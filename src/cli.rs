@@ -1360,7 +1360,7 @@ mod tests {
         }
 
         // The bar reads a rise the way the window does.
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
+        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
         let red: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_eq!((&red["up"], &red["down"]), (&parsed["down"], &parsed["up"]));
         assert_eq!(
@@ -1370,7 +1370,9 @@ mod tests {
     }
 
     /// The scheme chosen in the window reaches the bar: somebody who reads a
-    /// rise as red reads it that way in the bar too.
+    /// rise as red reads it that way in the bar too, and still does when it
+    /// was an older version that wrote the choice down, as a scheme of its
+    /// own.
     #[test]
     fn the_payload_follows_whichever_bar_scheme_was_chosen() {
         let store = Store::memory().unwrap();
@@ -1384,7 +1386,7 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
-    /// Every scheme on offer — filled, hollow, red up and monochrome — reaches
+    /// Every palette on offer — vivid, soft, quiet and monochrome — reaches
     /// the widget whole: the change text, the sparklines (which
     /// are drawn in the same up and down) and the pill all come from the
     /// chosen scheme's colours, by the same rules the chart applies to them.
@@ -1394,7 +1396,7 @@ mod tests {
         let store = Store::memory().unwrap();
         let theming = crate::theming::Theming::load(&store);
         let schemes = omacharts_engine::theme::bar_schemes(&theming.theme());
-        assert_eq!(schemes.len(), 4);
+        assert_eq!(schemes.len(), omacharts_engine::BarColouring::ALL.len());
         for scheme in schemes {
             store.set_setting(crate::theming::SETTING_BARS, &scheme.id);
             let sent: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();

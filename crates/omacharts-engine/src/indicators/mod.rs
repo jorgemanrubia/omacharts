@@ -24,7 +24,7 @@ use chrono_tz::Tz;
 use crate::bars::{Bar, Timeframe};
 use crate::ladders::{Days, Held, Ladder};
 use crate::symbols::Instrument;
-use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
+use crate::theme::{BarColouring, ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
@@ -346,7 +346,7 @@ impl Kind {
                 align: profile::Align::Left,
                 merged: Vec::new(),
             },
-            Kind::Volume => Params::Volume { height: 0.18, up_color: None, down_color: None },
+            Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
             // numbers Wilder published and the ones every other chart shows,
             // so a level somebody is watching elsewhere is the same level here.
@@ -378,6 +378,16 @@ impl Kind {
             Kind::SessionTimes => Params::SessionTimes { ranges: vec![time::Preset::Eth.range()] },
         }
     }
+}
+
+/// The least opacity a volume pane's bars take: below it they are hard to
+/// tell from the chart behind them.
+pub const MIN_VOLUME_OPACITY: f64 = 0.2;
+/// How solid volume bars are drawn unless somebody chose otherwise.
+pub const DEFAULT_VOLUME_OPACITY: f64 = 0.85;
+
+fn default_volume_opacity() -> f64 {
+    DEFAULT_VOLUME_OPACITY
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -445,13 +455,23 @@ pub enum Params {
     Volume {
         /// How much of the chart's height the pane takes.
         height: f64,
+        /// How its bars are painted: unset, the way the chart paints its
+        /// candles, so volume follows the chart; set, a colouring of its
+        /// own, so a quiet volume can sit under loud candles, or the other
+        /// way round.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        colouring: Option<BarColouring>,
         /// The bars of a rising and a falling session. Unset is the candles'
-        /// own colour dimmed toward the chart, so volume reads as belonging
-        /// to the bar above it without competing with it.
+        /// own colour, so volume reads as belonging to the bar above it.
         #[serde(default)]
         up_color: Option<ColorChoice>,
         #[serde(default)]
         down_color: Option<ColorChoice>,
+        /// How solid its bars are drawn, from [`MIN_VOLUME_OPACITY`] to 1,
+        /// where 1 hides nothing behind them. A chart saved before it was
+        /// a choice opens at the default.
+        #[serde(default = "default_volume_opacity")]
+        opacity: f64,
     },
     Rsi {
         period: usize,
@@ -1335,7 +1355,7 @@ mod tests {
     #[test]
     fn an_absurd_pane_height_is_brought_back_into_range() {
         let mut volume = Indicator::new(1, Kind::Volume);
-        volume.params = Params::Volume { height: 5.0, up_color: None, down_color: None };
+        volume.params = Params::Volume { height: 5.0, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY };
         match compute(&volume, &bars(&[1.0, 2.0]), 0, Timeframe::days(1), None) {
             Output::Volume { height, .. } => assert_eq!(height, MAX_PANE_SHARE),
             other => panic!("{other:?}"),

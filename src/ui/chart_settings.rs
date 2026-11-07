@@ -116,6 +116,23 @@ impl ChartSettings {
         });
         rebuild_indicators(&owner, &dialog, &list);
         template_rows(window, &dialog, &templates, &Refresh::rebuilding(&owner, &dialog, &list));
+        {
+            // A command can add, change or take away an indicator while the
+            // list is open, and the list reads it again.
+            let owner = Rc::downgrade(&owner);
+            let dialog_weak = dialog.downgrade();
+            let list = list.clone();
+            window.watch_chart(move || {
+                let (Some(owner), Some(dialog)) = (owner.upgrade(), dialog_weak.upgrade()) else {
+                    return false;
+                };
+                if dialog.root().is_none() {
+                    return false;
+                }
+                rebuild_indicators(&owner, &dialog, &list);
+                true
+            });
+        }
 
         dialog.present(Some(&window.window));
         match focus {
@@ -288,56 +305,194 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let colouring = adw::ComboRow::new();
     colouring.set_title("Colouring");
-    fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
+    fill_colourings(&colouring, window.bar_colouring());
     colouring.set_sensitive(!window.bars_hidden());
+
+    // The two switches worn over the colouring. Greyed with it while the
+    // bars are hidden; the hollow rise also on OHLC bars, which have no
+    // body to leave open, and the swap on a colouring that paints the same
+    // either way.
+    let hollow = adw::SwitchRow::new();
+    hollow.set_title(HOLLOW_LABEL);
+    hollow.set_active(window.bars_hollow_up());
+    let swapped = adw::SwitchRow::new();
+    swapped.set_title(SWAP_LABEL);
+    swapped.set_active(window.bars_swapped());
+    let theme = window.theme();
+    let shown = !window.bars_hidden();
+    hollow.set_sensitive(shown && hollow_applies(window.bar_style()));
+    swapped.set_sensitive(shown && two_toned(&theme, window.bar_colouring()));
+
+    // Set while the rows are being brought up to date with a chart changed
+    // from elsewhere, so that reading the change is not taken for making it.
+    let syncing = Rc::new(std::cell::Cell::new(false));
+
+    // How thick OHLC bars are drawn, offered only while they are.
+    let thickness = {
+        let window = window.clone();
+        let syncing = syncing.clone();
+        controls::bounded_row(
+            THICKNESS_LABEL,
+            None,
+            f64::from(window.ohlc_thickness()),
+            f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
+            f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
+            1.0,
+            0,
+            move |px| {
+                let px = px.round() as u8;
+                if !syncing.get() && px != window.ohlc_thickness() {
+                    window.set_ohlc_thickness(px);
+                }
+            },
+        )
+    };
+    thickness.row.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
 
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
+    let hollow_for_style = hollow.clone();
+    let swapped_for_style = swapped.clone();
+    let syncing_for_style = syncing.clone();
+    let thickness_for_style = thickness.row.clone();
     row.connect_selected_notify(move |row| {
+        if syncing_for_style.get() {
+            return;
+        }
+        let ohlc = BarStyle::ALL.get(row.selected() as usize) == Some(&BarStyle::Ohlc);
+        thickness_for_style.set_visible(ohlc);
         if row.selected() == hidden_at {
             window_for_style.set_bars_hidden(true);
             colouring_for_style.set_sensitive(false);
+            hollow_for_style.set_sensitive(false);
+            swapped_for_style.set_sensitive(false);
         } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
             window_for_style.set_bar_style(style);
-            fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
             colouring_for_style.set_sensitive(true);
+            hollow_for_style.set_sensitive(hollow_applies(style));
+            let theme = window_for_style.theme();
+            swapped_for_style.set_sensitive(two_toned(&theme, window_for_style.bar_colouring()));
         }
     });
     group.add(&row);
+    group.add(&thickness.row);
 
     let window_for_colouring = window.clone();
+    let swapped_for_colouring = swapped.clone();
+    let syncing_for_colouring = syncing.clone();
     colouring.connect_selected_notify(move |row| {
-        if filling_colourings(row) {
+        if filling_colourings(row) || syncing_for_colouring.get() {
             return;
         }
-        let style = window_for_colouring.bar_style();
-        let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
-        else {
+        let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
             return;
         };
-        if chosen != window_for_colouring.bar_colouring().for_style(style) {
+        if chosen != window_for_colouring.bar_colouring() {
             window_for_colouring.set_bar_colouring(chosen);
         }
+        let theme = window_for_colouring.theme();
+        swapped_for_colouring.set_sensitive(two_toned(&theme, chosen));
     });
     group.add(&colouring);
 
+    let window_for_hollow = window.clone();
+    let syncing_for_hollow = syncing.clone();
+    hollow.connect_active_notify(move |row| {
+        if !syncing_for_hollow.get() && row.is_active() != window_for_hollow.bars_hollow_up() {
+            window_for_hollow.set_bars_hollow_up(row.is_active());
+        }
+    });
+    group.add(&hollow);
+
+    let window_for_swapped = window.clone();
+    let syncing_for_swapped = syncing.clone();
+    swapped.connect_active_notify(move |row| {
+        if !syncing_for_swapped.get() && row.is_active() != window_for_swapped.bars_swapped() {
+            window_for_swapped.set_bars_swapped(row.is_active());
+        }
+    });
+    group.add(&swapped);
+
+    // A command, or a theme, can change the chart while this is open; the
+    // rows read it again rather than go on describing what it was. Weakly,
+    // so the window does not keep a closed dialog's rows alive.
+    let weak = Rc::downgrade(window);
+    let rows = (row.downgrade(), colouring.downgrade(), hollow.downgrade(), swapped.downgrade());
+    let thickness = (thickness.row.downgrade(), thickness.adjustment.clone());
+    window.watch_chart(move || {
+        let (Some(window), Some(row), Some(colouring), Some(hollow), Some(swapped)) =
+            (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade(), rows.2.upgrade(), rows.3.upgrade())
+        else {
+            return false;
+        };
+        if row.root().is_none() {
+            return false;
+        }
+        syncing.set(true);
+        sync_bars(&window, &row, &colouring, &hollow, &swapped, hidden_at);
+        if let Some(shown) = thickness.0.upgrade() {
+            shown.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
+            thickness.1.set_value(f64::from(window.ohlc_thickness()));
+        }
+        syncing.set(false);
+        true
+    });
 
     group
 }
 
-/// Offer the colourings a bar of `style` can be painted in, with `current`
-/// selected — as an OHLC bar draws it, so a hollow chart turned into OHLC
-/// reads as coloured, which is what it shows.
+/// Bring the Bars rows to what the focused chart is wearing now.
+fn sync_bars(
+    window: &Rc<Window>,
+    row: &adw::ComboRow,
+    colouring: &adw::ComboRow,
+    hollow: &adw::SwitchRow,
+    swapped: &adw::SwitchRow,
+    hidden_at: u32,
+) {
+    let hidden = window.bars_hidden();
+    row.set_selected(match hidden {
+        true => hidden_at,
+        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
+    });
+    let current = window.bar_colouring();
+    colouring.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
+    colouring.set_sensitive(!hidden);
+    hollow.set_active(window.bars_hollow_up());
+    swapped.set_active(window.bars_swapped());
+    hollow.set_sensitive(!hidden && hollow_applies(window.bar_style()));
+    swapped.set_sensitive(!hidden && two_toned(&window.theme(), current));
+}
+
+/// What the two switches over the colouring are called, in a chart's
+/// settings and in the preferences alike.
+pub const HOLLOW_LABEL: &str = "Hollow up bars";
+pub const SWAP_LABEL: &str = "Swap up and down colours";
+/// The row for how many pixels wide OHLC bars are drawn.
+pub const THICKNESS_LABEL: &str = "Thickness";
+
+/// Whether turning `colouring` round would change what it paints, which is
+/// when the switch for it is offered. Monochrome paints a rise and a fall
+/// alike, so there is nothing to turn round.
+pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring) -> bool {
+    colouring.scheme(theme).is_two_toned()
+}
+
+/// Whether a hollow rise would show on a bar of `style`: a candle has a
+/// body to leave open, an OHLC bar does not.
+pub fn hollow_applies(style: BarStyle) -> bool {
+    style == BarStyle::Candles
+}
+
+/// Offer the four palettes, with `current` selected.
 ///
 /// A new model selects its first entry on the way in, which the row's own
 /// handler would take for a choice; [`filling_colourings`] tells it not to.
-pub fn fill_colourings(row: &adw::ComboRow, style: BarStyle, current: BarColouring) {
-    let offered = BarColouring::offered(style);
-    let names: Vec<&str> = offered.iter().map(|c| c.label(style)).collect();
+pub fn fill_colourings(row: &adw::ComboRow, current: BarColouring) {
+    let names: Vec<&str> = BarColouring::ALL.iter().map(|c| c.label()).collect();
     row.set_widget_name(FILLING);
     row.set_model(Some(&gtk::StringList::new(&names)));
-    let shown = current.for_style(style);
-    row.set_selected(offered.iter().position(|c| *c == shown).unwrap_or(0) as u32);
+    row.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
     row.set_widget_name("");
 }
 
@@ -1574,23 +1729,83 @@ fn legend_group(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> 
     group
 }
 
-/// A rising and a falling session's volume bar. Unset, each is the candle's
-/// own colour dimmed toward the chart.
+/// A rising and a falling session's volume bar, and how solid both are.
+/// Unset, each is the candle's own colour.
 fn volume_colours(
     owner: &Rc<Owner>,
     refresh: &Refresh,
     indicator: &Indicator,
 ) -> adw::PreferencesGroup {
-    let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Colours");
+    let rows = Rc::new(RefCell::new(volume_rows(owner, refresh, indicator)));
+    for row in rows.borrow().iter() {
+        group.add(row);
+    }
+    // The palette, and the colours following the chart's, can be changed by
+    // a command while this is open. The rows are built again rather than set,
+    // because building one sets nothing: no choice is made by reading one.
+    let id = indicator.id;
+    let weak = group.downgrade();
+    let owner_for_watch = owner.clone();
+    let refresh = refresh.clone();
+    owner.app.watch_chart(move || {
+        let Some(group) = weak.upgrade().filter(|group| group.root().is_some()) else {
+            return false;
+        };
+        let indicators = owner_for_watch.indicators();
+        let Some(indicator) = indicators.iter().find(|i| i.id == id) else { return true };
+        for row in rows.borrow_mut().drain(..) {
+            group.remove(&row);
+        }
+        let fresh = volume_rows(&owner_for_watch, &refresh, indicator);
+        for row in &fresh {
+            group.add(row);
+        }
+        *rows.borrow_mut() = fresh;
+        true
+    });
+    group
+}
 
+/// The volume pane's palette, its opacity and its two colours, as it is
+/// painted now.
+fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
+    let id = indicator.id;
     let (up, down) =
         crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
-    let Params::Volume { up_color, down_color, .. } = &indicator.params else { return group };
+    let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
+        return Vec::new();
+    };
+    let opacity = percent_row(
+        owner,
+        refresh,
+        id,
+        VOLUME_OPACITY_LABEL,
+        crate::ui::chart::volume_opacity(indicator),
+        omacharts_engine::indicators::MIN_VOLUME_OPACITY,
+        1.0,
+        move |indicator, share| {
+            if let Params::Volume { opacity, .. } = &mut indicator.params {
+                *opacity = share;
+            }
+        },
+    );
+    // The chart's own colouring first, then the four palettes. A volume
+    // bar is a solid bar with no body to leave open, so the chart's
+    // switches reach it only as the swap, through the chart's scheme.
+    let offered = &BarColouring::ALL;
+    let mut names = vec![VOLUME_FOLLOWS_CHART];
+    names.extend(offered.iter().map(|c| c.label()));
+    let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
+    let choice = choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
+        if let Params::Volume { colouring, .. } = &mut indicator.params {
+            *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
+        }
+    });
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
-    group.add(&colour_row(
+    let up_row = colour_row(
         owner,
         refresh,
         &unused,
@@ -1603,8 +1818,8 @@ fn volume_colours(
             }
         },
         id,
-    ));
-    group.add(&colour_row(
+    );
+    let down_row = colour_row(
         owner,
         refresh,
         &unused,
@@ -1617,9 +1832,16 @@ fn volume_colours(
             }
         },
         id,
-    ));
-    group
+    );
+    vec![choice.upcast(), opacity.upcast(), up_row.upcast(), down_row.upcast()]
 }
+
+/// The volume row that says how solid its bars are.
+pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
+
+/// What a volume pane's colouring row offers first: the way the chart
+/// paints its candles, whatever that is.
+const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape and side.

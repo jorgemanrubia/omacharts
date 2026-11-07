@@ -94,7 +94,22 @@ A swatch opens the colour chooser. The colour applies as you pick it. **Rename**
 | Other | **Crosshair** | The crosshair. |
 | Other | **Accent** | A selected row, a switch that is on, the button a dialog suggests. |
 
-Volume bars take the candle colours, dimmed toward the background. Filled, hollow, red-up or monochrome bars are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)).
+Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Vivid, soft, quiet or monochrome bars, hollow rises, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
+
+<!-- regenerate:
+theme: paper
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state: one NVDA 1D chart, sidebar hidden; for each cell, chart set --colouring C --hollow-up H --swap-colours S, then chart range 3m
+capture: bin/headless-window cli chart screenshot, one per cell; the four joined two by two with a 12px gap, resized to 2000 wide, -quality 88
+cells: theme · theme-soft (top); theme-quiet · theme-mono (bottom)
+-->
+{% include figure.html src="/assets/manual/themes/palettes-paper.jpg" alt="The four palettes on the Paper theme: Vivid, Soft, Quiet and Monochrome" caption="The four palettes on Paper: Vivid, Soft (top); Quiet, Monochrome (bottom)." %}
+
+<!-- regenerate:
+as above, on midnight and on paper, cells: theme-quiet --hollow-up on · theme-mono --hollow-up on (top); theme --swap-colours on · theme with `chart indicator set volume --colouring theme-quiet` (bottom)
+-->
+{% include figure.html src="/assets/manual/themes/switches-midnight.jpg" alt="The two switches on Midnight: hollow rises on Quiet and on Monochrome, Vivid with up and down swapped, and Vivid over a quiet volume strip" caption="The switches on Midnight: Hollow up bars on Quiet and on Monochrome (top); Vivid swapped, and Vivid over a Quiet volume strip (bottom)." %}
+{% include figure.html src="/assets/manual/themes/switches-paper.jpg" alt="The same four charts on Paper" caption="The same on Paper." %}
 
 ## The palette
 

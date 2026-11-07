@@ -374,8 +374,8 @@ $ omacharts chart set --symbol NVDA --resolution 240
 chart 2: symbol NVDA, resolution 4h
   [exit 0]
 
-$ omacharts chart set --style candles --colouring theme-hollow --session regular --grid off --auto-scale off --log-scale on
-chart 4: style candles, colouring theme-hollow, session regular, grid off, auto-scale off, log scale on
+$ omacharts chart set --style candles --colouring theme-soft --hollow-up on --session regular --grid off --auto-scale off --log-scale on
+chart 4: style candles, colouring theme-soft, rises hollow, session regular, grid off, auto-scale off, log scale on
   [exit 0]
 
 $ omacharts chart set --resolution 3x
@@ -389,8 +389,11 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
 | `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
+| `--thickness PX` | How many pixels wide OHLC bars are drawn, `1` to `4` | [Style](/manual/charts/#style) |
 | `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
-| `--colouring C` | `theme`, `theme-hollow`, `theme-red-up`, `theme-mono` | [Colouring](/manual/charts/#colouring) |
+| `--colouring C` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono`; `theme-hollow` and `theme-red-up`, from earlier versions, are `theme` with the matching switch on | [Colouring](/manual/charts/#colouring) |
+| `--hollow-up on` or `off` | Draws a rising candle as an outline | [Colouring](/manual/charts/#colouring) |
+| `--swap-colours on` or `off` | Paints the colouring the other way round, red for a rise | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
@@ -404,8 +407,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
 
-`--colouring theme-hollow` on an OHLC chart is accepted and drawn coloured,
-since OHLC bars have no body.
+`--hollow-up on` on an OHLC chart is accepted and changes nothing you can
+see until the chart is candles again, since OHLC bars have no body.
 
 `--style none` and `--bars off` both hide the bars and keep their style.
 `--bars on` brings them back in it, and `--style candles` or `--style ohlc`
@@ -468,7 +471,7 @@ charts made next, as **Apply to all charts now** does.
 
 ```
 $ omacharts config bars
-coloured
+vivid
   [exit 0]
 
 $ omacharts config bars monochrome
@@ -476,25 +479,38 @@ bars are monochrome; the colours are remembered
   [exit 0]
 
 $ omacharts config bars red-up
-rising bars are red and falling bars green
+rising bars are red and falling bars green, in the "theme" scheme
   [exit 0]
 
-$ omacharts config bars coloured
-bars carry their direction again, in the "theme" scheme
+$ omacharts config bars
+vivid, swapped
+  [exit 0]
+
+$ omacharts config bars vivid
+bars carry their direction in colour again, in the "theme" scheme
   [exit 0]
 ```
 
 | `STATE` | Does |
 |---|---|
-| (none) | Prints the current state: `coloured`, `red-up` or `monochrome` |
+| (none) | Prints the current state: `vivid`, `soft`, `quiet` or `monochrome`, followed by `, hollow` when rises are hollow and `, swapped` when up and down are swapped. With `--json`, the `hollow_up` and `swapped` fields |
+| `vivid` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
+| `soft` | Every chart soft: a slate and a sand from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
+| `quiet` | Every chart quiet: two greys made from the theme's text, a rise the lighter and a fall the darker ([Colouring](/manual/charts/#colouring)) |
 | `monochrome` | Every chart monochrome, remembering the colouring in use |
-| `red-up` | Every chart red up |
-| `coloured` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
+| `coloured` | The same as `vivid`, from earlier versions |
+| `hollow` | `vivid`, with rises hollow on every chart and for new ones. From earlier versions, when Hollow was a colouring; `chart set --hollow-up` and `config set hollow_up` are the switch itself |
+| `red-up` | `vivid`, with up and down swapped on every chart and for new ones. From earlier versions, when Red up was a colouring; `chart set --swap-colours` and `config set swap_colours` are the switch itself |
+
+The two switches are worn over the palette, not palettes themselves, so the
+other states leave them as they are. `config set hollow_up off` and
+`config set swap_colours off` turn one off for new charts, and
+`chart set --hollow-up off` or `--swap-colours off` for one chart.
 
 `config set bar_scheme theme-mono` is different. It changes only what new
 charts open with, and remembers nothing to go back to.
 
-The chart defaults (`bar_style`, `bar_scheme`, `chart_session`, `show_grid`,
+The chart defaults (`bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`, `chart_session`, `show_grid`,
 `chart_log_scale`, `chart_header`, `timeframes`) are set with `config set`;
 see [Settings](#settings).
 
@@ -533,6 +549,8 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
+| `--colouring C` | `chart` to follow the chart's colouring, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` for one of its own | Volume ([Volume](/manual/indicators/volume/)) |
+| `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
@@ -1516,7 +1534,10 @@ same.
 |---|---|---|---|---|
 | `theme` | `omarchy` (System), `midnight`, `carbon`, `paper`, `daylight`, `omarchy:SLUG` for one installed Omarchy theme, or the id of a theme of your own | `omarchy` on Omarchy, `midnight` elsewhere | Theme › Theme | [Themes](/manual/themes/) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
-| `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-red-up`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
+| `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
+| `bar_scheme` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
+| `hollow_up` | on, off | off | Charts › Defaults › Hollow up bars | [Chart settings](/manual/chart-settings/) |
+| `swap_colours` | on, off | off | Charts › Defaults › Swap up and down colours | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
@@ -1787,5 +1808,5 @@ Each entry carries `symbol`, `suffix`, `display`, `name`, `kind`, `spark`
 (the last 30 daily closes), `last`, `change`, `changePct` and `asOf`
 (seconds since the epoch). A symbol with no quote yet has `null` for the
 numbers. Beside the sections come `colors`, the theme's colours (`text`,
-`muted`, `up`, `down`, `flat`, `hover` and the `tags` pills), and
+`soft`, `up`, `down`, `flat`, `hover` and the `tags` pills), and
 `updatedAt`.

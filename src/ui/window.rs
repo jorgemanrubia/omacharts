@@ -37,6 +37,7 @@ use crate::ui::pane::{self, ChartPane, Hideable, LadderSource, Node};
 use crate::ui::drop_line;
 use crate::ui::screenshot;
 use omacharts_engine::link;
+use omacharts_engine::theme::StoredColouring;
 use omacharts_engine::LinkMode;
 use crate::ui::colors;
 use crate::ui::preferences::Preferences;
@@ -666,6 +667,9 @@ mod tests {
                 bar_style: "candle".to_string(),
                 bars_hidden: false,
                 colouring: None,
+                swapped: None,
+                hollow_up: None,
+                ohlc_thickness: None,
                 session: "extended".to_string(),
                 show_grid: true,
                 link: LinkMode::Focus,
@@ -745,7 +749,10 @@ mod tests {
             template: None,
             bar_style: "candle".to_string(),
             bars_hidden: false,
-                colouring: None,
+            colouring: None,
+            swapped: None,
+            hollow_up: None,
+            ohlc_thickness: None,
             session: "extended".to_string(),
             show_grid: true,
             link,
@@ -1508,6 +1515,183 @@ mod sidebar_tests {
     }
 }
 
+#[cfg(test)]
+mod outside_change_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::bare_window;
+    use omacharts_engine::Range;
+
+    /// Run a command against the window, as a terminal would.
+    fn command(window: &Rc<Window>, words: &[&str]) -> String {
+        let args: Vec<String> = std::iter::once("omacharts").chain(words.iter().copied()).map(String::from).collect();
+        let live: &dyn crate::cli::Live = window;
+        let outcome = crate::cli::run(&args, &window.store, Some(live), &crate::cli::Here);
+        assert_eq!(outcome.code, 0, "{words:?}: {}", outcome.err);
+        outcome.out
+    }
+
+    fn at(window: &Window, position: usize) -> Rc<ChartPane> {
+        let id = window.layout.borrow().leaves()[position];
+        window.pane(id).expect("a chart there")
+    }
+
+    /// Every row of a kind under `widget`, in the order they are read.
+    fn rows<T: IsA<gtk::Widget>>(widget: &gtk::Widget) -> Vec<T> {
+        let mut found = Vec::new();
+        let mut next = widget.first_child();
+        while let Some(child) = next {
+            if let Ok(row) = child.clone().downcast::<T>() {
+                found.push(row);
+            }
+            found.extend(rows::<T>(&child));
+            next = child.next_sibling();
+        }
+        found
+    }
+
+    fn titled<T: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(window: &Window, title: &str) -> Vec<T> {
+        rows::<T>(window.window.upcast_ref()).into_iter().filter(|row| row.title() == title).collect()
+    }
+
+    /// A range set on one chart by a command stays on it when another
+    /// command moves the focus, which rebuilds every chart from what was
+    /// written down, and when the focus comes back.
+    #[test]
+    fn a_range_set_by_a_command_survives_the_focus_moving() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "split", "horizontal"]);
+            command(&window, &["chart", "focus", "pos:0"]);
+            command(&window, &["chart", "range", "2025"]);
+            let held = at(&window, 0).view.held_range();
+            assert!(matches!(held, Some(Range::Year(2025))), "{held:?}");
+
+            command(&window, &["chart", "focus", "pos:1"]);
+            assert_eq!(at(&window, 0).view.held_range(), held, "moving the focus away let the range go");
+            assert_eq!(at(&window, 1).view.held_range(), None, "the other chart took it on");
+            command(&window, &["chart", "focus", "pos:0"]);
+            assert_eq!(at(&window, 0).view.held_range(), held, "moving the focus back let the range go");
+        });
+    }
+
+    /// The Thickness row is offered under Style only while the bars are
+    /// OHLC bars, follows a command that changes them, and moves them as it
+    /// is moved.
+    #[test]
+    fn the_thickness_row_is_there_for_ohlc_bars_only_and_follows_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let row = titled::<adw::ActionRow>(&window, crate::ui::chart_settings::THICKNESS_LABEL)
+                .into_iter()
+                .next()
+                .expect("a Thickness row");
+            assert!(!row.get_visible(), "offered for candles");
+            let slider = rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
+
+            command(&window, &["chart", "set", "--style", "ohlc", "--thickness", "3"]);
+            assert!(row.get_visible(), "not offered for OHLC bars");
+            assert_eq!(slider.value(), 3.0);
+            assert_eq!(window.ohlc_thickness(), 3);
+
+            slider.set_value(1.0);
+            assert_eq!(window.ohlc_thickness(), 1, "the slider did not reach the chart");
+            command(&window, &["chart", "set", "--style", "candles"]);
+            assert!(!row.get_visible());
+        });
+    }
+
+    /// The volume pane's Opacity sits right under its Colouring, starts at
+    /// 85%, reaches the pane from its slider and follows a command.
+    #[test]
+    fn the_volume_opacity_row_sits_under_its_colouring_and_follows_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let volume = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
+                .map(|i| i.id)
+                .expect("a volume pane on a new chart");
+            let opacity = || {
+                let indicators = window.indicators();
+                crate::ui::chart::volume_opacity(indicators.iter().find(|i| i.id == volume).unwrap())
+            };
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
+            let row = || {
+                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::VOLUME_OPACITY_LABEL)
+                    .into_iter()
+                    .next()
+                    .expect("an Opacity row")
+            };
+            let above = row().prev_sibling().and_then(|w| w.downcast::<adw::ComboRow>().ok());
+            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Colouring"), "Opacity is not under Colouring");
+            let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
+            assert_eq!(slider(row()).value(), 85.0);
+            assert_eq!(opacity(), 0.85);
+
+            slider(row()).set_value(100.0);
+            assert_eq!(opacity(), 1.0, "the slider did not reach the pane");
+
+            command(&window, &["chart", "indicator", "set", "volume", "--opacity", "0.5"]);
+            assert_eq!(slider(row()).value(), 50.0, "the row kept the old opacity");
+            assert_eq!(opacity(), 0.5);
+        });
+    }
+
+    /// A chart's settings, open while a command changes its colouring, its
+    /// switches and its volume pane's palette, show what the command did —
+    /// and showing it changes nothing more.
+    #[test]
+    fn open_chart_settings_follow_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let volume = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
+                .map(|i| i.id)
+                .expect("a volume pane on a new chart");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
+            let colourings = titled::<adw::ComboRow>(&window, "Colouring");
+            assert_eq!(colourings.len(), 2, "the chart's and the volume pane's");
+            let (bars, strip) = (&colourings[0], &colourings[1]);
+            let hollow = titled::<adw::SwitchRow>(&window, crate::ui::chart_settings::HOLLOW_LABEL);
+            let swapped = titled::<adw::SwitchRow>(&window, crate::ui::chart_settings::SWAP_LABEL);
+            assert_eq!(bars.selected(), 0);
+            assert!(!hollow[0].is_active() && !swapped[0].is_active());
+
+            command(&window, &["chart", "set", "--colouring", "theme-quiet", "--hollow-up", "on", "--swap-colours", "on"]);
+            assert_eq!(window.bar_colouring(), BarColouring::Quiet);
+            let quiet = BarColouring::ALL.iter().position(|c| *c == BarColouring::Quiet).unwrap() as u32;
+            assert_eq!(bars.selected(), quiet, "the Colouring row kept the old palette");
+            assert!(hollow[0].is_active(), "the hollow switch stayed off");
+            assert!(swapped[0].is_active(), "the swap switch stayed off");
+
+            command(&window, &["chart", "set", "--colouring", "theme-mono"]);
+            assert!(!swapped[0].is_sensitive(), "nothing to swap on Monochrome");
+            assert!(swapped[0].is_active(), "greyed, not turned off");
+            assert_eq!(window.bar_colouring(), BarColouring::Monochrome);
+            assert!(window.bars_swapped() && window.bars_hollow_up(), "reading the change made another");
+
+            command(&window, &["chart", "indicator", "set", "volume", "--colouring", "theme-soft"]);
+            let strip = titled::<adw::ComboRow>(&window, "Colouring").into_iter().nth(1).unwrap_or(strip.clone());
+            let soft = BarColouring::ALL.iter().position(|c| *c == BarColouring::Soft).unwrap() as u32;
+            assert_eq!(strip.selected(), soft + 1, "the volume pane's Colouring row kept the old palette");
+            let shown = window.indicators();
+            let params = &shown.iter().find(|i| i.id == volume).expect("the volume pane").params;
+            assert!(
+                matches!(params, omacharts_engine::indicators::Params::Volume { colouring: Some(BarColouring::Soft), .. }),
+                "{params:?}"
+            );
+        });
+    }
+}
+
 /// Does this watchlist hold that symbol?
 ///
 /// Matched on the canonical ticker and the exchange suffix together, never on
@@ -1887,6 +2071,19 @@ struct StoredPane {
     /// written before charts were painted one by one.
     #[serde(default)]
     colouring: Option<String>,
+    /// The two switches worn over the colouring: up and down exchanged, and
+    /// a rise drawn as an outline. Missing from a chart written before they
+    /// were switches: one whose `colouring` is a scheme an older version
+    /// wrote for the look (`theme-red-up`, `theme-hollow`) wore it, and any
+    /// other chart with a colouring of its own did not.
+    #[serde(default)]
+    swapped: Option<bool>,
+    #[serde(default)]
+    hollow_up: Option<bool>,
+    /// How many pixels wide its OHLC bars are drawn. Missing from a chart
+    /// written before they could be thicker, which takes the default.
+    #[serde(default)]
+    ohlc_thickness: Option<u8>,
     session: String,
     show_grid: bool,
     /// What the rail does to this chart. Missing from a chart written with
@@ -2022,7 +2219,38 @@ fn hundredths(change_pct: f64) -> i64 {
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
 fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
-    pane.colouring.get().for_style(pane.bar_style.get()).scheme(theme)
+    pane.colouring.get().scheme(theme).worn(pane.swapped.get(), pane.hollow_up.get())
+}
+
+/// How a stored chart paints its bars: the palette and the switches over it.
+///
+/// A chart written before it had a colouring of its own was wearing the one
+/// every chart wore, which is the default's, switches and all. One written
+/// before the looks were switches says so by its colouring: a scheme an older
+/// version wrote for a hollow rise or for red up is Vivid with that switch
+/// on, and any other colouring of its own was worn plain.
+fn stored_colouring(stored: &StoredPane, defaults: &ChartDefaults) -> StoredColouring {
+    match stored.colouring.as_deref().and_then(BarColouring::from_stored) {
+        Some(written) => StoredColouring {
+            colouring: written.colouring,
+            swapped: stored.swapped.unwrap_or(written.swapped),
+            hollow_up: stored.hollow_up.unwrap_or(written.hollow_up),
+        },
+        None => StoredColouring {
+            colouring: defaults.colouring,
+            swapped: stored.swapped.unwrap_or(defaults.swapped),
+            hollow_up: stored.hollow_up.unwrap_or(defaults.hollow_up),
+        },
+    }
+}
+
+/// A chart's colouring and the switches it wears, as a split copies them.
+fn pane_look(pane: &ChartPane) -> StoredColouring {
+    StoredColouring {
+        colouring: pane.colouring.get(),
+        swapped: pane.swapped.get(),
+        hollow_up: pane.hollow_up.get(),
+    }
 }
 
 /// A chart's local drawings get negative ids, below everything the store
@@ -2319,6 +2547,10 @@ pub struct Window {
     /// them, in layout order, so a change can be carried to the other books
     /// on it the way it was made. Empty for a book on none.
     template_leaves: RefCell<Vec<u32>>,
+    /// What an open chart settings dialog reads off the focused chart, asked
+    /// to read it again when something else changed it. Each says whether
+    /// it is still on screen, and goes once it is not.
+    chart_watchers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// A save is already queued, so a drag does not queue one per pixel.
     save_pending: Cell<bool>,
     /// The chart menu's stateful actions, so they can be re-pointed at
@@ -2515,6 +2747,7 @@ impl Window {
             active: Cell::new(0),
             next_pane: Cell::new(1),
             template_leaves: RefCell::new(Vec::new()),
+            chart_watchers: RefCell::new(Vec::new()),
             save_pending: Cell::new(false),
             linked_action: RefCell::new(None),
             bar_style_action: RefCell::new(None),
@@ -2752,7 +2985,7 @@ impl Window {
             timeframe,
             template.as_ref().map(|t| t.indicators.clone()).unwrap_or(indicators),
             defaults.bar_style,
-            defaults.colouring,
+            defaults.look(),
             defaults.session,
             defaults.show_grid,
             LinkMode::default(),
@@ -2760,6 +2993,7 @@ impl Window {
         pane.template.set(template.map(|t| t.id));
         self.show_header_on(&pane);
         pane.view.set_price_log(defaults.log_scale);
+        pane.set_ohlc_thickness(defaults.ohlc_thickness);
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
         pane.view.set_sends(defaults.sends_drawings);
@@ -2774,7 +3008,7 @@ impl Window {
         timeframe: Timeframe,
         indicators: Vec<Indicator>,
         bar_style: BarStyle,
-        colouring: BarColouring,
+        look: StoredColouring,
         session: Session,
         show_grid: bool,
         mode: LinkMode,
@@ -2783,11 +3017,13 @@ impl Window {
         self.next_pane.set(id + 1);
 
         let theme = self.theming.borrow().theme();
-        let scheme = colouring.for_style(bar_style).scheme(&theme);
+        let scheme = look.colouring.scheme(&theme).worn(look.swapped, look.hollow_up);
         let pane = ChartPane::new(
             id, theme, scheme, timeframe, indicators, bar_style, session, show_grid, mode,
         );
-        pane.colouring.set(colouring);
+        pane.colouring.set(look.colouring);
+        pane.swapped.set(look.swapped);
+        pane.hollow_up.set(look.hollow_up);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -3245,7 +3481,7 @@ impl Window {
             from.timeframe.get(),
             from.indicators.borrow().clone(),
             from.bar_style.get(),
-            from.colouring.get(),
+            pane_look(&from),
             from.session.get(),
             from.show_grid.get(),
             from.mode(),
@@ -3256,6 +3492,7 @@ impl Window {
         added.view.set_price_log(from.view.price_log());
         added.bars_hidden.set(from.bars_hidden.get());
         added.view.set_bars_hidden(from.bars_hidden.get());
+        added.set_ohlc_thickness(from.ohlc_thickness.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
@@ -3996,6 +4233,9 @@ impl Window {
                     bar_style: pane.bar_style.get().key().to_string(),
                     bars_hidden: pane.bars_hidden.get(),
                     colouring: Some(pane.colouring.get().key().to_string()),
+                    swapped: Some(pane.swapped.get()),
+                    hollow_up: Some(pane.hollow_up.get()),
+                    ohlc_thickness: Some(pane.ohlc_thickness.get()),
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     link: pane.mode(),
@@ -4089,6 +4329,19 @@ impl Window {
     pub fn reload_workspace(self: &Rc<Self>) {
         let books = self.books.borrow().clone();
         let active = self.active.get();
+        // The one thing on screen that is not written down and still has to
+        // survive a rebuild: a range a chart was told to keep showing, by
+        // `chart range` among others. Without it, the next command that
+        // rebuilds the arrangement — focusing another chart is one — puts
+        // every chart back at rest. Matched by the chart's own name, which a
+        // rebuild keeps and a copy is given afresh, rather than by its id,
+        // which a rebuild hands out again.
+        let held: HashMap<String, omacharts_engine::Range> = self
+            .panes
+            .borrow()
+            .iter()
+            .filter_map(|pane| Some((pane.uid.borrow().clone(), pane.view.held_range()?)))
+            .collect();
 
         if !self.restore_workspace() {
             // An arrangement that cannot be rebuilt leaves the charts alone:
@@ -4100,9 +4353,36 @@ impl Window {
             return;
         }
 
+        if !held.is_empty() {
+            for pane in self.panes.borrow().iter() {
+                if let Some(range) = held.get(pane.uid.borrow().as_str()) {
+                    pane.view.show_range(*range);
+                }
+            }
+        }
+
         // A command can add or remove a whole chartbook, which is the one
         // change that shows outside the charts themselves.
         self.rebuild_book_strip();
+        self.chart_changed_elsewhere();
+    }
+
+    /// Have `watch` run whenever the focused chart may have been changed by
+    /// something other than the dialog showing it: a command, a theme.
+    /// It answers whether it is still wanted.
+    pub fn watch_chart(&self, watch: impl Fn() -> bool + 'static) {
+        self.chart_watchers.borrow_mut().push(Box::new(watch));
+    }
+
+    /// Tell whatever shows the focused chart's settings to read them again.
+    /// Taken out while they run, because one may rebuild rows that register
+    /// a watcher of their own.
+    pub fn chart_changed_elsewhere(&self) {
+        let mut watchers = std::mem::take(&mut *self.chart_watchers.borrow_mut());
+        watchers.retain(|watch| watch());
+        let mut kept = self.chart_watchers.borrow_mut();
+        watchers.append(&mut kept);
+        *kept = watchers;
     }
 
     /// Draw the rail again, after something outside the window changed a
@@ -4184,13 +4464,7 @@ impl Window {
                 Timeframe::parse(&stored.timeframe).unwrap_or(Timeframe::days(1)),
                 template.map(|t| t.indicators.clone()).unwrap_or_else(|| stored.indicators.clone()),
                 BarStyle::from_key(&stored.bar_style).unwrap_or_default(),
-                // A chart written before it had a colouring of its own was
-                // wearing the one every chart wore, which is the default's.
-                stored
-                    .colouring
-                    .as_deref()
-                    .and_then(BarColouring::from_key)
-                    .unwrap_or(defaults.colouring),
+                stored_colouring(&stored, &defaults),
                 Session::from_key(&stored.session).unwrap_or_default(),
                 stored.show_grid,
                 stored.link,
@@ -4215,6 +4489,7 @@ impl Window {
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
             pane.view.set_bars_hidden(stored.bars_hidden);
+            pane.set_ohlc_thickness(stored.ohlc_thickness.unwrap_or(defaults.ohlc_thickness));
             pane.view.set_show_indicators(stored.indicators_shown);
             pane.view.set_show_drawings(stored.drawings_shown);
             restored.push((pane, stored));
@@ -6211,6 +6486,8 @@ impl Window {
         if let Some(watchlist) = self.watchlist.borrow().as_ref() {
             watchlist.rebuild();
         }
+        // Whether a colouring has two tones to swap is the theme's answer.
+        self.chart_changed_elsewhere();
     }
 
     fn open_search(self: &Rc<Self>) {
@@ -9266,8 +9543,6 @@ impl Window {
         pane.bars_hidden.set(false);
         pane.view.set_bars_hidden(false);
         self.sync_chart_actions(&pane);
-        // What the colouring paints depends on the style: hollow is coloured
-        // on an OHLC bar.
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
         self.save_workspace();
@@ -9280,6 +9555,44 @@ impl Window {
     pub fn set_bar_colouring(self: &Rc<Self>, colouring: BarColouring) {
         let pane = self.focused_pane();
         pane.colouring.set(colouring);
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        self.save_workspace();
+    }
+
+    /// Whether the focused chart wears its colouring the other way round.
+    pub fn bars_swapped(&self) -> bool {
+        self.focused_pane().swapped.get()
+    }
+
+    pub fn set_bars_swapped(self: &Rc<Self>, swapped: bool) {
+        let pane = self.focused_pane();
+        pane.swapped.set(swapped);
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        // Profit and loss turn round with the candles.
+        self.apply_marks_to(&pane);
+        self.save_workspace();
+    }
+
+    /// How many pixels wide the focused chart draws its OHLC bars.
+    pub fn ohlc_thickness(&self) -> u8 {
+        self.focused_pane().ohlc_thickness.get()
+    }
+
+    pub fn set_ohlc_thickness(self: &Rc<Self>, thickness: u8) {
+        self.focused_pane().set_ohlc_thickness(thickness);
+        self.save_workspace();
+    }
+
+    /// Whether the focused chart draws a rising body as an outline.
+    pub fn bars_hollow_up(&self) -> bool {
+        self.focused_pane().hollow_up.get()
+    }
+
+    pub fn set_bars_hollow_up(self: &Rc<Self>, hollow_up: bool) {
+        let pane = self.focused_pane();
+        pane.hollow_up.set(hollow_up);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
         self.save_workspace();
@@ -9385,6 +9698,9 @@ impl Window {
                 stored.bar_style = defaults.bar_style.key().to_string();
                 stored.bars_hidden = false;
                 stored.colouring = Some(defaults.colouring.key().to_string());
+                stored.swapped = Some(defaults.swapped);
+                stored.hollow_up = Some(defaults.hollow_up);
+                stored.ohlc_thickness = Some(defaults.ohlc_thickness);
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
@@ -9414,8 +9730,12 @@ impl Window {
         pane.bars_hidden.set(false);
         pane.view.set_bars_hidden(false);
         pane.colouring.set(defaults.colouring);
+        pane.swapped.set(defaults.swapped);
+        pane.hollow_up.set(defaults.hollow_up);
+        pane.set_ohlc_thickness(defaults.ohlc_thickness);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+        self.apply_marks_to(pane);
         pane.session.set(defaults.session);
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);

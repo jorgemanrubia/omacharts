@@ -18,19 +18,28 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart, sidebar hidden)
-  click 1183 24           # the gear
+  key ctrl+shift+s
 capture: bin/headless-window shot /tmp/chartsettings.png; then scroll 640 500 10 and shot /tmp/chartsettings2.png
-crop: 490,95,1580,1250 (both)
+crop: 700,84,1160,1276 (both)
 -->
-{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Bars and Scales groups" caption="The Chart page, top." %}
+{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Bars group with its Colouring, Hollow up bars and Swap up and down colours rows, and the Scales group" caption="The Chart page, top." %}
 
 <!-- regenerate: as the figure above; this is its second capture, /tmp/chartsettings2.png, after scroll 640 500 10 -->
 {% include figure.html src="/assets/manual/charts/chart-settings-lower.png" alt="The Chart page scrolled down, showing the Session, Drawings and Reset to defaults groups" caption="The Chart page, bottom." %}
 
+<!-- regenerate:
+as above, with Monochrome chosen in the Colouring row (click 840 242, then 855 394)
+crop: 700,84,1160,1276
+-->
+{% include figure.html src="/assets/manual/charts/chart-settings-monochrome.png" alt="The Chart page with Monochrome chosen, the Swap up and down colours row greyed out" caption="Monochrome paints a rise and a fall alike, so the swap is greyed out; Hollow up bars is how it shows direction." %}
+
 | Group › row | Does |
 |---|---|
-| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). **Colouring** is greyed out while they are hidden |
-| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up** or **Monochrome** for candles; **Coloured**, **Red up** or **Monochrome** for OHLC bars ([Colouring](/manual/charts/#colouring)) |
+| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
+| **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
+| **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |
+| **Bars** › **Hollow up bars** | Draws a rising candle as an outline. Greyed out on OHLC bars, which have no body |
+| **Bars** › **Swap up and down colours** | Paints the colouring the other way round, red for a rise. Greyed out on Monochrome |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
@@ -54,16 +63,18 @@ window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   key ctrl+comma
   click 214 147           # Charts
-  move 1270 710
 capture: bin/headless-window shot /tmp/prefs-charts.png
-crop: 276,56,2008,1328   (the whole dialog, 12px layout margin; the Defaults page scrolls inside it)
+crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 -->
 {% include figure.html src="/assets/manual/charts/preferences-defaults.png" alt="Preferences open on the Charts Defaults tab" caption="Preferences › Charts › Defaults." %}
 
 | Group › row | Choices | Default |
 |---|---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
-| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Monochrome** | **Filled** |
+| **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
+| **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet**, **Monochrome** | **Vivid** |
+| **Bars** › **Hollow up bars** | On or off. Greyed out on OHLC bars | Off |
+| **Bars** › **Swap up and down colours** | On or off. Greyed out on Monochrome | Off |
 | **Scales** › **Logarithmic scale** | On or off | Off |
 | **Scales** › **Gridlines** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |

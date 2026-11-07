@@ -223,6 +223,8 @@ struct State {
     /// chart.
     axis_start_taken: f64,
     bar_style: BarStyle,
+    /// How many pixels wide an OHLC bar's line and ticks are drawn.
+    ohlc_thickness: u8,
     bars_hidden: bool,
     show_grid: bool,
     /// The clock the time axis and the crosshair read.
@@ -1258,6 +1260,7 @@ impl State {
             axis_corner_taken: false,
             axis_start_taken: 0.0,
             bar_style: BarStyle::default(),
+            ohlc_thickness: crate::chart_defaults::DEFAULT_OHLC_THICKNESS,
             bars_hidden: false,
             show_grid: false,
             clock: Clock::default(),
@@ -3927,6 +3930,13 @@ impl ChartView {
         self.redraw();
     }
 
+    /// How thick an OHLC bar is drawn, in pixels; held to what the setting
+    /// allows.
+    pub fn set_ohlc_thickness(&self, thickness: u8) {
+        self.state.borrow_mut().ohlc_thickness = crate::chart_defaults::clamp_thickness(thickness);
+        self.redraw();
+    }
+
     /// Stop drawing the bars, or start again. Only the bars go: the scale
     /// still fits them, and what is drawn from them stays where it was.
     pub fn set_bars_hidden(&self, hidden: bool) {
@@ -4279,7 +4289,12 @@ impl ChartView {
         self.redraw();
     }
 
-    /// The first and last day on screen, on the clock the time axis reads.
+    /// The range the chart is holding to, until a hand moves the view.
+    pub fn held_range(&self) -> Option<Range> {
+        self.state.borrow().range
+    }
+
+        /// The first and last day on screen, on the clock the time axis reads.
     pub fn days_shown(&self) -> Option<(chrono::NaiveDate, chrono::NaiveDate)> {
         let state = self.state.borrow();
         let (first, visible, _) = state.view();
@@ -5983,7 +5998,7 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
     if state.bars_hidden {
         return;
     }
-    candles(cr, state.bar_style, &state.scheme, columns, to_y);
+    candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, columns, to_y);
 }
 
 /// Candles, from nothing but what it takes to draw one: the style, the
@@ -5995,12 +6010,13 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
 fn candles(
     cr: &cairo::Context,
     bar_style: BarStyle,
+    ohlc_thickness: u8,
     scheme: &BarScheme,
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     if bar_style == BarStyle::Ohlc {
-        ohlc(cr, scheme, columns, to_y);
+        ohlc(cr, scheme, columns, to_y, ohlc_thickness);
         return;
     }
     let (bars, bar_w) = (&columns.bars, columns.bar_w);
@@ -6108,9 +6124,18 @@ fn stroke_wicks(cr: &cairo::Context, columns: &Columns) {
 }
 
 /// Open and close as ticks either side of a high-low line.
-fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64, thickness: u8) {
     let tick = (columns.bar_w * 0.32).clamp(1.0, 10.0);
-    cr.set_line_width(1.0);
+    let ticked = tick > 1.0;
+    let width = ohlc_width(thickness, columns.bar_px, ticked);
+    // On a pixel's edge for an even width and through its middle for an
+    // odd one, so the line covers whole pixels and stays crisp.
+    let centre = if width as i64 % 2 == 1 { 0.5 } else { 0.0 };
+    // Showing as much past the line as a thin line's did, a pixel at the
+    // least, and ending on a pixel's edge; short of the next bar's tick.
+    let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((columns.bar_px - 1.0) / 2.0).max(1.0));
+    let reach = (reach - centre).round() + centre;
+    cr.set_line_width(width);
     for rising in [false, true] {
         let direction = if rising { Direction::Up } else { Direction::Down };
         let mut any = false;
@@ -6119,17 +6144,17 @@ fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl 
                 continue;
             }
             any = true;
-            let x = columns.x(i).round() + 0.5;
+            let x = columns.x(i).round() + centre;
             for (high, low) in columns.wicks(i) {
                 draw_wick(cr, x, columns.tile(i), to_y(high), to_y(low));
             }
-            if tick > 1.0 {
-                let open = to_y(bar.open).round() + 0.5;
-                cr.move_to(x - tick, open);
+            if ticked {
+                let open = to_y(bar.open).round() + centre;
+                cr.move_to(x - reach, open);
                 cr.line_to(x, open);
-                let close = to_y(bar.close).round() + 0.5;
+                let close = to_y(bar.close).round() + centre;
                 cr.move_to(x, close);
-                cr.line_to(x + tick, close);
+                cr.line_to(x + reach, close);
             }
         }
         if any {
@@ -6137,6 +6162,16 @@ fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl 
             stroke_wicks(cr, columns);
         }
     }
+    cr.set_line_width(1.0);
+}
+
+/// How wide an OHLC bar's line is drawn: as thick as asked while there is
+/// room, and thinner where there is not, down to a pixel. Room is a pixel's
+/// gap to the next bar, and with ticks a pixel of tick showing either side
+/// as well, so neighbours never merge. Whole pixels, so its edges stay crisp.
+fn ohlc_width(thickness: u8, bar_px: f64, ticked: bool) -> f64 {
+    let spare = if ticked { 3.0 } else { 1.0 };
+    f64::from(thickness).min(bar_px.floor() - spare).max(1.0)
 }
 
 fn draw_volume(
@@ -6153,9 +6188,10 @@ fn draw_volume(
     let inner_top = top + height * 0.1;
     let inner_h = height * 0.9;
     let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
+    let opacity = volume_opacity(indicator);
     let lit = state.picked == Some(indicator.id);
     // Lit, the glow goes down first, under every bar, and the bars over it
-    // at full strength.
+    // at full strength, whatever their opacity.
     let passes: &[bool] = if lit { &[true, false] } else { &[false] };
     for glow in passes.iter().copied() {
         for rising in [false, true] {
@@ -6180,7 +6216,7 @@ fn draw_volume(
                 let alpha = match (glow, lit) {
                     (true, _) => selection::glow_alpha(&state.theme),
                     (false, true) => 1.0,
-                    (false, false) => 0.85,
+                    (false, false) => opacity,
                 };
                 colors::set_source_alpha(cr, colour, alpha);
                 let _ = cr.fill();
@@ -8038,8 +8074,8 @@ fn draw_ruler(
     let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
     let kind = state.instrument.as_ref().map(|i| i.kind);
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
-    // The candles' own up and down, so a "Red up" scheme measures a rise in
-    // red; the label is the last-price tag of that direction, whose figure is
+    // The candles' own up and down, so a chart with them turned round
+    // measures a rise in red; the label is the last-price tag of that direction, whose figure is
     // already chosen to read on its fill.
     let flat;
     let (colour, tag) = match RulerDirection::of(from, to) {
@@ -8790,19 +8826,41 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 }
 
 /// The colours a volume pane paints a rising and a falling bar: the
-/// indicator's own when somebody chose them, otherwise the candles' dimmed.
+/// indicator's own when somebody chose them, otherwise the candles' own —
+/// the chart's candles, or the colouring the indicator chose for itself.
 pub(crate) fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
 ) -> (String, String) {
-    let omacharts_engine::Params::Volume { up_color, down_color, .. } = &indicator.params else {
-        return (scheme.volume_up.clone(), scheme.volume_down.clone());
+    let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
+    else {
+        return (scheme.up.clone(), scheme.down.clone());
+    };
+    let own;
+    let scheme = match colouring {
+        Some(colouring) => {
+            own = colouring.scheme(theme);
+            &own
+        }
+        None => scheme,
     };
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
     };
-    (pick(up_color, &scheme.volume_up), pick(down_color, &scheme.volume_down))
+    (pick(up_color, &scheme.up), pick(down_color, &scheme.down))
+}
+
+/// How solid a volume pane's bars are drawn, kept within what the row offers
+/// so a hand-edited chart cannot make them vanish.
+pub(crate) fn volume_opacity(indicator: &Indicator) -> f64 {
+    use omacharts_engine::indicators::{DEFAULT_VOLUME_OPACITY, MIN_VOLUME_OPACITY};
+    match indicator.params {
+        omacharts_engine::Params::Volume { opacity, .. } if opacity.is_finite() => {
+            opacity.clamp(MIN_VOLUME_OPACITY, 1.0)
+        }
+        _ => DEFAULT_VOLUME_OPACITY,
+    }
 }
 
 /// One histogram per period, anchored where its period begins.
@@ -9467,6 +9525,23 @@ impl Clock {
 
 #[cfg(test)]
 mod tests {
+
+    /// An OHLC bar is as thick as asked while there is room, and thinner
+    /// where there is not: a pixel's gap always stays between neighbours,
+    /// with a pixel of tick either side where ticks are drawn, and it is
+    /// never under a pixel.
+    #[test]
+    fn an_ohlc_bar_is_as_thick_as_asked_unless_its_neighbours_would_touch() {
+        assert_eq!(ohlc_width(2, 8.0, true), 2.0);
+        assert_eq!(ohlc_width(4, 12.0, true), 4.0);
+        assert_eq!(ohlc_width(4, 6.0, true), 3.0, "a pixel of tick either side and a pixel's gap");
+        assert_eq!(ohlc_width(2, 4.5, true), 1.0, "at this density two would hide the ticks");
+        assert_eq!(ohlc_width(2, 3.0, false), 2.0, "no ticks to keep room for");
+        assert_eq!(ohlc_width(2, 2.5, false), 1.0);
+        assert_eq!(ohlc_width(3, 1.0, false), 1.0);
+        assert_eq!(ohlc_width(1, 20.0, true), 1.0);
+    }
+
     use super::*;
 
     /// The bug: a chart that could not fetch told the user the symbol had no
