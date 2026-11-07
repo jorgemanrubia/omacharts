@@ -94,7 +94,7 @@ A swatch opens the colour chooser. The colour applies as you pick it. **Rename**
 | Other | **Crosshair** | The crosshair. |
 | Other | **Accent** | A selected row, a switch that is on, the button a dialog suggests. |
 
-Volume bars take the candle colours, dimmed toward the background, unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Filled, hollow, soft, quiet or monochrome bars, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
+Volume bars take the candle colours, dimmed toward the background, unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Vivid, soft, quiet or monochrome bars, hollow rises, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
 
 ## The palette
 

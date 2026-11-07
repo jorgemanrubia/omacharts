@@ -39,11 +39,12 @@ pub struct Theming {
     custom_themes: Vec<Theme>,
     theme_id: String,
     scheme_id: String,
-    /// Whether new charts wear the scheme the other way round, red for a
-    /// rise: the default the preferences hold, which the watchlist, the
-    /// stylesheet and the bar widget follow, since they have no chart of
-    /// their own to follow.
-    inverted: bool,
+    /// The two switches new charts wear over the scheme, up and down
+    /// swapped and a hollow rise: the defaults the preferences hold, which
+    /// the watchlist, the stylesheet and the bar widget follow, since they
+    /// have no chart of their own to follow.
+    swapped: bool,
+    hollow_up: bool,
     provider: Option<gtk::CssProvider>,
 }
 
@@ -60,7 +61,8 @@ impl Theming {
         let theming = Theming {
             theme_id: store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string()),
             scheme_id: store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string()),
-            inverted: crate::chart_defaults::stored_colouring(store).1,
+            swapped: crate::chart_defaults::stored_colouring(store).swapped,
+            hollow_up: crate::chart_defaults::stored_colouring(store).hollow_up,
             omarchy,
             omarchy_fingerprint,
             builtin_themes: builtin_themes(),
@@ -86,6 +88,13 @@ impl Theming {
         else {
             return;
         };
+        self.adopt_legacy_colours(bars, store);
+    }
+
+    /// `bars`, from before candle colours belonged to themes, as a theme
+    /// wearing them. A scheme with no up body was the hollow look, which is
+    /// a switch of the chart's now, worn over the theme's own colours.
+    fn adopt_legacy_colours(&mut self, bars: BarScheme, store: &Store) {
         let base = self.theme();
         let name = format!("{} with {}", base.name, bars.name);
         let id = format!("custom-{}", self.scheme_id);
@@ -95,8 +104,11 @@ impl Theming {
         store.save_theme(&theme);
         self.custom_themes = store.custom_themes();
         self.select_theme(&id, store);
-        let colouring = if hollow { BarColouring::Hollow } else { BarColouring::Filled };
-        self.select_bar_scheme(colouring.key(), store);
+        self.select_bar_scheme(BarColouring::Vivid.key(), store);
+        if hollow {
+            self.hollow_up = true;
+            store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, true);
+        }
     }
 
     pub fn omarchy_available(&self) -> bool {
@@ -131,16 +143,16 @@ impl Theming {
     }
 
     /// What new charts paint their bars in, and what the watchlist and the
-    /// bar widget say up and down in.
-    /// How the bars are coloured: filled, hollow, red up or monochrome.
+    /// bar widget say up and down in: which palette, Vivid, Soft, Quiet or
+    /// Monochrome.
     pub fn colouring(&self) -> omacharts_engine::BarColouring {
         omacharts_engine::BarColouring::from_key(&self.scheme_id).unwrap_or_default()
     }
 
     /// Whether new charts wear their colouring the other way round, up and
     /// down exchanged.
-    pub fn inverted(&self) -> bool {
-        self.inverted
+    pub fn swapped(&self) -> bool {
+        self.swapped
     }
 
     pub fn bar_scheme(&self) -> BarScheme {
@@ -148,11 +160,7 @@ impl Theming {
     }
 
     fn bar_scheme_for(&self, theme: &Theme) -> BarScheme {
-        let scheme = BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme);
-        match self.inverted {
-            true => scheme.inverted(),
-            false => scheme,
-        }
+        BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme).worn(self.swapped, self.hollow_up)
     }
 
     /// The ink the bar widget writes in.
@@ -202,7 +210,9 @@ impl Theming {
         self.theme_id = store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string());
         self.scheme_id =
             store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string());
-        self.inverted = crate::chart_defaults::stored_colouring(store).1;
+        let look = crate::chart_defaults::stored_colouring(store);
+        self.swapped = look.swapped;
+        self.hollow_up = look.hollow_up;
         self.reload_custom(store);
     }
 
@@ -231,7 +241,7 @@ impl Theming {
         });
 
         let mut css = stylesheet(&theme, &self.bar_scheme());
-        css.push_str(&trading_css(&theme, self.inverted()));
+        css.push_str(&trading_css(&theme, self.swapped()));
         let provider = self.provider.get_or_insert_with(|| {
             let provider = gtk::CssProvider::new();
             if let Some(display) = gtk::gdk::Display::default() {
@@ -284,8 +294,8 @@ pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
 /// The trading look's colours as named colours, and the classes a signed
 /// P&L, a side and a position are written in with them: the one pair for
 /// money, the other for a side, as the chart's marks wear them.
-pub fn trading_css(theme: &Theme, inverted: bool) -> String {
-    let look = omacharts_engine::theme_trading(theme, inverted);
+pub fn trading_css(theme: &Theme, swapped: bool) -> String {
+    let look = omacharts_engine::theme_trading(theme, swapped);
     format!(
         "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
          @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
@@ -1420,39 +1430,63 @@ mod tests {
     #[test]
     fn schemes_written_before_colourings_come_back_painted_the_same_way() {
         let store = Store::memory().unwrap();
-        for (stored, read) in [
-            ("hollow", omacharts_engine::theme::THEME_HOLLOW_ID),
-            ("monochrome", omacharts_engine::theme::THEME_MONO_ID),
-            ("no-such-scheme", THEME_BARS_ID),
+        for (stored, read, hollow) in [
+            ("hollow", THEME_BARS_ID, true),
+            ("theme-hollow", THEME_BARS_ID, true),
+            ("monochrome", omacharts_engine::theme::THEME_MONO_ID, false),
+            ("no-such-scheme", THEME_BARS_ID, false),
         ] {
             store.set_setting(SETTING_BARS, stored);
-            assert_eq!(Theming::load(&store).bar_scheme().id, read, "{stored}");
+            let scheme = Theming::load(&store).bar_scheme();
+            assert_eq!((scheme.id.as_str(), scheme.is_hollow_up()), (read, hollow), "{stored}");
         }
     }
 
-    /// The turned-round scheme an older version wrote, and the switch that
-    /// replaced it, both paint the theme's colours the other way round.
+    /// A custom scheme from before colours lived in themes becomes a theme
+    /// wearing them; one whose up body was transparent was the hollow look,
+    /// which comes back as the switch.
     #[test]
-    fn the_switch_turns_the_default_scheme_round() {
+    fn a_legacy_scheme_with_no_up_body_carries_over_as_a_hollow_rise() {
+        let store = Store::memory().unwrap();
+        let mut bars = legacy_bar_colours("classic").unwrap();
+        bars.up_fill = "#3fb95000".to_string();
+        store.set_setting(SETTING_BARS, "classic");
+        let mut theming = Theming::load(&store);
+        theming.adopt_legacy_colours(bars, &store);
+        assert_eq!(theming.scheme_id(), THEME_BARS_ID);
+        assert_eq!(theming.colouring(), BarColouring::Vivid);
+        assert!(theming.bar_scheme().is_hollow_up());
+        assert!(crate::chart_defaults::stored_colouring(&store).hollow_up);
+    }
+
+    /// The turned-round scheme an older version wrote, and the switch that
+    /// replaced it, both paint the theme's colours the other way round; the
+    /// hollow switch leaves a rise with no body.
+    #[test]
+    fn the_switches_are_worn_by_the_default_scheme() {
         let store = Store::memory().unwrap();
         let plain = Theming::load(&store);
-        assert!(!plain.inverted());
+        assert!(!plain.swapped());
         let (up, down) = (plain.bar_scheme().up, plain.bar_scheme().down);
 
         store.set_setting(SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
         let older = Theming::load(&store);
-        assert!(older.inverted());
-        assert_eq!(older.colouring(), BarColouring::Filled);
+        assert!(older.swapped());
+        assert_eq!(older.colouring(), BarColouring::Vivid);
         assert_eq!((&older.bar_scheme().id, &older.bar_scheme().up, &older.bar_scheme().down), (&THEME_BARS_ID.to_string(), &down, &up));
 
         store.set_setting(SETTING_BARS, THEME_BARS_ID);
-        store.set_setting_bool(crate::chart_defaults::SETTING_INVERT_BARS, true);
+        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
+        store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, true);
         let mut switched = Theming::load(&store);
         assert_eq!((&switched.bar_scheme().up, &switched.bar_scheme().down), (&down, &up));
+        assert!(switched.bar_scheme().is_hollow_up());
         // And read again when a command changes it under a window.
-        store.set_setting_bool(crate::chart_defaults::SETTING_INVERT_BARS, false);
+        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, false);
+        store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, false);
         switched.reload_selection(&store);
-        assert!(!switched.inverted());
+        assert!(!switched.swapped());
         assert_eq!(switched.bar_scheme().up, up);
+        assert!(!switched.bar_scheme().is_hollow_up());
     }
 }

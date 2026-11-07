@@ -251,9 +251,10 @@ pub struct ChartPane {
     pub bars_hidden: Cell<bool>,
     /// How the theme's candle colours are painted on this chart.
     pub colouring: Cell<omacharts_engine::BarColouring>,
-    /// Whether that colouring is worn the other way round, its up and down
-    /// exchanged: red for a rise.
-    pub inverted: Cell<bool>,
+    /// The two switches worn over that colouring: its up and down
+    /// exchanged, red for a rise, and a rising body drawn as an outline.
+    pub swapped: Cell<bool>,
+    pub hollow_up: Cell<bool>,
     pub session: Cell<Session>,
     pub show_grid: Cell<bool>,
     /// What the rail does to this chart.
@@ -648,7 +649,8 @@ impl ChartPane {
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
-            inverted: Cell::new(false),
+            swapped: Cell::new(false),
+            hollow_up: Cell::new(false),
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),
             mode: Cell::new(mode),

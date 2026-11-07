@@ -2,7 +2,7 @@
 //!
 //! A theme is every colour the app wears, candles included; once it is yours
 //! to edit, every one of them is a row on the Theme page. How candles are
-//! painted from those colours — filled, hollow, red up, monochrome — is a
+//! painted from those colours — vivid, soft, quiet, monochrome — is a
 //! chart setting, and lives under Charts.
 //!
 //! Built-ins and the Omarchy theme are not editable in place. "Customize"
@@ -605,58 +605,65 @@ fn build_charts_page(context: &Rc<Context>) {
 
     let colouring = adw::ComboRow::new();
     colouring.set_title("Colouring");
-    crate::ui::chart_settings::fill_colourings(&colouring, current.bar_style, current.colouring);
+    crate::ui::chart_settings::fill_colourings(&colouring, current.colouring);
 
-    // Up and down the other way round, over whatever colouring is chosen;
-    // greyed on one that paints the same either way.
-    let inverted = adw::SwitchRow::new();
-    inverted.set_title(crate::ui::chart_settings::INVERT_LABEL);
-    inverted.set_active(current.inverted);
+    // The two switches worn over the colouring: the hollow rise greyed on
+    // OHLC bars, which have no body to leave open, and the swap on a
+    // colouring that paints the same either way.
+    let hollow = adw::SwitchRow::new();
+    hollow.set_title(crate::ui::chart_settings::HOLLOW_LABEL);
+    hollow.set_active(current.hollow_up);
+    hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(current.bar_style));
+    let swapped = adw::SwitchRow::new();
+    swapped.set_title(crate::ui::chart_settings::SWAP_LABEL);
+    swapped.set_active(current.swapped);
     let theme = context.theming.borrow().theme();
-    inverted.set_sensitive(crate::ui::chart_settings::two_toned(&theme, current.colouring, current.bar_style));
+    swapped.set_sensitive(crate::ui::chart_settings::two_toned(&theme, current.colouring));
 
     {
         let changed = changed.clone();
-        let colouring = colouring.clone();
-        let inverted = inverted.clone();
-        let defaults = defaults.clone();
-        let theme = theme.clone();
+        let hollow = hollow.clone();
         style.connect_selected_notify(move |row| {
             let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
             changed(&|d| d.bar_style = chosen);
-            crate::ui::chart_settings::fill_colourings(&colouring, chosen, defaults.get().colouring);
-            inverted.set_sensitive(crate::ui::chart_settings::two_toned(&theme, defaults.get().colouring, chosen));
+            hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(chosen));
         });
     }
     {
         let changed = changed.clone();
         let defaults = defaults.clone();
-        let inverted = inverted.clone();
+        let swapped = swapped.clone();
         colouring.connect_selected_notify(move |row| {
             if crate::ui::chart_settings::filling_colourings(row) {
                 return;
             }
-            let style = defaults.get().bar_style;
-            let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
-            else {
+            let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
                 return;
             };
-            if chosen != defaults.get().colouring.for_style(style) {
+            if chosen != defaults.get().colouring {
                 changed(&|d| d.colouring = chosen);
             }
-            inverted.set_sensitive(crate::ui::chart_settings::two_toned(&theme, chosen, style));
+            swapped.set_sensitive(crate::ui::chart_settings::two_toned(&theme, chosen));
         });
     }
     {
         let changed = changed.clone();
-        inverted.connect_active_notify(move |row| {
+        hollow.connect_active_notify(move |row| {
             let on = row.is_active();
-            changed(&|d| d.inverted = on);
+            changed(&|d| d.hollow_up = on);
+        });
+    }
+    {
+        let changed = changed.clone();
+        swapped.connect_active_notify(move |row| {
+            let on = row.is_active();
+            changed(&|d| d.swapped = on);
         });
     }
     bars.add(&style);
     bars.add(&colouring);
-    bars.add(&inverted);
+    bars.add(&hollow);
+    bars.add(&swapped);
 
     let session = adw::ComboRow::new();
     session.set_title("Hours");
@@ -972,8 +979,8 @@ fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Trading");
     let theme = context.theming.borrow().theme();
-    let inverted = context.theming.borrow().inverted();
-    let shown = omacharts_engine::theme_trading(&theme, inverted);
+    let swapped = context.theming.borrow().swapped();
+    let shown = omacharts_engine::theme_trading(&theme, swapped);
     // Change the theme's own look by `edit`, and nothing else in it.
     let save = |ctx: &Rc<Context>, edit: &dyn Fn(&mut TradingLook)| {
         let mut theme = ctx.theming.borrow().theme();

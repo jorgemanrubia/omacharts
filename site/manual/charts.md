@@ -129,17 +129,20 @@ crop: none (resized to 2000 wide)
 
 ### Colouring
 
-The colouring is how a chart uses the theme's colours ([Themes and colours](/manual/themes/)).
+The colouring is which of the theme's colours a chart paints its bars from ([Themes and colours](/manual/themes/)). It is one of four palettes, with two switches under it.
 
 | Colouring | Paints |
 |---|---|
-| **Filled** (**Coloured** for OHLC bars) | Rises in the theme's up colour, falls in its down colour, bodies filled. The default |
-| **Hollow** | The same, with rising candles drawn as outlines. Candles only. An OHLC bar is drawn coloured |
+| **Vivid** | Rises in the theme's up colour, falls in its down colour. The default |
 | **Soft** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
 | **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, so the price sits back and says nothing about good or bad |
-| **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not |
+| **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless its rises are hollow |
 
-**Swap up and down colours**, under the colouring, paints whatever colouring is chosen the other way round: a rise in the down colour and a fall in the up colour, so a coloured chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. It is greyed out on Monochrome, which paints a rise and a fall alike. Earlier versions offered this as a colouring of its own, **Red up**; that is **Filled** with the switch on, and a chart that was red up still is.
+**Hollow up bars** draws a rising candle as an outline, in whichever palette is chosen. It is how a Monochrome candle shows its direction. An OHLC bar has no body to leave open, so the switch is greyed out while the style is OHLC bars, and keeps its setting for when the chart is candles again.
+
+**Swap up and down colours** paints whatever palette is chosen the other way round: a rise in the down colour and a fall in the up colour, so a Vivid chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. A hollow rise is still the rise. It is greyed out on Monochrome, which paints a rise and a fall alike.
+
+Earlier versions offered **Hollow** and **Red up** as colourings of their own. Each is **Vivid** with the matching switch on, and a chart saved with either still looks the same.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -153,13 +156,13 @@ state:
   omacharts chart set --chart pos:N --link pinned        # N = 0..3
   omacharts chart set --chart pos:0 --colouring theme
   omacharts chart set --chart pos:1 --colouring theme-hollow
-  omacharts chart set --chart pos:2 --colouring theme --invert-bars on
+  omacharts chart set --chart pos:2 --colouring theme --swap-colours on
   omacharts chart set --chart pos:3 --colouring theme-mono
   then, with pos:2 focused: key alt+Left, key plus x5, key alt+Down, key plus x5, key alt+Right, key plus x5, key alt+Up, key plus x5
 capture: bin/headless-window cli chartbook screenshot --output /tmp/colourings.png
 crop: none (resized to 2000 wide)
 -->
-{% include figure.html src="/assets/manual/charts/colourings.jpg" alt="Four NVDA daily charts of the same two months, one in each colouring" caption="Filled, Filled with up and down swapped (top); Hollow, Monochrome (bottom)." %}
+{% include figure.html src="/assets/manual/charts/colourings.jpg" alt="Four NVDA daily charts of the same two months, one in each colouring" caption="Vivid, Vivid with up and down swapped (top); Vivid with hollow rises, Monochrome (bottom)." %}
 
 ### Hiding the bars
 

@@ -65,7 +65,8 @@ const KEYS: &[(&str, Kind)] = &[
 const SHARED: &[&str] = &[
     "theme",
     "bar_scheme",
-    "invert_bars",
+    "swap_colours",
+    "hollow_up",
     "coloured_bar_scheme",
     "workspace",
     "timeframes",

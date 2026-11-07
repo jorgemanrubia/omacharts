@@ -1360,7 +1360,7 @@ mod tests {
         }
 
         // The bar reads a rise the way the window does.
-        store.set_setting_bool(crate::chart_defaults::SETTING_INVERT_BARS, true);
+        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
         let red: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_eq!((&red["up"], &red["down"]), (&parsed["down"], &parsed["up"]));
         assert_eq!(
@@ -1386,8 +1386,8 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
-    /// Every scheme on offer — filled, hollow, soft, quiet and
-    /// monochrome — reaches the widget whole: the change text, the sparklines (which
+    /// Every palette on offer — vivid, soft, quiet and monochrome — reaches
+    /// the widget whole: the change text, the sparklines (which
     /// are drawn in the same up and down) and the pill all come from the
     /// chosen scheme's colours, by the same rules the chart applies to them.
     #[test]

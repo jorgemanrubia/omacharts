@@ -954,39 +954,44 @@ $ omacharts config bars monochrome
 bars are monochrome; the colours are remembered
   [exit 0]
 
-$ omacharts config bars coloured
-bars carry their direction again, in the "theme-hollow" scheme
+$ omacharts config bars vivid
+bars carry their direction in colour again, in the "theme" scheme
   [exit 0]
 ```
 
 `config bars soft` and `config bars quiet` are the third and fourth
 answers: a slate and a sand from the theme's palette instead of its green and
-red, and two tones of the theme's own quiet tint, a rise outlined and a fall
-filled, so the price sits back on the chart.
+red, and two greys made from the theme's text, a rise the lighter, so the
+price sits back on the chart.
 
-Up and down the other way round, red for a rise and green for a fall, the way
-charts are read in Taiwan, mainland China, Japan and Korea, is a switch over
-whichever colouring is chosen rather than a colouring: `chart set
---invert-bars on` for one chart, `config set invert_bars on` for the charts
-made next. `config bars` says `coloured, inverted` when it is on. `config bars
-red-up`, from when it was a colouring of its own, still works: coloured bars
-with the switch on, on every chart.
+Two switches are worn over whichever palette is chosen rather than being
+palettes themselves. A rising candle drawn as an outline is `chart set
+--hollow-up on` for one chart and `config set hollow_up on` for the charts
+made next. Up and down the other way round, red for a rise and green for a
+fall, the way charts are read in Taiwan, mainland China, Japan and Korea, is
+`chart set --swap-colours on` and `config set swap_colours on`. `config bars`
+says `vivid, hollow, swapped` with both on. `config bars coloured`, `config
+bars hollow` and `config bars red-up`, from when Hollow and Red up were
+colourings of their own, still work: `coloured` is `vivid`, and the other two
+are vivid bars with that switch on, on every chart.
 
 Bar colours belong to each chart, so `config bars` answers for every chart at
 once — the charts in every chartbook and the ones made next — the way Apply to
 all charts does in the preferences. One chart on its own is
-`chart set --colouring theme|theme-hollow|theme-soft|theme-quiet|theme-mono`.
-A volume pane follows the chart's colouring, swapped or not, unless given one
-of its own: `chart indicator set volume --colouring theme-soft`, which is
-painted its own way round whatever the chart's switch says, and `--colouring
-chart` to follow the chart again.
+`chart set --colouring theme|theme-soft|theme-quiet|theme-mono`, and
+`theme-hollow` or `theme-red-up` from an earlier version is `theme` with the
+switch on for that chart. A volume pane follows the chart's colouring, swapped
+or not, unless given one of its own: `chart indicator set volume --colouring
+theme-soft`, which is painted its own way round whatever the chart's switch
+says, and `--colouring chart` to follow the chart again. A hollow rise never
+reaches the volume: its bars are solid and dimmed, with no body to leave open.
 
 `config set bar_scheme theme-mono` changes only what new charts open with, and
 does not remember the scheme that was in use.
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts: `bar_style`, `bar_scheme`, `invert_bars`, `chart_session`,
-`show_grid`, `chart_log_scale`, `chart_shows_drawings` and
+show under Charts: `bar_style`, `bar_scheme`, `hollow_up`, `swap_colours`,
+`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings` and
 `chart_sends_drawings`. Changing
 one chart never changes them.
 

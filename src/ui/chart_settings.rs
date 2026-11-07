@@ -288,93 +288,107 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let colouring = adw::ComboRow::new();
     colouring.set_title("Colouring");
-    fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
+    fill_colourings(&colouring, window.bar_colouring());
     colouring.set_sensitive(!window.bars_hidden());
 
-    // Up and down the other way round, over whatever colouring is chosen.
-    // Greyed with the colouring while the bars are hidden, and on a
-    // colouring that would paint the same either way.
-    let inverted = adw::SwitchRow::new();
-    inverted.set_title(INVERT_LABEL);
-    inverted.set_active(window.bars_inverted());
+    // The two switches worn over the colouring. Greyed with it while the
+    // bars are hidden; the hollow rise also on OHLC bars, which have no
+    // body to leave open, and the swap on a colouring that paints the same
+    // either way.
+    let hollow = adw::SwitchRow::new();
+    hollow.set_title(HOLLOW_LABEL);
+    hollow.set_active(window.bars_hollow_up());
+    let swapped = adw::SwitchRow::new();
+    swapped.set_title(SWAP_LABEL);
+    swapped.set_active(window.bars_swapped());
     let theme = window.theme();
-    inverted.set_sensitive(
-        !window.bars_hidden() && two_toned(&theme, window.bar_colouring(), window.bar_style()),
-    );
+    let shown = !window.bars_hidden();
+    hollow.set_sensitive(shown && hollow_applies(window.bar_style()));
+    swapped.set_sensitive(shown && two_toned(&theme, window.bar_colouring()));
 
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
-    let inverted_for_style = inverted.clone();
+    let hollow_for_style = hollow.clone();
+    let swapped_for_style = swapped.clone();
     row.connect_selected_notify(move |row| {
         if row.selected() == hidden_at {
             window_for_style.set_bars_hidden(true);
             colouring_for_style.set_sensitive(false);
-            inverted_for_style.set_sensitive(false);
+            hollow_for_style.set_sensitive(false);
+            swapped_for_style.set_sensitive(false);
         } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
             window_for_style.set_bar_style(style);
-            fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
             colouring_for_style.set_sensitive(true);
+            hollow_for_style.set_sensitive(hollow_applies(style));
             let theme = window_for_style.theme();
-            inverted_for_style
-                .set_sensitive(two_toned(&theme, window_for_style.bar_colouring(), style));
+            swapped_for_style.set_sensitive(two_toned(&theme, window_for_style.bar_colouring()));
         }
     });
     group.add(&row);
 
     let window_for_colouring = window.clone();
-    let inverted_for_colouring = inverted.clone();
+    let swapped_for_colouring = swapped.clone();
     colouring.connect_selected_notify(move |row| {
         if filling_colourings(row) {
             return;
         }
-        let style = window_for_colouring.bar_style();
-        let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
-        else {
+        let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
             return;
         };
-        if chosen != window_for_colouring.bar_colouring().for_style(style) {
+        if chosen != window_for_colouring.bar_colouring() {
             window_for_colouring.set_bar_colouring(chosen);
         }
         let theme = window_for_colouring.theme();
-        inverted_for_colouring.set_sensitive(two_toned(&theme, chosen, style));
+        swapped_for_colouring.set_sensitive(two_toned(&theme, chosen));
     });
     group.add(&colouring);
 
-    let window_for_inverted = window.clone();
-    inverted.connect_active_notify(move |row| {
-        if row.is_active() != window_for_inverted.bars_inverted() {
-            window_for_inverted.set_bars_inverted(row.is_active());
+    let window_for_hollow = window.clone();
+    hollow.connect_active_notify(move |row| {
+        if row.is_active() != window_for_hollow.bars_hollow_up() {
+            window_for_hollow.set_bars_hollow_up(row.is_active());
         }
     });
-    group.add(&inverted);
+    group.add(&hollow);
+
+    let window_for_swapped = window.clone();
+    swapped.connect_active_notify(move |row| {
+        if row.is_active() != window_for_swapped.bars_swapped() {
+            window_for_swapped.set_bars_swapped(row.is_active());
+        }
+    });
+    group.add(&swapped);
 
     group
 }
 
-/// What the switch that turns up and down round is called, in a chart's
+/// What the two switches over the colouring are called, in a chart's
 /// settings and in the preferences alike.
-pub const INVERT_LABEL: &str = "Swap up and down colours";
+pub const HOLLOW_LABEL: &str = "Hollow up bars";
+pub const SWAP_LABEL: &str = "Swap up and down colours";
 
-/// Whether turning `colouring` round on a bar of `style` would change what
-/// it paints, which is when the switch for it is offered. Monochrome paints
-/// a rise and a fall alike, so there is nothing to turn round.
-pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring, style: BarStyle) -> bool {
-    colouring.for_style(style).scheme(theme).is_two_toned()
+/// Whether turning `colouring` round would change what it paints, which is
+/// when the switch for it is offered. Monochrome paints a rise and a fall
+/// alike, so there is nothing to turn round.
+pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring) -> bool {
+    colouring.scheme(theme).is_two_toned()
 }
 
-/// Offer the colourings a bar of `style` can be painted in, with `current`
-/// selected — as an OHLC bar draws it, so a hollow chart turned into OHLC
-/// reads as coloured, which is what it shows.
+/// Whether a hollow rise would show on a bar of `style`: a candle has a
+/// body to leave open, an OHLC bar does not.
+pub fn hollow_applies(style: BarStyle) -> bool {
+    style == BarStyle::Candles
+}
+
+/// Offer the four palettes, with `current` selected.
 ///
 /// A new model selects its first entry on the way in, which the row's own
 /// handler would take for a choice; [`filling_colourings`] tells it not to.
-pub fn fill_colourings(row: &adw::ComboRow, style: BarStyle, current: BarColouring) {
-    let offered = BarColouring::offered(style);
-    let names: Vec<&str> = offered.iter().map(|c| c.label(style)).collect();
+pub fn fill_colourings(row: &adw::ComboRow, current: BarColouring) {
+    let names: Vec<&str> = BarColouring::ALL.iter().map(|c| c.label()).collect();
     row.set_widget_name(FILLING);
     row.set_model(Some(&gtk::StringList::new(&names)));
-    let shown = current.for_style(style);
-    row.set_selected(offered.iter().position(|c| *c == shown).unwrap_or(0) as u32);
+    row.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
     row.set_widget_name("");
 }
 
@@ -1627,11 +1641,12 @@ fn volume_colours(
     let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
         return group;
     };
-    // The chart's own colouring first, then the ones a bar with no body can
-    // be painted in — hollow volume is no different from filled.
-    let offered = BarColouring::offered(BarStyle::Ohlc);
+    // The chart's own colouring first, then the four palettes. A volume
+    // bar is a dimmed solid bar with no body to leave open, so the chart's
+    // switches reach it only as the swap, through the chart's scheme.
+    let offered = &BarColouring::ALL;
     let mut names = vec![VOLUME_FOLLOWS_CHART];
-    names.extend(offered.iter().map(|c| c.label(BarStyle::Ohlc)));
+    names.extend(offered.iter().map(|c| c.label()));
     let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
     group.add(&choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
         if let Params::Volume { colouring, .. } = &mut indicator.params {
