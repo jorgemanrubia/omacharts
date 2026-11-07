@@ -1409,23 +1409,40 @@ impl Style {
     }
 
     /// A volume profile starts from the box's look, with what only a
-    /// profile has.
-    ///
-    /// Drawn often over the study, whose default is Blue rows under an Amber
-    /// point of control on every shipped theme, so the nine are set apart
-    /// from it. Blue, Teal and Cyan are outlines: a cool fill cannot be told
-    /// from the study's by hue, so they differ by form. Four to seven grow
-    /// from the right, mirroring the study, which grows from the left. Every
-    /// point of control is Ink: a companion for a Blue or Violet body would
-    /// be the study's Amber. Ink filled, the ninth, is the neutral composite
-    /// laid over session profiles.
+    /// profile has: filled rows growing from the left, under a point of
+    /// control in Ink.
     pub fn profile(preset: Preset) -> Style {
-        let (shape, align) = match preset {
-            Preset::Up | Preset::Down | Preset::Ink => (ProfileShape::Filled, ProfileAlign::Left),
-            Preset::Blue | Preset::Cyan => (ProfileShape::Outline, ProfileAlign::Left),
-            Preset::Amber | Preset::Violet | Preset::Orange => (ProfileShape::Filled, ProfileAlign::Right),
-            Preset::Teal => (ProfileShape::Outline, ProfileAlign::Right),
-        };
+        Style::profile_shaped(preset, ProfileShape::Filled, ProfileAlign::Left)
+    }
+
+    /// The same profile as its outline alone.
+    pub fn profile_outline(preset: Preset) -> Style {
+        Style::profile_shaped(preset, ProfileShape::Outline, ProfileAlign::Left)
+    }
+
+    /// Volume profile configuration `n`, 1 to 9, as shipped.
+    ///
+    /// Not the nine presets in order, as every other kind is. A profile
+    /// says nothing about direction, and Up and Down filled in green and red
+    /// read as buying and selling, so the nine leave the candles' colours
+    /// out, and Teal and Orange with them, which sit next to green and red
+    /// on enough themes to be taken for them. What is left is four colours,
+    /// filled from 1 to 4 and as outlines in the same order from 5 to 8,
+    /// all growing from the left as the study does. Cool and warm take
+    /// turns, so neighbours stand apart, and Blue, the colour a chart's
+    /// first indicators take, comes last. The ninth is Ink, the theme's text
+    /// as a grey, as an
+    /// outline growing from the right: the one neutral, and the one on the
+    /// other side.
+    pub fn profile_configuration(n: u8) -> Style {
+        match n.clamp(1, CONFIGURATIONS) {
+            n @ 1..=4 => Style::profile(PROFILE_COLOURS[n as usize - 1]),
+            n @ 5..=8 => Style::profile_outline(PROFILE_COLOURS[n as usize - 5]),
+            _ => Style::profile_shaped(Preset::Ink, ProfileShape::Outline, ProfileAlign::Right),
+        }
+    }
+
+    fn profile_shaped(preset: Preset, shape: ProfileShape, align: ProfileAlign) -> Style {
         // A filled profile's outline is a hairline round its rows; an
         // outline is the whole of the drawing, at a line's weight.
         let width = match shape {
@@ -1441,6 +1458,21 @@ impl Style {
             profile: ProfileLook { shape, align, ..ProfileLook::default() },
             ..Style::rect(preset)
         }
+    }
+
+    /// Volume profile configuration `n` as it shipped before the nine were
+    /// taken off the candles' colours: the nine presets in order, set apart
+    /// by form and side. Kept only to recognise a stored configuration
+    /// nobody changed, so it can be read as today's.
+    fn profile_as_first_shipped(n: u8) -> Style {
+        let preset = Preset::ALL[(n.clamp(1, CONFIGURATIONS) - 1) as usize];
+        let (shape, align) = match preset {
+            Preset::Up | Preset::Down | Preset::Ink => (ProfileShape::Filled, ProfileAlign::Left),
+            Preset::Blue | Preset::Cyan => (ProfileShape::Outline, ProfileAlign::Left),
+            Preset::Amber | Preset::Violet | Preset::Orange => (ProfileShape::Filled, ProfileAlign::Right),
+            Preset::Teal => (ProfileShape::Outline, ProfileAlign::Right),
+        };
+        Style::profile_shaped(preset, shape, align)
     }
 
     /// An anchored VWAP is a line, and starts as one: the preset's colour
@@ -1483,7 +1515,8 @@ impl Style {
 /// configuration N looks like N as it is now — change N and they all change,
 /// which is the point of a configuration over a copy. The defaults are the
 /// nine presets in order, so configuration 1 is Up and 2 is Down, as the
-/// brief asks.
+/// brief asks, for every kind but the volume profile, whose nine are its own
+/// ([`Style::profile_configuration`]).
 ///
 /// One list per kind, and every list is nine long. A kind added later reads
 /// back as absent from anything already written down, which [`list`] treats
@@ -1505,7 +1538,7 @@ pub struct Configurations {
     pub horizontal: Vec<Style>,
     #[serde(default)]
     pub zigzag: Vec<Style>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "renewed_profiles")]
     pub profile: Vec<Style>,
     #[serde(default)]
     pub vwap: Vec<Style>,
@@ -1513,6 +1546,25 @@ pub struct Configurations {
 
 /// How many configurations each kind has.
 pub const CONFIGURATIONS: u8 = 9;
+
+/// The volume profile's four colours, in the order configurations 1 to 4
+/// fill them and 5 to 8 outline them.
+pub const PROFILE_COLOURS: [Preset; 4] = [Preset::Violet, Preset::Amber, Preset::Cyan, Preset::Blue];
+
+/// Stored volume profile configurations, with every one still as it first
+/// shipped read as it ships now. One somebody changed is theirs and is kept
+/// exactly; one nobody touched was only ever the default, and the default
+/// moved.
+fn renewed_profiles<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Style>, D::Error> {
+    let mut stored = Vec::<Style>::deserialize(deserializer)?;
+    for (at, style) in stored.iter_mut().enumerate().take(CONFIGURATIONS as usize) {
+        let n = at as u8 + 1;
+        if *style == Style::profile_as_first_shipped(n) {
+            *style = Style::profile_configuration(n);
+        }
+    }
+    Ok(stored)
+}
 
 impl Default for Configurations {
     fn default() -> Configurations {
@@ -1525,7 +1577,7 @@ impl Default for Configurations {
             rect: nine(Style::rect),
             ellipse: nine(Style::ellipse),
             text: nine(Style::text),
-            profile: nine(Style::profile),
+            profile: (1..=CONFIGURATIONS).map(Style::profile_configuration).collect(),
             vwap: nine(Style::vwap),
         }
     }
@@ -3258,6 +3310,9 @@ mod configuration_tests {
         for kind in Kind::ALL {
             assert_eq!(configs.list(kind).len(), CONFIGURATIONS as usize);
             for (at, preset) in Preset::ALL.into_iter().enumerate() {
+                if kind == Kind::Profile {
+                    continue;
+                }
                 assert_eq!(configs.of(kind, at as u8 + 1), &Style::of(kind, preset));
             }
         }
@@ -3770,17 +3825,64 @@ mod edge_grip_tests {
         assert!(configs.is_default(Kind::Vwap, 4));
     }
 
+    /// Every profile configuration is configuration 1's look in another
+    /// colour: four filled, the same four as outlines in the same order, and
+    /// a neutral outline from the right last.
     #[test]
-    fn the_nine_profile_configurations_stand_apart_from_the_study() {
+    fn the_nine_profile_configurations_are_four_colours_filled_then_outlined() {
         let configs = Configurations::default();
-        let shapes: Vec<_> = (1..=9).map(|n| configs.of(Kind::Profile, n).profile.shape).collect();
-        // Blue, Teal and Cyan are told from the study's Blue by form.
-        for n in [3, 6, 8] {
-            assert_eq!(shapes[n - 1], ProfileShape::Outline, "configuration {n}");
+        let profile = |n: u8| configs.of(Kind::Profile, n).clone();
+        for n in 1..=4u8 {
+            let (filled, outline) = (profile(n), profile(n + 4));
+            assert_eq!(filled.profile.shape, ProfileShape::Filled, "configuration {n}");
+            assert_eq!(outline.profile.shape, ProfileShape::Outline, "configuration {}", n + 4);
+            assert_eq!(outline.colour, filled.colour, "configuration {} outlines {n}", n + 4);
+            assert_eq!(filled.colour, Paint::preset(PROFILE_COLOURS[n as usize - 1]));
+            for style in [&filled, &outline] {
+                assert_eq!(style.profile.align, ProfileAlign::Left);
+            }
+            // Only the colour sets the filled ones apart from configuration 1.
+            let first = profile(1);
+            let recoloured = Style { colour: filled.colour.clone(), fill: filled.fill.clone(), text: filled.text.clone(), ..first };
+            assert_eq!(filled, recoloured, "configuration {n} is 1 in another colour");
         }
-        for n in 4..=7 {
-            assert_eq!(configs.of(Kind::Profile, n as u8).profile.align, ProfileAlign::Right, "configuration {n}");
+        let ninth = profile(9);
+        assert_eq!(ninth.colour, Paint::preset(Preset::Ink));
+        assert_eq!((ninth.profile.shape, ninth.profile.align), (ProfileShape::Outline, ProfileAlign::Right));
+        assert!((1..=9).all(|n| profile(n).profile.poc == Paint::preset(Preset::Ink)));
+    }
+
+    /// A profile says nothing about direction, so none of the nine is in the
+    /// candles' colours, or in the two that pass for them on some themes.
+    #[test]
+    fn no_profile_configuration_is_green_or_red() {
+        let configs = Configurations::default();
+        let colours: Vec<_> = (1..=9).map(|n| configs.of(Kind::Profile, n).colour.clone()).collect();
+        for preset in [Preset::Up, Preset::Down, Preset::Teal, Preset::Orange] {
+            assert!(!colours.contains(&Paint::preset(preset)), "{} is a profile colour", preset.name());
         }
-        assert!((1..=9).all(|n| configs.of(Kind::Profile, n).profile.poc == Paint::preset(Preset::Ink)));
+        // Four colours and a neutral.
+        let unique: std::collections::BTreeSet<_> = colours.iter().map(Paint::spell).collect();
+        assert_eq!(unique.len(), 5);
+    }
+
+    /// A store written before the profile's nine changed keeps every one
+    /// somebody edited, and reads the ones nobody touched as they ship now.
+    #[test]
+    fn stored_profile_configurations_keep_edits_and_take_the_new_defaults() {
+        let mut stored = Configurations {
+            profile: (1..=CONFIGURATIONS).map(Style::profile_as_first_shipped).collect(),
+            ..Configurations::default()
+        };
+        let edited = Style { width: 3.0, ..Style::profile_as_first_shipped(2) };
+        stored.profile[1] = edited.clone();
+        let json = serde_json::to_string(&stored).unwrap();
+        let read: Configurations = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.of(Kind::Profile, 2), &edited, "an edit is the user's");
+        for n in (1..=9).filter(|&n| n != 2) {
+            assert!(read.is_default(Kind::Profile, n), "configuration {n} as it ships now");
+        }
+        // Other kinds are as they were.
+        assert_eq!(read.of(Kind::Rect, 1), &Style::rect(Preset::Up));
     }
 }
