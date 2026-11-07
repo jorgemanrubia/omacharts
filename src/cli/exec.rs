@@ -3270,6 +3270,7 @@ struct Edits {
     down_color: Option<ColorChoice>,
     /// `Some(None)` puts volume back on the chart's own colouring.
     colouring: Option<Option<omacharts_engine::BarColouring>>,
+    opacity: Option<f64>,
     color: Option<ColorChoice>,
     width: Option<f64>,
     style: Option<LineStyle>,
@@ -3378,6 +3379,7 @@ impl Edits {
                     || Fault::usage(format!("{text:?} is not a bar colouring")),
                 )?)),
             },
+            opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
             style: match arg(m, "style") {
@@ -3469,6 +3471,7 @@ impl Edits {
             && self.up_color.is_none()
             && self.down_color.is_none()
             && self.colouring.is_none()
+            && self.opacity.is_none()
             && self.color.is_none()
             && self.width.is_none()
             && self.style.is_none()
@@ -3638,6 +3641,12 @@ impl Edits {
             match kind == IndicatorKind::Volume {
                 true => params["colouring"] = to_value(colouring)?,
                 false => return Err(refuse("colouring")),
+            }
+        }
+        if let Some(opacity) = self.opacity {
+            match kind == IndicatorKind::Volume {
+                true => params["opacity"] = json!(opacity),
+                false => return Err(refuse("opacity")),
             }
         }
         // The pair may not cross: a band whose floor is above its ceiling is
@@ -6854,6 +6863,32 @@ mod tests {
         assert!(vp["params"]["rows"].is_null(), "auto is stored as no number at all");
         assert_eq!(vp["params"]["reset"], "week");
         assert_eq!(vp["params"]["poc_color"]["name"], "Amber");
+    }
+
+    #[test]
+    fn volume_takes_an_opacity_within_its_range_and_nothing_else_does() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let opacity = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["opacity"].as_f64()
+        };
+        assert_eq!(opacity(&store), Some(0.85), "a new volume pane is drawn at 85%");
+
+        let out = run("chart indicator set volume --book Macro --opacity 1", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(opacity(&store), Some(1.0));
+
+        for refused in ["chart indicator set volume --book Macro --opacity 0.1", "chart indicator set volume --book Macro --opacity 1.5"] {
+            let out = run(refused, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(opacity(&store), Some(1.0), "a refused opacity leaves the one there");
+        let out = run("chart indicator set rsi --book Macro --opacity 0.5", &store);
+        assert_ne!(out.code, 0, "an RSI has no bars to make solid");
     }
 
 

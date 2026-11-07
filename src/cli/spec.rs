@@ -389,6 +389,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles, or a colouring of their own").of(VOLUME_COLOURINGS),
+    Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),

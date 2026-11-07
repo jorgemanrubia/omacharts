@@ -1603,6 +1603,45 @@ mod outside_change_tests {
         });
     }
 
+    /// The volume pane's Opacity sits right under its Colouring, starts at
+    /// 85%, reaches the pane from its slider and follows a command.
+    #[test]
+    fn the_volume_opacity_row_sits_under_its_colouring_and_follows_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let volume = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
+                .map(|i| i.id)
+                .expect("a volume pane on a new chart");
+            let opacity = || {
+                let indicators = window.indicators();
+                crate::ui::chart::volume_opacity(indicators.iter().find(|i| i.id == volume).unwrap())
+            };
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
+            let row = || {
+                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::VOLUME_OPACITY_LABEL)
+                    .into_iter()
+                    .next()
+                    .expect("an Opacity row")
+            };
+            let above = row().prev_sibling().and_then(|w| w.downcast::<adw::ComboRow>().ok());
+            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Colouring"), "Opacity is not under Colouring");
+            let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
+            assert_eq!(slider(row()).value(), 85.0);
+            assert_eq!(opacity(), 0.85);
+
+            slider(row()).set_value(100.0);
+            assert_eq!(opacity(), 1.0, "the slider did not reach the pane");
+
+            command(&window, &["chart", "indicator", "set", "volume", "--opacity", "0.5"]);
+            assert_eq!(slider(row()).value(), 50.0, "the row kept the old opacity");
+            assert_eq!(opacity(), 0.5);
+        });
+    }
+
     /// A chart's settings, open while a command changes its colouring, its
     /// switches and its volume pane's palette, show what the command did —
     /// and showing it changes nothing more.

@@ -1729,8 +1729,8 @@ fn legend_group(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> 
     group
 }
 
-/// A rising and a falling session's volume bar. Unset, each is the candle's
-/// own colour dimmed toward the chart.
+/// A rising and a falling session's volume bar, and how solid both are.
+/// Unset, each is the candle's own colour.
 fn volume_colours(
     owner: &Rc<Owner>,
     refresh: &Refresh,
@@ -1768,7 +1768,8 @@ fn volume_colours(
     group
 }
 
-/// The volume pane's palette and its two colours, as it is painted now.
+/// The volume pane's palette, its opacity and its two colours, as it is
+/// painted now.
 fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
     let id = indicator.id;
     let (up, down) =
@@ -1776,6 +1777,20 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
     let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
         return Vec::new();
     };
+    let opacity = percent_row(
+        owner,
+        refresh,
+        id,
+        VOLUME_OPACITY_LABEL,
+        crate::ui::chart::volume_opacity(indicator),
+        omacharts_engine::indicators::MIN_VOLUME_OPACITY,
+        1.0,
+        move |indicator, share| {
+            if let Params::Volume { opacity, .. } = &mut indicator.params {
+                *opacity = share;
+            }
+        },
+    );
     // The chart's own colouring first, then the four palettes. A volume
     // bar is a solid bar with no body to leave open, so the chart's
     // switches reach it only as the swap, through the chart's scheme.
@@ -1818,8 +1833,11 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
         },
         id,
     );
-    vec![choice.upcast(), up_row.upcast(), down_row.upcast()]
+    vec![choice.upcast(), opacity.upcast(), up_row.upcast(), down_row.upcast()]
 }
+
+/// The volume row that says how solid its bars are.
+pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
 
 /// What a volume pane's colouring row offers first: the way the chart
 /// paints its candles, whatever that is.

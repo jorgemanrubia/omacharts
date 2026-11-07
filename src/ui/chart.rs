@@ -6188,9 +6188,10 @@ fn draw_volume(
     let inner_top = top + height * 0.1;
     let inner_h = height * 0.9;
     let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
+    let opacity = volume_opacity(indicator);
     let lit = state.picked == Some(indicator.id);
     // Lit, the glow goes down first, under every bar, and the bars over it
-    // at full strength.
+    // at full strength, whatever their opacity.
     let passes: &[bool] = if lit { &[true, false] } else { &[false] };
     for glow in passes.iter().copied() {
         for rising in [false, true] {
@@ -6215,7 +6216,7 @@ fn draw_volume(
                 let alpha = match (glow, lit) {
                     (true, _) => selection::glow_alpha(&state.theme),
                     (false, true) => 1.0,
-                    (false, false) => 0.85,
+                    (false, false) => opacity,
                 };
                 colors::set_source_alpha(cr, colour, alpha);
                 let _ = cr.fill();
@@ -8848,6 +8849,18 @@ pub(crate) fn volume_colours(
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
     };
     (pick(up_color, &scheme.up), pick(down_color, &scheme.down))
+}
+
+/// How solid a volume pane's bars are drawn, kept within what the row offers
+/// so a hand-edited chart cannot make them vanish.
+pub(crate) fn volume_opacity(indicator: &Indicator) -> f64 {
+    use omacharts_engine::indicators::{DEFAULT_VOLUME_OPACITY, MIN_VOLUME_OPACITY};
+    match indicator.params {
+        omacharts_engine::Params::Volume { opacity, .. } if opacity.is_finite() => {
+            opacity.clamp(MIN_VOLUME_OPACITY, 1.0)
+        }
+        _ => DEFAULT_VOLUME_OPACITY,
+    }
 }
 
 /// One histogram per period, anchored where its period begins.

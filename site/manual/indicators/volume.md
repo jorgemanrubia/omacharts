@@ -16,10 +16,11 @@ Its own strip. Each bar's volume, in the candles' up or down colour.
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
 | **Colouring** | **Same as the chart** | **Vivid**, **Soft**, **Quiet** or **Monochrome**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
+| **Opacity** | 85% | 20 to 100%. At 100% the bars hide what is behind them |
 | **Up** colour | The colouring's up colour | A palette name, or a custom colour |
 | **Down** colour | The colouring's down colour | A palette name, or a custom colour |
 
-**Same as the chart** follows the chart's own colouring, whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid bar with no body to leave open. Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both.
+**Same as the chart** follows the chart's own colouring, whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid bar with no body to leave open. Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both. A selected strip is drawn solid whatever its **Opacity**.
 
 The **Default** [chart template](/manual/chart-templates/) holds Volume, with [Session Times](/manual/indicators/session-times/).
 
@@ -46,6 +47,12 @@ capture: bin/headless-window shot /tmp/volume-colouring.png
 crop: 700,84,1160,1276
 -->
 {% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open: Same as the chart, Vivid, Soft, Quiet, Monochrome" caption="A volume strip's own Colouring." %}
+
+<!-- regenerate:
+as above, with the Colouring row closed
+crop: 762,640,1036,518 (the Colours group)
+-->
+{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring, then the Opacity slider at 85%, then Up and Down" caption="Opacity, under the strip's Colouring." %}
 
 ## Volume Profile
 
