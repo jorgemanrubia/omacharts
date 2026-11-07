@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --quiet --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pillow"]
+# dependencies = ["pillow", "numpy"]
 # ///
 """Render Omacharts videos from a Markdown script.
 
@@ -12,6 +12,8 @@
     bin/video cover SCRIPT          the cover: first frame, held, and thumbnail
     bin/video music SCRIPT [N]      N music candidates for the script's length
     bin/video render SCRIPT         record, mix and encode the video
+    bin/video recompose SCRIPT      mix and encode the last recording again
+    bin/video beats SCRIPT          read the pinned track's tempo and downbeats
     bin/video show FILE|URL         play or open it where the author watches
     bin/video page SCRIPT           open the script's page on GitHub there
     bin/video studio [SCRIPT] [--upto N]
@@ -153,7 +155,8 @@ class Script:
                     field = None
                 elif field:
                     setattr(scene, field, getattr(scene, field) + " " + line.strip())
-        if not self.scenes:
+        if not self.scenes and self.meta.get("timing") != "music":
+            # A music-driven video composes its music before its script.
             die(f"{self.path.name} has no scenes yet — it is at the {self.meta.get('stage', 'brief')} stage")
 
     @property
@@ -161,6 +164,36 @@ class Script:
         path = OUT / self.slug
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    # A video cut to its music rather than spoken over: `timing: music`. Its
+    # scenes have no Voice; every cue is a place in the music, `@bar.beat`
+    # (`@9`, `@9.3`, `@9.2.5` for the off-beat), counted from the track's
+    # first downbeat, and the picture is timed to it.
+
+    @property
+    def music_driven(self):
+        return self.meta.get("timing") == "music"
+
+    @property
+    def cover_length(self):
+        return float(self.meta.get("cover", COVER))
+
+    def beat_period(self):
+        if "music_bpm" not in self.meta:
+            die(f"{self.path.name} is timed to its music but has no music_bpm; run bin/video beats {self.slug}")
+        return 60 / float(self.meta["music_bpm"])
+
+    def beat_time(self, cue):
+        """Where `@bar.beat` falls in the music, in seconds from its start."""
+        bar, _, beat = cue.lstrip("@").partition(".")
+        per_bar = int(self.meta.get("music_meter", 4))
+        return float(self.meta.get("music_downbeat", 0)) + ((int(bar) - 1) * per_bar + float(beat or 1) - 1) * self.beat_period()
+
+    def cues(self, scene):
+        """A scene's cues in the order they fire."""
+        if self.music_driven:
+            return sorted(scene.actions, key=self.beat_time)
+        return re.findall(r"\{(\w+)\}", scene.voice)
 
 
 def find_script(name):
@@ -172,8 +205,8 @@ def find_script(name):
     return Script(path)
 
 
-ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
-                "terminal": None, "focus": 1}
+ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": (3, 4),
+                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1)}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -188,8 +221,9 @@ def parse_action(text):
     if ACTION_ARITY[verb] is None:
         return (verb, rest.strip())
     args = rest.split()
-    if len(args) != ACTION_ARITY[verb]:
-        die(f"{verb} takes {ACTION_ARITY[verb]} arguments: {text!r}")
+    arity = ACTION_ARITY[verb] if isinstance(ACTION_ARITY[verb], tuple) else (ACTION_ARITY[verb],)
+    if len(args) not in arity:
+        die(f"{verb} takes {' or '.join(map(str, arity))} arguments: {text!r}")
     return (verb, *args)
 
 
@@ -245,6 +279,9 @@ def load_voice(name):
 def voice_scenes(script):
     """Speak every scene, reusing what was spoken before for unchanged lines,
     and return per scene: the wav, its word timings and its Line."""
+    if script.music_driven:
+        # Nothing is said: every scene is a picture alone.
+        return [{"scene": scene, "line": Line("", {}), "wav": None, "duration": 0.0, "words": []} for scene in script.scenes]
     voice = load_voice(script.meta.get("voice", "narrator"))
     engine = voice.get("engine", "chatterbox")
     (CACHE / "tts").mkdir(parents=True, exist_ok=True)
@@ -580,12 +617,85 @@ hl.config({{
         colour = colour or f"rgb({self.colors.get('accent', '#7aa2f7').lstrip('#')})"
         self.hyprctl("eval", f'hl.config({{ general = {{ col = {{ active_border = "{colour}" }} }} }})')
 
+    # The desktop theme. On Omarchy the window wears the desktop's theme and
+    # follows it when it changes, which is how a person switches it; the
+    # studio's desktop is its own home, so this changes nothing outside it.
+    # The app looks for a change every THEME_POLL seconds on a timer of its
+    # own, whose phase wanders, so in a recording a theme is written ahead of
+    # its beat and waited on (`theme_on_cue`). A `cli config set theme` does
+    # not restyle a window already open.
+
+    THEME_POLL = 2.0
+
+    def theme_dir(self, name):
+        found = next((d / name for d in (Path.home() / ".config/omarchy/themes", Path.home() / ".local/share/omarchy/themes",
+                                          Path("/usr/share/omarchy/themes")) if (d / name / "colors.toml").is_file()), None)
+        if not found:
+            die(f"no Omarchy theme called {name}")
+        return found
+
+    def desktop_theme(self, name, wait=None, frame=True):
+        """Switch the studio desktop to theme `name`, the way omarchy-theme-set
+        does: the current theme's colours and name rewritten, and the border
+        and the gaps around the window with them (unless `frame` is False, for
+        the caller to do once the window has restyled)."""
+        current = Path(self.env["HOME"]) / ".local/state/omarchy/current"
+        text = (self.theme_dir(name) / "colors.toml").read_text()
+        tmp = current / "theme/.colors.toml.new"
+        tmp.write_text(text)
+        tmp.replace(current / "theme/colors.toml")
+        (current / "theme.name").write_text(name + "\n")
+        self.theme = name
+        self.colors = dict(re.findall(r'^(\w+)\s*=\s*"(#[0-9a-fA-F]{6})"', text, re.M))
+        if frame:
+            self.frame_colours()
+        if wait is None:
+            wait = not getattr(self, "recording", False)
+        if wait:
+            # Off the clock — a storyboard, a pinning session: let the app see it.
+            time.sleep(self.THEME_POLL + 0.5)
+
+    def frame_colours(self):
+        """The border and the gaps round the window in the theme's colours."""
+        hexa = lambda key, fallback: self.colors.get(key, fallback).lstrip("#")
+        self.hyprctl("eval", f'hl.config({{ general = {{ col = {{ active_border = "rgb({hexa("accent", "#7aa2f7")})", '
+                             f'inactive_border = "rgb({hexa("muted", "#414868")})" }} }}, '
+                             f'misc = {{ background_color = "rgb({hexa("background", "#1a1b26")})" }} }})')
+
+    def probe_colour(self):
+        """A few pixels of the chart's background, cheaply: a region grab."""
+        x, y = self.at(3, 45)
+        data = subprocess.run(["grim", "-g", f"{int(x)},{int(y)} 6x6", "-t", "ppm", "-"], env=self.env, capture_output=True).stdout
+        return data[-12:]
+
+    def theme_on_cue(self, name, beat):
+        """A theme meant for a beat, in a recording: written as much as a
+        poll ahead of it, then watched until the window has restyled — the
+        app's poll is not a steady clock, and a restyle comes in two strokes,
+        the chart and then the window around it — so nothing after it can
+        show before it. `anchor_cues` puts the finished restyle on its beat."""
+        before = self.probe_colour()
+        pause(beat - self.THEME_POLL - 0.1 - time.monotonic())
+        # The border and gaps change with the window, not before it: a frame
+        # round an old-coloured window would be the restyle seen half done.
+        self.desktop_theme(name, wait=False, frame=False)
+        written = time.monotonic()
+        while time.monotonic() - written < self.THEME_POLL + 1.5:
+            if self.probe_colour() != before:
+                break
+            time.sleep(0.01)
+        else:
+            say(f"theme {name}: the window did not seem to change")
+        self.frame_colours()
+        time.sleep(0.05)
+
     def shot(self, path):
         subprocess.run(["grim", "-c", "-o", "REC", str(path)], env=self.env, check=True)
 
     def perform(self, action, events, now=0.0, scene=None, cue=None):
         verb, *args = action
         event = {"t": now, "scene": scene, "cue": cue, "verb": verb, "args": args}
+        began = time.monotonic()
         if verb == "key":
             self.key(args[0])
         elif verb == "type":
@@ -611,6 +721,10 @@ hl.config({{
             event["args"] = args[0].split(maxsplit=1)
         elif verb == "focus":
             self.focus(args[0])
+        elif verb == "theme":
+            self.desktop_theme(args[0])
+        # When the action finished: a click lands just before it.
+        event["done"] = round(now + time.monotonic() - began, 3)
         events.append(event)
 
     # The terminal, for a scene about the command line: a real one, tiled
@@ -862,7 +976,7 @@ def board(script):
         steps = stills / "steps"
         steps.mkdir()
         for scene in script.scenes:
-            cues = re.findall(r"\{(\w+)\}", scene.voice)
+            cues = script.cues(scene)
             n = 0
             for cue in cues:
                 for action in scene.actions.get(cue, []):
@@ -974,14 +1088,24 @@ def cover(script):
 def music(script, count=3):
     if not (DATA / "ace/.venv").exists():
         die("no music environment; run bin/video setup")
-    voiced = voice_scenes(script)
-    length = math.ceil(timeline(script, voiced)["total"] + float(script.meta.get("cover", COVER))) + 4
     prompt = script.meta.get("music") or "calm, warm instrumental background music for a software screencast"
-    prompt += ", instrumental, steady, unobtrusive, clean modern mix, background music under a voice-over"
+    job = {"count": count}
+    if script.music_driven:
+        # The music comes first and the picture is cut to it, so the track is
+        # sized from the script's length and written to the tempo it asks for.
+        length = math.ceil(float(re.sub(r"[^\d.]", "", script.meta.get("length", "60")))) + 4
+        prompt += ", instrumental, clean modern mix"
+        job.update({"bpm": int(float(script.meta["music_tempo"])) if script.meta.get("music_tempo") else None,
+                    "timesignature": script.meta.get("music_meter", "4"), "seed": int(script.meta.get("music_seed", 1000))})
+    else:
+        voiced = voice_scenes(script)
+        length = math.ceil(timeline(script, voiced)["total"] + float(script.meta.get("cover", COVER))) + 4
+        prompt += ", instrumental, steady, unobtrusive, clean modern mix, background music under a voice-over"
     folder = script.out / "music"
     folder.mkdir(exist_ok=True)
+    job.update({"caption": prompt, "duration": length, "out": str(folder)})
+    (folder / "job.json").write_text(json.dumps(job))
     job = folder / "job.json"
-    job.write_text(json.dumps({"caption": prompt, "duration": length, "count": count, "out": str(folder)}))
     say(f"composing {count} candidates of {length}s — several minutes each on the CPU")
     run([str(DATA / "ace/.venv/bin/python"), str(ENGINES / "ace_engine.py"), str(DATA / "ace"), str(job)],
         env={**os.environ, "OMP_NUM_THREADS": str(os.cpu_count())}, cwd=folder)
@@ -989,6 +1113,31 @@ def music(script, count=3):
     for i, track in enumerate(found, 1):
         say(f"  {i}: {track.relative_to(ROOT)}")
     say("pin one with  music_file: <path>  in the script's frontmatter")
+    return found
+
+
+def beats(script):
+    """Read the pinned track's beat — its tempo, where its downbeats fall and
+    how loud each bar is — and pin the tempo and first downbeat in the
+    frontmatter, for a music-driven script's `@bar.beat` cues."""
+    track = script.meta.get("music_file") or die(f"{script.path.name} has no music_file to read the beat of")
+    track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
+    python = DATA / "venvs/qwen/bin/python"
+    if not python.exists():
+        die("no environment with librosa; run bin/video setup")
+    out = script.out / "beats.json"
+    run([str(python), str(ENGINES / "beats.py"), str(track), str(out)])
+    found = json.loads(out.read_text())
+    text = script.path.read_text()
+    for key, value in (("music_bpm", f"{found['bpm']:.3f}"), ("music_downbeat", f"{found['downbeat']:.3f}")):
+        if re.search(rf"^{key}:.*$", text, re.M):
+            text = re.sub(rf"^{key}:.*$", f"{key}: {value}", text, count=1, flags=re.M)
+        else:
+            text = text.replace("\n---\n", f"\n{key}: {value}\n---\n", 1)
+    script.path.write_text(text)
+    say(f"{out.relative_to(ROOT)}; bars with their loudness (dB) and kick:")
+    for bar in found["bars"]:
+        say(f"  bar {bar['bar']:>2} at {bar['t']:6.2f}s  {bar['db']:6.1f} dB  kick {bar['kick']}")
     return found
 
 
@@ -1005,6 +1154,18 @@ def lead_in(script):
 def timeline(script, voiced):
     """When each scene starts, and when each cue's actions fire, in seconds
     from the first frame of the recording."""
+    if script.music_driven:
+        # Each cue where its beat falls, in the recording: the music starts
+        # under the cover, so the recording's zero is the cover's length in.
+        intro = script.cover_length
+        scenes = []
+        for v in voiced:
+            cues = {cue: script.beat_time(cue) - intro for cue in v["scene"].actions}
+            start = min(cues.values(), default=scenes[-1]["end"] if scenes else 0.0)
+            scenes.append({"start": start, "cues": cues, "end": max(cues.values(), default=start) + v["scene"].after})
+        end = script.meta.get("music_end")
+        total = script.beat_time(end) - intro if end else scenes[-1]["end"] + TAIL
+        return {"scenes": scenes, "total": total}
     t, scenes = lead_in(script), []
     for v in voiced:
         cues = {cue: t + cue_time(v, cue) for cue in v["scene"].actions}
@@ -1025,6 +1186,7 @@ def render(script):
         for action in script.setup:
             studio.perform(action, events)
         time.sleep(1.5)
+        studio.recording = True
         say(f"recording {plan['total']:.1f}s")
         recorder = studio.spawn(["wf-recorder", "-y", "-o", "REC", "-r", str(FPS), "-c", "hevc_vaapi", "-d", "/dev/dri/renderD128",
                                  "-p", "qp=16", "-f", str(raw)], log="wf-recorder.log")
@@ -1044,8 +1206,22 @@ def render(script):
                 # lands on the word rather than the glide starting on it.
                 first = v["scene"].actions[cue][0]
                 lead = studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "rclick", "move", "drag", "scroll") else 0
+                if script.music_driven:
+                    # Timed to a beat, a key or a command is sent early by
+                    # what it takes to arrive and be drawn, too.
+                    lead += action_lead(first)
+                themes = [a for a in v["scene"].actions[cue] if a[0] == "theme"]
+                for action in themes:
+                    began = time.monotonic() - zero
+                    studio.theme_on_cue(action[1], zero + at)
+                    events.append({"t": round(began, 3), "done": round(time.monotonic() - zero, 3), "scene": v["scene"].number,
+                                   "cue": cue, "verb": "theme", "args": [action[1]]})
+                rest = [a for a in v["scene"].actions[cue] if a[0] != "theme"]
+                if themes and rest:
+                    first = rest[0]
+                    lead = (studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "rclick", "move", "drag", "scroll") else 0) + action_lead(first)
                 pause(zero + at - lead - time.monotonic())
-                for action in v["scene"].actions[cue]:
+                for action in rest:
                     studio.perform(action, events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)
         pause(zero + plan["total"] - time.monotonic())
         recorder.send_signal(signal.SIGINT)
@@ -1053,7 +1229,145 @@ def render(script):
     studio.keep_data()
     (out / "events.json").write_text(json.dumps(events, indent=1))
     offset = find_marker(raw) + (zero - marked)
+    (out / "offset.txt").write_text(f"{offset:.4f}\n")
     compose(script, voiced, plan, raw, offset)
+
+
+def recompose(script):
+    """The last recording made again into a video, without recording it
+    again: for a change to the camera, the music or the cover, which are
+    all drawn afterwards. Cues must be where they were when it was recorded."""
+    raw, saved = script.out / "raw.mkv", script.out / "offset.txt"
+    if not (raw.exists() and saved.exists() and (script.out / "events.json").exists()):
+        die(f"no recording of {script.slug} to compose again; run bin/video render {script.slug}")
+    voiced = voice_scenes(script)
+    compose(script, voiced, timeline(script, voiced), raw, float(saved.read_text()))
+
+
+POINTER_VERBS = ("click", "rclick", "drag", "scroll")
+SHOWN_VERBS = ("key", "cli", "theme", "type", *POINTER_VERBS)
+
+
+def anchor_cues(script, plan, events, raw, offset):
+    """When each beat-timed cue really showed in the recording, against when
+    its beat says it should.
+
+    A real app in real time lands a key a few frames early or late and a
+    theme up to a poll late; a beat has to be hit on the frame. So each cue's
+    change is found in the recording: the first frame after its keys or
+    command, and before the next cue's, that differs from the one before it
+    over more than a sliver of the picture. A theme restyles in two strokes,
+    the chart and then the window around it, so for a theme the change also
+    has a settled frame, where most of the picture has turned. A pointer cue
+    is its click's own moment. Returns [(planned, starts, settles)] in the
+    recording's time, for `remap_recording` to cut to."""
+    import numpy as np
+
+    # In colour: two themes of the same lightness differ only in hue, and a
+    # grey picture of the change from one to the other barely moves.
+    w, h = 256, 144
+    total = plan["total"]
+    frames = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total + 3:.3f}",
+                             "-vf", f"fps={FPS},scale={w}:{h}:flags=area,format=rgb24", "-f", "rawvideo", "-"],
+                            capture_output=True, check=True).stdout
+    video = np.frombuffer(frames, dtype=np.uint8).reshape(-1, h, w, 3)
+    changed = np.zeros(len(video))
+    for i in range(1, len(video)):
+        changed[i] = (np.abs(video[i].astype(np.int16) - video[i - 1]).max(axis=2) > 8).mean()
+    cues = {}
+    for event in events:
+        if event.get("scene") is not None and str(event.get("cue", "")).startswith("@") and event["verb"] in SHOWN_VERBS:
+            cues.setdefault(event["cue"], event)
+    order = sorted(cues.values(), key=lambda e: e["t"])
+    anchors, report = [], []
+    for i, first in enumerate(order):
+        cue = first["cue"]
+        planned = script.beat_time(cue) - script.cover_length
+        if first["verb"] in POINTER_VERBS:
+            at = first["done"] - 0.07 if first["verb"] != "drag" else first["t"] + 0.1
+            anchors.append((planned, at, at))
+            report.append(f"  {cue:>8}: {1000 * (at - planned):+6.0f}ms  (click)")
+            continue
+        if first["verb"] == "theme":
+            # The restyle: the first frame after it was written where most of
+            # the picture turns. The border and gaps of the theme before
+            # were recoloured just ahead of this one being written, so they
+            # are not it; only a stroke just before the turn belongs to it.
+            start = int(first["t"] * FPS) + 1
+            window = changed[start : int((first["done"] + 0.5) * FPS)]
+            big = np.nonzero(window > 0.25)[0]
+            if not len(big):
+                # Two themes alike enough that little turns: the first stroke.
+                big = np.nonzero(window > 0.0012)[0]
+            if not len(big):
+                report.append(f"  {cue:>8}: the theme never turned the picture; left where it fell")
+                continue
+            turn = start + big[0]
+            lead = np.nonzero(changed[max(start, turn - int(0.3 * FPS)) : turn] > 0.0012)[0]
+            starts = (max(start, turn - int(0.3 * FPS)) + lead[0]) / FPS if len(lead) else turn / FPS
+            settles = turn / FPS
+        else:
+            # From just before its keys land to just before the next cue's.
+            start = max(1, int((first["done"] - 0.45) * FPS))
+            stop = int((order[i + 1]["t"] + 0.05) * FPS) if i + 1 < len(order) else int((first["done"] + 2.6) * FPS)
+            hit = np.nonzero(changed[start:stop] > 0.0012)[0]
+            if not len(hit):
+                report.append(f"  {cue:>8}: nothing changed on screen; left where it fell")
+                continue
+            starts = settles = (start + hit[0]) / FPS
+        anchors.append((planned, starts, settles))
+        report.append(f"  {cue:>8}: {1000 * (settles - planned):+6.0f}ms" + (f"  (began {1000 * (settles - starts):.0f}ms before)" if settles > starts else ""))
+    anchors.sort()
+    (script.out / "anchors.txt").write_text("how far each cue fell from its beat, before the cut\n" + "\n".join(report) + "\n")
+    return anchors
+
+
+def remap_recording(source, anchors, total, target):
+    """The recording cut so that every anchored change lands on its beat:
+    from each beat to the next it plays straight on from that change, and
+    where the next change came sooner than its beat the last frame before it
+    begins is held, never letting it show early — nor a theme half drawn.
+    The jumps fall on the beats, where the picture changes anyway."""
+    frame = 1 / FPS
+    points = [(0.0, 0.0, 0.0)] + [a for a in anchors if 0 < a[0] < total]
+    parts, labels = [], []
+    for i, (planned, starts, settles) in enumerate(points):
+        until = points[i + 1][0] if i + 1 < len(points) else total
+        length = until - planned
+        if length < frame:
+            continue
+        start = max(0.0, settles)
+        stop = start + length
+        if i + 1 < len(points):
+            stop = min(stop, max(start + frame, points[i + 1][1] - frame))
+        parts.append(f"[0:v]trim=start={start:.4f}:end={stop:.4f},setpts=PTS-STARTPTS,"
+                     f"tpad=stop_mode=clone:stop_duration={max(0.0, length - (stop - start)) + frame:.4f},"
+                     f"trim=duration={length:.4f}[s{len(labels)}]")
+        labels.append(f"[s{len(labels)}]")
+    graph = ";".join(parts) + f";{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v]"
+    script = target.with_suffix(".graph")
+    script.write_text(graph)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-/filter_complex", str(script), "-map", "[v]",
+         "-c:v", "libx264", "-preset", "fast", "-crf", "10", "-pix_fmt", "yuv420p", "-r", str(FPS), str(target)])
+    return target
+
+
+def action_lead(action):
+    """How long after it is sent an action shows on screen, near enough: the
+    pauses `Studio.key` leaves around a chord, a command's round trip, a
+    desktop theme's restyle. What is left over is taken out after recording,
+    by `anchor_cues`, so these only have to be close."""
+    verb, *args = action
+    if verb == "key":
+        mods = args[0].count("+")
+        # Shift over a letter goes through bin/virtual-keyboard, which lands
+        # its chord most of a second after it starts (measured: 0.87s).
+        return 0.36 + 0.12 * mods if not (mods and "shift" in args[0].lower() and args[0][-1].isalpha()) else 0.82
+    if verb == "cli":
+        return 0.12
+    if verb == "theme":
+        return 0.12
+    return 0.0
 
 
 def find_marker(raw):
@@ -1164,29 +1478,99 @@ def split_plan(events, total):
     return splits
 
 
+def camera_plan(script, total):
+    """A music-driven video's camera, from its script: where it looks and how
+    close, as keyframes in the picture's time, and the kicks and flashes it
+    takes on the beat. Every one sits on its beat already, since the
+    recording is cut to the beats before this is drawn.
+
+    `zoom x y scale [beats]` moves there in a snap that settles within a
+    beat, and holds — for `beats`, then back to the whole frame, or until
+    the next move. `drift x y scale beats` glides there over that many
+    beats, the slow push of a camera on a dolly. `zoom 50 50 1` is the whole
+    frame again. `pulse [strength]` kicks the picture a little closer and lets
+    it fall back, on a drum; `flash [strength]` lifts it toward white and
+    back, under a cut."""
+    period = script.beat_period()
+    snap = min(0.55, period)
+    full = {"x": SIZE[0] / 2, "y": SIZE[1] / 2, "scale": 1.0}
+    moves, pulses, flashes = [], [], []
+    for scene in script.scenes:
+        for cue, actions in scene.actions.items():
+            if not cue.startswith("@"):
+                continue
+            t = script.beat_time(cue) - script.cover_length
+            for verb, *args in actions:
+                if verb in ("zoom", "drift"):
+                    x, y = (round(percent(a) * size) for a, size in zip(args[:2], SIZE))
+                    beats = float(args[3]) if len(args) > 3 else None
+                    moves.append({"t": t, "verb": verb, "x": x, "y": y, "scale": float(args[2]), "beats": beats})
+                elif verb == "pulse":
+                    pulses.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.035})
+                elif verb == "flash":
+                    flashes.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.35})
+    moves.sort(key=lambda m: m["t"])
+    keys = [{"t": 0.0, **full, "ease": "hold"}]
+    for i, move in enumerate(moves):
+        state = {k: move[k] for k in ("x", "y", "scale")}
+        nxt = moves[i + 1]["t"] if i + 1 < len(moves) else total
+        if move["verb"] == "drift":
+            keys.append({"t": move["t"], **keys[-1], "ease": "hold"} if keys[-1]["t"] < move["t"] else keys.pop())
+            keys.append({"t": min(nxt, move["t"] + move["beats"] * period), **state, "ease": "glide"})
+            continue
+        keys.append({"t": move["t"], **{k: keys[-1][k] for k in ("x", "y", "scale")}, "ease": "hold"})
+        keys.append({"t": min(nxt, move["t"] + snap), **state, "ease": "snap"})
+        if move["beats"]:
+            back = move["t"] + move["beats"] * period
+            if back < nxt - 1e-3:
+                keys.append({"t": back - snap, **state, "ease": "hold"})
+                keys.append({"t": back, **full, "ease": "smooth"})
+    keys = [k for i, k in enumerate(keys) if i == 0 or k["t"] > keys[i - 1]["t"] - 1e-6]
+    for k in keys:
+        k["t"] = round(k["t"], 3)
+    return keys, pulses, flashes
+
+
 def polish(script, raw, offset, total):
     """The recording, cut to the timeline and polished by Remotion: zooms and
     key badges drawn over it. Returns the file to compose from instead of raw."""
     events = json.loads((script.out / "events.json").read_text())
-    zooms, badges = polish_plan(events, total)
-    splits = split_plan(events, total)
     public = script.out / "compose-public"
     shutil.rmtree(public, ignore_errors=True)
     public.mkdir()
-    # H.264 in, not the recorder's HEVC: headless Chrome decodes it reliably.
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total:.3f}",
-         "-c:v", "libx264", "-preset", "fast", "-crf", "10", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an",
-         str(public / "recording.mp4")])
+    camera, pulses, flashes = [], [], []
+    if script.music_driven:
+        # Cut to the beats first, then the camera on top of the cut.
+        plan = timeline(script, voice_scenes(script))
+        anchors = anchor_cues(script, plan, events, raw, offset)
+        straight = script.out / "straight.mkv"
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total + 3:.3f}",
+             "-c:v", "libx264", "-preset", "ultrafast", "-qp", "8", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an", str(straight)])
+        remap_recording(straight, anchors, total, public / "recording.mp4")
+        straight.unlink()
+        camera, pulses, flashes = camera_plan(script, total)
+        zooms = []
+        badges = polish_plan(events, total)[1] if script.meta.get("badges", "off") == "on" else []
+        splits = []
+    else:
+        zooms, badges = polish_plan(events, total)
+        splits = split_plan(events, total)
+        # H.264 in, not the recorder's HEVC: headless Chrome decodes it reliably.
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total:.3f}",
+             "-c:v", "libx264", "-preset", "fast", "-crf", "10", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an",
+             str(public / "recording.mp4")])
     # Copied, not linked: Remotion serves a copy of this folder and leaves
     # symlinks behind, and a missing font fails the whole render.
     shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
     props = {"src": "recording.mp4", "width": SIZE[0], "height": SIZE[1], "fps": FPS,
-             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges, "splits": splits}
+             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges, "splits": splits,
+             "camera": camera, "pulses": pulses, "flashes": flashes}
     (script.out / "polish.json").write_text(json.dumps(props, indent=1))
     compose_dir = VIDEO / "compose"
     if not (compose_dir / "node_modules").exists():
         die("no Remotion; run bin/video setup")
-    say(f"polishing: {len(zooms)} zooms, {len(badges)} key badges, {len(splits)} terminal splits (Remotion, a few minutes at 4K)")
+    say(f"polishing: {len(zooms)} zooms, {len(camera)} camera keys, {len(pulses)} pulses, {len(badges)} key badges, "
+        f"{len(splits)} terminal splits (Remotion, a few minutes at 4K)")
     out = script.out / "polished.mp4"
     run(["npx", "remotion", "render", "src/index.ts", "Polish", str(out), f"--props={script.out / 'polish.json'}",
          f"--public-dir={public}", "--codec=h264", "--crf=12", f"--concurrency={max(2, (os.cpu_count() or 8) // 2)}",
@@ -1230,7 +1614,16 @@ def compose(script, voiced, plan, raw, offset):
 
     track = script.meta.get("music_file")
     audio = out / "mix.wav"
-    if track:
+    if track and script.music_driven:
+        # The music is the soundtrack, not a bed under a voice: at its own
+        # tempo — never stretched, the picture is cut to it — from the cover
+        # on, faded only at the very end, mastered as it is.
+        track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
+        tail = float(script.meta.get("music_fade", 1.5))
+        graph = (f"[0:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{total:.3f},"
+                 f"afade=t=in:d=0.05,afade=t=out:st={max(0, total - tail):.2f}:d={tail:.2f}[out]")
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(track), "-filter_complex", graph, "-map", "[out]", str(audio)])
+    elif track:
         track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
         fade = max(0, total - 2.5)
         # A track a little short of the picture is slowed to end with it,
@@ -1268,21 +1661,26 @@ def compose(script, voiced, plan, raw, offset):
          "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", str(final)])
     run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
          "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
-    subtitles(voiced, plan, out / f"{script.slug}.srt", intro)
+    if not script.music_driven:
+        subtitles(voiced, plan, out / f"{script.slug}.srt", intro)
     review = out / "review"
     shutil.rmtree(review, ignore_errors=True)
     review.mkdir()
+    # A frame just after every cue; cut to the beat, a change is there at
+    # once, so a music-driven one is looked at sooner.
+    after = 0.3 if script.music_driven else 0.6
     for v, s in zip(voiced, plan["scenes"]):
         for cue, at in s["cues"].items():
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{intro + at + 0.6:.2f}", "-i", str(preview), "-frames:v", "1",
-                 str(review / f"{v['scene'].number:02d}-{cue}.jpg")])
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{intro + at + after:.2f}", "-i", str(preview), "-frames:v", "1",
+                 str(review / f"{v['scene'].number:02d}-{cue.lstrip('@')}.jpg")])
     # The finished files beside the scripts, where the author looks for
     # them; git ignores video/renders/, since videos are too heavy for the
     # repo. Scripts, storyboards and covers are committed.
     renders = VIDEO / "renders"
     renders.mkdir(exist_ok=True)
     for made in (final, preview, out / f"{script.slug}.srt"):
-        shutil.copy(made, renders / made.name)
+        if made.exists():
+            shutil.copy(made, renders / made.name)
     say(f"video/renders/{final.name} ({total:.1f}s), {preview.name} for watching; review/ in {out.relative_to(ROOT)} has a frame per cue")
 
 
@@ -1490,6 +1888,13 @@ def main():
         render(script)
         if not os.environ.get("VIDEO_NO_SHOW"):
             show(script.out / f"{script.slug}-1080p.mp4")
+    elif verb == "recompose":
+        script = need()
+        recompose(script)
+        if not os.environ.get("VIDEO_NO_SHOW"):
+            show(script.out / f"{script.slug}-1080p.mp4")
+    elif verb == "beats":
+        beats(need())
     elif verb == "show":
         show(rest[0])
     elif verb == "page":
@@ -1506,7 +1911,7 @@ def main():
                 for scene in script.scenes:
                     if scene.number >= upto:
                         break
-                    for cue in re.findall(r"\{(\w+)\}", scene.voice):
+                    for cue in script.cues(scene):
                         for action in scene.actions.get(cue, []):
                             studio.perform(action, events)
                     time.sleep(0.6)

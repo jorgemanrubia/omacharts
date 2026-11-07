@@ -19,6 +19,16 @@ export type Badge = { start: number; end: number; keys: string[] };
 /** The terminal standing beside the app, `share` of the width on the right. */
 export type Split = { start: number; end: number; share: number };
 
+/** Where a music-driven video's camera looks, and how close, at time t:
+ * the centre of the view in the recording's pixels. `ease` is how the camera
+ * arrives here from the keyframe before: a snap that settles inside a beat,
+ * a slow glide, a smooth return, or a hold where it stays put. */
+export type CameraKey = { t: number; x: number; y: number; scale: number; ease: "snap" | "glide" | "smooth" | "hold" };
+/** A kick on a drum: the picture a touch closer for an instant, falling back. */
+export type Pulse = { t: number; strength: number };
+/** A lift toward white and back, under a cut. */
+export type Flash = { t: number; strength: number };
+
 export type PolishProps = {
   src: string;
   width: number;
@@ -28,7 +38,49 @@ export type PolishProps = {
   zooms: Zoom[];
   badges: Badge[];
   splits?: Split[];
+  camera?: CameraKey[];
+  pulses?: Pulse[];
+  flashes?: Flash[];
 };
+
+const EASES = {
+  snap: Easing.bezier(0.16, 1, 0.3, 1),
+  glide: Easing.bezier(0.37, 0, 0.63, 1),
+  smooth: Easing.bezier(0.45, 0, 0.25, 1),
+  hold: (x: number) => x,
+};
+
+// The view at time t: interpolated between the keyframes either side, by the
+// later one's ease.
+const view = (keys: CameraKey[], t: number, width: number, height: number) => {
+  const full = { x: width / 2, y: height / 2, scale: 1 };
+  if (!keys.length) return full;
+  const i = keys.findIndex((k) => k.t > t);
+  if (i === -1) return keys[keys.length - 1];
+  if (i === 0) return keys[0];
+  const a = keys[i - 1];
+  const b = keys[i];
+  const k = EASES[b.ease](Math.min(1, Math.max(0, (t - a.t) / Math.max(1e-6, b.t - a.t))));
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, scale: a.scale + (b.scale - a.scale) * k };
+};
+
+// How much of a kick is left at t: in over two frames, out over a beat's
+// share.
+const kick = (pulses: Pulse[], t: number) =>
+  pulses.reduce((sum, p) => {
+    const d = t - p.t;
+    if (d < -0.03 || d > 0.5) return sum;
+    const shape = d < 0 ? (d + 0.03) / 0.03 : Math.exp(-d / 0.11);
+    return sum + p.strength * shape;
+  }, 0);
+
+const lift = (flashes: Flash[], t: number) =>
+  flashes.reduce((most, f) => {
+    const d = t - f.t;
+    if (d < -0.04 || d > 0.45) return most;
+    const shape = d < 0 ? (d + 0.04) / 0.04 : Math.exp(-d / 0.09);
+    return Math.max(most, f.strength * shape);
+  }, 0);
 
 const EASE_IN = 0.5; // seconds to settle into a zoom
 const EASE_OUT = 0.6; // and to pull back out of it
@@ -57,17 +109,31 @@ const amount = (zoom: Zoom, t: number) =>
     easing: ease,
   });
 
-export const Polish = ({ src, width, height, zooms, badges, splits = [] }: PolishProps) => {
+export const Polish = ({ src, width, height, zooms, badges, splits = [], camera = [], pulses = [], flashes = [] }: PolishProps) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
 
   const zoom = zooms.find((z) => t >= z.start && t <= z.end);
   const k = zoom ? amount(zoom, t) : 0;
-  const scale = zoom ? 1 + (zoom.scale - 1) * k : 1;
+  let scale = zoom ? 1 + (zoom.scale - 1) * k : 1;
   // Scaling about the point of interest keeps that point still and the frame
   // filled: nothing outside the recording ever shows at the edges.
-  const origin = zoom ? `${zoom.x}px ${zoom.y}px` : "50% 50%";
+  let origin = zoom ? `${zoom.x}px ${zoom.y}px` : "50% 50%";
+  let shift = "";
+  if (camera.length) {
+    // The camera's view centred where it looks, kept inside the recording so
+    // its edges never show, with the kick on top.
+    const v = view(camera, t, width, height);
+    scale = Math.max(1, v.scale) * (1 + kick(pulses, t));
+    const cx = Math.min(width - width / (2 * scale), Math.max(width / (2 * scale), v.x));
+    const cy = Math.min(height - height / (2 * scale), Math.max(height / (2 * scale), v.y));
+    origin = "0px 0px";
+    shift = `translate(${(width / 2 - scale * cx).toFixed(2)}px, ${(height / 2 - scale * cy).toFixed(2)}px) `;
+  } else if (pulses.length) {
+    scale *= 1 + kick(pulses, t);
+  }
+  const flash = lift(flashes, t);
 
   // The terminal arriving or leaving: the window snaps to its new size in a
   // few frames, so the picture breathes in and out over it, softened at the
@@ -83,9 +149,14 @@ export const Polish = ({ src, width, height, zooms, badges, splits = [] }: Polis
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       <AbsoluteFill
         style={{
-          transform: `scale(${scale * (1 - 0.035 * move)})`,
+          transform: `${shift}scale(${scale * (1 - 0.035 * move)})`,
           transformOrigin: origin,
-          filter: move > 0.01 ? `blur(${(10 * move * unit).toFixed(2)}px) brightness(${1 + 0.12 * move})` : undefined,
+          filter:
+            move > 0.01
+              ? `blur(${(10 * move * unit).toFixed(2)}px) brightness(${1 + 0.12 * move})`
+              : flash > 0.01
+                ? `brightness(${(1 + flash).toFixed(3)})`
+                : undefined,
         }}
       >
         <OffthreadVideo src={staticFile(src)} muted style={{ width, height }} />

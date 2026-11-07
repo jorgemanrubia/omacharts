@@ -5,6 +5,9 @@ it), with the checkout and a job file:
 
     {"caption": "...", "duration": 64, "count": 3, "out": "folder"}
 
+and, for a track a video is cut to, optionally "bpm", "keyscale" and
+"timesignature" ("4" for 4/4), which ACE-Step keeps to.
+
 Each candidate gets its own seed, so they differ; the seed is in the file
 name, so a candidate can be made again.
 """
@@ -30,9 +33,10 @@ def main():
     llm = LLMHandler()
     llm.initialize(checkpoint_dir=os.path.join(root, "checkpoints"), lm_model_path="acestep-5Hz-lm-1.7B", backend="pt", device="cpu")
     for i in range(job["count"]):
-        seed = 1000 + i * 37
+        seed = job.get("seed", 1000) + i * 37
         started = time.monotonic()
-        params = GenerationParams(caption=job["caption"], instrumental=True, duration=job["duration"], seed=seed)
+        extra = {k: job[k] for k in ("bpm", "keyscale", "timesignature") if job.get(k)}
+        params = GenerationParams(caption=job["caption"], instrumental=True, duration=job["duration"], seed=seed, **extra)
         result = generate_music(dit, llm, params, GenerationConfig(batch_size=1, audio_format="flac"), save_dir=os.path.join(job["out"], ".work"))
         if not result.success:
             print("failed:", result.error, flush=True)
