@@ -65,7 +65,7 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin; the Defaults pag
 | **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
 | **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Monochrome** | **Filled** |
 | **Scales** › **Logarithmic scale** | On or off | Off |
-| **Scales** › **Gridlines** | On or off | On |
+| **Scales** › **Gridlines** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
 | **Drawings** › **Show drawings from other charts**, **Send drawings to other charts** | On or off ([Drawings](/manual/drawings/)) | On |

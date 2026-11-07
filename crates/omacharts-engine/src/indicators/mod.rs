@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use chrono_tz::Tz;
 
 use crate::bars::{Bar, Timeframe};
+use crate::ladders::{Days, Held, Ladder};
 use crate::symbols::Instrument;
 use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
@@ -106,6 +107,30 @@ pub enum Kind {
     SessionTimes,
 }
 
+/// What an indicator is computed from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Needs {
+    /// Bars, which every source has.
+    Bars,
+    /// What traded at each price and on which side: ladders, which only some
+    /// sources have. See [`unmet`].
+    VolumeAtPrice,
+}
+
+/// The line an indicator that needs volume at price shows on a chart whose
+/// source has none.
+pub const NEEDS_VOLUME_AT_PRICE: &str = "Needs a data feed with volume at price";
+
+/// What an indicator that needs `needs` shows instead of itself on a chart
+/// of `context`, if it cannot be computed there: one line, rather than an
+/// invented estimate. `None` when it can.
+pub fn unmet(needs: Needs, context: &Context) -> Option<Output> {
+    match needs {
+        Needs::Bars => None,
+        Needs::VolumeAtPrice => context.ladders.is_none().then_some(Output::Unmet(NEEDS_VOLUME_AT_PRICE)),
+    }
+}
+
 /// The families the picker and the manual sort indicators into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
@@ -168,6 +193,22 @@ impl Kind {
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
+    }
+
+    /// What it cannot be computed without. Every indicator there is needs
+    /// bars and nothing more; one that needs volume at price — a footprint,
+    /// delta — is shown on a chart whose source has none as one line saying
+    /// so, never as an estimate.
+    pub fn needs(self) -> Needs {
+        Needs::Bars
+    }
+
+    /// Whether it draws more exactly from volume at price when the chart's
+    /// source has it. Only the volume profile, which otherwise spreads each
+    /// bar's volume over its range. A chart holds ladders only while one of
+    /// its indicators says yes here or needs them outright.
+    pub fn uses_volume_at_price(self) -> bool {
+        matches!(self, Kind::VolumeProfile) || self.needs() == Needs::VolumeAtPrice
     }
 
     /// Whether a new one is named in the chart's legend. Session shading is
@@ -503,7 +544,12 @@ pub struct Indicator {
     /// an index into the list saying "the price sits here" would not manage,
     /// because removing an indicator above the price would silently promote the
     /// one below it.
-    #[serde(default)]
+    ///
+    /// Nobody chooses this today: every strip sits below the price, and a
+    /// stored `true` is read back as `false` (see [`below_the_price`]). The
+    /// drawing and [`move_pane`] still honour it, so a setting for it plugs
+    /// in by dropping that override and offering [`cross_price`] again.
+    #[serde(default, deserialize_with = "below_the_price")]
     pub above_price: bool,
     /// Whether the chart's legend names it. Drawn or not is `visible`; this
     /// is only whether it takes a line at the top of the chart.
@@ -511,12 +557,57 @@ pub struct Indicator {
     pub in_legend: bool,
 }
 
+/// Every strip is read back below the price, whatever was stored: a chart
+/// left with a strip above it once had a way to move it back, and now has
+/// none. The stored value is still read, so an older file stays readable.
+fn below_the_price<'de, D: serde::Deserializer<'de>>(stored: D) -> Result<bool, D::Error> {
+    let _ = <bool as Deserialize>::deserialize(stored)?;
+    Ok(false)
+}
+
 /// An indicator stored before the legend could leave one out was in it.
 fn listed() -> bool {
     true
 }
 
+/// The thicknesses a study's line is picked from: four, and none, which is
+/// how a VWAP band is a shade with no outline.
+pub const STROKE_WIDTHS: [f64; 5] = [0.0, 1.0, 1.5, 2.5, 4.0];
+
+/// How thin and how thick a volume profile's outline and point of control
+/// may be set, and the step between: half a pixel to six, by halves.
+pub const MIN_OUTLINE_WIDTH: f64 = 0.5;
+pub const MAX_OUTLINE_WIDTH: f64 = 6.0;
+pub const OUTLINE_WIDTH_STEP: f64 = 0.5;
+
 impl Indicator {
+    /// One step thicker or thinner, as Alt+Shift with + and − asks: the
+    /// thickness its settings call its line's, along the choices they
+    /// offer, or a volume profile's outline by its own step. Never down to
+    /// no line, which would take the selected line out from under the hand.
+    /// `false` for what has no line to change, the volume bars and session
+    /// shading.
+    pub fn step_width(&mut self, thicker: bool) -> bool {
+        match &mut self.params {
+            Params::Volume { .. } | Params::SessionTimes { .. } => false,
+            Params::VolumeProfile { outline_width, .. } => {
+                let by = if thicker { OUTLINE_WIDTH_STEP } else { -OUTLINE_WIDTH_STEP };
+                *outline_width = (*outline_width + by).clamp(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH);
+                true
+            }
+            _ => {
+                let now = self.stroke.width;
+                let mut drawn = STROKE_WIDTHS.iter().copied().filter(|width| *width > 0.0);
+                let next = match thicker {
+                    true => drawn.find(|width| *width > now + 1e-9).unwrap_or(now.max(STROKE_WIDTHS[4])),
+                    false => drawn.rev().find(|width| *width < now - 1e-9).unwrap_or(STROKE_WIDTHS[1]),
+                };
+                self.stroke.width = next;
+                true
+            }
+        }
+    }
+
     pub fn new(id: u32, kind: Kind) -> Indicator {
         Indicator {
             id,
@@ -656,6 +747,9 @@ pub enum Output {
     Pane(Pane),
     /// Stretches of time shaded behind the bars.
     Time(Time),
+    /// Nothing to draw, and the one line that says why: what it needs, this
+    /// chart's source does not have. See [`unmet`].
+    Unmet(&'static str),
 }
 
 /// An indicator that cannot share the price scale, and so gets a strip of its
@@ -761,6 +855,25 @@ pub fn move_pane(indicators: &mut [Indicator], id: u32, direction: Move) -> bool
     }
 }
 
+/// Move one strip one row along the stack on its own side of the price.
+///
+/// What the app offers: a strip never crosses the price, so at the price's
+/// edge, as at either end of the stack, this is `false` and nothing moves.
+/// [`move_pane`] is the same move without that limit, for when where a strip
+/// sits becomes a setting.
+pub fn move_strip(indicators: &mut [Indicator], id: u32, direction: Move) -> bool {
+    let rows = stack(indicators);
+    let Some(at) = rows.iter().position(|row| *row == Row::Strip(id)) else { return false };
+    let neighbour = match direction {
+        Move::Up => at.checked_sub(1),
+        Move::Down => (at + 1 < rows.len()).then_some(at + 1),
+    };
+    match neighbour.map(|n| rows[n]) {
+        Some(Row::Strip(_)) => move_pane(indicators, id, direction),
+        _ => false,
+    }
+}
+
 /// Put a strip on the other side of the price plot, against the price itself.
 ///
 /// It lands at the edge it arrived from rather than at the end of its new side,
@@ -849,6 +962,10 @@ pub struct Context<'a> {
     pub instrument: Option<&'a Instrument>,
     /// The clock the chart reads, which a range of hours typed in it keeps.
     pub zone: Tz,
+    /// What traded at each price, when the chart's source has it and one of
+    /// its indicators wants it. `None` on every chart of a source without
+    /// ladders, which is then computed exactly as it always was.
+    pub ladders: Option<&'a Held>,
 }
 
 impl<'a> Context<'a> {
@@ -860,7 +977,26 @@ impl<'a> Context<'a> {
             kind: Some(instrument.kind),
             instrument: Some(instrument),
             zone,
+            ladders: None,
         }
+    }
+
+    /// The same chart, with its ladders.
+    pub fn with_ladders(self, ladders: Option<&'a Held>) -> Context<'a> {
+        Context { ladders, ..self }
+    }
+}
+
+/// The ladder of a run of bars on a chart of `context`, from its held
+/// ladders: by minutes for intraday bars, by whole trading days for daily
+/// and longer ones, whose stamps are their trading dates.
+fn ladder_of(held: &Held, days: &Days, timeframe: Timeframe, bars: &[Bar]) -> Option<Ladder> {
+    let (first, last) = (bars.first()?, bars.last()?);
+    if timeframe.is_intraday() {
+        held.between(first.ts, last.ts + timeframe.seconds())
+    } else {
+        let end = timeframe.shift(last.ts, 1);
+        held.days_between(first.ts.div_euclid(86_400), end.div_euclid(86_400), days)
     }
 }
 
@@ -885,6 +1021,7 @@ pub fn compute(
         kind,
         instrument: None,
         zone: crate::clock::ChartZone::default().for_instrument(None),
+        ladders: None,
     };
     compute_in(indicator, bars, &context)
 }
@@ -892,6 +1029,9 @@ pub fn compute(
 /// Compute an indicator over `bars`, on a chart of what `context` says.
 pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Output {
     let Context { session_origin, timeframe, kind, .. } = *context;
+    if let Some(unmet) = unmet(indicator.kind.needs(), context) {
+        return unmet;
+    }
     let schedule = || time::schedule_for(context.instrument);
     match (&indicator.kind, &indicator.params) {
         (Kind::Sma, Params::MovingAverage { period }) => Output::Line(sma(bars, *period)),
@@ -959,7 +1099,18 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
         (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, .. }) => {
-            Output::Profiles(profile::compute(
+            // Days are cut by the exchange's calendar, which needs the
+            // instrument; a chart without one has no ladders either.
+            let days = context.ladders.and(context.instrument).map(Days::new);
+            let of = |run: &[Bar]| match (context.ladders, &days) {
+                (Some(held), Some(days)) => ladder_of(held, days, timeframe, run),
+                _ => None,
+            };
+            let at_price = context
+                .ladders
+                .filter(|_| days.is_some())
+                .map(|held| profile::AtPrice { tick_size: held.tick_size, of: &of });
+            Output::Profiles(profile::compute_with(
                 bars,
                 reset.effective_for(timeframe),
                 session_origin,
@@ -967,6 +1118,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 *value_area,
                 kind,
                 merged,
+                at_price.as_ref(),
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
@@ -1058,6 +1210,46 @@ pub fn search(query: &str) -> Vec<Kind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Alt+Shift with + and − walks a study's line along the thicknesses
+    /// its settings offer and stops at the ends, never at no line; a volume
+    /// profile's outline goes by halves from half a pixel to six.
+    #[test]
+    fn a_studys_line_steps_along_the_thicknesses_its_settings_offer() {
+        let mut sma = Indicator::new(1, Kind::Sma);
+        let mut seen = vec![sma.stroke.width];
+        for _ in 0..4 {
+            assert!(sma.step_width(true));
+            seen.push(sma.stroke.width);
+        }
+        assert_eq!(seen, [1.5, 2.5, 4.0, 4.0, 4.0]);
+        for _ in 0..5 {
+            sma.step_width(false);
+        }
+        assert_eq!(sma.stroke.width, 1.0, "never down to no line");
+        sma.stroke.width = 2.0;
+        sma.step_width(true);
+        assert_eq!(sma.stroke.width, 2.5, "from between two, to the next");
+        sma.stroke.width = 0.0;
+        sma.step_width(true);
+        assert_eq!(sma.stroke.width, 1.0);
+
+        let mut profile = Indicator::new(2, Kind::VolumeProfile);
+        for _ in 0..20 {
+            profile.step_width(true);
+        }
+        let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
+        assert_eq!(outline_width, MAX_OUTLINE_WIDTH);
+        for _ in 0..20 {
+            profile.step_width(false);
+        }
+        let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
+        assert_eq!(outline_width, MIN_OUTLINE_WIDTH);
+        assert_eq!(profile.stroke, Stroke::default(), "the profile's line is its outline");
+
+        assert!(!Indicator::new(3, Kind::Volume).step_width(true), "bars have no line");
+        assert!(!Indicator::new(4, Kind::SessionTimes).step_width(true));
+    }
 
     fn bars(closes: &[f64]) -> Vec<Bar> {
         closes
@@ -1467,13 +1659,28 @@ mod tests {
         assert!(!back.above_price, "and it round trips as it is");
     }
 
+    /// A strip stored above the price, from when it could be put there, comes
+    /// back below it: nothing in the app could move it back down.
     #[test]
-    fn a_strip_above_the_price_survives_being_written_down() {
+    fn a_strip_stored_above_the_price_comes_back_below_it() {
         let mut set = stacked();
         move_pane(&mut set, 1, Move::Up);
+        assert_eq!(stack(&set)[0], Row::Strip(1), "above the price before it is stored");
         let json = serde_json::to_string(&set).unwrap();
         let back: Vec<Indicator> = serde_json::from_str(&json).unwrap();
-        assert_eq!(stack(&back), stack(&set));
+        assert!(!back.iter().any(|i| i.above_price));
+        assert_eq!(stack(&back), vec![Row::Price, Row::Strip(1), Row::Strip(3), Row::Strip(4)]);
+    }
+
+    #[test]
+    fn a_strip_moved_from_the_app_stays_on_its_side_of_the_price() {
+        let mut set = stacked();
+        assert!(!move_strip(&mut set, 1, Move::Up), "the price is above it");
+        assert_eq!(stack(&set), stack(&stacked()));
+        assert!(move_strip(&mut set, 3, Move::Up), "past the strip above it");
+        assert_eq!(stack(&set), vec![Row::Price, Row::Strip(3), Row::Strip(1), Row::Strip(4)]);
+        assert!(!move_strip(&mut set, 4, Move::Down), "already the bottom row");
+        assert!(!move_strip(&mut set, 2, Move::Up), "an overlay has no strip");
     }
 
     #[test]
@@ -1659,5 +1866,202 @@ mod tests {
         let indicator: Indicator = serde_json::from_str(json).expect("an older MACD");
         let Params::Macd { signal_color, .. } = &indicator.params else { panic!("not a MACD") };
         assert_eq!(*signal_color, None);
+    }
+
+    mod at_price {
+        use super::*;
+        use crate::ladders::{to_price, Minute, Series, Side};
+        use crate::symbols::InstrumentKind;
+
+        const TICK: f64 = 0.25;
+
+        fn es() -> Instrument {
+            Instrument {
+                symbol: "ES".into(),
+                name: "E-mini S&P 500".into(),
+                kind: InstrumentKind::FutureRoot,
+                suffix: None,
+                currency: Some("USD".into()),
+                tier: 0,
+                session_origin: 79_200,
+                overrides: Vec::new(),
+                exchange: None,
+                popularity: 0,
+                local_name: None,
+            }
+        }
+
+        /// Three CME sessions of one-minute ladders from 2026-10-11 22:00
+        /// UTC, the halt left out, and the bars they make.
+        fn sessions(instrument: &Instrument) -> (Series, Vec<Bar>) {
+            sessions_of(instrument, true)
+        }
+
+        /// [`sessions`], every print with its aggressor or, `sided` false,
+        /// none with one: a feed that never says.
+        fn sessions_of(instrument: &Instrument, sided: bool) -> (Series, Vec<Bar>) {
+            let days = Days::new(instrument);
+            let mut state = 0x9e37_79b9_7f4a_7c15u64;
+            let mut next = move |n: u64| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state % n.max(1)
+            };
+            let mut series = Series::new(TICK);
+            // 2026-10-11 22:00 UTC, Sunday 17:00 Chicago: the week opens.
+            let start: i64 = 1_791_842_400;
+            let mut center = 26_000i32;
+            for i in 0..3 * 1_440 {
+                let ts = start + i * 60;
+                if ts.rem_euclid(86_400) / 3_600 == 21 {
+                    continue; // the daily halt, 16:00 to 17:00 Chicago
+                }
+                center += next(9) as i32 - 4;
+                let mut minute = Minute::opening(ts, to_price(center, TICK));
+                for _ in 0..1 + next(30) {
+                    let tick = center + next(13) as i32 - 6;
+                    let side = match next(12) {
+                        _ if !sided => Side::Unknown,
+                        0 => Side::Unknown,
+                        1..=5 => Side::Sell,
+                        _ => Side::Buy,
+                    };
+                    minute.add_trade(tick, to_price(tick, TICK), 1 + next(25), side, 1);
+                }
+                series.insert(&days, minute);
+            }
+            let bars = series
+                .minutes()
+                .map(|m| Bar { ts: m.ts, open: m.open, high: m.high, low: m.low, close: m.close, volume: m.volume as f64 })
+                .collect();
+            (series, bars)
+        }
+
+        fn profile_of(bars: &[Bar], instrument: &Instrument, rows: Option<usize>, ladders: Option<&Held>) -> Vec<Profile> {
+            let mut indicator = Indicator::new(1, Kind::VolumeProfile);
+            if let Params::VolumeProfile { rows: r, reset, .. } = &mut indicator.params {
+                *r = rows;
+                *reset = Reset::Session;
+            }
+            let context = Context::of(instrument, Timeframe::minutes(1), chrono_tz::UTC).with_ladders(ladders);
+            match compute_in(&indicator, bars, &context) {
+                Output::Profiles(profiles) => profiles,
+                other => panic!("not profiles: {other:?}"),
+            }
+        }
+
+        /// The profile drawn from ladders is the sum, row by row, of what
+        /// every minute in the period traded at each price in that row,
+        /// worked out here the slow way, minute by minute and price by price.
+        #[test]
+        fn a_profile_from_ladders_is_every_minute_summed_by_price() {
+            for sided in [true, false] {
+                every_minute_summed_by_price(sided);
+            }
+        }
+
+        /// A feed that never says the aggressor still draws its profile
+        /// from what traded at each price, and its delta is nothing.
+        #[test]
+        fn trades_with_no_aggressor_still_make_a_profile_and_no_delta() {
+            let instrument = es();
+            let (series, bars) = sessions_of(&instrument, false);
+            let held = Held::of(&series);
+            let profiles = profile_of(&bars, &instrument, None, Some(&held));
+            assert_eq!(profiles.len(), 3);
+            let traded: f64 = bars.iter().map(|b| b.volume).sum();
+            assert_eq!(profiles.iter().map(|p| p.total_volume).sum::<f64>(), traded);
+            let (from, to) = (bars[0].ts, bars[bars.len() - 1].ts + 60);
+            let ladder = held.between(from, to).expect("held whole");
+            assert_eq!((ladder.total() as f64, ladder.delta()), (traded, 0));
+            assert!(ladder.levels.iter().all(|l| l.at_bid == 0 && l.at_ask == 0));
+        }
+
+        fn every_minute_summed_by_price(sided: bool) {
+            let instrument = es();
+            let (series, bars) = sessions_of(&instrument, sided);
+            let held = Held::of(&series);
+            for rows in [None, Some(24)] {
+                let profiles = profile_of(&bars, &instrument, rows, Some(&held));
+                assert_eq!(profiles.len(), 3, "{rows:?}");
+                for profile in &profiles {
+                    let (from, to) = (bars[profile.first_bar].ts, bars[profile.last_bar].ts + 60);
+                    let mut expected = vec![0.0; profile.rows.len()];
+                    let mut total = 0u64;
+                    for minute in series.minutes().filter(|m| (from..to).contains(&m.ts)) {
+                        for (tick, level) in minute.ladder.iter() {
+                            let price = to_price(tick, TICK);
+                            let row = profile
+                                .rows
+                                .iter()
+                                .position(|r| price >= r.low - 1e-6 && price < r.high - 1e-6)
+                                .expect("every price has a row");
+                            expected[row] += level.volume() as f64;
+                            total += level.volume();
+                        }
+                    }
+                    let got: Vec<f64> = profile.rows.iter().map(|r| r.volume).collect();
+                    assert_eq!(got, expected, "{rows:?} at {from}");
+                    assert_eq!(profile.total_volume, total as f64);
+                    for row in &profile.rows {
+                        let ticks = (row.high - row.low) / TICK;
+                        assert!((ticks - ticks.round()).abs() < 1e-9 && ticks >= 1.0, "rows are whole ticks: {ticks}");
+                    }
+                }
+            }
+        }
+
+        /// A period from before the ladders begin keeps the estimate, and
+        /// one after it does not; a chart with no ladders is the estimate
+        /// throughout, by the very code it always ran.
+        #[test]
+        fn a_period_before_the_ladders_begin_keeps_the_estimate() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            let mut held = Held::of(&series);
+            held.floor = bars[2_000].ts;
+            let exact = profile_of(&bars, &instrument, Some(24), Some(&held));
+            let estimate = profile_of(&bars, &instrument, Some(24), None);
+            let plain = profile::compute(
+                &bars,
+                Reset::Session,
+                79_200,
+                Some(24),
+                0.7,
+                Some(InstrumentKind::FutureRoot),
+                &[],
+            );
+            assert_eq!(estimate, plain, "no ladders is the old code path");
+            // Spread over ranges, an estimate's rows are fractions; counted
+            // from ladders they are whole contracts.
+            let whole = |p: &Profile| p.rows.iter().all(|r| r.volume.fract() == 0.0);
+            assert!(!whole(&exact[0]) && !whole(&exact[1]), "before the floor");
+            assert!(whole(&exact[2]), "after it");
+        }
+
+        /// The mechanism an indicator that needs volume at price stands on:
+        /// on a chart with ladders it is computed, on one without it is one
+        /// line, and nothing that needs only bars is ever stopped.
+        #[test]
+        fn an_indicator_that_needs_volume_at_price_says_so_on_a_chart_without() {
+            let instrument = es();
+            let (series, _) = sessions(&instrument);
+            let held = Held::of(&series);
+            let bare = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC);
+            let rich = bare.with_ladders(Some(&held));
+
+            // What a footprint would declare.
+            let footprint = Needs::VolumeAtPrice;
+            assert_eq!(unmet(footprint, &bare), Some(Output::Unmet("Needs a data feed with volume at price")));
+            assert_eq!(unmet(footprint, &rich), None);
+
+            for kind in Kind::ALL {
+                assert_eq!(kind.needs(), Needs::Bars, "{kind:?}");
+                assert_eq!(unmet(kind.needs(), &bare), None);
+            }
+            let users: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.uses_volume_at_price()).collect();
+            assert_eq!(users, vec![Kind::VolumeProfile]);
+        }
     }
 }

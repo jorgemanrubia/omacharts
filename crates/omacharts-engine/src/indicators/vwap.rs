@@ -8,6 +8,8 @@
 //! The envelope itself is [`super::bands`], shared with the Bollinger bands,
 //! so the two look like one idea applied to different maths.
 
+use serde::{Deserialize, Serialize};
+
 use crate::bars::Bar;
 
 use super::bands::{Band, Bands};
@@ -71,6 +73,10 @@ pub fn compute(bars: &[Bar], reset: Reset, session_origin: i64, bands: &[Band]) 
     for (i, bar) in bars.iter().enumerate() {
         let this_bucket = reset.bucket(bar.ts, session_origin);
         if this_bucket != bucket {
+            // The first bar starts nothing: there is no line before it.
+            if bucket != i64::MIN {
+                out.start(i);
+            }
             bucket = this_bucket;
             sum_w = 0.0;
             sum_wp = 0.0;
@@ -98,6 +104,92 @@ pub fn compute(bars: &[Bar], reset: Reset, session_origin: i64, bands: &[Band]) 
     out
 }
 
+/// The price an anchored VWAP weights by volume.
+///
+/// Typical price is the default everywhere it is offered, and the one the
+/// study above uses: a bar traded across its range, and its close alone
+/// would weight a long-legged bar as if all of it changed hands at the end.
+/// The others are there because each has a following, and none costs more
+/// than the default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// (high + low + close) / 3.
+    #[default]
+    Hlc3,
+    /// (high + low) / 2.
+    Hl2,
+    /// (open + high + low + close) / 4.
+    Ohlc4,
+    Close,
+}
+
+impl Source {
+    pub const ALL: [Source; 4] = [Source::Hlc3, Source::Hl2, Source::Ohlc4, Source::Close];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Hlc3 => "Typical (HLC/3)",
+            Source::Hl2 => "Median (HL/2)",
+            Source::Ohlc4 => "Average (OHLC/4)",
+            Source::Close => "Close",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Source::Hlc3 => "hlc3",
+            Source::Hl2 => "hl2",
+            Source::Ohlc4 => "ohlc4",
+            Source::Close => "close",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Source> {
+        Source::ALL.into_iter().find(|s| s.key().eq_ignore_ascii_case(key))
+    }
+
+    pub fn of(self, bar: &Bar) -> f64 {
+        match self {
+            Source::Hlc3 => typical(bar),
+            Source::Hl2 => (bar.high + bar.low) / 2.0,
+            Source::Ohlc4 => (bar.open + bar.high + bar.low + bar.close) / 4.0,
+            Source::Close => bar.close,
+        }
+    }
+}
+
+/// One bar of an anchored VWAP: the average, and the volume-weighted
+/// standard deviation of the source around it, which a band is a multiple
+/// of.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Anchored {
+    pub vwap: f64,
+    pub deviation: f64,
+}
+
+/// A VWAP that never resets: from the first of `bars`, which is the bar it
+/// is anchored to, through the last. One value per bar.
+///
+/// The same accumulation as [`compute`], without the periods, so the two
+/// agree to the cent over a span where neither has reset — and the same
+/// equal weighting where a bar has no volume.
+pub fn anchored(bars: &[Bar], source: Source) -> Vec<Anchored> {
+    let (mut sum_w, mut sum_wp, mut sum_wp2) = (0.0f64, 0.0f64, 0.0f64);
+    bars.iter()
+        .map(|bar| {
+            let weight = if bar.volume > 0.0 { bar.volume } else { 1.0 };
+            let price = source.of(bar);
+            sum_w += weight;
+            sum_wp += weight * price;
+            sum_wp2 += weight * price * price;
+            let vwap = sum_wp / sum_w;
+            let variance = (sum_wp2 / sum_w - vwap * vwap).max(0.0);
+            Anchored { vwap, deviation: variance.sqrt() }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +214,74 @@ mod tests {
     }
 
     const DAY: i64 = 86_400;
+
+    fn ohlc(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Bar {
+        Bar { ts: 0, open, high, low, close, volume }
+    }
+
+    /// Worked by hand. Typical prices 10, 13 and 12 on 100, 200 and 100:
+    ///
+    /// - bar 1: 1000 / 100 = 10, no spread yet;
+    /// - bar 2: (1000 + 2600) / 300 = 12, and Σwp² / Σw = (10000 + 33800) / 300
+    ///   = 146, so the variance is 146 − 144 = 2;
+    /// - bar 3: (3600 + 1200) / 400 = 12, and (43800 + 14400) / 400 = 145.5,
+    ///   so the variance is 1.5.
+    #[test]
+    fn an_anchored_vwap_is_cumulative_from_its_anchor() {
+        let bars = vec![
+            ohlc(11.0, 12.0, 9.0, 9.0, 100.0),
+            ohlc(12.0, 15.0, 12.0, 12.0, 200.0),
+            ohlc(13.0, 14.0, 11.0, 11.0, 100.0),
+        ];
+        let out = anchored(&bars, Source::Hlc3);
+        let vwaps: Vec<f64> = out.iter().map(|a| a.vwap).collect();
+        assert_eq!(vwaps, vec![10.0, 12.0, 12.0]);
+        assert_eq!(out[0].deviation, 0.0);
+        assert!((out[1].deviation - 2f64.sqrt()).abs() < 1e-12, "{}", out[1].deviation);
+        assert!((out[2].deviation - 1.5f64.sqrt()).abs() < 1e-12, "{}", out[2].deviation);
+
+        // Closes 9, 12 and 11: 900 / 100, 3300 / 300, 4400 / 400.
+        let closes: Vec<f64> = anchored(&bars, Source::Close).iter().map(|a| a.vwap).collect();
+        assert_eq!(closes, vec![9.0, 11.0, 11.0]);
+        // Midpoints 10.5, 13.5 and 12.5: 1050 / 100, 3750 / 300, 5000 / 400.
+        let medians: Vec<f64> = anchored(&bars, Source::Hl2).iter().map(|a| a.vwap).collect();
+        assert_eq!(medians, vec![10.5, 12.5, 12.5]);
+        // Four-price averages 10.25, 12.75 and 12.25: 1025 / 100,
+        // 3575 / 300, 4800 / 400.
+        let averages: Vec<f64> = anchored(&bars, Source::Ohlc4).iter().map(|a| a.vwap).collect();
+        assert!((averages[1] - 3575.0 / 300.0).abs() < 1e-12);
+        assert_eq!(averages[2], 12.0);
+    }
+
+    /// Anchored where a session VWAP starts, the two are the same line until
+    /// the session ends — which is what lets one stand in for the other.
+    #[test]
+    fn anchored_at_a_session_open_it_is_the_session_vwap() {
+        let bars: Vec<Bar> = (0..30)
+            .map(|i| {
+                let p = 100.0 + (i as f64 * 0.7).sin() * 3.0;
+                Bar { ts: i * 60, open: p, high: p + 1.0, low: p - 1.5, close: p + 0.25, volume: 10.0 + i as f64 }
+            })
+            .collect();
+        let session = compute(&bars, Reset::Session, 0, &[]);
+        for (i, a) in anchored(&bars, Source::Hlc3).iter().enumerate() {
+            let expected = session.center[i].unwrap();
+            assert!((a.vwap - expected).abs() < 1e-9, "bar {i}: {} against {expected}", a.vwap);
+        }
+    }
+
+    #[test]
+    fn an_anchored_vwap_of_no_bars_is_nothing() {
+        assert!(anchored(&[], Source::Hlc3).is_empty());
+    }
+
+    #[test]
+    fn a_source_reads_back_from_its_key() {
+        for source in Source::ALL {
+            assert_eq!(Source::from_key(source.key()), Some(source));
+        }
+        assert_eq!(Source::default(), Source::Hlc3);
+    }
 
     #[test]
     fn vwap_of_one_price_is_that_price() {
@@ -152,6 +312,37 @@ mod tests {
         let out = compute(&bars, Reset::Session, 0, &[]);
         assert_eq!(out.center[1], Some(10.0));
         assert_eq!(out.center[2], Some(50.0), "a new session starts clean");
+    }
+
+    /// The bar a period starts over on is marked, so the chart can break its
+    /// lines there; the first bar of the series starts nothing.
+    #[test]
+    fn a_reset_is_marked_where_the_new_period_begins() {
+        let bars = vec![bar(0, 10.0, 1.0), bar(3600, 12.0, 1.0), bar(DAY, 50.0, 1.0), bar(DAY + 60, 52.0, 1.0)];
+        let out = compute(&bars, Reset::Session, 0, &bands(&[1.0]));
+        assert_eq!(out.starts, vec![false, false, true, false]);
+    }
+
+    /// The shaded band is the one-deviation band: its edges sit exactly one
+    /// spread either side of the line, which is what the outer bands are
+    /// multiples of.
+    #[test]
+    fn the_shaded_band_spans_one_deviation_and_the_outer_ones_their_multiples() {
+        let bars: Vec<Bar> = (0..40)
+            .map(|i| Bar { ts: i * 86_400, open: 100.0, high: 100.0 + i as f64, low: 90.0, close: 95.0 + i as f64, volume: 1000.0 + i as f64 })
+            .collect();
+        let out = compute(&bars, Reset::Year, 0, &default_bands());
+        let reference = anchored(&bars, Source::Hlc3);
+        for (i, at) in reference.iter().enumerate() {
+            let centre = out.center[i].unwrap();
+            for band in &out.bands {
+                let up = band.upper[i].unwrap() - centre;
+                let down = centre - band.lower[i].unwrap();
+                assert!((up - at.deviation * band.deviations).abs() < 1e-9, "bar {i}, {}σ", band.deviations);
+                assert!((down - at.deviation * band.deviations).abs() < 1e-9, "bar {i}, {}σ", band.deviations);
+            }
+        }
+        assert!(out.bands[0].fill && out.bands[0].deviations == 1.0, "the shading is the 1σ band");
     }
 
     #[test]

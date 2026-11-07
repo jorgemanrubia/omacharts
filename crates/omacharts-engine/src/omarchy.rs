@@ -278,6 +278,7 @@ pub fn derive(keys: &HashMap<String, String>, name: &str) -> Theme {
         },
         swatches,
         bars: None,
+        trading: None,
     }
 }
 

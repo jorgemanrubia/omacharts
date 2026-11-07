@@ -123,11 +123,18 @@ targets="${PERF_TARGETS:-$PWD/target/perf}"
 # Build one side and say which binary came out, asked of cargo rather than
 # assumed from the path, so that a build which produced nothing is an error here
 # instead of an older binary's numbers.
+#
+# With the fake broker where the tree has one, which is what the trading rows
+# sign in through. A revision from before it is built without, and its side
+# simply has no trading rows; every other row is built the same either way.
 build_at() {
-  local where="$1" into="$2" binary
+  local where="$1" into="$2" binary features=()
+  if grep -q '^fakes *=' "$where/Cargo.toml"; then
+    features=(--features fakes)
+  fi
   binary=$(
     cd "$where" &&
-      CARGO_TARGET_DIR="$into" cargo build --release --example perf \
+      CARGO_TARGET_DIR="$into" cargo build --release --example perf "${features[@]}" \
         --message-format=json-render-diagnostics |
       sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1
   )
@@ -166,6 +173,24 @@ cheapest() {
   ' "$@"
 }
 
+# One pass of the table, in a temporary directory of its own.
+#
+# The table makes its scratch `HOME` at a fixed path under the temporary
+# directory, and a fixed path is shared with every other run on the machine:
+# another comparison, a CI job beside this one, a `cargo run --example perf` in
+# a terminal. A newer build migrating its fixture there while an older one was
+# opening it is how the base side died with `FromTheFuture`, holding a database
+# from a schema it had never heard of. So each pass gets a fresh `TMPDIR`.
+# `mktemp` names are all one length, which matters: the allocation counts are
+# compared to the byte, and the path is a string.
+measure() {
+  local bin="$1" tmp status=0
+  tmp=$(mktemp -d "$work/tmp.XXXXXXXXXX")
+  TMPDIR="$tmp" "$bin" --tsv || status=$?
+  rm -rf "$tmp"
+  return "$status"
+}
+
 echo "comparing $(git rev-parse --short HEAD) against $(git rev-parse --short "$base")" >&2
 
 git worktree add --detach "$tree" "$base" >&2
@@ -182,7 +207,7 @@ harness reaches for — a field on the chart's state, a signature in the engine 
 and it is not by itself a regression. Read the numbers below by hand.
 
 EOF
-  "$head_bin" --tsv | column -s $'\t' -t
+  measure "$head_bin" | column -s $'\t' -t
   exit 0
 fi
 head_bin=$(build_at . "$targets/head")
@@ -190,8 +215,8 @@ head_bin=$(build_at . "$targets/head")
 # Both binaries exist before either runs, so neither side is measured while a
 # compile is finishing beside it.
 for pass in 1 2; do
-  "$base_bin" --tsv > "$work/base.$pass.tsv"
-  "$head_bin" --tsv > "$work/head.$pass.tsv"
+  measure "$base_bin" > "$work/base.$pass.tsv"
+  measure "$head_bin" > "$work/head.$pass.tsv"
 done
 cheapest "$work"/base.*.tsv > "$work/base.tsv"
 cheapest "$work"/head.*.tsv > "$work/head.tsv"

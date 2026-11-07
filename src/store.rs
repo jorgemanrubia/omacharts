@@ -3,7 +3,8 @@
 //! Two files in `$XDG_DATA_HOME/omacharts/`, opened as one. `omacharts.db`
 //! holds everything somebody made — settings, chartbooks, watchlists,
 //! drawings, themes — and is the file to copy to take them elsewhere.
-//! `market.db` beside it holds what was fetched: bars and quotes, attached
+//! `market.db` beside it holds what was fetched: bars, quotes and minute
+//! ladders (see `store/ladders.rs`), attached
 //! as the `market` schema. A query names a table and SQLite finds it in
 //! whichever file has it, so nothing below needs to know there are two.
 //!
@@ -20,6 +21,9 @@ use omacharts_engine::{Bar, Configurations, Drawing, Indicator, Theme, Timeframe
 
 /// Where the drawing configurations live, as one JSON value.
 pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
+
+mod ladders;
+pub(crate) use ladders::forget_day as forget_ladder_day;
 
 use crate::migrations;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -635,6 +639,7 @@ impl Store {
     pub fn clear_market_data(&self) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM bar_series", [])?;
         self.conn.execute("DELETE FROM quotes", [])?;
+        self.conn.execute_batch("DELETE FROM ladder_days; DELETE FROM ladder_tail; DELETE FROM ladder_coverage;")?;
         self.conn.execute_batch("VACUUM market")?;
         Ok(())
     }

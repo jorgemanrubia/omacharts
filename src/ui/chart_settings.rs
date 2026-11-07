@@ -666,25 +666,25 @@ impl IndicatorList {
 /// They ask for the colour every time they are drawn instead, and the colour
 /// row repaints them when it changes one.
 #[derive(Clone)]
-struct Ink {
+pub(crate) struct Ink {
     colour: Rc<dyn Fn() -> String>,
     samples: Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>>,
 }
 
 impl Ink {
-    fn new(colour: impl Fn() -> String + 'static) -> Ink {
+    pub(crate) fn new(colour: impl Fn() -> String + 'static) -> Ink {
         Ink { colour: Rc::new(colour), samples: Rc::new(RefCell::new(Vec::new())) }
     }
 
-    fn colour(&self) -> String {
+    pub(crate) fn colour(&self) -> String {
         (self.colour)()
     }
 
-    fn watch(&self, area: &gtk::DrawingArea) {
+    pub(crate) fn watch(&self, area: &gtk::DrawingArea) {
         self.samples.borrow_mut().push(area.downgrade());
     }
 
-    fn repaint(&self) {
+    pub(crate) fn repaint(&self) {
         for area in self.samples.borrow().iter() {
             if let Some(area) = area.upgrade() {
                 area.queue_draw();
@@ -749,7 +749,7 @@ fn rebuild_indicators(
         (None, true, _) => None,
         (None, false, true) => Some("Nothing yet.".to_string()),
         (None, false, false) => Some(
-            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
+            "Drag to reorder. Colours come from the theme."
                 .to_string(),
         ),
     };
@@ -761,20 +761,12 @@ fn rebuild_indicators(
     }
     .as_str());
 
-    // The price plot is a row of the list because strips can be stacked above it
-    // as well as below, and a list showing only the strips could not say which
-    // side of the price each one is on. A chart with no strips has no stack to
-    // describe, so it is left out there.
-    let stacked = indicators.iter().any(|i| i.kind.in_own_pane());
-    let price_at = if stacked { price_row_at(&indicators) } else { usize::MAX };
-    for (at, indicator) in indicators.iter().enumerate() {
-        if at == price_at {
-            list.push(&price_row(owner, &refresh));
-        }
+    // The price is not a row: every strip sits below it, so the list shows
+    // only what can be changed. If where a strip sits becomes a setting, the
+    // price comes back as a row strips are dropped across (see
+    // `indicators::cross_price`).
+    for indicator in &indicators {
         list.push(&indicator_row(owner, dialog, &refresh, &indicators, indicator));
-    }
-    if price_at == indicators.len() {
-        list.push(&price_row(owner, &refresh));
     }
 
     if indicators.is_empty() {
@@ -789,64 +781,6 @@ fn rebuild_indicators(
         });
         list.push(&empty);
     }
-}
-
-/// Where the price plot sits in the list: above the first strip that is below
-/// it, and at the end when every strip is above it.
-///
-/// The strips above the price are listed before the strips below it, which is
-/// what every way of reordering them maintains — so one boundary is enough to
-/// place the price among them.
-fn price_row_at(indicators: &[Indicator]) -> usize {
-    indicators
-        .iter()
-        .position(|i| i.kind.in_own_pane() && !i.above_price)
-        .unwrap_or(indicators.len())
-}
-
-/// The price plot's own line in the list.
-///
-/// Not a thing you can configure or remove — it is the chart — so it carries
-/// nothing but its name. It is a place to drop a strip on, which is how a strip
-/// is moved across the price from here.
-fn price_row(owner: &Rc<Owner>, refresh: &Refresh) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title("Price");
-    row.set_subtitle("Candles, and everything drawn over them");
-    // No handle and no dot. Every other row wears both, so their absence is
-    // what says this row is the chart itself rather than another indicator —
-    // and a mark here would read as the handle it is not.
-    row.add_css_class("dim-label");
-
-    let moving = |value: &glib::Value| value.get::<String>().ok()?.parse::<u32>().ok();
-    let watched = owner.clone();
-    let owner = owner.clone();
-    let refresh = refresh.clone();
-    let target = drop_line::target(
-        &row,
-        // A strip from above the price becomes the first below it, and one
-        // from below the last above it: the line goes on the far side.
-        move |value| {
-            let id = moving(value)?;
-            let all = watched.indicators();
-            let strip = all.iter().find(|i| i.id == id && i.kind.in_own_pane())?;
-            Some(if strip.above_price { drop_line::Edge::After } else { drop_line::Edge::Before })
-        },
-        move |value| {
-            let Some(moving) = moving(value) else { return false };
-            let mut all = owner.indicators();
-            // Dropped on the price: the strip changes sides, which is the one
-            // thing dropping it on another row cannot say.
-            if !indicators::cross_price(&mut all, moving) {
-                return false;
-            }
-            owner.set_indicators(all);
-            refresh.run();
-            true
-        },
-    );
-    row.add_controller(target);
-    row
 }
 
 /// One line in the list: what it is, whether it is drawn, and a way in.
@@ -974,18 +908,7 @@ fn wire_reorder(owner: &Rc<Owner>, refresh: &Refresh, row: &adw::ActionRow, id: 
             // Taken out before the destination is used, so dropping downwards
             // lands after the row you dropped on and upwards lands in its place —
             // which is what the pointer was over either way.
-            // A strip dropped next to a strip on the other side of the price has
-            // crossed it: the row it was dropped on says which side that is. Read
-            // before the drag is lifted out, because that shifts everything after
-            // it — the row dropped on included.
-            let landing = indicators
-                .get(to)
-                .filter(|onto| onto.kind.in_own_pane())
-                .map(|onto| onto.above_price);
-            let mut dragged = indicators.remove(from);
-            if let (true, Some(side)) = (dragged.kind.in_own_pane(), landing) {
-                dragged.above_price = side;
-            }
+            let dragged = indicators.remove(from);
             indicators.insert(to, dragged);
             owner.set_indicators(indicators);
             refresh.run();
@@ -1298,11 +1221,11 @@ fn stroke_rows(
 /// question nobody has an opinion about; what people want is a thicker line or
 /// a thinner one, and they want to see which. Zero stays because a VWAP band
 /// uses it to draw its fill with no outline.
-const WIDTHS: [f64; 5] = [0.0, 1.0, 1.5, 2.5, 4.0];
+pub(crate) const WIDTHS: [f64; 5] = omacharts_engine::indicators::STROKE_WIDTHS;
 
 /// What a style sample is drawn at, so dashes and dots are legible whatever
 /// weight the line itself is set to.
-const LINE_SAMPLE_WIDTH: f64 = 1.5;
+pub(crate) const LINE_SAMPLE_WIDTH: f64 = 1.5;
 
 /// A row of drawn samples, one of them pressed.
 ///
@@ -1365,7 +1288,7 @@ fn picker_row(
     row
 }
 
-fn describe_stroke(width: f64, style: LineStyle) -> String {
+pub(crate) fn describe_stroke(width: f64, style: LineStyle) -> String {
     if width <= 0.0 {
         return "No line".to_string();
     }
@@ -1373,7 +1296,7 @@ fn describe_stroke(width: f64, style: LineStyle) -> String {
 }
 
 /// One option, drawn as the line it would produce.
-fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::DrawingArea {
+pub(crate) fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(34);
     area.set_content_height(18);
@@ -1828,7 +1751,8 @@ fn thickness_row(
     current: f64,
     apply: impl Fn(&mut Indicator, f64) + 'static,
 ) -> adw::SpinRow {
-    let row = adw::SpinRow::with_range(0.5, 6.0, 0.5);
+    use omacharts_engine::indicators::{MAX_OUTLINE_WIDTH, MIN_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP};
+    let row = adw::SpinRow::with_range(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP);
     row.set_title(title);
     row.set_digits(1);
     row.set_value(current);

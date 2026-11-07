@@ -116,7 +116,7 @@ pub const LAUNCH: &[Launch] = &[
 /// Everything `--long` accepts, including the sets this table defers on.
 pub fn launch_values(long: &str) -> Vec<&'static str> {
     match long {
-        "provider" => omacharts_engine::providers::LISTED.iter().map(|feed| feed.id).collect(),
+        "provider" => omacharts_engine::providers::offered().map(|feed| feed.id).collect(),
         _ => LAUNCH
             .iter()
             .find(|option| option.long == long)
@@ -177,6 +177,71 @@ pub struct Noun {
 /// of the exceptions with the reason written on it.
 pub const IN_THE_CALLER: &[(&str, &str)] = &[("provider", "login"), ("provider", "logout")];
 
+/// The groups the parser accepts and no listing shows: not `--help`, not
+/// `surface --json`, not the completions, the man page or the skill, all of
+/// which are built from [`SURFACE`] alone. For what is switched on to try
+/// before it is offered to everybody, and so must not be advertised; see
+/// [`crate::features`].
+pub const HIDDEN: &[Noun] = &[Noun {
+    name: "features",
+    about: "Experimental parts of the app, switched on or off",
+    local: false,
+    verbs: &[
+        Verb {
+            name: "list",
+            about: "Every feature flag, and whether it is on",
+            args: &[],
+            flags: &[],
+            example: "omacharts features list",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+        Verb {
+            name: "enable",
+            about: "Switch a feature on, in an open window at once",
+            args: &[Arg::req("FEATURE", "a feature's name, from `features list`")],
+            flags: &[],
+            example: "omacharts features enable trading",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+        Verb {
+            name: "disable",
+            about: "Switch a feature off, in an open window at once",
+            args: &[Arg::req("FEATURE", "a feature's name, from `features list`")],
+            flags: &[],
+            example: "omacharts features disable trading",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+    ],
+}];
+
+/// Verbs of listed groups that the parser accepts and no listing shows, as
+/// [`HIDDEN`] does for whole groups: for a verb only an experimental part
+/// of the app has a use for. `provider setup` sets up a feed that reads
+/// something on this machine, and the only one is Sierra Chart's, behind
+/// its feature flag; with the flag off it knows no such feed.
+pub const HIDDEN_VERBS: &[(&str, Verb)] = &[(
+    "provider",
+    Verb {
+        name: "setup",
+        about: "Set up a feed that reads something on this machine and add it; with no values, it is looked for",
+        args: &[
+            Arg::req("NAME", "the feed to set up"),
+            Arg::any("VALUE", "what it is set up with, as KEY=VALUE"),
+        ],
+        flags: &[],
+        example: "omacharts provider setup sierra folder=~/SierraChart port=11099",
+        json: true,
+        writes: true,
+        workspace: false,
+    },
+)];
+
 /// How a watchlist, section or chartbook is named on the command line.
 pub const SELECTOR: &str =
     "a name, case-insensitive, or `id:N` when two of them share one";
@@ -216,6 +281,7 @@ const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const PROFILE_STYLES: &[&str] = &["filled", "outline"];
 const PROFILE_ALIGNS: &[&str] = &["left", "right"];
+const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
@@ -229,7 +295,7 @@ const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"
 /// list before the parser sees anything, so an alias the engine understands
 /// and the table does not is an alias nobody can use.
 const DRAWING_KINDS: &[&str] =
-    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp"];
+    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp", "avwap", "vwap"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
@@ -374,6 +440,16 @@ pub const SURFACE: &[Noun] = &[
                 ],
                 flags: &[],
                 example: "omacharts symbol show SAP DE",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "contracts",
+                about: "The dated contracts of a futures root, soonest first, with the front month marked",
+                args: &[Arg::req("ROOT", "a futures root, such as ES")],
+                flags: &[],
+                example: "omacharts symbol contracts ES",
                 json: true,
                 writes: false,
                 workspace: false,
@@ -900,7 +976,7 @@ pub const SURFACE: &[Noun] = &[
                 args: &[
                     Arg::req("ACTION", "what to do")
                         .of(&["list", "add", "set", "remove", "clear", "configs", "configure", "reset-configs"]),
-                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, or words at the first")
+                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, a volume profile of the bars between them, words at the first, or an anchored VWAP from the first")
                         .of(DRAWING_KINDS),
                 ],
                 flags: &[
@@ -912,7 +988,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("point", "ANCHOR", POINT).repeating(),
                     Flag::valued("config", "N", "the configuration, 1-9, a drawing follows, or the one to configure"),
                     Flag::valued("color", "COLOUR", "a line's colour, or a box's edge: a preset name or #rrggbb"),
-                    Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge"),
+                    Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge; 0 leaves an anchored VWAP only its bands"),
                     Flag::valued("arrow", "WHERE", "which ends of a line wear an arrowhead").of(ARROWS),
                     Flag::valued("head", "SHAPE", "the arrowhead's shape").of(HEADS),
                     Flag::valued("border", "BOOL", "whether a box has an edge, or a filled volume profile an outline").of(SWITCHES),
@@ -932,6 +1008,16 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("value-area", "F", "the share of a volume profile's volume its value area holds, 0.1-1"),
                     Flag::valued("transparency", "F", "how far a volume profile's outline and background fade, 0-1"),
                     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels; --width is its outline's"),
+                    Flag::valued("source", "PRICE", "the price an anchored VWAP weights by volume").of(VWAP_SOURCES),
+                    Flag::valued("style", "STYLE", "how an anchored VWAP's line is drawn").of(LINE_STYLES),
+                    Flag::valued("bands", "LIST", "which of an anchored VWAP's bands are drawn: any of 1, 2 and 3, comma-separated, or none"),
+                    Flag::valued("band", "N", "the anchored VWAP band, 1-3, the --band-* flags change (default: every one)"),
+                    Flag::valued("band-deviations", "F", "how far out the --band sits, in standard deviations, 0.1-6"),
+                    Flag::valued("band-shaded", "BOOL", "whether a band shades the area between its edges").of(SWITCHES),
+                    Flag::valued("band-alpha", "F", "how solid a band's shading is, 0-1"),
+                    Flag::valued("band-color", "COLOUR", "a band's colour: a preset name, #rrggbb, or `line` for the line's own"),
+                    Flag::valued("band-width", "F", "the thickness of a band's edges in pixels; 0 draws none"),
+                    Flag::valued("band-style", "STYLE", "how a band's edges are drawn").of(LINE_STYLES),
                 ],
                 example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,
@@ -1324,12 +1410,8 @@ pub const SURFACE: &[Noun] = &[
 /// only ever fail.
 /// Find a verb by the pair of names the parser matched.
 pub fn verb(noun: &str, verb: &str) -> Option<&'static Verb> {
-    SURFACE
-        .iter()
-        .find(|n| n.name == noun)?
-        .verbs
-        .iter()
-        .find(|v| v.name == verb)
+    let listed = SURFACE.iter().chain(HIDDEN).find(|n| n.name == noun).and_then(|n| n.verbs.iter().find(|v| v.name == verb));
+    listed.or_else(|| HIDDEN_VERBS.iter().find(|(n, v)| *n == noun && v.name == verb).map(|(_, v)| v))
 }
 
 /// What a chart and a chartbook are stored with, and what reaches each one.
@@ -1366,6 +1448,24 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("indicators_shown", "chart set", "--indicators"),
     ("drawings_shown", "chart set", "--drawings"),
     ("profile_merges", "chart profile", ""),
+    (
+        "source",
+        "",
+        "exploratory: which data source a chart is pinned to is chosen from its header for now, \
+         and the command comes with the feature shipping",
+    ),
+    (
+        "account",
+        "",
+        "exploratory: which trading account a chart is on is chosen from its header for now, \
+         and the command comes with the feature shipping",
+    ),
+    (
+        "trading_size",
+        "",
+        "exploratory: a chart's quantity is picked from its header or with Ctrl and a digit for now, \
+         and the command comes with trading shipping",
+    ),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),
@@ -1444,6 +1544,14 @@ mod tests {
                 kind.key()
             );
         }
+    }
+
+    /// The price sources an anchored VWAP offers, against the engine's.
+    #[test]
+    fn the_vwap_sources_on_offer_are_the_ones_that_exist() {
+        use omacharts_engine::drawings::VwapSource;
+        let engine: Vec<&str> = VwapSource::ALL.iter().map(|s| s.key()).collect();
+        assert_eq!(VWAP_SOURCES, engine.as_slice());
     }
 
     /// And the places a label can sit, the same way.

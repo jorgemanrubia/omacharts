@@ -359,6 +359,66 @@ pub fn grouped_decimals(value: f64, decimals: usize) -> String {
     out
 }
 
+/// How many of the newest bars [`tick_of`] reads.
+const TICK_BARS: usize = 400;
+/// How many different prices it wants before it believes a step: a handful
+/// of bars at 7,600 and 7,625 would otherwise call ES a market in 25s.
+const TICK_PRICES: usize = 12;
+
+/// The step `bars` trade in, if they show one: the coarsest of the steps
+/// markets are quoted in — one, two, two and a half or five of a power of
+/// ten, or a power of two's fraction, ES's 0.25 and ZN's 1/64 — that every
+/// price of the newest bars is a whole number of.
+///
+/// Read off the prices rather than looked up, because nothing here lists a
+/// contract's tick, and the prices are what a chart has to agree with.
+/// `None` where nothing is a step — a split-adjusted share, which is a
+/// quotient — or too few prices to tell.
+///
+/// The crosshair asks on every frame, so this allocates nothing: counting
+/// prices only has to reach [`TICK_PRICES`], and whether a step fits is the
+/// same question asked of a price twice as of it once.
+pub fn tick_of(bars: &[Bar]) -> Option<f64> {
+    let newest = &bars[bars.len().saturating_sub(TICK_BARS)..];
+    let prices = || {
+        newest
+            .iter()
+            .flat_map(|bar| [bar.open, bar.high, bar.low, bar.close])
+            .filter(|price| price.is_finite() && *price > 0.0)
+    };
+    let mut seen = [0.0; TICK_PRICES];
+    let mut distinct = 0;
+    for price in prices() {
+        if !seen[..distinct].contains(&price) {
+            seen[distinct] = price;
+            distinct += 1;
+            if distinct == TICK_PRICES {
+                break;
+            }
+        }
+    }
+    if distinct < TICK_PRICES {
+        return None;
+    }
+    let on = |step: f64| prices().all(|p| ((p / step) - (p / step).round()).abs() < 1e-3);
+    // Coarsest first, so the first step that fits is the answer and the
+    // coarser ones that do not are turned away by their first price or two.
+    let mut decimal = (-8..=4).rev().flat_map(|power| [5.0, 2.5, 2.0, 1.0].map(|m| m * 10f64.powi(power)));
+    let mut binary = (1..=8).map(|n| 0.5f64.powi(n));
+    match (decimal.find(|step| on(*step)), binary.find(|step| on(*step))) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// `price` on the nearest whole number of `tick`, and the decimals that
+/// writes it in full: 0.25 wants two, 1/64 six.
+pub fn on_tick(price: f64, tick: f64) -> (f64, usize) {
+    let snapped = (price / tick).round() * tick;
+    let decimals = (0..=8).find(|d| ((tick * 10f64.powi(*d)) - (tick * 10f64.powi(*d)).round()).abs() < 1e-9);
+    (snapped, decimals.unwrap_or(8) as usize)
+}
+
 /// A bar whose body is this small a fraction of its range is a doji.
 const DOJI: f64 = 0.05;
 /// Above this share of doji-like bars, the opens are not real opens.
@@ -762,6 +822,51 @@ fn week_start(ts: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A series priced `base + i * step` for a few dozen steps.
+    fn stepped(base: f64, step: f64) -> Vec<Bar> {
+        (0..40)
+            .map(|i| {
+                let price = base + (i % 17) as f64 * step;
+                let (high, low) = (price + 3.0 * step, price - 2.0 * step);
+                Bar { ts: i, open: price, high, low, close: price + step, volume: 1.0 }
+            })
+            .collect()
+    }
+
+    /// The step each kind of market trades in comes off its prices: ES's
+    /// quarters, CL's cents, ZN's sixty-fourths, YM's whole points, and a
+    /// share Yahoo served as 32-bit floats in cents.
+    #[test]
+    fn a_series_tick_is_read_off_its_prices() {
+        assert_eq!(tick_of(&stepped(7_620.25, 0.25)), Some(0.25));
+        assert_eq!(tick_of(&stepped(61.37, 0.01)), Some(0.01));
+        assert_eq!(tick_of(&stepped(110.015625, 1.0 / 64.0)), Some(1.0 / 64.0));
+        assert_eq!(tick_of(&stepped(47_113.0, 1.0)), Some(1.0));
+        let floats: Vec<Bar> = stepped(123.45, 0.01)
+            .into_iter()
+            .map(|b| Bar {
+                open: b.open as f32 as f64,
+                high: b.high as f32 as f64,
+                low: b.low as f32 as f64,
+                close: b.close as f32 as f64,
+                ..b
+            })
+            .collect();
+        assert_eq!(tick_of(&floats), Some(0.01));
+        // A split-adjusted price is a quotient, with no step at all.
+        assert_eq!(tick_of(&stepped(123.456_789_123, 0.013_717_421_1)), None);
+        // Too few prices to say.
+        assert_eq!(tick_of(&stepped(7_600.0, 25.0)[..2]), None);
+    }
+
+    #[test]
+    fn a_price_put_on_its_tick_is_written_in_full() {
+        assert_eq!(on_tick(7_627.55, 0.25), (7_627.5, 2));
+        assert_eq!(on_tick(7_627.63, 0.25), (7_627.75, 2));
+        assert_eq!(on_tick(110.02, 1.0 / 64.0), (110.015625, 6));
+        assert_eq!(on_tick(47_113.4, 1.0), (47_113.0, 0));
+    }
 
     #[test]
     fn a_crash_print_and_a_tick_or_two_on_a_penny_are_kept() {

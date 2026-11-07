@@ -261,6 +261,25 @@ omacharts chart profile list --on-screen --json
 omacharts chart profile merge --at 1793836800
 ```
 
+**An anchored VWAP is a drawing too.** `avwap` (or `vwap`) is the
+volume-weighted average price from the bar at `--from` (its price is not
+read) to the last bar, never reset and worked out again as bars arrive:
+anchor it where a move began, an earnings gap or a swing low, to see the
+average cost of everyone who bought since. Its properties are the VWAP
+study's: `--style` is its line's pattern, `--source hlc3|hl2|ohlc4|close`
+the price each bar adds, and `--bands 1,2,3` (or `none`) which of its three
+bands are drawn, at 1, 1.5 and 2 standard deviations. `--band N` with
+`--band-deviations`, `--band-shaded`, `--band-alpha`, `--band-color`,
+`--band-width` or `--band-style` changes one band; without `--band` they
+change all three. All of it is part of a configuration, so
+`configure avwap --config N` with the same flags sets up a look to reuse.
+`set --id N --from` re-anchors it. It takes no `--text`.
+
+```
+omacharts chart drawing add avwap --from 2026-10-20,0 --bands 1,3
+omacharts chart drawing configure avwap --config 5 --bands 1,2,3 --band 3 --band-style dashed
+```
+
 **Words go on the chart two ways.** `text` is a drawing that is nothing but
 what it says, at one anchor — `--from` alone, and `--to` is not read. Any
 other kind takes `--text` as a *label on itself*, placed by `--text-at`,

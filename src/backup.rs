@@ -193,7 +193,7 @@ fn schema_of(path: &Path) -> Option<i32> {
 /// symbol is not a reason for a backup.
 pub fn take(store: &Store) -> Result<(Backup, bool), Error> {
     let settings = store.path().ok_or(Error::NoFile)?.to_path_buf();
-    let taken = write(&settings, |to| store.snapshot_settings(to))?;
+    let taken = write(&settings, Utc::now(), |to| store.snapshot_settings(to))?;
     prune(&settings, Local::now());
     Ok(taken)
 }
@@ -221,7 +221,7 @@ pub fn take_if_changed(settings: &Path) -> Result<Option<Backup>, Error> {
     // another thread, and the market data is not being copied.
     let conn = Connection::open(settings)?;
     let store = Store::adopt(conn);
-    let (backup, fresh) = write(settings, |to| store.snapshot_settings(to))?;
+    let (backup, fresh) = write(settings, Utc::now(), |to| store.snapshot_settings(to))?;
     prune(settings, Local::now());
     Ok(fresh.then_some(backup))
 }
@@ -230,17 +230,28 @@ fn wal_of(settings: &Path) -> PathBuf {
     PathBuf::from(format!("{}-wal", settings.display()))
 }
 
-/// The copy itself: `snapshot` writes a database to the path it is given,
-/// which is a temporary one until it is complete.
+/// The copy itself, named for `at`: `snapshot` writes a database to the path
+/// it is given, which is a temporary one until it is complete.
 fn write(
     settings: &Path,
+    at: DateTime<Utc>,
     snapshot: impl FnOnce(&Path) -> rusqlite::Result<()>,
 ) -> Result<(Backup, bool), Error> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+
     let folder = dir(settings);
     std::fs::create_dir_all(&folder)?;
-    let name = format!("{PREFIX}{}{SUFFIX}", Utc::now().format(STAMP));
-    // A leading dot and no `.db`, so that [`list`] never sees it.
-    let partial = folder.join(format!(".{name}.partial-{}", std::process::id()));
+    let named = |at: DateTime<Utc>| format!("{PREFIX}{}{SUFFIX}", at.format(STAMP));
+    // A leading dot and no `.db`, so that [`list`] never sees it. The process
+    // and a count within it, because the window's cadence thread and a
+    // command run in the window can both be writing one in the same second.
+    let partial = folder.join(format!(
+        ".{}.partial-{}-{}",
+        named(at),
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_file(&partial);
     if let Err(error) = snapshot(&partial) {
         let _ = std::fs::remove_file(&partial);
@@ -256,13 +267,26 @@ fn write(
     // Two in one second — commands chained by an agent — must not overwrite
     // each other: the earlier one is a state that existed. The later is
     // named a second on, and on until a name is free.
-    let mut at = Utc::now();
-    let mut path = folder.join(&name);
-    while path.exists() {
-        at += chrono::Duration::seconds(1);
-        path = folder.join(format!("{PREFIX}{}{SUFFIX}", at.format(STAMP)));
-    }
-    std::fs::rename(&partial, &path)?;
+    //
+    // A hard link rather than a rename, because a rename replaces whatever
+    // has the name: between seeing a name free and taking it, another writer
+    // can take it too, and one of the two states is gone. A link refuses a
+    // name that exists, so the name is claimed and checked in one step.
+    let mut at = at;
+    let path = loop {
+        let path = folder.join(named(at));
+        match std::fs::hard_link(&partial, &path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                at += chrono::Duration::seconds(1);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&partial);
+                return Err(error.into());
+            }
+        }
+    };
+    std::fs::remove_file(&partial)?;
     let backup = describe(&path).ok_or_else(|| std::io::Error::other("the backup vanished"))?;
     Ok((backup, true))
 }
@@ -490,7 +514,7 @@ fn restore_backup(store: &Store, from: Backup) -> Result<Restored, Error> {
         }
         // Not `take`, which prunes: a prune here could remove the very backup
         // being restored, before it is restored. The next backup prunes.
-        let (kept, _) = write(&settings, |to| store.snapshot_settings(to))?;
+        let (kept, _) = write(&settings, Utc::now(), |to| store.snapshot_settings(to))?;
         store.replace_settings(&copy)?;
         Ok(Restored { from: from.clone(), kept })
     })();
@@ -531,6 +555,7 @@ pub fn keep_taking(settings: PathBuf) {
         std::thread::spawn(move || {
             if let Err(error) = take_if_changed(&settings) {
                 eprintln!("omacharts: settings not backed up: {error}");
+                crate::log_words::say(crate::log_words::trouble("Backups", "Settings not backed up", &error));
             }
         });
     };
@@ -867,18 +892,63 @@ mod tests {
         cleanup(&settings);
     }
 
-    /// Two backups in one second are two states, and both are kept.
+    /// Two backups in one second are two states, and both are written.
+    ///
+    /// The moment is pinned rather than read off the clock, so the two really
+    /// are in one second; and `write` rather than `take`, because whether the
+    /// earlier then survives is the pruning's question, not the naming's. It
+    /// does not: the newest in a two-hour slot is the one kept.
     #[test]
     fn two_backups_in_one_second_do_not_overwrite_each_other() {
         let settings = scratch("same-second");
         let store = Store::open_at(&settings).unwrap();
+        let at = Utc.with_ymd_and_hms(2026, 10, 21, 14, 3, 7).unwrap();
         store.set_setting("theme", "paper");
-        let (first, _) = take(&store).unwrap();
+        let (first, _) = write(&settings, at, |to| store.snapshot_settings(to)).unwrap();
         store.set_setting("theme", "midnight");
-        let (second, fresh) = take(&store).unwrap();
+        let (second, fresh) = write(&settings, at, |to| store.snapshot_settings(to)).unwrap();
         assert!(fresh);
-        assert_ne!(first.name, second.name);
+        assert_eq!(first.name, "settings-20261021-140307.db");
+        assert_eq!(second.name, "settings-20261021-140308.db");
         assert!(first.path.exists() && second.path.exists());
+        cleanup(&settings);
+    }
+
+    /// Writers at once in one second — the window's cadence and a command —
+    /// each get a file of their own, and nothing is left half-written.
+    #[test]
+    fn backups_written_at_once_each_keep_their_own_name() {
+        const WRITERS: usize = 8;
+        let settings = scratch("at-once");
+        let at = Utc.with_ymd_and_hms(2026, 10, 21, 14, 3, 7).unwrap();
+        // Every writer's copy finished before any takes a name, so they all
+        // reach for the same one together.
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|n| {
+                let (settings, ready) = (settings.clone(), ready.clone());
+                std::thread::spawn(move || {
+                    // A state of its own each, so none is "the same as the newest".
+                    write(&settings, at, |to| {
+                        Connection::open(to)?.execute_batch(&format!("CREATE TABLE t{n} (x)"))?;
+                        ready.wait();
+                        Ok(())
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        let mut names = Vec::new();
+        for writer in writers {
+            let (backup, fresh) = writer.join().unwrap();
+            assert!(fresh);
+            names.push(backup.name);
+        }
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), WRITERS, "two writers took one name");
+        let entries = std::fs::read_dir(dir(&settings)).unwrap().count();
+        assert_eq!(entries, WRITERS, "a partial copy was left behind");
         cleanup(&settings);
     }
 

@@ -845,7 +845,8 @@ on](#which-chart-a-command-acts-on)). `KIND` is `line`, `hline`, `arrow`,
 `zigzag`, `rect`, `ellipse` (or `circle`), `text`, or `profile` (or `vp`: a
 volume profile of the span between `--from` and `--to`, whose prices are
 ignored; `--color` is its outline and `--fill` its background, and it takes no
-`--text`). The tools and their
+`--text`), or `avwap` (or `vwap`: an anchored VWAP from the bar at `--from` to
+the last bar, whose price is ignored; it takes no `--text`). The tools and their
 configurations are in [Drawings](/manual/drawings/). Whether a chart shows
 other charts' drawings and sends its own is `chart set --show-drawings` and
 `--send-drawings`, each `on` or `off`:
@@ -875,11 +876,11 @@ read in the chart's time zone, the one its time axis is labelled in
 | Flag | Takes | Does |
 |---|---|---|
 | `--id N` | An id from `list` | Which drawing, for `set` and `remove` |
-| `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing takes `--from` only |
+| `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing and an anchored VWAP take `--from` only |
 | `--point ANCHOR` | An anchor, repeated | A zig-zag's corners in order, two at least. `--from` and `--to` alone give it one leg |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
 | `--color C` | A colour | A line's colour; a box's or circle's edge |
-| `--width F` | 0.5 to 12 | A line's thickness; an edge's |
+| `--width F` | 0.5 to 12; 0 on an anchored VWAP | A line's thickness; an edge's. 0 leaves an anchored VWAP only its bands |
 | `--arrow WHERE` | `none`, `end`, `start`, `both` | Which ends have an arrowhead |
 | `--head SHAPE` | `filled`, `open`, `barb` | The arrowhead |
 | `--border B` | `on`, `off` | Whether a box or circle has an edge |
@@ -896,6 +897,16 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
 | `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
 | `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
+| `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
+| `--style S` | `solid`, `dashed`, `dotted` | How an anchored VWAP's line is drawn |
+| `--bands LIST` | `1,2,3` or any of them; `none` | Which of an anchored VWAP's three bands are drawn, by place from the line out; none by default |
+| `--band N` | 1 to 3 | The band the `--band-*` flags change. Without it they change all three |
+| `--band-deviations F` | 0.1 to 6 | How far out the band sits, in standard deviations. Needs `--band` |
+| `--band-shaded B` | `on`, `off` | Whether the band shades the area between its edges |
+| `--band-alpha F` | 0 to 1 | How solid that shading is |
+| `--band-color C` | A colour; `line` | The band's colour; `line` follows the line's |
+| `--band-width F` | 0 to 12 | The thickness of the band's edges; 0 draws none |
+| `--band-style S` | `solid`, `dashed`, `dotted` | How the band's edges are drawn |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
 | `--order WHERE` | `front`, `back` | Brings it to the front or sends it to the back |
 
@@ -903,7 +914,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency` and `--poc-width` gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--poc-width`, `--source`, `--style`, `--bands` and the `--band-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 
@@ -1483,8 +1494,8 @@ $ omacharts config get show_grid
 omacharts: "show_grid" has never been set
   [exit 3]
 
-$ omacharts config set show_grid off
-set show_grid to off
+$ omacharts config set show_grid on
+set show_grid to on
   [exit 0]
 
 $ omacharts config get cache_limit --json
@@ -1507,12 +1518,13 @@ same.
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-red-up`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
-| `show_grid` | on, off | on | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
+| `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`; or `none` | `symbol,resolution` | Charts › Header | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `feed`, `stripe`; or `none` | `feed,symbol,resolution` | Charts › Header › Left | [Charts](/manual/charts/) |
+| `chart_header_center` | the same | `stripe` | Charts › Header › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |

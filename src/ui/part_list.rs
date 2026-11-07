@@ -29,7 +29,7 @@ pub trait Part: Copy + PartialEq + 'static {
 
 impl Part for crate::header::Part {
     fn every() -> Vec<Self> {
-        Self::ALL.to_vec()
+        Self::every_shown(crate::features::trading())
     }
     fn key(self) -> &'static str {
         crate::header::Part::key(self)
@@ -47,6 +47,9 @@ pub struct PartList<P: Part> {
     pub group: adw::PreferencesGroup,
     add: gtk::MenuButton,
     parts: RefCell<Vec<P>>,
+    /// Parts the + does not offer, because they are somewhere else: in the
+    /// header's other section, for one.
+    elsewhere: RefCell<Vec<P>>,
     rows: RefCell<Vec<gtk::Widget>>,
     changed: Box<dyn Fn(Vec<P>)>,
 }
@@ -70,6 +73,7 @@ impl<P: Part> PartList<P> {
             group,
             add,
             parts: RefCell::new(current),
+            elsewhere: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             changed: Box::new(changed),
         });
@@ -77,7 +81,33 @@ impl<P: Part> PartList<P> {
         list
     }
 
-    fn set(self: &Rc<Self>, parts: Vec<P>) {
+    /// Stop offering `parts`, which are somewhere else now, and offer again
+    /// what no longer is.
+    pub fn set_elsewhere(self: &Rc<Self>, parts: Vec<P>) {
+        *self.elsewhere.borrow_mut() = parts;
+        self.rebuild();
+    }
+
+    /// What it holds, in order.
+    pub fn parts(&self) -> Vec<P> {
+        self.parts.borrow().clone()
+    }
+
+    /// What the + offers, in its order.
+    pub fn offered(&self) -> Vec<P> {
+        let parts = self.parts.borrow();
+        let elsewhere = self.elsewhere.borrow();
+        P::every().into_iter().filter(|p| !parts.contains(p) && !elsewhere.contains(p)).collect()
+    }
+
+    /// Show `parts` without handing them on: for a change made elsewhere,
+    /// which has already been applied.
+    pub(crate) fn replace(self: &Rc<Self>, parts: Vec<P>) {
+        *self.parts.borrow_mut() = parts;
+        self.rebuild();
+    }
+
+    pub(crate) fn set(self: &Rc<Self>, parts: Vec<P>) {
         *self.parts.borrow_mut() = parts.clone();
         (self.changed)(parts);
         self.rebuild();
@@ -93,6 +123,8 @@ impl<P: Part> PartList<P> {
         let parts = self.parts.borrow().clone();
         for part in &parts {
             let row = adw::ActionRow::new();
+            // A name, not markup: "P&L" would be a broken entity.
+            row.set_use_markup(false);
             row.set_title(part.label());
             if part.fixed() {
                 // Where the handle would be, so its name lines up with the
@@ -169,27 +201,25 @@ impl<P: Part> PartList<P> {
         }
 
         // The + offers what is not there yet, and goes when nothing is left.
-        let missing: Vec<P> = P::every().into_iter().filter(|p| !parts.contains(p)).collect();
+        let missing = self.offered();
         self.add.set_visible(!missing.is_empty());
-        let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let popover = gtk::Popover::new();
-        for part in missing {
-            let button = gtk::Button::with_label(part.label());
-            button.add_css_class("flat");
-            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
-                label.set_xalign(0.0);
-            }
-            let this = self.clone();
-            let shut = popover.clone();
-            button.connect_clicked(move |_| {
-                shut.popdown();
-                let mut parts = this.parts.borrow().clone();
-                parts.push(part);
-                this.set(parts);
-            });
-            choices.append(&button);
-        }
-        popover.set_child(Some(&choices));
-        self.add.set_popover(Some(&popover));
+        let items = missing
+            .into_iter()
+            .map(|part| {
+                let this = Rc::downgrade(self);
+                crate::ui::menus::Item::new(part.label(), move || {
+                    // From an idle: the list this rebuilds holds the menu
+                    // whose row was just picked.
+                    let this = this.clone();
+                    glib::idle_add_local_once(move || {
+                        let Some(this) = this.upgrade() else { return };
+                        let mut parts = this.parts.borrow().clone();
+                        parts.push(part);
+                        this.set(parts);
+                    });
+                })
+            })
+            .collect();
+        crate::ui::menus::actions(&self.add, "part", items);
     }
 }

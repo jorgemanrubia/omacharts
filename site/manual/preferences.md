@@ -56,7 +56,7 @@ crop: 301,122,1958,1356
 | Tab › group › row | Does | Chapter |
 |---|---|---|
 | Templates › **Chart templates** | The list. + makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
-| Header › **In the header** | The parts every chart's header shows, in order. | [The header](/manual/charts/#the-header) |
+| Header › **Left**, **Center** | The parts every chart's header shows in each section, in order. | [The header](/manual/charts/#the-header) |
 | Other › Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
 | Other › Chart › **Sync crosshair across charts** | The pointer on one chart draws the same moment on every other chart of the same symbol. On by default. | [Sharing the crosshair](/manual/charts/#sharing-the-crosshair) |
 | Other › Chart › **Zoom sensitivity** | How far the wheel and a two-finger swipe zoom every chart, from 10% to 200%. 100% by default, where a wheel notch zooms as it always has. | [Moving around](/manual/charts/#moving-around) |

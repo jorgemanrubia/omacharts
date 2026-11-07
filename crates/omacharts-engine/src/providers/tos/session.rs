@@ -12,26 +12,42 @@
 //! which is what lets a settings panel show it without charging somebody a
 //! network round trip for opening Preferences.
 
-use crate::providers::{Access, Setup};
+use crate::providers::{Access, How, SignIn};
 
-/// What signing in to this feed involves, in the words the panel shows.
-///
-/// Written here, beside the code that does it, rather than in the UI: the
-/// panel renders whatever the feed says, and a feed added later cannot end
-/// up with its instructions in somebody else's file.
-pub const SETUP: Setup = Setup {
-    explain: "Charts come from your own thinkorswim account. Signing in opens a real \
-              Chrome window at thinkorswim, where you type your password and your one-time \
-              code yourself — Omacharts never sees either, and types nothing into the page. \
-              What it keeps is the session the browser ends up with.",
-    requires: &[
-        "A Schwab account with thinkorswim",
-        "Chromium, Chrome, Brave or Edge installed on this machine",
-    ],
-    scope: "Charts only: the client sends chart requests and nothing else, and cannot \
-            place an order. Schwab expires a session after a while: when yours goes, charts \
-            stop updating and say so, and signing in again here is the fix.",
-};
+/// Signing in to thinkorswim, as the boundary asks it of every feed: in a
+/// browser the person drives.
+#[derive(Debug)]
+pub struct Signing;
+
+impl SignIn for Signing {
+    fn how(&self) -> How {
+        How::Browser
+    }
+
+    fn access(&self) -> Access {
+        access()
+    }
+
+    fn can_sign_in(&self) -> Result<String, String> {
+        can_sign_in()
+    }
+
+    fn sign_in(&self, log: Box<dyn Fn(&str) + Send + Sync>) -> Result<(), String> {
+        sign_in(log)
+    }
+
+    fn sign_out(&self) -> Result<(), String> {
+        sign_out()
+    }
+
+    fn connected(&self) -> bool {
+        connected()
+    }
+
+    fn places(&self) -> Vec<(&'static str, String)> {
+        places()
+    }
+}
 
 /// What is saved, without connecting to anything.
 pub fn access() -> Access {
@@ -123,25 +139,6 @@ fn when(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The panel shows these three sentences and nothing else, so they have
-    /// to carry the facts somebody needs *before* pressing the button: that
-    /// a browser opens and they sign in themselves, that a Schwab account
-    /// and a browser are prerequisites, and what expires.
-    #[test]
-    fn the_instructions_say_what_a_person_has_to_know() {
-        assert!(SETUP.explain.contains("you type your password"));
-        assert!(SETUP.explain.contains("Omacharts never sees"));
-        assert!(SETUP.requires.iter().any(|line| line.contains("Schwab")));
-        assert!(SETUP.requires.iter().any(|line| line.contains("Chromium")));
-        assert!(SETUP.scope.contains("cannot place an order"));
-        assert!(SETUP.scope.contains("expires"));
-        // Which kind of account is the account's business: nothing a person
-        // reads here says what sort of session it is.
-        for text in [SETUP.explain, SETUP.scope].into_iter().chain(SETUP.requires.iter().copied()) {
-            assert!(!text.to_lowercase().contains("paper"), "{text}");
-        }
-    }
 
     /// Four states, four different things to do about them. Two that read
     /// the same would be a panel that cannot tell somebody why their charts

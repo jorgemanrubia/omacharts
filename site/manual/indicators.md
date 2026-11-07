@@ -20,7 +20,7 @@ The indicators come in families, each with a page that has every indicator in it
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit (bin/headless-window, sandboxed HOME)
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -43,7 +43,7 @@ theme: tokyo-night
 window: 1600x1900 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in; tall enough for the whole list)
 state:
   omacharts config set theme omarchy:tokyo-night
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -71,7 +71,7 @@ window: 1600x2200 @2, bin/headless-window (HOME sandboxed with ~/.local/share/om
 state:
   omacharts config set theme omarchy:tokyo-night
   move 795 1095
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -97,14 +97,14 @@ A strip takes a share of the chart's height, set with **Pane height %** in its s
 |---|---|
 | Drag the line between two rows | Resizes the strip the line belongs to. The new height is saved |
 | Pointer in a strip | Shows its corner controls, top right |
-| The up or down chevron in the corner | Moves the strip one row up or down, past the price plot when that is next. A chevron with nowhere to go is not shown |
+| The up or down chevron in the corner | Moves the strip one row up or down among the strips. Strips always sit under the price. A chevron with nowhere to go is not shown |
 | The × in the corner | Removes the indicator |
 
 <!-- regenerate:
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -130,7 +130,7 @@ The Indicators page lists the focused chart's indicators under **On the chart**.
 | Bin | Removes it |
 | Click the row | Opens its settings over the list. Changes apply as they are made. The back arrow returns to the list |
 
-The list is in the order of the chart, top to bottom. Overlays are listed in the order they are drawn, strips in the order they stack. When the chart has a strip, **Price** (**Candles, and everything drawn over them**) is a row too, in the price plot's place. Dragging a strip onto **Price** moves it to the other side of the price.
+The list is in the order of the chart, top to bottom. Overlays are listed in the order they are drawn, strips in the order they stack.
 
 Above the list, **Chart template** names the template the chart is on, or **None**. On a chart on a template, the list is the template's own: it is titled after it, such as **On the Momentum template**, with **A change here reaches every chart that uses it.** under the title. Its rows open, reorder, show, hide and remove the template's indicators, and **+** adds to the template. Every chart on the template changes with it ([Chart templates](/manual/chart-templates/)).
 
@@ -141,7 +141,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
 state:
   omacharts config set theme omarchy:tokyo-night
-  key ctrl+b
+  key ctrl+shift+b
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd
@@ -182,6 +182,8 @@ Click an indicator on the chart to select it: a line, a bar of the volume strip 
 
 A selected indicator glows in its own colour, under the lines and bars it draws, and each of its lines wears a dot at its latest value. A volume profile is outlined instead. Its name in the legend is at full strength with a ring round its dot, and a strip's name takes its colour.
 
+<kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>+</kbd> and <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>−</kbd> thicken and thin the selected indicator's line, the **Thickness** of its settings, a step at a time through 1, 1.5, 2.5 and 4 px. On a volume profile they change the **Outline thickness**, by half a pixel from 0.5 to 6 px. The volume bars and Session Times have no line to change.
+
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
@@ -191,7 +193,7 @@ state:
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add bollinger
   omacharts chart indicator add volume
-  key ctrl+b               # the rail away
+  key ctrl+shift+b               # the rail away
   click 300 262            # on the band's middle line
   move 1270 300            # off the plot, so no crosshair
 capture: bin/headless-window shot /tmp/selected.png

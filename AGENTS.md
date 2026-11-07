@@ -253,6 +253,25 @@ window is sent is swallowed and has to be sent twice, and `swaymsg`'s own
 cursor command cannot drag — are in the review skill's section on driving
 the window, which is where an agent is when it needs them.
 
+### And the suite runs inside it, or its window tests do not run
+
+Every test that builds a widget goes through `crate::ui::on_gtk`, which
+hands it to the one thread GTK is initialised on, because libtest gives
+each test a thread of its own and GTK refuses every thread but its first.
+With no display, `on_gtk` runs nothing and the test passes having checked
+nothing — which is CI, and also any run that cannot reach a compositor. So
+the run that counts is the whole suite inside a headless window:
+
+```sh
+eval "$(bin/headless-window start)"
+bin/headless-window run cargo test --workspace
+bin/headless-window stop
+```
+
+A new widget test wraps its body in `crate::ui::on_gtk(|| { ... })`. One
+that asks GTK on its own thread instead passes by never running, which is
+how a broken one went unnoticed when only the first of them really ran.
+
 ## A fresh target directory is a cold build, and cold here means minutes
 
 The dependency graph includes the GTK bindings, so building this workspace

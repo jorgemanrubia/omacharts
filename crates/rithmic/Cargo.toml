@@ -1,0 +1,19 @@
+[package]
+name = "rithmic"
+version = "0.1.0"
+edition = "2024"
+description = "Rithmic logins for charts and trading: one connection per login, bars, front months, live trades and orders."
+license = "MIT"
+
+[dependencies]
+rithmic-rs = "3.3.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# The password is kept in the desktop keyring through the Secret Service.
+# oo7 rather than `keyring`: it is the linux-credentials project's own
+# pure-Rust client (zbus underneath, so no libdbus or libsecret to link), it
+# is async on tokio, which this crate already runs, and with `native_crypto`
+# it brings no second openssl beside the one rithmic-rs already links.
+oo7 = { version = "0.6", default-features = false, features = ["tokio", "native_crypto"] }
+
+[dev-dependencies]
+rithmic-rs = "3.3.0"
