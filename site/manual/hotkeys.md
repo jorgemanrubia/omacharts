@@ -29,8 +29,7 @@ crop: 768,68,1024,1304   (the whole dialog, 16px layout margin; the list scrolls
 Some menus and tooltips write the modifiers in another order (Shift+Ctrl+N
 rather than Ctrl+Shift+N).
 
-The sheet leaves out <kbd>Ctrl</kbd> + <kbd>F</kbd> and <kbd>/</kbd>, the
-keys inside dialogs and while typing on the chart, and the mouse. The
+The sheet leaves out <kbd>/</kbd>, the keys inside dialogs and while typing on the chart, and the mouse. The
 Omarchy plugin's panel has keys of its own, in
 [Omarchy plugin](/manual/bar-widget/#using-it).
 
@@ -39,12 +38,13 @@ Omarchy plugin's panel has keys of its own, in
 | Key | Does | See |
 |---|---|---|
 | Type a letter | Opens the symbol search with that letter in it | [Symbols](/manual/symbols/) |
-| <kbd>Ctrl</kbd> + <kbd>K</kbd> / <kbd>Ctrl</kbd> + <kbd>F</kbd> / <kbd>/</kbd> | Opens the symbol search empty | [Symbols](/manual/symbols/) |
+| <kbd>Ctrl</kbd> + <kbd>K</kbd> / <kbd>/</kbd> | Opens the symbol search empty | [Symbols](/manual/symbols/) |
 | Type a number | Opens **Change resolution** with that digit in it. A bare number is minutes | [Charts](/manual/charts/#choosing-a-resolution) |
 | <kbd>Ctrl</kbd> + <kbd>I</kbd> | The focused chart's indicators | [Indicators](/manual/indicators/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> | The list of indicators to add | [Indicators](/manual/indicators/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd> | The focused chart's settings | [Chart settings](/manual/chart-settings/) |
 | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Preferences | [Preferences](/manual/preferences/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> | The Log | [The window](/manual/window/#the-log) |
 | <kbd>F10</kbd> | The main menu | [The window](/manual/window/) |
 | <kbd>?</kbd> / <kbd>Ctrl</kbd> + <kbd>?</kbd> | The Keyboard shortcuts sheet | [The window](/manual/window/) |
 
@@ -56,7 +56,7 @@ Omarchy plugin's panel has keys of its own, in
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>R</kbd> | Renames the open chartbook, in its tab | [Chartbooks](/manual/chartbooks/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Alt</kbd> + <kbd>X</kbd> | Removes the open chartbook, after asking. The last one cannot be removed | [Chartbooks](/manual/chartbooks/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | The previous or next chartbook | [Chartbooks](/manual/chartbooks/) |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | A screenshot of the open chartbook, to the clipboard | [Screenshots](/manual/screenshots/) |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>O</kbd> | A screenshot of the open chartbook, to the clipboard | [Screenshots](/manual/screenshots/) |
 
 ## Watchlist
 
@@ -77,9 +77,9 @@ From anywhere:
 
 | Key | Does | See |
 |---|---|---|
-| <kbd>Ctrl</kbd> + <kbd>B</kbd> | Shows the sidebar with the keyboard in it, or hides it and gives the keyboard back to the chart | [The window](/manual/window/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> | Shows the sidebar with the keyboard in it, or hides it and gives the keyboard back to the chart | [The window](/manual/window/) |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Over a chart, the previous or next symbol in the watchlist, without going to it | [Watchlists](/manual/watchlists/) |
-| <kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists | [Watchlists](/manual/watchlists/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists. The number row, whatever your layout prints on it with Shift held | [Watchlists](/manual/watchlists/) |
 
 ## Arranging charts
 
@@ -122,7 +122,7 @@ Tools and configurations:
 
 | Key | Does | See |
 |---|---|---|
-| <kbd>Ctrl</kbd> + <kbd>D</kbd> | Shows or hides the drawing tools | [Drawings](/manual/drawings/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Shows or hides the drawing tools | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>L</kbd> | A line: click where it starts, then where it ends | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>H</kbd> | A horizontal line | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>A</kbd> | An arrow | [Drawings](/manual/drawings/) |

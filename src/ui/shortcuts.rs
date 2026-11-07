@@ -45,9 +45,16 @@ const fn careful(action: &'static str, accels: &'static [&'static str]) -> Bindi
 pub const BINDINGS: &[Binding] = &[
     // Nothing here can be typed into a box, so the application can own
     // them outright.
-    global("win.find", &["<Ctrl>k", "<Ctrl>f"]),
-    global("win.watchlist", &["<Ctrl>b"]),
+    // Ctrl+F was a second key for this until trading took it for going
+    // flat: Ctrl+K and / are the ways to a symbol.
+    global("win.find", &["<Ctrl>k"]),
+    // With Shift since trading took Ctrl+B to buy, the way the drawing
+    // tools beside it took Ctrl+Shift+D.
+    global("win.watchlist", &["<Ctrl><Shift>b"]),
     global("win.preferences", &["<Ctrl>comma"]),
+    // M for messages, shown and hidden: Ctrl+M on its own maximizes a
+    // chart, and Ctrl+Shift+L was the previous link mode's already.
+    global("win.log", &["<Ctrl><Shift>m"]),
     global("chart.indicators", &["<Ctrl>i"]),
     // A letter, because Shift and punctuation together is a trap. GTK
     // matches the keyval the key produces *after* modifiers, and shifting
@@ -70,9 +77,15 @@ pub const BINDINGS: &[Binding] = &[
     // them should not be a key anybody presses by accident.
     global("chart.bars", &["<Ctrl><Alt><Shift>h"]),
     // O, not P: Ctrl+P is kept for a command palette. A screenshot of the
-    // chartbook is the same key with Shift, the way closing one already is.
+    // chartbook is the same key with Alt, since trading took Ctrl+Shift+O
+    // for its orders.
     global("chart.screenshot", &["<Ctrl>o"]),
-    global("win.screenshot", &["<Ctrl><Shift>o"]),
+    global("win.screenshot", &["<Ctrl><Alt>o"]),
+    // The trading panel, each key on its own tab: Accounts, Positions and
+    // Orders. With no login there is no action, and the key does nothing.
+    global("win.trading-accounts", &["<Ctrl><Shift>a"]),
+    global("win.trading-positions", &["<Ctrl><Shift>p"]),
+    global("win.trading-orders", &["<Ctrl><Shift>o"]),
     // Alt with a letter is the drawing tools' register: a line and a
     // rectangle. Resetting the view used to be Alt+R and gave the key up:
     // a tool is reached for many times an hour and a reset once. Escape
@@ -93,8 +106,9 @@ pub const BINDINGS: &[Binding] = &[
     global("chart.draw-avwap", &["<Alt>w"]),
     global("chart.measure", &["<Alt>m"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
-    // Ctrl+B for the rail on the right, Ctrl+D for the tools on the left.
-    global("win.drawing-tools", &["<Ctrl>d"]),
+    // Ctrl+Shift+B for the rail on the right, Ctrl+Shift+D for the tools on
+    // the left.
+    global("win.drawing-tools", &["<Ctrl><Shift>d"]),
     global("chart.reset-view", &["<Ctrl>Escape"]),
     global("chart.split-h", &["<Ctrl><Alt>h"]),
     global("chart.maximize", &["<Ctrl>m"]),
@@ -115,6 +129,13 @@ pub const BINDINGS: &[Binding] = &[
     global("win.close-chartbook", &["<Ctrl><Shift><Alt>x"]),
     // A bare key, which an entry has to see first.
     careful("win.shortcuts", &["question"]),
+    // The trading keys, there only with a trading account. Never while
+    // something is typed, and never taken from a label being written, so
+    // the window's key controller handles them, not an accelerator: an
+    // order is not something a key in a box should ever place.
+    careful("chart.buy-market", &["<Ctrl>b"]),
+    careful("chart.sell-market", &["<Ctrl>s"]),
+    careful("chart.go-flat", &["<Ctrl>f"]),
 ];
 
 /// The keys no action owns, for saying so where somebody is looking.
@@ -171,7 +192,7 @@ pub fn lend_to_text_editor(app: &adw::Application, lend: bool) {
         }
         match lend {
             // Only the lent chord goes; an action with another accelerator
-            // keeps it, so Ctrl+K still finds a symbol while Ctrl+F is away.
+            // keeps the rest of its keys.
             true => {
                 let left: Vec<&str> = binding
                     .accels
@@ -268,19 +289,16 @@ mod tests {
         // Parsing one is GTK's job and GTK needs a display to say so.
         // Where there is none this checks the rest, which is still the
         // part that goes wrong.
-        let parses = crate::ui::gtk_ready();
-
         // A typo here is a shortcut that silently does nothing, and a
         // menu row that confidently advertises it.
-        for binding in BINDINGS {
-            for accel in binding.accels {
-                assert!(
-                    !parses || gtk::accelerator_parse(*accel).is_some(),
-                    "{} cannot be parsed, for {}",
-                    accel,
-                    binding.action
-                );
+        crate::ui::on_gtk(|| {
+            for binding in BINDINGS {
+                for accel in binding.accels {
+                    assert!(gtk::accelerator_parse(*accel).is_some(), "{} cannot be parsed, for {}", accel, binding.action);
+                }
             }
+        });
+        for binding in BINDINGS {
             assert!(!binding.accels.is_empty(), "{} has no key", binding.action);
             assert!(binding.action.contains('.'), "{} has no action group", binding.action);
         }
@@ -291,12 +309,11 @@ mod tests {
     /// half somebody hovered for.
     #[test]
     fn the_keys_no_action_owns_are_accelerators_too() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        for accel in [ADD_SYMBOL, ADD_SECTION, REMOVE_SYMBOL, ADD_INDICATOR, MAIN_MENU] {
-            assert!(accel_label(accel).is_some(), "{accel} spells nothing");
-        }
+        crate::ui::on_gtk(|| {
+            for accel in [ADD_SYMBOL, ADD_SECTION, REMOVE_SYMBOL, ADD_INDICATOR, MAIN_MENU] {
+                assert!(accel_label(accel).is_some(), "{accel} spells nothing");
+            }
+        });
     }
 
     /// A tooltip says the key after what the button does, whether the key came
@@ -304,12 +321,11 @@ mod tests {
     /// extra when there is no key, rather than inventing one.
     #[test]
     fn a_tooltip_carries_the_key_it_was_given() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Ctrl+B)");
-        assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
-        assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
+        crate::ui::on_gtk(|| {
+            assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Shift+Ctrl+B)");
+            assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
+            assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
+        });
     }
 
     #[test]
@@ -321,6 +337,70 @@ mod tests {
                 seen.push(accel);
             }
         }
+    }
+
+    /// Trading took Ctrl+B, Ctrl+S and Ctrl+F; the sidebars moved to Shift
+    /// and finding a symbol kept Ctrl+K.
+    #[test]
+    fn the_sidebars_moved_to_shift_for_trading() {
+        assert_eq!(binding("win.watchlist").unwrap().accels, ["<Ctrl><Shift>b"]);
+        assert_eq!(binding("win.drawing-tools").unwrap().accels, ["<Ctrl><Shift>d"]);
+        assert_eq!(binding("win.find").unwrap().accels, ["<Ctrl>k"]);
+        for (action, key) in
+            [("chart.buy-market", "<Ctrl>b"), ("chart.sell-market", "<Ctrl>s"), ("chart.go-flat", "<Ctrl>f")]
+        {
+            assert_eq!(accel(action), Some(key));
+        }
+        // None of the three is an accelerator the application installs.
+        assert!(!BINDINGS
+            .iter()
+            .filter(|binding| binding.global)
+            .any(|binding| binding.accels.iter().any(|a| ["<Ctrl>b", "<Ctrl>s", "<Ctrl>f", "<Ctrl>d"].contains(a))));
+    }
+
+    /// The keys that moved to Ctrl+Shift reach their actions once installed,
+    /// and reach them as a keyboard delivers them. With Shift held a key types
+    /// its capital — `B`, Shift consumed — and GTK matches `<Ctrl><Shift>b` by
+    /// uppercasing the letter it was given and comparing. So each accelerator
+    /// has to be the lowercase letter with Shift as a modifier: GDK4 has no
+    /// public way to make a key event to prove the rest with, which is what a
+    /// run in `bin/headless-window` is for.
+    #[test]
+    fn the_keys_moved_to_shift_reach_their_actions() {
+        use gtk::gdk::{Key, ModifierType};
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            install(&app);
+            for (accel, action, delivered) in [
+                ("<Ctrl><Shift>b", "win.watchlist", Key::B),
+                ("<Ctrl><Shift>d", "win.drawing-tools", Key::D),
+                ("<Ctrl><Shift>m", "win.log", Key::M),
+                ("<Ctrl><Shift>a", "win.trading-accounts", Key::A),
+                ("<Ctrl><Shift>p", "win.trading-positions", Key::P),
+                ("<Ctrl><Shift>o", "win.trading-orders", Key::O),
+            ] {
+                let actions = app.actions_for_accel(accel);
+                assert!(actions.iter().any(|a| a == action), "{accel} reaches {actions:?}, not {action}");
+                let (key, mods) = gtk::accelerator_parse(accel).expect(accel);
+                assert_eq!(mods, ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK, "{accel}");
+                assert_eq!(key.to_upper(), delivered, "{accel}");
+            }
+        });
+    }
+
+    /// Trading's orders took Ctrl+Shift+O, and the chartbook's screenshot
+    /// moved beside the chart's, on Alt.
+    #[test]
+    fn the_chartbook_screenshot_moved_to_alt() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            install(&app);
+            assert_eq!(app.actions_for_accel("<Ctrl><Alt>o"), ["win.screenshot"]);
+            assert_eq!(app.actions_for_accel("<Ctrl><Shift>o"), ["win.trading-orders"]);
+            assert!(app.actions_for_accel("<Ctrl><Shift>j").is_empty(), "the Log's old key");
+        });
     }
 
     /// Screenshots went on Ctrl+O, and link modes on Ctrl+L, so that Ctrl+P
@@ -335,8 +415,9 @@ mod tests {
         // The one that would break typing a question mark. If it is ever
         // marked global, the bug it causes is somebody else's afternoon.
         // Splitting and closing are not among them any more: they are on
-        // Ctrl+Alt, which nothing types.
-        for action in ["win.shortcuts"] {
+        // Ctrl+Alt, which nothing types. Nor are the trading keys: a key
+        // pressed in a box must never place an order.
+        for action in ["win.shortcuts", "chart.buy-market", "chart.sell-market", "chart.go-flat"] {
             let binding = binding(action).expect(action);
             assert!(!binding.global, "{action} must stay out of the accelerator table");
         }

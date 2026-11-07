@@ -17,7 +17,7 @@ state:
   omacharts chart set --symbol NVDA --resolution 1D
   omacharts chart indicator add sma --period 50 --color Blue
   omacharts config set chart_header symbol,resolution,change,template
-  key ctrl+d
+  key ctrl+shift+d
   move 1279 400
 capture: bin/headless-window shot /tmp/anatomy.png
 crop: none (resized to 2000 wide)
@@ -31,7 +31,7 @@ crop: none (resized to 2000 wide)
 | The chart | Everything not taken by the sidebar, the tools or the strip | One or more charts, split as you arranged them. See [Charts](/manual/charts/) and [Splitting and arranging charts](/manual/layouts/). |
 | The header | Top-left of each chart | The chart's symbol and resolution, and optionally the day's change and its chart template. Click the symbol to open the [symbol search](/manual/symbols/); click the resolution for the list of [resolutions](/manual/charts/#resolutions). What it shows is [one setting for every chart](/manual/charts/#the-header). |
 | The indicator legend | Under the header, on the focused chart only | One row per indicator. See [Indicators](/manual/indicators/). |
-| The resolution strip | Centred across the top of the focused chart | The preset resolutions as buttons. Hidden when the chart is too narrow for it. The resolution in the header offers the same list. |
+| The resolution strip | Centred across the top of the focused chart, unless the header puts it on the left or leaves it out | The preset resolutions as buttons. Hidden when the chart is too narrow for it. The resolution in the header offers the same list. |
 | The chart's corner | Top-right of each chart, beside the price axis | The gear (**Chart settings**), the **Maximize** button and the link button. See [The corners](#the-corners). |
 | The window's corner | Top-right of the window | The watchlist toggle and the main menu. |
 | The sidebar | Right edge | The open chartbook's watchlist. See [Watchlists](/manual/watchlists/). |
@@ -60,13 +60,13 @@ crop: 1060,0,1500,170
 | Gear | While the pointer is on the chart | Opens **Chart settings** for that chart. See [Chart settings](/manual/chart-settings/). |
 | **Maximize** (two diagonal arrows) | While the pointer is on the chart and the chartbook has two charts or more | Gives the chart the whole window, or puts it back. The arrows point inward while it is maximised. See [Maximising a chart](/manual/layouts/#maximising-a-chart). |
 | Link button | When the chartbook has two charts or more, or always on a Pinned chart | Opens the chart's link modes. One link on a Focus chart, only under the pointer; a chain on a Follow chart and a pin on a Pinned chart, always shown and in the accent colour. See [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist). |
-| Watchlist toggle | Always, in the window's corner | Shows or hides the sidebar, like <kbd>Ctrl</kbd> + <kbd>B</kbd>. The key also puts the keyboard in the sidebar, and gives it back to the chart when hiding it. Lit while the sidebar is out. |
+| Watchlist toggle | Always, in the window's corner | Shows or hides the sidebar, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd>. The key also puts the keyboard in the sidebar, and gives it back to the chart when hiding it. Lit while the sidebar is out. |
 | Main menu | Always, in the window's corner | Opens the [main menu](#the-main-menu). <kbd>F10</kbd> opens it too. |
-| Drawing tools' toggle | Always, in the window's top-left corner | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>D</kbd>. |
+| Drawing tools' toggle | Always, in the window's bottom-left corner, level with the dates, and in the same place whether the tools are out or not: over the bottom-left chart, left of its first date, while they are hidden, and at their foot while they are out | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. Faint while the tools are hidden. |
 
 Clicking another chart's gear or corner focuses that chart first. A chart's buttons hide when the keyboard moves the focus to another chart, and come back when the pointer moves. With the sidebar closed, the window's corner sits over the top-right chart, whose buttons move left.
 
-The blank space in both window corners is the window's handle. Drag it to move the window, double-click it to maximise the window, and right-click it for the desktop's window menu, where the desktop has one.
+The blank space in the window's corner is the window's handle. Drag it to move the window, double-click it to maximise the window, and right-click it for the desktop's window menu, where the desktop has one.
 
 ## The focused chart
 
@@ -91,7 +91,27 @@ crop: 1052,0,1508,290   (from the focused chart's border; the menu sits against 
 |---|---|---|
 | **New chartbook** | <kbd>Ctrl</kbd> + <kbd>N</kbd> | Opens the **New chartbook** dialog. See [Chartbooks](/manual/chartbooks/). |
 | **Preferences** | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Opens Preferences. See [Preferences](/manual/preferences/). |
+| **Log** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> | Opens the [Log](#the-log). |
 | **Keyboard Shortcuts** | <kbd>?</kbd> | Opens the Keyboard shortcuts sheet. |
+
+## The Log
+
+The Log is a window of its own, beside the charts, listing what the data feeds and the app have said since it started: a feed signing in or losing a live chart's stream, a backup that could not be taken. Each line has the time, who said it (a data feed, by its name) and what happened. A line the feed or the system said more about has **Details** under it, with their words as they came.
+
+The same thing said again by the same source is one line, counted, as in **(×3)** after it, at the time of the last. The Log keeps the last thousand lines and nothing after Omacharts quits. User IDs and passwords are never in it.
+
+| Control | Does |
+|---|---|
+| **All**, **Warnings**, **Errors** | Shows everything, or warnings and errors, or errors alone. |
+| **Copy** | Copies the lines shown, with their details, to the clipboard. |
+| **Clear** | Empties the Log. |
+| <kbd>Esc</kbd> | Closes the Log. |
+
+### Errors in the corner
+
+When something goes wrong and the Log is closed, a notice in the window's bottom-left corner says the newest error and how many more there are, as in **· 2 more**. **Show log** opens the Log at the oldest of them. The notice stays until you open the Log or dismiss it with **✕**. It never takes the keyboard from the chart.
+
+After a dismissed notice, a red dot on the main menu's button says there are errors you have not read. Opening the Log clears it.
 
 ## The Keyboard shortcuts sheet
 
@@ -111,7 +131,7 @@ crop: 490,68,1580,1304   (the whole dialog, 16px layout margin above and below, 
 -->
 {% include figure.html src="/assets/manual/window/shortcuts-sheet.png" alt="The Keyboard shortcuts sheet with ctrl alt typed, listing the chartbook, watchlist and split keys that use it" caption="The sheet filtered to the rows that use Ctrl+Alt." %}
 
-[Hotkeys](/manual/hotkeys/) lists the same keys and the mouse gestures. A button's tooltip names its key in brackets, as in **Watchlist (Ctrl+B)**.
+[Hotkeys](/manual/hotkeys/) lists the same keys and the mouse gestures. A button's tooltip names its key in brackets, as in **Watchlist (Shift+Ctrl+B)**.
 
 ## Dialogs
 

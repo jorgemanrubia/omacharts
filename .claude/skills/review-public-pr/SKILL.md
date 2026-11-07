@@ -182,7 +182,7 @@ changes:
 ```
 eval "$(bin/headless-window start)"   # exports OMACHARTS_WINDOW
 bin/headless-window app               # launches the built binary, prints its pid
-bin/headless-window key ctrl+b        # chords and named keys
+bin/headless-window key ctrl+shift+b        # chords and named keys
 bin/headless-window click 753 24      # a real press and release
 bin/headless-window drag 900 400 400 400
 bin/headless-window scroll 640 400 -6
@@ -236,7 +236,7 @@ Things to know before trusting what you see:
   beforehand prevents it — a bound accelerator spent on purpose does not
   take its place — so the first `key ctrl+…` after `app` is sent, checked
   against a screenshot, and sent again. Everything after it lands: ten
-  consecutive `ctrl+b` toggles, ten rails.
+  consecutive `ctrl+shift+b` toggles, ten rails.
 - **A modal dialog eats the chords** it is meant to eat, so a run that
   leaves one open makes everything afterwards look broken. `key Escape`
   first if you are not sure.

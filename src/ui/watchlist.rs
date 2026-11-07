@@ -966,6 +966,22 @@ impl Watchlist {
         self.store.watchlists()
     }
 
+    /// Leave this much of the rail's foot empty, under its rows, for what
+    /// the window stands in its bottom-right corner over it: the trading
+    /// panel's toggle, at the time axis's height. Zero gives it back.
+    pub fn leave_foot(&self, height: i32) {
+        if let Some(pages) = self.widget.last_child()
+            && pages.margin_bottom() != height
+        {
+            pages.set_margin_bottom(height);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn foot(&self) -> i32 {
+        self.widget.last_child().map_or(0, |pages| pages.margin_bottom())
+    }
+
     /// Put the keyboard on the rail, landing on something selected so the
     /// arrows have somewhere to go from.
     pub fn grab_focus(self: &Rc<Self>) {
@@ -3182,43 +3198,32 @@ mod tests {
     /// regression here hangs this test rather than failing it, which is the
     /// one way this can go wrong.
     ///
-    /// Ignored by default, so run it deliberately:
-    ///
-    /// ```sh
-    /// cargo test clearing_the_rail -- --ignored
-    /// ```
-    ///
-    /// It needs a real display and GTK all to itself. A build machine has no
-    /// display, and libtest hands every test its own thread, so whichever GTK
-    /// test gets there first owns GTK and this one dies on the first widget it
-    /// touches — a segfault that says nothing about the rail. The bounded walk
-    /// itself is six lines; what this pins down is that GTK really does refuse
-    /// to take the popover off, which is the part no amount of reasoning can
+    /// It needs a real display, so a build machine skips it, and GTK to
+    /// itself, which [`crate::ui::on_gtk`] gives it. The bounded walk itself
+    /// is six lines; what this pins down is that GTK really does refuse to
+    /// take the popover off, which is the part no amount of reasoning can
     /// settle.
     #[test]
-    #[ignore = "needs a display and GTK to itself; see the note above"]
     fn clearing_the_rail_finishes_with_a_popover_anchored_on_the_list() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
+        crate::ui::on_gtk(|| {
+            let list = gtk::ListBox::new();
+            for symbol in ["ES", "GC", "CL"] {
+                list.append(&gtk::Label::new(Some(symbol)));
+            }
+            list.set_placeholder(Some(&gtk::Label::new(Some("Nothing here yet"))));
+            let popover = gtk::Popover::new();
+            popover.set_parent(&list);
 
-        let list = gtk::ListBox::new();
-        for symbol in ["ES", "GC", "CL"] {
-            list.append(&gtk::Label::new(Some(symbol)));
-        }
-        list.set_placeholder(Some(&gtk::Label::new(Some("Nothing here yet"))));
-        let popover = gtk::Popover::new();
-        popover.set_parent(&list);
+            clear_rows(&list);
 
-        clear_rows(&list);
-
-        assert!(list.row_at_index(0).is_none(), "a row was left on the rail");
-        assert_eq!(
-            popover.parent().as_ref(),
-            Some(list.upcast_ref::<gtk::Widget>()),
-            "the box being typed into is not the rail's to take away"
-        );
-        popover.unparent();
+            assert!(list.row_at_index(0).is_none(), "a row was left on the rail");
+            assert_eq!(
+                popover.parent().as_ref(),
+                Some(list.upcast_ref::<gtk::Widget>()),
+                "the box being typed into is not the rail's to take away"
+            );
+            popover.unparent();
+        });
     }
 
     /// The section each row belongs to, laid out the way `rebuild` lays the

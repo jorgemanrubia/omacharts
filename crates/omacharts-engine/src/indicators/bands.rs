@@ -80,6 +80,11 @@ pub struct Bands {
     /// Innermost first. Disabled bands are still here, so a band's styling
     /// follows its position rather than shifting when a neighbour is hidden.
     pub bands: Vec<BandSeries>,
+    /// Bar `i` begins a period of its own: the line and every band start
+    /// over there, and joining it to the bar before would draw a stroke from
+    /// last year's envelope to this year's first price. Empty until a period
+    /// first starts over, so a set of bands that never resets costs nothing.
+    pub starts: Vec<bool>,
 }
 
 impl Bands {
@@ -88,6 +93,7 @@ impl Bands {
     pub fn blank(n: usize, bands: &[Band]) -> Bands {
         Bands {
             center: vec![None; n],
+            starts: Vec::new(),
             bands: bands
                 .iter()
                 .map(|band| BandSeries {
@@ -117,6 +123,14 @@ impl Bands {
             band.upper[i] = Some(center + spread * band.deviations);
             band.lower[i] = Some(center - spread * band.deviations);
         }
+    }
+
+    /// Mark bar `i` as the first of a new period.
+    pub fn start(&mut self, i: usize) {
+        if self.starts.is_empty() {
+            self.starts = vec![false; self.center.len()];
+        }
+        self.starts[i] = true;
     }
 }
 

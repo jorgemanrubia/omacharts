@@ -171,6 +171,63 @@ impl Instrument {
             .map(|(_, s)| s.as_str())
     }
 
+    /// The size of one tick of its price, which every price it trades at is
+    /// a whole number of: the contract's (see [`crate::specs`]), for a
+    /// futures root. `None` for anything else, and for a root whose tick is
+    /// not known — a stock's tick depends on its price and its venue, and is
+    /// no one number.
+    pub fn tick_size(&self) -> Option<f64> {
+        match self.kind {
+            InstrumentKind::FutureRoot => crate::specs::tick(self.root()),
+            _ => None,
+        }
+    }
+
+    /// Its contract specification, for a futures root whose tick is known.
+    pub fn spec(&self) -> Option<crate::specs::Spec> {
+        match self.kind {
+            InstrumentKind::FutureRoot => crate::specs::spec(self.root()),
+            _ => None,
+        }
+    }
+
+    /// The futures root this is, or is a contract of: `ES` for `ES` and for
+    /// `ESH7`. The symbol itself for anything that is not a future.
+    pub fn root(&self) -> &str {
+        match self.kind {
+            InstrumentKind::FutureRoot => crate::specs::root_of(&self.symbol),
+            _ => &self.symbol,
+        }
+    }
+
+    /// The month this is a contract of, for a dated future: `ESH7` is March
+    /// 2027. `None` for a root, which is the contract trading now, whichever
+    /// that is.
+    pub fn contract(&self) -> Option<crate::contracts::Month> {
+        match self.kind {
+            InstrumentKind::FutureRoot => crate::contracts::parse(&self.symbol, crate::contracts::today()).map(|(_, month)| month),
+            _ => None,
+        }
+    }
+
+    /// Is this a dated contract rather than a continuous root?
+    pub fn is_contract(&self) -> bool {
+        self.kind == InstrumentKind::FutureRoot && crate::specs::root_of(&self.symbol) != self.symbol
+    }
+
+    /// This root's contract of `month`: the same instrument, named `ESH7`
+    /// rather than `ES`. Only a futures root has one.
+    pub fn in_month(&self, month: crate::contracts::Month) -> Option<Instrument> {
+        (self.kind == InstrumentKind::FutureRoot)
+            .then(|| Instrument { symbol: crate::contracts::symbol(self.root(), month), ..self.clone() })
+    }
+
+    /// The continuous root of a dated contract: `ES` for `ESH7`. Itself for
+    /// anything else.
+    pub fn as_root(&self) -> Instrument {
+        Instrument { symbol: self.root().to_string(), ..self.clone() }
+    }
+
     /// What the UI shows as the instrument's ticker.
     /// Where it trades, in the form people say out loud.
     ///
@@ -195,10 +252,13 @@ impl Instrument {
     }
 
     /// The name, and the local one beside it when there is one: `TSMC · 台積電`.
+    /// A dated contract's month goes beside its root's name: `E-mini S&P 500
+    /// · Mar 2027`.
     pub fn full_name(&self) -> String {
-        match self.local_name.as_deref() {
-            Some(local) => format!("{} · {local}", self.name),
-            None => self.name.clone(),
+        match (self.local_name.as_deref(), self.contract()) {
+            (Some(local), _) => format!("{} · {local}", self.name),
+            (None, Some(month)) => format!("{} · {}", self.name, month.label()),
+            (None, None) => self.name.clone(),
         }
     }
 
@@ -289,6 +349,25 @@ impl SearchIndex {
         self.items
             .iter()
             .find(|i| i.symbol == symbol && i.suffix.as_deref() == suffix)
+    }
+
+    /// [`SearchIndex::find`], and failing that a dated contract of a futures
+    /// root it has: `ESH7` is March 2027 of `ES`, whether or not anybody
+    /// wrote it down. Only a contract spelled the exchange's way, which is
+    /// how it was stored; what somebody types goes through [`crate::contracts::parse`]
+    /// first.
+    pub fn resolve(&self, symbol: &str, suffix: Option<&str>) -> Option<Instrument> {
+        if let Some(found) = self.find(symbol, suffix) {
+            return Some(found.clone());
+        }
+        if suffix.is_some() {
+            return None;
+        }
+        let (root, month) = crate::contracts::parse(symbol, crate::contracts::today())?;
+        if crate::contracts::symbol(&root, month) != symbol {
+            return None;
+        }
+        self.find(&root, None).filter(|i| i.kind == InstrumentKind::FutureRoot)?.in_month(month)
     }
 
     /// The curated majors, for an empty search field.
@@ -910,5 +989,35 @@ mod tests {
     #[test]
     fn nonsense_matches_nothing() {
         assert!(index().search("zzzzqq", 5).is_empty());
+    }
+
+    /// A dated contract is its root's instrument under the contract's name:
+    /// the same specification, the same hours, named with its month.
+    #[test]
+    fn a_dated_contract_resolves_to_its_root_in_that_month() {
+        let idx = index();
+        let es = idx.find("ES", None).unwrap();
+        assert!(!es.is_contract());
+        assert_eq!(es.contract(), None);
+        assert_eq!(es.root(), "ES");
+        let march = idx.resolve("ESH7", None).expect("ESH7");
+        assert!(march.is_contract());
+        assert_eq!(march.root(), "ES");
+        assert_eq!(march.kind, InstrumentKind::FutureRoot);
+        assert_eq!(march.name, es.name);
+        assert_eq!(march.display_symbol(), "ESH7");
+        assert_eq!(march.contract().map(|m| m.label()).as_deref(), Some("Mar 2027"));
+        assert_eq!(march.full_name(), "E-mini S&P 500 · Mar 2027");
+        assert_eq!(march.tick_size(), es.tick_size());
+        assert_eq!(march.as_root(), es.clone());
+        assert_eq!(es.in_month(march.contract().unwrap()), Some(march.clone()));
+        assert_eq!(idx.resolve("ES", None).as_ref(), Some(es));
+        assert!(idx.resolve("ESH27", None).is_none(), "stored the exchange's way, or not at all");
+        assert!(idx.resolve("ZZQH7", None).is_none(), "no such root");
+        assert!(idx.resolve("AAPLH7", None).is_none(), "a share has no months");
+        assert!(idx.resolve("ESH7", Some("MC")).is_none());
+        let apple = idx.find("AAPL", None).unwrap();
+        assert_eq!(apple.in_month(march.contract().unwrap()), None);
+        assert_eq!(apple.root(), "AAPL");
     }
 }

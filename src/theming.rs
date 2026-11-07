@@ -126,6 +126,11 @@ impl Theming {
 
     /// What new charts paint their bars in, and what the watchlist and the
     /// bar widget say up and down in.
+    /// How the bars are coloured: filled, hollow, red up or monochrome.
+    pub fn colouring(&self) -> omacharts_engine::BarColouring {
+        omacharts_engine::BarColouring::from_key(&self.scheme_id).unwrap_or_default()
+    }
+
     pub fn bar_scheme(&self) -> BarScheme {
         self.bar_scheme_for(&self.theme())
     }
@@ -208,7 +213,8 @@ impl Theming {
             Mode::Light => adw::ColorScheme::ForceLight,
         });
 
-        let css = stylesheet(&theme, &self.bar_scheme());
+        let mut css = stylesheet(&theme, &self.bar_scheme());
+        css.push_str(&trading_css(&theme, self.colouring()));
         let provider = self.provider.get_or_insert_with(|| {
             let provider = gtk::CssProvider::new();
             if let Some(display) = gtk::gdk::Display::default() {
@@ -257,6 +263,22 @@ pub(crate) const CORNER_PAD_START: i32 = 8;
 /// and `padding-top` of `.window-corner` below, 2 + 8. The rail's + stands
 /// at the same height, beside the toggle. The two change together.
 pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
+
+/// The trading look's colours as named colours, and the classes a signed
+/// P&L, a side and a position are written in with them: the one pair for
+/// money, the other for a side, as the chart's marks wear them.
+pub fn trading_css(theme: &Theme, colouring: omacharts_engine::BarColouring) -> String {
+    let look = omacharts_engine::theme_trading(theme, colouring);
+    format!(
+        "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
+         @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
+         @define-color omacharts_long {};\n@define-color omacharts_short {};\n\
+         .pnl-gain {{ color: @omacharts_profit; }}\n.pnl-loss {{ color: @omacharts_loss; }}\n\
+         .trade-buy {{ color: @omacharts_buy; }}\n.trade-sell {{ color: @omacharts_sell; }}\n\
+         .trade-long {{ color: @omacharts_long; }}\n.trade-short {{ color: @omacharts_short; }}\n",
+        look.profit, look.loss, look.buy, look.sell, look.long, look.short
+    )
+}
 
 /// The app's CSS: libadwaita's named colours, redefined from the theme, plus
 /// the few classes we add ourselves.
@@ -307,6 +329,15 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     // with the candles beside it.
     define("omacharts_up", &scheme.up);
     define("omacharts_down", &scheme.down);
+    // The palette's own red, orange and green, for anything that stands
+    // for bad, pending and good rather than for down and up: the data
+    // feed's dot wears them. The chart's trouble dot is the same Rose.
+    let swatch = |name: &str, otherwise: &str| {
+        theme.swatch(name).map(|swatch| swatch.hex.clone()).unwrap_or_else(|| otherwise.to_string())
+    };
+    define("omacharts_rose", &swatch("Rose", &scheme.down));
+    define("omacharts_orange", &swatch("Orange", &ui.accent));
+    define("omacharts_green", &swatch("Green", &scheme.up));
 
     // The frame around tiled charts. Derived, not taken: the engine explains
     // why in `frame.rs`, and `doc/themes/frames.html` shows the result on
@@ -458,6 +489,20 @@ popover.pick-frame > contents { padding: 0; }
 .pick-list.navigation-sidebar > row:selected:focus-visible { outline: none; }
 .pick-ticker { font-family: monospace; font-weight: 700; font-size: 0.9em; }
 .pick-name { font-size: 0.9em; opacity: 0.55; }
+/* A futures root's fold, at the row's far edge: no padding of its own, so
+   the row keeps its height, and quiet until pointed at. Under an open root,
+   its contracts; Front, on the one trading now, sits where a kind would,
+   in the chip's grey rather than the kind's accent, being a date's doing
+   and not a category. */
+.pick-expander { min-height: 0; min-width: 0; padding: 0 2px; opacity: 0.45; -gtk-icon-size: 14px; }
+.pick-expander:hover { opacity: 1; }
+.pick-front {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: alpha(@card_fg_color, 0.08);
+  opacity: 0.75;
+}
 /* Every chart while a picker is open, faded under it; the one it will
    change wears the wide ring. */
 .pick-shade { background-color: alpha(black, 0.4); }
@@ -613,9 +658,7 @@ entry.range-date > image:hover { opacity: 0.9; }
   border-radius: 5px;
 }
 
-/* One mode in the chain's popover. A menu row rather than a button: the icon
-   carries the colour, so the row itself should stay out of the way and let
-   the three read as a list. */
+/* A row of the header's hand-built lists. */
 .link-row {
   padding: 3px 10px;
   min-height: 0;
@@ -623,9 +666,6 @@ entry.range-date > image:hover { opacity: 0.9; }
   font-size: 0.9em;
 }
 .link-row:hover { background: alpha(currentColor, 0.09); }
-/* A mode's icon in that menu, for a mode other than the default: the accent,
-   as the chart's button wears it. */
-.link-mode-set { color: @accent_color; }
 
 /* The symbol over the chart is a button, because clicking the name of the
    thing you are looking at to change it is the shortest route there is — but
@@ -655,6 +695,39 @@ entry.range-date > image:hover { opacity: 0.9; }
 .legend-link.quiet.open { opacity: 0.45; }
 .chart-pane:hover .legend-gear:hover,
 .chart-pane:hover .legend-link.quiet:hover { opacity: 1; }
+/* The data feed's dot, beside the chart's name: eight pixels across, so it
+   is a light and not a stray wick, in the palette's red, orange or green
+   for not connected, connecting and connected. The button around it is
+   the same flat button the resolution is, and with one feed to be on it
+   has nothing to open and no hover to promise one. */
+.feed-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 4px;
+  background: @omacharts_rose;
+}
+.feed-dot.connecting { background: @omacharts_orange; }
+.feed-dot.connected { background: @omacharts_green; }
+.feed-warning { color: @omacharts_rose; }
+/* Buy and Sell in the header: the line's own flat buttons, in the trading
+   colours, a word each, with the hover wash the others have. */
+.trade-button { padding: 2px 6px; min-width: 0; min-height: 0; font-weight: bold; }
+.feed-part > button { padding: 2px 6px; min-width: 0; }
+/* First on the line, the button reaches into the legend's margin so the
+   dot's centre is the legend dots' centre, and keeps only a pixel past the
+   dot on its right so the symbol starts where the legend's names do: the
+   dot's box, the row's gap and the name's edge of every legend row (see
+   pane::legend_row), here the dot, this pixel, the line's spacing and the
+   symbol button's own padding. */
+.feed-part.lead { margin-left: -3px; }
+.feed-part.lead > button { padding-right: 1px; }
+/* With nothing to open, GTK makes the button insensitive, and an
+   insensitive button is drawn faded: the dot is the same light either way,
+   only without the hover. */
+.feed-part.inert > button:hover { background: none; }
+.feed-part.inert > button:disabled,
+.feed-part.inert > button:disabled > * { opacity: 1; filter: none; }
+
 /* A hidden layer's glyph, on every chart and in every state: a bare chart
    with nothing saying why reads as one whose data never came. */
 .legend-hidden { opacity: 0.75; }
@@ -739,29 +812,36 @@ entry.range-date > image:hover { opacity: 0.9; }
 /* While a picker dims a chart, no ground: it is the chart's colour undimmed,
    and over the shade it was a lit square in the corner. */
 .picking .window-corner.over-chart { background: none; }
-/* The drawing tools' corner on the left, the mirror of the one on the right:
-   centred over the bar it opens, which is as wide as one of its tools, and
-   at the same height, so beside the chart's name it centres on the name. */
-.window-corner.start {
-  margin: 2px 0 0 2px;
-  padding: 8px 9px 7px 7px;
-}
-.window-corner.start.over-chart {
-  border-bottom-right-radius: 12px;
-  box-shadow: none;
-}
-/* Beside a chart's name it is one more glyph in the row, and the name is
-   what that corner is for: so it stays well under the name until the
-   pointer comes to it. */
-.window-corner.start.over-chart button { opacity: 0.25; }
-.window-corner.start.over-chart:hover button { opacity: 1; }
+/* The drawing tools' toggle, in the bottom-left corner at the time axis's
+   height, and the trading panel's, in the bottom-right under the prices:
+   quiet while what each opens is shut, at the corners' usual strength
+   while it is open, full under the pointer. It is each toggle's own state
+   that says which. One rule, so the two cannot drift apart. */
+button.tools-toggle:not(:checked),
+button.trading-toggle:not(:checked) { opacity: 0.25; }
+button.tools-toggle:hover,
+button.trading-toggle:hover { opacity: 1; }
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
-.window-corner button {
+.window-corner button,
+button.tools-toggle,
+button.trading-toggle {
   opacity: 0.75;
   transition: opacity 120ms ease-out;
 }
 .window-corner:hover button { opacity: 1; }
+/* The main menu's dot: an error dismissed from the corner notice and not
+   yet read in the Log. Drawn on the button rather than a widget beside it,
+   so a window with nothing unread has nothing more in it. */
+.window-corner menubutton.unread > button {
+  opacity: 1;
+  background-image: radial-gradient(circle 3px at 74% 28%, @error_color 99%, transparent 100%);
+}
+
+/* The corner notice, over the bottom-left of the charts. */
+.log-notice { padding: 8px 8px 8px 14px; margin: 0 0 0 0; }
+/* The Log's rows: room between them, and none taken from the text. */
+.log-list > row { padding: 6px 12px; }
 
 /* The drawing tools, down the left edge: a column of two, quiet until one is
    in hand, which lights it in the accent the way a pressed tool should. */
@@ -1009,9 +1089,29 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
    went, and because the time axis is already down here — the eye is not
    pulled off the prices to find it. One hairline above it, and nothing else:
    at this height a border on every side is a box, and a box is furniture. */
+/* The trading panel under the charts, set like the strip: one hairline
+   above it, and its tables in the rail's quiet type. */
+.trading-panel {
+  border-top: 1px solid alpha(currentColor, 0.08);
+}
+.trading-tabs {
+  padding: 3px 6px;
+}
+.trading-table {
+  padding: 4px 12px 8px 12px;
+  font-size: 0.9em;
+}
+.trading-heading {
+  opacity: 0.55;
+  font-size: 0.85em;
+}
+.trading-table button {
+  padding: 0 8px;
+  min-height: 22px;
+}
 .chartbook-strip {
-  /* No padding on the left: the drawing tools' tab sits flush with the
-     window's edge, the way a tab on a drawer does. */
+  /* No padding on the left: the first tab sits flush with the window's
+     edge, the way a tab on a drawer does. */
   padding: 1px 4px 1px 0;
   border-top: 1px solid alpha(currentColor, 0.08);
 }
@@ -1058,6 +1158,8 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
    firmer one for the one that is on. Last in the sheet, so it settles each
    one's size whatever its own rule says. */
 .window-corner button,
+button.tools-toggle,
+button.trading-toggle,
 .legend-link,
 .legend-gear,
 .pane-expand,
@@ -1069,20 +1171,31 @@ button.rail-add {
   border-radius: 6px;
 }
 .window-corner button:hover,
+button.tools-toggle:hover,
+button.trading-toggle:hover,
 .legend-link:hover,
 .legend-gear:hover,
 .chart-pane:hover .pane-expand:hover,
 button.rail-switcher:hover,
 button.rail-add:hover { background: alpha(currentColor, 0.12); }
 .window-corner button:checked,
+button.tools-toggle:checked,
+button.trading-toggle:checked,
 button.rail-switcher.open { background: alpha(currentColor, 0.15); }
 .window-corner button:checked:hover,
+button.tools-toggle:checked:hover,
+button.trading-toggle:checked:hover,
 button.rail-switcher.open:hover { background: alpha(currentColor, 0.2); }
 /* The link is a menu button, and only the button inside it opens the menu:
    padding on the outer one drew a box whose rim did nothing when clicked.
    The outer keeps the size and the wash; the inner fills all of it. */
 .legend-link { padding: 0; }
 .legend-link > button { min-width: 22px; min-height: 22px; padding: 2px; }
+/* At the time axis's height both corner toggles have its 24 pixels to
+   stand in: no padding above or below them, so each is the glyph's 22 tall
+   and clear of the axis's rule above. */
+button.tools-toggle,
+button.trading-toggle { padding-top: 0; padding-bottom: 0; }
 ",
     );
 
@@ -1136,8 +1249,8 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
   outline-offset: -{double}px;
 }}
 /* The drawing tools stand beside the charts on the window's own ground,
-   with the ring's width of it before the tools, so the toggle above stands
-   centred over them. Their edge against the charts is the rail's against
+   with the ring's width of it before the tools, which the toggle at their
+   foot centres under, open or shut. Their edge against the charts is the rail's against
    them: Adwaita's paned separator, a sixth of the text colour over the
    window's ground. */
 .drawing-tools {{
@@ -1156,6 +1269,28 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A signed P&L is written in the trading look's profit and loss, which
+    /// Red up turns round and Monochrome does not.
+    #[test]
+    fn profit_and_loss_are_named_colours_from_the_trading_look() {
+        let theme = &builtin_themes()[0];
+        let bars = omacharts_engine::theme::theme_bars(theme);
+        let css = trading_css(theme, omacharts_engine::BarColouring::Monochrome);
+        assert!(css.contains(&format!("@define-color omacharts_profit {};", bars.up)), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_loss {};", bars.down)), "{css}");
+        assert!(css.contains(".pnl-gain { color: @omacharts_profit; }"));
+        let red_up = trading_css(theme, omacharts_engine::BarColouring::RedUp);
+        assert!(red_up.contains(&format!("@define-color omacharts_profit {};", bars.down)), "{red_up}");
+        // A side and a position are the theme's Blue and Amber, never money's
+        // colours, so the header's Buy and Sell match the chart's entries.
+        let (blue, amber) = (&theme.swatch("Blue").unwrap().hex, &theme.swatch("Amber").unwrap().hex);
+        assert!(css.contains(&format!("@define-color omacharts_buy {blue};")), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_sell {amber};")), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_long {blue};")), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_short {amber};")), "{css}");
+        assert!(css.contains(".trade-buy { color: @omacharts_buy; }") && css.contains(".trade-short { color: @omacharts_short; }"));
+    }
 
     #[test]
     fn the_stylesheet_redefines_the_platform_colours() {
@@ -1184,6 +1319,11 @@ mod tests {
         assert!(css.contains(".symbol-row:drop(active)"));
         assert!(css.contains(".section-row:drop(active)"));
         assert!(css.contains(".dragging row:hover"));
+        // The drawing tools' toggle and the trading panel's are quiet
+        // while what they open is shut, by one rule.
+        assert!(css.contains(
+            "button.tools-toggle:not(:checked),\nbutton.trading-toggle:not(:checked) { opacity: 0.25; }"
+        ));
     }
 
     #[test]

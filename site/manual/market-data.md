@@ -13,7 +13,7 @@ Yahoo Finance is the default and needs no account. It covers every listing the [
 
 Prices update about once a bar, and not while the market is shut or while you have panned back into history.
 
-A chart that says *Rate limited by the data provider. Prices fill in shortly.* carries on by itself after a while.
+A chart that says *Rate limited by the data feed. Prices fill in shortly.* carries on by itself after a while.
 
 ## thinkorswim
 
@@ -22,7 +22,7 @@ Experimental. A change on Schwab's side can stop the feed working until Omachart
 
 thinkorswim shows live prices from your Schwab account. It needs Chromium, Chrome, Brave or Edge on this machine.
 
-It carries US stocks and ETFs, some indexes, and futures (`ES` is charted as `/ES`), but not currencies, crypto or listings abroad. A chart of one of those says *This data provider cannot chart this symbol. Another one may be able to.* Intraday resolutions reach about twenty sessions back, daily bars as far as the account has.
+It carries US stocks and ETFs, some indexes, and futures (`ES` is charted as `/ES`), but not currencies, crypto or listings abroad. A chart of one of those says *No data feed in Preferences → Data charts this symbol.* Intraday resolutions reach about twenty sessions back, daily bars as far as the account has.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -33,7 +33,7 @@ state:
 capture: bin/headless-window shot /tmp/unserved.png
 crop: 450,721,1100,140
 -->
-![A chart's message: This data provider cannot chart this symbol. Another one may be able to.](/assets/manual/market-data/cannot-chart.png)
+![A chart's message: No data feed in Preferences → Data charts this symbol.](/assets/manual/market-data/cannot-chart.png)
 
 ### Signing in
 
@@ -54,7 +54,7 @@ crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 -->
 {% include figure.html src="/assets/manual/market-data/data-feed-thinkorswim.png" alt="Preferences on Data with thinkorswim chosen and a Sign in… button below" caption="Preferences › Data with thinkorswim chosen and nobody signed in." %}
 
-Until someone signs in, a chart on thinkorswim says *This data provider is not signed in.* and points to Preferences.
+Until someone signs in, a chart on thinkorswim says *This data feed is not signed in.* and points to Preferences.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -66,11 +66,11 @@ state:
 capture: bin/headless-window shot /tmp/not-signed-in.png
 crop: 440,721,1180,140
 -->
-![A chart's message: This data provider is not signed in. Open Preferences → Market data → Provider.](/assets/manual/market-data/not-signed-in.png)
+![A chart's message: This data feed is not signed in. Open Preferences → Data.](/assets/manual/market-data/not-signed-in.png)
 
 ### Expired sessions
 
-Schwab ends a session after a while. Charts stop updating and say so, and Preferences offers **Sign in again**.
+Schwab ends a session after a while. Charts stop updating and say so, and Preferences offers **Sign in…** again.
 
 The session stays on this machine and is not in backups ([Where your data lives](/manual/your-data/#where-everything-is)).
 

@@ -73,6 +73,10 @@ pub fn compute(bars: &[Bar], reset: Reset, session_origin: i64, bands: &[Band]) 
     for (i, bar) in bars.iter().enumerate() {
         let this_bucket = reset.bucket(bar.ts, session_origin);
         if this_bucket != bucket {
+            // The first bar starts nothing: there is no line before it.
+            if bucket != i64::MIN {
+                out.start(i);
+            }
             bucket = this_bucket;
             sum_w = 0.0;
             sum_wp = 0.0;
@@ -308,6 +312,37 @@ mod tests {
         let out = compute(&bars, Reset::Session, 0, &[]);
         assert_eq!(out.center[1], Some(10.0));
         assert_eq!(out.center[2], Some(50.0), "a new session starts clean");
+    }
+
+    /// The bar a period starts over on is marked, so the chart can break its
+    /// lines there; the first bar of the series starts nothing.
+    #[test]
+    fn a_reset_is_marked_where_the_new_period_begins() {
+        let bars = vec![bar(0, 10.0, 1.0), bar(3600, 12.0, 1.0), bar(DAY, 50.0, 1.0), bar(DAY + 60, 52.0, 1.0)];
+        let out = compute(&bars, Reset::Session, 0, &bands(&[1.0]));
+        assert_eq!(out.starts, vec![false, false, true, false]);
+    }
+
+    /// The shaded band is the one-deviation band: its edges sit exactly one
+    /// spread either side of the line, which is what the outer bands are
+    /// multiples of.
+    #[test]
+    fn the_shaded_band_spans_one_deviation_and_the_outer_ones_their_multiples() {
+        let bars: Vec<Bar> = (0..40)
+            .map(|i| Bar { ts: i * 86_400, open: 100.0, high: 100.0 + i as f64, low: 90.0, close: 95.0 + i as f64, volume: 1000.0 + i as f64 })
+            .collect();
+        let out = compute(&bars, Reset::Year, 0, &default_bands());
+        let reference = anchored(&bars, Source::Hlc3);
+        for (i, at) in reference.iter().enumerate() {
+            let centre = out.center[i].unwrap();
+            for band in &out.bands {
+                let up = band.upper[i].unwrap() - centre;
+                let down = centre - band.lower[i].unwrap();
+                assert!((up - at.deviation * band.deviations).abs() < 1e-9, "bar {i}, {}σ", band.deviations);
+                assert!((down - at.deviation * band.deviations).abs() < 1e-9, "bar {i}, {}σ", band.deviations);
+            }
+        }
+        assert!(out.bands[0].fill && out.bands[0].deviations == 1.0, "the shading is the 1σ band");
     }
 
     #[test]

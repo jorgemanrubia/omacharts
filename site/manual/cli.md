@@ -1494,8 +1494,8 @@ $ omacharts config get show_grid
 omacharts: "show_grid" has never been set
   [exit 3]
 
-$ omacharts config set show_grid off
-set show_grid to off
+$ omacharts config set show_grid on
+set show_grid to on
   [exit 0]
 
 $ omacharts config get cache_limit --json
@@ -1518,12 +1518,13 @@ same.
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-red-up`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
-| `show_grid` | on, off | on | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
+| `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`; or `none` | `symbol,resolution` | Charts › Header | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `feed`, `stripe`; or `none` | `feed,symbol,resolution` | Charts › Header › Left | [Charts](/manual/charts/) |
+| `chart_header_center` | the same | `stripe` | Charts › Header › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |

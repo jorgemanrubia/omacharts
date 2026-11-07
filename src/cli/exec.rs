@@ -76,6 +76,14 @@ pub fn dispatch(
         return surface(rest);
     }
 
+    // Bare, the feature flags are listed, as `features list` lists them.
+    if noun == "features" && rest.subcommand().is_none() {
+        return match features_list(store, false) {
+            Ok(out) => Outcome::ok(out),
+            Err(fault) => Outcome::failed(fault),
+        };
+    }
+
     let Some((verb, m)) = rest.subcommand() else {
         return Outcome::ok(parser::command().render_help().to_string());
     };
@@ -107,6 +115,7 @@ pub fn dispatch(
     let result = match (noun, verb) {
         ("symbol", "search") => symbol_search(m, json),
         ("symbol", "show") => symbol_show(m, json),
+        ("symbol", "contracts") => symbol_contracts(m, json),
 
         ("watchlist", "list") => watchlist_list(store, json),
         ("watchlist", "show") => watchlist_show(store, m, json),
@@ -174,6 +183,15 @@ pub fn dispatch(
         ("provider", "status") => provider_status(store, live, json),
         ("provider", "login") => provider_login(store, m, json),
         ("provider", "logout") => provider_logout(store, m, json),
+        ("provider", "setup") => {
+            let outcome = provider_setup(store, m, json);
+            if outcome.is_ok()
+                && let Some(live) = live
+            {
+                live.adopt_feed();
+            }
+            outcome
+        }
 
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
@@ -186,8 +204,15 @@ pub fn dispatch(
                 && let Some(live) = live
             {
                 match required(m, "KEY") {
-                    Ok(key) if key == crate::feeds::SETTING => live.adopt_feed(),
-                    Ok(key) if key == crate::header::SETTING => live.adopt_header(),
+                    Ok(key) if key == crate::feeds::SETTING || key == crate::feeds::ONE_FEED => {
+                        live.adopt_feed()
+                    }
+                    // A login changed: which charts it can serve may have
+                    // too.
+                    Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
+                    Ok(key) if crate::header::Section::ALL.iter().any(|section| section.setting() == key) => {
+                        live.adopt_header()
+                    }
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
                     }
@@ -206,6 +231,10 @@ pub fn dispatch(
         ("cache", "status") => cache_status(store, json),
         ("cache", "clear") => cache_clear(store, json),
         ("cache", "limit") => cache_limit(store, m, json),
+
+        ("features", "list") => features_list(store, json),
+        ("features", "enable") => features_set(store, m, json, true, live),
+        ("features", "disable") => features_set(store, m, json, false, live),
 
         ("backup", "list") => backup_list(store, json),
         ("backup", "create") => backup_create(store, json),
@@ -320,16 +349,61 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         + "\n")
 }
 
+/// A root's dated contracts as the rule lists them, or as a feed listed
+/// them to this process: a command-line process holds no feed session, so
+/// it is the rule's listing that answers here.
+fn symbol_contracts(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    use omacharts_engine::contracts;
+    let index = crate::inventory::everything();
+    let typed = required(m, "ROOT")?.to_uppercase();
+    let root = index
+        .find(&typed, None)
+        .filter(|i| i.kind == omacharts_engine::InstrumentKind::FutureRoot)
+        .ok_or_else(|| Fault::not_found(format!("no futures root called {typed}; try `omacharts symbol search {typed}`")))?;
+    let listed = contracts::listing(root.root(), contracts::today());
+    if as_json {
+        let rows: Vec<serde_json::Value> = listed
+            .iter()
+            .map(|listing| {
+                serde_json::json!({
+                    "symbol": listing.symbol,
+                    "month": listing.month.label(),
+                    "expires": listing.expires.to_string(),
+                    "rolls": listing.rolls.to_string(),
+                    "front": listing.front,
+                })
+            })
+            .collect();
+        return Ok(format!("{}\n", serde_json::Value::Array(rows)));
+    }
+    Ok(listed
+        .iter()
+        .map(|listing| {
+            format!(
+                "{:<8}{:<10}expires {}  rolls {}{}",
+                listing.symbol,
+                listing.month.label(),
+                listing.expires,
+                listing.rolls,
+                if listing.front { "  front" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n")
+}
+
 fn symbol_show(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let index = crate::inventory::everything();
     let (symbol, suffix) =
         listing(&index, required(m, "SYMBOL")?, arg(m, "SUFFIX").map(|s| s.to_uppercase()));
-    let found = index.find(&symbol, suffix.as_deref()).ok_or_else(|| {
+    let found = index.resolve(&symbol, suffix.as_deref()).ok_or_else(|| {
         Fault::not_found(format!(
             "no instrument called {}; try `omacharts symbol search {symbol}`",
             spell(&symbol, suffix.as_deref())
         ))
     })?;
+    let found = &found;
     if as_json {
         return Ok(format!("{}\n", instrument_json(found)));
     }
@@ -600,7 +674,7 @@ fn watchlist_add(
     for typed in &symbols {
         // Each one on its own, so `2330.TW 6488.TWO` can share a command.
         let (symbol, suffix) = listing(&index, typed, suffix.clone());
-        if index.find(&symbol, suffix.as_deref()).is_none() {
+        if index.resolve(&symbol, suffix.as_deref()).is_none() {
             unknown.push(spell(&symbol, suffix.as_deref()));
             continue;
         }
@@ -1449,7 +1523,7 @@ fn chart_set(
         Some(text) => {
             let index = crate::inventory::everything();
             let (symbol, suffix) = listing(&index, text, given);
-            if index.find(&symbol, suffix.as_deref()).is_none() {
+            if index.resolve(&symbol, suffix.as_deref()).is_none() {
                 return Err(Fault::not_found(format!(
                     "no instrument called {}; try `omacharts symbol search {symbol}`",
                     spell(&symbol, suffix.as_deref())
@@ -4414,31 +4488,30 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
 /// another is stored, and that is worth seeing at a glance rather than
 /// being a thing somebody discovers from a chart.
 fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    crate::feeds::remember_logins(store);
     let stored = crate::feeds::stored(store).id;
     let in_use = crate::feeds::in_use(store).id;
     if as_json {
-        let rows = providers::LISTED
-            .iter()
+        let rows = providers::offered()
             .map(|feed| {
                 json!({
                     "id": feed.id,
                     "label": feed.label,
                     "serves": feed.serves,
                     "freshness": providers::freshness(feed.id),
-                    "delivery": providers::selected(Some(feed.id)).delivery().word(),
+                    "delivery": providers::built_or_default(feed.id).delivery().word(),
                     "stored": feed.id == stored,
                     "inUse": feed.id == in_use,
                     "needsSignIn": feed.needs_sign_in(),
                     "experimental": feed.experimental,
-                    "session": providers::access(feed.id).map(|access| access.line()),
+                    "session": providers::standing_line(feed.id),
                 })
                 .to_string()
             })
             .collect();
         return Ok(wrap_list("providers", rows));
     }
-    Ok(providers::LISTED
-        .iter()
+    Ok(providers::offered()
         .map(|feed| {
             let mut note = match (feed.id == stored, feed.id == in_use) {
                 (true, true) => "in use".to_string(),
@@ -4446,11 +4519,11 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                 (false, true) => "in use, not stored".to_string(),
                 (false, false) => String::new(),
             };
-            if let Some(access) = providers::access(feed.id) {
+            if let Some(standing) = providers::standing_line(feed.id) {
                 if !note.is_empty() {
                     note.push_str(" · ");
                 }
-                note.push_str(&access.line().to_lowercase());
+                note.push_str(&lowered(&standing));
             }
             // The word rides with what the feed serves rather than with
             // the note beside it: it is a fact about the feed, true whether
@@ -4464,6 +4537,13 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n")
+}
+
+/// A line with its first letter lowered, to sit inside another: what it
+/// names keeps its own spelling.
+fn lowered(line: &str) -> String {
+    let mut chars = line.chars();
+    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
 fn suffixed(note: &str) -> String {
@@ -4481,12 +4561,13 @@ fn suffixed(note: &str) -> String {
 /// session, the files it lives in and the state of every subscription are
 /// spelled out for somebody who needs them.
 fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Result<String, Fault> {
+    crate::feeds::remember_logins(store);
     let stored = crate::feeds::stored(store);
     let in_use = crate::feeds::in_use(store);
     let access = providers::access(in_use.id);
     let browser = providers::can_sign_in(in_use.id);
     let places = providers::places(in_use.id);
-    let delivery = providers::selected(Some(in_use.id)).delivery();
+    let delivery = providers::built_or_default(in_use.id).delivery();
     let streaming = live.map(|live| live.streaming());
 
     if as_json {
@@ -4505,7 +4586,7 @@ fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Res
                 "forThisLaunch": crate::feeds::for_this_launch().map(|feed| feed.id),
                 "needsSignIn": in_use.needs_sign_in(),
                 "ready": access.as_ref().map(|access| access.ready()).unwrap_or(true),
-                "session": access.as_ref().map(|access| access.line()),
+                "session": providers::standing_line(in_use.id),
                 "browser": browser.as_ref().ok(),
                 "cannotSignIn": browser.as_ref().err(),
                 "files": places
@@ -4526,7 +4607,7 @@ fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Res
     match &access {
         None => out.push_str("nothing to sign in to; it works as it is\n"),
         Some(access) => {
-            out.push_str(&format!("{}\n", access.line()));
+            out.push_str(&format!("{}\n", providers::standing_line(in_use.id).unwrap_or_else(|| access.line())));
             if !access.ready() {
                 out.push_str("charts will be empty until you sign in: omacharts provider login\n");
             }
@@ -4662,6 +4743,7 @@ fn ago_text(ago: std::time::Duration) -> String {
 /// result because they are progress rather than an answer: `--json` stays
 /// one object on stdout, which is what something parsing this needs.
 fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    crate::feeds::remember_logins(store);
     let feed = named_or_chosen(store, m)?;
     if !feed.needs_sign_in() {
         return Err(Fault::refused(format!(
@@ -4669,15 +4751,18 @@ fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
             feed.label
         )));
     }
-    if let Err(why) = providers::can_sign_in(feed.id) {
-        return Err(Fault::new(super::EXIT_ERROR, why));
-    }
+    let with = providers::can_sign_in(feed.id).map_err(|why| Fault::new(super::EXIT_ERROR, why))?;
 
-    eprintln!("a browser is opening at {}; sign in there", feed.label);
+    // A browser sign-in is one the person drives; a form's is a check of
+    // what is saved, which the window's session then signs in with.
+    match feed.setup.map(|setup| setup.how()) {
+        Some(providers::How::Browser) => eprintln!("a browser is opening at {}; sign in there", feed.label),
+        _ => eprintln!("checking the {} login: {with}", feed.label),
+    }
     providers::sign_in(feed.id, |line| eprintln!("{line}"))
         .map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
 
-    let access = providers::access(feed.id).map(|access| access.line());
+    let access = providers::standing_line(feed.id);
     said(
         as_json,
         json!({"id": feed.id, "session": access}),
@@ -4695,8 +4780,10 @@ fn provider_logout(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result
     }
     // Saying what was there beats "ok": somebody signing out twice should
     // be able to tell the difference.
+    crate::feeds::remember_logins(store);
     let had = providers::access(feed.id).is_some_and(|access| !matches!(access, providers::Access::Missing));
     providers::sign_out(feed.id).map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
+    crate::feeds::forget_login(store, feed.id);
     said(
         as_json,
         json!({"id": feed.id, "forgotten": had}),
@@ -4704,6 +4791,61 @@ fn provider_logout(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result
             true => format!("forgot the saved {} session", feed.label),
             false => format!("no saved {} session to forget", feed.label),
         },
+    )
+}
+
+/// Set up a feed the app keeps the setup of — a folder on this disk, say —
+/// with `KEY=VALUE`s on top of what it had, or with what it finds on this
+/// machine when given none, and add it to the feeds. A value that makes it
+/// unusable is refused and nothing is kept; one that leaves it only half
+/// set up is kept, and said so.
+fn provider_setup(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let name = required(m, "NAME")?;
+    let feed = providers::listed(name)
+        .ok_or_else(|| Fault::not_found(format!("no such data feed: {name:?}; the feeds are {}", feed_names())))?;
+    let Some(setup) = feed.setup.filter(|_| crate::feeds::kept_here(feed)) else {
+        return Err(Fault::refused(format!(
+            "{} is not set up here: {}",
+            feed.label,
+            match feed.needs_sign_in() {
+                true => "sign in to it with `omacharts provider login`",
+                false => "it works as it is",
+            }
+        )));
+    };
+    let given: Vec<String> = m.get_many::<String>("VALUE").map(|values| values.cloned().collect()).unwrap_or_default();
+    let before = crate::feeds::setup_of(store, feed.id);
+    let mut saved = before.clone();
+    for value in &given {
+        let Some((key, value)) = value.split_once('=') else {
+            return Err(Fault::usage(format!("{value:?} is not KEY=VALUE")));
+        };
+        let Some(field) = setup.fields().iter().find(|field| field.key.eq_ignore_ascii_case(key.trim())) else {
+            let keys: Vec<&str> = setup.fields().iter().map(|field| field.key).collect();
+            return Err(Fault::usage(format!("{} has no {key:?}; it takes {}", feed.label, keys.join(", "))));
+        };
+        saved = saved.with(field.key, value);
+    }
+    if given.is_empty() {
+        saved = setup.found().ok_or_else(|| {
+            Fault::new(super::EXIT_ERROR, format!("{} was not found on this machine; say where it is", feed.label))
+        })?;
+    }
+    // Tried before it is kept: a value that cannot work goes back to what
+    // was there.
+    setup.remember(saved.clone());
+    if let providers::Access::Expired(problem) = setup.access() {
+        setup.remember(before);
+        return Err(Fault::new(super::EXIT_ERROR, format!("{}: {problem}", feed.label)));
+    }
+    crate::feeds::set_up(store, feed, saved.clone());
+    crate::feeds::add_feed(store, feed.id);
+    let standing = providers::standing_line(feed.id).unwrap_or_default();
+    let values: Vec<String> = saved.values.iter().map(|(key, value)| format!("{key}={value}")).collect();
+    said(
+        as_json,
+        json!({"id": feed.id, "values": saved.values, "ready": setup.access().ready(), "session": standing}),
+        format!("set up {}: {} · {}", feed.label, values.join(" "), lowered(&standing)),
     )
 }
 
@@ -4724,11 +4866,67 @@ fn named_or_chosen(
 }
 
 fn feed_names() -> String {
-    providers::LISTED.iter().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
+    providers::offered().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
+}
+
+/// Every feature flag and whether it is on, as the settings say: what a
+/// window open on them has switched on too.
+fn features_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let flags = crate::features::FLAGS;
+    if as_json {
+        let rows = flags
+            .iter()
+            .map(|flag| {
+                json!({
+                    "name": flag.name,
+                    "on": crate::features::stored(store, flag.feature),
+                    "default": flag.default,
+                    "description": flag.about,
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("features", rows));
+    }
+    Ok(flags
+        .iter()
+        .map(|flag| {
+            let state = if crate::features::stored(store, flag.feature) { "on" } else { "off" };
+            format!("{:<12} {state:<4} {}\n", flag.name, flag.about)
+        })
+        .collect())
+}
+
+/// Switch a feature flag, and have an open window put in or take out what
+/// it switches, at once.
+fn features_set(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    on: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let name = required(m, "FEATURE")?;
+    let Some(flag) = crate::features::named(name) else {
+        let known: Vec<&str> = crate::features::FLAGS.iter().map(|flag| flag.name).collect();
+        return Err(Fault::not_found(format!("no feature called {name:?}; the features are {}", known.join(", "))));
+    };
+    let changed = crate::features::set(store, flag.feature, on);
+    if changed && let Some(live) = live {
+        live.adopt_features();
+    }
+    let state = if on { "on" } else { "off" };
+    let text = match changed {
+        true => format!("{} is {state}", flag.name),
+        false => format!("{} was already {state}", flag.name),
+    };
+    said(as_json, json!({"name": flag.name, "on": on, "changed": changed}), text)
 }
 
 fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
-    let settings = store.settings();
+    // The feature flags are not listed: they are `features`' to show.
+    let settings: Vec<(String, String)> =
+        store.settings().into_iter().filter(|(key, _)| !key.starts_with(crate::features::PREFIX)).collect();
     if as_json {
         let rows = settings
             .iter()
@@ -4766,12 +4964,20 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // and be told it worked. So this one is checked, and stored canonically
     // so that `TOS` and `tos` are the same choice rather than two.
     // The header too, so a typo is refused here rather than read back later
-    // as a header missing a part.
-    if key == crate::header::SETTING {
-        let parts = crate::header::parse(value).map_err(Fault::usage)?;
-        crate::header::save(store, &parts);
+    // as a header missing a part. Either section, and a part placed in one
+    // leaves the other, as it does in the preferences.
+    if let Some(section) = crate::header::Section::ALL.into_iter().find(|section| section.setting() == key) {
+        let trading = crate::features::stored(store, crate::features::Feature::Trading);
+        let parts = crate::header::parse_for(value, trading).map_err(Fault::usage)?;
         let value = crate::header::spell(&parts);
-        let text = format!("every chart's header shows {value}");
+        let mut header = crate::header::load(store);
+        header.set_shown(section, parts, trading);
+        crate::header::save(store, &header);
+        let text = match section {
+            crate::header::Section::Left => format!("every chart's header shows {value}"),
+            crate::header::Section::Center => format!("every chart's header shows {value} in the center"),
+            crate::header::Section::Right => format!("every chart's header shows {value} on the right"),
+        };
         return said(as_json, json!({"key": key, "value": value}), text);
     }
     // The templates themselves are a document `template` keeps, with the
@@ -4813,18 +5019,36 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         store.set_setting(key, &value);
         return said(as_json, json!({"key": key, "value": value}), text);
     }
-    let value = match key == crate::feeds::SETTING {
-        false => value.to_string(),
-        true => providers::listed(value)
-            .ok_or_else(|| {
-                Fault::usage(format!(
-                    "no such data feed: {value:?}; the feeds are {}",
-                    feed_names()
-                ))
-            })?
-            .id
-            .to_string(),
-    };
+    // One feed, as there used to be: it goes on top of the order, and the
+    // order is what is stored. Said back as what was asked for.
+    if key == crate::feeds::ONE_FEED {
+        let feed = providers::listed(value).ok_or_else(|| {
+            Fault::usage(format!("no such data feed: {value:?}; the feeds are {}", feed_names()))
+        })?;
+        crate::feeds::put_on_top(store, feed);
+        let text = format!("set {key} to {}", feed.id);
+        return said(as_json, json!({"key": key, "value": feed.id}), text);
+    }
+    // The order itself: a list of feeds this build knows, Yahoo included
+    // where it goes, and left out to chart without it.
+    if key == crate::feeds::SETTING {
+        let order: Vec<String> = serde_json::from_str(value).map_err(|_| {
+            let example = providers::offered().map(|feed| feed.id).find(|id| *id != providers::DEFAULT);
+            let example = example.unwrap_or(providers::DEFAULT);
+            Fault::usage(format!("{key} is a JSON list of feeds, such as [\"{example}\"]"))
+        })?;
+        if let Some(unknown) = order.iter().find(|id| providers::listed(id).is_none()) {
+            return Err(Fault::usage(format!(
+                "no such data feed: {unknown:?}; the feeds are {}",
+                feed_names()
+            )));
+        }
+        crate::feeds::save_order(store, &order);
+        let stored = crate::feeds::stored_order(store);
+        let text = format!("set {key} to {}", serde_json::to_string(&stored).unwrap_or_default());
+        return said(as_json, json!({"key": key, "value": stored}), text);
+    }
+    let value = value.to_string();
 
     store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
@@ -5199,6 +5423,13 @@ fn listing(
     if suffix.is_some() || index.find(&symbol, None).is_some() {
         return (symbol, suffix);
     }
+    // A dated contract however it was typed, ESH27 or ES H7, as the exchange
+    // spells it: ESH7.
+    if let Some((root, month)) = omacharts_engine::contracts::parse(&symbol, omacharts_engine::contracts::today())
+        && index.find(&root, None).is_some_and(|i| i.kind == omacharts_engine::InstrumentKind::FutureRoot)
+    {
+        return (omacharts_engine::contracts::symbol(&root, month), None);
+    }
     match omacharts_engine::symbols::split_suffix(&symbol) {
         (ticker, Some(venue)) => (ticker.to_string(), Some(venue.to_string())),
         _ => (symbol, None),
@@ -5470,16 +5701,70 @@ mod tests {
         assert_eq!(ChartDefaults::load(&store).template, None);
     }
 
+    /// `provider setup` knows no Sierra Chart while its flag is off. On, a
+    /// folder that is not Sierra Chart's is refused and nothing is kept; one
+    /// that is is kept, added to the feeds, and listed as set up.
+    #[test]
+    fn a_feed_set_up_from_a_terminal_is_kept_and_added() {
+        let store = Store::memory().unwrap();
+        assert_eq!(run("provider setup sierra port=11099", &store).code, crate::cli::EXIT_NOT_FOUND, "behind its flag");
+        crate::features::force(crate::features::Feature::Sierra, true);
+        let root = std::env::temp_dir().join(format!("omacharts-cli-sierra-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Data")).unwrap();
+        let refused = run(&format!("provider setup sierra folder={}", root.display()), &store);
+        assert_eq!(refused.code, crate::cli::EXIT_ERROR, "{}", refused.out);
+        assert!(refused.err.contains("Sierra Chart"), "{}", refused.err);
+        assert_eq!(store.setting(crate::feeds::SETUPS), None, "nothing kept");
+        std::fs::write(root.join("Sierra4.config"), b"").unwrap();
+        let kept = run(&format!("provider setup sierra folder={} port=11100", root.display()), &store);
+        assert_eq!(kept.code, 0, "{}", kept.err);
+        assert!(kept.out.starts_with("set up Sierra Chart: "), "{}", kept.out);
+        let saved = crate::feeds::setup_of(&store, "sierra");
+        assert_eq!(saved.value("port"), Some("11100"));
+        assert_eq!(crate::feeds::stored_order(&store), vec!["sierra", "yahoo"]);
+        assert_eq!(run("provider setup sierra colour=blue", &store).code, EXIT_USAGE);
+        assert_eq!(run("provider setup yahoo", &store).code, crate::cli::EXIT_REFUSED);
+        crate::features::force(crate::features::Feature::Sierra, false);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
-        assert_eq!(crate::header::load(&store), crate::header::standard());
+        crate::features::set(&store, crate::features::Feature::Trading, true);
+        use crate::header::{Header, Part};
+        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(out.out, "every chart's header shows change,symbol,template\n");
         assert_eq!(run("config set chart_header symbol,price", &store).code, EXIT_USAGE);
-        use crate::header::Part;
-        assert_eq!(crate::header::load(&store), vec![Part::Change, Part::Symbol, Part::Template]);
+        assert_eq!(
+            crate::header::load(&store),
+            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Stripe], right: corner.clone() }
+        );
+        // The stripe put on the left leaves the center; put back, it leaves
+        // the left.
+        assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
+        assert_eq!(
+            crate::header::load(&store),
+            Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new(), right: corner.clone() }
+        );
+        let out = run("config set chart_header_center stripe", &store);
+        assert_eq!(out.out, "every chart's header shows stripe in the center\n");
+        assert_eq!(
+            crate::header::load(&store),
+            Header { left: vec![Part::Symbol], center: vec![Part::Stripe], right: corner.clone() }
+        );
+        assert_eq!(run("config set chart_header_center stripe,banana", &store).code, EXIT_USAGE);
+        // The right is a section like the others, and the corner's controls
+        // parts like the others.
+        let out = run("config set chart_header_right link,settings", &store);
+        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
+        assert_eq!(crate::header::load(&store).right, vec![Part::Link, Part::Settings]);
+        assert_eq!(run("config set chart_header settings,symbol", &store).code, 0);
+        assert_eq!(crate::header::load(&store).right, vec![Part::Link]);
         // Not a chart's to have: there is no flag for it any more.
         assert_eq!(run("chart set --header symbol", &store).code, EXIT_USAGE);
     }
@@ -7974,6 +8259,9 @@ mod tests {
         fn adopt_feed(&self) {
             self.0.borrow_mut().push("feed");
         }
+        fn adopt_features(&self) {
+            self.0.borrow_mut().push("features");
+        }
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}
         fn symbols(&self) -> Option<std::rc::Rc<omacharts_engine::SearchIndex>> {
@@ -8024,5 +8312,92 @@ mod tests {
         assert_eq!(unknown.code, crate::cli::EXIT_ERROR);
         assert!(unknown.err.contains("backup list"), "{}", unknown.err);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `features` lists the flags, every one off on a fresh profile, and
+    /// switches one by name; a name nobody knows is not found.
+    #[test]
+    fn features_are_listed_and_switched_by_name() {
+        let store = bare();
+        for line in ["features", "features list"] {
+            let out = run(line, &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert!(out.out.starts_with("trading"), "{}", out.out);
+            assert!(out.out.lines().next().unwrap().contains(" off "), "{}", out.out);
+        }
+        let listed = json_of(&run("features list --json", &store));
+        assert_eq!(listed["features"][0]["name"], "trading");
+        assert_eq!(listed["features"][0]["on"], false);
+        assert_eq!(listed["features"][0]["default"], false);
+
+        let out = run("features enable trading", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out, "trading is on\n");
+        assert!(crate::features::stored(&store, crate::features::Feature::Trading));
+        assert_eq!(run("features enable trading", &store).out, "trading was already on\n");
+        assert_eq!(json_of(&run("features list --json", &store))["features"][0]["on"], true);
+        let out = json_of(&run("features disable trading --json", &store));
+        assert_eq!(out, json!({"name": "trading", "on": false, "changed": true}));
+        assert!(!crate::features::stored(&store, crate::features::Feature::Trading));
+
+        for line in ["features enable bananas", "features disable bananas"] {
+            let out = run(line, &store);
+            assert_eq!(out.code, crate::cli::EXIT_NOT_FOUND, "{line}: {}", out.err);
+            assert!(out.err.contains("trading"), "{}", out.err);
+        }
+        // Kept out of `config list`, which is not where they are shown.
+        run("features enable trading", &store);
+        assert!(!run("config list", &store).out.contains("feature."));
+    }
+
+    /// Switched with a window open, the window is told, so trading comes
+    /// and goes in it at once; switched to what it already was, nothing.
+    #[test]
+    fn switching_a_feature_reaches_the_window_that_is_open() {
+        let store = bare();
+        let window = Watching::default();
+        let args = |verb: &str| ["omacharts", "features", verb, "trading"].map(String::from).to_vec();
+        assert_eq!(dispatch(&args("enable"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(dispatch(&args("enable"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(dispatch(&args("disable"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["features", "features"]);
+    }
+
+    /// The flags are not advertised: no `--help`, no `surface --json`, no
+    /// completions and no man page name them, though the parser takes them.
+    #[test]
+    fn features_are_accepted_and_listed_nowhere() {
+        let store = bare();
+        let help = run("--help", &store).out;
+        assert!(!help.contains("features"), "{help}");
+        let surface = run("surface --json", &store).out;
+        assert!(!surface.contains("features") && !surface.contains("\"trading"), "{surface}");
+        for shell in ["bash", "zsh", "fish"] {
+            let script = run(&format!("surface --completions {shell}"), &store).out;
+            assert!(!script.contains("features"), "{shell}");
+        }
+        assert!(!run("surface --man", &store).out.contains("features"));
+        assert!(crate::cli::is_command(&["omacharts".into(), "features".into()]));
+        assert_eq!(run("features list", &store).code, 0);
+    }
+
+    /// With trading off, the header knows none of trading's parts: they are
+    /// neither typed nor suggested, and the ones a header already holds stay
+    /// where they were for when it is switched on.
+    #[test]
+    fn with_trading_off_the_header_has_no_trading_parts() {
+        use crate::header::Part;
+        let store = bare();
+        let out = run("config set chart_header_right trade,settings", &store);
+        assert_eq!(out.code, EXIT_USAGE);
+        assert!(!out.err.contains("day_pnl") && !out.err.contains("account"), "{}", out.err);
+        let out = run("config set chart_header_right link,settings", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
+        assert_eq!(
+            crate::header::load(&store).right,
+            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
+            "trading's parts kept where they were"
+        );
     }
 }

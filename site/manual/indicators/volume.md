@@ -24,7 +24,7 @@ The **Default** [chart template](/manual/chart-templates/) holds Volume, with [S
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add volume
   move 795 595
@@ -63,7 +63,7 @@ A composite belongs to the chart it was made on, to the symbol it is showing and
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 5m --session regular --template none
   omacharts chart indicator add volume_profile
   move 795 595

@@ -11,7 +11,7 @@ A drawing is a mark you put on a chart by hand. It stays on the same bars as the
 theme: tokyo-night
 window: 2560x1600 @2, scratchpad kit (bin/headless-window, sandboxed HOME)
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol NVDA --resolution 1D --template none
   omacharts chart drawing add line --from 2026-06-26,190 --to 2026-09-22,209 --config 3 --text "rising lows" --text-at bottom
   omacharts chart drawing add hline --from 2026-05-14,236 --to 2026-10-20,236 --config 4 --text "236 resistance" --text-at top-left
@@ -28,7 +28,7 @@ crop: none
 
 ## The tools
 
-<kbd>Ctrl</kbd> + <kbd>D</kbd>, or the toggle in the window's top-left corner, shows and hides the tools down the left edge. A tool's key picks it whether the tools are showing or not.
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>, the toggle in the window's bottom-left corner, or **Sidebars** → **Drawing tools** in a chart's right-click menu shows and hides the tools down the left edge. The toggle stays where it is as they come and go: left of the bottom-left chart's first date while the tools are hidden, and at their foot while they are out. A tool's key picks it whether the tools are showing or not.
 
 | Tool | Key | Placing it |
 |---|---|---|
@@ -52,7 +52,7 @@ window: 2560x1600 @2, bin/headless-window (HOME sandboxed, with the Omarchy them
 state:
   omacharts config set theme omarchy:tokyo-night   (before the window opens)
   omacharts chart set --symbol NVDA --resolution 1D --template none
-  key ctrl+d
+  key ctrl+shift+d
   key alt+r
   key alt+6
   move 1275 795
@@ -88,7 +88,7 @@ window: 2560x1600 @2, bin/headless-window (HOME sandboxed and the theme seeded, 
 state:
   omacharts config set theme omarchy:tokyo-night   (before the window opens)
   omacharts chart set --symbol NVDA --resolution 1D --template none
-  key ctrl+d
+  key ctrl+shift+d
   key alt+m
   click 515 520
   move 668 160
@@ -140,7 +140,7 @@ theme: tokyo-night
 window: 2560x1600 @2, bin/headless-window start --size 2560x1600 (HOME sandboxed)
 state:
   (the state of the first figure)
-  key ctrl+d
+  key ctrl+shift+d
   key Escape
   click 900 300          # the range box, nearer its left edge so the menu has room
   run bin/virtual-pointer --extent 1280x800 --button right click 900 300
@@ -175,7 +175,7 @@ theme: tokyo-night
 window: 2560x1600 @2, scratchpad kit
 state:
   (the state of the first figure)
-  key ctrl+d
+  key ctrl+shift+d
   key Escape
   click 960 330
   key alt+Return
@@ -240,7 +240,7 @@ theme: tokyo-night
 window: 2560x1600 @2, scratchpad kit
 state:
   (the state of the first figure)
-  key ctrl+d
+  key ctrl+shift+d
   run bin/virtual-pointer --button right click 24 116
   click 90 139         # Line configurations…
   move 1275 795
@@ -281,7 +281,7 @@ Every configuration's point of control is Ink, and its outline and background ar
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1h
   omacharts chart indicator add volume_profile
   omacharts chart drawing add profile --from 2026-10-14,700 --to 2026-10-21,700 --config 9
@@ -321,7 +321,7 @@ Every property is part of the configuration: **Save as…** keeps the bands with
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1h
   omacharts chart drawing add avwap --from 2026-10-20,0 --config 4 --bands 1,2
   omacharts chart drawing add avwap --from 2026-10-27T09:30,0 --config 3
@@ -360,19 +360,19 @@ A text drawing is text at a point. Any other drawing can carry a label, which si
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Puts a figure's label against that edge. Only when it has a label; otherwise the arrows nudge |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>.</kbd> | Puts the label back in the centre |
 
-A corner position is set in the properties' **Position** grid. While you are typing in a drawing, <kbd>Ctrl</kbd> + <kbd>B</kbd> and <kbd>Ctrl</kbd> + <kbd>I</kbd> do not toggle the sidebar or the indicator search.
+A corner position is set in the properties' **Position** grid. While you are typing in a drawing, <kbd>Ctrl</kbd> + <kbd>B</kbd> and <kbd>Ctrl</kbd> + <kbd>I</kbd> are bold and italic and nothing else: <kbd>Ctrl</kbd> + <kbd>I</kbd> does not open the indicators.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1600 @2, scratchpad kit
 state:
   (the state of the first figure)
-  key ctrl+d
+  key ctrl+shift+d
   key Escape
   click 1050 85
   key Return
   type "new high"
-  key ctrl+b
+  key ctrl+shift+b
 capture: bin/headless-window shot /tmp/typing.png
 crop: 1780,40,560,400
 -->

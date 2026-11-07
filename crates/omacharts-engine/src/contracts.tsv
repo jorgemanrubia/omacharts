@@ -1,48 +1,80 @@
-# root	exchange	hours
-# Which exchange each futures root trades on, and on which of its hours.
+# root	exchange	hours	tick	point	currency	quoted	months	expiry	roll
+# Which exchange each futures root trades on, on which of its hours, and the
+# size of one tick of its price: the step every price it trades at is a
+# whole number of, in the units it is quoted in (grains and livestock in
+# cents, Treasuries in points, so 1/64 is half a thirty-second). A fraction
+# is written as one. A tick left as - is not known, and nothing that needs
+# one, volume at price among them, is offered for that root. A point is what
+# one whole unit of that price is worth on one contract, in the currency it
+# trades in: $50 for ES, so a tick of it is $12.50. Left as -, it is not
+# known, and an open position in it is not marked to the market here. The
+# currency is the one a point is worth in, which is what profit and loss
+# comes out in: dollars for 6E as for ES. Quoted says what the price is a
+# number of. Ticks and points are the exchanges' own specifications (CME
+# Group's contract specs pages, ICE Futures U.S. for the softs) for outright
+# trades; calendar spreads trade in finer steps on some roots, and are not
+# what a chart of the root shows.
+# Months are the codes of the contract months the root lists (all for every
+# month; for the metals, the active ones). Expiry is the last day a contract
+# of a month trades, as the exchange's rulebook states it, and roll the
+# first day the contract after it is the front month, both in the words
+# crates/omacharts-engine/src/contracts.rs reads: an anchor (3rd-fri,
+# 3rd-wed, 1st-fri, eom, prior-eom, prior2-eom, prior-25th, 15th, bom,
+# 6th-bday, 10th-bday, or expiry for the root's own expiry) and steps back
+# from it in business days (3b, strictly before; 0b for the anchor or the
+# business day before it) or calendar days (8d). Equity index contracts
+# roll on the Thursday eight days before the third-Friday expiry, where the
+# volume goes over (CME's roll-dates page names the Monday of expiry week);
+# contracts that are delivered roll the business day before first notice
+# day: Treasuries two business days before the delivery month (the day
+# before first position day), grains and metals the last business day of
+# the month before, cattle the business day after the first Friday, coffee
+# seven business days before the delivery month, cocoa ten before its sixth
+# business day, cotton five; energy, hogs, sugar and FX, which settle or
+# deliver after their last trade, roll a few business days before it.
 # One exchange keeps different hours for different products: the CME's
 # livestock closes at lunchtime while its equity index contracts trade all
 # night. A root not listed here is taken to be on Globex's equity index hours,
 # which is what most of what gets charted keeps.
-ES	CME	cme_equity_index
-MES	CME	cme_equity_index
-NQ	CME	cme_equity_index
-MNQ	CME	cme_equity_index
-RTY	CME	cme_equity_index
-M2K	CME	cme_equity_index
-YM	CBOT	cme_equity_index
-MYM	CBOT	cme_equity_index
-6E	CME	cme_rates_and_fx
-6J	CME	cme_rates_and_fx
-6B	CME	cme_rates_and_fx
-6A	CME	cme_rates_and_fx
-6C	CME	cme_rates_and_fx
-6S	CME	cme_rates_and_fx
-ZB	CBOT	cme_rates_and_fx
-ZN	CBOT	cme_rates_and_fx
-ZF	CBOT	cme_rates_and_fx
-ZT	CBOT	cme_rates_and_fx
-ZC	CBOT	cme_grains
-ZS	CBOT	cme_grains
-ZW	CBOT	cme_grains
-ZL	CBOT	cme_grains
-ZM	CBOT	cme_grains
-LE	CME	cme_livestock
-HE	CME	cme_livestock
-CL	NYMEX	nymex_energy
-MCL	NYMEX	nymex_energy
-BZ	NYMEX	nymex_energy
-NG	NYMEX	nymex_energy
-RB	NYMEX	nymex_energy
-HO	NYMEX	nymex_energy
-PL	NYMEX	nymex_platinum
-PA	NYMEX	nymex_platinum
-GC	COMEX	comex_metals
-MGC	COMEX	comex_metals
-SI	COMEX	comex_silver
-SIL	COMEX	comex_silver
-HG	COMEX	comex_copper
-KC	ICEUS	ice_us_softs
-SB	ICEUS	ice_us_sugar
-CC	ICEUS	ice_us_cocoa
-CT	ICEUS	ice_us_cotton
+ES	CME	cme_equity_index	0.25	50	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+MES	CME	cme_equity_index	0.25	5	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+NQ	CME	cme_equity_index	0.25	20	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+MNQ	CME	cme_equity_index	0.25	2	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+RTY	CME	cme_equity_index	0.1	50	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+M2K	CME	cme_equity_index	0.1	5	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+YM	CBOT	cme_equity_index	1	5	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+MYM	CBOT	cme_equity_index	1	0.5	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
+6E	CME	cme_rates_and_fx	0.00005	125000	USD	USD per EUR	HMUZ	3rd-wed-2b	expiry-2b
+6J	CME	cme_rates_and_fx	0.0000005	12500000	USD	USD per JPY	HMUZ	3rd-wed-2b	expiry-2b
+6B	CME	cme_rates_and_fx	0.0001	62500	USD	USD per GBP	HMUZ	3rd-wed-2b	expiry-2b
+6A	CME	cme_rates_and_fx	0.00005	100000	USD	USD per AUD	HMUZ	3rd-wed-2b	expiry-2b
+6C	CME	cme_rates_and_fx	0.00005	100000	USD	USD per CAD	HMUZ	3rd-wed-1b	expiry-2b
+6S	CME	cme_rates_and_fx	0.00005	125000	USD	USD per CHF	HMUZ	3rd-wed-2b	expiry-2b
+ZB	CBOT	cme_rates_and_fx	1/32	1000	USD	points and 32nds	HMUZ	eom-7b	bom-3b
+ZN	CBOT	cme_rates_and_fx	1/64	1000	USD	points and 32nds	HMUZ	eom-7b	bom-3b
+ZF	CBOT	cme_rates_and_fx	1/128	1000	USD	points and 32nds	HMUZ	eom	bom-3b
+ZT	CBOT	cme_rates_and_fx	1/256	2000	USD	points and 32nds	HMUZ	eom	bom-3b
+ZC	CBOT	cme_grains	0.25	50	USD	cents per bushel	HKNUZ	15th-1b	prior-eom-1b
+ZS	CBOT	cme_grains	0.25	50	USD	cents per bushel	FHKNQUX	15th-1b	prior-eom-1b
+ZW	CBOT	cme_grains	0.25	50	USD	cents per bushel	HKNUZ	15th-1b	prior-eom-1b
+ZL	CBOT	cme_grains	0.01	600	USD	cents per pound	FHKNQUVZ	15th-1b	prior-eom-1b
+ZM	CBOT	cme_grains	0.1	100	USD	USD per short ton	FHKNQUVZ	15th-1b	prior-eom-1b
+LE	CME	cme_livestock	0.025	400	USD	cents per pound	GJMQVZ	eom	1st-fri
+HE	CME	cme_livestock	0.025	400	USD	cents per pound	GJKMNQVZ	10th-bday	expiry-3b
+CL	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel	all	prior-25th-3b	expiry-3b
+MCL	NYMEX	nymex_energy	0.01	100	USD	USD per barrel	all	prior-25th-4b	expiry-3b
+BZ	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel	all	prior2-eom	expiry-3b
+NG	NYMEX	nymex_energy	0.001	10000	USD	USD per MMBtu	all	bom-3b	expiry-3b
+RB	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon	all	prior-eom	expiry-3b
+HO	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon	all	prior-eom	expiry-3b
+PL	NYMEX	nymex_platinum	0.1	50	USD	USD per troy ounce	FJNV	eom-2b	prior-eom-1b
+PA	NYMEX	nymex_platinum	0.5	100	USD	USD per troy ounce	HMUZ	eom-2b	prior-eom-1b
+GC	COMEX	comex_metals	0.1	100	USD	USD per troy ounce	GJMQZ	eom-2b	prior-eom-1b
+MGC	COMEX	comex_metals	0.1	10	USD	USD per troy ounce	GJMQZ	eom-2b	prior-eom-1b
+SI	COMEX	comex_silver	0.005	5000	USD	USD per troy ounce	HKNUZ	eom-2b	prior-eom-1b
+SIL	COMEX	comex_silver	0.005	1000	USD	USD per troy ounce	HKNUZ	eom-2b	prior-eom-1b
+HG	COMEX	comex_copper	0.0005	25000	USD	USD per pound	HKNUZ	eom-2b	prior-eom-1b
+KC	ICEUS	ice_us_softs	0.05	375	USD	cents per pound	HKNUZ	eom-8b	bom-8b
+SB	ICEUS	ice_us_sugar	0.01	1120	USD	cents per pound	HKNV	prior-eom	expiry-1b
+CC	ICEUS	ice_us_cocoa	1	10	USD	USD per metric ton	HKNUZ	eom-11b	6th-bday-11b
+CT	ICEUS	ice_us_cotton	0.01	500	USD	cents per pound	HKNVZ	eom-16b	bom-6b

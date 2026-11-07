@@ -8,7 +8,17 @@ license = "MIT"
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10.4"
+async-channel = "2.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 ureq = { version = "3.4.2", features = ["json"] }
 tos-market = { path = "../tos-market" }
+rithmic = { path = "../rithmic" }
+# Sierra Chart: its data files, and its DTC server for what they cannot say.
+sierra = { path = "../sierra" }
+dtc = { path = "../dtc" }
+
+[features]
+# The fake feeds that prove the boundary holds, for tests only: see
+# src/providers/fake.rs.
+fakes = []
