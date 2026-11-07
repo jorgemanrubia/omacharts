@@ -703,8 +703,8 @@ omacharts chartbook duplicate Macro --name "Macro weekly" --switch
 ## Drawing on a chart
 
 A drawing is a line between two anchors, a box or an ellipse with them at
-opposite corners, words at one, a volume profile of the bars between two, or an anchored VWAP
-from one. An anchor is a moment and a price —
+opposite corners, words at one, a volume profile of the bars between two, an anchored VWAP
+from one, or a Fibonacci retracement of the swing between two. An anchor is a moment and a price —
 `2026-09-01,180.5`, or with the minute, `2026-09-01T14:30,180.5`, or unix
 seconds — which is how the chart keeps them too, so a line through two daily
 closes still passes through the same two moments on the hourly chart.
@@ -776,6 +776,25 @@ words.
 omacharts chart drawing add avwap --from 2026-09-08,0 --bands 1,3
 omacharts chart drawing set --id 3 --from 2026-09-15,0 --source close
 omacharts chart drawing set --id 3 --band 3 --band-deviations 2.5 --band-color violet
+```
+
+**A Fibonacci retracement** (`fib`, or `fibonacci`, `retracement`) spans the
+swing from `--from` to `--to`: 0 is at `--to` and 1 at `--from`, so the levels
+follow the direction it was drawn. It has the seven levels 0, 0.236, 0.382,
+0.5, 0.618, 0.786 and 1, all on, each a solid hairline in the drawing's
+`--color`. `--levels` says which are drawn (ratios comma-separated, `all` or
+`none`), `--labels on|off` whether each is labelled with its ratio and price,
+and `--level-color` (a colour, or `drawing` for the drawing's own),
+`--level-width` and `--level-style` change a level's look; `--level RATIO`
+says which, and without it they change all seven. `--width` sets every
+level's thickness at once. All of it is part of the style, so
+`configure fib --config N` takes it too. It is moved whole, like a line, and
+takes no words.
+
+```
+omacharts chart drawing add fib --from 2026-09-08,178 --to 2026-09-19,192
+omacharts chart drawing set --id 4 --level 0.618 --level-color amber --level-style dashed
+omacharts chart drawing set --id 4 --levels 0,0.5,0.618,1 --labels off
 ```
 
 **Any other drawing can carry words.** `--text` on a line, a box or an ellipse is a

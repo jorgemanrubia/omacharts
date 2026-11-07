@@ -280,6 +280,20 @@ omacharts chart drawing add avwap --from 2026-10-20,0 --bands 1,3
 omacharts chart drawing configure avwap --config 5 --bands 1,2,3 --band 3 --band-style dashed
 ```
 
+**A Fibonacci retracement is a drawing of two anchors.** `fib` spans the
+swing from `--from` to `--to`, with 0 at `--to` and 1 at `--from`, so drag
+order is direction: from a low to a high for the pullback levels. Its seven
+levels (0, 0.236, 0.382, 0.5, 0.618, 0.786, 1) are all on and in the
+drawing's colour. `--levels` picks which are drawn, `--labels on|off` hides
+the ratio-and-price labels, and `--level RATIO` with `--level-color`,
+`--level-width` or `--level-style` restyles one level; without `--level`
+they change all seven. It takes no `--text`.
+
+```
+omacharts chart drawing add fib --from 2026-10-01,100 --to 2026-10-14,120
+omacharts chart drawing configure fib --config 5 --levels 0,0.382,0.5,0.618,1 --level 0.5 --level-style dashed
+```
+
 **Words go on the chart two ways.** `text` is a drawing that is nothing but
 what it says, at one anchor — `--from` alone, and `--to` is not read. Any
 other kind takes `--text` as a *label on itself*, placed by `--text-at`,
