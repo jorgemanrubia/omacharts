@@ -15,7 +15,7 @@ state:
   omacharts chartbook delete "Chartbook 1"
   omacharts chart set --resolution 1D
   omacharts config set chart_header symbol,resolution,change,template
-  key ctrl+b
+  key ctrl+shift+b
 capture: bin/headless-window cli chart screenshot --output /tmp/candles.png
 crop: none (resized to 2000 wide)
 -->
@@ -59,7 +59,7 @@ state:
   omacharts chartbook delete "Chartbook 1"
   omacharts chart set --resolution 1D
   click 400 400
-  key ctrl+b                # sidebar hidden
+  key ctrl+shift+b                # sidebar hidden
   move 640 600
   key 4
   type h
@@ -211,7 +211,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   omacharts chart set --symbol NVDA --resolution 1D
-  key ctrl+b                          # sidebar hidden
+  key ctrl+shift+b                          # sidebar hidden
   omacharts chart split horizontal    # so the left chart's price axis is mid-window and the menu has room
   omacharts chart set --chart pos:0 --style candles
   omacharts chart set --chart pos:1 --style candles
@@ -400,21 +400,21 @@ state:
 capture: bin/headless-window shot /tmp/unserved.png
 crop: 0,0,1998,880, resized to 1400 wide
 -->
-{% include figure.html src="/assets/manual/charts/feed-failure.png" alt="A EURUSD daily chart with no bars and the line: This data provider cannot chart this symbol. Another one may be able to." caption="EURUSD on a feed that cannot chart it." %}
+{% include figure.html src="/assets/manual/charts/feed-failure.png" alt="A EURUSD daily chart with no bars and the line: No data feed in Preferences → Data charts this symbol." caption="EURUSD on a feed that cannot chart it." %}
 
 | The chart says | What it means | What to do |
 |---|---|---|
 | *Press Ctrl+K to find a symbol* | The chart has no symbol yet. | Type a letter over it ([Symbols](/manual/symbols/)). |
 | *Loading…* | The prices are loading. | Nothing. |
 | *No data for this symbol* | The feed has no bars for it, such as a delisted ticker. | Try another symbol, or another feed. |
-| *The data provider does not have this symbol.* | The feed has no such ticker. | Check the spelling and venue suffix ([Symbols](/manual/symbols/)). |
-| *This data provider cannot chart this symbol. Another one may be able to.* | The feed cannot chart this kind of instrument. | Switch feed ([Market data feeds](/manual/market-data/)). |
-| *The data provider does not serve this resolution.* | The feed has no bars at this resolution. | Try another resolution. |
-| *This data provider is not signed in. Open Preferences → Market data → Provider.* | thinkorswim is chosen and is not signed in, or the sign-in has expired. | Preferences › Data › **Sign in…**. |
-| *Rate limited by the data provider. Prices fill in shortly.* | The feed has stopped sending prices for a while. | Wait. Prices fill in when it allows them again. |
+| *The data feed does not have this symbol.* | The feed has no such ticker. | Check the spelling and venue suffix ([Symbols](/manual/symbols/)). |
+| *No data feed in Preferences → Data charts this symbol.* | The feed cannot chart this kind of instrument. | Switch feed ([Market data feeds](/manual/market-data/)). |
+| *The data feed does not serve this resolution.* | The feed has no bars at this resolution. | Try another resolution. |
+| *This data feed is not signed in. Open Preferences → Data.* | thinkorswim is chosen and is not signed in, or the sign-in has expired. | Preferences › Data › **Sign in…**. |
+| *Rate limited by the data feed. Prices fill in shortly.* | The feed has stopped sending prices for a while. | Wait. Prices fill in when it allows them again. |
 | *No network connection. Prices fill in when there is one.* | This machine is offline. | Nothing. It fills in when the connection is back. |
-| *The data provider is not answering. Prices fill in when it does.* | The feed is not answering. | Wait. If it persists, check the feed in Preferences › Data. |
-| *The data provider sent a reply this could not read.* | The feed sent something that was not prices. | Wait for the next refresh. |
+| *The data feed is not answering. Prices fill in when it does.* | The feed is not answering. | Wait. If it persists, check the feed in Preferences › Data. |
+| *The data feed sent a reply this could not read.* | The feed sent something that was not prices. | Wait for the next refresh. |
 | *Could not open the local price cache.* | The disk is full, or Omacharts cannot write to its data folder. | Check the data folder ([Where your data lives](/manual/your-data/)). |
 
 A chart that has bars but could not get newer ones keeps them and shows a small rose dot in the top-right corner of the plot. Hover over it for the reason.
@@ -423,7 +423,7 @@ Prices refresh as bars close. A chart does not refresh while its market is shut 
 
 ## The header
 
-The header is the line at a chart's top-left. It is the same on every chart in every chartbook, and can show these parts in any order.
+The header is the line at a chart's top-left and the row centred across its top. It is the same on every chart in every chartbook. Each part goes in one of its two sections, **Left** or **Center**, in any order.
 
 | Part | Shows |
 |---|---|
@@ -431,10 +431,11 @@ The header is the line at a chart's top-left. It is the same on every chart in e
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
 | **Daily change** | The day's move as a percentage, in the chart's up and down colours. The same figure as the sidebar's |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
+| **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
 
-Out of the box it shows the symbol and the resolution.
+Out of the box the left shows the symbol and the resolution, and the center the resolutions stripe.
 
-Edit it in Preferences › Charts › **Header**, under **In the header**, or right-click the header and choose **Edit header…**, which opens the same tab. The **+** beside the title adds a part not yet there, a part's bin removes it, and dragging a part by its handle reorders it.
+Edit it in Preferences › Charts › **Header**, or right-click the header and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
 
 ## The chart menu
 
@@ -463,6 +464,7 @@ crop: 560,262,640,780   (the whole menu, 20px layout margin)
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
+| **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |
 | **Close chart** | Closes it. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#closing-a-chart) |
 | **Watchlist** › **Focus**, **Follow**, **Pinned** | The chart's link mode | [Choosing a link mode](/manual/watchlists/#choosing-a-link-mode) |

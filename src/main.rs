@@ -9,6 +9,7 @@ use gtk::gio;
 use gtk::gio::prelude::ApplicationCommandLineExt;
 use gtk::glib;
 use omacharts::cli;
+use omacharts::log_words;
 use omacharts::store::Store;
 use omacharts::ui::window::NotShown;
 use omacharts::ui::Window;
@@ -16,6 +17,7 @@ use omacharts::ui::Window;
 const APP_ID: &str = "com.jorgemanrubia.Omacharts";
 
 fn main() -> glib::ExitCode {
+    omacharts::feeds::identify();
     let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
 
     // The launch options come off first, so that everything below reads a
@@ -63,7 +65,11 @@ fn main() -> glib::ExitCode {
         return report(refused);
     }
     if cli::is_command(&args) && !app_is_running() {
-        return report(cli::run(&args, &open_store(), None, &cli::Here));
+        let store = open_store();
+        // What the flags switch, as a window would read them: a feed behind
+        // one is there for the command only while it is on.
+        omacharts::features::adopt(&store);
+        return report(cli::run(&args, &store, None, &cli::Here));
     }
     if let Some(code) = peel_off(&args).filter(|_| !cli::is_command(&args)) {
         return code;
@@ -137,6 +143,11 @@ fn main() -> glib::ExitCode {
                 // rather than nothing at all.
                 Err(error) => {
                     eprintln!("omacharts: {error}; carrying on without saving anything");
+                    log_words::say(log_words::trouble(
+                        "Settings",
+                        "Settings could not be opened · nothing is saved this time",
+                        &error,
+                    ));
                     Store::memory().expect("open database")
                 }
             };
@@ -168,6 +179,10 @@ fn main() -> glib::ExitCode {
                                 "omacharts: cache over its limit, dropped {} series",
                                 swept.dropped
                             );
+                            log_words::say(log_words::note(
+                                "Price cache",
+                                format!("Over its limit · dropped {} series", swept.dropped),
+                            ));
                         }
                     });
                 });
@@ -186,9 +201,17 @@ fn main() -> glib::ExitCode {
             && let Some(feed) = asked_for
             && window.provider().id() != feed.id
         {
-            window.switch_feed(std::sync::Arc::from(
-                omacharts_engine::providers::selected(Some(feed.id)),
-            ));
+            if feed.setup.is_some_and(|setup| setup.trades())
+                && let Ok(store) = Store::open()
+            {
+                omacharts::feeds::remember_logins(&store);
+            }
+            window.switch_feeds(
+                omacharts_engine::providers::ordered(&omacharts::feeds::launch_order(feed))
+                    .into_iter()
+                    .map(std::sync::Arc::from)
+                    .collect(),
+            );
             command_line.printerr_literal(&format!(
                 "omacharts: charting from {} for this window; `omacharts config set \
                  provider {}` makes it the default\n",
@@ -287,6 +310,7 @@ fn main() -> glib::ExitCode {
                 && let Err(error) = omacharts::bar_plugin::refresh(&home)
             {
                 eprintln!("omacharts: bar widget not updated: {error}");
+                log_words::say(log_words::trouble("Bar widget", "Bar widget not updated", &error));
             }
         });
 

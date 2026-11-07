@@ -25,7 +25,7 @@ Moving one level past the other pushes the other along.
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add rsi
   move 795 595
@@ -52,7 +52,7 @@ Moving the fast length up to the slow one pushes the slow one along, and the oth
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add macd
   move 795 595
@@ -74,7 +74,7 @@ Its own strip. Wilder's average of the true range (the bar's range, stretched to
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add atr
   move 795 595
@@ -101,7 +101,7 @@ Its own strip. The slow stochastic. Where each close sits in the range of the la
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add stochastic
   move 795 595

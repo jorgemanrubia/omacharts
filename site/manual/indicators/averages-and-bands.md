@@ -20,7 +20,7 @@ Drawn over the price. The average close of the last *period* bars. It has no val
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -42,7 +42,7 @@ Drawn over the price. An average of closes that weights the latest bars most, so
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add ema
   move 795 595
@@ -64,7 +64,7 @@ Drawn over the price. The average price paid since the period began, each bar's 
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 5m --session regular --template none
   omacharts chart indicator add vwap --bands 1,2,3
   move 795 595
@@ -89,7 +89,7 @@ The label includes the multiple, as in **BB 20 2** and **BB 20 2.5**.
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1D --template none
   omacharts chart indicator add bollinger
   move 795 595

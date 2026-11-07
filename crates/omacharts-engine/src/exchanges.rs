@@ -145,8 +145,27 @@ impl Exchange {
 pub struct Registry {
     exchanges: Vec<Exchange>,
     hours: Vec<Hours>,
-    /// A futures root, the exchange it trades on, and the hours it keeps.
-    contracts: Vec<(String, usize, usize)>,
+    contracts: Vec<Contract>,
+}
+
+/// A futures root: the exchange it trades on, the hours it keeps there, and
+/// the size of one tick of its price and what a point of it is worth when
+/// the table knows them.
+#[derive(Debug)]
+struct Contract {
+    root: String,
+    exchange: usize,
+    hours: usize,
+    tick: Option<f64>,
+    point: Option<f64>,
+    currency: Option<String>,
+    quoted: Option<String>,
+    /// The month codes it lists, `HMUZ`, when the table says.
+    months: Option<String>,
+    /// When a contract of it stops trading, and when the one after it
+    /// becomes the front month, in the words [`crate::contracts`] reads.
+    expiry: Option<String>,
+    roll: Option<String>,
 }
 
 /// The tables, read once.
@@ -179,6 +198,15 @@ fn list(field: &str) -> Vec<String> {
     dash(field)
         .map(|text| text.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default()
+}
+
+/// A tick size: a decimal, or a fraction such as `1/64`, above zero.
+fn tick(text: &str) -> Option<f64> {
+    let value = match text.split_once('/') {
+        Some((top, bottom)) => top.trim().parse::<f64>().ok()? / bottom.trim().parse::<f64>().ok()?,
+        None => text.parse::<f64>().ok()?,
+    };
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 /// `HH:MM`, in minutes past midnight.
@@ -262,10 +290,27 @@ impl Registry {
         let mut parsed_contracts = Vec::new();
         for fields in rows(contracts) {
             let row = (|| {
-                let [root, exchange, hours, ..] = fields.as_slice() else { return None };
+                let [root, exchange, hours, rest @ ..] = fields.as_slice() else { return None };
                 let exchange = parsed_exchanges.iter().position(|e| e.code == *exchange)?;
                 let hours = parsed_hours.iter().position(|h| h.id == *hours)?;
-                Some((root.to_string(), exchange, hours))
+                // A point is read as a tick is: a number above zero.
+                let positive = |at: usize| match rest.get(at).and_then(|field| dash(field)) {
+                    Some(text) => tick(text).map(Some),
+                    None => Some(None),
+                };
+                let text = |at: usize| rest.get(at).and_then(|field| dash(field)).map(str::to_string);
+                Some(Contract {
+                    root: root.to_string(),
+                    exchange,
+                    hours,
+                    tick: positive(0)?,
+                    point: positive(1)?,
+                    currency: text(2),
+                    quoted: text(3),
+                    months: text(4),
+                    expiry: text(5),
+                    roll: text(6),
+                })
             })();
             match row {
                 Some(row) => parsed_contracts.push(row),
@@ -286,6 +331,59 @@ impl Registry {
     /// the other names listings use for it.
     pub fn exchange(&self, name: &str) -> Option<&Exchange> {
         self.exchanges.iter().find(|e| e.answers_to(name))
+    }
+
+    /// The code of the exchange `contracts.tsv` puts a futures root on, or
+    /// `None` for a root it does not list. Unlike [`Registry::for_instrument`],
+    /// which takes an unlisted root to be on Globex so that it has hours,
+    /// this guesses nothing: a feed deciding whether it serves a root must
+    /// not serve one on the strength of a default.
+    pub fn contract_exchange(&self, root: &str) -> Option<&str> {
+        let contract = self.contract(root)?;
+        self.exchanges.get(contract.exchange).map(|exchange| exchange.code.as_str())
+    }
+
+    /// The size of one tick of a futures root's price, as `contracts.tsv`
+    /// gives it: every price it trades at is a whole number of these. `None`
+    /// for a root it does not list, or lists without one.
+    pub fn contract_tick(&self, root: &str) -> Option<f64> {
+        self.contract(root)?.tick
+    }
+
+    /// What one whole point of a futures root's price is worth on one
+    /// contract, in the currency it trades in, as `contracts.tsv` gives it:
+    /// 50 for ES. `None` for a root it does not list, or lists without one.
+    pub fn contract_point(&self, root: &str) -> Option<f64> {
+        self.contract(root)?.point
+    }
+
+    /// The currency a point of a futures root is worth in, as
+    /// `contracts.tsv` gives it: "USD" for 6E as for ES.
+    pub fn contract_currency(&self, root: &str) -> Option<&str> {
+        self.contract(root)?.currency.as_deref()
+    }
+
+    /// What a futures root's price is a number of, as `contracts.tsv` says:
+    /// "cents per bushel" for ZC.
+    pub fn contract_quoted(&self, root: &str) -> Option<&str> {
+        self.contract(root)?.quoted.as_deref()
+    }
+
+    /// A futures root's month cycle, and when a contract of it expires and
+    /// when the next becomes the front month, as `contracts.tsv` writes
+    /// them: `None` for a root it does not list, or lists without them.
+    pub fn contract_months(&self, root: &str) -> Option<(&str, &str, &str)> {
+        let contract = self.contract(root)?;
+        Some((contract.months.as_deref()?, contract.expiry.as_deref()?, contract.roll.as_deref()?))
+    }
+
+    /// Every futures root `contracts.tsv` lists.
+    pub fn contract_roots(&self) -> impl Iterator<Item = &str> {
+        self.contracts.iter().map(|contract| contract.root.as_str())
+    }
+
+    fn contract(&self, root: &str) -> Option<&Contract> {
+        self.contracts.iter().find(|contract| contract.root == root)
     }
 
     fn by_code(&self, code: &str) -> Option<usize> {
@@ -309,8 +407,8 @@ impl Registry {
     pub fn for_instrument(&self, instrument: &Instrument) -> Option<Schedule<'_>> {
         match instrument.kind {
             InstrumentKind::FutureRoot => {
-                return match self.contracts.iter().find(|(root, ..)| *root == instrument.symbol) {
-                    Some((_, exchange, hours)) => self.schedule(*exchange, Some(*hours)),
+                return match self.contract(&instrument.symbol) {
+                    Some(contract) => self.schedule(contract.exchange, Some(contract.hours)),
                     None => self.schedule(self.by_code("CME")?, None),
                 };
             }
@@ -565,11 +663,83 @@ mod tests {
     fn every_shipped_futures_root_has_its_exchange() {
         for root in crate::symbols::seed().iter().filter(|i| i.kind == InstrumentKind::FutureRoot) {
             assert!(
-                registry().contracts.iter().any(|(r, ..)| *r == root.symbol),
+                registry().contract(&root.symbol).is_some(),
                 "{} has no row in contracts.tsv",
                 root.symbol
             );
         }
+    }
+
+    /// A tick is the contract's, read from the table: decimals and
+    /// fractions both, and every root listed has one.
+    #[test]
+    fn every_root_has_its_tick() {
+        let r = registry();
+        for (root, tick) in [
+            ("ES", 0.25),
+            ("MES", 0.25),
+            ("NQ", 0.25),
+            ("MNQ", 0.25),
+            ("YM", 1.0),
+            ("RTY", 0.1),
+            ("CL", 0.01),
+            ("NG", 0.001),
+            ("GC", 0.1),
+            ("SI", 0.005),
+            ("ZN", 1.0 / 64.0),
+            ("ZB", 1.0 / 32.0),
+            ("ZT", 1.0 / 256.0),
+            ("6E", 0.00005),
+            ("6J", 0.000_000_5),
+            ("ZC", 0.25),
+        ] {
+            assert_eq!(r.contract_tick(root), Some(tick), "{root}");
+        }
+        for contract in &r.contracts {
+            assert!(contract.tick.is_some(), "{} has no tick in contracts.tsv", contract.root);
+        }
+        assert_eq!(r.contract_tick("NOPE"), None);
+        assert_eq!(instrument(InstrumentKind::FutureRoot, "ES", None).tick_size(), Some(0.25));
+        assert_eq!(instrument(InstrumentKind::Equity, "ES", None).tick_size(), None, "a stock has no one tick");
+    }
+
+    /// What a point is worth, so that a tick of it comes to what the
+    /// exchange says a tick is worth, and every root listed has one.
+    #[test]
+    fn every_root_has_its_point_value() {
+        let r = registry();
+        for (root, tick_value) in [
+            ("ES", 12.5),
+            ("MES", 1.25),
+            ("NQ", 5.0),
+            ("YM", 5.0),
+            ("CL", 10.0),
+            ("NG", 10.0),
+            ("GC", 10.0),
+            ("ZN", 15.625),
+            ("6E", 6.25),
+            ("ZC", 12.5),
+            ("KC", 18.75),
+        ] {
+            let value = r.contract_point(root).unwrap() * r.contract_tick(root).unwrap();
+            assert!((value - tick_value).abs() < 1e-9, "{root}: a tick is {value}");
+        }
+        for contract in &r.contracts {
+            assert!(contract.point.is_some(), "{} has no point in contracts.tsv", contract.root);
+        }
+        assert_eq!(r.contract_point("NOPE"), None);
+    }
+
+    #[test]
+    fn a_tick_is_a_decimal_or_a_fraction_above_zero() {
+        assert_eq!(tick("0.25"), Some(0.25));
+        assert_eq!(tick("1/64"), Some(0.015625));
+        for refused in ["0", "-1", "1/0", "x", "nan"] {
+            assert_eq!(tick(refused), None, "{refused}");
+        }
+        let parsed = Registry::parse(EXCHANGES, HOURS, "ES\tCME\tcme_equity_index\tquarter\nNQ\tCME\tcme_equity_index\t-\n");
+        assert_eq!(parsed.rejected.len(), 1, "a tick that does not read is a row refused");
+        assert_eq!(parsed.registry.contract_tick("NQ"), None, "and one left as - is not known");
     }
 
     #[test]

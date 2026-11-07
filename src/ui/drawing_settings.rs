@@ -520,11 +520,7 @@ fn mark_edited(row: &adw::ActionRow, edited: bool) {
 /// of nine that reads differently and nothing about it needs explaining
 /// twice.
 fn offer_save_as(button: &gtk::MenuButton, started_from: Option<u8>) {
-    button.set_menu_model(Some(&save_menu(started_from)));
-    // A new model is a new popover, and the position goes with the old one.
-    if let Some(popover) = button.popover() {
-        popover.set_position(gtk::PositionType::Bottom);
-    }
+    crate::ui::menus::set_model(button, &save_menu(started_from));
 }
 
 fn save_menu(started_from: Option<u8>) -> gio::Menu {

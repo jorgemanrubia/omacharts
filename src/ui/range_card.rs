@@ -987,45 +987,18 @@ impl RangeCard {
             .chain(rest)
             .filter(|pick| pick.is_none_or(|tf| plan(range, Some(tf)).fits))
             .collect();
-        let list = gtk::ListBox::new();
-        list.set_selection_mode(gtk::SelectionMode::Browse);
-        list.add_css_class("navigation-sidebar");
-        list.add_css_class("pick-list");
-        for pick in &picks {
-            let name = match pick {
-                Some(tf) => tf.key(),
-                None => "auto".to_string(),
-            };
-            let key = gtk::Label::new(Some(&name));
-            key.add_css_class("pick-ticker");
-            key.set_xalign(0.0);
-            key.set_hexpand(true);
-            let row = gtk::ListBoxRow::new();
-            row.set_child(Some(&key));
-            list.append(&row);
-        }
-        let named = self.forced.get();
-        let at = picks.iter().position(|pick| *pick == named).unwrap_or(0);
-        if let Some(row) = list.row_at_index(at as i32) {
-            list.select_row(Some(&row));
-        }
-
-        let popover = gtk::Popover::new();
-        popover.add_css_class("pick-drop");
-        popover.set_has_arrow(false);
-        popover.set_position(gtk::PositionType::Bottom);
-        popover.set_child(Some(&list));
-        popover.set_parent(&self.chip.chip);
+        let key = |pick: &Option<Timeframe>| match pick {
+            Some(tf) => tf.key(),
+            None => "auto".to_string(),
+        };
+        let choices = picks.iter().map(|pick| (key(pick), key(pick))).collect();
+        let named = key(&self.forced.get());
         let weak = Rc::downgrade(self);
-        let closing = popover.downgrade();
-        list.connect_row_activated(move |_, row| {
+        let popover = crate::ui::menus::drop_choice(&self.chip.chip, "range-resolution", choices, &named, move |chosen| {
             let Some(card) = weak.upgrade() else { return };
-            if let Some(pick) = picks.get(row.index().max(0) as usize) {
+            if let Some(pick) = picks.iter().find(|pick| key(pick) == chosen) {
                 card.forced.set(*pick);
                 card.refresh();
-            }
-            if let Some(popover) = closing.upgrade() {
-                popover.popdown();
             }
         });
         // One per click, so each lets go of the chip once it has closed,
@@ -1041,9 +1014,6 @@ impl RangeCard {
             });
         });
         popover.popup();
-        if let Some(row) = list.row_at_index(at as i32) {
-            row.grab_focus();
-        }
     }
 
     /// One along the strip, coarser or finer, from what the chip shows.

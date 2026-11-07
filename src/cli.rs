@@ -274,6 +274,9 @@ pub trait Live {
     /// Zoom every chart at the sensitivity the settings now name. Nothing to
     /// do without a window.
     fn adopt_zoom(&self) {}
+    /// Put in or take out what the feature flags now switch, in place.
+    /// Nothing to do without a window.
+    fn adopt_features(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -432,7 +435,7 @@ fn feed_named(name: &str) -> Result<&'static omacharts_engine::providers::Listed
 /// way and mean entirely different things.
 pub fn is_command(args: &[String]) -> bool {
     let Some(first) = args.get(1).map(String::as_str) else { return false };
-    matches!(first, "help" | "surface") || spec::SURFACE.iter().any(|n| n.name == first)
+    matches!(first, "help" | "surface") || spec::SURFACE.iter().chain(spec::HIDDEN).any(|n| n.name == first)
 }
 
 /// Does this command have to run in the process it was typed in?
@@ -745,9 +748,13 @@ pub fn plan_refresh(
 /// is the one place that paces requests. Speculative, so they go two seconds
 /// apart and are refused outright while the provider is throttling: a bar
 /// widget must never cost the app its rate limit.
-fn refresh(store: &Store, provider: &dyn Provider, plan: Refresh) {
+///
+/// A loader of `provider`'s own, because pacing and cooldowns are a feed's:
+/// one feed's rate limit must not hold another's rows back.
+fn refresh(provider: &dyn Provider, plan: Refresh) {
     let (sender, receiver) = async_channel::unbounded();
-    let loader = Loader::new(std::sync::Arc::from(crate::feeds::selected(store)), sender);
+    let built = omacharts_engine::providers::built_or_default(provider.id());
+    let loader = Loader::new(std::sync::Arc::from(built), sender);
     let mut outstanding = 0;
     // The batches first: a request each for the whole list, against one each
     // for the rows that need a history.
@@ -774,7 +781,7 @@ fn refresh(store: &Store, provider: &dyn Provider, plan: Refresh) {
 /// The watchlist as JSON, for the bar widget.
 pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live>) -> String {
     let index = resolver(live);
-    let provider = crate::feeds::selected(store);
+    let feeds = crate::feeds::Feeds::load(store);
 
     let sections = store.watchlist();
     if refresh_first {
@@ -784,18 +791,32 @@ pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live
             .filter_map(|entry| index.find(&entry.symbol, entry.suffix.as_deref()).cloned())
             .collect();
         let now = chrono::Utc::now().timestamp();
-        let plan = plan_refresh(store, provider.as_ref(), &instruments, now, MAX_BATCHES);
-        match live {
-            // Inside the window, on its main loop. Hand the work to the
-            // loader thread and answer from the cache, which is all the
-            // widget draws anyway: a quote that arrives on the next tick is
-            // not worth six seconds of frozen application.
-            Some(live) => {
-                live.warm(&plan.bars);
-                live.warm_closes(plan.closes);
+        // One plan per feed, over the rows that feed serves: a batch of
+        // closes is one feed's request, in that feed's spelling.
+        for (provider, _) in &feeds.feeds {
+            let served: Vec<Instrument> = instruments
+                .iter()
+                .filter(|instrument| {
+                    feeds.route(instrument).is_some_and(|(by, _)| by.id() == provider.id())
+                })
+                .cloned()
+                .collect();
+            if served.is_empty() {
+                continue;
             }
-            // A process of its own, with no window and nothing to block.
-            None => refresh(store, provider.as_ref(), plan),
+            let plan = plan_refresh(store, provider.as_ref(), &served, now, MAX_BATCHES);
+            match live {
+                // Inside the window, on its main loop. Hand the work to the
+                // loader thread and answer from the cache, which is all the
+                // widget draws anyway: a quote that arrives on the next tick
+                // is not worth six seconds of frozen application.
+                Some(live) => {
+                    live.warm(&plan.bars);
+                    live.warm_closes(plan.closes);
+                }
+                // A process of its own, with no window and nothing to block.
+                None => refresh(provider.as_ref(), plan),
+            }
         }
     }
 
@@ -822,7 +843,8 @@ pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live
             if e > 0 {
                 out.push(',');
             }
-            out.push_str(&entry_json(store, provider.as_ref(), instrument));
+            let serving = feeds.route(instrument).map(|(provider, _)| provider);
+            out.push_str(&entry_json(store, serving, instrument));
         }
         out.push_str("]}");
     }
@@ -888,7 +910,9 @@ fn colors_json(store: &Store) -> String {
     )
 }
 
-fn entry_json(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> String {
+/// One row, from the feed serving it; `None` when no feed has a name for it,
+/// which leaves it with no price and no line.
+fn entry_json(store: &Store, provider: Option<&dyn Provider>, instrument: &Instrument) -> String {
     let mut fields = format!(
         "{{\"symbol\":{},\"suffix\":{},\"display\":{},\"name\":{},\"kind\":{}",
         json_string(&instrument.symbol),
@@ -900,8 +924,8 @@ fn entry_json(store: &Store, provider: &dyn Provider, instrument: &Instrument) -
         json_string(&instrument.name),
         json_string(instrument.kind.label()),
     );
-    let quote = quote(store, provider, instrument);
-    if let Some(key) = cache_key(provider, instrument) {
+    let quote = provider.and_then(|provider| quote(store, provider, instrument));
+    if let Some(key) = provider.and_then(|provider| cache_key(provider, instrument)) {
         let bars = daily_bars(store, &key, instrument.kind);
         let mut closes: Vec<(i64, f64)> = bars.iter().map(|bar| (bar.ts, bar.close)).collect();
         // The line ends where the price beside it does. A batch of closes is
@@ -1016,6 +1040,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_zoom(&self) {
         crate::ui::Window::adopt_zoom(self);
+    }
+
+    fn adopt_features(&self) {
+        crate::ui::Window::adopt_features(self);
     }
 
     fn screenshot(
@@ -1376,7 +1404,7 @@ mod tests {
         let index = SearchIndex::new(omacharts_engine::symbols::seed());
         let instrument = index.find("ES", None).unwrap();
 
-        let json = entry_json(&store, &provider, instrument);
+        let json = entry_json(&store, Some(&provider), instrument);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed["last"].is_null(), "a missing price must not read as 0");
         assert_eq!(parsed["symbol"], "ES");
@@ -1416,7 +1444,7 @@ mod tests {
         let instrument = index.find("SAP", Some("DE")).unwrap();
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&entry_json(&store, &provider, instrument)).unwrap();
+            serde_json::from_str(&entry_json(&store, Some(&provider), instrument)).unwrap();
         assert_eq!(parsed["symbol"], "SAP", "the ticker alone, for looking it up again");
         assert_eq!(parsed["suffix"], "DE");
         assert_eq!(parsed["display"], "SAP.DE", "and the spelling people read");
@@ -1444,7 +1472,7 @@ mod tests {
         store.write_bars(&key, Timeframe::days(1), &bars);
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&entry_json(&store, &provider, instrument)).unwrap();
+            serde_json::from_str(&entry_json(&store, Some(&provider), instrument)).unwrap();
         let spark = parsed["spark"].as_array().unwrap();
         assert_eq!(spark.len(), SPARK_POINTS);
         assert_eq!(spark.last().unwrap().as_f64().unwrap(), 99.0, "the tail, not the start");
@@ -1457,7 +1485,7 @@ mod tests {
         let index = SearchIndex::new(omacharts_engine::symbols::seed());
         let instrument = index.find("ES", None).unwrap();
         let parsed: serde_json::Value =
-            serde_json::from_str(&entry_json(&store, &provider, instrument)).unwrap();
+            serde_json::from_str(&entry_json(&store, Some(&provider), instrument)).unwrap();
         assert!(parsed["spark"].is_null(), "an absent series beats an empty one");
     }
 
@@ -1480,7 +1508,7 @@ mod tests {
         store.write_bars(&key, Timeframe::days(1), &[bar(86_400, 100.0), bar(172_800, 110.0)]);
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&entry_json(&store, &provider, instrument)).unwrap();
+            serde_json::from_str(&entry_json(&store, Some(&provider), instrument)).unwrap();
         assert_eq!(parsed["last"].as_f64().unwrap(), 110.0);
         assert_eq!(parsed["change"].as_f64().unwrap(), 10.0);
         assert!((parsed["changePct"].as_f64().unwrap() - 10.0).abs() < 1e-6);
@@ -1628,7 +1656,7 @@ mod tests {
 
         let eurusd = Instrument { kind: omacharts_engine::InstrumentKind::Fx, ..listed("EURUSD") };
         let parsed: serde_json::Value =
-            serde_json::from_str(&entry_json(&store, &Yahoo::new(), &eurusd)).unwrap();
+            serde_json::from_str(&entry_json(&store, Some(&Yahoo::new()), &eurusd)).unwrap();
         let spark: Vec<f64> =
             parsed["spark"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         assert_eq!(spark, vec![1.116, 1.1204, 1.1217], "today once, at the batch's price");

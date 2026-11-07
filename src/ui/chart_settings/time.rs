@@ -368,42 +368,29 @@ fn add_group(
     let row = adw::ActionRow::new();
     row.set_title("Add a range");
 
-    let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let popover = gtk::Popover::new();
-    popover.set_child(Some(&menu));
-    for preset in Preset::ALL {
-        let item = gtk::Button::with_label(preset.label());
-        item.add_css_class("flat");
-        // ETH twice is the same bars shaded twice, which only reads as the
-        // shading being too dark.
-        if preset.is_among(ranges) {
-            item.set_sensitive(false);
-            item.set_tooltip_text(Some("Already shaded"));
-        }
-        if let Some(label) = item.child().and_downcast::<gtk::Label>() {
-            label.set_xalign(0.0);
-        }
-        let owner = owner.clone();
-        let refresh = refresh.clone();
-        let rebuild = rebuild.clone();
-        let popover = popover.downgrade();
-        item.connect_clicked(move |_| {
-            change(&owner, &refresh, id, |ranges| ranges.push(preset.range()));
-            if let Some(popover) = popover.upgrade() {
-                popover.popdown();
-            }
+    let items = Preset::ALL
+        .into_iter()
+        .map(|preset| {
+            let owner = owner.clone();
+            let refresh = refresh.clone();
             let rebuild = rebuild.clone();
-            glib::idle_add_local_once(move || rebuild());
-        });
-        menu.append(&item);
-    }
+            crate::ui::menus::Item::new(preset.label(), move || {
+                change(&owner, &refresh, id, |ranges| ranges.push(preset.range()));
+                let rebuild = rebuild.clone();
+                glib::idle_add_local_once(move || rebuild());
+            })
+            // ETH twice is the same bars shaded twice, which only reads as
+            // the shading being too dark.
+            .enabled(!preset.is_among(ranges))
+        })
+        .collect();
 
     let button = gtk::MenuButton::new();
     button.set_icon_name("list-add-symbolic");
     button.add_css_class("flat");
     button.set_valign(gtk::Align::Center);
     button.set_tooltip_text(Some("Add a range"));
-    button.set_popover(Some(&popover));
+    crate::ui::menus::actions(&button, "range", items);
     row.add_suffix(&button);
     row.set_activatable_widget(Some(&button));
     group.add(&row);

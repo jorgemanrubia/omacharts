@@ -128,16 +128,16 @@ fifteen-minute bars, where a week of sessions survives the switch.
     cli chartbook create Study --symbol SPY --switch
     cli chart range 3m --resolution 4h
     wait 1.5
-    key ctrl+b
+    key ctrl+shift+b
     cli chartbook switch QQQ
     wait 1.5
-    key ctrl+b
+    key ctrl+shift+b
     cli chartbook switch Auction
     wait 1.5
-    key ctrl+b
+    key ctrl+shift+b
     cli chartbook switch SPY
     wait 1.5
-    key ctrl+b
+    key ctrl+shift+b
     cli chart range 18m --resolution 4h
     wait 1.0
 

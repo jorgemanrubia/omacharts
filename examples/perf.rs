@@ -2,6 +2,7 @@
 //!
 //!     cargo run --release --example perf
 //!     cargo run --release --example perf -- --tsv
+//!     cargo run --release --example perf --features fakes   # with trading
 //!
 //! Three areas, because three things are what this app is for: how long it
 //! takes to be looking at a chart, what a frame costs once you are, and how
@@ -93,6 +94,8 @@ fn main() {
     startup(&home, &mut rows);
     drawing(&mut rows);
     interactivity(&home, &mut rows);
+    #[cfg(feature = "fakes")]
+    trading(&home, &mut rows);
     let _ = std::fs::remove_dir_all(&home);
 
     match tsv {
@@ -382,6 +385,115 @@ fn interactivity(home: &Path, rows: &mut Vec<Row>) {
 }
 
 // ---------------------------------------------------------------------------
+// Trading
+// ---------------------------------------------------------------------------
+
+/// What saved trading logins cost the main loop: reading Trading again,
+/// which the window does on every push, and starting a sign-in, which a
+/// launch does after its first frame.
+///
+/// Behind the `fakes` feature, because the broker here is the fake one, and
+/// because a revision from before trading has nothing to read: built
+/// without the feature, as that revision is, these rows are simply missing
+/// from its side. `bin/perf-compare` turns it on where the tree has it.
+///
+/// The sign-in sleeps on its thread, as a network would. What the row
+/// measures is the dispatch on this one, which must not wait for it, and it
+/// counts only this thread's allocations, since the sign-ins finishing on
+/// theirs land at no fixed point in a run.
+#[cfg(feature = "fakes")]
+fn trading(home: &Path, rows: &mut Vec<Row>) {
+    use omacharts::trading::fake::{FakeBroker, Kept};
+    use omacharts::trading::{self, Broker, Desk, Registry, Typed, View};
+    use std::sync::Arc;
+
+    let store = Store::open_at(&home.join("trading.db")).expect("a database");
+    let typed = |name: &str| Typed {
+        broker: "fake".into(),
+        name: name.into(),
+        user: "someone".into(),
+        password: "not a password".into(),
+        values: Vec::new(),
+    };
+    for name in ["Lucid", "Tradeify"] {
+        trading::add_login(&store, &Kept::default(), &typed(name)).expect("a login");
+    }
+
+    // Both signed in and refreshed, each holding a position and a day of
+    // orders, as a desk is once the sign-ins have landed.
+    let fake = Arc::new(FakeBroker::listed());
+    let desk = Desk::new(Registry::of(vec![fake.clone()]));
+    let logins = trading::logins(&store);
+    for login in &logins {
+        fake.held.lock().unwrap().insert(login.name.clone(), a_day_of_orders());
+        assert!(desk.begin(&login.id));
+        let session = fake.sign_in(login, desk.waker(&login.id)).expect("signed in");
+        session.refresh().expect("refreshed");
+        desk.opened(&login.id, Ok(session));
+    }
+    rows.push(row("trading", "read the trading view, two logins", || {
+        let mut view = View::load(&store);
+        view.book = desk.book(&view.logins);
+        black_box(view);
+    }));
+
+    let slow = Arc::new(FakeBroker { takes: Duration::from_millis(10), ..FakeBroker::listed() });
+    let desk = Desk::new(Registry::of(vec![slow]));
+    let saved = &logins[..1];
+    rows.push(row_on_this_thread("trading", "dispatch sign-in for a saved login", || {
+        desk.sign_in_saved(saved);
+        // Let it go, so the next run starts one again.
+        desk.end(&saved[0].id);
+    }));
+    // The sign-ins still sleeping finish before anything else is counted.
+    std::thread::sleep(Duration::from_millis(50));
+}
+
+/// A book a trading day might leave: a position held, an order working and
+/// a dozen done, each with its fill.
+#[cfg(feature = "fakes")]
+fn a_day_of_orders() -> omacharts::trading::Book {
+    use omacharts::trading::*;
+    let order = |at: i64, stage: Stage| Order {
+        account: "FAKE-1".into(),
+        basket_id: format!("B{at}"),
+        contract: "ESZ6".into(),
+        exchange: "CME".into(),
+        side: if at % 2 == 0 { Side::Buy } else { Side::Sell },
+        qty: 1,
+        filled: u32::from(stage == Stage::Filled),
+        kind: OrderKind::Limit,
+        price: Some(7_600.0 + at as f64),
+        status: stage.into(),
+        fill_price: (stage == Stage::Filled).then_some(7_600.0 + at as f64),
+        fills: match stage {
+            Stage::Filled => vec![Fill { basket: format!("B{at}"), at, qty: 1, price: 7_600.0 + at as f64 }],
+            _ => Vec::new(),
+        },
+        at,
+        tag: Some(format!("omacharts:{at}")),
+        tick: Some(0.25),
+    };
+    let mut orders: Vec<Order> = (1..=12).map(|at| order(at, Stage::Filled)).collect();
+    orders.push(order(13, Stage::Working));
+    orders.reverse();
+    Book {
+        orders,
+        positions: vec![Position {
+            account: "FAKE-1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            net: 1,
+            avg: Some(7_611.0),
+            open_pnl: Some(12.5),
+            tick: Some(0.25),
+            point: Some(50.0),
+        }],
+        ..Book::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Measuring
 // ---------------------------------------------------------------------------
 
@@ -402,7 +514,19 @@ struct Row {
 /// only ever make a sample slower, never faster, so the minimum over a few
 /// hundred runs converges on what the work costs while the mean converges on
 /// how busy the machine was.
-fn row(area: &'static str, scenario: &str, mut work: impl FnMut()) -> Row {
+fn row(area: &'static str, scenario: &str, work: impl FnMut()) -> Row {
+    measure(area, scenario, work, || (ALLOCS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed)))
+}
+
+/// [`row`], counting only what this thread allocates: for work that hands
+/// some of itself to threads of its own, which allocate when they get to
+/// it rather than at any fixed point in a run.
+#[cfg_attr(not(feature = "fakes"), allow(dead_code))]
+fn row_on_this_thread(area: &'static str, scenario: &str, work: impl FnMut()) -> Row {
+    measure(area, scenario, work, || MINE.with(|mine| mine.get()))
+}
+
+fn measure(area: &'static str, scenario: &str, mut work: impl FnMut(), counted: impl Fn() -> (u64, u64)) -> Row {
     let warm = Instant::now();
     let mut runs = 0u32;
     while warm.elapsed() < WARMUP || runs < 2 {
@@ -413,10 +537,10 @@ fn row(area: &'static str, scenario: &str, mut work: impl FnMut()) -> Row {
     // Counted around one run, after the warm-up, so a table built on first use
     // or a `Vec` that has grown to its working size is not charged to the
     // scenario. Exact, and the same on every machine.
-    let (allocs, bytes) = (ALLOCS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed));
+    let (allocs, bytes) = counted();
     work();
-    let allocs = ALLOCS.load(Ordering::Relaxed) - allocs;
-    let bytes = BYTES.load(Ordering::Relaxed) - bytes;
+    let (now_allocs, now_bytes) = counted();
+    let (allocs, bytes) = (now_allocs - allocs, now_bytes - bytes);
 
     let mut best = u64::MAX;
     let started = Instant::now();
@@ -498,6 +622,22 @@ fn took(ns: u64) -> String {
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static BYTES: AtomicU64 = AtomicU64::new(0);
 
+thread_local! {
+    /// The same two, for the thread doing the allocating alone.
+    static MINE: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Count one allocation of `size` bytes, in all and on this thread.
+fn count(size: usize) {
+    ALLOCS.fetch_add(1, Ordering::Relaxed);
+    BYTES.fetch_add(size as u64, Ordering::Relaxed);
+    // Gone already on a thread that is ending: counted in all, then.
+    let _ = MINE.try_with(|mine| {
+        let (allocs, bytes) = mine.get();
+        mine.set((allocs + 1, bytes + size as u64));
+    });
+}
+
 /// The system allocator, counting as it goes.
 ///
 /// This is the half of the table a shared CI runner cannot move. For a
@@ -516,14 +656,12 @@ struct Counting;
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        count(layout.size());
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        count(layout.size());
         unsafe { System.alloc_zeroed(layout) }
     }
 
@@ -535,8 +673,7 @@ unsafe impl GlobalAlloc for Counting {
     /// growing `Vec` that reallocates eight times has done eight allocations,
     /// and a loop that grows one is exactly the shape worth catching.
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        count(new_size);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

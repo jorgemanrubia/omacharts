@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::bars::{Bar, Timeframe, Unit};
 use crate::provider::{Capability, Closes, Pacing, Provider, ProviderError, SharedCooldown};
+use crate::exchanges::registry;
 use crate::symbols::{Instrument, InstrumentKind};
 
 const ENDPOINT: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -187,8 +188,11 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "yahoo",
     label: "Yahoo Finance",
     serves: "Every listing the symbol search covers",
+    covers: "Stocks, ETFs, indexes, futures, FX, crypto",
+    build: || Box::new(Yahoo::new()),
     setup: None,
     experimental: false,
+    gate: None,
 };
 
 pub struct Yahoo {
@@ -408,7 +412,23 @@ impl Provider for Yahoo {
         }
         Some(match instrument.kind {
             InstrumentKind::Index => format!("^{}", instrument.symbol),
-            InstrumentKind::FutureRoot => format!("{}=F", instrument.symbol),
+            // A root is Yahoo's own continuous series; a dated contract is
+            // spelled with two digits of year and the exchange it is on,
+            // ESH27.CME, and is not served for a root on no known exchange.
+            InstrumentKind::FutureRoot => match instrument.contract() {
+                None => format!("{}=F", instrument.symbol),
+                Some(month) => {
+                    let venue = match registry().contract_exchange(instrument.root())? {
+                        "CME" => "CME",
+                        "CBOT" => "CBT",
+                        "NYMEX" => "NYM",
+                        "COMEX" => "CMX",
+                        "ICEUS" => "NYB",
+                        _ => return None,
+                    };
+                    format!("{}{}{:02}.{venue}", instrument.root(), month.code(), month.year.rem_euclid(100))
+                }
+            },
             InstrumentKind::Fx => format!("{}=X", instrument.symbol),
             InstrumentKind::Crypto => format!("{}-USD", instrument.symbol),
             InstrumentKind::Equity | InstrumentKind::Etf => {
@@ -819,6 +839,23 @@ mod tests {
         for (kind, symbol, expected) in cases {
             assert_eq!(y.symbol_for(&instrument(kind, symbol)).unwrap(), expected);
         }
+    }
+
+    /// A dated contract is on Yahoo under the exchange's suffix, which is
+    /// not the exchange's own code; a root on no exchange the table knows
+    /// has no contracts there.
+    #[test]
+    fn a_dated_contract_is_spelled_with_its_year_and_its_exchange() {
+        let y = Yahoo::new();
+        let today = crate::contracts::today();
+        for (typed, expected) in [("ESH7", "ESH27.CME"), ("ZNH7", "ZNH27.CBT"), ("CLF7", "CLF27.NYM"), ("GCG7", "GCG27.CMX"), ("KCH7", "KCH27.NYB"), ("MESZ6", "MESZ26.CME")] {
+            let (root, month) = crate::contracts::parse(typed, today).unwrap();
+            let contract = instrument(InstrumentKind::FutureRoot, &root).in_month(month).unwrap();
+            assert_eq!(y.symbol_for(&contract).as_deref(), Some(expected), "{typed}");
+        }
+        let (root, month) = crate::contracts::parse("ZZQH7", today).unwrap();
+        assert_eq!(y.symbol_for(&instrument(InstrumentKind::FutureRoot, &root).in_month(month).unwrap()), None);
+        assert_eq!(y.symbol_for(&instrument(InstrumentKind::FutureRoot, "ZZQ")).as_deref(), Some("ZZQ=F"));
     }
 
     #[test]

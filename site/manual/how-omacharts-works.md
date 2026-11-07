@@ -20,7 +20,7 @@ state:
   omacharts chartbook create Macro --symbol SPY --switch
   omacharts chart indicator add sma --period 50 --color Blue
   omacharts chart indicator add sma --period 200 --color Amber
-  key ctrl+d
+  key ctrl+shift+d
   move 1270 710
   (the strip also held "Chartbook 1" and "Semis" from the quick start run)
 capture: bin/headless-window shot window.png
@@ -31,9 +31,9 @@ crop: none, resized to 2000 wide
 Around the chart:
 
 - **The sidebar**, on the right, holds the watchlist.
-  <kbd>Ctrl</kbd> + <kbd>B</kbd> shows and hides it.
+  <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> shows and hides it.
 - **The drawing tools**, on the left, one per kind of drawing.
-  <kbd>Ctrl</kbd> + <kbd>D</kbd> shows and hides them.
+  <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> shows and hides them.
 - **The chartbook strip**, along the bottom, with a tab per chartbook. It
   appears when you make a second chartbook (<kbd>Ctrl</kbd> + <kbd>N</kbd>).
 - **The window's corner**, top right, holds the watchlist toggle and the

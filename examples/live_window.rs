@@ -45,7 +45,7 @@ fn main() -> glib::ExitCode {
     app.connect_activate(move |app| {
         let store = Store::open().expect("a store in the throwaway data home");
         let provider: Arc<dyn Provider> = Arc::new(Synthetic::new(tick));
-        let window = Window::build_with(app, Rc::new(store), provider);
+        let window = Window::build_with(app, Rc::new(store), vec![provider]);
         // Splitting copies the chart being split, so every chart shows the
         // same symbol and they all watch the one subscription.
         for n in 1..charts {

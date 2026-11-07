@@ -10,6 +10,7 @@
 //! and less useful picture.
 
 use crate::bars::{price_decimals, Bar};
+use crate::ladders::{to_price, Ladder};
 use crate::symbols::InstrumentKind;
 
 use serde::{Deserialize, Serialize};
@@ -199,6 +200,33 @@ pub fn compute(
     kind: Option<InstrumentKind>,
     merged: &[i64],
 ) -> Vec<Profile> {
+    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None)
+}
+
+/// What traded at each price, for a chart whose source says: the ladder of
+/// any run of its bars, and the tick its prices are whole multiples of.
+pub struct AtPrice<'a> {
+    pub tick_size: f64,
+    /// The ladder of exactly these bars, or `None` when it is not known
+    /// whole — before the source's history begins, say. That period keeps
+    /// the estimate.
+    pub of: &'a dyn Fn(&[Bar]) -> Option<Ladder>,
+}
+
+/// [`compute`], drawing each period from the volume that actually traded at
+/// each price when `at_price` knows it. Without it, or for a period it does
+/// not know, the volume of each bar is spread over its range as always.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_with(
+    bars: &[Bar],
+    reset: Reset,
+    session_origin: i64,
+    rows: Option<usize>,
+    value_area: f64,
+    kind: Option<InstrumentKind>,
+    merged: &[i64],
+    at_price: Option<&AtPrice>,
+) -> Vec<Profile> {
     let mut out = Vec::new();
     if bars.is_empty() {
         return out;
@@ -212,15 +240,28 @@ pub fn compute(
     let step = rows.is_none().then(|| auto_step(bars, &periods, kind));
 
     let grid = match step {
-        Some((step, tick)) => Grid::Step { step, tick },
+        // A row a fraction of the contract's tick would hold every price or
+        // none, a comb rather than a profile: with ladders the step is whole
+        // ticks, for the estimated periods beside them too.
+        Some((step, tick)) => match at_price {
+            Some(at) => Grid::Step { step: on_ticks(step, at.tick_size), tick: tick.max(at.tick_size) },
+            None => Grid::Step { step, tick },
+        },
         None => Grid::Rows(rows.unwrap_or(MIN_ROWS).clamp(MIN_ROWS, MAX_ROWS)),
     };
 
     for (start, end) in periods {
         let slice = &bars[start..end];
-        if let Some(mut profile) =
-            one(slice, start, reset.bucket(bars[start].ts, session_origin), grid, value_area)
-        {
+        let bucket = reset.bucket(bars[start].ts, session_origin);
+        let exact = at_price.and_then(|at| {
+            let ladder = (at.of)(slice)?;
+            ladder.levels.iter().any(|level| level.volume() > 0).then_some((ladder, at.tick_size))
+        });
+        let profile = match exact {
+            Some((ladder, tick)) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick),
+            None => one(slice, start, bucket, grid, value_area),
+        };
+        if let Some(mut profile) = profile {
             profile.parts = parts(slice, reset, session_origin);
             out.push(profile);
         }
@@ -470,7 +511,98 @@ fn one(
         running += whole[row];
         *volume += running;
     }
+    finish(bars, offset, start_ts, low, step, volumes, value_area)
+}
 
+/// `step` rounded up to whole ticks of `tick`, and never under one.
+fn on_ticks(step: f64, tick: f64) -> f64 {
+    if tick.is_nan() || tick <= 0.0 || !step.is_finite() {
+        return step;
+    }
+    // A hair under a whole number of ticks is that number: 0.5 / 0.25 read
+    // as 2.0000000001 must not become three ticks.
+    ((step / tick - 1e-9).ceil()).max(1.0) * tick
+}
+
+/// [`smoothed`] in whole ticks: a split only where it leaves rows a whole
+/// number of ticks tall, so no row falls between two prices.
+fn smoothed_ticks(step: f64, tick: f64, span: f64) -> f64 {
+    let ticks = (step / tick).round().max(1.0) as u64;
+    if span <= 0.0 || span / step >= SMOOTH_ROWS {
+        return step;
+    }
+    let mut finest = ticks;
+    for split in [2u64, 5, 10, 20, 50, 100] {
+        if !ticks.is_multiple_of(split) {
+            continue;
+        }
+        finest = ticks / split;
+        if span / (finest as f64 * tick) >= SMOOTH_ROWS {
+            break;
+        }
+    }
+    finest as f64 * tick
+}
+
+/// [`one`] from what traded at each price: every price's volume — bid, ask
+/// and with no known aggressor — in the row that holds it, nothing spread.
+/// Rows are whole ticks tall and cover the period's bars and its ladder
+/// both, so the price that traded at the high has a row of its own.
+///
+/// Volume a provider reported with no price at all is in no row.
+fn one_exact(
+    bars: &[Bar],
+    offset: usize,
+    start_ts: i64,
+    grid: Grid,
+    value_area: f64,
+    ladder: &Ladder,
+    tick: f64,
+) -> Option<Profile> {
+    let (mut low, mut high) = (f64::MAX, f64::MIN);
+    for bar in bars {
+        low = low.min(bar.low);
+        high = high.max(bar.high);
+    }
+    let top = ladder.high_tick()?;
+    low = low.min(to_price(ladder.low_tick, tick));
+    high = high.max(to_price(top, tick));
+    if !low.is_finite() || !high.is_finite() || tick.is_nan() || tick <= 0.0 {
+        return None;
+    }
+    let step = match grid {
+        Grid::Rows(rows) => on_ticks((high - low) / rows as f64, tick),
+        Grid::Step { step, .. } => smoothed_ticks(on_ticks(step, tick), tick, high - low),
+    };
+    // Rows of whole ticks start on a whole multiple of the step, and a
+    // price on a boundary is the row above it.
+    const HAIR: f64 = 1e-6;
+    let base = ((low / step) + HAIR).floor() * step;
+    let rows = (((high - base) / step + HAIR).floor() as isize + 1).max(1) as usize;
+    let rows = rows.clamp(MIN_ROWS, MAX_ROWS);
+    let mut volumes = vec![0.0f64; rows];
+    for (at, level) in ladder.iter() {
+        let volume = level.volume();
+        if volume == 0 {
+            continue;
+        }
+        let row = ((to_price(at, tick) - base) / step + HAIR).floor();
+        let row = (row.max(0.0) as usize).min(rows - 1);
+        volumes[row] += volume as f64;
+    }
+    finish(bars, offset, start_ts, base, step, volumes, value_area)
+}
+
+/// A profile from its rows' volumes: the point of control, the value area.
+fn finish(
+    bars: &[Bar],
+    offset: usize,
+    start_ts: i64,
+    low: f64,
+    step: f64,
+    volumes: Vec<f64>,
+    value_area: f64,
+) -> Option<Profile> {
     let total: f64 = volumes.iter().sum();
     let poc = volumes
         .iter()
@@ -478,7 +610,6 @@ fn one(
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)?;
     let max_volume = volumes[poc];
-
     Some(Profile {
         start_ts,
         parts: vec![start_ts],
@@ -486,7 +617,7 @@ fn one(
         first_bar: offset,
         last_bar: offset + bars.len() - 1,
         value_area: expand_value_area(&volumes, poc, total, value_area),
-        rows: (0..rows)
+        rows: (0..volumes.len())
             .map(|i| ProfileRow {
                 low: low + i as f64 * step,
                 high: low + (i + 1) as f64 * step,
@@ -680,6 +811,31 @@ mod tests {
             })
             .collect()
     }
+
+    /// Every number a profile holds, as one hash: `{:?}` of an `f64` is its
+    /// shortest exact spelling, so two equal hashes are equal bits.
+    fn fingerprint(profiles: &[Profile]) -> u64 {
+        format!("{profiles:?}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+    }
+
+    /// The estimate from bar ranges, held to what it computed before volume at
+    /// price existed: a chart without ladders draws exactly what it drew.
+    #[test]
+    fn without_ladders_the_profile_is_what_it_always_was() {
+        let mut bars = session(0, 333.0, 8.0);
+        bars.extend(session(1, 333.0, 2.0));
+        bars.extend(session(2, 340.0, 5.0));
+        let cases = [
+            compute(&bars, Reset::Session, 0, None, 0.7, Some(InstrumentKind::Equity), &[]),
+            compute(&bars, Reset::Session, 0, Some(50), 0.68, None, &[]),
+            compute(&bars, Reset::Week, 0, None, 0.7, Some(InstrumentKind::FutureRoot), &[]),
+            compute(&bars, Reset::Session, 3_600, None, 0.7, Some(InstrumentKind::FutureRoot), &[DAY + 3_600]),
+        ];
+        let prints: Vec<u64> = cases.iter().map(|profiles| fingerprint(profiles)).collect();
+        assert_eq!(prints, GOLDEN, "{prints:?}");
+    }
+
+    const GOLDEN: [u64; 4] = [17829156222254821403, 1918181280838795739, 7844774359875511761, 10693579781058083716];
 
     fn row_height(p: &Profile) -> f64 {
         p.rows[0].high - p.rows[0].low

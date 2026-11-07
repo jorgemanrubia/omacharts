@@ -97,7 +97,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
 state:
   omacharts config set theme omarchy:tokyo-night
-  key ctrl+b
+  key ctrl+shift+b
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd

@@ -31,6 +31,20 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
+    // The broker logins — names, user IDs, systems, gateways — and which
+    // one market data comes through belong to the machine they were typed
+    // on. Their passwords are in the keyring, never a setting.
+    (crate::trading::LOGINS, Kind::Local),
+    (crate::trading::DATA_LOGIN, Kind::Local),
+    // What a feed is set up with, a folder on this disk and a port on
+    // this machine: another machine's would point at nothing.
+    (crate::feeds::SETUPS, Kind::Local),
+    // Each login's accounts as last listed, with their balances: rewritten
+    // at every sign-in, and account numbers stay on this machine.
+    ("trading_accounts", Kind::Bookkeeping),
+    // Which experiments are switched on: a machine's, switched on there
+    // from its command line, never carried to another by a restore.
+    (crate::features::PREFIX, Kind::Local),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),
@@ -39,6 +53,9 @@ const KEYS: &[(&str, Kind)] = &[
     ("bar_widget_offered", Kind::Bookkeeping),
     ("active_watchlist", Kind::Bookkeeping),
     ("show_watchlist", Kind::Bookkeeping),
+    ("show_trading_panel", Kind::Bookkeeping),
+    // Whether the panel's Orders tab was left on the open orders or all.
+    ("orders_filter", Kind::Bookkeeping),
     ("show_drawing_tools", Kind::Bookkeeping),
 ];
 
@@ -52,7 +69,14 @@ const SHARED: &[&str] = &[
     "workspace",
     "timeframes",
     "indicators",
-    "provider",
+    "providers",
+    "default_account",
+    // The lists of trading sizes a chart picks from: a trader's choice, the
+    // same on every machine they trade from.
+    "trading_size_templates",
+    // Which side of a chart the orders' labels sit at: how somebody reads
+    // their charts, wherever they trade from.
+    "order_labels",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",
@@ -68,6 +92,8 @@ const SHARED: &[&str] = &[
     "chart_template",
     "chart_templates",
     "chart_header",
+    "chart_header_center",
+    "chart_header_right",
     "chartbook_templates",
     "chart_time_zone",
     "time_format",
@@ -103,7 +129,10 @@ mod tests {
         assert_eq!(kind("chart_templates"), Kind::Shared);
         assert_eq!(kind("chart_template"), Kind::Shared);
         assert_eq!(kind("chart_header"), Kind::Shared);
+        assert_eq!(kind("chart_header_center"), Kind::Shared);
+        assert_eq!(kind("chart_header_right"), Kind::Shared);
         assert_eq!(kind("chartbook_templates"), Kind::Shared);
+        assert_eq!(kind("feature.trading"), Kind::Local);
     }
 
     /// Every key the app writes has been given a kind on purpose.

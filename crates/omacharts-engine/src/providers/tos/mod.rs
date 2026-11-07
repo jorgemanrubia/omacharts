@@ -76,8 +76,11 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "tos",
     label: "thinkorswim",
     serves: "US listings, from your thinkorswim account",
-    setup: Some(&session::SETUP),
+    covers: "US stocks, ETFs, indexes, futures",
+    build: || Box::new(Tos::new()),
+    setup: Some(&session::Signing),
     experimental: true,
+    gate: None,
 };
 
 pub struct Tos;

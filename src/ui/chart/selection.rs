@@ -128,7 +128,7 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
             let poc = to_y(profile.poc_price());
             area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
         }),
-        Output::Volume { .. } | Output::Pane(_) | Output::Time(_) => false,
+        Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => false,
     }
 }
 

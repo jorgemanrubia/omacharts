@@ -1,12 +1,13 @@
 //! The drawing tools, on a bar down the left edge.
 //!
 //! The rail of watchlists lives on the right; the tools live on the left, the
-//! same way: a key, or a toggle in the window's top-left corner, brings them
-//! in, and they take no room when they are out. The toggle is the mirror of
-//! the rail's in the top-right — the same button, the left-panel glyph, at
-//! the same height — so the two edges of the window open the same way. It
-//! stands over the bar while the bar is out, and over the top-left chart
-//! when it is not.
+//! same way: a key, or a toggle brings them in, and they take no room when
+//! they are out. The toggle is the left-panel glyph in the window's
+//! bottom-left corner at the time axis's height, the mirror of the trading
+//! panel's in the bottom-right. It stands at one place in the window
+//! whether the bar is out or not, centred under the column of tools: at the
+//! foot of the bar while the bar is out, and over the bottom-left chart,
+//! left of its first date, when it is not.
 //!
 //! One column of buttons, which is the shape a handful of tools wants and
 //! stays the shape as they are added. Each button is a sign the app drew
@@ -65,11 +66,24 @@ fn tooltip(button: Button) -> String {
     }
 }
 
+/// How far down the bar its first tool starts, the bar's own ring of
+/// padding aside: level with the header along the top of a chart.
+const TOOLS_TOP: i32 = 8;
+/// What the column leaves free at the bar's foot for the toggle there: the
+/// time axis's height, and some air.
+const TOOLS_FOOT: i32 = crate::ui::chart::TIME_AXIS_H as i32 + 8;
+/// The column's margin either side.
+const COLUMN_SIDE: i32 = 4;
+/// Where the middle of the column of tools stands, from the bar's left
+/// edge and so from the window's: the bar's ring of padding, the column's
+/// margin and half a tool. The toggle centres on it, open or shut.
+pub(crate) const COLUMN_CENTRE: i32 = omacharts_engine::frame::RING_WIDTH as i32 + COLUMN_SIDE + TOOL / 2;
+
 pub struct DrawingBar {
     /// What goes in the layout: the bar with its ground, shown and hidden.
     pub root: gtk::Box,
     /// The button that opens and shuts this bar, lit while it is out. The
-    /// window puts it in its top-left corner.
+    /// window puts it in its bottom-left corner.
     pub toggle: gtk::ToggleButton,
     /// The pointer first, as `None`, then a button a tool.
     buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)>,
@@ -110,15 +124,17 @@ impl DrawingBar {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
         column.add_css_class("drawing-bar");
         column.set_valign(gtk::Align::Start);
-        // Under the window's top-left corner, which holds this bar's toggle
-        // while the bar is out: the same step the rail's header takes down
-        // out from under the corner on the right, and eight pixels more.
-        column.set_margin_top(45);
+        // From the top, the first tool level with the charts' headers: the
+        // bar's toggle is at its foot now, at the time axis's height.
+        column.set_margin_top(TOOLS_TOP);
+        // And clear of that toggle at the foot, on a window short enough
+        // for the column to reach it.
+        column.set_margin_bottom(TOOLS_FOOT);
         // The same either side. It was six and two, which put the column a
         // visible two pixels left of centre in its own bar — the kind of
         // thing you cannot name but can see.
-        column.set_margin_start(4);
-        column.set_margin_end(4);
+        column.set_margin_start(COLUMN_SIDE);
+        column.set_margin_end(COLUMN_SIDE);
 
         let mut buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)> = Vec::new();
         let mut badges = Vec::new();
@@ -569,15 +585,14 @@ mod tests {
     #[test]
     fn a_tool_button_says_its_name_and_its_key_and_nothing_else() {
         // The key is written by GTK, which needs a display to do it.
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
-        assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
-        assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
-        for kind in Kind::ALL {
-            let tip = tooltip(Button::Draw(kind));
-            assert!(tip.starts_with(kind.label()) && tip.ends_with(')') && !tip.contains(':'), "{tip}");
-        }
+        crate::ui::on_gtk(|| {
+            assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
+            assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
+            assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
+            for kind in Kind::ALL {
+                let tip = tooltip(Button::Draw(kind));
+                assert!(tip.starts_with(kind.label()) && tip.ends_with(')') && !tip.contains(':'), "{tip}");
+            }
+        });
     }
 }

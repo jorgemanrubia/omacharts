@@ -185,7 +185,7 @@ follows").
   `pos:N`, counting from 0.
 - **Settings** by key in backticks, with the values they take:
   `chart_header` is a comma-separated list of `symbol`, `resolution`,
-  `change` and `template`, or `none`.
+  `change`, `template`, `account` and `stripe`, or `none`.
 
 ## Screenshots
 
