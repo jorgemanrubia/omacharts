@@ -208,6 +208,9 @@ principles of a good screencast, which the scriptwriter also follows.
 - **Film the latest main.** Videos show omacharts as it is on main —
   `bin/video` fetches it and builds it in a worktree of its own — unless the
   author asks for something else, which goes in the script as `build:`.
+- **No grid.** Charts in a video have their gridlines turned off, both
+  ways, unless a script asks for them: the price and the drawings read
+  cleaner without them. The author set this on 2026-11-08.
 - **Every video opens on its cover,** held about two and a half seconds
   with the music already playing, then faded into the first scene. The
   voice waits until the fade is over and the app has been on screen, silent,
