@@ -143,7 +143,11 @@ on its word.
 `bin/video cover` renders `video/cover/cover.html` in headless Chromium at
 3840x2160 over the site's own `bg-ribbon.jpg`, mark and Cascadia Mono, with
 Archivo from Google Fonts (so it needs the network, like the OG cards).
-`compose` holds it for `cover:` seconds (2.5 by default) and crossfades
+An end card is the same page with `&end=1`: the line under the wordmark
+(`end_title:`) and omacharts.org centred beneath. `end_card: <seconds>`
+in a script appends it after the recording, dissolving in over a quarter
+of a second centred on the recording's last frame, held while the music
+finishes. `compose` holds the cover for `cover:` seconds (2.5 by default) and crossfades
 into the recording over 0.6s — the recording's lead-in, where nothing
 happens yet — and shifts the voice, subtitles and review frames by the
 same amount. The first word comes `SETTLE` (1s) after the fade ends.

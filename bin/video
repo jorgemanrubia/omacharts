@@ -67,6 +67,7 @@ DEFAULT_AFTER = 0.8  # hold once a scene's narration ends
 TAIL = 1.5
 COVER = 2.5  # the cover held at the start, before it fades into the first scene
 COVER_FADE = 0.6
+END_FADE = 0.24  # the dissolve into the end card, centred on its beat
 SETTLE = 1.0  # the app on screen, silent, between the cover's fade and the first word
 
 
@@ -1059,15 +1060,17 @@ def fc_match(pattern):
 # --- Cover -------------------------------------------------------------------------
 
 
-def cover(script):
-    """The cover: the video's first frame, held, and its thumbnail. The page
-    is video/cover/cover.html, the site's OpenGraph card re-framed for 16:9;
-    it needs the network for Archivo, as the card does."""
+def end_card(script):
+    """The end card: the cover's page with its end look, the line under the
+    wordmark (`end_title:`, "Beautiful charting software" unless set) and
+    omacharts.org beneath. Held `end_card:` seconds at the very end."""
+    return render_card(script, script.meta.get("end_title") or "Beautiful charting software", script.out / "end.png", end=True)
+
+
+def render_card(script, title, out, end=False):
     import tempfile
     import urllib.parse
 
-    title = script.meta.get("cover_title") or script.meta.get("title") or script.slug
-    out = script.out / "cover.png"
     with tempfile.TemporaryDirectory() as work:
         work = Path(work)
         for name in ("cover.html", "cover.css"):
@@ -1075,11 +1078,20 @@ def cover(script):
         shutil.copy(ROOT / "site/icon.svg", work)
         shutil.copy(ROOT / "site/assets/home/bg-ribbon.jpg", work)
         (work / "fonts").symlink_to(ROOT / "site/assets/fonts")
-        url = f"file://{work}/cover.html?title={urllib.parse.quote(title)}"
+        url = f"file://{work}/cover.html?title={urllib.parse.quote(title)}" + ("&end=1" if end else "")
         run(["chromium", "--headless=new", "--no-sandbox", "--hide-scrollbars", "--force-device-scale-factor=1",
              f"--window-size={SIZE[0]},{SIZE[1]}", "--virtual-time-budget=20000", f"--screenshot={work / 'shot.png'}", url],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         shutil.copy(work / "shot.png", out)
+    return out
+
+
+def cover(script):
+    """The cover: the video's first frame, held, and its thumbnail. The page
+    is video/cover/cover.html, the site's OpenGraph card re-framed for 16:9;
+    it needs the network for Archivo, as the card does."""
+    title = script.meta.get("cover_title") or script.meta.get("title") or script.slug
+    out = render_card(script, title, script.out / "cover.png")
     # YouTube takes a thumbnail of at most 2MB; 1280x720 is what it asks for.
     run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-vf", "scale=1280:720:flags=lanczos", "-q:v", "2",
          str(script.out / "thumbnail.jpg")])
@@ -1608,7 +1620,12 @@ def compose(script, voiced, plan, raw, offset):
     # everything heard is placed after it.
     intro = float(script.meta.get("cover", COVER))
     still = cover(script) if intro > 0 else None
-    total = plan["total"] + intro
+    # The end card, if the script asks for one: cut to on the recording's
+    # last frame — the beat `music_end` names, in a music-driven video —
+    # and held while the music finishes.
+    outro = float(script.meta.get("end_card", 0))
+    ending = end_card(script) if outro > 0 else None
+    total = plan["total"] + intro + outro
     voice = out / "voice.wav"
     # Each scene is levelled into a file of its own first and only then
     # delayed into place: run in one graph, loudnorm ahead of adelay
@@ -1674,13 +1691,23 @@ def compose(script, voiced, plan, raw, offset):
         recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
     if still:
         # The fade overlaps the recording's lead-in, where nothing happens yet.
-        inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + COVER_FADE:.3f}", "-i", str(still), *recording, "-i", str(master)]
+        inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + COVER_FADE:.3f}", "-i", str(still), *recording]
         video = (f"[0:v]format=yuv420p,setsar=1[c];[1:v]fps={FPS},format=yuv420p,setsar=1[r];"
-                 f"[c][r]xfade=transition=fade:duration={COVER_FADE}:offset={intro:.3f}[v]")
-        maps = ["-filter_complex", video, "-map", "[v]", "-map", "2:a"]
+                 f"[c][r]xfade=transition=fade:duration={COVER_FADE}:offset={intro:.3f}[v0]")
     else:
-        inputs = [*recording, "-i", str(master)]
-        maps = ["-map", "0:v", "-map", "1:a"]
+        inputs = [*recording]
+        video = f"[0:v]fps={FPS},format=yuv420p,setsar=1[v0]"
+    if ending:
+        # A quick dissolve centred on the cut, so the card arrives on the beat.
+        n = len([a for a in inputs if a == "-i"])
+        inputs += ["-loop", "1", "-framerate", str(FPS), "-t", f"{outro + END_FADE:.3f}", "-i", str(ending)]
+        video += (f";[{n}:v]format=yuv420p,setsar=1[e];"
+                  f"[v0][e]xfade=transition=fade:duration={END_FADE}:offset={intro + plan['total'] - END_FADE / 2:.3f}[v]")
+    else:
+        video += ";[v0]null[v]"
+    audio_input = len([a for a in inputs if a == "-i"])
+    inputs += ["-i", str(master)]
+    maps = ["-filter_complex", video, "-map", "[v]", "-map", f"{audio_input}:a"]
     run(["ffmpeg", "-v", "error", "-y", *inputs, *maps, "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "slow", "-crf", "14",
          "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", str(final)])
     run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",

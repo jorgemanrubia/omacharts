@@ -127,6 +127,8 @@ one line, as elsewhere.
 | `music_fade` | seconds the music fades over at the end, 1.5 unless set |
 | `cover` | seconds the cover is held; the music plays under it from 0 |
 | `badges` | `on` to show key badges, off unless set |
+| `end_card` | seconds an end card is held after the picture (`music_end`), the music finishing under it; none unless set |
+| `end_title` | the end card's line under the wordmark, "Beautiful charting software" unless set |
 
 And four actions for the camera and the beat, drawn afterwards:
 

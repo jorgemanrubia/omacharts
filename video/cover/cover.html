@@ -5,7 +5,9 @@
      OpenGraph card re-framed for 16:9 at 3840x2160 — the same ribbon of
      charts under the same scrim, the same lockup, with the video's title
      where the manual card says MANUAL. bin/video cover renders it with the
-     title in the query string (?title=...). -->
+     title in the query string (?title=...). With &end=1 it is the end card
+     instead: the same ground and lockup, the line under the wordmark, and
+     omacharts.org under them in the middle, where to go next. -->
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;800&display=block">
 <link rel="stylesheet" href="cover.css">
 <div class="ground"></div>
@@ -21,8 +23,13 @@
 </div>
 <div class="url">omacharts.org</div>
 <script>
+  const params = new URLSearchParams(location.search);
   const label = document.getElementById("label");
-  label.textContent = new URLSearchParams(location.search).get("title") || "";
+  label.textContent = params.get("title") || "";
+  if (params.get("end")) {
+    document.body.classList.add("end");
+    document.querySelector(".copy").appendChild(document.querySelector(".url"));
+  }
   // A long title shrinks to the wordmark's width rather than running past
   // the lockup's right edge.
   document.fonts.ready.then(() => {

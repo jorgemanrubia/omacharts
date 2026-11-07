@@ -76,3 +76,14 @@ html, body { width: 3840px; height: 2160px; overflow: hidden; background: #0d111
   color: rgba(243, 236, 220, .78);
   text-shadow: 0 .03em .12em rgba(0, 0, 0, .7);
 }
+
+/* The end card: the address under the lockup, centred, the one thing left
+   to read. */
+.end .copy { justify-items: center; }
+.end .url {
+  position: static;
+  margin-top: 150px;
+  font-size: 104px;
+  letter-spacing: .08em;
+  color: rgba(243, 236, 220, .9);
+}
