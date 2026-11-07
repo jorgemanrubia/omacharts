@@ -2141,7 +2141,7 @@ fn chart_drawing(
     let text = match action {
         "add" => {
             let kind = kind.ok_or_else(|| {
-                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text, profile or avwap".into())
+                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text, profile, avwap or fib".into())
             })?;
             if !corners.is_empty() && !kind.is_path() {
                 return Err(not_a_path());
@@ -2191,7 +2191,8 @@ fn chart_drawing(
             drawing.follow(config.unwrap_or(1));
             if !style.is_empty() {
                 style.check(drawing.kind)?;
-                drawing.edit_style(&configs, |s| style.apply(s));
+                let kind = drawing.kind;
+                drawing.edit_style(&configs, |s| style.apply(kind, s));
             }
             if !words.is_empty() {
                 words.apply(&mut drawing);
@@ -2253,7 +2254,8 @@ fn chart_drawing(
             }
             if !style.is_empty() {
                 style.check(drawing.kind)?;
-                drawing.edit_style(&configs, |s| style.apply(s));
+                let kind = drawing.kind;
+                drawing.edit_style(&configs, |s| style.apply(kind, s));
             }
             if !words.is_empty() {
                 words.apply(&mut drawing);
@@ -2390,7 +2392,7 @@ fn configurations_verb(
             edits.check(kind)?;
             let mut configs = store.drawing_configurations();
             let mut style = configs.of(kind, n).clone();
-            edits.apply(&mut style);
+            edits.apply(kind, &mut style);
             configs.set(kind, n, style.clone());
             store.set_drawing_configurations(&configs);
             let text = format!("{} configuration {n} is now {}", kind.label(), describe_style(kind, &style));
@@ -2577,6 +2579,20 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             })).collect::<Vec<_>>(),
         });
     }
+    // And only a retracement has these.
+    if kind == omacharts_engine::DrawingKind::Fib {
+        out["fib"] = json!({
+            "labels": style.fib.labels,
+            "levels": style.fib.levels.iter().map(|level| json!({
+                "level": level.ratio,
+                "enabled": level.enabled,
+                // Null for the drawing's own colour, which it follows.
+                "color": level.colour.as_ref().map(|paint| paint.spell()),
+                "width": level.stroke.width,
+                "style": level.stroke.style.label().to_lowercase(),
+            })).collect::<Vec<_>>(),
+        });
+    }
     out
 }
 
@@ -2669,6 +2685,24 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
             };
             format!("{}, {}px{pattern}, {}, {bands}", style.colour.spell(), style.width, style.vwap.source.key())
         }
+        Kind::Fib => {
+            let look = &style.fib;
+            let shown: Vec<String> = look.enabled().map(|level| level.name()).collect();
+            let levels = match shown.len() {
+                0 => "no levels".to_string(),
+                n if n == look.levels.len() => "every level".to_string(),
+                _ => format!("levels {}", shown.join(" ")),
+            };
+            let width = match look.width() {
+                Some(width) => format!("{width}px"),
+                None => "mixed widths".to_string(),
+            };
+            let labels = match look.labels {
+                true => "labelled",
+                false => "no labels",
+            };
+            format!("{}, {width}, {levels}, {labels}", style.colour.spell())
+        }
     }
 }
 
@@ -2717,6 +2751,15 @@ struct StyleEdits {
     band_colour: Option<Option<omacharts_engine::Paint>>,
     band_width: Option<f64>,
     band_style: Option<LineStyle>,
+    /// Which of a retracement's levels are drawn, by ratio.
+    levels: Option<Vec<f64>>,
+    /// The level the `--level-*` flags change, by ratio, or every one.
+    level: Option<f64>,
+    /// `Some(None)` for the drawing's own colour.
+    level_colour: Option<Option<omacharts_engine::Paint>>,
+    level_width: Option<f64>,
+    level_style: Option<LineStyle>,
+    labels: Option<bool>,
 }
 
 impl StyleEdits {
@@ -2825,7 +2868,34 @@ impl StyleEdits {
         if band_deviations.is_some() && band.is_none() {
             return Err(Fault::usage("--band-deviations needs --band: the three bands sit at different multiples".into()));
         }
+        let levels = match arg(m, "levels") {
+            None => None,
+            Some(text) => Some(read_fib_levels(text)?),
+        };
+        let level = match arg(m, "level") {
+            None => None,
+            Some(text) => Some(read_fib_level(text).ok_or_else(|| {
+                Fault::usage(format!("--level is one of 0, 0.236, 0.382, 0.5, 0.618, 0.786 and 1, not {text:?}"))
+            })?),
+        };
+        let level_colour = match arg(m, "level-color") {
+            None => None,
+            Some(text) if text.eq_ignore_ascii_case("drawing") => Some(None),
+            Some(_) => Some(paint("level-color")?),
+        };
+        let labels = match arg(m, "labels").map(String::as_str) {
+            None => None,
+            Some("on") => Some(true),
+            Some("off") => Some(false),
+            Some(other) => return Err(Fault::usage(format!("--labels is on or off, not {other:?}"))),
+        };
         Ok(StyleEdits {
+            levels,
+            level,
+            level_colour,
+            level_width: bounded(m, "level-width", MIN_WIDTH, MAX_WIDTH)?,
+            level_style: pattern("level-style")?,
+            labels,
             source,
             line: pattern("style")?,
             bands,
@@ -2882,6 +2952,16 @@ impl StyleEdits {
             && self.bands.is_none()
             && self.band.is_none()
             && !self.edits_a_band()
+            && self.levels.is_none()
+            && self.level.is_none()
+            && !self.edits_a_level()
+            && self.labels.is_none()
+    }
+
+    /// Whether anything is said about the look of a retracement's level, as
+    /// opposed to which are drawn.
+    fn edits_a_level(&self) -> bool {
+        self.level_colour.is_some() || self.level_width.is_some() || self.level_style.is_some()
     }
 
     /// Whether anything is said about the look of a band, as opposed to
@@ -2919,15 +2999,53 @@ impl StyleEdits {
                 "--band says which band the --band-* flags change; give one of them too".into(),
             ));
         }
+        let fib_only = self.levels.is_some() || self.level.is_some() || self.edits_a_level() || self.labels.is_some();
+        if fib_only && kind != omacharts_engine::DrawingKind::Fib {
+            return Err(Fault::usage(format!(
+                "--levels, --labels and the --level flags are a Fibonacci retracement's; a {} has none",
+                kind.label().to_lowercase()
+            )));
+        }
+        if self.level.is_some() && !self.edits_a_level() {
+            return Err(Fault::usage(
+                "--level says which level the --level-* flags change; give one of them too".into(),
+            ));
+        }
         Ok(())
     }
 
-    fn apply(&self, style: &mut omacharts_engine::Style) {
+    fn apply(&self, kind: omacharts_engine::DrawingKind, style: &mut omacharts_engine::Style) {
         if let Some(colour) = &self.colour {
             style.colour = colour.clone();
         }
         if let Some(width) = self.width {
-            style.width = width;
+            // A retracement's thickness is its levels'.
+            match kind {
+                omacharts_engine::DrawingKind::Fib => style.fib.set_width(width),
+                _ => style.width = width,
+            }
+        }
+        if let Some(shown) = &self.levels {
+            for level in style.fib.levels.iter_mut() {
+                level.enabled = shown.iter().any(|ratio| omacharts_engine::drawings::same_ratio(*ratio, level.ratio));
+            }
+        }
+        for level in style.fib.levels.iter_mut() {
+            if self.level.is_some_and(|only| !omacharts_engine::drawings::same_ratio(only, level.ratio)) {
+                continue;
+            }
+            if let Some(colour) = &self.level_colour {
+                level.colour = colour.clone();
+            }
+            if let Some(width) = self.level_width {
+                level.stroke.width = width;
+            }
+            if let Some(pattern) = self.level_style {
+                level.stroke.style = pattern;
+            }
+        }
+        if let Some(labels) = self.labels {
+            style.fib.labels = labels;
         }
         if let Some(arrow) = self.arrow {
             style.arrow = arrow;
@@ -3912,6 +4030,36 @@ fn read_bands(text: &str) -> Result<Vec<usize>, Fault> {
                 .filter(|n| (1..=VWAP_BAND_COUNT).contains(n))
                 .map(|n| n - 1)
                 .ok_or_else(|| Fault::usage(format!("--bands takes 1, 2 and 3, comma-separated, or none — not {part:?}")))
+        })
+        .collect()
+}
+
+/// One of a retracement's ratios as a command types it: `0.618`, or the
+/// percentage, `61.8`. Only the seven it draws.
+fn read_fib_level(text: &str) -> Option<f64> {
+    use omacharts_engine::drawings::{same_ratio, FIB_RATIOS};
+    let text = text.trim().trim_end_matches('%');
+    let value: f64 = text.parse().ok()?;
+    let ratio = if value > 1.0 { value / 100.0 } else { value };
+    FIB_RATIOS.into_iter().find(|r| same_ratio(*r, ratio))
+}
+
+/// Which of a retracement's levels are drawn, as a command types them:
+/// ratios, comma-separated, `all`, or `none`.
+fn read_fib_levels(text: &str) -> Result<Vec<f64>, Fault> {
+    use omacharts_engine::drawings::FIB_RATIOS;
+    match text.trim().to_lowercase().as_str() {
+        "none" | "" => return Ok(Vec::new()),
+        "all" => return Ok(FIB_RATIOS.to_vec()),
+        _ => {}
+    }
+    text.split(',')
+        .map(|part| {
+            read_fib_level(part).ok_or_else(|| {
+                Fault::usage(format!(
+                    "--levels takes any of 0, 0.236, 0.382, 0.5, 0.618, 0.786 and 1, comma-separated, all, or none — not {part:?}"
+                ))
+            })
         })
         .collect()
 }
@@ -7949,6 +8097,70 @@ mod tests {
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// A retracement spans two anchors, takes which levels it draws, each
+    /// level's colour, thickness and pattern, and its labels from a command
+    /// as its properties dialog gives them, and refuses what is not one of
+    /// its seven levels.
+    #[test]
+    fn a_fib_retracement_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let out = run(
+            "chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --levels 0,0.382,0.5,0.618,1 --labels off",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("fib  2026-10-01 100.00 → 2026-10-14 200.00"), "{}", out.out);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let drawing = &listed["drawings"][0];
+        assert_eq!(drawing["kind"], "fib");
+        let fib = &drawing["style"]["fib"];
+        assert_eq!(fib["labels"], false);
+        let enabled: Vec<f64> = fib["levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|level| level["enabled"] == true)
+            .map(|level| level["level"].as_f64().unwrap())
+            .collect();
+        assert_eq!(enabled, [0.0, 0.382, 0.5, 0.618, 1.0]);
+
+        let id = drawing["id"].as_i64().unwrap();
+        let set = run(
+            &format!("chart drawing set --book Macro --id {id} --level 61.8 --level-color amber --level-width 2.5 --level-style dashed --labels on"),
+            &store,
+        );
+        assert_eq!(set.code, 0, "{}", set.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let fib = &listed["drawings"][0]["style"]["fib"];
+        let golden = &fib["levels"][4];
+        assert_eq!(golden["level"], 0.618);
+        assert_eq!(golden["color"], "amber");
+        assert_eq!(golden["width"], 2.5);
+        assert_eq!(golden["style"], "dashed");
+        assert_eq!(fib["levels"][3]["color"], serde_json::Value::Null, "only the one level changed");
+        assert_eq!(fib["labels"], true);
+
+        // Every level at once, and back to the drawing's colour.
+        let all = run(&format!("chart drawing set --book Macro --id {id} --width 2 --level-color drawing"), &store);
+        assert_eq!(all.code, 0, "{}", all.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let levels = listed["drawings"][0]["style"]["fib"]["levels"].as_array().unwrap().clone();
+        assert!(levels.iter().all(|level| level["width"] == 2.0 && level["color"].is_null()), "{levels:?}");
+
+        for bad in ["--levels 0.3", "--level 0.7 --level-width 2", "--level 0.5", "--text hello", "--source close"] {
+            let out = run(&format!("chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 {bad}"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        let other = run("chart drawing add line --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --labels off", &store);
+        assert_eq!(other.code, crate::cli::EXIT_USAGE, "a line has no level labels");
+        let configured = run("chart drawing configure fib --config 3 --levels all --level 0 --level-style dotted", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
+        let configs = run("chart drawing configs fib", &store);
+        assert!(configs.out.contains("fib 1  ink, 1px, every level, labelled"), "{}", configs.out);
+        assert!(configs.out.contains("fib 3  blue") && configs.out.contains("(edited)"), "{}", configs.out);
     }
 
     /// An anchored VWAP is one moment, and takes every property its dialog

@@ -104,6 +104,8 @@ pub const BINDINGS: &[Binding] = &[
     // W for weighted: V went to the volume profile above it, and A is the
     // arrow's.
     global("chart.draw-avwap", &["<Alt>w"]),
+    // F for Fibonacci: there is no menu bar for it to be a mnemonic of.
+    global("chart.draw-fib", &["<Alt>f"]),
     global("chart.measure", &["<Alt>m"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
     // Ctrl+Shift+B for the rail on the right, Ctrl+Shift+D for the tools on

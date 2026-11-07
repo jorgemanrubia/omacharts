@@ -604,7 +604,40 @@ fn describe(kind: Kind, style: &Style) -> String {
             style.vwap.source.label().to_lowercase(),
             vwap_bands(style)
         ),
+        Kind::Fib => fib_summary(style),
     }
+}
+
+/// A retracement in words: its colour, then how its levels are drawn when
+/// that is not all of them as a solid hairline in it, and whether it is
+/// labelled.
+fn fib_summary(style: &Style) -> String {
+    let look = &style.fib;
+    let mut words = vec![name_of(&style.colour)];
+    let shown: Vec<String> = look.enabled().map(|level| level.name()).collect();
+    if shown.len() < look.levels.len() {
+        words.push(format!("levels {}", shown.join(" ")));
+    }
+    if let Some(width) = look.width()
+        && width != drawings::FIB_WIDTH
+    {
+        words.push(format!("{width}px"));
+    }
+    let patterns: Vec<LineStyle> = look.enabled().map(|level| level.stroke.style).collect();
+    match patterns.first() {
+        Some(first) if patterns.iter().all(|p| p == first) && *first != LineStyle::Solid => {
+            words.push(first.label().to_lowercase())
+        }
+        Some(_) if patterns.iter().any(|p| *p != patterns[0]) => words.push("mixed lines".to_string()),
+        _ => {}
+    }
+    if look.levels.iter().any(|level| level.colour.is_some()) {
+        words.push("own colours".to_string());
+    }
+    if !look.labels {
+        words.push("no labels".to_string());
+    }
+    words.join(", ")
 }
 
 /// An anchored VWAP's bands in words: `±1σ, ±2σ`, or nothing for none.
@@ -1018,6 +1051,50 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 inks.borrow_mut().push(band_ink);
                 shows.extend(band_shows);
             }
+        }
+        // One colour for every level that has none of its own, whether the
+        // levels are labelled, and then the seven levels, each a row that
+        // opens on its own colour, thickness and pattern.
+        Kind::Fib => {
+            let inks: Rc<RefCell<Vec<Ink>>> = Rc::new(RefCell::new(Vec::new()));
+            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                let inks = inks.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    for ink in inks.borrow().iter() {
+                        ink.repaint();
+                    }
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let labels = adw::SwitchRow::new();
+            labels.set_title("Labels");
+            labels.set_active(style.borrow().fib.labels);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                labels.connect_active_notify(move |row| {
+                    style.borrow_mut().fib.labels = row.is_active();
+                    emit();
+                });
+            }
+            group.add(&labels);
+            shows.push(Rc::new(move |s: &Style| labels.set_active(s.fib.labels)));
+
+            let levels = adw::PreferencesGroup::new();
+            levels.set_title("Levels");
+            for index in 0..style.borrow().fib.levels.len() {
+                let (row, ink, level_shows) = fib_level_row(&theme, &style, &showing, &emit, index);
+                levels.add(&row);
+                inks.borrow_mut().push(ink);
+                shows.extend(level_shows);
+            }
+            more.push(levels);
         }
         // A box and an ellipse have the same properties — a fill at an alpha
         // under an edge — and differ only in the outline drawn round them, so
@@ -1833,6 +1910,178 @@ fn vwap_band_group(
     (group, ink, shows)
 }
 
+/// One of a retracement's levels: a row named by its ratio, with a switch
+/// that draws it or not and a sample of how it is drawn, that opens on its
+/// colour, its thickness and its pattern.
+///
+/// A row that opens rather than a group each, because seven groups of four
+/// rows is a page nobody finds the eighth thing on, and most levels are
+/// never opened: they follow the drawing's colour as a solid hairline.
+fn fib_level_row(
+    theme: &Theme,
+    style: &Rc<RefCell<Style>>,
+    showing: &Rc<Cell<bool>>,
+    emit: &Rc<dyn Fn()>,
+    index: usize,
+) -> (adw::ExpanderRow, Ink, Vec<Shower<Style>>) {
+    let mut shows: Vec<Shower<Style>> = Vec::new();
+    let level = style.borrow().fib.levels[index].clone();
+    let edit = {
+        let style = style.clone();
+        let emit = emit.clone();
+        let showing = showing.clone();
+        Rc::new(move |change: &dyn Fn(&mut drawings::FibLevel)| {
+            if showing.get() {
+                return;
+            }
+            if let Some(level) = style.borrow_mut().fib.levels.get_mut(index) {
+                change(level);
+            }
+            emit();
+        })
+    };
+    let row = adw::ExpanderRow::new();
+    row.set_title(&level.name());
+
+    // The level's colour as it is drawn, for the samples.
+    let ink = {
+        let style = style.clone();
+        let theme = theme.clone();
+        Ink::new(move || {
+            let style = style.borrow();
+            style.fib.levels[index].paint(&style.colour).hex(&theme)
+        })
+    };
+
+    // How it is drawn, on the row itself, so the seven read as a picture of
+    // the drawing before any is opened.
+    let sample = gtk::DrawingArea::new();
+    sample.set_content_width(56);
+    sample.set_content_height(16);
+    sample.set_valign(gtk::Align::Center);
+    {
+        let style = style.clone();
+        let ink = ink.clone();
+        sample.set_draw_func(move |_, cr, w, h| {
+            let style = style.borrow();
+            let Some(level) = style.fib.levels.get(index) else { return };
+            if !level.enabled || level.stroke.is_hidden() {
+                return;
+            }
+            let width = level.stroke.width;
+            let y = (h as f64 / 2.0).round() + if (width.round() as i64) % 2 == 1 { 0.5 } else { 0.0 };
+            colors::set_source_alpha(cr, &ink.colour(), drawings::FIB_ALPHA);
+            cr.set_line_width(width);
+            cr.set_dash(&level.stroke.style.dashes(width), 0.0);
+            cr.move_to(2.0, y);
+            cr.line_to(w as f64 - 2.0, y);
+            let _ = cr.stroke();
+        });
+    }
+    ink.watch(&sample);
+    row.add_suffix(&sample);
+
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.set_active(level.enabled);
+    switch.set_tooltip_text(Some("Show"));
+    {
+        let edit = edit.clone();
+        let ink = ink.clone();
+        switch.connect_active_notify(move |switch| {
+            let on = switch.is_active();
+            edit(&|level| level.enabled = on);
+            ink.repaint();
+        });
+    }
+    row.add_suffix(&switch);
+    {
+        let switch = switch.clone();
+        shows.push(Rc::new(move |s: &Style| switch.set_active(s.fib.levels[index].enabled)));
+    }
+
+    // Its own colour, or the drawing's while it has none: the same answer
+    // the chart draws.
+    let reset = gtk::Button::with_label("Reset");
+    reset.add_css_class("flat");
+    reset.add_css_class("subtle-link");
+    reset.set_valign(gtk::Align::Center);
+    reset.set_tooltip_text(Some("Back to the drawing's colour"));
+    reset.set_sensitive(level.colour.is_some());
+    let (button, show_paint) = paint_button(theme, level.paint(&style.borrow().colour), {
+        let edit = edit.clone();
+        let ink = ink.clone();
+        let reset = reset.downgrade();
+        move |paint| {
+            edit(&|level| level.colour = Some(paint.clone()));
+            if let Some(reset) = reset.upgrade() {
+                reset.set_sensitive(true);
+            }
+            ink.repaint();
+        }
+    });
+    {
+        let edit = edit.clone();
+        let ink = ink.clone();
+        let style = style.clone();
+        let show_paint = show_paint.clone();
+        reset.connect_clicked(move |reset| {
+            edit(&|level| level.colour = None);
+            reset.set_sensitive(false);
+            let colour = style.borrow().colour.clone();
+            show_paint(&colour);
+            ink.repaint();
+        });
+    }
+    let colour = adw::ActionRow::new();
+    colour.set_title("Colour");
+    colour.add_suffix(&reset);
+    colour.add_suffix(&button);
+    row.add_row(&colour);
+    {
+        let ink = ink.clone();
+        shows.push(Rc::new(move |s: &Style| {
+            let level = &s.fib.levels[index];
+            show_paint(level.paint(&s.colour));
+            reset.set_sensitive(level.colour.is_some());
+            ink.repaint();
+        }));
+    }
+    for (stroke_row, show) in stroke_rows(&ink, level.stroke, showing, {
+        let edit = edit.clone();
+        let ink = ink.clone();
+        move |stroke: Stroke| {
+            edit(&|level| level.stroke = stroke);
+            ink.repaint();
+        }
+    }) {
+        row.add_row(&stroke_row);
+        shows.push(Rc::new(move |s: &Style| show(s.fib.levels[index].stroke)));
+    }
+    (row, ink, shows)
+}
+
+/// A small retracement in a style's look: its levels across the box, 0 at
+/// the top as a swing dragged upward has it, each in its colour, thickness
+/// and pattern at the strength the chart draws a level.
+fn fib_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w, h): (f64, f64, f64, f64)) {
+    cr.save().ok();
+    for level in style.fib.enabled() {
+        if level.stroke.is_hidden() {
+            continue;
+        }
+        let width = level.stroke.width.min(h / 4.0).max(0.75);
+        let at = (y + h * level.ratio).round() + if (width.round() as i64) % 2 == 1 { 0.5 } else { 0.0 };
+        colors::set_source_alpha(cr, &level.paint(&style.colour).hex(theme), drawings::FIB_ALPHA);
+        cr.set_line_width(width);
+        cr.set_dash(&level.stroke.style.dashes(width), 0.0);
+        cr.move_to(x, at);
+        cr.line_to(x + w, at);
+        let _ = cr.stroke();
+    }
+    cr.restore().ok();
+}
+
 /// A row of stroke samples, and a way to show it another stroke.
 type StrokeRow = (adw::ActionRow, Rc<dyn Fn(Stroke)>);
 
@@ -2182,6 +2431,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
             }
             Kind::Profile => profile_sample(cr, &theme, &style, 1.0, 1.0, w - 2.0, h - 2.0),
             Kind::Vwap => vwap_sample(cr, &theme, &style, (2.0, 2.0, w - 4.0, h - 4.0), style.width.clamp(1.0, 3.0)),
+            Kind::Fib => fib_sample(cr, &theme, &style, (2.0, 1.0, w - 4.0, h - 2.0)),
             // A swatch is thirty pixels by twelve: too small for a word, so
             // the text configuration shows the ink as a bar of it, the way
             // every other colour in the window is shown at this size.
@@ -2342,6 +2592,7 @@ fn draw_preview_figure(
         }
         Kind::Profile => profile_sample(cr, theme, style, w * 0.25, h * 0.18, w * 0.5, h * 0.64),
         Kind::Vwap => vwap_sample(cr, theme, style, (w * 0.12, h * 0.2, w * 0.76, h * 0.6), line_w),
+        Kind::Fib => fib_sample(cr, theme, style, (w * 0.12, h * 0.18, w * 0.76, h * 0.64)),
     }
 }
 
