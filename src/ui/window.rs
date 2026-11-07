@@ -37,6 +37,7 @@ use crate::ui::pane::{self, ChartPane, Hideable, LadderSource, Node};
 use crate::ui::drop_line;
 use crate::ui::screenshot;
 use omacharts_engine::link;
+use omacharts_engine::theme::StoredColouring;
 use omacharts_engine::LinkMode;
 use crate::ui::colors;
 use crate::ui::preferences::Preferences;
@@ -666,6 +667,8 @@ mod tests {
                 bar_style: "candle".to_string(),
                 bars_hidden: false,
                 colouring: None,
+                swapped: None,
+                hollow_up: None,
                 session: "extended".to_string(),
                 show_grid: true,
                 link: LinkMode::Focus,
@@ -745,7 +748,9 @@ mod tests {
             template: None,
             bar_style: "candle".to_string(),
             bars_hidden: false,
-                colouring: None,
+            colouring: None,
+            swapped: None,
+            hollow_up: None,
             session: "extended".to_string(),
             show_grid: true,
             link,
@@ -1887,6 +1892,15 @@ struct StoredPane {
     /// written before charts were painted one by one.
     #[serde(default)]
     colouring: Option<String>,
+    /// The two switches worn over the colouring: up and down exchanged, and
+    /// a rise drawn as an outline. Missing from a chart written before they
+    /// were switches: one whose `colouring` is a scheme an older version
+    /// wrote for the look (`theme-red-up`, `theme-hollow`) wore it, and any
+    /// other chart with a colouring of its own did not.
+    #[serde(default)]
+    swapped: Option<bool>,
+    #[serde(default)]
+    hollow_up: Option<bool>,
     session: String,
     show_grid: bool,
     /// What the rail does to this chart. Missing from a chart written with
@@ -2022,7 +2036,38 @@ fn hundredths(change_pct: f64) -> i64 {
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
 fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
-    pane.colouring.get().for_style(pane.bar_style.get()).scheme(theme)
+    pane.colouring.get().scheme(theme).worn(pane.swapped.get(), pane.hollow_up.get())
+}
+
+/// How a stored chart paints its bars: the palette and the switches over it.
+///
+/// A chart written before it had a colouring of its own was wearing the one
+/// every chart wore, which is the default's, switches and all. One written
+/// before the looks were switches says so by its colouring: a scheme an older
+/// version wrote for a hollow rise or for red up is Vivid with that switch
+/// on, and any other colouring of its own was worn plain.
+fn stored_colouring(stored: &StoredPane, defaults: &ChartDefaults) -> StoredColouring {
+    match stored.colouring.as_deref().and_then(BarColouring::from_stored) {
+        Some(written) => StoredColouring {
+            colouring: written.colouring,
+            swapped: stored.swapped.unwrap_or(written.swapped),
+            hollow_up: stored.hollow_up.unwrap_or(written.hollow_up),
+        },
+        None => StoredColouring {
+            colouring: defaults.colouring,
+            swapped: stored.swapped.unwrap_or(defaults.swapped),
+            hollow_up: stored.hollow_up.unwrap_or(defaults.hollow_up),
+        },
+    }
+}
+
+/// A chart's colouring and the switches it wears, as a split copies them.
+fn pane_look(pane: &ChartPane) -> StoredColouring {
+    StoredColouring {
+        colouring: pane.colouring.get(),
+        swapped: pane.swapped.get(),
+        hollow_up: pane.hollow_up.get(),
+    }
 }
 
 /// A chart's local drawings get negative ids, below everything the store
@@ -2752,7 +2797,7 @@ impl Window {
             timeframe,
             template.as_ref().map(|t| t.indicators.clone()).unwrap_or(indicators),
             defaults.bar_style,
-            defaults.colouring,
+            defaults.look(),
             defaults.session,
             defaults.show_grid,
             LinkMode::default(),
@@ -2774,7 +2819,7 @@ impl Window {
         timeframe: Timeframe,
         indicators: Vec<Indicator>,
         bar_style: BarStyle,
-        colouring: BarColouring,
+        look: StoredColouring,
         session: Session,
         show_grid: bool,
         mode: LinkMode,
@@ -2783,11 +2828,13 @@ impl Window {
         self.next_pane.set(id + 1);
 
         let theme = self.theming.borrow().theme();
-        let scheme = colouring.for_style(bar_style).scheme(&theme);
+        let scheme = look.colouring.scheme(&theme).worn(look.swapped, look.hollow_up);
         let pane = ChartPane::new(
             id, theme, scheme, timeframe, indicators, bar_style, session, show_grid, mode,
         );
-        pane.colouring.set(colouring);
+        pane.colouring.set(look.colouring);
+        pane.swapped.set(look.swapped);
+        pane.hollow_up.set(look.hollow_up);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -3245,7 +3292,7 @@ impl Window {
             from.timeframe.get(),
             from.indicators.borrow().clone(),
             from.bar_style.get(),
-            from.colouring.get(),
+            pane_look(&from),
             from.session.get(),
             from.show_grid.get(),
             from.mode(),
@@ -3996,6 +4043,8 @@ impl Window {
                     bar_style: pane.bar_style.get().key().to_string(),
                     bars_hidden: pane.bars_hidden.get(),
                     colouring: Some(pane.colouring.get().key().to_string()),
+                    swapped: Some(pane.swapped.get()),
+                    hollow_up: Some(pane.hollow_up.get()),
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     link: pane.mode(),
@@ -4184,13 +4233,7 @@ impl Window {
                 Timeframe::parse(&stored.timeframe).unwrap_or(Timeframe::days(1)),
                 template.map(|t| t.indicators.clone()).unwrap_or_else(|| stored.indicators.clone()),
                 BarStyle::from_key(&stored.bar_style).unwrap_or_default(),
-                // A chart written before it had a colouring of its own was
-                // wearing the one every chart wore, which is the default's.
-                stored
-                    .colouring
-                    .as_deref()
-                    .and_then(BarColouring::from_key)
-                    .unwrap_or(defaults.colouring),
+                stored_colouring(&stored, &defaults),
                 Session::from_key(&stored.session).unwrap_or_default(),
                 stored.show_grid,
                 stored.link,
@@ -9266,8 +9309,6 @@ impl Window {
         pane.bars_hidden.set(false);
         pane.view.set_bars_hidden(false);
         self.sync_chart_actions(&pane);
-        // What the colouring paints depends on the style: hollow is coloured
-        // on an OHLC bar.
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
         self.save_workspace();
@@ -9280,6 +9321,34 @@ impl Window {
     pub fn set_bar_colouring(self: &Rc<Self>, colouring: BarColouring) {
         let pane = self.focused_pane();
         pane.colouring.set(colouring);
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        self.save_workspace();
+    }
+
+    /// Whether the focused chart wears its colouring the other way round.
+    pub fn bars_swapped(&self) -> bool {
+        self.focused_pane().swapped.get()
+    }
+
+    pub fn set_bars_swapped(self: &Rc<Self>, swapped: bool) {
+        let pane = self.focused_pane();
+        pane.swapped.set(swapped);
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        // Profit and loss turn round with the candles.
+        self.apply_marks_to(&pane);
+        self.save_workspace();
+    }
+
+    /// Whether the focused chart draws a rising body as an outline.
+    pub fn bars_hollow_up(&self) -> bool {
+        self.focused_pane().hollow_up.get()
+    }
+
+    pub fn set_bars_hollow_up(self: &Rc<Self>, hollow_up: bool) {
+        let pane = self.focused_pane();
+        pane.hollow_up.set(hollow_up);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
         self.save_workspace();
@@ -9385,6 +9454,8 @@ impl Window {
                 stored.bar_style = defaults.bar_style.key().to_string();
                 stored.bars_hidden = false;
                 stored.colouring = Some(defaults.colouring.key().to_string());
+                stored.swapped = Some(defaults.swapped);
+                stored.hollow_up = Some(defaults.hollow_up);
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
@@ -9414,8 +9485,11 @@ impl Window {
         pane.bars_hidden.set(false);
         pane.view.set_bars_hidden(false);
         pane.colouring.set(defaults.colouring);
+        pane.swapped.set(defaults.swapped);
+        pane.hollow_up.set(defaults.hollow_up);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+        self.apply_marks_to(pane);
         pane.session.set(defaults.session);
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);

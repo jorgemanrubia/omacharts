@@ -15,8 +15,11 @@ Its own strip. Each bar's volume, in the candles' up or down colour, dimmed.
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
-| **Up** colour | The candles' up colour, dimmed | A palette name, or a custom colour |
-| **Down** colour | The candles' down colour, dimmed | A palette name, or a custom colour |
+| **Colouring** | **Same as the chart** | **Vivid**, **Soft**, **Quiet** or **Monochrome**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
+| **Up** colour | The colouring's up colour, dimmed | A palette name, or a custom colour |
+| **Down** colour | The colouring's down colour, dimmed | A palette name, or a custom colour |
+
+**Same as the chart** follows the chart's own colouring, whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid dimmed bar with no body to leave open. Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then dim that colouring's colours, and a colour set by hand wins over both.
 
 The **Default** [chart template](/manual/chart-templates/) holds Volume, with [Session Times](/manual/indicators/session-times/).
 
@@ -32,6 +35,17 @@ capture: bin/headless-window cli chart screenshot --output /tmp/vol.png
 crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/volume.jpg)
 -->
 {% include figure.html src="/assets/manual/indicators/volume.jpg" alt="The volume strip under a SPY daily chart, bars in dimmed green and red" caption="The Volume strip under SPY daily." %}
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  (one NVDA 1D chart on the Default template, sidebar hidden)
+  key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume); click 800 383 (the Colouring row)
+capture: bin/headless-window shot /tmp/volume-colouring.png
+crop: 700,84,1160,1276
+-->
+{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open: Same as the chart, Vivid, Soft, Quiet, Monochrome" caption="A volume strip's own Colouring." %}
 
 ## Volume Profile
 

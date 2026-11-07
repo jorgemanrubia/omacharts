@@ -265,9 +265,11 @@ pub const CHART_SELECTOR: &str =
     "`pos:N`, counting from 0 in layout order, or a raw id from `chart list` \
      — prefer the position, which survives the window rebuilding";
 
-/// How a chart paints the theme's candle colours, spelled as the scheme ids
-/// the settings store.
-const COLOURINGS: &[&str] = &["theme", "theme-hollow", "theme-red-up", "theme-mono"];
+/// The palette a chart paints its bars from, spelled as the scheme ids the
+/// settings store, plus the two a released version offered for a hollow
+/// rise and for red up, which are Vivid with that switch on.
+const COLOURINGS: &[&str] =
+    &["theme", "theme-soft", "theme-quiet", "theme-mono", "theme-hollow", "theme-red-up"];
 const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -284,7 +286,14 @@ const PROFILE_ALIGNS: &[&str] = &["left", "right"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
-const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
+/// The answers `config bars` gives and takes. `coloured`, `hollow` and
+/// `red-up` are what a released version took: `coloured` is `vivid`, and the
+/// other two are `vivid` with that switch on, on every chart.
+const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
+/// What a volume pane's bars may be painted from: the chart's own colouring,
+/// or one of the four palettes.
+const VOLUME_COLOURINGS: &[&str] =
+    &["chart", "theme", "theme-soft", "theme-quiet", "theme-mono"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -379,6 +388,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles, or a colouring of their own").of(VOLUME_COLOURINGS),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
@@ -906,7 +916,10 @@ pub const SURFACE: &[Noun] = &[
                         "hide the bars, or show them again in the style they had",
                     )
                     .of(SWITCHES),
-                    Flag::valued("colouring", "COLOURING", "how the theme's candle colours are painted").of(COLOURINGS),
+                    Flag::valued("colouring", "COLOURING", "which of the theme's palettes the bars are painted from").of(COLOURINGS),
+                    Flag::valued("hollow-up", "BOOL", "draw a rising body as an outline").of(SWITCHES),
+                    Flag::valued("swap-colours", "BOOL", "swap the colouring's up and down, red for a rise")
+                        .of(SWITCHES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
                         "link",
@@ -1228,7 +1241,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "Whether bars carry their direction in colour, red for up, or no colour at all",
+                about: "Which palette every chart paints its bars from: vivid, soft, quiet or monochrome; and whether a rise is hollow or up and down are swapped",
                 args: &[Arg::opt("STATE", "omit to read it").of(COLOURING)],
                 flags: &[],
                 example: "omacharts config bars monochrome",
@@ -1431,6 +1444,8 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("bar_style", "chart set", "--style"),
     ("bars_hidden", "chart set", "--bars"),
     ("colouring", "chart set", "--colouring"),
+    ("swapped", "chart set", "--swap-colours"),
+    ("hollow_up", "chart set", "--hollow-up"),
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("link", "chart set", "--link"),

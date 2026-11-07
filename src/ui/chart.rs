@@ -8038,8 +8038,8 @@ fn draw_ruler(
     let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
     let kind = state.instrument.as_ref().map(|i| i.kind);
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
-    // The candles' own up and down, so a "Red up" scheme measures a rise in
-    // red; the label is the last-price tag of that direction, whose figure is
+    // The candles' own up and down, so a chart with them turned round
+    // measures a rise in red; the label is the last-price tag of that direction, whose figure is
     // already chosen to read on its fill.
     let flat;
     let (colour, tag) = match RulerDirection::of(from, to) {
@@ -8790,14 +8790,24 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 }
 
 /// The colours a volume pane paints a rising and a falling bar: the
-/// indicator's own when somebody chose them, otherwise the candles' dimmed.
+/// indicator's own when somebody chose them, otherwise the candles' dimmed
+/// — the chart's candles, or the colouring the indicator chose for itself.
 pub(crate) fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
 ) -> (String, String) {
-    let omacharts_engine::Params::Volume { up_color, down_color, .. } = &indicator.params else {
+    let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
+    else {
         return (scheme.volume_up.clone(), scheme.volume_down.clone());
+    };
+    let own;
+    let scheme = match colouring {
+        Some(colouring) => {
+            own = colouring.scheme(theme);
+            &own
+        }
+        None => scheme,
     };
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))

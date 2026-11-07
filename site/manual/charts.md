@@ -129,34 +129,43 @@ crop: none (resized to 2000 wide)
 
 ### Colouring
 
-The colouring is how a chart uses the theme's colours ([Themes and colours](/manual/themes/)).
+The colouring is which of the theme's colours a chart paints its bars from ([Themes and colours](/manual/themes/)). It is one of four palettes, with two switches under it.
 
 | Colouring | Paints |
 |---|---|
-| **Filled** (**Coloured** for OHLC bars) | Rises in the theme's up colour, falls in its down colour, bodies filled. The default |
-| **Hollow** | The same, with rising candles drawn as outlines. Candles only. An OHLC bar is drawn coloured |
-| **Red up** | Red for a rise and green for a fall |
-| **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not |
+| **Vivid** | Rises in the theme's up colour, falls in its down colour. The default |
+| **Soft** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
+| **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, so the price sits back and says nothing about good or bad |
+| **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless its rises are hollow |
+
+**Hollow up bars** draws a rising candle as an outline, in whichever palette is chosen. It is how a Monochrome candle shows its direction. An OHLC bar has no body to leave open, so the switch is greyed out while the style is OHLC bars, and keeps its setting for when the chart is candles again.
+
+**Swap up and down colours** paints whatever palette is chosen the other way round: a rise in the down colour and a fall in the up colour, so a Vivid chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. A hollow rise is still the rise. It is greyed out on Monochrome, which paints a rise and a fall alike.
+
+Earlier versions offered **Hollow** and **Red up** as colourings of their own. Each is **Vivid** with the matching switch on, and a chart saved with either still looks the same.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  (the daily-candles state above)
-  omacharts config set chart_header symbol,resolution
-  omacharts chart split horizontal
-  omacharts chart split vertical --chart pos:0
-  omacharts chart split vertical --chart pos:2
-  omacharts chart set --chart pos:N --link pinned        # N = 0..3
-  omacharts chart set --chart pos:0 --colouring theme
-  omacharts chart set --chart pos:1 --colouring theme-hollow
-  omacharts chart set --chart pos:2 --colouring theme-red-up
-  omacharts chart set --chart pos:3 --colouring theme-mono
-  then, with pos:2 focused: key alt+Left, key plus x5, key alt+Down, key plus x5, key alt+Right, key plus x5, key alt+Up, key plus x5
-capture: bin/headless-window cli chartbook screenshot --output /tmp/colourings.png
-crop: none (resized to 2000 wide)
+  (the daily-candles state above, sidebar hidden)
+  for each cell: omacharts chart set --colouring C --hollow-up H --swap-colours S
+                 omacharts chart range 3m
+capture: bin/headless-window cli chart screenshot --output /tmp/CELL.png, one per cell
+crop: the four cells joined two by two with a 12px gap of the chart background (#1a1b26), resized to 2000 wide, -quality 88
+cells: theme · theme-soft (top); theme-quiet · theme-mono (bottom), switches off
 -->
-{% include figure.html src="/assets/manual/charts/colourings.jpg" alt="Four NVDA daily charts of the same two months, one in each colouring" caption="Filled, Red up (top); Hollow, Monochrome (bottom)." %}
+{% include figure.html src="/assets/manual/charts/palettes.jpg" alt="Four NVDA daily charts of the same three months, one in each palette" caption="Vivid, Soft (top); Quiet, Monochrome (bottom)." %}
+
+<!-- regenerate:
+as the palettes figure, cells: theme-quiet --hollow-up on · theme-mono --hollow-up on (top); theme --swap-colours on · theme with `chart indicator set volume --colouring theme-quiet` (bottom)
+-->
+{% include figure.html src="/assets/manual/charts/switches.jpg" alt="Four NVDA daily charts: Quiet and Monochrome with hollow rises, Vivid with up and down swapped, and Vivid over a quiet volume strip" caption="Hollow up bars on Quiet and on Monochrome (top); Vivid with up and down swapped, and Vivid over a volume strip of its own, Quiet (bottom)." %}
+
+<!-- regenerate:
+as the palettes figure, on midnight (top) and paper (bottom): theme-soft · theme-quiet, the two rows joined with a 12px gap
+-->
+{% include figure.html src="/assets/manual/charts/soft-quiet.jpg" alt="Soft and Quiet side by side on the Midnight theme and on the Paper theme" caption="Soft (left) and Quiet (right) on Midnight and on Paper." %}
 
 ### Hiding the bars
 
