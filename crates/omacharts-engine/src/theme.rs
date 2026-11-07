@@ -612,13 +612,11 @@ impl BarScheme {
         }
     }
 
-    /// The volume colour for a direction.
+    /// The volume colour for a direction: the bar's own. A colouring saved
+    /// before volume took the candles' colours still carries a dimmed pair,
+    /// and is painted as its candles all the same.
     pub fn volume(&self, direction: Direction) -> &str {
-        match direction {
-            Direction::Up => &self.volume_up,
-            Direction::Down => &self.volume_down,
-            Direction::Flat => &self.neutral,
-        }
+        self.outline(direction)
     }
 
     pub fn duplicate(&self, id: impl Into<String>, name: impl Into<String>) -> BarScheme {
@@ -865,13 +863,13 @@ pub fn theme_bars(theme: &Theme) -> BarScheme {
     let mut bars = match &theme.bars {
         // Volume follows the candles rather than being stored beside them:
         // its colours belong to the volume indicator, and unset they are
-        // these, dimmed.
+        // these.
         Some(bars) => BarScheme {
             id: THEME_BARS_ID.to_string(),
             name: "Vivid".to_string(),
             source: Source::BuiltIn,
-            volume_up: mix(&bars.up, &theme.ui.background, 0.45),
-            volume_down: mix(&bars.down, &theme.ui.background, 0.45),
+            volume_up: bars.up.clone(),
+            volume_down: bars.down.clone(),
             ..bars.clone()
         },
         None => palette_bars(theme),
@@ -904,8 +902,8 @@ fn palette_bars(theme: &Theme) -> BarScheme {
         id: THEME_BARS_ID.to_string(),
         name: "Vivid".to_string(),
         source: Source::BuiltIn,
-        volume_up: mix(&up, &theme.ui.background, 0.45),
-        volume_down: mix(&down, &theme.ui.background, 0.45),
+        volume_up: up.clone(),
+        volume_down: down.clone(),
         up_fill: up.clone(),
         down_fill: down.clone(),
         up,
@@ -1066,8 +1064,8 @@ pub fn theme_soft_bars(theme: &Theme) -> BarScheme {
         id: THEME_SOFT_ID.to_string(),
         name: "Soft".to_string(),
         source: Source::BuiltIn,
-        volume_up: mix(&up, &theme.ui.background, 0.45),
-        volume_down: mix(&down, &theme.ui.background, 0.45),
+        volume_up: up.clone(),
+        volume_down: down.clone(),
         up_fill: up.clone(),
         down_fill: down.clone(),
         up,
@@ -1177,8 +1175,8 @@ pub fn theme_quiet_bars(theme: &Theme) -> BarScheme {
         id: THEME_QUIET_ID.to_string(),
         name: "Quiet".to_string(),
         source: Source::BuiltIn,
-        volume_up: mix(&up, &theme.ui.background, 0.45),
-        volume_down: mix(&down, &theme.ui.background, 0.45),
+        volume_up: up.clone(),
+        volume_down: down.clone(),
         up_fill: up.clone(),
         down_fill: down.clone(),
         up,
@@ -1249,8 +1247,8 @@ pub fn theme_mono_bars(theme: &Theme) -> BarScheme {
         // The same dimming the coloured scheme gives volume, so the two read
         // as the same chart with the colour taken out rather than as two
         // different ones.
-        volume_up: mix(&ink, &theme.ui.background, 0.45),
-        volume_down: mix(&ink, &theme.ui.background, 0.45),
+        volume_up: ink.clone(),
+        volume_down: ink.clone(),
         up: ink.clone(),
         up_fill: ink.clone(),
         down: ink.clone(),
@@ -2073,11 +2071,16 @@ mod tests {
     }
 
     #[test]
-    fn volume_sits_between_the_candle_and_the_background() {
-        let theme = midnight();
-        let bars = theme_bars(&theme);
-        assert_ne!(bars.volume_up, bars.up);
-        assert_ne!(bars.volume_up, theme.ui.background);
+    fn volume_is_painted_in_the_bars_own_colours() {
+        for theme in builtin_themes() {
+            for bars in [theme_bars(&theme), theme_soft_bars(&theme), theme_quiet_bars(&theme), theme_mono_bars(&theme)] {
+                assert_eq!((&bars.volume_up, &bars.volume_down), (&bars.up, &bars.down), "{} {}", theme.name, bars.name);
+                assert_eq!(bars.volume(Direction::Up), bars.up, "{} {}", theme.name, bars.name);
+            }
+        }
+        let mut saved = theme_bars(&midnight());
+        saved.volume_up = "#123456".to_string();
+        assert_eq!(saved.volume(Direction::Up), saved.up, "a dimmed pair saved with a colouring is not what is drawn");
     }
 
     #[test]

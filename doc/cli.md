@@ -984,7 +984,8 @@ switch on for that chart. A volume pane follows the chart's colouring, swapped
 or not, unless given one of its own: `chart indicator set volume --colouring
 theme-soft`, which is painted its own way round whatever the chart's switch
 says, and `--colouring chart` to follow the chart again. A hollow rise never
-reaches the volume: its bars are solid and dimmed, with no body to leave open.
+reaches the volume: its bars are solid, with no body to leave open, and in the
+candles' own colours.
 
 `config set bar_scheme theme-mono` changes only what new charts open with, and
 does not remember the scheme that was in use.

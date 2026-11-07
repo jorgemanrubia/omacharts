@@ -265,9 +265,9 @@ impl Theming {
 
 /// The two fixed schemes whose colours were not the theme's, as they shipped.
 fn legacy_bar_colours(id: &str) -> Option<BarScheme> {
-    let (name, up, down, volume_up, volume_down) = match id {
-        "classic" => ("Classic", "#3fb950", "#f85149", "#2d6e3b", "#8c322e"),
-        "accessible" => ("Blue / Orange", "#4493f8", "#ff9b50", "#2a5a8f", "#8f5a2a"),
+    let (name, up, down) = match id {
+        "classic" => ("Classic", "#3fb950", "#f85149"),
+        "accessible" => ("Blue / Orange", "#4493f8", "#ff9b50"),
         _ => return None,
     };
     Some(BarScheme {
@@ -278,8 +278,8 @@ fn legacy_bar_colours(id: &str) -> Option<BarScheme> {
         up_fill: up.to_string(),
         down: down.to_string(),
         down_fill: down.to_string(),
-        volume_up: volume_up.to_string(),
-        volume_down: volume_down.to_string(),
+        volume_up: up.to_string(),
+        volume_down: down.to_string(),
         neutral: "#8b949e".to_string(),
         mono: String::new(),
     })

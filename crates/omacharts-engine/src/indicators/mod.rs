@@ -452,8 +452,7 @@ pub enum Params {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         colouring: Option<BarColouring>,
         /// The bars of a rising and a falling session. Unset is the candles'
-        /// own colour dimmed toward the chart, so volume reads as belonging
-        /// to the bar above it without competing with it.
+        /// own colour, so volume reads as belonging to the bar above it.
         #[serde(default)]
         up_color: Option<ColorChoice>,
         #[serde(default)]

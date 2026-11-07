@@ -8825,8 +8825,8 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 }
 
 /// The colours a volume pane paints a rising and a falling bar: the
-/// indicator's own when somebody chose them, otherwise the candles' dimmed
-/// — the chart's candles, or the colouring the indicator chose for itself.
+/// indicator's own when somebody chose them, otherwise the candles' own —
+/// the chart's candles, or the colouring the indicator chose for itself.
 pub(crate) fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
@@ -8834,7 +8834,7 @@ pub(crate) fn volume_colours(
 ) -> (String, String) {
     let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
     else {
-        return (scheme.volume_up.clone(), scheme.volume_down.clone());
+        return (scheme.up.clone(), scheme.down.clone());
     };
     let own;
     let scheme = match colouring {
@@ -8847,7 +8847,7 @@ pub(crate) fn volume_colours(
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
     };
-    (pick(up_color, &scheme.volume_up), pick(down_color, &scheme.volume_down))
+    (pick(up_color, &scheme.up), pick(down_color, &scheme.down))
 }
 
 /// One histogram per period, anchored where its period begins.

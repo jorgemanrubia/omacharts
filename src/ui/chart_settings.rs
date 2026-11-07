@@ -1777,7 +1777,7 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
         return Vec::new();
     };
     // The chart's own colouring first, then the four palettes. A volume
-    // bar is a dimmed solid bar with no body to leave open, so the chart's
+    // bar is a solid bar with no body to leave open, so the chart's
     // switches reach it only as the swap, through the chart's scheme.
     let offered = &BarColouring::ALL;
     let mut names = vec![VOLUME_FOLLOWS_CHART];
