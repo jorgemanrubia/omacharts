@@ -1140,177 +1140,63 @@ fn nearest_hue(theme: &Theme, names: &[&str], ideal: f64) -> f64 {
         .unwrap_or(ideal)
 }
 
-/// Candles in two tones of one quiet tint, for a chart in which price is
-/// not the protagonist and is not a colour either.
+/// Candles in two greys, for a chart in which price is not the protagonist
+/// and is not a colour either.
 ///
-/// A rise and a fall are two tones made from the theme's text, told apart
-/// by lightness, or by one of them being drawn hollow, never by hue, so
-/// neither says good or bad and neither competes with an indicator, a
-/// drawing or a price line, all of which keep their colour and so become
-/// the foreground. The tint is the theme's own tone — a slate on Tokyo
-/// Night, a sepia on Gruvbox, a steel on Nord — at a chroma low enough to
-/// read as monochrome, so a colorless chart is still that theme's chart
-/// rather than one pasted in from somewhere else, and has no character of
-/// its own. Both tones are held clear of the chart's ground: the nearer
-/// one at the 3:1 a graphic that carries meaning needs, the further one at
-/// about 5:1, under the coloured pair's 5:1 to 9:1 but a decent contrast
-/// still. Derived from the theme like every other scheme, so a theme never
-/// asked about colorless candles has them from its own text.
-///
-/// PROTOTYPE: four ways of drawing the pair are carried while one is
-/// chosen, picked by `OMACHARTS_COLORLESS_APPROACH` — see
-/// [`ColorlessApproach`]. Three go once the choice is made, and the
-/// variable with them.
+/// A rise is the lighter grey and a fall the darker, as a black-and-white
+/// chart has always had them, so neither says good or bad and neither
+/// competes with an indicator, a drawing or a price line, all of which keep
+/// their colour and so become the foreground. Both greys are made from the
+/// theme's text with its tint all but taken out, and held clear of the
+/// chart's ground: the nearer at the 3:1 a graphic that carries meaning
+/// needs, the further at about 5:1, under the coloured pair's 5:1 to 9:1
+/// but a decent contrast still; between the two that is about 1.65:1, or
+/// 0.12 of lightness, six times what the eye can just separate. Derived
+/// from the theme like every other scheme, so a theme never asked about
+/// colorless candles has them from its own text.
 pub fn theme_colorless_bars(theme: &Theme) -> BarScheme {
     let coloured = theme_bars(theme);
-    let pair = ColorlessApproach::chosen().pair(theme);
-    let body = |tone: &str, hollow: bool| if hollow { HOLLOW.to_string() } else { tone.to_string() };
+    let near = colorless_grey(theme, COLORLESS_NEAR);
+    let far = colorless_grey(theme, COLORLESS_FAR);
+    let lightness = |hex: &str| Oklch::of(hex).map_or(0.0, |c| c.l);
+    let (up, down) = if lightness(&far) > lightness(&near) { (far, near) } else { (near, far) };
     BarScheme {
         id: THEME_COLORLESS_ID.to_string(),
         name: "Colorless".to_string(),
         source: Source::BuiltIn,
-        volume_up: mix(&pair.up, &theme.ui.background, 0.45),
-        volume_down: mix(&pair.down, &theme.ui.background, 0.45),
-        up_fill: body(&pair.up, pair.up_hollow),
-        down_fill: body(&pair.down, pair.down_hollow),
-        up: pair.up,
-        down: pair.down,
+        volume_up: mix(&up, &theme.ui.background, 0.45),
+        volume_down: mix(&down, &theme.ui.background, 0.45),
+        up_fill: up.clone(),
+        down_fill: down.clone(),
+        up,
+        down,
         neutral: coloured.neutral.clone(),
         mono: coloured.mono,
     }
 }
 
-/// A body that is not painted: the outline is drawn and the chart shows
-/// through, as [`theme_hollow_bars`] draws a rise.
-const HOLLOW: &str = "#00000000";
-
-/// PROTOTYPE: the four ways of drawing a colorless pair under comparison:
-/// a grey or the theme's tint, and every body filled or a rise left as an
-/// outline.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ColorlessApproach {
-    /// A: two filled greys, the rise the lighter one, the fall the darker,
-    /// as a black-and-white chart has always had them. Pure grey, for
-    /// comparison.
-    GreyFilled,
-    /// B: the same two tones, filled, in the theme's tint.
-    TintFilled,
-    /// C: the theme's tint; a rise is an outline in the further tone, a
-    /// fall a stone filled in the nearer one: told apart by fill and by
-    /// lightness.
-    #[default]
-    TintLineStone,
-    /// D: C in pure grey.
-    GreyLineStone,
-}
-
-/// A colorless pair, before it is painted: a tone for each direction and
-/// whether that direction's body is left hollow.
-#[derive(Clone, PartialEq, Debug)]
-pub struct ColorlessPair {
-    pub up: String,
-    pub down: String,
-    pub up_hollow: bool,
-    pub down_hollow: bool,
-}
-
-impl ColorlessApproach {
-    pub const ALL: [ColorlessApproach; 4] = [
-        ColorlessApproach::GreyFilled,
-        ColorlessApproach::TintFilled,
-        ColorlessApproach::TintLineStone,
-        ColorlessApproach::GreyLineStone,
-    ];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            ColorlessApproach::GreyFilled => "grey-filled",
-            ColorlessApproach::TintFilled => "tint-filled",
-            ColorlessApproach::TintLineStone => "tint-line-stone",
-            ColorlessApproach::GreyLineStone => "grey-line-stone",
-        }
-    }
-
-    pub fn chosen() -> ColorlessApproach {
-        let key = std::env::var("OMACHARTS_COLORLESS_APPROACH").unwrap_or_default();
-        ColorlessApproach::ALL.into_iter().find(|a| a.key() == key).unwrap_or_default()
-    }
-
-    fn tinted(self) -> bool {
-        matches!(self, ColorlessApproach::TintFilled | ColorlessApproach::TintLineStone)
-    }
-
-    /// The pair this approach draws from `theme`.
-    pub fn pair(self, theme: &Theme) -> ColorlessPair {
-        let chroma = if self.tinted() { COLORLESS_TINT } else { COLORLESS_GREY };
-        let near = colorless_tone(theme, COLORLESS_NEAR, chroma);
-        let far = colorless_tone(theme, COLORLESS_FAR, chroma);
-        let pair = |up: &str, down: &str, up_hollow: bool| ColorlessPair {
-            up: up.to_string(),
-            down: down.to_string(),
-            up_hollow,
-            down_hollow: false,
-        };
-        match self {
-            ColorlessApproach::GreyFilled | ColorlessApproach::TintFilled => {
-                let lightness = |hex: &str| Oklch::of(hex).map_or(0.0, |c| c.l);
-                let (light, dark) = if lightness(&far) > lightness(&near) { (far, near) } else { (near, far) };
-                pair(&light, &dark, false)
-            }
-            ColorlessApproach::TintLineStone | ColorlessApproach::GreyLineStone => pair(&far, &near, true),
-        }
-    }
-}
-
-/// Where the nearer of the two tones sits against the chart: WCAG's 3:1
+/// Where the nearer of the two greys sits against the chart: WCAG's 3:1
 /// for a graphic that carries meaning, since a wick is a hairline of it,
-/// and no further, so a filled body of it is a stone rather than a block.
+/// and no further, so a body of it is a stone rather than a block.
 pub const COLORLESS_NEAR: ContrastBand = ContrastBand::new(3.0, 3.15);
 
-/// Where the further tone sits: under the coloured pair, which runs 5:1 to
+/// Where the further grey sits: under the coloured pair, which runs 5:1 to
 /// 9:1 on most themes, and under Monochrome's ceiling, but a decent
-/// contrast, since this tone is what a rise is read off. The two bands set
-/// the pair's own contrast: 5.1 over 3.1 is about 1.65:1 between a rise
-/// and a fall, which is 0.12 of lightness, six times what the eye can just
-/// separate.
+/// contrast, since on a dark theme this grey is what a rise is read off.
+/// The two bands set the pair's own contrast: 5.1 over 3.1 is about 1.65:1
+/// between a rise and a fall on every theme, because both are derived from
+/// the same ground.
 pub const COLORLESS_FAR: ContrastBand = ContrastBand::new(5.0, 5.2);
 
-/// How much colour the theme's tint carries on a colorless bar: the same
-/// trace Monochrome keeps, enough to be this theme's tone rather than a
-/// generic grey, and well under the 0.055 of a muted bar, which is a
-/// colour. Both tones carry it at one hue, so the pair reads as one tint
-/// at two lightnesses, never as two colours.
-pub const COLORLESS_TINT: f64 = 0.03;
-
-/// The most colour a grey keeps: below what the eye separates from a dead
-/// grey side by side.
+/// The most colour a colorless grey keeps: a trace of the theme's text,
+/// below what the eye separates from a dead grey side by side, so a warm
+/// theme's greys lean warm without being a colour.
 pub const COLORLESS_GREY: f64 = 0.012;
 
-/// Below this a colour's hue is too faint to be worth borrowing.
-const TONED: f64 = 0.004;
-
-/// The hue of the theme's overall tone: its text, or its chart when the
-/// text is a dead grey, or its accent when both are. `None` for a theme
-/// with no hue anywhere, whose colorless bars are grey.
-fn theme_tone(theme: &Theme) -> Option<f64> {
-    [&theme.ui.text, &theme.ui.background, &theme.ui.accent]
-        .into_iter()
-        .filter_map(|hex| Oklch::of(hex))
-        .find(|colour| colour.c >= TONED)
-        .map(|colour| colour.h)
-}
-
-/// The theme's text as a tone held to `band` against the chart, carrying
-/// `chroma` of the theme's tone, or as much as it has.
-fn colorless_tone(theme: &Theme, band: ContrastBand, chroma: f64) -> String {
-    let Some(text) = Oklch::of(&theme.ui.text) else {
-        return theme.ui.text.clone();
-    };
-    let toned = match theme_tone(theme) {
-        Some(h) if chroma > COLORLESS_GREY => Oklch { c: chroma, h, ..text }.hex(),
-        _ => text.hex(),
-    };
-    held_to(&toned, &theme.ui.background, band, Some(chroma))
+/// The theme's text as a grey held to `band` against the chart, its chroma
+/// capped at [`COLORLESS_GREY`].
+fn colorless_grey(theme: &Theme, band: ContrastBand) -> String {
+    held_to(&theme.ui.text, &theme.ui.background, band, Some(COLORLESS_GREY))
 }
 
 /// Written down as its key, the id the settings have always stored, so an
@@ -2103,6 +1989,21 @@ mod tests {
                 assert_eq!((&red.neutral, &red.id, &red.name), (&green.neutral, &green.id, &green.name));
                 assert_eq!(green.is_two_toned(), green.id != THEME_MONO_ID, "{}", green.name);
             }
+        }
+    }
+
+    #[test]
+    fn colorless_bars_are_two_greys_apart_in_lightness_and_clear_of_the_chart() {
+        for theme in builtin_themes() {
+            let bars = theme_colorless_bars(&theme);
+            let (up, down) = (Oklch::of(&bars.up).unwrap(), Oklch::of(&bars.down).unwrap());
+            assert!(up.c <= COLORLESS_GREY + 0.002 && down.c <= COLORLESS_GREY + 0.002, "{}: a colour", theme.name);
+            assert!(up.l > down.l + 0.1, "{}: {} over {} is not a lighter rise", theme.name, bars.up, bars.down);
+            for grey in [&bars.up, &bars.down] {
+                let ratio = contrast_ratio(grey, &theme.ui.background);
+                assert!((COLORLESS_NEAR.floor..=COLORLESS_FAR.ceiling).contains(&ratio), "{}: {ratio:.2}", theme.name);
+            }
+            assert!(bars.is_two_toned());
         }
     }
 
