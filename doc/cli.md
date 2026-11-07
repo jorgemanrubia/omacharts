@@ -962,11 +962,17 @@ bars carry their direction again, in the "theme-hollow" scheme
 `config bars red-up` is the third answer: the theme's colours the other way
 round, red for a rise and green for a fall, the way charts are read in Taiwan,
 mainland China, Japan and Korea. It remembers the palette in use as well.
+`config bars muted` and `config bars muted-red-up` are the fourth and fifth:
+two quiet colours from the theme's palette, a slate and a sand, instead of
+its green and red, so the price sits back on the chart.
 
 Bar colours belong to each chart, so `config bars` answers for every chart at
 once — the charts in every chartbook and the ones made next — the way Apply to
 all charts does in the preferences. One chart on its own is
-`chart set --colouring theme|theme-hollow|theme-red-up|theme-mono`.
+`chart set --colouring theme|theme-hollow|theme-red-up|theme-muted|theme-muted-red-up|theme-mono`.
+A volume pane follows the chart's colouring unless given one of its own:
+`chart indicator set volume --colouring theme-muted`, and `--colouring chart`
+to follow the chart again.
 
 `config set bar_scheme theme-mono` changes only what new charts open with, and
 does not remember the scheme that was in use.

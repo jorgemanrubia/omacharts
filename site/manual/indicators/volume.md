@@ -15,8 +15,11 @@ Its own strip. Each bar's volume, in the candles' up or down colour, dimmed.
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
-| **Up** colour | The candles' up colour, dimmed | A palette name, or a custom colour |
-| **Down** colour | The candles' down colour, dimmed | A palette name, or a custom colour |
+| **Colouring** | **Same as the chart** | **Coloured**, **Red up**, **Muted**, **Muted red up** or **Monochrome**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
+| **Up** colour | The colouring's up colour, dimmed | A palette name, or a custom colour |
+| **Down** colour | The colouring's down colour, dimmed | A palette name, or a custom colour |
+
+**Same as the chart** follows the chart's own colouring, whatever it is changed to. Choosing one keeps the volume in it while the price changes: coloured candles over a muted volume, or the other way round. **Up** and **Down** then dim that colouring's colours, and a colour set by hand wins over both.
 
 The **Default** [chart template](/manual/chart-templates/) holds Volume, with [Session Times](/manual/indicators/session-times/).
 

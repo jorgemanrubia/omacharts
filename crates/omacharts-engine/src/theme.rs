@@ -1025,27 +1025,25 @@ pub fn theme_red_up_bars(theme: &Theme) -> BarScheme {
     }
 }
 
-/// The theme's own direction colours with most of the colour taken out:
-/// a rise and a fall still told apart, quietly, by a chart that no longer
-/// signals.
+/// Candles in a pair of quiet colours drawn from the theme's palette, for a
+/// chart in which price is not the protagonist.
 ///
-/// Between the coloured chart and the monochrome one. Each direction keeps
-/// the theme's hue for it — the green stays that theme's green, the rose
-/// that theme's rose — so the candles still follow the desktop; what goes
-/// is the loudness. Derived from the theme rather than stored, like every
-/// other scheme, so a theme that was never asked about muted candles has
-/// them anyway.
+/// Not the theme's green and rose with the colour taken out: a different
+/// idea. Up and down are two colours chosen because they sit well together
+/// on this theme's chart — a slate against a sand, a teal against a mauve —
+/// and neither of them says good or bad. They are held to less contrast
+/// than the coloured pair, so the bars sit back and share the chart with
+/// its drawings, indicators and grid rather than shouting over them, and
+/// to just enough difference from each other to be told apart at a glance.
+/// Derived from the theme like every other scheme, so a theme never asked
+/// about muted candles has them from its own palette.
 ///
-/// PROTOTYPE: three derivations are carried while one is chosen, picked
-/// by `OMACHARTS_MUTED_APPROACH` — see [`MutedApproach`]. Two go once the
-/// choice is made, and the variable with them.
+/// PROTOTYPE: four ways of choosing the pair are carried while one is
+/// chosen, picked by `OMACHARTS_MUTED_APPROACH` — see [`MutedApproach`].
+/// Three go once the choice is made, and the variable with them.
 pub fn theme_muted_bars(theme: &Theme) -> BarScheme {
     let coloured = theme_bars(theme);
-    let (up, down) = match MutedApproach::chosen() {
-        MutedApproach::TintedGrey => tinted_grey(theme, &coloured.up, &coloured.down),
-        MutedApproach::Faded => faded(theme, &coloured),
-        MutedApproach::Shaded => shaded(theme, &coloured.up, &coloured.down),
-    };
+    let (up, down) = MutedApproach::chosen().pair(theme);
     BarScheme {
         id: THEME_MUTED_ID.to_string(),
         name: "Muted".to_string(),
@@ -1061,8 +1059,8 @@ pub fn theme_muted_bars(theme: &Theme) -> BarScheme {
     }
 }
 
-/// [`theme_muted_bars`] the other way round, for the trader who reads red
-/// as up — see [`theme_red_up_bars`].
+/// [`theme_muted_bars`] the other way round, for the trader who reads the
+/// first colour as down — see [`theme_red_up_bars`].
 pub fn theme_muted_red_up_bars(theme: &Theme) -> BarScheme {
     let bars = theme_muted_bars(theme);
     BarScheme {
@@ -1078,28 +1076,34 @@ pub fn theme_muted_red_up_bars(theme: &Theme) -> BarScheme {
     }
 }
 
-/// PROTOTYPE: the three ways of muting under comparison.
+/// PROTOTYPE: the four ways of choosing a muted pair under comparison.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum MutedApproach {
-    /// One quiet grey, tinted with each direction's hue.
+    /// The palette's coolest and warmest: a slate against a sand.
     #[default]
-    TintedGrey,
-    /// The theme's own up and down, faded most of the way into the
-    /// monochrome ink.
-    Faded,
-    /// Two shades of one quiet tint: a rise stands out, a fall recedes.
-    Shaded,
+    SlateSand,
+    /// The palette's two secondary hues: its Teal against its Violet.
+    TealMauve,
+    /// The theme's accent against a stone made of its text.
+    AccentStone,
+    /// Two tones either side of the accent's hue.
+    TwinTones,
 }
 
 impl MutedApproach {
-    pub const ALL: [MutedApproach; 3] =
-        [MutedApproach::TintedGrey, MutedApproach::Faded, MutedApproach::Shaded];
+    pub const ALL: [MutedApproach; 4] = [
+        MutedApproach::SlateSand,
+        MutedApproach::TealMauve,
+        MutedApproach::AccentStone,
+        MutedApproach::TwinTones,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
-            MutedApproach::TintedGrey => "tinted-grey",
-            MutedApproach::Faded => "faded",
-            MutedApproach::Shaded => "shaded",
+            MutedApproach::SlateSand => "slate-sand",
+            MutedApproach::TealMauve => "teal-mauve",
+            MutedApproach::AccentStone => "accent-stone",
+            MutedApproach::TwinTones => "twin-tones",
         }
     }
 
@@ -1108,25 +1112,27 @@ impl MutedApproach {
         MutedApproach::ALL.into_iter().find(|a| a.key() == key).unwrap_or_default()
     }
 
-    /// The muted pair this approach derives for `theme`, for the report.
+    /// The muted pair this approach draws from `theme`, up first.
     pub fn pair(self, theme: &Theme) -> (String, String) {
-        let coloured = theme_bars(theme);
-        match self {
-            MutedApproach::TintedGrey => tinted_grey(theme, &coloured.up, &coloured.down),
-            MutedApproach::Faded => faded(theme, &coloured),
-            MutedApproach::Shaded => shaded(theme, &coloured.up, &coloured.down),
-        }
+        let (up, down) = match self {
+            MutedApproach::SlateSand => slate_sand(theme),
+            MutedApproach::TealMauve => teal_mauve(theme),
+            MutedApproach::AccentStone => accent_stone(theme),
+            MutedApproach::TwinTones => twin_tones(theme),
+        };
+        quiet_pair(theme, up, down)
     }
 }
 
 /// What a muted bar is held to against the chart behind it.
 ///
-/// Below the monochrome floor on purpose: a muted chart is one that sits
-/// back, and a muted bar has a second colour beside it to be read against.
-/// Still at WCAG's 3:1 for a graphic that carries meaning, because a wick
-/// is a hairline of the same colour. The ceiling is where it stops being
-/// quiet.
-pub const MUTED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 4.5);
+/// Well below the coloured pair, which sits at 5:1 to 9:1 on most themes,
+/// and below the monochrome floor too: a muted chart is one in which the
+/// bars sit back, and a muted bar has a second colour beside it to be read
+/// against. Still at WCAG's 3:1 for a graphic that carries meaning, since
+/// a wick is a hairline of the same colour. The ceiling is where it stops
+/// sitting back.
+pub const MUTED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 3.8);
 
 /// The least a muted rise may be from a muted fall, as `delta_e` sees it.
 ///
@@ -1137,101 +1143,148 @@ pub const MUTED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 4.5);
 /// look. That is what "subtly distinct" is in numbers.
 pub const MUTED_APART: f64 = 0.05;
 
-/// The most muted a direction colour's chroma may be and still clear
-/// [`MUTED_APART`] at the hues most themes use: raised from here, a little
-/// at a time, only for a theme whose green and rose are nearer each other
-/// than that.
-const MUTED_CHROMA: f64 = 0.045;
+/// How much colour a muted bar carries: enough to be a slate rather than a
+/// grey, not enough to be a blue. Raised a little at a time, only for a
+/// pair whose hues are nearer each other than [`MUTED_APART`] allows.
+const MUTED_CHROMA: f64 = 0.055;
+
+/// The most colour the stone of [`accent_stone`] may carry: a trace of the
+/// theme's own text, so it is that theme's stone rather than a dead grey.
+const STONE_CHROMA: f64 = 0.012;
 
 /// Below this a colour has no hue worth keeping.
 const GREY: f64 = 0.01;
 
-/// How far toward the monochrome ink a faded direction colour goes.
-const MUTED_FADE: f64 = 0.7;
+/// A quiet colour before it is painted: a hue, how much of it, and whether
+/// it sits back further still.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Tint {
+    pub h: f64,
+    pub c: f64,
+    /// Painted at the floor of [`MUTED_CONTRAST`] rather than its ceiling:
+    /// for a stone beside a colour, which is told from it by sitting
+    /// further back rather than by having a hue of its own.
+    pub recedes: bool,
+}
 
-/// Where a faded bar may end up: [`MUTED_CONTRAST`]'s floor, since what it
-/// fades toward already sits inside the band, and a ceiling that lets a
-/// theme's brightest direction colour keep a little of its brightness.
-const FADED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 5.5);
-
-/// The two shades a shaded chart is built from, and the trace of hue each
-/// keeps. A rise at the loud shade, a fall at the quiet one.
-const SHADE_LOUD: ContrastBand = ContrastBand::new(4.3, 4.7);
-const SHADE_QUIET: ContrastBand = ContrastBand::new(3.0, 3.3);
-const SHADE_CHROMA: f64 = 0.025;
-
-/// A: one quiet grey, tinted.
-///
-/// The theme's text, brought into [`MUTED_CONTRAST`] and stripped of
-/// chroma, is the grey; a rise and a fall are that grey with the chroma
-/// put back at [`MUTED_CHROMA`] in the direction colour's own hue. The
-/// same lightness, so the two differ by hue alone, the way the coloured
-/// pair does; a theme whose two hues are near each other gets a little
-/// more chroma until they clear [`MUTED_APART`].
-fn tinted_grey(theme: &Theme, up: &str, down: &str) -> (String, String) {
-    let grey = held_to(&theme.ui.text, &theme.ui.background, MUTED_CONTRAST, Some(0.0));
-    let (Some(grey), Some(up), Some(down)) = (Oklch::of(&grey), Oklch::of(up), Oklch::of(down)) else {
-        return (up.to_string(), down.to_string());
-    };
-    // A direction colour that is itself a grey — Vantablack and White have
-    // no green — stays a grey, rather than being tinted at a hue it has not
-    // got, which for a grey is nought: red.
-    let tint = |colour: Oklch, c: f64| {
-        Oklch { l: grey.l, c: if colour.c < GREY { 0.0 } else { c }, h: colour.h }.hex()
-    };
-    let mut c = MUTED_CHROMA;
-    loop {
-        let pair = (tint(up, c), tint(down, c));
-        if delta_e(&pair.0, &pair.1) >= MUTED_APART || c >= 0.12 {
-            return pair;
-        }
-        c += 0.005;
+impl Tint {
+    fn hue(h: f64) -> Tint {
+        Tint { h, c: MUTED_CHROMA, recedes: false }
     }
 }
 
-/// B: the theme's own colours, faded.
+/// Where a receding tint is held: the floor of the band, and no more.
+const RECEDED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 3.15);
+
+/// Paint `up` and `down` at the one lightness every muted bar shares, and
+/// make sure they can be told apart.
 ///
-/// Each direction colour is blended [`MUTED_FADE`] of the way toward the
-/// quiet grey of [`tinted_grey`] in OKLab, so what is left is the same
-/// colour seen through the same grey — its hue, and whatever lightness
-/// difference the theme gave its green and its rose, both at a third of
-/// their strength — then held into [`FADED_CONTRAST`] in case the theme's
-/// colour was dark enough to drag it under the floor. A pair that fades too
-/// close is faded less, a step at a time.
-fn faded(theme: &Theme, coloured: &BarScheme) -> (String, String) {
+/// The lightness is the theme's text brought into [`MUTED_CONTRAST`] with
+/// its chroma taken out, so the pair is as far from the chart as a quiet
+/// grey would be and no further; both tints are painted at it, so they
+/// differ by hue alone — except a tint that recedes, which is painted at
+/// the band's floor instead and is told apart by that. A pair whose hues
+/// are near each other gets a little more chroma until it clears
+/// [`MUTED_APART`], a tint with next to no chroma (a stone) keeping it.
+fn quiet_pair(theme: &Theme, up: Tint, down: Tint) -> (String, String) {
     let ground = &theme.ui.background;
     let grey = held_to(&theme.ui.text, ground, MUTED_CONTRAST, Some(0.0));
-    let mut t = MUTED_FADE;
+    let receded = held_to(&theme.ui.text, ground, RECEDED_CONTRAST, Some(0.0));
+    let (Some(grey), Some(receded)) = (Oklch::of(&grey), Oklch::of(&receded)) else {
+        return (theme.ui.text.clone(), theme.ui.text_muted.clone());
+    };
+    let paint = |tint: Tint, more: f64| {
+        let c = if tint.c < GREY * 2.0 { tint.c } else { tint.c + more };
+        let l = if tint.recedes { receded.l } else { grey.l };
+        Oklch { l, c, h: tint.h }.hex()
+    };
+    let mut more = 0.0;
     loop {
-        let pair = (
-            held_to(&blend(&coloured.up, &grey, t), ground, FADED_CONTRAST, None),
-            held_to(&blend(&coloured.down, &grey, t), ground, FADED_CONTRAST, None),
-        );
-        if delta_e(&pair.0, &pair.1) >= MUTED_APART || t <= 0.3 {
+        let pair = (paint(up, more), paint(down, more));
+        if delta_e(&pair.0, &pair.1) >= MUTED_APART || more >= 0.08 {
             return pair;
         }
-        t -= 0.05;
+        more += 0.005;
     }
 }
 
-/// C: two shades of one quiet tint.
-///
-/// Direction is told by lightness, which every eye reads: a rise is the
-/// theme's text brought to [`SHADE_LOUD`] against the chart, a fall the
-/// same brought to [`SHADE_QUIET`], so a rise stands forward and a fall
-/// sits back on a dark theme and a light one alike. Each keeps a trace of
-/// its direction colour's hue, [`SHADE_CHROMA`], which is enough to read
-/// as that theme's green and rose without being either.
-fn shaded(theme: &Theme, up: &str, down: &str) -> (String, String) {
-    let ground = &theme.ui.background;
-    let shade = |hex: &str, band: ContrastBand| {
-        let (Some(ink), Some(colour)) = (Oklch::of(&theme.ui.text), Oklch::of(hex)) else {
-            return hex.to_string();
-        };
-        let start = Oklch { l: ink.l, c: SHADE_CHROMA.min(colour.c), h: colour.h }.hex();
-        held_to(&start, ground, band, Some(SHADE_CHROMA))
-    };
-    (shade(up, SHADE_LOUD), shade(down, SHADE_QUIET))
+/// The hue of a named swatch, if the theme has it and it has one.
+fn swatch_hue(theme: &Theme, name: &str) -> Option<f64> {
+    let swatch = theme.swatch(name)?;
+    let colour = Oklch::of(&swatch.hex)?;
+    (colour.c >= GREY).then_some(colour.h)
+}
+
+/// Of the swatches named, the hue nearest `ideal`; `ideal` itself when the
+/// theme has none of them.
+fn nearest_hue(theme: &Theme, names: &[&str], ideal: f64) -> f64 {
+    names
+        .iter()
+        .filter_map(|name| swatch_hue(theme, name))
+        .min_by(|a, b| hue_gap(*a, ideal).total_cmp(&hue_gap(*b, ideal)))
+        .unwrap_or(ideal)
+}
+
+/// The hue of the theme's accent, or of its text when the accent is a grey,
+/// or the slate of [`SLATE`] when both are.
+fn accent_hue(theme: &Theme) -> f64 {
+    [&theme.ui.accent, &theme.ui.text]
+        .into_iter()
+        .filter_map(|hex| Oklch::of(hex))
+        .find(|colour| colour.c >= GREY)
+        .map_or(SLATE, |colour| colour.h)
+}
+
+/// Where a slate blue and a sand sit on the wheel, for a theme that has
+/// neither to offer.
+const SLATE: f64 = 255.0;
+const SAND: f64 = 75.0;
+const TEAL: f64 = 190.0;
+const MAUVE: f64 = 320.0;
+
+/// How far either side of the accent a twin tone sits: enough to be two
+/// colours, not enough to stop being the accent's family.
+const TWIN_SPREAD: f64 = 40.0;
+
+/// A: a slate against a sand. The coolest of the palette's blues and the
+/// warmest of its ambers, which is the pairing every editorial chart
+/// reaches for first, and the one that says least about good and bad.
+fn slate_sand(theme: &Theme) -> (Tint, Tint) {
+    (
+        Tint::hue(nearest_hue(theme, &["Blue", "Cyan", "Teal"], SLATE)),
+        Tint::hue(nearest_hue(theme, &["Amber", "Orange"], SAND)),
+    )
+}
+
+/// B: a teal against a mauve. The palette's two secondary hues, which no
+/// theme uses for a warning or a success, so the pair reads as designed
+/// rather than as a signal turned down.
+fn teal_mauve(theme: &Theme) -> (Tint, Tint) {
+    (
+        Tint::hue(nearest_hue(theme, &["Teal", "Cyan"], TEAL)),
+        Tint::hue(nearest_hue(theme, &["Violet", "Rose"], MAUVE)),
+    )
+}
+
+/// C: the accent against a stone. A rise wears the theme's own colour,
+/// quietened; a fall is the theme's text as a stone, with a trace of its
+/// tint, sitting back a little further. The most blended of the four: one
+/// direction is simply the chart's own grey.
+fn accent_stone(theme: &Theme) -> (Tint, Tint) {
+    let stone = Oklch::of(&theme.ui.text).map_or(Tint { h: 0.0, c: 0.0, recedes: true }, |text| Tint {
+        h: text.h,
+        c: text.c.min(STONE_CHROMA),
+        recedes: true,
+    });
+    (Tint::hue(accent_hue(theme)), stone)
+}
+
+/// D: two tones of the accent. The accent's hue turned [`TWIN_SPREAD`]
+/// either way, so a blue theme gets a teal-blue rise and a violet-blue
+/// fall: the same family, two members.
+fn twin_tones(theme: &Theme) -> (Tint, Tint) {
+    let h = accent_hue(theme);
+    (Tint::hue(h - TWIN_SPREAD), Tint::hue(h + TWIN_SPREAD))
 }
 
 /// Written down as its key, the id the settings have always stored, so an
@@ -1251,16 +1304,6 @@ impl<'de> Deserialize<'de> for BarColouring {
     }
 }
 
-/// Blend `a` toward `b` in OKLab, so halfway looks halfway. `t` of 0 is
-/// all `a`, 1 is all `b`.
-pub fn blend(a: &str, b: &str, t: f64) -> String {
-    let (Some(a_lab), Some(b_lab)) = (oklab(a), oklab(b)) else { return a.to_string() };
-    let lerp = |x: f64, y: f64| x + (y - x) * t;
-    let (l, la, lb) = (lerp(a_lab.0, b_lab.0), lerp(a_lab.1, b_lab.1), lerp(a_lab.2, b_lab.2));
-    let c = (la * la + lb * lb).sqrt();
-    let h = if c < 0.0005 { 0.0 } else { lb.atan2(la).to_degrees().rem_euclid(360.0) };
-    Oklch { l, c, h }.hex()
-}
 
 /// Candles in one neutral colour, for people who would rather read a chart
 /// than be signalled at by one.

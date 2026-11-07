@@ -136,6 +136,8 @@ The colouring is how a chart uses the theme's colours ([Themes and colours](/man
 | **Filled** (**Coloured** for OHLC bars) | Rises in the theme's up colour, falls in its down colour, bodies filled. The default |
 | **Hollow** | The same, with rising candles drawn as outlines. Candles only. An OHLC bar is drawn coloured |
 | **Red up** | Red for a rise and green for a fall |
+| **Muted** | Rises and falls in two quiet colours drawn from the theme's palette rather than its green and red, a slate and a sand, held to less contrast than the coloured bars so the price sits back and the chart's drawings and indicators share it |
+| **Muted red up** | The same two colours the other way round |
 | **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not |
 
 <!-- regenerate:

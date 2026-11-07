@@ -390,7 +390,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
 | `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
 | `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
-| `--colouring C` | `theme`, `theme-hollow`, `theme-red-up`, `theme-mono` | [Colouring](/manual/charts/#colouring) |
+| `--colouring C` | `theme`, `theme-hollow`, `theme-red-up`, `theme-muted`, `theme-muted-red-up`, `theme-mono` | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
@@ -486,9 +486,11 @@ bars carry their direction again, in the "theme" scheme
 
 | `STATE` | Does |
 |---|---|
-| (none) | Prints the current state: `coloured`, `red-up` or `monochrome` |
+| (none) | Prints the current state: `coloured`, `red-up`, `muted`, `muted-red-up` or `monochrome` |
 | `monochrome` | Every chart monochrome, remembering the colouring in use |
 | `red-up` | Every chart red up |
+| `muted` | Every chart muted: two quiet colours from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
+| `muted-red-up` | Every chart muted, the two colours the other way round |
 | `coloured` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
 
 `config set bar_scheme theme-mono` is different. It changes only what new
@@ -533,6 +535,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
+| `--colouring C` | `chart` to follow the chart's colouring, or `theme`, `theme-red-up`, `theme-muted`, `theme-muted-red-up`, `theme-mono` for one of its own | Volume ([Volume](/manual/indicators/volume/)) |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
@@ -1516,7 +1519,7 @@ same.
 |---|---|---|---|---|
 | `theme` | `omarchy` (System), `midnight`, `carbon`, `paper`, `daylight`, `omarchy:SLUG` for one installed Omarchy theme, or the id of a theme of your own | `omarchy` on Omarchy, `midnight` elsewhere | Theme › Theme | [Themes](/manual/themes/) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
-| `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-red-up`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
+| `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-red-up`, `theme-muted`, `theme-muted-red-up`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |

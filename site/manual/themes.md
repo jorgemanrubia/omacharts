@@ -94,7 +94,7 @@ A swatch opens the colour chooser. The colour applies as you pick it. **Rename**
 | Other | **Crosshair** | The crosshair. |
 | Other | **Accent** | A selected row, a switch that is on, the button a dialog suggests. |
 
-Volume bars take the candle colours, dimmed toward the background. Filled, hollow, red-up or monochrome bars are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)).
+Volume bars take the candle colours, dimmed toward the background, unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Filled, hollow, red-up, muted or monochrome bars are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the muted pair is drawn from the theme's palette, its coolest blue and its warmest amber, and is not a colour a theme sets.
 
 ## The palette
 

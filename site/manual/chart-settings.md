@@ -30,7 +30,7 @@ crop: 490,95,1580,1250 (both)
 | Group › row | Does |
 |---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). **Colouring** is greyed out while they are hidden |
-| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up** or **Monochrome** for candles; **Coloured**, **Red up** or **Monochrome** for OHLC bars ([Colouring](/manual/charts/#colouring)) |
+| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Muted**, **Muted red up** or **Monochrome** for candles; **Coloured**, **Red up**, **Muted**, **Muted red up** or **Monochrome** for OHLC bars ([Colouring](/manual/charts/#colouring)) |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
@@ -63,7 +63,7 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin; the Defaults pag
 | Group › row | Choices | Default |
 |---|---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
-| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Monochrome** | **Filled** |
+| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Muted**, **Muted red up**, **Monochrome** | **Filled** |
 | **Scales** › **Logarithmic scale** | On or off | Off |
 | **Scales** › **Gridlines** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
