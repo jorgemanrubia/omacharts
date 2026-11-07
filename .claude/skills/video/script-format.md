@@ -106,6 +106,38 @@ holds the picture once the scene's narration ends.
 Use `cli` in setup, and keys and the pointer for anything the viewer should
 see a person do: a chart that silently changes symbol teaches nothing.
 
+## Timed to music
+
+A video with no voice, cut to its music, says `timing: music` in its
+frontmatter. Its scenes have a **Picture** and no **Voice**, and every cue
+is a place in the music: `@bar.beat`, counted from the track's first
+downbeat (`@9` or `@9.1` is bar 9's downbeat, `@9.3` its third beat,
+`@9.2.5` the off-beat after the second). Several actions on one cue go on
+one line, as elsewhere.
+
+    @15.1: key ctrl+alt+Right; theme hackerman; pulse
+    @19.1: zoom 25% 30% 1.9
+
+| Frontmatter | Means |
+|---|---|
+| `music_tempo` | the BPM `bin/video music` asks the composer for |
+| `music_bpm`, `music_downbeat` | the pinned track's tempo and first downbeat, written by `bin/video beats` |
+| `music_meter` | beats in a bar, 4 unless set |
+| `music_end` | the `bar.beat` the picture ends on |
+| `music_fade` | seconds the music fades over at the end, 1.5 unless set |
+| `cover` | seconds the cover is held; the music plays under it from 0 |
+| `badges` | `on` to show key badges, off unless set |
+
+And four actions for the camera and the beat, drawn afterwards:
+
+| Action | Means |
+|---|---|
+| `theme <name>` | the desktop switches to that Omarchy theme, and the window with it. At most one a bar |
+| `zoom <x%> <y%> <scale> [beats]` | the camera snaps there, settling within a beat, and holds: for `beats`, then back, or until the next move. `zoom 50% 50% 1` is the whole frame |
+| `drift <x%> <y%> <scale> <beats>` | the camera glides there over that many beats |
+| `pulse [strength]` | the picture kicks closer for an instant on a drum (0.035 unless set) |
+| `flash [strength]` | a brief lift toward white, under a cut (0.35 unless set) |
+
 ## Notes
 
 The author steers by writing in the file as well as in chat. A line starting

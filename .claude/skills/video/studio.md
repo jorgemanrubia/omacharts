@@ -178,6 +178,55 @@ per-scene cache is for. Every line is force-aligned (torchaudio's MMS_FA) to
 time its words, which is how cues find their moment; it reads letters only,
 so numbers belong in the narration spelled out.
 
+## Cut to the music
+
+A video can be timed to its music instead of a voice (`timing: music` in
+its frontmatter, `@bar.beat` cues; script-format.md). Proven on
+2026-11-08 with the Beautiful charts video. What it took:
+
+- **The music comes first.** `bin/video music` composes candidates at the
+  `music_tempo:` asked for (ACE-Step keeps a given BPM), sized from
+  `length:`; `bin/video beats` reads the pinned track with librosa (the
+  qwen environment has it): a straight grid fitted through the tracked
+  beats, the downbeat as the beat phase with the most low-end onset, and
+  each bar's loudness, so the build, drop and break can be found. It pins
+  `music_bpm:` and `music_downbeat:` in the frontmatter.
+- **Themes are the desktop's.** On Omarchy the window follows the desktop
+  theme, so `theme <name>` rewrites the studio home's
+  `~/.local/state/omarchy/current/theme/colors.toml` and `theme.name`, as
+  omarchy-theme-set does, and recolours the border and gaps.
+  `omacharts config set theme omarchy:<name>` writes the setting but does
+  **not** restyle a window already open. The app looks for a desktop
+  change on a 2-second glib timer, and that timer's phase wanders (write to
+  restyle took anything from 0.07 to 1.07s in one run), so aligning the
+  recording to its ticks did not hold. Instead a theme is written up to a
+  poll ahead of its beat and the studio watches a few pixels (a 6x6 `grim
+  -g` grab takes ~30ms) until the window has restyled before going on, so
+  nothing after it can show before it. At most one theme a bar at 120 BPM.
+- **A restyle comes in two strokes.** Recolouring the border and gaps at
+  the moment of writing showed as a stroke (4% of the frame) up to a
+  second before the window turned, and the anchoring took each theme's
+  stroke for the next theme's change, so every theme landed a bar late.
+  The frame is recoloured only once the window has turned.
+- **Cut to the beat afterwards.** Real time is close, never exact: a chord
+  lands a few frames off, Shift over a letter through `virtual-keyboard`
+  most of a second after it starts (0.87s measured), a theme up to a
+  poll late. So after recording, `anchor_cues` finds each cue's change in
+  the recording (in colour: two themes of the same lightness barely move a
+  grey picture; a frame differing from the one before over 0.12% of the
+  picture, searched from the cue's keys to the next cue's; a theme's at
+  the frame where a quarter of the picture turns) and `remap_recording`
+  cuts the recording so every change lands on its beat's frame, holding a
+  frame where a change came early. `anchors.txt` says how far each fell.
+  A change too faint to find (gridlines on a dark theme) is left where it
+  fell.
+- **Camera in post.** `zoom`, `drift`, `pulse` and `flash` are drawn by
+  Remotion from the script, on the beats, over the cut recording.
+  `bin/video recompose` makes the video again from the last recording, so
+  a camera, music or cover change costs no new recording.
+- ffmpeg 8 dropped `-filter_complex_script`; a graph in a file is
+  `-/filter_complex FILE`.
+
 ## Shutting it down
 
 Find the studio's processes by `XDG_RUNTIME_DIR=<studio dir>` in
