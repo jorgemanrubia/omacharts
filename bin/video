@@ -1427,7 +1427,7 @@ def remap_recording(source, anchors, total, target):
         if i + 1 < len(points):
             stop = min(stop, max(start + 1, f(points[i + 1][1]) - 1))
         parts.append(f"[0:v]trim=start_frame={start}:end_frame={stop},setpts=PTS-STARTPTS,"
-                     f"tpad=stop_mode=clone:stop={length - (stop - start)},trim=end_frame={length}[s{len(labels)}]")
+                     f"tpad=stop_mode=clone:stop={length - (stop - start)},trim=end_frame={length},settb=1/{FPS},setpts=N[s{len(labels)}]")
         labels.append(f"[s{len(labels)}]")
     graph = ";".join(parts) + f";{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v]"
     script = target.with_suffix(".graph")
