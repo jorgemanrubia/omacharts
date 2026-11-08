@@ -60,6 +60,9 @@ struct Panel {
     page: adw::PreferencesPage,
     /// The feeds, rebuilt whenever one changes.
     group: RefCell<Option<adw::PreferencesGroup>>,
+    /// The artwork and notices the feeds set up have to show, under the
+    /// feeds.
+    credits: RefCell<Vec<adw::PreferencesGroup>>,
     /// What the page shows below the feeds, kept last.
     after: Vec<adw::PreferencesGroup>,
     /// The feed a sign-in is running for, so a second press cannot start
@@ -101,6 +104,7 @@ impl Panel {
             on_change,
             page,
             group: RefCell::new(None),
+            credits: RefCell::new(Vec::new()),
             after,
             signing_in: Cell::new(None),
             notes: RefCell::new(HashMap::new()),
@@ -138,15 +142,37 @@ fn rebuild(panel: &Rc<Panel>) {
     if let Some(old) = panel.group.borrow_mut().take() {
         panel.page.remove(&old);
     }
+    for old in panel.credits.borrow_mut().drain(..) {
+        panel.page.remove(&old);
+    }
     let group = feeds_group(panel);
     panel.page.add(&group);
     *panel.group.borrow_mut() = Some(group);
+    for credits in set_up(panel).into_iter().filter_map(sign_in_dialogs::credits) {
+        panel.page.add(&credits);
+        panel.credits.borrow_mut().push(credits);
+    }
     for after in &panel.after {
         if after.parent().is_some() {
             panel.page.remove(after);
         }
         panel.page.add(after);
     }
+}
+
+/// The feeds set up: those added, and those with a login in Trading. A
+/// feed that has artwork and notices to show has them on the page while
+/// it is set up.
+fn set_up(panel: &Panel) -> Vec<&'static Listed> {
+    let logins = crate::trading::logins(&panel.store);
+    let mut feeds = panel.added();
+    for feed in providers::offered() {
+        let logged_in = logins.iter().any(|login| login.broker.eq_ignore_ascii_case(feed.id));
+        if logged_in && !feeds.iter().any(|known| known.id == feed.id) {
+            feeds.push(feed);
+        }
+    }
+    feeds
 }
 
 fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {

@@ -9,6 +9,8 @@
 //! is the only way to them.
 
 // Beside this file rather than under it, where the dialogs have always been.
+#[path = "rithmic_attribution.rs"]
+mod rithmic_attribution;
 #[path = "rithmic_login.rs"]
 mod rithmic_login;
 #[path = "sierra_login.rs"]
@@ -16,6 +18,7 @@ mod sierra_login;
 #[path = "sierra_setup.rs"]
 mod sierra_setup;
 
+use gtk::prelude::*;
 use omacharts_engine::providers::{Listed, Saved};
 
 use crate::trading::{Login, Typed};
@@ -50,6 +53,64 @@ pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
         id if id == omacharts_engine::providers::fake::LISTED.id => Some(fake::dialog),
         _ => None,
     }
+}
+
+/// What a feed has to show while it is set up — its artwork and its
+/// notices, as its terms ask — under the feeds on the Data page.
+pub fn credits(feed: &Listed) -> Option<adw::PreferencesGroup> {
+    match feed.id {
+        id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_attribution::group()),
+        _ => None,
+    }
+}
+
+/// The custom item a feed dot's menu leaves room for a feed's artwork in.
+fn credits_item(feed: &str) -> String {
+    format!("credits-{feed}")
+}
+
+/// Leave room in `menu`, in a section of its own, for the artwork of each
+/// feed in `feeds` that has some to show.
+pub fn leave_room_for_credits(menu: &gtk::gio::Menu, feeds: &[&str]) {
+    let section = gtk::gio::Menu::new();
+    for feed in feeds.iter().filter(|feed| menu_credits(feed).is_some()) {
+        let item = gtk::gio::MenuItem::new(None, None);
+        item.set_attribute_value("custom", Some(&credits_item(feed).to_variant()));
+        section.append_item(&item);
+    }
+    if section.n_items() > 0 {
+        menu.append_section(None, &section);
+    }
+}
+
+/// A feed's artwork, small, for the menu its feed dot opens.
+fn menu_credits(feed: &str) -> Option<gtk::Widget> {
+    match feed {
+        id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_attribution::menu_logos().upcast()),
+        _ => None,
+    }
+}
+
+/// Put each feed's artwork where `popover`'s menu left room for it.
+pub fn fill_credits(popover: &gtk::PopoverMenu) {
+    let Some(model) = popover.menu_model() else { return };
+    for feed in omacharts_engine::providers::offered() {
+        let item = credits_item(feed.id);
+        if leaves_room(&model, &item)
+            && let Some(widget) = menu_credits(feed.id)
+        {
+            popover.add_child(&widget, &item);
+        }
+    }
+}
+
+/// Does `model`, or a section of it, have the custom item `id`?
+fn leaves_room(model: &gtk::gio::MenuModel, id: &str) -> bool {
+    (0..model.n_items()).any(|at| {
+        let custom = model.item_attribute_value(at, "custom", Some(gtk::glib::VariantTy::STRING));
+        custom.and_then(|custom| custom.get::<String>()).is_some_and(|custom| custom == id)
+            || model.item_link(at, "section").is_some_and(|section| leaves_room(&section, id))
+    })
 }
 
 /// The fake rich feed's dialog, as a provider's own dialog would be: a

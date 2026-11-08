@@ -1120,6 +1120,9 @@ impl ChartPane {
                     let model = model.clone();
                     self.feed_menu.set_create_popup_func(move |button| {
                         crate::ui::menus::set_model(button, &model());
+                        if let Some(menu) = button.popover().and_downcast::<gtk::PopoverMenu>() {
+                            crate::ui::sign_in_dialogs::fill_credits(&menu);
+                        }
                     });
                     self.feed_menu.set_widget_name("offers");
                 }
