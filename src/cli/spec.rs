@@ -270,7 +270,7 @@ pub const CHART_SELECTOR: &str =
 /// rise and for red up, which are Vivid with that switch on.
 const COLOURINGS: &[&str] =
     &["theme", "theme-soft", "theme-quiet", "theme-mono", "theme-hollow", "theme-red-up"];
-const STYLES: &[&str] = &["candles", "ohlc", "none"];
+const STYLES: &[&str] = &["candles", "ohlc", "line", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[

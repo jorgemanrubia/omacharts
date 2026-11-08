@@ -367,6 +367,7 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let theme = window.theme();
     let shown = !window.bars_hidden();
     hollow.set_sensitive(shown && hollow_applies(window.bar_style()));
+    hollow.set_visible(hollow_offered(window.bar_style()));
     swapped.set_sensitive(shown && two_toned(&theme, window.bar_colouring()));
 
     // Set while the rows are being brought up to date with a chart changed
@@ -416,6 +417,7 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
             window_for_style.set_bar_style(style);
             colouring_for_style.set_sensitive(true);
             hollow_for_style.set_sensitive(hollow_applies(style));
+            hollow_for_style.set_visible(hollow_offered(style));
             let theme = window_for_style.theme();
             swapped_for_style.set_sensitive(two_toned(&theme, window_for_style.bar_colouring()));
         }
@@ -507,6 +509,7 @@ fn sync_bars(
     hollow.set_active(window.bars_hollow_up());
     swapped.set_active(window.bars_swapped());
     hollow.set_sensitive(!hidden && hollow_applies(window.bar_style()));
+    hollow.set_visible(hollow_offered(window.bar_style()));
     swapped.set_sensitive(!hidden && two_toned(&window.theme(), current));
 }
 
@@ -528,6 +531,12 @@ pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring) -> bo
 /// body to leave open, an OHLC bar does not.
 pub fn hollow_applies(style: BarStyle) -> bool {
     style == BarStyle::Candles
+}
+
+/// Whether the hollow rise is offered at all: greyed on OHLC bars, which
+/// are still bars, and gone on a line, which has no up bars to speak of.
+pub fn hollow_offered(style: BarStyle) -> bool {
+    style != BarStyle::Line
 }
 
 /// Offer the four palettes, with `current` selected.

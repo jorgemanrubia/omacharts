@@ -1104,9 +1104,12 @@ impl PriceScale {
 /// `None` when the bars carry nothing finite to measure.
 fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale> {
     let (mut low, mut high) = (f64::MAX, f64::MIN);
+    // A line is drawn through the closes alone, so it fits them rather than
+    // the ranges it never shows.
+    let line = state.drawn_as_line();
     for b in bars {
-        low = low.min(b.low);
-        high = high.max(b.high);
+        low = low.min(if line { b.close } else { b.low });
+        high = high.max(if line { b.close } else { b.high });
     }
     if let Some(compare) = &state.compare {
         let (first, _) = state.slice();
@@ -2139,6 +2142,13 @@ impl State {
         self.anchored = false;
         self.overhang = 0;
         self.first = first.min(len.saturating_sub(self.visible));
+    }
+
+    /// Whether the chart's own bars are drawn as a line through the closes:
+    /// the Line style, or a comparison drawing every market as a line.
+    fn drawn_as_line(&self) -> bool {
+        !self.bars_hidden
+            && (self.bar_style == BarStyle::Line || self.compare.as_ref().is_some_and(|overlay| overlay.spec.lines_only))
     }
 
     /// The bars in view: the first, and how many. Fewer than the columns
@@ -5673,7 +5683,9 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     cr.clip();
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_drawings(cr, state, &plan, &scale, true);
-    if !state.compare.as_ref().is_some_and(|overlay| overlay.spec.lines_only) {
+    // A line of the chart's own goes over the compared ones, so it is drawn
+    // with them instead.
+    if !(state.drawn_as_line() && compared.is_some()) {
         draw_candles(cr, state, &columns, &to_y);
     }
     draw_indicator_lines(cr, state, &columns, &to_y);
@@ -6125,6 +6137,10 @@ fn axis_time(bars: &[Bar], timeframe: Timeframe, per: f64, at: i64) -> Option<i6
 /// for bodies.
 fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
     if state.bars_hidden {
+        return;
+    }
+    if state.drawn_as_line() {
+        compare::draw_own_line(cr, state, columns, to_y);
         return;
     }
     candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, columns, to_y);
@@ -11164,6 +11180,45 @@ mod tests {
             let drawn = frame(10.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
             assert!(painted(&drawn) > 0, "{style:?} drew nothing");
         }
+    }
+
+    #[test]
+    fn a_line_is_one_stroke_through_the_closes_in_the_text_colour() {
+        let mut state = charted(1);
+        state.bar_style = BarStyle::Line;
+        // Opening low and closing high, and the reverse: a line that took
+        // its colour from the direction would show two.
+        let bars = [
+            Bar { ts: 0, open: 20.0, high: 90.0, low: 10.0, close: 80.0, volume: 0.0 },
+            Bar { ts: 60, open: 80.0, high: 90.0, low: 10.0, close: 20.0, volume: 0.0 },
+        ];
+        let to_y = |price: f64| 100.0 - price;
+        let columns = Columns::of(&bars, 0, 2, 0.0, 20.0);
+        let drawn = frame(40.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+        let (r, g, b, _) = crate::colors::rgba(&state.theme.ui.text);
+        let text = [(b * 255.0).round() as u8, (g * 255.0).round() as u8, (r * 255.0).round() as u8];
+        let solid: Vec<&[u8]> = drawn.chunks(4).filter(|pixel| pixel[3] == 255).collect();
+        assert!(!solid.is_empty(), "the line is drawn");
+        assert!(solid.iter().all(|pixel| pixel[..3] == text), "every solid pixel is the text colour");
+        let alpha = |x: usize, y: usize| drawn[(y * 40 + x) * 4 + 3];
+        let (x, high) = (columns.x(0).round() as usize, 10);
+        assert_eq!(alpha(x, high), 0, "the high is not drawn");
+        assert_ne!(alpha(x, 20), 0, "the close is");
+    }
+
+    #[test]
+    fn a_line_fits_the_closes_rather_than_the_ranges() {
+        let mut state = charted(60);
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, 600.0, 400.0);
+        let fit = |state: &State| price_range(state, &state.bars[first..first + visible], &plan).unwrap().prices();
+        let candles = fit(&state);
+        state.bar_style = BarStyle::Line;
+        let line = fit(&state);
+        assert!(line.0 > candles.0 && line.1 < candles.1, "{line:?} inside {candles:?}");
+        let closes = state.bars[first..first + visible].iter().map(|bar| bar.close);
+        let (low, high) = closes.fold((f64::MAX, f64::MIN), |(l, h), c| (l.min(c), h.max(c)));
+        assert!(line.0 <= low && line.1 >= high, "every close is in view");
     }
 
     #[test]

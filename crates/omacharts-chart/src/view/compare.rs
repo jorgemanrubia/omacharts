@@ -125,18 +125,11 @@ impl Overlay {
     }
 
     /// The lowest and highest prices the frame has to show over the bars from
-    /// `first`, `count` of them: the bars' own, or their closes alone when
-    /// they are a line, widened to take in every compared line.
+    /// `first`, `count` of them: `low` and `high`, the bars' own, widened to
+    /// take in every compared line.
     pub(super) fn fit(&self, bars: &[Bar], first: usize, count: usize, low: f64, high: f64) -> (f64, f64) {
         let Some(based) = self.based(bars, first) else { return (low, high) };
         let (mut low, mut high) = (low, high);
-        if self.spec.lines_only {
-            (low, high) = (f64::MAX, f64::MIN);
-            for bar in bars.iter().skip(first).take(count) {
-                low = low.min(bar.close);
-                high = high.max(bar.close);
-            }
-        }
         for line in 0..self.aligned.len() {
             for at in first..first + count {
                 if let Some(price) = self.placed(&based, line, at) {
@@ -308,11 +301,32 @@ pub(super) fn draw_lines(
         colors::set_source(cr, &spec.color);
         stroke(cr, columns, to_y, |at| overlay.placed(based, line, at));
     }
-    if overlay.spec.lines_only {
-        cr.set_line_width(OWN_LINE_W);
-        colors::set_source(cr, &overlay.spec.color);
-        stroke(cr, columns, to_y, |at| state.bars.get(at).map(|bar| bar.close));
+    cr.restore().ok();
+    if state.drawn_as_line() {
+        draw_own_line(cr, state, columns, to_y);
     }
+}
+
+/// The chart's own bars as one line through their closes, in the theme's
+/// text colour: what the Line style draws, and Lines only while comparing.
+pub(super) fn draw_own_line(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    cr.save().ok();
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_width(OWN_LINE_W);
+    colors::set_source(cr, &state.theme.ui.text);
+    for (at, bar) in columns.bars.iter().enumerate() {
+        let (x, y) = (columns.x(at), to_y(bar.close));
+        match at {
+            0 => cr.move_to(x, y),
+            _ => cr.line_to(x, y),
+        }
+    }
+    // A lone bar is a dot: the round cap of a line no longer than itself.
+    if columns.bars.len() == 1 {
+        cr.rel_line_to(0.0, 0.0);
+    }
+    let _ = cr.stroke();
     cr.restore().ok();
 }
 
@@ -438,7 +452,7 @@ pub(super) fn draw_pointer(
     let Some(hovered) = hovered.filter(|at| (first..first + visible).contains(at)) else { return };
     let x = bars_x + ((hovered - first) as f64 + 0.5) * bar_w;
     let mut dots: Vec<(f64, &str)> = Vec::new();
-    if overlay.spec.lines_only
+    if state.drawn_as_line()
         && let Some(bar) = state.bars.get(hovered)
     {
         dots.push((bar.close, &overlay.spec.color));
@@ -519,14 +533,6 @@ mod tests {
         let based = overlay.based(&main, 7).unwrap();
         // The flat market sits at the chart's base close all along.
         assert_eq!(overlay.placed(&based, 0, 9), Some(102.0));
-    }
-
-    #[test]
-    fn lines_only_fits_the_closes_rather_than_the_ranges() {
-        let main: Vec<Bar> = (0..5).map(|d| bar(d * DAY, 100.0)).collect();
-        let other: Vec<Bar> = (0..5).map(|d| bar(d * DAY, 10.0)).collect();
-        let overlay = overlay(&main, other, true, None);
-        assert_eq!(overlay.fit(&main, 0, 5, 99.0, 101.0), (100.0, 100.0));
     }
 
     #[test]

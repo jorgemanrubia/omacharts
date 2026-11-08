@@ -7025,6 +7025,21 @@ mod tests {
         assert_eq!(parsed["charts"][0]["resolution"], "1h");
     }
 
+    #[test]
+    fn a_chart_can_be_drawn_as_a_line_and_new_charts_can_start_as_one() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let set = run("chart set --book Macro --style line", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let listed = run("chart list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["charts"][0]["style"], "line");
+        assert_eq!(parsed["charts"][0]["bar_style"], "line");
+
+        assert_eq!(run("config set bar_style line", &store).code, 0);
+        assert_eq!(crate::chart_defaults::ChartDefaults::load(&store).bar_style, BarStyle::Line);
+    }
+
     /// Hiding the bars is a look at what is under them, so it must not cost
     /// the style they come back in.
     #[test]

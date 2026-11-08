@@ -28,15 +28,18 @@ pub enum BarStyle {
     Candles,
     /// Open and close as ticks either side of a high-low line.
     Ohlc,
+    /// One line through the closes.
+    Line,
 }
 
 impl BarStyle {
-    pub const ALL: [BarStyle; 2] = [BarStyle::Candles, BarStyle::Ohlc];
+    pub const ALL: [BarStyle; 3] = [BarStyle::Candles, BarStyle::Ohlc, BarStyle::Line];
 
     pub fn label(self) -> &'static str {
         match self {
             BarStyle::Candles => "Candles",
             BarStyle::Ohlc => "OHLC bars",
+            BarStyle::Line => "Line",
         }
     }
 
@@ -44,6 +47,7 @@ impl BarStyle {
         match self {
             BarStyle::Candles => "candles",
             BarStyle::Ohlc => "ohlc",
+            BarStyle::Line => "line",
         }
     }
 
@@ -1257,6 +1261,8 @@ mod tests {
             assert!(!style.label().is_empty());
         }
         assert_eq!(BarStyle::from_key("sticks"), None);
+        assert_eq!(BarStyle::from_key("line"), Some(BarStyle::Line));
+        assert_eq!(serde_json::to_string(&BarStyle::Line).unwrap(), "\"line\"");
         assert_eq!(BarStyle::default(), BarStyle::Candles);
     }
 

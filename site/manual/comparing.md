@@ -47,7 +47,7 @@ Each market is read at the chart's own resolution and laid on the chart's own ba
 
 ## Lines only
 
-**Lines only** draws the chart's own symbol as a line like the others instead of its bars. It is in the chart menu and in Chart settings while the chart compares something.
+**Lines only** draws the chart's own symbol as a line like the others instead of its bars, as the **Line** style does ([Bars](/manual/charts/#style)), while keeping the chart's own style for when it compares nothing. It is in the chart menu and in Chart settings while the chart compares something.
 
 <!-- regenerate:
 as the figure above, then
