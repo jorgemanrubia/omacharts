@@ -9,7 +9,7 @@ music_file: video/out/beautiful-charts/music/candidate-3-seed1074.flac
 cover: 3.93
 music_end: 30.1
 music_fade: 1.0
-end_card: 3
+end_card: 2.5
 music: warm, groovy electronic at 120 BPM in 4/4, thirty bars, instrumental. A tight, round kick, crisp closed hi-hats, a clap on two and four, a rounded analog bass and a bright plucked synth arpeggio, with warm pads underneath. Shape, in bars. One and two, a filtered pickup, the pluck and a muffled kick only. Three to six, the kick opens up and the bass enters, still sparse. Seven to fourteen, a build, hats and claps come in and the filter opens bar by bar, ending in a one-bar snare roll. Fifteen to twenty-two, the drop, the full groove with a strong downbeat on every bar. Twenty-three to twenty-six, a break, the kick drops out, pads and hats carry it, and a riser in bar twenty-six. Twenty-seven to twenty-nine, the full groove again with a lead on top. Thirty, a final hit that rings out. Playful and confident, clean and tasteful, never aggressive or festival-sized, with no vocals
 music_bpm: 119.988
 music_downbeat: 0.528
@@ -280,10 +280,10 @@ Gruvbox. The crude close-up holds to the end of bar 23. The four charts:
     @17.1: early 3; theme hackerman; flash; pulse 0.05; cli chartbook template apply Drop; cli chart set --chart pos:0 --symbol BTC --style candles --colouring theme --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol AAPL --style candles --colouring theme-soft --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol ES --style ohlc --thickness 3 --colouring theme --swap-colours off --session extended --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:3 --symbol CL --style candles --colouring theme-quiet --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:0; cli chart range "2022/11/25..2023/02/25"; cli chart focus pos:2; cli chart range "2026/10/16..2026/10/16"; cli chart focus pos:1; cli chart range "2023/01/01..2024/12/31"; cli chart focus pos:3; cli chart range "2025/12/12..2026/01/14"; cli chart focus pos:0; scroll 25% 25% -1; scroll 25% 25% 1; scroll 75% 25% -1; scroll 75% 25% 1; scroll 25% 75% -1; scroll 25% 75% 1; scroll 75% 75% -1; scroll 75% 75% 1; move -0.4% 50%
     @18.1: theme rose-pine; pulse 0.025
     @19.1: theme nord; pulse 0.025
-    @20.1: theme white; zoom 25% 25% 2; pulse 0.025
-    @21.1: theme kanagawa; zoom 75% 25% 2; pulse 0.025
-    @22.1: theme matte-black; zoom 25% 75% 2; pulse 0.025
-    @23.1: theme gruvbox; zoom 75% 75% 2; pulse 0.025
+    @20.1: theme white; zoom 25% 25% 2.06; pulse 0.025
+    @21.1: theme kanagawa; zoom 75% 25% 2.06; pulse 0.025
+    @22.1: theme matte-black; zoom 25% 75% 2.06; pulse 0.025
+    @23.1: theme gruvbox; zoom 75% 75% 2.06; pulse 0.025
 
 ### 4. Break
 
@@ -303,7 +303,7 @@ starts to drift right. On 26.1 Ctrl and H brings in the drawings:
 
     @24.1: early 3; theme ethereal; zoom 50% 50% 1; cli chartbook template apply Break; cli chart set --symbol NQ --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators off --drawings off --grid off; cli chart range "2025/04/14..2025/10/23"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @25.1: key ctrl+shift+h; pulse 0.05; zoom 35% 50% 1.3
-    @25.2: drift 65% 50% 1.3 7
+    @25.2: drift 65% 42% 1.3 7
     @26.1: key ctrl+h; pulse 0.025
 
 ### 5. Finale

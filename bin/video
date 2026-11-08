@@ -67,7 +67,7 @@ DEFAULT_AFTER = 0.8  # hold once a scene's narration ends
 TAIL = 1.5
 COVER = 2.5  # the cover held at the start, before it fades into the first scene
 COVER_FADE = 0.6
-END_FADE = 0.24  # the dissolve into the end card, centred on its beat
+END_FADE = 0.4  # the dissolve into the end card, from its beat: the last hit lands on the picture
 SETTLE = 1.0  # the app on screen, silent, between the cover's fade and the first word
 
 
@@ -207,7 +207,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": (3, 4),
-                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1, "cursor": 1}
+                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1, "cursor": 1, "punch": (0, 1), "pulses": (2, 3), "whip": (0, 1)}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -1575,7 +1575,7 @@ def camera_plan(script, total):
     period = script.beat_period()
     snap = min(0.55, period)
     full = {"x": SIZE[0] / 2, "y": SIZE[1] / 2, "scale": 1.0}
-    moves, pulses, flashes = [], [], []
+    moves, pulses, flashes, whips = [], [], [], []
     for scene in script.scenes:
         for cue, actions in scene.actions.items():
             if not cue.startswith("@"):
@@ -1588,6 +1588,18 @@ def camera_plan(script, total):
                     moves.append({"t": t, "verb": verb, "x": x, "y": y, "scale": float(args[2]), "beats": beats})
                 elif verb == "pulse":
                     pulses.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.035})
+                elif verb == "punch":
+                    # A harder kick that falls back over most of a beat.
+                    pulses.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.09, "decay": 0.28})
+                elif verb == "pulses":
+                    # A kick every `every` beats for `count` of them: a section's
+                    # drum, without a cue for each.
+                    strength, count = float(args[0]), int(args[1])
+                    every = float(args[2]) if len(args) > 2 else 1
+                    for i in range(count):
+                        pulses.append({"t": round(t + i * every * period, 3), "strength": strength})
+                elif verb == "whip":
+                    whips.append({"t": round(t, 3), "dir": 1 if not args or args[0] in ("left", "l") else -1})
                 elif verb == "flash":
                     flashes.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.35})
     moves.sort(key=lambda m: m["t"])
@@ -1610,7 +1622,7 @@ def camera_plan(script, total):
     keys = [k for i, k in enumerate(keys) if i == 0 or k["t"] > keys[i - 1]["t"] - 1e-6]
     for k in keys:
         k["t"] = round(k["t"], 3)
-    return keys, pulses, flashes
+    return keys, pulses, flashes, whips
 
 
 def polish(script, raw, offset, total):
@@ -1620,7 +1632,7 @@ def polish(script, raw, offset, total):
     public = script.out / "compose-public"
     shutil.rmtree(public, ignore_errors=True)
     public.mkdir()
-    camera, pulses, flashes = [], [], []
+    camera, pulses, flashes, whips = [], [], [], []
     if script.music_driven:
         # Cut to the beats first, then the camera on top of the cut.
         plan = timeline(script, voice_scenes(script))
@@ -1630,7 +1642,7 @@ def polish(script, raw, offset, total):
              "-c:v", "libx264", "-preset", "ultrafast", "-qp", "8", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an", str(straight)])
         remap_recording(straight, anchors, total, public / "recording.mp4")
         straight.unlink()
-        camera, pulses, flashes = camera_plan(script, total)
+        camera, pulses, flashes, whips = camera_plan(script, total)
         zooms = []
         badges = polish_plan(events, total)[1] if script.meta.get("badges", "off") == "on" else []
         splits = []
@@ -1646,7 +1658,7 @@ def polish(script, raw, offset, total):
     shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
     props = {"src": "recording.mp4", "width": SIZE[0], "height": SIZE[1], "fps": FPS,
              "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges, "splits": splits,
-             "camera": camera, "pulses": pulses, "flashes": flashes}
+             "camera": camera, "pulses": pulses, "flashes": flashes, "whips": whips}
     (script.out / "polish.json").write_text(json.dumps(props, indent=1))
     compose_dir = VIDEO / "compose"
     if not (compose_dir / "node_modules").exists():
@@ -1744,11 +1756,13 @@ def compose(script, voiced, plan, raw, offset):
         inputs = [*recording]
         video = f"[0:v]fps={FPS},format=yuv420p,setsar=1[v0]"
     if ending:
-        # A quick dissolve centred on the cut, so the card arrives on the beat.
+        # A short dissolve from the picture's last frame, the beat it ends
+        # on, so whatever lands on that beat lands on the picture and the
+        # card resolves out of it; the last frame is held under the fade.
         n = len([a for a in inputs if a == "-i"])
-        inputs += ["-loop", "1", "-framerate", str(FPS), "-t", f"{outro + END_FADE:.3f}", "-i", str(ending)]
-        video += (f";[{n}:v]format=yuv420p,setsar=1[e];"
-                  f"[v0][e]xfade=transition=fade:duration={END_FADE}:offset={intro + plan['total'] - END_FADE / 2:.3f}[v]")
+        inputs += ["-loop", "1", "-framerate", str(FPS), "-t", f"{outro:.3f}", "-i", str(ending)]
+        video += (f";[v0]tpad=stop_mode=clone:stop_duration={END_FADE:.3f}[v1];[{n}:v]format=yuv420p,setsar=1[e];"
+                  f"[v1][e]xfade=transition=fade:duration={END_FADE}:offset={intro + plan['total']:.3f}[v]")
     else:
         video += ";[v0]null[v]"
     audio_input = len([a for a in inputs if a == "-i"])

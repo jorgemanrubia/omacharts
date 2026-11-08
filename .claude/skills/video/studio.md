@@ -145,9 +145,9 @@ on its word.
 Archivo from Google Fonts (so it needs the network, like the OG cards).
 An end card is the same page with `&end=1`: the line under the wordmark
 (`end_title:`) and omacharts.org centred beneath. `end_card: <seconds>`
-in a script appends it after the recording, dissolving in over a quarter
-of a second centred on the recording's last frame, held while the music
-finishes. `compose` holds the cover for `cover:` seconds (2.5 by default) and crossfades
+in a script appends it after the recording, dissolving in over 0.4s
+from the recording's last frame — its beat, so a hit there lands on the
+charts and the card resolves out of them — held while the music finishes. `compose` holds the cover for `cover:` seconds (2.5 by default) and crossfades
 into the recording over 0.6s — the recording's lead-in, where nothing
 happens yet — and shifts the voice, subtitles and review frames by the
 same amount. The first word comes `SETTLE` (1s) after the fade ends.

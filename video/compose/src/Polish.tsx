@@ -25,7 +25,10 @@ export type Split = { start: number; end: number; share: number };
  * a slow glide, a smooth return, or a hold where it stays put. */
 export type CameraKey = { t: number; x: number; y: number; scale: number; ease: "snap" | "glide" | "smooth" | "hold" };
 /** A kick on a drum: the picture a touch closer for an instant, falling back. */
-export type Pulse = { t: number; strength: number };
+export type Pulse = { t: number; strength: number; decay?: number };
+/** A whip across a cut on its beat: the old picture flung out one way, the
+ * new one flung in after it, blurred with the speed. */
+export type Whip = { t: number; dir: number };
 /** A lift toward white and back, under a cut. */
 export type Flash = { t: number; strength: number };
 
@@ -41,6 +44,7 @@ export type PolishProps = {
   camera?: CameraKey[];
   pulses?: Pulse[];
   flashes?: Flash[];
+  whips?: Whip[];
 };
 
 const EASES = {
@@ -69,10 +73,31 @@ const view = (keys: CameraKey[], t: number, width: number, height: number) => {
 const kick = (pulses: Pulse[], t: number) =>
   pulses.reduce((sum, p) => {
     const d = t - p.t;
-    if (d < -0.03 || d > 0.5) return sum;
-    const shape = d < 0 ? (d + 0.03) / 0.03 : Math.exp(-d / 0.11);
+    const decay = p.decay ?? 0.11;
+    if (d < -0.03 || d > decay * 4.5) return sum;
+    const shape = d < 0 ? (d + 0.03) / 0.03 : Math.exp(-d / decay);
     return sum + p.strength * shape;
   }, 0);
+
+// Where a whip has the picture at t: a shift in widths, and how fast it is
+// moving (for the blur). Out over 0.14 s before the beat, in over 0.2 s after.
+const WHIP_OUT = 0.14;
+const WHIP_IN = 0.2;
+const WHIP_SHIFT = 0.11;
+const whipAt = (whips: Whip[], t: number) => {
+  for (const w of whips) {
+    const d = t - w.t;
+    if (d >= -WHIP_OUT && d < 0) {
+      const k = (d + WHIP_OUT) / WHIP_OUT;
+      return { shift: -w.dir * WHIP_SHIFT * k * k, speed: k };
+    }
+    if (d >= 0 && d < WHIP_IN) {
+      const k = 1 - d / WHIP_IN;
+      return { shift: w.dir * WHIP_SHIFT * k * k * k, speed: k };
+    }
+  }
+  return { shift: 0, speed: 0 };
+};
 
 const lift = (flashes: Flash[], t: number) =>
   flashes.reduce((most, f) => {
@@ -109,7 +134,7 @@ const amount = (zoom: Zoom, t: number) =>
     easing: ease,
   });
 
-export const Polish = ({ src, width, height, zooms, badges, splits = [], camera = [], pulses = [], flashes = [] }: PolishProps) => {
+export const Polish = ({ src, width, height, zooms, badges, splits = [], camera = [], pulses = [], flashes = [], whips = [] }: PolishProps) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
@@ -125,8 +150,12 @@ export const Polish = ({ src, width, height, zooms, badges, splits = [], camera 
     // The camera's view centred where it looks, kept inside the recording so
     // its edges never show, with the kick on top.
     const v = view(camera, t, width, height);
-    scale = Math.max(1, v.scale) * (1 + kick(pulses, t));
-    const cx = Math.min(width - width / (2 * scale), Math.max(width / (2 * scale), v.x));
+    const whip = whipAt(whips, t);
+    // A whip needs room to slide without showing an edge: it pushes in by
+    // as much as it shifts.
+    scale = Math.max(1, v.scale) * (1 + kick(pulses, t)) * (1 + 2.2 * Math.abs(whip.shift));
+    const vx = v.x + whip.shift * width;
+    const cx = Math.min(width - width / (2 * scale), Math.max(width / (2 * scale), vx));
     const cy = Math.min(height - height / (2 * scale), Math.max(height / (2 * scale), v.y));
     origin = "0px 0px";
     shift = `translate(${(width / 2 - scale * cx).toFixed(2)}px, ${(height / 2 - scale * cy).toFixed(2)}px) `;
@@ -134,6 +163,7 @@ export const Polish = ({ src, width, height, zooms, badges, splits = [], camera 
     scale *= 1 + kick(pulses, t);
   }
   const flash = lift(flashes, t);
+  const whipBlur = camera.length ? whipAt(whips, t).speed : 0;
 
   // The terminal arriving or leaving: the window snaps to its new size in a
   // few frames, so the picture breathes in and out over it, softened at the
@@ -154,8 +184,8 @@ export const Polish = ({ src, width, height, zooms, badges, splits = [], camera 
           filter:
             move > 0.01
               ? `blur(${(10 * move * unit).toFixed(2)}px) brightness(${1 + 0.12 * move})`
-              : flash > 0.01
-                ? `brightness(${(1 + flash).toFixed(3)})`
+              : flash > 0.01 || whipBlur > 0.01
+                ? `${whipBlur > 0.01 ? `blur(${(14 * whipBlur * unit).toFixed(2)}px) ` : ""}brightness(${(1 + flash).toFixed(3)})`
                 : undefined,
         }}
       >
