@@ -207,7 +207,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": (3, 4),
-                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1, "cursor": 1, "punch": (0, 1), "pulses": (2, 3), "whip": (0, 1)}
+                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1, "cursor": 1, "punch": (0, 1), "pulses": (2, 3), "whip": (0, 1), "pan": 3, "push": 4}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -1575,22 +1575,25 @@ def camera_plan(script, total):
     period = script.beat_period()
     snap = min(0.55, period)
     full = {"x": SIZE[0] / 2, "y": SIZE[1] / 2, "scale": 1.0}
-    moves, pulses, flashes, whips = [], [], [], []
+    moves, pulses, flashes, whips, blurs = [], [], [], [], []
     for scene in script.scenes:
         for cue, actions in scene.actions.items():
             if not cue.startswith("@"):
                 continue
             t = script.beat_time(cue) - script.cover_length
             for verb, *args in actions:
-                if verb in ("zoom", "drift"):
+                if verb in ("zoom", "drift", "pan", "push"):
                     x, y = (round(percent(a) * size) for a, size in zip(args[:2], SIZE))
                     beats = float(args[3]) if len(args) > 3 else None
                     moves.append({"t": t, "verb": verb, "x": x, "y": y, "scale": float(args[2]), "beats": beats})
+                    if verb == "pan":
+                        blurs.append({"t": round(t, 3), "d": round(period, 3)})
                 elif verb == "pulse":
                     pulses.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.035})
                 elif verb == "punch":
-                    # A harder kick that falls back over most of a beat.
-                    pulses.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.09, "decay": 0.28})
+                    # The picture thrown closer on the beat and settling back
+                    # within it: `punch 0.2` is 1.2x falling to 1.0.
+                    pulses.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.1, "decay": 0.12})
                 elif verb == "pulses":
                     # A kick every `every` beats for `count` of them: a section's
                     # drum, without a cue for each.
@@ -1607,10 +1610,15 @@ def camera_plan(script, total):
     for i, move in enumerate(moves):
         state = {k: move[k] for k in ("x", "y", "scale")}
         nxt = moves[i + 1]["t"] if i + 1 < len(moves) else total
-        if move["verb"] == "drift":
+        if move["verb"] in ("drift", "push", "pan"):
+            # A drift glides; a push starts slow and runs into the next beat
+            # like a riser; a pan is a whip across to a new framing in one
+            # beat, blurred with its speed.
             if keys[-1]["t"] < move["t"]:
                 keys.append({**keys[-1], "t": move["t"], "ease": "hold"})
-            keys.append({**state, "t": min(nxt, move["t"] + move["beats"] * period), "ease": "glide"})
+            beats = move["beats"] if move["verb"] != "pan" else 1
+            ease = {"drift": "glide", "push": "risein", "pan": "whip"}[move["verb"]]
+            keys.append({**state, "t": min(nxt, move["t"] + beats * period), "ease": ease})
             continue
         keys.append({**{k: keys[-1][k] for k in ("x", "y", "scale")}, "t": move["t"], "ease": "hold"})
         keys.append({**state, "t": min(nxt, move["t"] + snap), "ease": "snap"})
@@ -1622,7 +1630,7 @@ def camera_plan(script, total):
     keys = [k for i, k in enumerate(keys) if i == 0 or k["t"] > keys[i - 1]["t"] - 1e-6]
     for k in keys:
         k["t"] = round(k["t"], 3)
-    return keys, pulses, flashes, whips
+    return keys, pulses, flashes, whips, blurs
 
 
 def polish(script, raw, offset, total):
@@ -1632,7 +1640,7 @@ def polish(script, raw, offset, total):
     public = script.out / "compose-public"
     shutil.rmtree(public, ignore_errors=True)
     public.mkdir()
-    camera, pulses, flashes, whips = [], [], [], []
+    camera, pulses, flashes, whips, blurs = [], [], [], [], []
     if script.music_driven:
         # Cut to the beats first, then the camera on top of the cut.
         plan = timeline(script, voice_scenes(script))
@@ -1642,7 +1650,7 @@ def polish(script, raw, offset, total):
              "-c:v", "libx264", "-preset", "ultrafast", "-qp", "8", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an", str(straight)])
         remap_recording(straight, anchors, total, public / "recording.mp4")
         straight.unlink()
-        camera, pulses, flashes, whips = camera_plan(script, total)
+        camera, pulses, flashes, whips, blurs = camera_plan(script, total)
         zooms = []
         badges = polish_plan(events, total)[1] if script.meta.get("badges", "off") == "on" else []
         splits = []
@@ -1658,7 +1666,7 @@ def polish(script, raw, offset, total):
     shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
     props = {"src": "recording.mp4", "width": SIZE[0], "height": SIZE[1], "fps": FPS,
              "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges, "splits": splits,
-             "camera": camera, "pulses": pulses, "flashes": flashes, "whips": whips}
+             "camera": camera, "pulses": pulses, "flashes": flashes, "whips": whips, "blurs": blurs}
     (script.out / "polish.json").write_text(json.dumps(props, indent=1))
     compose_dir = VIDEO / "compose"
     if not (compose_dir / "node_modules").exists():

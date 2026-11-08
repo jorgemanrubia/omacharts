@@ -23,7 +23,9 @@ export type Split = { start: number; end: number; share: number };
  * the centre of the view in the recording's pixels. `ease` is how the camera
  * arrives here from the keyframe before: a snap that settles inside a beat,
  * a slow glide, a smooth return, or a hold where it stays put. */
-export type CameraKey = { t: number; x: number; y: number; scale: number; ease: "snap" | "glide" | "smooth" | "hold" };
+export type CameraKey = { t: number; x: number; y: number; scale: number; ease: "snap" | "glide" | "smooth" | "hold" | "risein" | "whip" };
+/** A whip-pan's motion blur: strongest mid-move, over `d` seconds from `t`. */
+export type Blur = { t: number; d: number };
 /** A kick on a drum: the picture a touch closer for an instant, falling back. */
 export type Pulse = { t: number; strength: number; decay?: number };
 /** A whip across a cut on its beat: the old picture flung out one way, the
@@ -45,6 +47,7 @@ export type PolishProps = {
   pulses?: Pulse[];
   flashes?: Flash[];
   whips?: Whip[];
+  blurs?: Blur[];
 };
 
 const EASES = {
@@ -52,6 +55,8 @@ const EASES = {
   glide: Easing.bezier(0.37, 0, 0.63, 1),
   smooth: Easing.bezier(0.45, 0, 0.25, 1),
   hold: (x: number) => x,
+  risein: (x: number) => x * x,
+  whip: Easing.bezier(0.65, 0, 0.35, 1),
 };
 
 // The view at time t: interpolated between the keyframes either side, by the
@@ -134,7 +139,7 @@ const amount = (zoom: Zoom, t: number) =>
     easing: ease,
   });
 
-export const Polish = ({ src, width, height, zooms, badges, splits = [], camera = [], pulses = [], flashes = [], whips = [] }: PolishProps) => {
+export const Polish = ({ src, width, height, zooms, badges, splits = [], camera = [], pulses = [], flashes = [], whips = [], blurs = [] }: PolishProps) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const t = frame / fps;
@@ -163,7 +168,11 @@ export const Polish = ({ src, width, height, zooms, badges, splits = [], camera 
     scale *= 1 + kick(pulses, t);
   }
   const flash = lift(flashes, t);
-  const whipBlur = camera.length ? whipAt(whips, t).speed : 0;
+  const panBlur = blurs.reduce((most, b) => {
+    const k = (t - b.t) / b.d;
+    return k <= 0 || k >= 1 ? most : Math.max(most, Math.sin(Math.PI * k));
+  }, 0);
+  const whipBlur = camera.length ? Math.max(whipAt(whips, t).speed, panBlur) : 0;
 
   // The terminal arriving or leaving: the window snaps to its new size in a
   // few frames, so the picture breathes in and out over it, softened at the
