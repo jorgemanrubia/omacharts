@@ -63,6 +63,7 @@ impl ChartSettings {
         let chart_page = adw::PreferencesPage::new();
         chart_page.set_title("Chart");
         chart_page.set_icon_name(Some("preferences-system-symbolic"));
+        chart_page.add(&title_group(window));
         chart_page.add(&bars_group(window));
         chart_page.add(&scales_group(window));
         chart_page.add(&session_group(window));
@@ -284,6 +285,49 @@ fn template_rows(
         rebuild.borrow_mut().take();
     });
     fill();
+}
+
+/// The row a chart's title is typed into.
+pub const TITLE_LABEL: &str = "Title";
+
+/// The chart's own name, first, since it is what the chart is called. Kept
+/// as it is typed, and blank for none.
+fn title_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    let row = adw::EntryRow::new();
+    row.set_title(TITLE_LABEL);
+    row.set_text(&window.chart_title());
+    // Set while the row is brought up to date with a name given elsewhere,
+    // so that reading it is not taken for typing it.
+    let syncing = Rc::new(std::cell::Cell::new(false));
+    let typed = window.clone();
+    let quiet = syncing.clone();
+    row.connect_changed(move |row| {
+        if !quiet.get() {
+            typed.set_chart_title(&row.text());
+        }
+    });
+    group.add(&row);
+
+    // Named in the header or by a command while this is open, the row reads
+    // the name again; not while it says the same thing, which is every time
+    // it is the row's own typing that changed it, trailing space and all.
+    let weak = Rc::downgrade(window);
+    let shown = row.downgrade();
+    window.watch_chart(move || {
+        let (Some(window), Some(row)) = (weak.upgrade(), shown.upgrade()) else { return false };
+        if row.root().is_none() {
+            return false;
+        }
+        let title = window.chart_title();
+        if crate::ui::window::clean_title(&row.text()) != title {
+            syncing.set(true);
+            row.set_text(&title);
+            syncing.set(false);
+        }
+        true
+    });
+    group
 }
 
 fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {

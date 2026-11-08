@@ -56,7 +56,7 @@ use omacharts_engine::Theme;
 use crate::store::Store;
 use crate::ui::chart::POINTER_LAYER;
 use crate::ui::colors;
-use crate::ui::pane::ChartPane;
+use crate::ui::pane::{ChartPane, TITLE_UNTITLED};
 
 /// Where screenshots are written. Unset means the default, which is derived
 /// rather than stored: writing it down on first run would freeze today's
@@ -88,6 +88,8 @@ pub const FOLDER: &str = "Omacharts";
 /// - `pane-expand` — the maximize corner.
 /// - `feed-part` — the data feed's dot: how a connection stood at the
 ///   moment is not what the picture is of.
+/// - [`TITLE_UNTITLED`] — an untitled chart's Title part, which is only
+///   ever a way to give it one. A chart's title stays: it names the chart.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
 ///   a strip wears under the pointer. Not a control, and the only thing here
 ///   that is not: it is where the mouse is, and a picture has no mouse.
@@ -99,6 +101,7 @@ const LEFT_OUT: &[&str] = &[
     "legend-button",
     "pane-expand",
     "feed-part",
+    TITLE_UNTITLED,
     POINTER_LAYER,
 ];
 

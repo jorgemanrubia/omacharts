@@ -241,6 +241,16 @@ omacharts config set chart_header template,symbol
 cached quotes the watchlist shows, so it is as fresh as the sidebar and fetches
 nothing of its own.
 
+The row centred across the top is `chart_header_center`, and out of the box it
+holds `title`: the chart's own name, which is stored with each chart rather
+than for the app. `chart set --title` names the chart and `--title ""` takes the
+name away; a chart made by splitting another starts with none:
+
+```
+omacharts chart set --title "Semis desk"
+omacharts config set chart_header_center title,stripe
+```
+
 ## The clock
 
 Charts read one time zone and write times one way, for the whole app: the time
@@ -614,7 +624,7 @@ years in UTC, so `3M` is the calendar quarters.
 A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
-Besides what a chart shows, `chart set` carries how it shows it — `--style`,
+Besides what a chart shows, `chart set` carries how it shows it — `--title`, `--style`,
 `--thickness`, `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
 `--indicators` and `--drawings` — and those are stored with the chart,
 so a price axis held still with `--auto-scale off` is still held the next

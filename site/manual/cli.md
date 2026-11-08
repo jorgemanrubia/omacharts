@@ -378,6 +378,14 @@ $ omacharts chart set --style candles --colouring theme-soft --hollow-up on --se
 chart 4: style candles, colouring theme-soft, rises hollow, session regular, grid off, auto-scale off, log scale on
   [exit 0]
 
+$ omacharts chart set --title "Semis desk"
+chart 4: title "Semis desk"
+  [exit 0]
+
+$ omacharts chart set --title ""
+chart 4: untitled
+  [exit 0]
+
 $ omacharts chart set --resolution 3x
 omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
   [exit 2]
@@ -385,6 +393,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 
 | Flag | Takes | Explained in |
 |---|---|---|
+| `--title TITLE` | The chart's own name, shown in its header; `""` for none | [Naming a chart](/manual/charts/#naming-a-chart) |
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
@@ -1040,20 +1049,20 @@ omacharts: this chartbook has 3 charts, so there is no pos:7
 ### `chart list`
 
 Lists the charts in a chartbook: raw id, symbol, resolution, bar style
-(`none` while the bars are hidden) and link mode, with `*` on the focused one. `--chart` takes these raw ids. The
+(`none` while the bars are hidden), link mode and title, with `*` on the focused one. `--chart` takes these raw ids. The
 list is by id, not layout order; `status show` gives positions.
 
 ```
 $ omacharts chart list
 Desk — watchlist "Default"
-* 159  NVDA         1D     candles  follow
+* 159  NVDA         1D     candles  follow  "Semis desk"
   160  AMD          1h     candles  follow
   161  AMD          15m    candles  follow
   [exit 0]
 ```
 
 `--book` lists another chartbook. `--json` gives each chart in full:
-colouring, session, gridlines, both scales, whether it shows and sends
+its title (`null` when it has none), colouring, session, gridlines, both scales, whether it shows and sends
 drawings, indicators and template.
 
 ## Chartbooks
@@ -1544,8 +1553,8 @@ same.
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `feed`, `stripe`; or `none` | `feed,symbol,resolution` | Charts › Header › Left | [Charts](/manual/charts/) |
-| `chart_header_center` | the same | `stripe` | Charts › Header › Center | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution` | Charts › Header › Left | [Charts](/manual/charts/) |
+| `chart_header_center` | the same | `title` | Charts › Header › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
@@ -1588,7 +1597,7 @@ omacharts: no such data feed: "thinkorswimm"; the feeds are yahoo, tos
   [exit 2]
 
 $ omacharts config set chart_header symbol,banana
-omacharts: "banana" is not part of a header; try symbol, resolution, change, template
+omacharts: "banana" is not part of a header; try symbol, resolution, change, template, title, feed, stripe, settings, maximize, link
   [exit 2]
 
 $ omacharts config set chart_time_zone Europe/London

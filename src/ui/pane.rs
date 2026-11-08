@@ -114,6 +114,9 @@ fn decapitalised(words: &str) -> String {
     }
 }
 
+/// Where a title typed into the header is handed.
+type TitleHandler = Rc<dyn Fn(String)>;
+
 pub struct ChartPane {
     pub id: u32,
     pub view: Rc<ChartView>,
@@ -197,6 +200,20 @@ pub struct ChartPane {
     /// where it is writes nothing.
     pub change_shown: Cell<Option<i64>>,
     pub template_label: gtk::Label,
+    /// The Title part: the chart's own name, a flat button like the symbol
+    /// that turns into an entry where it stands when clicked, Enter or
+    /// clicking away keeping what was typed and Escape what was there.
+    pub title_part: gtk::Stack,
+    pub title_button: gtk::Button,
+    title_label: gtk::Label,
+    pub title_entry: gtk::Entry,
+    /// The chart's name, empty for none.
+    pub title: RefCell<String>,
+    /// While the entry is up: Enter and the focus leaving it both finish
+    /// it, and only the first of them may.
+    title_editing: Cell<bool>,
+    /// Where a title typed in the header goes: the window, which keeps it.
+    title_handler: RefCell<Option<TitleHandler>>,
     /// The header's right: the corner the controls stand in until somebody
     /// moves them.
     corner: gtk::Box,
@@ -382,6 +399,37 @@ impl ChartPane {
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
         template_label.set_valign(gtk::Align::Center);
+        // The title reads as the header's other words do, the symbol's
+        // weight and its hover, and is a button only so the pointer can say
+        // it is one. Untitled, its words are there and not drawn, so the
+        // slot has a size to point at: under the pointer they read "Add
+        // title", quietly, and a click names the chart where it stands.
+        let title_label = gtk::Label::new(Some(TITLE_PLACEHOLDER));
+        title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        title_label.set_max_width_chars(TITLE_MAX_CHARS);
+        let title_button = gtk::Button::new();
+        title_button.set_child(Some(&title_label));
+        for class in ["flat", "legend-symbol", "readout-symbol", "chart-title", TITLE_UNTITLED] {
+            title_button.add_css_class(class);
+        }
+        title_button.set_valign(gtk::Align::Center);
+        title_button.set_cursor_from_name(Some("pointer"));
+        let title_entry = gtk::Entry::new();
+        title_entry.add_css_class("readout-symbol");
+        title_entry.add_css_class("chart-title-entry");
+        title_entry.set_valign(gtk::Align::Center);
+        gtk::prelude::EntryExt::set_alignment(&title_entry, 0.5);
+        title_entry.set_max_length(TITLE_MAX_LENGTH);
+        title_entry.set_width_chars(title_width(""));
+        title_entry.connect_changed(|entry| entry.set_width_chars(title_width(&entry.text())));
+        let title_part = gtk::Stack::new();
+        title_part.set_hhomogeneous(false);
+        title_part.set_vhomogeneous(false);
+        title_part.set_valign(gtk::Align::Center);
+        title_part.set_height_request(SYMBOL_ROW_HEIGHT);
+        title_part.add_named(&title_button, Some("shown"));
+        title_part.add_named(&title_entry, Some("editing"));
+        title_part.set_visible_child_name("shown");
         // A button like the resolution beside it, with no chevron for the
         // same reason, and dim like the template: it is a note on the chart
         // more than its title.
@@ -628,6 +676,13 @@ impl ChartPane {
             change_basis: Cell::new(None),
             change_shown: Cell::new(None),
             template_label,
+            title_part,
+            title_button,
+            title_label,
+            title_entry,
+            title: RefCell::new(String::new()),
+            title_editing: Cell::new(false),
+            title_handler: RefCell::new(None),
             corner,
             account_menu,
             account_label,
@@ -666,7 +721,100 @@ impl ChartPane {
             glyph,
         });
         pane.arrange_header();
+        pane.wire_title_entry();
         pane
+    }
+
+    /// Enter keeps what was typed, and so does clicking away; Escape puts
+    /// back what was there.
+    fn wire_title_entry(self: &Rc<Self>) {
+        let this = Rc::downgrade(self);
+        self.title_entry.connect_activate(move |_| {
+            if let Some(pane) = this.upgrade() {
+                pane.finish_title_edit(true);
+            }
+        });
+        let focus = gtk::EventControllerFocus::new();
+        let this = Rc::downgrade(self);
+        focus.connect_leave(move |_| {
+            if let Some(pane) = this.upgrade() {
+                pane.finish_title_edit(true);
+            }
+        });
+        self.title_entry.add_controller(focus);
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = Rc::downgrade(self);
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key != gtk::gdk::Key::Escape {
+                return gtk::glib::Propagation::Proceed;
+            }
+            if let Some(pane) = this.upgrade() {
+                pane.finish_title_edit(false);
+            }
+            gtk::glib::Propagation::Stop
+        });
+        self.title_entry.add_controller(keys);
+    }
+
+    /// Where a title typed into the header is handed.
+    pub fn set_title_handler(&self, handler: impl Fn(String) + 'static) {
+        *self.title_handler.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// Show `title` as the chart's name, or nothing for none.
+    pub fn write_title(&self, title: &str) {
+        let title = title.trim();
+        if *self.title.borrow() != title {
+            *self.title.borrow_mut() = title.to_string();
+        }
+        let named = !title.is_empty();
+        let shown = if named { title } else { TITLE_PLACEHOLDER };
+        if self.title_label.text() != shown {
+            self.title_label.set_text(shown);
+        }
+        match named {
+            true => self.title_button.remove_css_class(TITLE_UNTITLED),
+            false => self.title_button.add_css_class(TITLE_UNTITLED),
+        }
+        // A long name is cut short in the header and read in full here.
+        self.title_button.set_tooltip_text(named.then_some(title));
+    }
+
+    /// Is the title being typed into the header?
+    pub fn editing_title(&self) -> bool {
+        self.title_editing.get()
+    }
+
+    /// Swap the title for an entry holding it, where it stands.
+    pub fn begin_title_edit(&self) {
+        if self.title_editing.replace(true) {
+            return;
+        }
+        self.title_entry.set_text(&self.title.borrow());
+        self.title_part.set_visible_child_name("editing");
+        self.title_entry.grab_focus();
+        self.title_entry.select_region(0, -1);
+    }
+
+    /// Put the title back where the entry was, keeping what was typed when
+    /// `keep` and it changed. Blank is an answer: the chart has no name.
+    pub fn finish_title_edit(&self, keep: bool) {
+        if !self.title_editing.replace(false) {
+            return;
+        }
+        let typed = self.title_entry.text().trim().to_string();
+        self.title_part.set_visible_child_name("shown");
+        // The keys go back to the chart they were typed over.
+        self.view.area.grab_focus();
+        if !keep || typed == *self.title.borrow() {
+            return;
+        }
+        let handler = self.title_handler.borrow().clone();
+        match handler {
+            Some(handler) => handler(typed),
+            None => self.write_title(&typed),
+        }
     }
 
     /// Point this chart's strip, and the resolution beside its symbol, at the
@@ -802,11 +950,12 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 13] = [
+        let parts: [(Part, gtk::Widget); 14] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
+            (Part::Title, self.title_part.clone().upcast()),
             (Part::Account, self.account_menu.clone().upcast()),
             (Part::Feed, self.feed_menu.clone().upcast()),
             (Part::DayPnl, self.day_part.clone().upcast()),
@@ -1298,6 +1447,23 @@ pub fn legend_row(dot: &impl IsA<gtk::Widget>, name: &gtk::Label) -> gtk::Box {
 
 /// The strip's height: its buttons plus the padding around them.
 const SYMBOL_ROW_HEIGHT: i32 = 32;
+
+/// What an untitled chart's Title part says under the pointer, and holds the
+/// room of at rest without drawing it.
+pub const TITLE_PLACEHOLDER: &str = "Add title";
+/// The class an untitled chart's Title part wears; a screenshot leaves it
+/// out, since it is a control and not a name.
+pub const TITLE_UNTITLED: &str = "chart-title-untitled";
+/// How long a title may be, and how much of it the header shows before it
+/// is cut short.
+pub const TITLE_MAX_LENGTH: i32 = 80;
+const TITLE_MAX_CHARS: i32 = 40;
+
+/// How wide the entry a title is typed into is: what it holds and a
+/// character to grow into, so it reads as the words rather than a field.
+fn title_width(text: &str) -> i32 {
+    (text.chars().count() as i32 + 1).clamp(8, TITLE_MAX_CHARS)
+}
 
 /// The corner's margin with `clearance` to leave. With none, it still
 /// clears the price axis: a Follow or Pinned chart's link is always on
@@ -2089,9 +2255,9 @@ mod tests {
         )
     }
 
-    /// The stripe is a part like the others: across the top by default, in
-    /// the line on the left when put there, and nowhere, taking no room at
-    /// all, when taken out.
+    /// The stripe is a part like the others: across the top when put
+    /// there, in the line on the left when put there, and nowhere, taking
+    /// no room at all, when taken out, which is where it is by default.
     #[test]
     fn the_stripe_goes_where_the_header_puts_it() {
         use crate::header::{Header, Part};
@@ -2104,15 +2270,17 @@ mod tests {
             pane.set_focused(true);
             let width = |row: &gtk::Box| row.preferred_size().1.width();
             let parent = || pane.strip.parent();
-
-            assert!(parent().is_some_and(|p| p == pane.header_center));
-            let line = width(&pane.header_row);
-            assert!(width(&pane.header_center) > 0);
-
             let header = |left: Vec<Part>, center: Vec<Part>| {
                 *pane.header.borrow_mut() = Header { left, center, right: Header::standard().right };
                 pane.arrange_header();
             };
+
+            assert!(parent().is_none(), "the stripe is in the standard header");
+            assert!(pane.title_part.parent().is_some_and(|p| p == pane.header_center));
+            header(Header::standard().left, vec![Part::Stripe]);
+            assert!(parent().is_some_and(|p| p == pane.header_center));
+            let line = width(&pane.header_row);
+            assert!(width(&pane.header_center) > 0);
             header(vec![Part::Symbol, Part::Resolution, Part::Account, Part::Stripe], Vec::new());
             assert!(parent().is_some_and(|p| p == pane.header_row));
             assert_eq!(pane.header_row.last_child(), pane.hidden_glyphs.last().map(|(_, b)| b.clone().upcast()));
@@ -2124,9 +2292,13 @@ mod tests {
             assert_eq!(width(&pane.header_row), line);
             assert_eq!(width(&pane.header_center), 0);
 
-            header(Header::standard().left, Header::standard().center);
+            header(Header::standard().left, vec![Part::Stripe]);
             assert!(parent().is_some_and(|p| p == pane.header_center));
             assert_eq!(width(&pane.header_row), line);
+
+            header(Header::standard().left, Header::standard().center);
+            assert!(parent().is_none());
+            assert!(pane.title_part.parent().is_some_and(|p| p == pane.header_center));
         });
     }
 

@@ -74,13 +74,14 @@ crop: 898,193,763,399   (the whole card, 24px layout margin)
 
 ### The preset resolutions
 
-The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip and choose **Edit resolutions…**, or open Preferences › Charts › Other › **Preset resolutions** › **Edit…**.
+The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › Charts › Other › **Preset resolutions** › **Edit…**.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart, sidebar hidden)
+  omacharts config set chart_header_center stripe
   run bin/virtual-pointer --extent 1280x720 --button right click 600 24
   click 675 46            # Edit resolutions…
 capture: bin/headless-window shot /tmp/resdialog.png
@@ -453,11 +454,21 @@ The header is the line at a chart's top-left and the row centred across its top.
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
 | **Daily change** | The day's move as a percentage, in the chart's up and down colours. The same figure as the sidebar's |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
+| **Title** | The chart's own name. Click it to [name the chart](#naming-a-chart) |
 | **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
 
-Out of the box the left shows the symbol and the resolution, and the center the resolutions stripe.
+Out of the box the left shows the symbol and the resolution, and the center the title.
 
-Edit it in Preferences › Charts › **Header**, or right-click the header and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
+Edit it in Preferences › Charts › **Header**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
+
+### Naming a chart
+
+A chart can have a title, shown by the header's **Title** part. A chart has none until it is given one.
+
+- Click the title in the header and type. <kbd>Enter</kbd> or clicking away keeps it, <kbd>Esc</kbd> puts the old one back. On a chart with no title the place is empty, and pointing at it shows **Add title**.
+- Or choose **Edit name…** in the [chart menu](#the-chart-menu), or type it in the **Title** row of [Chart settings](/manual/chart-settings/).
+
+Leave it blank to remove the title. A chart made by splitting another starts with none. From the CLI it is `chart set --title` ([Changing charts from the CLI](/manual/cli/#charts)).
 
 ## The chart menu
 
@@ -471,7 +482,7 @@ state:
   key ctrl+alt+h
   run bin/virtual-pointer --extent 1280x720 --button right click 300 150
 capture: bin/headless-window shot /tmp/chartmenu.png
-crop: 560,262,640,780   (the whole menu, 20px layout margin)
+crop: 560,262,640,986   (the whole menu, 20px layout margin)
 -->
 {% include figure.html src="/assets/manual/charts/chart-menu.png" alt="The chart menu open over a chart, each item with its key" caption="The chart menu on a chartbook of two charts." %}
 
@@ -485,6 +496,7 @@ crop: 560,262,640,780   (the whole menu, 20px layout margin)
 | **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
+| **Edit name…** | Asks for the chart's title. Blank removes it | [Naming a chart](#naming-a-chart) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |

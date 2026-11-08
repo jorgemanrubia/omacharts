@@ -77,6 +77,10 @@ pub enum Part {
     Size,
     /// The preset resolutions as a row of buttons, on the focused chart only.
     Stripe,
+    /// The chart's own name, given in its menu, its settings or with
+    /// `chart set --title`. Clicked, it is edited where it stands. On a chart
+    /// with none it is blank until the pointer is on it.
+    Title,
     /// The gear that opens the chart's settings.
     Settings,
     /// The corner that grows the chart to fill the window, with a second
@@ -87,11 +91,12 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ALL: [Part; 13] = [
+    pub const ALL: [Part; 14] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
         Part::Template,
+        Part::Title,
         Part::Account,
         Part::Feed,
         Part::DayPnl,
@@ -109,9 +114,12 @@ impl Part {
     /// or one feed each draws nothing and takes no room. The day's P&L,
     /// Buy, Sell and the quantity lead the corner, ahead of the three
     /// controls that always stood in it, in the order they stood; without
-    /// an account to trade on, they draw nothing either.
+    /// an account to trade on, they draw nothing either. The chart's title
+    /// has the center, where the resolutions stripe stood before there were
+    /// titles: the resolution beside the symbol already offers every one.
     pub fn home(self) -> Option<Section> {
         match self {
+            Part::Title => Some(Section::Center),
             Part::Symbol => Some(Section::Left),
             Part::Resolution => Some(Section::Left),
             Part::Change => None,
@@ -121,7 +129,7 @@ impl Part {
             Part::DayPnl => Some(Section::Right),
             Part::Trade => Some(Section::Right),
             Part::Size => Some(Section::Right),
-            Part::Stripe => Some(Section::Center),
+            Part::Stripe => None,
             Part::Settings => Some(Section::Right),
             Part::Maximize => Some(Section::Right),
             Part::Link => Some(Section::Right),
@@ -157,6 +165,7 @@ impl Part {
             Part::Trade => "trade",
             Part::Size => "size",
             Part::Stripe => "stripe",
+            Part::Title => "title",
             Part::Settings => "settings",
             Part::Maximize => "maximize",
             Part::Link => "link",
@@ -180,6 +189,7 @@ impl Part {
             Part::Trade => "Buy Sell",
             Part::Size => "Quantity",
             Part::Stripe => "Resolutions stripe",
+            Part::Title => "Title",
             Part::Settings => "Chart settings",
             Part::Maximize => "Maximize",
             Part::Link => "Watchlist link",
@@ -332,6 +342,24 @@ const BEFORE_PNL_MOVED: [(&str, &str); 3] = [
     (RIGHT_SETTING, "trade,size,settings,maximize,link"),
 ];
 
+/// The header that shipped before charts had titles, with the resolutions
+/// stripe in the center, as Preferences wrote it out once anybody touched it
+/// or restored it: read as [`Header::standard`] too, so a header that was
+/// only ever the standard one gets the title where the stripe was. One that
+/// differs from it in anything is somebody's, and kept.
+const BEFORE_TITLES: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution,account"),
+    (CENTER_SETTING, "stripe"),
+    (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
+];
+
+/// Whether what is stored is `old`, a standard header of an earlier build:
+/// some section written, and every written one as it shipped.
+fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
+    old.iter().any(|(key, _)| store.setting(key).is_some())
+        && old.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
+}
+
 /// The header every chart shows.
 ///
 /// Read leniently, where [`parse`] is strict: a part only a newer build knows
@@ -342,9 +370,9 @@ const BEFORE_PNL_MOVED: [(&str, &str); 3] = [
 /// stay in the corner. A part stored in two sections is in the first of
 /// them, the left being the section that was always there.
 pub fn load(store: &Store) -> Header {
-    if BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
-        && store.setting(SETTING).is_some()
-    {
+    let pnl_moved = BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
+        && store.setting(SETTING).is_some();
+    if pnl_moved || stored_as(store, &BEFORE_TITLES) {
         return Header::standard();
     }
     let mut header = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
@@ -407,15 +435,16 @@ mod tests {
     }
 
     /// Out of the box the left is the data feed's dot and then the line
-    /// every chart always had; the center the stripe it always had across
-    /// its top, and the right the day's P&L, Buy, Sell and the quantity
-    /// ahead of the three controls that always stood in its corner, in
-    /// their order.
+    /// every chart always had; the center the chart's title, and the right
+    /// the day's P&L, Buy, Sell and the quantity ahead of the three
+    /// controls that always stood in its corner, in their order. The
+    /// stripe is only there once somebody adds it.
     #[test]
-    fn the_standard_header_is_the_line_the_stripe_and_the_corner() {
+    fn the_standard_header_is_the_line_the_title_and_the_corner() {
         let header = Header::standard();
         assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
-        assert_eq!(header.center, vec![Part::Stripe]);
+        assert_eq!(header.center, vec![Part::Title]);
+        assert!(!header.contains(Part::Stripe));
         assert_eq!(
             header.right,
             vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
@@ -439,9 +468,28 @@ mod tests {
         assert_eq!(load(&store).center, Vec::new());
     }
 
+    /// A header saved as the one that shipped before there were titles,
+    /// the stripe in the center, is the standard one now, the title where
+    /// the stripe was, whether all of it was written down or some; one that
+    /// differs from it in anything is kept as it was saved, stripe and all.
+    #[test]
+    fn the_old_standard_header_gives_the_center_to_the_title() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_TITLES {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        store.remove_setting(SETTING);
+        assert_eq!(load(&store), Header::standard());
+        store.set_setting(SETTING, "symbol,resolution");
+        let kept = load(&store);
+        assert_eq!(kept.left, vec![Part::Symbol, Part::Resolution]);
+        assert_eq!(kept.center, vec![Part::Stripe]);
+        assert!(!kept.contains(Part::Title));
+    }
+
     /// A header stored before there were sections keeps its line on the
-    /// left, and has the stripe in the center and the controls in the
-    /// corner, where they already were.
+    /// left, and has the standard center and the controls in the corner.
     #[test]
     fn a_header_stored_before_sections_is_unchanged() {
         let store = Store::memory().unwrap();
@@ -450,13 +498,13 @@ mod tests {
             load(&store),
             Header {
                 left: vec![Part::Change, Part::Symbol, Part::Account],
-                center: vec![Part::Stripe],
+                center: vec![Part::Title],
                 right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link],
             }
         );
         store.set_setting(SETTING, "none");
         assert_eq!(load(&store).left, Vec::new());
-        assert_eq!(load(&store).center, vec![Part::Stripe]);
+        assert_eq!(load(&store).center, vec![Part::Title]);
     }
 
     /// Placing a part in one section takes it out of the others; and a
@@ -467,7 +515,7 @@ mod tests {
         let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         let mut header = Header::standard();
         header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
-        assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new(), right: corner.clone() });
+        assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: vec![Part::Title], right: corner.clone() });
         header.set(Section::Center, vec![Part::Symbol]);
         assert_eq!(header, Header { left: vec![Part::Stripe], center: vec![Part::Symbol], right: corner.clone() });
         header.set(Section::Right, vec![Part::Stripe, Part::Settings]);

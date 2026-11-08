@@ -1164,9 +1164,16 @@ fn charts_verb(
                     out.push('\n');
                     for pane in charts::panes(book) {
                         let id = pane["id"].as_u64().unwrap_or(0);
+                        // Its name last, quoted: it is the one column that
+                        // may have spaces in it.
+                        let title = pane["title"]
+                            .as_str()
+                            .filter(|title| !title.is_empty())
+                            .map(|title| format!("{title:?}"))
+                            .unwrap_or_default();
                         out.push_str(
                             format!(
-                                "{} {:<4} {:<12} {:<6} {:<8} {}\n",
+                                "{} {:<4} {:<12} {:<6} {:<8} {:<7} {}\n",
                                 if id == focused { "*" } else { " " },
                                 id,
                                 spell(
@@ -1176,6 +1183,7 @@ fn charts_verb(
                                 pane["timeframe"].as_str().unwrap_or(""),
                                 shown_style(pane),
                                 stored_mode(pane).key(),
+                                title,
                             )
                             .trim_end(),
                         );
@@ -1589,6 +1597,8 @@ fn chart_set(
     let hollow_up = switch("hollow-up")?;
     let swapped = switch("swap-colours")?;
     let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
+    // Blank takes the name away, as clearing it in the header does.
+    let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
     let template = match arg(m, "template") {
@@ -1606,6 +1616,19 @@ fn chart_set(
     let Some(chart) = charts::pane_mut(target, pane) else {
         return Err(Fault::not_found(format!("no chart {pane}")));
     };
+    match title.as_deref() {
+        None => {}
+        Some("") => {
+            if let Some(fields) = chart.as_object_mut() {
+                fields.remove("title");
+            }
+            changed.push("untitled".to_string());
+        }
+        Some(title) => {
+            chart["title"] = json!(title);
+            changed.push(format!("title {title:?}"));
+        }
+    }
     if let Some(symbol) = symbol {
         chart["symbol"] = json!(symbol);
         chart["suffix"] = json!(suffix);
@@ -1723,7 +1746,7 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
+            "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
              --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
@@ -3977,6 +4000,8 @@ fn shown_style(pane: &Value) -> &str {
 fn pane_json(pane: &Value) -> String {
     json!({
         "id": pane["id"],
+        // Null for a chart nobody named.
+        "title": pane["title"].as_str().filter(|title| !title.is_empty()),
         "symbol": pane["symbol"],
         "suffix": pane["suffix"],
         "display": spell(pane["symbol"].as_str().unwrap_or(""), pane["suffix"].as_str()),
@@ -5873,15 +5898,16 @@ mod tests {
         assert_eq!(run("config set chart_header symbol,price", &store).code, EXIT_USAGE);
         assert_eq!(
             crate::header::load(&store),
-            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Stripe], right: corner.clone() }
+            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Title], right: corner.clone() }
         );
-        // The stripe put on the left leaves the center; put back, it leaves
-        // the left.
-        assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
+        // The title put on the left leaves the center; the stripe put in
+        // the center leaves the left.
+        assert_eq!(run("config set chart_header symbol,stripe,title", &store).code, 0);
         assert_eq!(
             crate::header::load(&store),
-            Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new(), right: corner.clone() }
+            Header { left: vec![Part::Symbol, Part::Stripe, Part::Title], center: Vec::new(), right: corner.clone() }
         );
+        assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
         let out = run("config set chart_header_center stripe", &store);
         assert_eq!(out.out, "every chart's header shows stripe in the center\n");
         assert_eq!(
@@ -7333,6 +7359,40 @@ mod tests {
         assert_eq!(parse_bytes("512 MB"), Some(512 * 1024 * 1024));
         assert_eq!(parse_bytes("nonsense"), None);
         assert_eq!(parse_bytes("0"), None, "a cache of nothing is not a limit");
+    }
+
+    /// A chart's title is its own: set, listed, cleared with a blank one,
+    /// and not handed on to the half a split makes.
+    #[test]
+    fn a_chart_is_titled_by_a_command_and_untitled_by_a_blank_one() {
+        let store = bare();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        let listed = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
+        };
+        assert_eq!(listed(&store)["charts"][0]["title"], Value::Null);
+        let args: Vec<String> = ["omacharts", "chart", "set", "--book", "Macro", "--title", "  Rates   desk "]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let out = dispatch(&args, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("title \"Rates desk\""), "{}", out.out);
+        assert_eq!(listed(&store)["charts"][0]["title"], "Rates desk");
+        let text = run("chart list --book Macro", &store).out;
+        assert!(text.contains("\"Rates desk\""), "{text}");
+
+        assert_eq!(run("chart split horizontal --book Macro", &store).code, 0);
+        let charts = listed(&store)["charts"].clone();
+        assert_eq!(charts.as_array().map(Vec::len), Some(2));
+        assert_eq!(charts.as_array().unwrap().iter().filter(|c| c["title"] == "Rates desk").count(), 1);
+
+        let args: Vec<String> =
+            ["omacharts", "chart", "set", "--book", "Macro", "--chart", "pos:0", "--title", ""].into_iter().map(String::from).collect();
+        let out = dispatch(&args, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("untitled"), "{}", out.out);
+        assert!(listed(&store)["charts"].as_array().unwrap().iter().all(|c| c["title"].is_null()));
     }
 
     /// How thick OHLC bars are drawn is a chart's own, from one pixel to
