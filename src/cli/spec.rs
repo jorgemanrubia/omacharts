@@ -304,7 +304,7 @@ const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"
 /// list before the parser sees anything, so an alias the engine understands
 /// and the table does not is an alias nobody can use.
 const DRAWING_KINDS: &[&str] =
-    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp", "avwap", "vwap", "fib", "fibonacci", "retracement"];
+    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp", "avwap", "vwap", "fib", "fibonacci", "retracement", "fib-retracement"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",

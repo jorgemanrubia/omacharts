@@ -2538,7 +2538,12 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
 fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> Value {
     let mut out = json!({
         "color": style.colour.spell(),
-        "width": style.width,
+        // A retracement's thickness is its levels': the one they share, or
+        // null when they differ.
+        "width": match kind {
+            omacharts_engine::DrawingKind::Fib => json!(style.fib.width()),
+            _ => json!(style.width),
+        },
         "arrow": style.arrow.key(),
         "head": style.head.key(),
         "border": style.border,
@@ -8158,6 +8163,7 @@ mod tests {
         assert_eq!(golden["width"], 2.5);
         assert_eq!(golden["style"], "dashed");
         assert_eq!(fib["levels"][3]["color"], serde_json::Value::Null, "only the one level changed");
+        assert!(listed["drawings"][0]["style"]["width"].is_null(), "the levels are no longer one thickness");
         assert_eq!((&fib["fib_labels"], &fib["price_labels"]), (&json!(false), &json!(true)), "one switch, not both");
 
         // Every level at once, and back to the drawing's colour.
@@ -8166,6 +8172,7 @@ mod tests {
         let listed = json_of(&run("chart drawing list --book Macro --json", &store));
         let levels = listed["drawings"][0]["style"]["fib"]["levels"].as_array().unwrap().clone();
         assert!(levels.iter().all(|level| level["width"] == 2.0 && level["color"].is_null()), "{levels:?}");
+        assert_eq!(listed["drawings"][0]["style"]["width"], 2.0, "the thickness the levels share");
 
         for bad in ["--levels 0.3", "--levels 1%", "--level 0.7 --level-width 2", "--level 0.5", "--fib-labels maybe", "--text hello", "--source close"] {
             let out = run(&format!("chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 {bad}"), &store);
