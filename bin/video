@@ -938,7 +938,8 @@ class Hand:
                 e = t * t * (3 - 2 * t)  # smoothstep
                 px = (1 - e) ** 2 * sx + 2 * (1 - e) * e * cx + e * e * x
                 py = (1 - e) ** 2 * sy + 2 * (1 - e) * e * cy + e * e * y
-                pointer.move(px, py)
+                # The bend can carry a path near the edge off the screen.
+                pointer.move(min(max(px, 0), LAYOUT[0] - 1), min(max(py, 0), LAYOUT[1] - 1))
                 time.sleep(max(0, started + seconds * t - time.monotonic()))
         self.x, self.y = x, y
         return [round(x, 1), round(y, 1)]
