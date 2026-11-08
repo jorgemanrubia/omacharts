@@ -1711,7 +1711,7 @@ def compose(script, voiced, plan, raw, offset):
     graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,atrim=0:{total:.3f}[out]"
     run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
 
-    track = script.meta.get("music_file")
+    track = music_track(script)
     audio = out / "mix.wav"
     if track and script.music_driven:
         # The music is the soundtrack, not a bed under a voice: at its own
@@ -1793,6 +1793,41 @@ def compose(script, voiced, plan, raw, offset):
         if made.exists():
             shutil.copy(made, renders / made.name)
     say(f"video/renders/{final.name} ({total:.1f}s), {preview.name} for watching; review/ in {out.relative_to(ROOT)} has a frame per cue")
+
+
+def music_track(script):
+    """The track a video is mixed with: `music_file`, or, when the script
+    asks for `music_bars` — ranges of the track's bars, "1-23, 17-23, 24-32" —
+    the track rebuilt from them in that order, cut on the downbeats with a
+    crossfade of a few milliseconds, so a section can be played twice or
+    left out and the beat never stumbles. Its bars are then numbered afresh:
+    the script's cues count bars of the rebuilt track."""
+    track = script.meta.get("music_file")
+    if not track:
+        return None
+    track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
+    bars = script.meta.get("music_bars")
+    if not bars:
+        return track
+    bar = script.beat_period() * int(script.meta.get("music_meter", 4))
+    down = float(script.meta.get("music_downbeat", 0))
+    ranges = [tuple(int(x) for x in part.split("-")) for part in bars.replace(" ", "").split(",")]
+    out = script.out / "music-spliced.wav"
+    fade = 0.008
+    inputs, parts, labels = ["-i", str(track)], [], []
+    for i, (a, b) in enumerate(ranges):
+        # The first range keeps whatever comes before its first downbeat.
+        start = 0.0 if i == 0 else down + (a - 1) * bar - fade
+        end = down + b * bar + fade if i + 1 < len(ranges) else 1e6
+        parts.append(f"[0:a]atrim=start={max(0, start):.5f}:end={end:.5f},asetpts=PTS-STARTPTS[p{i}]")
+        labels.append(f"[p{i}]")
+    chain = labels[0]
+    for i in range(1, len(labels)):
+        parts.append(f"{chain}{labels[i]}acrossfade=d={2 * fade:.4f}:c1=tri:c2=tri[x{i}]")
+        chain = f"[x{i}]"
+    graph = ";".join(parts) + (f";{chain}anull[out]" if len(labels) > 1 else f";{labels[0]}anull[out]")
+    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", "-ar", "48000", str(out)])
+    return out
 
 
 def audible_end(track):
