@@ -389,6 +389,11 @@ pub fn copy_pane(from: &Value, id: u32) -> Value {
     // turning sending off on the half made the other half's work vanish
     // as well.
     copy["drawing_uid"] = json!(gtk::glib::uuid_string_random().to_string());
+    // A title is one chart's: the half a split makes starts without one, as
+    // it does in the window.
+    if let Some(fields) = copy.as_object_mut() {
+        fields.remove("title");
+    }
     copy
 }
 

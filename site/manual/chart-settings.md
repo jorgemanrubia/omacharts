@@ -22,19 +22,20 @@ state:
 capture: bin/headless-window shot /tmp/chartsettings.png; then scroll 640 500 10 and shot /tmp/chartsettings2.png
 crop: 700,84,1160,1276 (both)
 -->
-{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Bars group with its Colouring, Hollow up bars and Swap up and down colours rows, and the Scales group" caption="The Chart page, top." %}
+{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Title row, the Bars group with its Colouring, Hollow up bars and Swap up and down colours rows, and the Scales group" caption="The Chart page, top." %}
 
 <!-- regenerate: as the figure above; this is its second capture, /tmp/chartsettings2.png, after scroll 640 500 10 -->
 {% include figure.html src="/assets/manual/charts/chart-settings-lower.png" alt="The Chart page scrolled down, showing the Session, Drawings and Reset to defaults groups" caption="The Chart page, bottom." %}
 
 <!-- regenerate:
-as above, with Monochrome chosen in the Colouring row (click 840 242, then 855 394)
+as above, with omacharts chart set --colouring theme-mono run before key ctrl+shift+s
 crop: 700,84,1160,1276
 -->
 {% include figure.html src="/assets/manual/charts/chart-settings-monochrome.png" alt="The Chart page with Monochrome chosen, the Swap up and down colours row greyed out" caption="Monochrome paints a rise and a fall alike, so the swap is greyed out; Hollow up bars is how it shows direction." %}
 
 | Group › row | Does |
 |---|---|
+| **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
 | **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
 | **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
 | **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |

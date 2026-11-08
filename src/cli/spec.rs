@@ -907,6 +907,7 @@ pub const SURFACE: &[Noun] = &[
                 flags: &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued("title", "TITLE", "the chart title, shown in its header; \"\" for none"),
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
@@ -1446,6 +1447,7 @@ pub fn verb(noun: &str, verb: &str) -> Option<&'static Verb> {
 #[cfg(test)]
 const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("id", "", "identity rather than state: a chart is named back as pos:N"),
+    ("title", "chart set", "--title"),
     ("symbol", "chart set", "--symbol"),
     ("suffix", "chart set", "--suffix"),
     ("timeframe", "chart set", "--resolution"),

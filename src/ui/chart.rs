@@ -3316,6 +3316,20 @@ impl ChartView {
         self.editing.borrow().is_some()
     }
 
+    /// Whether any drawing is selected: F2 is then the drawing's, for its
+    /// text, and not the chart title's.
+    pub fn has_selection(&self) -> bool {
+        !self.state.borrow().selected.is_empty()
+    }
+
+    /// Lay `drawing` down alone and select it, for a test that needs one.
+    #[cfg(test)]
+    pub(crate) fn select_only(&self, drawing: Drawing) {
+        let mut state = self.state.borrow_mut();
+        state.drawings = vec![drawing];
+        state.selected = vec![0];
+    }
+
     /// Open the editor on the selected drawing, if one is selected. What
     /// "Edit text" in the drawing's menu does, and Enter is not: Enter opens
     /// the properties, which is where it has always gone.

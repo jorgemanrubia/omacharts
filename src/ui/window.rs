@@ -220,6 +220,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+H", "Show or hide the drawings"),
             ("Ctrl+Shift+H", "Show or hide the indicators"),
             ("Ctrl+Alt+Shift+H", "Hide the bars, or show them as they were"),
+            ("F2", "Edit the chart title, with no drawing selected"),
             ("Ctrl+Alt+Shift+1 … 9", "Chart template N, in the order they are listed"),
             ("Ctrl+Alt+Shift+0", "No chart template"),
             ("Ctrl+Alt+Shift+PgUp PgDn", "Previous or next chart template"),
@@ -660,6 +661,7 @@ mod tests {
             focused: 7,
             panes: vec![StoredPane {
                 id: 7,
+                title: None,
                 symbol: "CL".to_string(),
                 suffix: None,
                 timeframe: "1h".to_string(),
@@ -743,6 +745,7 @@ mod tests {
     fn stored_pane(id: u32, symbol: &str, link: LinkMode) -> StoredPane {
         StoredPane {
             id,
+            title: None,
             symbol: symbol.to_string(),
             suffix: None,
             timeframe: "1D".to_string(),
@@ -1576,6 +1579,303 @@ mod outside_change_tests {
         });
     }
 
+    /// The rows of a menu, as (label, action), and whether each opens a
+    /// section rather than being a row.
+    fn menu_rows(model: &gio::MenuModel) -> Vec<(String, String, bool)> {
+        (0..model.n_items())
+            .map(|at| {
+                let text = |name| {
+                    model
+                        .item_attribute_value(at, name, None)
+                        .and_then(|v| v.str().map(str::to_string))
+                        .unwrap_or_default()
+                };
+                (text("label"), text("action"), model.item_link(at, "section").is_some())
+            })
+            .collect()
+    }
+
+    /// Right-clicking the stripe offers the header's editor as the line
+    /// beside it does; the chart's menu ends its first section with Edit
+    /// chart title…, under the three switches.
+    #[test]
+    fn the_stripe_offers_the_header_and_the_chart_menu_offers_a_title() {
+        crate::ui::on_gtk(|| {
+            let rows: Vec<(String, String)> =
+                menu_rows(strip_menu_model().upcast_ref()).into_iter().map(|(label, action, _)| (label, action)).collect();
+            assert_eq!(
+                rows,
+                vec![
+                    ("Edit resolutions…".to_string(), "chart.edit-resolutions".to_string()),
+                    ("Edit header…".to_string(), "chart.edit-header".to_string()),
+                ]
+            );
+
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let rows = menu_rows(window.chart_menu_model(100.0).upcast_ref());
+            let at = rows.iter().position(|(label, ..)| label == "Edit chart title…").expect("an Edit chart title… row");
+            assert_eq!(rows[at].1, "chart.edit-title");
+            assert_eq!(rows[at - 1].0, "Drawings");
+            assert!(rows.get(at + 1).is_some_and(|(.., section)| *section), "not the end of its section");
+            assert!(rows[..at].iter().all(|(.., section)| !section), "not the first section");
+        });
+    }
+
+    /// Clicked, the Title part is an entry where it stands: Enter keeps
+    /// what was typed, trimmed; Escape what was there; and blank takes the
+    /// title away, leaving the slot to say Add title under the pointer. What
+    /// is kept is the chart's, in what a command lists.
+    #[test]
+    fn a_title_is_typed_where_it_stands_in_the_header() {
+        use crate::ui::pane::{TITLE_PLACEHOLDER, TITLE_UNTITLED};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            assert!(pane.shows(crate::header::Part::Title), "the title is not in the standard header");
+            assert!(pane.title_part.parent().is_some_and(|parent| parent == pane.header_center));
+            assert!(pane.title_button.has_css_class(TITLE_UNTITLED));
+            let words = pane.title_button.child().and_downcast::<gtk::Label>().expect("the title's words");
+            assert_eq!(words.text(), TITLE_PLACEHOLDER);
+
+            pane.title_button.emit_clicked();
+            assert!(pane.editing_title());
+            assert_eq!(pane.title_part.visible_child_name().as_deref(), Some("editing"));
+            pane.title_entry.set_text("  Rates   desk ");
+            pane.title_entry.emit_activate();
+            assert!(!pane.editing_title());
+            assert_eq!(pane.title_part.visible_child_name().as_deref(), Some("shown"));
+            assert_eq!(window.chart_title(), "Rates desk");
+            assert_eq!(words.text(), "Rates desk");
+            assert!(!pane.title_button.has_css_class(TITLE_UNTITLED));
+            let listed: serde_json::Value =
+                serde_json::from_str(&command(&window, &["chart", "list", "--json"])).expect("JSON");
+            assert_eq!(listed["charts"][0]["title"], "Rates desk");
+
+            pane.title_button.emit_clicked();
+            assert_eq!(pane.title_entry.text(), "Rates desk");
+            pane.title_entry.set_text("Something else");
+            pane.finish_title_edit(false);
+            assert_eq!(window.chart_title(), "Rates desk", "Escape kept what was typed");
+
+            pane.title_button.emit_clicked();
+            pane.title_entry.set_text("   ");
+            pane.title_entry.emit_activate();
+            assert_eq!(window.chart_title(), "");
+            assert!(pane.title_button.has_css_class(TITLE_UNTITLED));
+            assert_eq!(words.text(), TITLE_PLACEHOLDER);
+            let listed: serde_json::Value =
+                serde_json::from_str(&command(&window, &["chart", "list", "--json"])).expect("JSON");
+            assert_eq!(listed["charts"][0]["title"], serde_json::Value::Null);
+        });
+    }
+
+    /// F2 with a drawing selected puts the caret in its text, as it always
+    /// has, and leaves the chart title alone; with nothing selected, it is
+    /// the chart title's.
+    #[test]
+    fn f2_is_a_selected_drawing_s_text_and_otherwise_the_chart_title() {
+        use omacharts_engine::drawings::{Anchor, Drawing, Kind as DrawingKind, Text};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            let mut note = Drawing::new(DrawingKind::Text, Anchor::new(1, 1.0), Anchor::new(1, 1.0));
+            note.text = Text::plain("Earnings");
+            pane.view.select_only(note);
+
+            window.press_f2();
+            assert!(pane.view.is_typing_text(), "F2 left the selected drawing's text alone");
+            assert!(!pane.editing_title(), "F2 took the chart title from a selected drawing");
+            assert!(window.window.visible_dialog().is_none());
+        });
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            assert!(!pane.view.has_selection());
+            window.press_f2();
+            assert!(pane.editing_title(), "F2 with nothing selected did not edit the chart title");
+            assert!(!pane.view.is_typing_text());
+        });
+    }
+
+    /// F2 edits the chart title where the header shows it, and in the
+    /// dialog where it does not: left out of the header, or with no room for
+    /// the row it is in. The menu row says F2.
+    #[test]
+    fn f2_edits_the_chart_title_in_the_header_or_else_in_the_dialog() {
+        use crate::header::{Header, Part};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            let rows = menu_rows(window.chart_menu_model(100.0).upcast_ref());
+            assert!(rows.iter().any(|(label, ..)| label == "Edit chart title…"));
+            assert_eq!(shortcuts::accel("chart.edit-title"), Some("F2"));
+
+            window.edit_chart_title();
+            assert!(pane.editing_title(), "F2 did not edit in the header");
+            assert!(window.window.visible_dialog().is_none());
+            pane.finish_title_edit(false);
+
+            pane.header_center.set_child_visible(false);
+            window.edit_chart_title();
+            assert!(!pane.editing_title());
+            let dialog = window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("the dialog");
+            assert_eq!(dialog.heading().as_deref(), Some("Chart title"));
+            dialog.force_close();
+            pane.header_center.set_child_visible(true);
+
+            *pane.header.borrow_mut() = Header { center: Vec::new(), ..Header::standard() };
+            pane.arrange_header();
+            assert!(!pane.shows(Part::Title));
+            window.edit_chart_title();
+            assert!(!pane.editing_title());
+            window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("the dialog").force_close();
+        });
+    }
+
+    /// Untitled, the title is the whole top of the chart between the two
+    /// sides, so the pointer finds Add title anywhere there; titled, it is
+    /// as wide as its words.
+    #[test]
+    fn an_untitled_chart_offers_its_title_across_the_top() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            let lay_out = || {
+                pane.root.measure(gtk::Orientation::Horizontal, -1);
+                pane.root.measure(gtk::Orientation::Vertical, 1000);
+                pane.root.size_allocate(&gtk::Allocation::new(0, 0, 1000, 600), -1);
+            };
+            lay_out();
+            let wide = pane.title_button.width();
+            assert!(wide > 600, "untitled, it is only {wide} wide of 1000");
+            assert_eq!(pane.title_button.cursor().and_then(|c| c.name()).as_deref(), Some("pointer"));
+
+            window.set_chart_title("Rates");
+            lay_out();
+            let narrow = pane.title_button.width();
+            assert!(narrow > 0 && narrow < 200, "titled, it is {narrow} wide");
+        });
+    }
+
+    /// A screenshot draws the chart title where the header shows it, and an
+    /// untitled chart's empty slot, which is only the Add title placeholder
+    /// waiting for a hover, leaves nothing there.
+    #[test]
+    fn a_screenshot_of_a_titled_chart_shows_its_title_in_the_header() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            // On screen, since a widget that is not shown draws nothing.
+            window.window.set_default_size(1000, 600);
+            window.window.present();
+            let settle = || {
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..30 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            };
+            let pixels = |texture: &gtk::gdk::Texture| {
+                let stride = texture.width() as usize * 4;
+                let mut bytes = vec![0; stride * texture.height() as usize];
+                texture.download(&mut bytes, stride);
+                (bytes, stride)
+            };
+            window.set_chart_title("Semis desk");
+            settle();
+            assert!(pane.root.is_mapped(), "the chart never came on screen");
+            let at = pane.title_button.compute_bounds(&pane.root).expect("the title has a place");
+            let titled = screenshot::chart(&pane, &window.theme()).expect("a screenshot").texture;
+            window.set_chart_title("");
+            settle();
+            let untitled = screenshot::chart(&pane, &window.theme()).expect("a screenshot").texture;
+            window.window.close();
+
+            let scale = titled.width() as f32 / pane.root.width() as f32;
+            let ((titled, stride), (untitled, _)) = (pixels(&titled), pixels(&untitled));
+            let rows = (at.y() * scale) as usize..((at.y() + at.height()) * scale) as usize;
+            let columns = (at.x() * scale) as usize * 4..((at.x() + at.width()) * scale) as usize * 4;
+            let region = |bytes: &[u8]| -> Vec<u8> {
+                rows.clone().flat_map(|row| bytes[row * stride..][columns.clone()].to_vec()).collect()
+            };
+            let (titled, untitled) = (region(&titled), region(&untitled));
+            let ground = untitled[..4].to_vec();
+            assert!(
+                untitled.chunks(4).all(|pixel| pixel == ground),
+                "an untitled chart's empty slot drew something into the screenshot"
+            );
+            assert!(
+                titled.chunks(4).any(|pixel| pixel != ground),
+                "the title is not in the screenshot where the header shows it"
+            );
+        });
+    }
+
+    /// Edit chart title… asks in a dialog, offering the title the chart has, and
+    /// an empty answer is one: the chart is untitled again.
+    #[test]
+    fn edit_title_asks_for_the_chart_s_title_in_a_dialog() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            window.set_chart_title("Macro");
+            let answer = |text: &str| {
+                gtk::prelude::WidgetExt::activate_action(&window.window, "chart.edit-title", None)
+                    .expect("an Edit chart title… action");
+                let dialog =
+                    window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("a dialog");
+                assert_eq!(dialog.heading().as_deref(), Some("Chart title"));
+                assert_eq!(dialog.response_label("ok"), "Save");
+                let field = rows::<adw::EntryRow>(dialog.upcast_ref()).into_iter().next().expect("a field");
+                assert_eq!(field.title(), "Title");
+                assert_eq!(field.text(), window.chart_title());
+                field.set_text(text);
+                assert!(dialog.is_response_enabled("ok"), "{text:?} was refused");
+                dialog.emit_by_name::<()>("response", &[&"ok"]);
+                dialog.force_close();
+            };
+            answer("Rates");
+            assert_eq!(window.chart_title(), "Rates");
+            assert_eq!(window.focused_pane().title.borrow().as_str(), "Rates");
+            answer("");
+            assert_eq!(window.chart_title(), "");
+        });
+    }
+
+    /// The Title row heads a chart's settings: typed into, it titles the
+    /// chart as it is typed; and it reads a title given by a command, or
+    /// taken away by one.
+    #[test]
+    fn the_title_row_titles_the_chart_and_follows_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let row = titled::<adw::EntryRow>(&window, crate::ui::chart_settings::TITLE_LABEL)
+                .into_iter()
+                .next()
+                .expect("a Title row");
+            assert_eq!(row.text(), "");
+            row.set_text("Rates ");
+            assert_eq!(window.chart_title(), "Rates");
+            assert_eq!(row.text(), "Rates ", "the row's own typing was written back over it");
+
+            command(&window, &["chart", "set", "--title", "Yields"]);
+            assert_eq!(row.text(), "Yields");
+            assert_eq!(window.focused_pane().title.borrow().as_str(), "Yields");
+            command(&window, &["chart", "set", "--title", ""]);
+            assert_eq!(row.text(), "");
+            assert_eq!(window.chart_title(), "");
+        });
+    }
+
     /// The Thickness row is offered under Style only while the bars are
     /// OHLC bars, follows a command that changes them, and moves them as it
     /// is moved.
@@ -2050,6 +2350,10 @@ pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct StoredPane {
     id: u32,
+    /// The chart title. Missing for a chart nobody titled, which is
+    /// every chart written before charts could be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
     symbol: String,
     #[serde(default)]
     suffix: Option<String>,
@@ -2153,9 +2457,26 @@ fn yes() -> bool {
     true
 }
 
+/// What right-clicking the resolutions stripe offers: its list, and the
+/// header's own item, since the stripe is in the header and a menu that
+/// left it out would read as though this part of it were set elsewhere.
+fn strip_menu_model() -> gio::Menu {
+    let model = gio::Menu::new();
+    model.append(Some("Edit resolutions…"), Some("chart.edit-resolutions"));
+    model.append(Some("Edit header…"), Some("chart.edit-header"));
+    model
+}
+
 /// What a chart's price scale does until somebody takes hold of it.
 fn fits_itself() -> bool {
     true
+}
+
+/// A chart's title as it is kept: trimmed, on one line, and no longer than
+/// the header's entry lets one be typed, wherever it was typed.
+pub(crate) fn clean_title(title: &str) -> String {
+    let one_line: String = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    one_line.chars().take(crate::ui::pane::TITLE_MAX_LENGTH as usize).collect()
 }
 
 /// One arrangement of charts, saved under a name.
@@ -3150,11 +3471,26 @@ impl Window {
             // header's line.
             gesture.set_state(gtk::EventSequenceState::Claimed);
             editor.focus(id);
-            let model = gio::Menu::new();
-            model.append(Some("Edit resolutions…"), Some("chart.edit-resolutions"));
-            popup_menu(&model, &strip, x, y);
+            popup_menu(&strip_menu_model(), &strip, x, y);
         });
         pane.strip.add_controller(strip_menu);
+
+        // The title is typed where it stands: clicked, it is an entry, and
+        // what is typed there is kept like a title given in the menu.
+        let titler = Rc::downgrade(self);
+        pane.title_button.connect_clicked(move |_| {
+            let Some(window) = titler.upgrade() else { return };
+            window.focus(id);
+            if let Some(pane) = window.pane(id) {
+                pane.begin_title_edit();
+            }
+        });
+        let keeper = Rc::downgrade(self);
+        pane.set_title_handler(move |title| {
+            if let Some(window) = keeper.upgrade() {
+                window.set_title_of(id, &title);
+            }
+        });
 
         // And the header, the same way, for what it shows: one line for every
         // chart, set in the preferences, and reached from here because here
@@ -4226,6 +4562,7 @@ impl Window {
                 let (symbol, suffix) = stored_symbol(instrument.as_ref(), pending.as_ref());
                 StoredPane {
                     id: pane.id,
+                    title: Some(pane.title.borrow().clone()).filter(|title| !title.is_empty()),
                     symbol,
                     suffix,
                     timeframe: pane.timeframe.get().key(),
@@ -4491,6 +4828,7 @@ impl Window {
             pane.bars_hidden.set(stored.bars_hidden);
             pane.view.set_bars_hidden(stored.bars_hidden);
             pane.set_ohlc_thickness(stored.ohlc_thickness.unwrap_or(defaults.ohlc_thickness));
+            pane.write_title(stored.title.as_deref().unwrap_or(""));
             pane.view.set_show_indicators(stored.indicators_shown);
             pane.view.set_show_drawings(stored.drawings_shown);
             restored.push((pane, stored));
@@ -6127,6 +6465,12 @@ impl Window {
                 // only takes letters and digits.
                 Key::question => {
                     this.show_shortcuts();
+                    return glib::Propagation::Stop;
+                }
+                // F2: a selected drawing's text, or, with none selected, the
+                // chart title. A box being typed in keeps it.
+                Key::F2 if !ctrl && !alt && !shift && !this.is_typing() => {
+                    this.press_f2();
                     return glib::Propagation::Stop;
                 }
                 // Ctrl+W closes the chartbook, and closes the window when
@@ -9576,6 +9920,63 @@ impl Window {
         self.save_workspace();
     }
 
+    /// The focused chart's title, empty for none.
+    pub fn chart_title(&self) -> String {
+        self.focused_pane().title.borrow().clone()
+    }
+
+    /// Title the focused chart, or take its title away with a blank one.
+    pub fn set_chart_title(self: &Rc<Self>, title: &str) {
+        let id = self.focused_pane().id;
+        self.set_title_of(id, title);
+    }
+
+    /// Title chart `id`, on its header and in the arrangement, and tell its
+    /// settings if they are open.
+    pub fn set_title_of(self: &Rc<Self>, id: u32, title: &str) {
+        let Some(pane) = self.pane(id) else { return };
+        let title = clean_title(title);
+        if *pane.title.borrow() == title {
+            return;
+        }
+        pane.write_title(&title);
+        self.save_workspace();
+        self.chart_changed_elsewhere();
+    }
+
+    /// F2, on the focused chart: with a drawing selected, its text, as it
+    /// always was (the chart caught that first when it had the keyboard;
+    /// this is the same from anywhere else); with none, the chart title.
+    pub fn press_f2(self: &Rc<Self>) {
+        let view = self.focused_pane().view.clone();
+        match view.has_selection() {
+            true => {
+                view.edit_selected_text();
+            }
+            false => self.edit_chart_title(),
+        }
+    }
+
+    /// The focused chart's title typed where the header shows it, or
+    /// asked for in the dialog when the header leaves it out or has no room.
+    pub fn edit_chart_title(self: &Rc<Self>) {
+        let pane = self.focused_pane();
+        match pane.title_in_view() {
+            true => pane.begin_title_edit(),
+            false => self.ask_chart_title(),
+        }
+    }
+
+    /// Edit chart title…: the focused chart's title, asked for in a dialog the
+    /// way a chartbook template's name is, where blank takes the title away.
+    pub fn ask_chart_title(self: &Rc<Self>) {
+        let id = self.focused_pane().id;
+        let this = self.clone();
+        crate::ui::preferences::ask_title(&self.window, &self.chart_title(), move |chosen| {
+            this.set_title_of(id, &chosen)
+        });
+    }
+
     /// How many pixels wide the focused chart draws its OHLC bars.
     pub fn ohlc_thickness(&self) -> u8 {
         self.focused_pane().ohlc_thickness.get()
@@ -10752,6 +11153,7 @@ impl Window {
         shortcuts::append(&menu, "Gridlines", "chart.grid");
         shortcuts::append(&menu, "Indicators", "chart.show-indicators");
         shortcuts::append(&menu, "Drawings", "chart.show-drawings");
+        shortcuts::append(&menu, "Edit chart title\u{2026}", "chart.edit-title");
         if orders.is_some() {
             outer.append_section(None, &menu);
         }
@@ -11102,6 +11504,11 @@ impl Window {
         let this = self.clone();
         header.connect_activate(move |_, _| this.edit_header());
         actions.add_action(&header);
+
+        let title = gio::SimpleAction::new("edit-title", None);
+        let this = self.clone();
+        title.connect_activate(move |_, _| this.ask_chart_title());
+        actions.add_action(&title);
 
         // Offered only while the chart has indicators: a template made from
         // none would be an empty one, which the preferences already make.

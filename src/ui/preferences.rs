@@ -1849,8 +1849,27 @@ pub(crate) fn ask_name(
     verb: &str,
     done: impl Fn(String) + 'static,
 ) {
+    ask_for_text(anchor, heading, "Name", initial, verb, false, done);
+}
+
+/// A chart's title, asked for the way a name is, under its own word: blank is
+/// an answer, and leaves the chart untitled.
+pub(crate) fn ask_title(anchor: &impl IsA<gtk::Widget>, initial: &str, done: impl Fn(String) + 'static) {
+    ask_for_text(anchor, "Chart title", "Title", initial, "Save", true, done);
+}
+
+fn ask_for_text(
+    anchor: &impl IsA<gtk::Widget>,
+    heading: &str,
+    label: &str,
+    initial: &str,
+    verb: &str,
+    blank_ok: bool,
+    done: impl Fn(String) + 'static,
+) {
+    let answers = move |text: &str| blank_ok || !text.trim().is_empty();
     let name = adw::EntryRow::new();
-    name.set_title("Name");
+    name.set_title(label);
     name.set_text(initial);
     let rows = adw::PreferencesGroup::new();
     rows.add(&name);
@@ -1863,17 +1882,17 @@ pub(crate) fn ask_name(
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
     // Offered blank, for a new name, it cannot be answered until it is not.
-    dialog.set_response_enabled("ok", !initial.trim().is_empty());
+    dialog.set_response_enabled("ok", answers(initial));
 
     let gate = dialog.clone();
     name.connect_changed(move |field| {
-        gate.set_response_enabled("ok", !field.text().trim().is_empty());
+        gate.set_response_enabled("ok", answers(&field.text()));
     });
     // An entry row keeps Return for itself; typing a name and pressing it is
     // one gesture and should finish the one thing.
     let finish = dialog.clone();
     name.connect_entry_activated(move |field| {
-        if !field.text().trim().is_empty() {
+        if answers(&field.text()) {
             finish.emit_by_name::<()>("response", &[&"ok"]);
             finish.close();
         }
@@ -1967,22 +1986,22 @@ mod tests {
             assert_eq!(center.group.title(), "Center");
             assert_eq!(right.group.title(), "Right");
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
-            assert_eq!(center.parts(), vec![Part::Stripe]);
+            assert_eq!(center.parts(), vec![Part::Title]);
             assert_eq!(right.parts(), vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
-            assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template]);
-
-            // Out of the center, the stripe is offered by all three.
-            center.set(Vec::new());
             assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
             assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
             assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            // Into the left, by none.
+
+            // Out of the center, the title is offered by all three.
+            center.set(Vec::new());
+            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
+            // The stripe into the left is offered by none.
             left.set(vec![Part::Symbol, Part::Stripe]);
             assert_eq!(
                 center.offered(),
-                vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Feed]
+                vec![Part::Resolution, Part::Change, Part::Template, Part::Title, Part::Account, Part::Feed]
             );
             assert!(!left.offered().contains(&Part::Stripe));
             assert!(!right.offered().contains(&Part::Stripe));
@@ -2026,10 +2045,10 @@ mod tests {
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             restore();
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
-            assert_eq!(center.parts(), vec![Part::Stripe]);
+            assert_eq!(center.parts(), vec![Part::Title]);
             assert_eq!(right.parts(), vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template]);
+            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
             assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);
             // And the lists go on from there.
             center.set(Vec::new());

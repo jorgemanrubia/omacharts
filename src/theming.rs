@@ -710,6 +710,25 @@ entry.range-date > image:hover { opacity: 0.9; }
   min-height: 0;
 }
 .legend-symbol:hover { background: alpha(currentColor, 0.12); }
+/* The chart's title, centred over it: the symbol's button, its words left
+   undrawn while there are none, the room kept so the pointer can find it,
+   and under the pointer a quiet Add title. Typed into, the entry wears no
+   field: the same words, at the same weight, with a caret in them. */
+.chart-title.chart-title-untitled label { opacity: 0; transition: opacity 120ms ease-out; }
+.chart-title.chart-title-untitled:hover label { opacity: 0.5; font-weight: 400; }
+/* Untitled, it spans the top of the chart: the words answer the pointer, not
+   a wash the width of the chart. */
+.chart-title.chart-title-untitled:hover { background: none; }
+entry.chart-title-entry {
+  background: alpha(currentColor, 0.12);
+  border: none;
+  box-shadow: none;
+  outline: none;
+  padding: 0 4px;
+  min-height: 0;
+  border-radius: 5px;
+}
+entry.chart-title-entry > text { margin: 0; }
 
 /* The legend sits over the drawing, and the drawing is the point. The gear,
    and the link while the chart is in Focus (the default, so nothing to
