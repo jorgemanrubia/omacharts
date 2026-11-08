@@ -4,6 +4,7 @@
 //! looking when you want them. Two pages: how the bars are read and scaled,
 //! and what is drawn on top of them.
 
+mod compare;
 mod time;
 
 use std::cell::{OnceCell, RefCell};
@@ -66,6 +67,7 @@ impl ChartSettings {
         chart_page.add(&title_group(window));
         chart_page.add(&bars_group(window));
         chart_page.add(&scales_group(window));
+        chart_page.add(&compare::group(window, &dialog));
         chart_page.add(&session_group(window));
         chart_page.add(&drawings_group(window));
         chart_page.add(&defaults_group(window, &dialog));

@@ -47,6 +47,7 @@ use crate::ui::shortcuts;
 use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
+pub(crate) mod compare;
 mod log;
 mod marks;
 mod trade;
@@ -682,6 +683,7 @@ mod tests {
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 profile_merges: Vec::new(),
+                compare: Default::default(),
                 source: None,
                 account: None,
                 trading_size: None,
@@ -766,6 +768,7 @@ mod tests {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
+            compare: Default::default(),
             source: None,
             account: None,
             trading_size: None,
@@ -2283,6 +2286,33 @@ impl Feed {
     }
 }
 
+/// Bars as a feed sent them, folded to what a chart at `timeframe` draws.
+fn fold_for_screen(
+    instrument: &Instrument,
+    timeframe: Timeframe,
+    session: Session,
+    bars: Vec<omacharts_engine::Bar>,
+) -> Vec<omacharts_engine::Bar> {
+    // A market that never closes opens where it left off. Nothing here is
+    // specific to a provider: the repair only fires when the series it is
+    // given has no bodies, which is true of Yahoo's currency pairs and
+    // not of its crypto.
+    let mut bars = if instrument.kind.is_continuous() {
+        omacharts_engine::repair_continuous_opens(&bars)
+    } else {
+        bars
+    };
+    // Then what nobody could have traded, left out or cut back: here,
+    // on the way to the screen, and never where the bars are kept.
+    omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
+    let bars = omacharts_engine::session::filter(&bars, session, instrument, timeframe.is_intraday());
+    if timeframe.is_derived() {
+        resample(&bars, timeframe, &Grid::new(instrument, session))
+    } else {
+        bars
+    }
+}
+
 /// Which feed serves a chart, as [`Window::route`] decided it.
 struct Routed {
     feed: Rc<Feed>,
@@ -2436,6 +2466,11 @@ struct StoredPane {
     /// Volume profile periods merged into composites on this chart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profile_merges: Vec<omacharts_engine::indicators::profile::Merge>,
+    /// The markets drawn against this chart's own, where they are measured
+    /// from, and whether its bars give way to a line. Missing for a chart
+    /// that compares nothing, which is every chart written before any could.
+    #[serde(default, skip_serializing_if = "omacharts_engine::compare::Compare::is_empty")]
+    compare: omacharts_engine::compare::Compare,
     /// The data feed somebody chose for this chart, by id. Missing for a
     /// chart that follows the order of feeds, which is every chart until
     /// somebody chooses and every chart written before anybody could.
@@ -3837,6 +3872,7 @@ impl Window {
         added.set_ohlc_thickness(from.ohlc_thickness.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
+        *added.compare.borrow_mut() = from.compare.borrow().clone();
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -4592,6 +4628,7 @@ impl Window {
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     profile_merges: pane.profile_merges.borrow().clone(),
+                    compare: pane.compare.borrow().clone(),
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
@@ -4830,6 +4867,7 @@ impl Window {
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
+            *pane.compare.borrow_mut() = stored.compare.clone();
             *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
@@ -7407,6 +7445,7 @@ impl Window {
                 .loader
                 .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
         }
+        self.load_comparisons(pane);
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
         }
@@ -7815,6 +7854,12 @@ impl Window {
             // reason another one loads slowly.
             feed.loader.fetch(Request { key, symbol, timeframe, speculative: true }, REFRESH);
         }
+        for id in self.mounted().leaves() {
+            let Some(pane) = self.pane(id) else { continue };
+            if !pane.compared.borrow().is_empty() {
+                self.refresh_comparisons(&pane, visible, now);
+            }
+        }
     }
 
     /// Is the window on screen at all?
@@ -7866,6 +7911,7 @@ impl Window {
         bars: Vec<omacharts_engine::Bar>,
         trouble: Option<FetchFailure>,
     ) {
+        self.compare_arrived(key, native, &bars, trouble);
         // A series being streamed is newer in memory than any reply: the
         // reply still feeds the rail, and paints nothing.
         let streamed = self
@@ -7930,29 +7976,7 @@ impl Window {
         timeframe: Timeframe,
         bars: Vec<omacharts_engine::Bar>,
     ) {
-        // A market that never closes opens where it left off. Nothing here is
-        // specific to a provider: the repair only fires when the series it is
-        // given has no bodies, which is true of Yahoo's currency pairs and
-        // not of its crypto.
-        let mut bars = if instrument.kind.is_continuous() {
-            omacharts_engine::repair_continuous_opens(&bars)
-        } else {
-            bars
-        };
-        // Then what nobody could have traded, left out or cut back: here,
-        // on the way to the screen, and never where the bars are kept.
-        omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
-        let bars = omacharts_engine::session::filter(
-            &bars,
-            pane.session.get(),
-            instrument,
-            timeframe.is_intraday(),
-        );
-        let bars = if timeframe.is_derived() {
-            resample(&bars, timeframe, &Grid::new(instrument, pane.session.get()))
-        } else {
-            bars
-        };
+        let bars = fold_for_screen(instrument, timeframe, pane.session.get(), bars);
         self.recompute_indicators(pane, instrument, timeframe, &bars);
         let bars = Rc::new(bars);
         {
@@ -11044,6 +11068,7 @@ impl Window {
     }
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
+        self.note_menu_at(x);
         let menu = self.chart_menu_model(y);
 
         // Hung off the window rather than the chart it was opened on: a menu
@@ -11169,6 +11194,9 @@ impl Window {
         }
         let menu = outer;
 
+        // Other markets against this one: what is measured, and from where.
+        menu.append_section(None, &self.compare_menu_section());
+
         // The layout, in its own section: splitting and closing are about the
         // arrangement rather than about what this chart draws.
         let layout = gio::Menu::new();
@@ -11282,6 +11310,7 @@ impl Window {
     /// choice as a selected radio item without anybody building ticks by hand.
     fn install_chart_actions(self: &Rc<Self>) {
         let actions = gio::SimpleActionGroup::new();
+        self.install_compare_actions(&actions);
 
         let bar_style = gio::SimpleAction::new_stateful(
             "bar-style",

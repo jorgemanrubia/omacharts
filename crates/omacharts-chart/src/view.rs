@@ -20,7 +20,9 @@
 //! drag at the frame rate.
 
 pub mod bench;
+mod compare;
 mod selection;
+pub use compare::{CompareLine, Comparing, Readout};
 pub use selection::ProfileSpot;
 
 use std::borrow::Cow;
@@ -362,6 +364,12 @@ struct State {
     /// editor is told where to sit after every keystroke, and tells the
     /// chart here.
     editing_at: Option<(f64, f64, f64, f64)>,
+    /// The other markets drawn over this one, rebased, while there are any.
+    /// Nothing at all otherwise, so a chart that compares nothing pays for
+    /// nothing.
+    compare: Option<Box<compare::Overlay>>,
+    /// Told what the compared markets read at the bar in question.
+    on_compare_readout: Handler<dyn Fn(Readout)>,
 }
 
 /// What happened to the selected indicator, for the window, which owns the
@@ -1100,6 +1108,10 @@ fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale>
         low = low.min(b.low);
         high = high.max(b.high);
     }
+    if let Some(compare) = &state.compare {
+        let (first, _) = state.slice();
+        (low, high) = compare.fit(&state.bars, first, bars.len(), low, high);
+    }
     if !low.is_finite() || !high.is_finite() {
         return None;
     }
@@ -1295,6 +1307,8 @@ impl State {
             sends: true,
             undo: Vec::new(),
             redo: Vec::new(),
+            compare: None,
+            on_compare_readout: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -2035,6 +2049,9 @@ impl State {
         self.bars = bars;
         self.instrument = Some(instrument);
         self.timeframe = timeframe;
+        if let Some(compare) = self.compare.as_mut() {
+            compare.realign(&self.bars, timeframe);
+        }
         if changed {
             // A measured range belongs to the series it was measured on.
             self.ruler = None;
@@ -3989,6 +4006,10 @@ impl ChartView {
             for bar in tail {
                 omacharts_engine::stream::upsert(&mut state.bars, *bar);
             }
+            let state = &mut *state;
+            if let Some(compare) = state.compare.as_mut() {
+                compare.realign(&state.bars, state.timeframe);
+            }
             state.trouble = None;
             state.loading = false;
             // A new day can start a new month, and the month to date with it.
@@ -4044,6 +4065,45 @@ impl ChartView {
 
     /// Stop drawing the bars, or start again. Only the bars go: the scale
     /// still fits them, and what is drawn from them stays where it was.
+    /// Compare other markets on this chart, or stop comparing with `None`.
+    /// Handed whole each time, bars and all: a line whose bars just arrived
+    /// is the same call as the first.
+    pub fn set_comparing(&self, comparing: Option<Comparing>) {
+        {
+            let mut state = self.state.borrow_mut();
+            let state = &mut *state;
+            let handler = state.on_compare_readout.clone();
+            state.compare = comparing
+                .map(|spec| Box::new(compare::Overlay::new(spec, &state.bars, state.timeframe, handler)));
+        }
+        self.redraw();
+    }
+
+    /// Whether the chart is comparing markets, and so drawn in percent.
+    pub fn comparing(&self) -> bool {
+        self.state.borrow().compare.is_some()
+    }
+
+    /// Told what every compared market reads at the hovered bar, or at the
+    /// last on screen with none hovered, whenever that changes.
+    pub fn set_compare_readout_handler(&self, handler: impl Fn(Readout) + 'static) {
+        *self.state.borrow().on_compare_readout.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// The time of the bar at `x` of the chart, the nearest end's past
+    /// either end of the series: what "Compare from here" pins the base to.
+    pub fn bar_time_at(&self, x: f64) -> Option<i64> {
+        let state = self.state.borrow();
+        let (first, visible, lead) = state.view();
+        if visible == 0 {
+            return None;
+        }
+        let plot_w = (self.area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
+        let frac = ((x - PAD) / plot_w).clamp(0.0, 1.0);
+        let index = (first as f64 - lead as f64 + frac * state.columns() as f64).floor().max(0.0) as usize;
+        state.bars.get(index.min(state.bars.len().saturating_sub(1))).map(|bar| bar.ts)
+    }
+
     pub fn set_bars_hidden(&self, hidden: bool) {
         self.state.borrow_mut().bars_hidden = hidden;
         self.hidden_changed();
@@ -5594,7 +5654,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     // the gridlines, so they read as the chart's ground rather than as
     // something drawn on it.
     draw_time_ground(cr, state, &columns, &plan);
-    draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
+    let compared = state.compare.as_deref().and_then(|overlay| Some((overlay, overlay.based(&state.bars, columns.first)?)));
+    match &compared {
+        Some((_, based)) => compare::draw_grid(cr, state, based, plot_x, plot_w, price_y, price_h, &scale, &to_y),
+        None => draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y),
+    }
     draw_time_axis(cr, state, &columns.bars, columns.bars_each(), plot_x, plot_w, height, bar_w, bars_x - columns.shift());
     draw_goto_day(cr, state, &columns, &plan, height);
     // Shaded things go under the candles; lines go over. A band drawn on top
@@ -5609,8 +5673,13 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     cr.clip();
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_drawings(cr, state, &plan, &scale, true);
-    draw_candles(cr, state, &columns, &to_y);
+    if !state.compare.as_ref().is_some_and(|overlay| overlay.spec.lines_only) {
+        draw_candles(cr, state, &columns, &to_y);
+    }
     draw_indicator_lines(cr, state, &columns, &to_y);
+    if let Some((overlay, based)) = &compared {
+        compare::draw_lines(cr, state, overlay, based, &columns, &plan, &to_y);
+    }
     draw_unmet(cr, state, plot_x, price_y + price_h);
     cr.restore().ok();
     draw_drawings(cr, state, &plan, &scale, false);
@@ -5639,7 +5708,13 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
 
     draw_axis_fade(cr, state, plot_x + plot_w, width);
     let tag_at = draw_marks(cr, state, state.lane(&plan), price_y, price_y + price_h, width, &to_y);
-    draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y, tag_at);
+    match &compared {
+        Some((overlay, based)) => {
+            let step = compare::grid_step(&scale, based.rebase, price_h);
+            compare::draw_end_labels(cr, state, overlay, based, &columns, &plan, width, step, &to_y);
+        }
+        None => draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y, tag_at),
+    }
 
     if state.trouble.is_some() {
         draw_trouble_dot(cr, state, width);
@@ -5808,6 +5883,16 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
             width, height, bar_w, first as i64 - lead as i64, &scale,
         );
         draw_pane_value(cr, state, &plan, px, py, first, visible, width);
+    }
+
+    if let Some(overlay) = state.compare.as_deref() {
+        let hovered = state
+            .pointer
+            .filter(|(px, _)| *px >= plan.plot_x && *px <= plan.plot_x + plan.plot_w)
+            .map(|(px, _)| ((px - bars_x) / bar_w).floor())
+            .filter(|at| *at >= 0.0)
+            .map(|at| first + at as usize);
+        compare::draw_pointer(cr, state, overlay, &plan, &scale, first, visible, hovered, bar_w, bars_x);
     }
 
     // Another chart's pointer, if nothing is pointing at this one. The real
@@ -7652,10 +7737,15 @@ fn draw_crosshair(
     // not while a mark is dragged: its own price is on the axis then.
     let dragging = matches!(state.drag, Some(Drag::Mark { .. }));
     if py >= price_y && py <= price_y + price_h && !dragging {
+        // In percent while markets are compared: the change at that height.
+        let text = match state.compare.as_deref().and_then(|overlay| overlay.based(&state.bars, state.slice().0)) {
+            Some(based) => compare::crosshair_label(&based, scale, price_h, scale.price_at(py, price_y, price_h)),
+            None => price_under_pointer(state, scale, py, price_y, price_h),
+        };
         label_on_axis(
             cr,
             state,
-            &price_under_pointer(state, scale, py, price_y, price_h),
+            &text,
             plot_x + plot_w,
             below_cover(state, py.round() + 0.5),
             width,

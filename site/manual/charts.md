@@ -525,6 +525,10 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Edit chart title…** | Asks for the chart title, with its key. Blank removes it | [Chart titles](#chart-titles) |
+| **Compare with…** | Opens the search to draw another market on the chart in percent | [Comparing markets](/manual/comparing/) |
+| **Compare from here** | Measures every compared line from the bar under the pointer. Only while the chart compares something | [Where the lines are measured from](/manual/comparing/#where-the-lines-are-measured-from) |
+| **Compare from left edge** | Measures from the first bar on screen again. Only while the base is pinned | [Where the lines are measured from](/manual/comparing/#where-the-lines-are-measured-from) |
+| **Lines only** | Ticked while the chart's own symbol is drawn as a line. Only while the chart compares something | [Lines only](/manual/comparing/#lines-only) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |

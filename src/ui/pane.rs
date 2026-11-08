@@ -142,6 +142,10 @@ pub struct ChartPane {
     /// only, like the strip: four charts each listing their moving averages
     /// over the drawing is the noise the strip already learned to avoid.
     pub indicator_legend: gtk::Box,
+    /// One row per market while the chart compares any, its own included,
+    /// ranked by how far each has come. On every chart, focused or not: it
+    /// is what a comparison is read from.
+    pub compare_legend: gtk::Box,
     pub gear: gtk::Button,
     /// The drawings, the indicators and the bars, one glyph each after the
     /// header, shown only while that one is hidden: struck through, so a
@@ -296,6 +300,10 @@ pub struct ChartPane {
     /// The volume profile periods merged on this chart, kept with it: a
     /// composite is a study of this chart's, not of the indicator's.
     pub profile_merges: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
+    /// The markets compared on this chart, as they are kept.
+    pub compare: RefCell<omacharts_engine::compare::Compare>,
+    /// Their bars as they arrive, one for each in `compare`, in its order.
+    pub compared: RefCell<Vec<crate::ui::window::compare::Loaded>>,
     /// What the link icon is painted in, so a mode other than the default can
     /// be read off four charts at a glance rather than by opening four
     /// popovers. Held here because the drawing happens on every frame and the
@@ -538,7 +546,13 @@ impl ChartPane {
         legend.set_valign(gtk::Align::Start);
         legend.set_margin_start(LEGEND_MARGIN);
         legend.set_margin_top(6);
+        let compare_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        compare_legend.set_halign(gtk::Align::Start);
+        compare_legend.add_css_class("compare-legend");
+        compare_legend.set_visible(false);
+
         legend.append(&bar);
+        legend.append(&compare_legend);
         legend.append(&indicator_legend);
 
         // The strip sits across the top of its own chart rather than in the
@@ -670,6 +684,7 @@ impl ChartPane {
             timeframe_menu,
             timeframe_label,
             indicator_legend,
+            compare_legend,
             gear,
             hidden_glyphs,
             link,
@@ -731,6 +746,8 @@ impl ChartPane {
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             profile_merges: RefCell::new(Vec::new()),
+            compare: RefCell::new(Default::default()),
+            compared: RefCell::new(Vec::new()),
             link_colour,
             glyph,
         });

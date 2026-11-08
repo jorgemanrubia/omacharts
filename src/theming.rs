@@ -1188,6 +1188,14 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 .legend-row:hover .legend-button { opacity: 0.55; }
 .legend-button:hover { opacity: 1; }
 
+/* Markets compared on the chart, best first: the symbol, then its change
+   in figures that keep their width as they move under the pointer. */
+.compare-legend { margin-bottom: 2px; }
+.compare-symbol { font-size: 0.78em; font-weight: 600; opacity: 0.85; }
+.compare-value { font-size: 0.78em; font-feature-settings: 'tnum'; opacity: 0.85; }
+/* Asked for and not answered yet, or answered with a failure. */
+.legend-row.compare-pending { opacity: 0.45; transition: opacity 160ms ease-out; }
+
 /* One box for every glyph button along the top of the window: a chart's
    link, gear and maximize, the window's toggle and menu, the rail's list
    button and +. They stand in a row and light under the same pointer, so

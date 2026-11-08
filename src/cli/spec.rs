@@ -969,6 +969,31 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "compare",
+                about: "Compare other markets with a chart's own, as lines in percent from one bar; list, add or remove them, or say where they are measured from",
+                args: &[
+                    Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set", "clear"]),
+                    Arg::any("SYMBOL", "the markets, for add and remove: tickers such as GC, NQ or BTC-USD"),
+                ],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued(
+                        "from",
+                        "WHEN",
+                        "the bar every line is 0% at: a date `2026-01-02`, a moment `2026-01-02T14:30`, \
+                         unix seconds, or `left` for the first bar on screen, which follows scrolling",
+                    ),
+                    Flag::valued("lines-only", "BOOL", "draw the chart's own bars as a line like the others")
+                        .of(&["on", "off"]),
+                    Flag::valued("color", "COLOUR", "the colour of the markets named: a palette name, #rrggbb, or `auto` for the theme's next"),
+                ],
+                example: "omacharts chart compare add GC NQ BTC-USD --from 2026-01-02",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
                 name: "screenshot",
                 about: "Save a PNG of the focused chart, as it looks on screen",
                 args: &[],
@@ -1475,6 +1500,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("indicators_shown", "chart set", "--indicators"),
     ("drawings_shown", "chart set", "--drawings"),
     ("profile_merges", "chart profile", ""),
+    ("compare", "chart compare", ""),
     (
         "source",
         "",

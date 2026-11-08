@@ -150,6 +150,17 @@ omacharts template indicator set Default session_times --range 2 --color Blue --
 A chart on no template gets its own with `chart indicator add session_times`,
 which starts with ETH.
 
+**How did gold, the Nasdaq and bitcoin do against SPY this year?** Compare
+them on the SPY chart. The lines are percent from one bar: the first on screen
+unless `--from` pins it, so pin it to read a fixed period. `chart compare list
+--json` says what a chart compares; the window's legend ranks them.
+
+```
+omacharts chart set --chart pos:0 --symbol SPY --resolution 1D
+omacharts chart compare add --chart pos:0 GC NQ BTC-USD
+omacharts chart compare set --chart pos:0 --from 2026-01-02 --lines-only on
+```
+
 **Each chart has a link mode**, which is what a click in the watchlist does
 to it. `focus` (the default) takes the click only while it is the focused
 chart, for charts showing different symbols. `follow` takes every click, so

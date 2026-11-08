@@ -65,6 +65,11 @@ pub struct Slot {
     /// before resolutions were part of one, which leaves each chart's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeframe: Option<String>,
+    /// The markets the chart is compared with, and how. Missing from a
+    /// template saved before charts compared anything, which leaves each
+    /// chart's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare: Option<omacharts_engine::compare::Compare>,
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -236,6 +241,7 @@ pub fn capture(book: &Value) -> Option<Shape> {
             template: pane["template"].as_u64().map(|id| id as u32),
             indicators: serde_json::from_value(pane["indicators"].clone()).unwrap_or_default(),
             timeframe: pane["timeframe"].as_str().map(str::to_string),
+            compare: Some(serde_json::from_value(pane["compare"].clone()).unwrap_or_default()),
         });
     }
     Some(Shape { layout: layout.relabel(&positions), panes })
@@ -271,6 +277,7 @@ impl Shape {
                 now.template == held.template
                     && now.indicators == held.indicators
                     && (held.timeframe.is_none() || now.timeframe == held.timeframe)
+                    && (held.compare.is_none() || now.compare == held.compare)
             });
         slots && alike(&self.layout, &held.layout)
     }
@@ -423,6 +430,9 @@ pub fn apply(
         }
         if let Some(timeframe) = &slot.timeframe {
             pane["timeframe"] = json!(timeframe);
+        }
+        if let Some(compare) = &slot.compare {
+            pane["compare"] = serde_json::to_value(compare).unwrap_or(json!({}));
         }
         let Some(id) = pane["id"].as_u64() else { return false };
         ids.insert(at as u32, id as u32);
@@ -596,7 +606,7 @@ mod tests {
             // Position 1 is on the chart template, and draws it as it is now.
             panes: vec![
                 saved.panes[0].clone(),
-                Slot { template: Some(1), indicators: volume_template().indicators, timeframe: Some("1D".into()) },
+                Slot { template: Some(1), indicators: volume_template().indicators, timeframe: Some("1D".into()), compare: Some(Default::default()) },
                 saved.panes[2].clone(),
                 saved.panes[3].clone(),
             ],
@@ -659,7 +669,7 @@ mod tests {
     #[test]
     fn a_chart_template_that_has_gone_leaves_the_indicators_it_was_saved_with() {
         let mut saved = capture(&single("A")).unwrap();
-        saved.panes[0] = Slot { template: Some(7), indicators: vec![Indicator::new(1, IndicatorKind::Macd)], timeframe: None };
+        saved.panes[0] = Slot { template: Some(7), indicators: vec![Indicator::new(1, IndicatorKind::Macd)], timeframe: None, compare: None };
         let mut book = single("SPY");
         assert!(apply(&mut book, &saved, &[volume_template()], &mut 10, None));
         let pane = &book["panes"][0];
@@ -671,7 +681,7 @@ mod tests {
     /// naming a chart it does not have, changes nothing.
     #[test]
     fn an_arrangement_that_is_not_one_changes_nothing() {
-        let broken = Shape { layout: Node::leaf(3), panes: vec![Slot { template: None, indicators: vec![], timeframe: None }] };
+        let broken = Shape { layout: Node::leaf(3), panes: vec![Slot { template: None, indicators: vec![], timeframe: None, compare: None }] };
         let mut book = single("SPY");
         let before = book.clone();
         assert!(!apply(&mut book, &broken, &[], &mut 10, None));
@@ -911,6 +921,35 @@ mod tests {
         set_link(&mut books[1], Some(1));
         assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 0, "opening an old one rewrote the others");
         assert_eq!(timeframes(&books[1]), ["1D", "1D"]);
+    }
+
+    /// What a chart compares is saved with the arrangement and taken by a
+    /// book that takes it, by position; a template saved before charts
+    /// compared anything leaves each chart's own.
+    #[test]
+    fn a_comparison_is_saved_and_taken_by_position() {
+        let mut saved = pair((1, "A"), (2, "B"));
+        saved["panes"][1]["compare"] = json!({"symbols": [{"symbol": "GC"}], "lines_only": true});
+        let shape = capture(&saved).unwrap();
+        let held = shape.panes[1].compare.clone().expect("a comparison");
+        assert_eq!(held.symbols[0].symbol, "GC");
+        assert!(held.lines_only);
+        assert_eq!(shape.panes[0].compare, Some(Default::default()));
+
+        let mut book = pair((3, "X"), (4, "Y"));
+        book["panes"][0]["compare"] = json!({"symbols": [{"symbol": "NQ"}]});
+        assert!(apply(&mut book, &shape, &[], &mut 50, None));
+        assert!(capture(&book).unwrap().same(&shape), "the book did not take the comparison");
+        assert_eq!(book["panes"][1]["compare"]["symbols"][0]["symbol"], "GC");
+        assert_eq!(book["panes"][0]["compare"], json!({}), "the first chart compares nothing now");
+
+        let mut old = shape.clone();
+        old.panes.iter_mut().for_each(|slot| slot.compare = None);
+        let mut kept = pair((5, "X"), (6, "Y"));
+        kept["panes"][0]["compare"] = json!({"symbols": [{"symbol": "NQ"}]});
+        assert!(apply(&mut kept, &old, &[], &mut 60, None));
+        assert_eq!(kept["panes"][0]["compare"]["symbols"][0]["symbol"], "NQ");
+        assert!(capture(&kept).unwrap().same(&old));
     }
 
     /// A book on no template, or on one that has gone, carries nothing.

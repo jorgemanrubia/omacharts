@@ -45,6 +45,10 @@ crop: 700,84,1160,1276
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
+| **Compare** › each market | Its colour, and the bin to stop comparing it ([Comparing markets](/manual/comparing/)) |
+| **Compare** › **Compare with…** | Closes the dialog and opens the search to add a market |
+| **Compare** › **Lines only** | Draws the chart's own symbol as a line. Only while the chart compares something |
+| **Compare** › **Measured from** | **Left edge**, or the day the lines are pinned to, with a **Left edge** button to unpin |
 | **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
 | **Drawings** › **Send drawings to other charts** | Off, what is drawn on this chart stays on this chart ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |
