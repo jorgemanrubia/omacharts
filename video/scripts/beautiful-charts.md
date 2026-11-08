@@ -1,6 +1,6 @@
 ---
 title: Beautiful charts
-stage: script
+stage: render
 length: 60s
 theme: tokyo-night
 timing: music
