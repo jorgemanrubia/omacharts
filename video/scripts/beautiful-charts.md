@@ -200,8 +200,9 @@ hidden from the start, and nothing here shows them.
     cli chartbook template apply Intro
     cli chart set --symbol NVDA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale on --indicators on --drawings on --grid off
     cli chart range "2023/07/01..2024/06/20"
-    key Left
-    key Right
+    scroll 50% 45% -1
+    scroll 50% 45% 1
+    move -0.4% 50%
     key Escape
 
 ## Script
@@ -242,16 +243,16 @@ closes the dialog and the pointer slips back to the edge and hides.
 - 16.1: the camera eases back to the full frame under the fill, settled
   before the drop.
 
-    @9.1: early 3; theme everforest; zoom 50% 50% 1; cli chartbook template apply Build; cli chart set --symbol GC --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart range "2024/12/30..2025/04/02"; key Left; key Right
+    @9.1: early 3; theme everforest; zoom 50% 50% 1; cli chartbook template apply Build; cli chart set --symbol GC --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @9.2: key ctrl+shift+s
     @9.4: click 59% 26%
     @10.1: click 59% 37%
     @10.3: key Escape; move -0.4% 50%
-    @11.1: cli chart set --colouring theme-soft; zoom 68% 40% 1.5
-    @12.1: cli chart set --colouring theme
+    @11.1: early 1.5; zoom 68% 40% 1.5; cli chart set --colouring theme-soft; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
+    @12.1: early 1.5; cli chart set --colouring theme; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @13.1: theme flexoki-light
-    @14.1: cli chart set --style ohlc --thickness 2
-    @15.1: cli chart set --swap-colours on
+    @14.1: early 1.5; cli chart set --style ohlc --thickness 2; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
+    @15.1: early 1.5; cli chart set --swap-colours on; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @16.1: drift 50% 50% 1 4
 
 ### 3. Drop
@@ -275,7 +276,7 @@ Gruvbox. The crude close-up holds to the end of bar 23. The four charts:
   Quiet candles. An amber twenty EMA, an amber support level at the
   December low and an RSI strip.
 
-    @17.1: early 3; theme hackerman; flash; pulse 0.05; cli chartbook template apply Drop; cli chart set --chart pos:0 --symbol BTC --style candles --colouring theme --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol AAPL --style candles --colouring theme-soft --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol ES --style ohlc --thickness 3 --colouring theme --swap-colours off --session extended --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:3 --symbol CL --style candles --colouring theme-quiet --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:0; cli chart range "2022/11/25..2023/02/25"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/16..2026/10/16"; key Left; key Right; cli chart focus pos:1; cli chart range "2023/01/01..2024/12/31"; key Left; key Right; cli chart focus pos:3; cli chart range "2025/12/12..2026/01/14"; key Left; key Right; cli chart focus pos:0
+    @17.1: early 3; theme hackerman; flash; pulse 0.05; cli chartbook template apply Drop; cli chart set --chart pos:0 --symbol BTC --style candles --colouring theme --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol AAPL --style candles --colouring theme-soft --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol ES --style ohlc --thickness 3 --colouring theme --swap-colours off --session extended --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:3 --symbol CL --style candles --colouring theme-quiet --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:0; cli chart range "2022/11/25..2023/02/25"; cli chart focus pos:2; cli chart range "2026/10/16..2026/10/16"; cli chart focus pos:1; cli chart range "2023/01/01..2024/12/31"; cli chart focus pos:3; cli chart range "2025/12/12..2026/01/14"; cli chart focus pos:0; scroll 25% 25% -1; scroll 25% 25% 1; scroll 75% 25% -1; scroll 75% 25% 1; scroll 25% 75% -1; scroll 25% 75% 1; scroll 75% 75% -1; scroll 75% 75% 1; move -0.4% 50%
     @18.1: theme rose-pine; pulse 0.025
     @19.1: theme nord; pulse 0.025
     @20.1: theme white; zoom 25% 25% 2; pulse 0.025
@@ -299,7 +300,7 @@ starts to drift right. On 26.1 Ctrl and H brings in the drawings:
 - a volume profile over the last range;
 - a cyan anchored VWAP line from the April low.
 
-    @24.1: early 3; theme ethereal; zoom 50% 50% 1; cli chartbook template apply Break; cli chart set --symbol NQ --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators off --drawings off --grid off; cli chart range "2025/04/14..2025/10/23"; key Left; key Right
+    @24.1: early 3; theme ethereal; zoom 50% 50% 1; cli chartbook template apply Break; cli chart set --symbol NQ --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators off --drawings off --grid off; cli chart range "2025/04/14..2025/10/23"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @25.1: key ctrl+shift+h; pulse 0.05; zoom 35% 50% 1.3
     @25.2: drift 65% 50% 1.3 7
     @26.1: key ctrl+h; pulse 0.025
@@ -318,7 +319,7 @@ video began, and holds as the push goes on. The three charts:
 - bottom right, the five-minute over one session in Soft hollow candles,
   with VWAP and its bands.
 
-    @27.1: early 1.5; theme starship; zoom 50% 50% 1; drift 50% 50% 1.1 12; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2026/10/15..2026/10/28"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/27..2026/10/27"; key Left; key Right; cli chart focus pos:0; cli chart range "2026/05/01..2026/10/30"; key Left; key Right
+    @27.1: early 1.5; theme starship; zoom 50% 50% 1; drift 50% 50% 1.1 12; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2026/10/15..2026/10/28"; cli chart focus pos:2; cli chart range "2026/10/27..2026/10/27"; cli chart focus pos:0; cli chart range "2026/05/01..2026/10/30"; scroll 30% 45% -1; scroll 30% 45% 1; scroll 80% 25% -1; scroll 80% 25% 1; scroll 80% 75% -1; scroll 80% 75% 1; move -0.4% 50%
     @28.1: theme catppuccin-latte; pulse 0.025
     @29.1: theme tokyo-night; pulse 0.025
 
@@ -333,3 +334,7 @@ seconds while the music's tail fades.
 ## Pronunciation
 
 None. The video has no narration.
+
+## Storyboard
+
+![Storyboard](../storyboards/beautiful-charts.jpg)
