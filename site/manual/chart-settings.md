@@ -35,7 +35,7 @@ crop: 700,84,1160,1276
 
 | Group › row | Does |
 |---|---|
-| **Title** | The chart's own name, shown by the header's **Title** part. Blank for none ([Naming a chart](/manual/charts/#naming-a-chart)) |
+| **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
 | **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
 | **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
 | **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |

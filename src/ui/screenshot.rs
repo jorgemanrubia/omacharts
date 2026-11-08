@@ -89,7 +89,7 @@ pub const FOLDER: &str = "Omacharts";
 /// - `feed-part` — the data feed's dot: how a connection stood at the
 ///   moment is not what the picture is of.
 /// - [`TITLE_UNTITLED`] — an untitled chart's Title part, which is only
-///   ever a way to give it one. A chart's title stays: it names the chart.
+///   ever a way to give it one. A chart's title stays: it titles the chart.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
 ///   a strip wears under the pointer. Not a control, and the only thing here
 ///   that is not: it is where the mouse is, and a picture has no mouse.

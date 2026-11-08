@@ -290,14 +290,14 @@ fn template_rows(
 /// The row a chart's title is typed into.
 pub const TITLE_LABEL: &str = "Title";
 
-/// The chart's own name, first, since it is what the chart is called. Kept
+/// The chart title, first, since it is what the chart is called. Kept
 /// as it is typed, and blank for none.
 fn title_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     let row = adw::EntryRow::new();
     row.set_title(TITLE_LABEL);
     row.set_text(&window.chart_title());
-    // Set while the row is brought up to date with a name given elsewhere,
+    // Set while the row is brought up to date with a title given elsewhere,
     // so that reading it is not taken for typing it.
     let syncing = Rc::new(std::cell::Cell::new(false));
     let typed = window.clone();
@@ -309,8 +309,8 @@ fn title_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     });
     group.add(&row);
 
-    // Named in the header or by a command while this is open, the row reads
-    // the name again; not while it says the same thing, which is every time
+    // Titled in the header or by a command while this is open, the row reads
+    // the title again; not while it says the same thing, which is every time
     // it is the row's own typing that changed it, trailing space and all.
     let weak = Rc::downgrade(window);
     let shown = row.downgrade();

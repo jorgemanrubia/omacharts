@@ -1595,9 +1595,9 @@ mod outside_change_tests {
 
     /// Right-clicking the stripe offers the header's editor as the line
     /// beside it does; the chart's menu ends its first section with Edit
-    /// name…, under the three switches.
+    /// chart title…, under the three switches.
     #[test]
-    fn the_stripe_offers_the_header_and_the_chart_menu_offers_a_name() {
+    fn the_stripe_offers_the_header_and_the_chart_menu_offers_a_title() {
         crate::ui::on_gtk(|| {
             let rows: Vec<(String, String)> =
                 menu_rows(strip_menu_model().upcast_ref()).into_iter().map(|(label, action, _)| (label, action)).collect();
@@ -1612,8 +1612,8 @@ mod outside_change_tests {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
             let rows = menu_rows(window.chart_menu_model(100.0).upcast_ref());
-            let at = rows.iter().position(|(label, ..)| label == "Edit name…").expect("an Edit name… row");
-            assert_eq!(rows[at].1, "chart.edit-name");
+            let at = rows.iter().position(|(label, ..)| label == "Edit chart title…").expect("an Edit chart title… row");
+            assert_eq!(rows[at].1, "chart.edit-title");
             assert_eq!(rows[at - 1].0, "Drawings");
             assert!(rows.get(at + 1).is_some_and(|(.., section)| *section), "not the end of its section");
             assert!(rows[..at].iter().all(|(.., section)| !section), "not the first section");
@@ -1622,7 +1622,7 @@ mod outside_change_tests {
 
     /// Clicked, the Title part is an entry where it stands: Enter keeps
     /// what was typed, trimmed; Escape what was there; and blank takes the
-    /// name away, leaving the slot to say Add title under the pointer. What
+    /// title away, leaving the slot to say Add title under the pointer. What
     /// is kept is the chart's, in what a command lists.
     #[test]
     fn a_title_is_typed_where_it_stands_in_the_header() {
@@ -1669,21 +1669,23 @@ mod outside_change_tests {
         });
     }
 
-    /// Edit name… asks in a dialog, offering the name the chart has, and
+    /// Edit chart title… asks in a dialog, offering the title the chart has, and
     /// an empty answer is one: the chart is untitled again.
     #[test]
-    fn edit_name_asks_for_the_chart_s_name_in_a_dialog() {
+    fn edit_title_asks_for_the_chart_s_title_in_a_dialog() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
             window.set_chart_title("Macro");
             let answer = |text: &str| {
-                gtk::prelude::WidgetExt::activate_action(&window.window, "chart.edit-name", None)
-                    .expect("an Edit name… action");
+                gtk::prelude::WidgetExt::activate_action(&window.window, "chart.edit-title", None)
+                    .expect("an Edit chart title… action");
                 let dialog =
                     window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("a dialog");
+                assert_eq!(dialog.heading().as_deref(), Some("Chart title"));
+                assert_eq!(dialog.response_label("ok"), "Save");
                 let field = rows::<adw::EntryRow>(dialog.upcast_ref()).into_iter().next().expect("a field");
-                assert_eq!(field.title(), "Name");
+                assert_eq!(field.title(), "Title");
                 assert_eq!(field.text(), window.chart_title());
                 field.set_text(text);
                 assert!(dialog.is_response_enabled("ok"), "{text:?} was refused");
@@ -1698,11 +1700,11 @@ mod outside_change_tests {
         });
     }
 
-    /// The Title row heads a chart's settings: typed into, it names the
-    /// chart as it is typed; and it reads a name given by a command, or
+    /// The Title row heads a chart's settings: typed into, it titles the
+    /// chart as it is typed; and it reads a title given by a command, or
     /// taken away by one.
     #[test]
-    fn the_title_row_names_the_chart_and_follows_a_command() {
+    fn the_title_row_titles_the_chart_and_follows_a_command() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
@@ -2199,7 +2201,7 @@ pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct StoredPane {
     id: u32,
-    /// The chart's own name. Missing for a chart nobody named, which is
+    /// The chart title. Missing for a chart nobody titled, which is
     /// every chart written before charts could be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
@@ -3324,11 +3326,11 @@ impl Window {
         });
         pane.strip.add_controller(strip_menu);
 
-        // The title is named where it stands: clicked, it is an entry, and
-        // what is typed there is kept like a name given in the menu.
-        let namer = Rc::downgrade(self);
+        // The title is typed where it stands: clicked, it is an entry, and
+        // what is typed there is kept like a title given in the menu.
+        let titler = Rc::downgrade(self);
         pane.title_button.connect_clicked(move |_| {
-            let Some(window) = namer.upgrade() else { return };
+            let Some(window) = titler.upgrade() else { return };
             window.focus(id);
             if let Some(pane) = window.pane(id) {
                 pane.begin_title_edit();
@@ -9763,18 +9765,18 @@ impl Window {
         self.save_workspace();
     }
 
-    /// The focused chart's own name, empty for none.
+    /// The focused chart's title, empty for none.
     pub fn chart_title(&self) -> String {
         self.focused_pane().title.borrow().clone()
     }
 
-    /// Name the focused chart, or take its name away with a blank one.
+    /// Title the focused chart, or take its title away with a blank one.
     pub fn set_chart_title(self: &Rc<Self>, title: &str) {
         let id = self.focused_pane().id;
         self.set_title_of(id, title);
     }
 
-    /// Name chart `id`, on its header and in the arrangement, and tell its
+    /// Title chart `id`, on its header and in the arrangement, and tell its
     /// settings if they are open.
     pub fn set_title_of(self: &Rc<Self>, id: u32, title: &str) {
         let Some(pane) = self.pane(id) else { return };
@@ -9787,18 +9789,14 @@ impl Window {
         self.chart_changed_elsewhere();
     }
 
-    /// Edit name…: the focused chart's name, asked for in a dialog the way
-    /// a chartbook template's is, where blank takes the name away.
-    pub fn ask_chart_name(self: &Rc<Self>) {
+    /// Edit chart title…: the focused chart's title, asked for in a dialog the
+    /// way a chartbook template's name is, where blank takes the title away.
+    pub fn ask_chart_title(self: &Rc<Self>) {
         let id = self.focused_pane().id;
         let this = self.clone();
-        crate::ui::preferences::ask_name_or_none(
-            &self.window,
-            "Rename Chart",
-            &self.chart_title(),
-            "Rename",
-            move |chosen| this.set_title_of(id, &chosen),
-        );
+        crate::ui::preferences::ask_title(&self.window, &self.chart_title(), move |chosen| {
+            this.set_title_of(id, &chosen)
+        });
     }
 
     /// How many pixels wide the focused chart draws its OHLC bars.
@@ -10977,7 +10975,7 @@ impl Window {
         shortcuts::append(&menu, "Gridlines", "chart.grid");
         shortcuts::append(&menu, "Indicators", "chart.show-indicators");
         shortcuts::append(&menu, "Drawings", "chart.show-drawings");
-        menu.append(Some("Edit name\u{2026}"), Some("chart.edit-name"));
+        menu.append(Some("Edit chart title\u{2026}"), Some("chart.edit-title"));
         if orders.is_some() {
             outer.append_section(None, &menu);
         }
@@ -11329,10 +11327,10 @@ impl Window {
         header.connect_activate(move |_, _| this.edit_header());
         actions.add_action(&header);
 
-        let name = gio::SimpleAction::new("edit-name", None);
+        let title = gio::SimpleAction::new("edit-title", None);
         let this = self.clone();
-        name.connect_activate(move |_, _| this.ask_chart_name());
-        actions.add_action(&name);
+        title.connect_activate(move |_, _| this.ask_chart_title());
+        actions.add_action(&title);
 
         // Offered only while the chart has indicators: a template made from
         // none would be an empty one, which the preferences already make.

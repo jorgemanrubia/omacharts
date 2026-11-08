@@ -1164,7 +1164,7 @@ fn charts_verb(
                     out.push('\n');
                     for pane in charts::panes(book) {
                         let id = pane["id"].as_u64().unwrap_or(0);
-                        // Its name last, quoted: it is the one column that
+                        // Its title last, quoted: it is the one column that
                         // may have spaces in it.
                         let title = pane["title"]
                             .as_str()
@@ -1597,7 +1597,7 @@ fn chart_set(
     let hollow_up = switch("hollow-up")?;
     let swapped = switch("swap-colours")?;
     let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
-    // Blank takes the name away, as clearing it in the header does.
+    // Blank takes the title away, as clearing it in the header does.
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
@@ -4000,7 +4000,7 @@ fn shown_style(pane: &Value) -> &str {
 fn pane_json(pane: &Value) -> String {
     json!({
         "id": pane["id"],
-        // Null for a chart nobody named.
+        // Null for a chart nobody titled.
         "title": pane["title"].as_str().filter(|title| !title.is_empty()),
         "symbol": pane["symbol"],
         "suffix": pane["suffix"],

@@ -242,9 +242,9 @@ cached quotes the watchlist shows, so it is as fresh as the sidebar and fetches
 nothing of its own.
 
 The row centred across the top is `chart_header_center`, and out of the box it
-holds `title`: the chart's own name, which is stored with each chart rather
-than for the app. `chart set --title` names the chart and `--title ""` takes the
-name away; a chart made by splitting another starts with none:
+holds `title`: the chart title, which is stored with each chart rather than
+for the app. `chart set --title` gives a chart its title and `--title ""` takes
+it away; a chart made by splitting another starts with none:
 
 ```
 omacharts chart set --title "Semis desk"

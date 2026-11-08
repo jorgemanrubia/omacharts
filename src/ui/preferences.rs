@@ -1849,24 +1849,19 @@ pub(crate) fn ask_name(
     verb: &str,
     done: impl Fn(String) + 'static,
 ) {
-    ask_for_name(anchor, heading, initial, verb, false, done);
+    ask_for_text(anchor, heading, "Name", initial, verb, false, done);
 }
 
-/// [`ask_name`] for a name a thing can do without, a chart's: blank is an
-/// answer, and takes the name away.
-pub(crate) fn ask_name_or_none(
-    anchor: &impl IsA<gtk::Widget>,
-    heading: &str,
-    initial: &str,
-    verb: &str,
-    done: impl Fn(String) + 'static,
-) {
-    ask_for_name(anchor, heading, initial, verb, true, done);
+/// A chart's title, asked for the way a name is, under its own word: blank is
+/// an answer, and leaves the chart untitled.
+pub(crate) fn ask_title(anchor: &impl IsA<gtk::Widget>, initial: &str, done: impl Fn(String) + 'static) {
+    ask_for_text(anchor, "Chart title", "Title", initial, "Save", true, done);
 }
 
-fn ask_for_name(
+fn ask_for_text(
     anchor: &impl IsA<gtk::Widget>,
     heading: &str,
+    label: &str,
     initial: &str,
     verb: &str,
     blank_ok: bool,
@@ -1874,7 +1869,7 @@ fn ask_for_name(
 ) {
     let answers = move |text: &str| blank_ok || !text.trim().is_empty();
     let name = adw::EntryRow::new();
-    name.set_title("Name");
+    name.set_title(label);
     name.set_text(initial);
     let rows = adw::PreferencesGroup::new();
     rows.add(&name);

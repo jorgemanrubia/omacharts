@@ -200,14 +200,14 @@ pub struct ChartPane {
     /// where it is writes nothing.
     pub change_shown: Cell<Option<i64>>,
     pub template_label: gtk::Label,
-    /// The Title part: the chart's own name, a flat button like the symbol
+    /// The Title part: the chart title, a flat button like the symbol
     /// that turns into an entry where it stands when clicked, Enter or
     /// clicking away keeping what was typed and Escape what was there.
     pub title_part: gtk::Stack,
     pub title_button: gtk::Button,
     title_label: gtk::Label,
     pub title_entry: gtk::Entry,
-    /// The chart's name, empty for none.
+    /// The chart title, empty for none.
     pub title: RefCell<String>,
     /// While the entry is up: Enter and the focus leaving it both finish
     /// it, and only the first of them may.
@@ -403,7 +403,7 @@ impl ChartPane {
         // weight and its hover, and is a button only so the pointer can say
         // it is one. Untitled, its words are there and not drawn, so the
         // slot has a size to point at: under the pointer they read "Add
-        // title", quietly, and a click names the chart where it stands.
+        // title", quietly, and a click titles the chart where it stands.
         let title_label = gtk::Label::new(Some(TITLE_PLACEHOLDER));
         title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         title_label.set_max_width_chars(TITLE_MAX_CHARS);
@@ -763,23 +763,23 @@ impl ChartPane {
         *self.title_handler.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Show `title` as the chart's name, or nothing for none.
+    /// Show `title` as the chart title, or nothing for none.
     pub fn write_title(&self, title: &str) {
         let title = title.trim();
         if *self.title.borrow() != title {
             *self.title.borrow_mut() = title.to_string();
         }
-        let named = !title.is_empty();
-        let shown = if named { title } else { TITLE_PLACEHOLDER };
+        let titled = !title.is_empty();
+        let shown = if titled { title } else { TITLE_PLACEHOLDER };
         if self.title_label.text() != shown {
             self.title_label.set_text(shown);
         }
-        match named {
+        match titled {
             true => self.title_button.remove_css_class(TITLE_UNTITLED),
             false => self.title_button.add_css_class(TITLE_UNTITLED),
         }
-        // A long name is cut short in the header and read in full here.
-        self.title_button.set_tooltip_text(named.then_some(title));
+        // A long title is cut short in the header and read in full here.
+        self.title_button.set_tooltip_text(titled.then_some(title));
     }
 
     /// Is the title being typed into the header?
@@ -799,7 +799,7 @@ impl ChartPane {
     }
 
     /// Put the title back where the entry was, keeping what was typed when
-    /// `keep` and it changed. Blank is an answer: the chart has no name.
+    /// `keep` and it changed. Blank is an answer: the chart has no title.
     pub fn finish_title_edit(&self, keep: bool) {
         if !self.title_editing.replace(false) {
             return;
@@ -1453,7 +1453,7 @@ const SYMBOL_ROW_HEIGHT: i32 = 32;
 /// room of at rest without drawing it.
 pub const TITLE_PLACEHOLDER: &str = "Add title";
 /// The class an untitled chart's Title part wears; a screenshot leaves it
-/// out, since it is a control and not a name.
+/// out, since it is a control and not a title.
 pub const TITLE_UNTITLED: &str = "chart-title-untitled";
 /// How long a title may be, and how much of it the header shows before it
 /// is cut short.

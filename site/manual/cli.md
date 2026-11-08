@@ -393,7 +393,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 
 | Flag | Takes | Explained in |
 |---|---|---|
-| `--title TITLE` | The chart's own name, shown in its header; `""` for none | [Naming a chart](/manual/charts/#naming-a-chart) |
+| `--title TITLE` | The chart title, shown in its header; `""` for none | [Chart titles](/manual/charts/#chart-titles) |
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
@@ -1049,7 +1049,7 @@ omacharts: this chartbook has 3 charts, so there is no pos:7
 ### `chart list`
 
 Lists the charts in a chartbook: raw id, symbol, resolution, bar style
-(`none` while the bars are hidden), link mode and title, with `*` on the focused one. `--chart` takes these raw ids. The
+(`none` while the bars are hidden), link mode and chart title, with `*` on the focused one. `--chart` takes these raw ids. The
 list is by id, not layout order; `status show` gives positions.
 
 ```
@@ -1062,7 +1062,7 @@ Desk — watchlist "Default"
 ```
 
 `--book` lists another chartbook. `--json` gives each chart in full:
-its title (`null` when it has none), colouring, session, gridlines, both scales, whether it shows and sends
+its chart title, `title` (`null` when it has none), colouring, session, gridlines, both scales, whether it shows and sends
 drawings, indicators and template.
 
 ## Chartbooks

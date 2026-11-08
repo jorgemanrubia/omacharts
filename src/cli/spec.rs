@@ -907,7 +907,7 @@ pub const SURFACE: &[Noun] = &[
                 flags: &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
-                    Flag::valued("title", "TITLE", "the chart's own name, shown in its header; \"\" for none"),
+                    Flag::valued("title", "TITLE", "the chart title, shown in its header; \"\" for none"),
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),

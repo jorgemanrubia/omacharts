@@ -77,7 +77,7 @@ pub enum Part {
     Size,
     /// The preset resolutions as a row of buttons, on the focused chart only.
     Stripe,
-    /// The chart's own name, given in its menu, its settings or with
+    /// The chart title, given in its menu, its settings or with
     /// `chart set --title`. Clicked, it is edited where it stands. On a chart
     /// with none it is blank until the pointer is on it.
     Title,
@@ -189,7 +189,7 @@ impl Part {
             Part::Trade => "Buy Sell",
             Part::Size => "Quantity",
             Part::Stripe => "Resolutions stripe",
-            Part::Title => "Title",
+            Part::Title => "Chart title",
             Part::Settings => "Chart settings",
             Part::Maximize => "Maximize",
             Part::Link => "Watchlist link",

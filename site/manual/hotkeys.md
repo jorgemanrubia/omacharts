@@ -229,7 +229,7 @@ On a chart:
 | Right-click the price axis | **Auto scale price**, **Logarithmic scale**, **Reset chart** | [Charts](/manual/charts/) |
 | Click the symbol in the header | The symbol search | [Symbols](/manual/symbols/) |
 | Click the resolution in the header | The list of resolutions | [Charts](/manual/charts/) |
-| Click the title in the header | Types the chart's title in place | [Naming a chart](/manual/charts/#naming-a-chart) |
+| Click the chart title in the header | Edits the chart title in place | [Chart titles](/manual/charts/#chart-titles) |
 | Right-click the header | **Edit header…** | [Charts](/manual/charts/#the-header) |
 | Right-click the resolution strip | **Edit resolutions…**, **Edit header…** | [Charts](/manual/charts/) |
 | Double-click an indicator's name in the legend | Its settings. The eye, gear and bin beside it hide it, open its settings, or remove it | [Indicators](/manual/indicators/) |
