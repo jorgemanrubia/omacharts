@@ -17,6 +17,14 @@ use omacharts::ui::Window;
 const APP_ID: &str = "com.jorgemanrubia.Omacharts";
 
 fn main() -> glib::ExitCode {
+    let code = run();
+    // A downloaded version that got here with a success runs; see
+    // `omacharts::update::settle`.
+    omacharts::update::settle(code == glib::ExitCode::SUCCESS);
+    code
+}
+
+fn run() -> glib::ExitCode {
     // Before anything else: learn from the launcher what is installed, which
     // is what the updater compares against. An app that is itself the
     // installed command becomes a newer download here, with an exec, and
@@ -136,6 +144,7 @@ fn main() -> glib::ExitCode {
 
         let starting = window.borrow().is_none();
         if starting {
+            omacharts::update::before_first_open(&settings_file());
             let store = match Store::open() {
                 Ok(store) => store,
                 // Written by a newer Omacharts than this one. The file is
@@ -143,9 +152,13 @@ fn main() -> glib::ExitCode {
                 // must not be worked around: carrying on with an empty
                 // database would put a pristine watchlist on screen over the
                 // top of years of their own, and look exactly like having
-                // lost it.
+                // lost it. A newer download on the shelf most likely wrote
+                // it, and is started in this one's place.
                 Err(error @ omacharts::migrations::Error::FromTheFuture { .. }) => {
-                    eprintln!("omacharts: {error}");
+                    if omacharts::update::restart_as_newer_for_a_newer_database() {
+                        return glib::ExitCode::SUCCESS;
+                    }
+                    eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
                     return glib::ExitCode::FAILURE;
                 }
                 // Anything else — unreadable, unwritable, corrupt — and an
@@ -388,13 +401,26 @@ impl cli::Caller for Typed<'_> {
 }
 
 fn open_store() -> Store {
+    omacharts::update::before_first_open(&settings_file());
     match Store::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("omacharts: {error}");
+            if matches!(error, omacharts::migrations::Error::FromTheFuture { .. }) {
+                // A newer download most likely wrote it: become that.
+                omacharts::update::become_newer_for_a_newer_database();
+                eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
+            } else {
+                eprintln!("omacharts: {error}");
+            }
+            omacharts::update::settle(false);
             std::process::exit(cli::EXIT_ERROR as i32);
         }
     }
+}
+
+/// The settings file [`Store::open`] opens.
+fn settings_file() -> std::path::PathBuf {
+    omacharts::store::data_dir().join("omacharts.db")
 }
 
 fn report(outcome: cli::Outcome) -> glib::ExitCode {

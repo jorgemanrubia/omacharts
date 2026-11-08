@@ -27,8 +27,12 @@ jobs:
           cp -r assets packaging "$dir/"
           tar czf "$dir.tar.gz" "$dir"
           sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+      # A draft until `publish`, at the end: releases/latest, which is what
+      # every installed omacharts asks for, must never name a release whose
+      # binaries are still being built.
       - uses: softprops/action-gh-release@v2
         with:
+          draft: true
           files: |
             omacharts-*-x86_64-linux.tar.gz
             omacharts-*-x86_64-linux.tar.gz.sha256
@@ -168,3 +172,18 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst omacharts-${{ matrix.arch }}.pkg.tar.zst.sha256 \
             omacharts-${{ matrix.arch }}.gz omacharts-${{ matrix.arch }}.gz.sha256 --clobber
+
+  # Out of draft once every architecture's files are on it, and not before:
+  # the updater finds a release through releases/latest, which skips drafts,
+  # so nobody is offered a release they cannot download yet. A release whose
+  # package job failed stays a draft, for a person to look at.
+  publish:
+    needs: [build, sync, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

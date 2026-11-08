@@ -39,8 +39,38 @@ Turn it off with Preferences › General › Updates › **Update automatically*
 |---|---|
 | `omacharts update check` | Asks GitHub for the newest release and says whether it is newer. |
 | `omacharts update download` | Downloads it now, whatever the switch says. The next launch uses it. |
+| `omacharts update reset` | Removes the downloads, so the next launch runs the package's version. |
 
-A build from a working tree never updates itself.
+A build from a working tree never updates itself, and nothing is downloaded or run from a download as root.
+
+The menu entry, the icon, the manual page and the agent skill are the package's, and stay at its version until the package catches up.
+
+### When an update misbehaves
+
+A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds set it aside too. A version that has run properly once is never set aside, because it may be the only one that can open your settings.
+
+To run the package's version once, without removing anything:
+
+```sh
+OMACHARTS_NO_UPDATE=1 omacharts
+```
+
+To go back to the package's version for good, until the next release:
+
+```sh
+omacharts update reset
+```
+
+That keeps a newer version that has already run, because it may have updated your settings to a form the package's version can't read. `omacharts update reset --all` removes that one too.
+
+If the package's version then says the settings were written by a newer Omacharts, either:
+
+- run `omacharts update download` to fetch the newest release again, which can read them; or
+- put back the backup taken just before the download first opened them. Each downloaded version takes one the first time it runs, in `~/.local/share/omacharts/backups/` ([Backups](/manual/your-data/#backups)). With Omacharts closed, copy it over `~/.local/share/omacharts/omacharts.db` and delete `omacharts.db-wal` and `omacharts.db-shm` beside it if they are there.
+
+`update reset` also forgets a version that was set aside, so it can be downloaded again.
+
+The downloads are for one machine. A home folder shared between machines over the network, with different architectures or Omacharts running on more than one at once, is not supported.
 
 ## From source
 

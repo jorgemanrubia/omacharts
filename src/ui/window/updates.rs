@@ -17,6 +17,9 @@ use super::Window;
 use crate::ui::notice::UpdateNotice;
 use crate::update::{self, Checked, Shelf, Version};
 
+/// Seconds a window is up before its version counts as one that runs.
+const HEALTHY_AFTER: u32 = 3;
+
 impl Window {
     /// Start keeping up to date, behind the first frame: an idle at low
     /// priority, registered when that frame has been painted, as signing in
@@ -38,6 +41,9 @@ impl Window {
                 if let Some(handler) = once.borrow_mut().take() {
                     clock.disconnect(handler);
                 }
+                // A downloaded version that has drawn its window and kept it
+                // up for a few seconds runs: it is never given up on now.
+                glib::timeout_add_seconds_local_once(HEALTHY_AFTER, update::healthy);
                 let weak = weak.clone();
                 glib::idle_add_local_full(glib::Priority::LOW, move || {
                     if let Some(this) = weak.upgrade() {
@@ -69,7 +75,7 @@ impl Window {
     /// pacman installed, and the settings it may already have migrated would
     /// not open in the older one.
     fn check_for_update(self: &Rc<Self>, at_launch: bool) {
-        if !self.store.setting_bool(update::SETTING, true) {
+        if !self.store.setting_bool(update::SETTING, true) || update::updates_off() || update::as_root() {
             return;
         }
         let Some(origin) = update::origin() else { return };

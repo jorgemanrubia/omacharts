@@ -56,7 +56,17 @@ impl Prefix {
     }
 
     fn run(&self, args: &[&str]) -> (String, u32) {
-        let child = Command::new(self.launcher())
+        self.run_with(args, None)
+    }
+
+    /// With `OMACHARTS_NO_UPDATE` set to `no_update`, or unset.
+    fn run_with(&self, args: &[&str], no_update: Option<&str>) -> (String, u32) {
+        let mut command = Command::new(self.launcher());
+        command.env_remove("OMACHARTS_NO_UPDATE");
+        if let Some(value) = no_update {
+            command.env("OMACHARTS_NO_UPDATE", value);
+        }
+        let child = command
             .args(args)
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env_remove("OMACHARTS_LAUNCHER")
@@ -87,20 +97,32 @@ fn newer(by: u32) -> String {
 fn with_nothing_downloaded_it_runs_the_packaged_app_with_every_argument() {
     let prefix = Prefix::new("plain");
     let (said, _) = prefix.run(&["chart", "open", "two words"]);
-    let told = format!("{INSTALLED}\u{1f}{}", prefix.launcher().display());
+    // No folder: the packaged app is not a download.
+    let told = format!("{INSTALLED}\u{1f}{}\u{1f}", prefix.launcher().display());
     assert_eq!(said, format!("packaged | {told} | chart open two words"));
 }
 
 #[test]
-fn it_runs_a_newer_download_and_leaves_it_a_marker() {
+fn it_runs_a_newer_download_names_its_folder_and_leaves_it_a_marker() {
     let prefix = Prefix::new("newer");
     prefix.shelve(&newer(1));
     let (said, pid) = prefix.run(&["--version"]);
-    assert!(said.starts_with(&format!("{} | {INSTALLED}\u{1f}", newer(1))), "{said}");
-    assert!(said.ends_with("| --version"), "{said}");
-    // The app removes it first thing; a script does not, which is how the
-    // next launch would know this version never started.
-    assert!(prefix.versions().join(newer(1)).join(format!(".trying-{pid}")).exists());
+    let folder = prefix.versions().join(newer(1));
+    let told = format!("{INSTALLED}\u{1f}{}\u{1f}{}", prefix.launcher().display(), folder.display());
+    assert_eq!(said, format!("{} | {told} | --version", newer(1)));
+    // The app clears it once it has shown it runs; a script does not, which
+    // is how later launches know this version keeps ending first.
+    assert!(folder.join(format!(".trying-{pid}")).exists());
+}
+
+#[test]
+fn with_updates_switched_off_it_runs_the_packaged_app() {
+    let prefix = Prefix::new("off");
+    prefix.shelve(&newer(1));
+    let (said, _) = prefix.run_with(&[], Some("1"));
+    assert!(said.starts_with("packaged |"), "{said}");
+    let (said, _) = prefix.run_with(&[], Some("0"));
+    assert!(said.starts_with(&format!("{} |", newer(1))), "0 is not off: {said}");
 }
 
 #[test]
@@ -111,27 +133,67 @@ fn a_download_no_newer_than_the_package_is_never_run() {
     assert!(said.starts_with("packaged |"), "{said}");
 }
 
-#[test]
-fn a_download_that_died_before_starting_is_passed_over_for_good() {
-    let prefix = Prefix::new("died");
-    prefix.shelve(&newer(1));
-    // A marker from a process that is long gone.
-    fs::write(prefix.versions().join(newer(1)).join(".trying-4000000000"), b"").unwrap();
-    let (said, _) = prefix.run(&[]);
-    assert!(said.starts_with("packaged |"), "{said}");
-    assert!(prefix.versions().join(newer(1)).join(".bad").exists());
+/// Markers from launches long gone.
+fn ended(folder: &Path, launches: u32) {
+    for pid in 0..launches {
+        fs::write(folder.join(format!(".trying-{}", 4_000_000_000 + pid)), b"").unwrap();
+    }
 }
 
 #[test]
-fn a_download_that_cannot_be_executed_is_marked_bad_and_the_package_runs() {
-    let prefix = Prefix::new("broken");
-    let binary = prefix.shelve(&newer(2));
+fn a_download_whose_launches_keep_ending_first_is_passed_over_for_good() {
+    let prefix = Prefix::new("died");
     prefix.shelve(&newer(1));
+    let folder = prefix.versions().join(newer(1));
+    // Two may be anything.
+    ended(&folder, 2);
+    let (said, _) = prefix.run(&[]);
+    assert!(said.starts_with(&format!("{} |", newer(1))), "{said}");
+    // That one ended too, and made three.
+    let (said, _) = prefix.run(&[]);
+    assert!(said.starts_with("packaged |"), "{said}");
+    assert!(folder.join(".bad").exists());
+}
+
+#[test]
+fn a_download_that_has_run_is_never_passed_over() {
+    let prefix = Prefix::new("healthy");
+    prefix.shelve(&newer(1));
+    let folder = prefix.versions().join(newer(1));
+    fs::write(folder.join(".healthy"), b"").unwrap();
+    ended(&folder, 10);
+    let (said, _) = prefix.run(&[]);
+    assert!(said.starts_with(&format!("{} |", newer(1))), "{said}");
+    assert!(!folder.join(".bad").exists());
+}
+
+#[test]
+fn a_download_this_machine_cannot_execute_is_marked_bad_and_the_next_one_down_runs() {
+    let prefix = Prefix::new("broken");
+    let binary = prefix.shelve(&newer(3));
+    fs::write(&binary, b"\x7fELF but not really").unwrap();
+    let missing = prefix.shelve(&newer(2));
+    fs::write(&missing, "#!/nowhere/sh\necho never\n").unwrap();
+    prefix.shelve(&newer(1));
+    let (said, _) = prefix.run(&[]);
+    assert!(said.starts_with(&format!("{} |", newer(1))), "{said}");
+    let why = fs::read_to_string(prefix.versions().join(newer(3)).join(".bad")).unwrap();
+    assert!(why.contains("not an executable"), "{why}");
+    let why = fs::read_to_string(prefix.versions().join(newer(2)).join(".bad")).unwrap();
+    assert!(why.contains("interpreter"), "{why}");
+}
+
+#[test]
+fn a_download_that_cannot_be_started_this_time_is_not_given_up_on() {
+    let prefix = Prefix::new("eacces");
+    let binary = prefix.shelve(&newer(1));
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o644)).unwrap();
     let (said, _) = prefix.run(&[]);
     assert!(said.starts_with("packaged |"), "{said}");
-    assert!(prefix.versions().join(newer(2)).join(".bad").exists());
-    // And next time, the next one down.
+    let folder = prefix.versions().join(newer(1));
+    assert!(!folder.join(".bad").exists());
+    assert!(!fs::read_dir(&folder).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(".trying-")));
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     let (said, _) = prefix.run(&[]);
     assert!(said.starts_with(&format!("{} |", newer(1))), "{said}");
 }

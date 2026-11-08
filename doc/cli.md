@@ -1314,8 +1314,8 @@ chartbooks are not cache and are left alone.
 ## Updates
 
 The installed app downloads new releases in the background and starts the
-newest at the next launch. These two ask now, in the terminal they are typed
-in, whether a window is open or not:
+newest at the next launch. These ask now, in the terminal they are typed in,
+whether a window is open or not:
 
 ```
 $ omacharts update check
@@ -1328,8 +1328,25 @@ $ omacharts update download
 ```
 
 `--json` gives `running`, `installed`, `latest`, `ready` and `available`. A
-build that is not `/usr/bin/omacharts` refuses with exit 5, and nothing is
-asked for.
+release whose binary for this machine is not up yet says it is being
+published, and is downloaded at a later check.
+
+```
+$ omacharts update reset
+removed 2 · the next launch runs 0.2.14
+  [exit 0]
+```
+
+`update reset` removes every download and everything the updater remembers,
+so the next launch runs the package's version and a version that was set aside
+can be downloaded again. A newer version that has already run is kept, since it
+may have migrated the settings; `--all` removes it too. `--json` gives
+`removed`, `kept` and `installed`.
+
+A build that is not `/usr/bin/omacharts` refuses all three with exit 5, and
+nothing is asked for; so does any of them run as root, or `check` and
+`download` with `OMACHARTS_NO_UPDATE` set. That variable, set to anything but
+`0`, runs the package's version and nothing downloaded, for that launch.
 
 ## Backups of your settings
 

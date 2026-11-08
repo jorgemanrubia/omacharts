@@ -242,6 +242,7 @@ pub fn dispatch(
 
         ("update", "check") => update_now(json, false),
         ("update", "download") => update_now(json, true),
+        ("update", "reset") => update_reset(json, flag(m, "all")),
 
         _ => Err(Fault::usage(format!("no such command: {noun} {verb}"))),
     };
@@ -5699,12 +5700,13 @@ fn backup_restore(
 /// also what keeps the example run by the tests off the network.
 fn update_now(as_json: bool, download: bool) -> Result<String, Fault> {
     use crate::update::{self, Checked, Shelf, Version};
-    let origin = update::origin().ok_or_else(|| {
-        Fault::new(
+    let origin = updating_origin()?;
+    if update::updates_off() {
+        return Err(Fault::new(
             super::EXIT_REFUSED,
-            format!("only the installed omacharts updates itself, {}; this one is not", update::INSTALLED_AT),
-        )
-    })?;
+            format!("updates are switched off for this launch by {}", update::NO_UPDATE_ENV),
+        ));
+    }
     let shelf = Shelf::new(update::shelf_dir());
     let running = Version::running();
     let installed = || update::installed_version(origin);
@@ -5715,6 +5717,7 @@ fn update_now(as_json: bool, download: bool) -> Result<String, Fault> {
     let (latest, text) = match checked {
         Checked::UpToDate { latest } => (latest, format!("up to date · {} is the newest release", latest.max(running))),
         Checked::Available { latest } => (latest, format!("{latest} is available · `omacharts update download` gets it")),
+        Checked::Publishing { latest } => (latest, format!("{latest} is being published · not yet downloadable")),
         Checked::Ready { latest, .. } => (
             latest,
             match ready {
@@ -5733,6 +5736,48 @@ fn update_now(as_json: bool, download: bool) -> Result<String, Fault> {
             "ready": ready.map(|version| version.to_string()),
             "available": matches!(checked, Checked::Available { .. }),
         }),
+        text,
+    )
+}
+
+/// The installed omacharts this process came from, for a command that
+/// changes what it runs. Refused for anything else — a build in `target/`,
+/// the tests — which is also what keeps the example run by the tests off the
+/// network, and refused as root: a download made as root would be root's,
+/// in whichever home `sudo -E` kept, and no launch of theirs could tidy it.
+fn updating_origin() -> Result<&'static crate::update::Origin, Fault> {
+    use crate::update;
+    if update::as_root() {
+        return Err(Fault::new(super::EXIT_REFUSED, "updates are never made as root; run this as yourself".to_string()));
+    }
+    update::origin().ok_or_else(|| {
+        Fault::new(
+            super::EXIT_REFUSED,
+            format!("only the installed omacharts updates itself, {}; this one is not", update::INSTALLED_AT),
+        )
+    })
+}
+
+/// `update reset`: back to the installed version, and nothing given up on.
+fn update_reset(as_json: bool, all: bool) -> Result<String, Fault> {
+    use crate::update::{self, Shelf};
+    let origin = updating_origin()?;
+    let shelf = Shelf::new(update::shelf_dir());
+    let installed = update::installed_version(origin);
+    let removed = shelf
+        .reset(installed, all)
+        .map_err(|error| Fault::new(super::EXIT_ERROR, format!("update reset: {error}")))?;
+    let kept = shelf.newest_ready();
+    let text = match kept {
+        Some(version) => format!(
+            "removed {removed} · kept {version}, which has run and may have migrated the settings; \
+             `omacharts update reset --all` removes it too"
+        ),
+        None => format!("removed {removed} · the next launch runs {installed}"),
+    };
+    said(
+        as_json,
+        json!({ "removed": removed, "kept": kept.map(|version| version.to_string()), "installed": installed.to_string() }),
         text,
     )
 }

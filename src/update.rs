@@ -12,8 +12,10 @@
 //! ```text
 //! versions/
 //!   0.2.15/omacharts           complete and verified; renamed into place whole
-//!   0.2.15/.trying-4242        a hand-over in flight, by its process id
-//!   0.2.15/.bad                handed over to and never started: skipped
+//!   0.2.15/.trying-4242        a launch that has not yet shown it healthy
+//!   0.2.15/.healthy            it has run properly here: never marked bad
+//!   0.2.15/.backed-up          the settings were backed up before it opened them
+//!   0.2.16/.bad                never run or downloaded again, and why
 //!   .incoming-0.2.16-4300/     a download in progress, or one that died
 //!   .checked                   its modification time is the last check
 //! ```
@@ -35,10 +37,19 @@
 //! - **One hand-over per launch.** The process handed to is told so in its
 //!   environment and never hands over again, so two downloads can never
 //!   bounce a launch between each other.
-//! - **A version that does not start is never tried again.** The launcher
-//!   leaves a marker named after its process id before the `exec`, and the
-//!   version it starts removes it first thing. A marker whose process is gone
-//!   is a version that died before reaching `main`, and it is marked bad.
+//! - **A version that does not run is given up on, and one that has run
+//!   never is.** The launcher leaves a marker named after its process id
+//!   before the `exec`. The version clears its markers once it has shown
+//!   itself healthy — a window up for a few seconds, or a command finished —
+//!   and says so in `.healthy`. Three launches in a row that ended first mark
+//!   it bad, as does a definite reason it cannot run here: a checksum that
+//!   does not match, a binary that does not unpack, says another version or
+//!   is not something this machine can execute. Anything that may pass — a
+//!   timeout, memory, a file busy for a moment — is this launch's problem
+//!   only, and the next one tries again. A version that has been healthy
+//!   stays runnable whatever happens after, since it may be the only one that
+//!   can open a database it migrated; and the settings are backed up before
+//!   a version that has never run here first opens them.
 //!
 //! The launch path is the part with a budget, and it all runs in the
 //! launcher: one directory read when there is nothing newer, which is
@@ -53,8 +64,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
-pub use crate::launch::{alive, shelf_dir, Shelf, Version, SOURCE_ENV};
-use crate::launch::{trying, BAD, BINARY, LAUNCHER_ENV, PROBE_ENV};
+pub use crate::launch::{alive, as_root, shelf_dir, updates_off, Shelf, Version, NO_UPDATE_ENV, SOURCE_ENV};
+use crate::launch::{trying, Told, BAD, BINARY, HEALTHY, LAUNCHER_ENV, PROBE_ENV};
+
+/// In a version's folder: the settings were backed up before it first
+/// opened them.
+const BACKED_UP: &str = ".backed-up";
 
 /// Where releases are published.
 pub const REPOSITORY: &str = "https://github.com/jorgemanrubia/omacharts";
@@ -94,8 +109,16 @@ pub struct Origin {
     /// Its version when this process was launched. pacman may replace it
     /// while this runs, which is what [`installed_version`] asks about.
     pub installed_version: Version,
+    /// The downloaded version's folder, when this process is one, handed
+    /// over to.
+    pub folder: Option<PathBuf>,
+}
+
+impl Origin {
     /// Whether this process is a downloaded version, handed over to.
-    pub handed_over: bool,
+    pub fn handed_over(&self) -> bool {
+        self.folder.is_some()
+    }
 }
 
 static ORIGIN: OnceLock<Origin> = OnceLock::new();
@@ -121,19 +144,12 @@ pub fn installed_version(origin: &Origin) -> Version {
 /// Returns only if this process carries on as itself.
 pub fn at_launch() {
     let exe = std::env::current_exe().ok();
-    let shelf_root = shelf_dir();
     if let Some(from) = std::env::var_os(LAUNCHER_ENV) {
         // SAFETY: first thing in `main`, before any other thread exists.
         unsafe { std::env::remove_var(LAUNCHER_ENV) };
-        let from = from.to_string_lossy();
-        let handed_over = exe.as_deref().is_some_and(|exe| exe.starts_with(&shelf_root));
-        if let Some((version, path)) = from.split_once('\u{1f}')
-            && let Some(installed_version) = Version::parse(version)
-        {
-            let _ = ORIGIN.set(Origin { installed: PathBuf::from(path), installed_version, handed_over });
-        }
-        if handed_over && let Some(dir) = exe.as_deref().and_then(Path::parent) {
-            let _ = fs::remove_file(dir.join(trying(std::process::id())));
+        if let Some(told) = Told::decode(&from.to_string_lossy()) {
+            let folder = told.folder.filter(|folder| exe.as_deref().is_some_and(|exe| runs_from(exe, folder)));
+            let _ = ORIGIN.set(Origin { installed: told.installed, installed_version: told.installed_version, folder });
         }
         return;
     }
@@ -142,15 +158,152 @@ pub fn at_launch() {
     }
     let Some(exe) = exe else { return };
     let source_given = std::env::var_os(SOURCE_ENV).is_some_and(|v| !v.is_empty());
-    if (exe != Path::new(INSTALLED_AT) && !source_given) || exe.starts_with(&shelf_root) {
+    if (exe != Path::new(INSTALLED_AT) && !source_given) || under(&exe, &shelf_dir()) {
         return;
     }
     let running = Version::running();
     crate::launch::hand_over_if_newer(&exe, running);
     // Nothing newer, or it would not start: this binary is the one.
     unsafe { std::env::remove_var(LAUNCHER_ENV) };
-    let _ = ORIGIN.set(Origin { installed: exe, installed_version: running, handed_over: false });
+    let _ = ORIGIN.set(Origin { installed: exe, installed_version: running, folder: None });
 }
+
+/// Is `exe` the binary in `folder`? Both as the file system resolves them:
+/// the running binary's path is, and a data folder reached through a
+/// symbolic link is not, until it is asked.
+fn runs_from(exe: &Path, folder: &Path) -> bool {
+    let resolved = |path: &Path| fs::canonicalize(path).ok();
+    let exe = resolved(exe);
+    exe.as_deref().and_then(Path::parent).is_some_and(|parent| Some(parent) == resolved(folder).as_deref())
+}
+
+/// Is `path` somewhere inside `dir`, resolved the same way?
+fn under(path: &Path, dir: &Path) -> bool {
+    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved(path).starts_with(resolved(dir))
+}
+
+/// This version has shown it runs: a window up for a few seconds, or a
+/// command run to the end. Its folder says so for good, and every launch
+/// still marked as trying it is cleared, this one's and any that ended
+/// before it — they are not a version that does not start.
+pub fn healthy() {
+    if let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) {
+        mark_healthy(folder);
+    }
+}
+
+fn mark_healthy(folder: &Path) {
+    if !folder.join(HEALTHY).exists() {
+        let _ = fs::write(folder.join(HEALTHY), b"");
+    }
+    for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(|name| name.starts_with(".trying-")) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The last thing `main` does on its way out. A success is a healthy run;
+/// anything else is a run that ended on its own terms, which says nothing
+/// about the version either way, so only this launch's marker goes. A
+/// version that crashes never gets here, and its marker stays to count.
+pub fn settle(success: bool) {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
+    if success {
+        mark_healthy(folder);
+    } else {
+        let _ = fs::remove_file(folder.join(trying(std::process::id())));
+    }
+}
+
+/// Before the database is opened by a downloaded version that has never
+/// run here: back the settings up, so that if it migrates them and then
+/// turns out not to run, the copy from before it is there to go back to.
+/// Two `stat`s for any version that has.
+pub fn before_first_open(settings: &Path) {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
+    backup_before_first_open(folder, settings);
+}
+
+fn backup_before_first_open(folder: &Path, settings: &Path) {
+    if folder.join(HEALTHY).exists() || folder.join(BACKED_UP).exists() {
+        return;
+    }
+    if settings.exists()
+        && let Err(error) = crate::backup::take_if_changed(settings)
+    {
+        eprintln!("omacharts: settings not backed up before this version first opened them: {error}");
+        return;
+    }
+    let _ = fs::write(folder.join(BACKED_UP), b"");
+}
+
+/// The database was written by a newer Omacharts than this one. When this
+/// is the installed version and a newer download is on the shelf, that is
+/// the one to run — most likely it is the one that wrote it.
+pub fn newer_for_a_newer_database() -> Option<(Told, PathBuf)> {
+    let origin = origin()?;
+    if origin.handed_over() || updates_off() || as_root() {
+        return None;
+    }
+    let floor = Version::running().max(origin.installed_version);
+    let chosen = Shelf::new(shelf_dir()).choose(floor, alive)?;
+    let told = Told {
+        installed_version: origin.installed_version,
+        installed: origin.installed.clone(),
+        folder: Some(chosen.folder),
+    };
+    Some((told, chosen.binary))
+}
+
+/// [`newer_for_a_newer_database`], for a command: become it. Returns only
+/// when there is none, or it would not start.
+pub fn become_newer_for_a_newer_database() {
+    let Some((told, binary)) = newer_for_a_newer_database() else { return };
+    let folder = told.folder.clone().unwrap_or_default();
+    let marker = folder.join(trying(std::process::id()));
+    let _ = fs::write(&marker, b"");
+    told.tell();
+    let error = crate::launch::exec(&binary);
+    let _ = fs::remove_file(&marker);
+    // SAFETY: nothing else reads the environment while a command opens its
+    // database, and the exec that would have used it did not happen.
+    unsafe { std::env::remove_var(LAUNCHER_ENV) };
+    eprintln!("omacharts: {} could not be started: {error}", binary.display());
+}
+
+/// [`newer_for_a_newer_database`], for the window: start it, to come up once
+/// this process is gone, with the arguments this one was given. Says whether
+/// it did.
+pub fn restart_as_newer_for_a_newer_database() -> bool {
+    use std::os::unix::process::CommandExt;
+    let Some((told, binary)) = newer_for_a_newer_database() else { return false };
+    let folder = told.folder.clone().unwrap_or_default();
+    let started = std::process::Command::new(&binary)
+        .args(std::env::args_os().skip(1))
+        .env(LAUNCHER_ENV, told.encode())
+        .env(RESTARTING, std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .process_group(0)
+        .spawn();
+    match started {
+        Ok(child) => {
+            let _ = fs::write(folder.join(trying(child.id())), b"");
+            true
+        }
+        Err(error) => {
+            eprintln!("omacharts: {} could not be started: {error}", binary.display());
+            false
+        }
+    }
+}
+
+/// What to say when the database is newer than this binary and nothing
+/// newer is here to open it.
+pub const NEWER_DATABASE_HELP: &str = "`omacharts update download` fetches the newest release, which can \
+     open it, or the manual's Updating section says how to put back the backup taken before it was \
+     migrated";
 
 /// The second thing `main` does: if this process was started by "Restart to
 /// update", wait for the one it replaces to be gone and to have given up the
@@ -195,6 +348,8 @@ struct Found {
     version: Version,
     /// Has a binary and is not marked bad.
     ready: bool,
+    /// Has run properly here.
+    healthy: bool,
 }
 
 const CHECKED: &str = ".checked";
@@ -208,7 +363,8 @@ impl Shelf {
             .filter_map(|entry| {
                 let version = Version::parse(entry.file_name().to_str()?)?;
                 let dir = entry.path();
-                Some(Found { version, ready: dir.join(BINARY).is_file() && !dir.join(BAD).exists() })
+                let ready = dir.join(BINARY).is_file() && !dir.join(BAD).exists();
+                Some(Found { version, ready, healthy: ready && dir.join(HEALTHY).exists() })
             })
             .collect();
         found.sort_unstable_by_key(|found| std::cmp::Reverse(found.version));
@@ -230,18 +386,21 @@ impl Shelf {
     ///
     /// - every version as old as `installed` or older, ready or bad — pacman
     ///   has caught up with it;
-    /// - every ready version older than the newest ready one;
+    /// - every ready version older than the newest ready one, but for the
+    ///   newest that has run here, until a newer one has: if the newest does
+    ///   not run, that one does, and it can open what it last wrote;
     /// - every bad marker but the newest, and that one too unless it is newer
     ///   than the newest ready version, which is the only thing it guards;
     /// - every download in progress whose process is gone.
     pub fn tidy(&self, installed: Version, alive: impl Fn(u32) -> bool) -> usize {
         let mut gone = 0;
         let newest_ready = self.newest_ready();
+        let newest_healthy = self.found().into_iter().find(|found| found.healthy).map(|found| found.version);
         let mut kept_bad = false;
         for found in self.found() {
             let keep = found.version > installed
                 && if found.ready {
-                    Some(found.version) == newest_ready
+                    Some(found.version) == newest_ready || Some(found.version) == newest_healthy
                 } else {
                     let guards = newest_ready.is_none_or(|ready| found.version > ready) && !kept_bad;
                     kept_bad |= guards;
@@ -274,6 +433,40 @@ impl Shelf {
             .is_none_or(|since| since >= CADENCE)
     }
 
+    /// Remove every download, every mark and the time of the last check, so
+    /// the next check starts from nothing — and a version given up on can be
+    /// downloaded again. All but a version newer than `installed` that has
+    /// run here, unless `all`: the settings may have been migrated by it,
+    /// and the installed version would not open them.
+    pub fn reset(&self, installed: Version, all: bool) -> io::Result<usize> {
+        let keep: Vec<Version> = if all {
+            Vec::new()
+        } else {
+            self.found().into_iter().filter(|found| found.healthy && found.version > installed).map(|found| found.version).collect()
+        };
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error),
+        };
+        let mut gone = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_str().and_then(Version::parse).is_some_and(|version| keep.contains(&version)) {
+                continue;
+            }
+            let path = entry.path();
+            let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            removed?;
+            gone += 1;
+        }
+        Ok(gone)
+    }
+
     fn note_checked(&self) {
         if fs::create_dir_all(&self.root).is_ok() {
             let _ = fs::File::create(self.root.join(CHECKED));
@@ -287,16 +480,21 @@ impl Shelf {
         fs::create_dir_all(&incoming).map_err(Failure::Disk)?;
         let installed = self.fill(source, version, asset, &incoming).and_then(|()| {
             let target = self.root.join(version.to_string());
-            if target.join(BINARY).is_file() {
-                // Another process put the same version in place first.
-                return Ok(());
+            // Everything in the folder, and the folder's own entry, on disk
+            // before the rename makes it a version: a crash just after
+            // must not leave a version whose binary is empty.
+            sync_dir(&incoming).map_err(Failure::Disk)?;
+            sync_dir(&self.root).map_err(Failure::Disk)?;
+            match fs::rename(&incoming, &target) {
+                Ok(()) => {}
+                // Another process put the same version in place first, and
+                // a finished version is never taken apart: it may be running.
+                Err(error) if matches!(error.raw_os_error(), Some(17) | Some(39)) => {
+                    return if target.join(BINARY).is_file() { Ok(()) } else { Err(Failure::Disk(error)) };
+                }
+                Err(error) => return Err(Failure::Disk(error)),
             }
-            let _ = fs::remove_dir_all(&target);
-            fs::rename(&incoming, &target).map_err(Failure::Disk)?;
-            if let Ok(dir) = fs::File::open(&self.root) {
-                let _ = dir.sync_all();
-            }
-            Ok(())
+            sync_dir(&self.root).map_err(Failure::Disk)
         });
         let _ = fs::remove_dir_all(&incoming);
         installed
@@ -361,19 +559,16 @@ impl Shelf {
         // Verified, so it may be run: once, to prove it starts on this
         // machine and is the version it was published as.
         match probe(&binary, Duration::from_secs(20)) {
-            Some(said) if said == version => Ok(()),
-            Some(said) => Err(Failure::Broken(format!("{asset} says it is {said}, not {version}"))),
-            None => Err(Failure::Broken(format!("{version} does not start here"))),
+            Ok(said) if said == version => Ok(()),
+            Ok(said) => Err(Failure::Broken(format!("{asset} says it is {said}, not {version}"))),
+            Err(Unstarted::Definitely(why)) => Err(Failure::Broken(format!("{version} cannot run here: {why}"))),
+            Err(Unstarted::ForNow(why)) => Err(Failure::NotNow(format!("{version} did not answer: {why}"))),
         }
     }
+}
 
-    /// Remove every download.
-    pub fn clear(&self) -> io::Result<()> {
-        match fs::remove_dir_all(&self.root) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
-        }
-    }
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    fs::File::open(dir)?.sync_all()
 }
 
 /// A release asset is a binary of some tens of megabytes; anything far
@@ -385,9 +580,20 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Why a probe got no version.
+#[derive(Debug, PartialEq, Eq)]
+enum Unstarted {
+    /// It is not something this machine can run, and will not be.
+    Definitely(String),
+    /// It did not answer this time: too slow, out of memory, an exit that
+    /// may not happen again.
+    ForNow(String),
+}
+
 /// Ask `binary` its version, without letting it hand over or reach the
 /// window, and without waiting on it for longer than `patience`.
-fn probe(binary: &Path, patience: Duration) -> Option<Version> {
+fn probe(binary: &Path, patience: Duration) -> Result<Version, Unstarted> {
+    use crate::launch::{refused, Refused};
     let spawn = || {
         std::process::Command::new(binary)
             .arg("--version")
@@ -402,33 +608,48 @@ fn probe(binary: &Path, patience: Duration) -> Option<Version> {
     };
     // A file just written can be busy for a moment, while a fork elsewhere in
     // the process still holds the descriptor it was written through.
-    let mut child = None;
-    for _ in 0..10 {
+    let mut attempts = 0;
+    let mut child = loop {
+        attempts += 1;
         match spawn() {
-            Ok(started) => {
-                child = Some(started);
-                break;
+            Ok(started) => break started,
+            Err(error) if error.raw_os_error() == Some(26) && attempts < 10 => {
+                std::thread::sleep(Duration::from_millis(50))
             }
-            Err(error) if error.raw_os_error() == Some(26) => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
+            Err(error) => {
+                return Err(match refused(&error, binary) {
+                    Refused::Definitely(why) => Unstarted::Definitely(why),
+                    Refused::Vanished | Refused::ForNow(_) => Unstarted::ForNow(error.to_string()),
+                });
+            }
         }
-    }
-    let mut child = child?;
+    };
     let deadline = std::time::Instant::now() + patience;
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
+            Ok(Some(status)) => return Err(Unstarted::ForNow(format!("--version ended with {status}"))),
             Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
+            Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err(Unstarted::ForNow(format!("no answer in {} seconds", patience.as_secs())));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Unstarted::ForNow(error.to_string()));
             }
         }
     }
     let mut said = String::new();
-    child.stdout.take()?.read_to_string(&mut said).ok()?;
-    Version::parse(said.trim().strip_prefix("omacharts")?)
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut said);
+    }
+    said.trim()
+        .strip_prefix("omacharts")
+        .and_then(Version::parse)
+        .ok_or_else(|| Unstarted::Definitely(format!("its --version said {:?}", said.trim())))
 }
 
 // -- where releases come from ---------------------------------------------
@@ -439,6 +660,9 @@ pub trait Source {
     fn latest(&self) -> Result<Version, Failure>;
     /// One of `version`'s assets, to read.
     fn open(&self, version: Version, asset: &str) -> Result<Box<dyn Read>, Failure>;
+    /// Whether `version` has `asset` yet. A release is announced a while
+    /// before every architecture's binary is on it.
+    fn has(&self, version: Version, asset: &str) -> Result<bool, Failure>;
 }
 
 /// Why a check or a download did not finish.
@@ -448,10 +672,21 @@ pub enum Failure {
     Network(String),
     /// The download is not what was published.
     Mismatch { asset: String },
-    /// Verified, but does not unpack or does not start.
+    /// Verified, and cannot run here: does not unpack, says another version,
+    /// or is not something this machine executes.
     Broken(String),
+    /// Verified, and did not answer this time, for a reason that may pass.
+    NotNow(String),
     /// Out of space, or not writable.
     Disk(io::Error),
+}
+
+impl Failure {
+    /// Will downloading this version again end the same way? Then it is
+    /// marked bad, and not downloaded again.
+    pub fn definite(&self) -> bool {
+        matches!(self, Failure::Mismatch { .. } | Failure::Broken(_))
+    }
 }
 
 impl fmt::Display for Failure {
@@ -460,6 +695,7 @@ impl fmt::Display for Failure {
             Failure::Network(why) => write!(f, "releases not reachable: {why}"),
             Failure::Mismatch { asset } => write!(f, "{asset} does not match its published checksum; discarded"),
             Failure::Broken(why) => write!(f, "{why}; discarded"),
+            Failure::NotNow(why) => write!(f, "{why}; discarded, to try again at the next check"),
             Failure::Disk(error) => write!(f, "could not be saved: {error}"),
         }
     }
@@ -522,6 +758,16 @@ impl Source for GitHub {
         let response = self.agent.get(&url).call().map_err(|error| Failure::Network(error.to_string()))?;
         Ok(Box::new(response.into_body().into_reader()))
     }
+
+    /// Asked of the checksum, the last file a release's upload puts up.
+    fn has(&self, version: Version, asset: &str) -> Result<bool, Failure> {
+        let url = format!("{}/releases/download/v{version}/{asset}.sha256", self.base);
+        match self.agent.head(&url).call() {
+            Ok(_) => Ok(true),
+            Err(ureq::Error::StatusCode(404)) => Ok(false),
+            Err(error) => Err(Failure::Network(error.to_string())),
+        }
+    }
 }
 
 // -- a check --------------------------------------------------------------
@@ -533,6 +779,9 @@ pub enum Checked {
     UpToDate { latest: Version },
     /// `latest` is newer, and was not downloaded because nobody asked.
     Available { latest: Version },
+    /// `latest` is newer and announced, and this machine's binary is not
+    /// on it yet.
+    Publishing { latest: Version },
     /// A version is downloaded and starts at the next launch.
     Ready { version: Version, latest: Version },
     /// A download finished after pacman installed something as new, and was
@@ -566,30 +815,39 @@ pub fn check(
 ) -> Result<Checked, Failure> {
     let before = installed();
     shelf.tidy(before, alive);
+    // Noted only once a check has its answer, so one that fails is asked
+    // again at the next launch rather than six hours on.
     let latest = source.latest()?;
-    shelf.note_checked();
 
     let ready = shelf.newest_ready();
     let floor = [Some(before), Some(running), shelf.newest_known()].into_iter().flatten().max().unwrap_or(before);
     if latest <= floor {
+        shelf.note_checked();
         return Ok(match ready {
             Some(version) if version > before => Checked::Ready { version, latest },
             _ => Checked::UpToDate { latest },
         });
     }
+    let asset = asset();
+    if !source.has(latest, &asset)? {
+        return Ok(Checked::Publishing { latest });
+    }
     if !download {
+        shelf.note_checked();
         return Ok(Checked::Available { latest });
     }
 
-    match shelf.install(source, latest, &asset()) {
+    match shelf.install(source, latest, &asset) {
         Ok(()) => {}
-        // Verified and still no good: never again, until a newer release.
-        Err(failure @ Failure::Broken(_)) => {
-            shelf.mark_bad(latest);
+        // Not what was published, or cannot run here: never again, until a
+        // newer release or `update reset`.
+        Err(failure) if failure.definite() => {
+            shelf.mark_bad(latest, &failure.to_string());
             return Err(failure);
         }
         Err(failure) => return Err(failure),
     }
+    shelf.note_checked();
 
     let after = installed();
     shelf.tidy(after, alive);
@@ -741,6 +999,10 @@ mod tests {
             let bytes = self.assets.get(asset).cloned().ok_or_else(|| Failure::Network("404".into()))?;
             Ok(Box::new(io::Cursor::new(bytes)))
         }
+        fn has(&self, version: Version, asset: &str) -> Result<bool, Failure> {
+            assert_eq!(version, self.latest);
+            Ok(self.assets.contains_key(&format!("{asset}.sha256")))
+        }
     }
 
     struct Offline;
@@ -751,6 +1013,17 @@ mod tests {
         fn open(&self, _: Version, _: &str) -> Result<Box<dyn Read>, Failure> {
             Err(Failure::Network("offline".into()))
         }
+        fn has(&self, _: Version, _: &str) -> Result<bool, Failure> {
+            Err(Failure::Network("offline".into()))
+        }
+    }
+
+    fn version_of(chosen: Option<crate::launch::Chosen>) -> Option<Version> {
+        chosen.map(|chosen| chosen.version)
+    }
+
+    fn why_bad(shelf: &Shelf, version: &str) -> String {
+        fs::read_to_string(shelf.root.join(version).join(BAD)).unwrap_or_default()
     }
 
     #[test]
@@ -773,20 +1046,30 @@ mod tests {
         assert_eq!(checked, Checked::Ready { version: v("0.2.15"), latest: v("0.2.15") });
         assert_eq!(on_shelf(&shelf), ["0.2.15"], "nothing but the version, no temp left behind");
         assert!(shelf.root.join("0.2.15/omacharts").is_file());
-        assert_eq!(probe(&shelf.root.join("0.2.15/omacharts"), Duration::from_secs(5)), Some(v("0.2.15")));
+        assert_eq!(probe(&shelf.root.join("0.2.15/omacharts"), Duration::from_secs(5)), Ok(v("0.2.15")));
         assert_eq!(checked.restart_brings(v("0.2.14"), v("0.2.14")), Some(v("0.2.15")));
     }
 
     #[test]
-    fn a_download_that_does_not_match_its_checksum_is_discarded() {
+    fn a_download_that_does_not_match_its_checksum_is_discarded_and_not_fetched_again_until_a_reset() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         let mut fake = Fake::releasing("0.2.15");
         fake.assets.insert(asset(), gzip(b"#!/bin/sh\necho tampered\n"));
         let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
         assert!(matches!(failed, Failure::Mismatch { .. }), "{failed}");
-        assert!(on_shelf(&shelf).is_empty(), "nothing kept: {:?}", on_shelf(&shelf));
+        assert!(!shelf.root.join("0.2.15").join(BINARY).exists(), "nothing kept: {:?}", on_shelf(&shelf));
+        assert!(why_bad(&shelf, "0.2.15").contains("checksum"), "{}", why_bad(&shelf, "0.2.15"));
         assert_eq!(shelf.choose(v("0.2.14"), |_| true), None);
+
+        let again = Fake::releasing("0.2.15");
+        assert_eq!(check(&again, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap(), Checked::UpToDate { latest: v("0.2.15") });
+        assert!(again.opened.borrow().is_empty());
+
+        // `update reset` forgets it, and the next check fetches it whole.
+        shelf.reset(v("0.2.14"), false).unwrap();
+        let checked = check(&again, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
+        assert_eq!(checked, Checked::Ready { version: v("0.2.15"), latest: v("0.2.15") });
     }
 
     #[test]
@@ -800,12 +1083,13 @@ mod tests {
     }
 
     #[test]
-    fn a_verified_binary_that_says_another_version_or_does_not_start_is_never_tried_again() {
+    fn a_verified_binary_that_says_another_version_or_cannot_run_here_is_never_tried_again() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         let fake = Fake::with_binary("0.2.15", &script_saying("0.2.13"));
         assert!(matches!(check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true), Err(Failure::Broken(_))));
         assert_eq!(shelf.choose(v("0.2.14"), |_| true), None);
+        assert!(why_bad(&shelf, "0.2.15").contains("says it is 0.2.13"), "{}", why_bad(&shelf, "0.2.15"));
         // And the next check does not fetch it again.
         let again = Fake::with_binary("0.2.15", &script_saying("0.2.13"));
         assert_eq!(
@@ -817,8 +1101,93 @@ mod tests {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         let fake = Fake::with_binary("0.2.15", b"\x7fELF not really");
-        assert!(matches!(check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true), Err(Failure::Broken(_))));
+        let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
+        assert!(matches!(failed, Failure::Broken(_)), "{failed}");
         assert_eq!(shelf.choose(v("0.2.14"), |_| true), None);
+        assert!(why_bad(&shelf, "0.2.15").contains("cannot run here"), "{}", why_bad(&shelf, "0.2.15"));
+    }
+
+    #[test]
+    fn a_verified_binary_that_does_not_answer_this_time_is_discarded_but_not_given_up_on() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        // Ends with a failure, which an out-of-memory or a busy machine can
+        // make of any binary: nothing says it would the next time.
+        let fake = Fake::with_binary("0.2.15", b"#!/bin/sh\nexit 3\n");
+        let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
+        assert!(matches!(failed, Failure::NotNow(_)), "{failed}");
+        assert!(on_shelf(&shelf).is_empty(), "nothing kept, nothing marked: {:?}", on_shelf(&shelf));
+        assert!(shelf.check_due(SystemTime::now()), "and the next launch asks again");
+
+        let fine = Fake::releasing("0.2.15");
+        let checked = check(&fine, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
+        assert_eq!(checked, Checked::Ready { version: v("0.2.15"), latest: v("0.2.15") });
+        assert!(!shelf.check_due(SystemTime::now()));
+    }
+
+    #[test]
+    fn a_probe_that_takes_too_long_is_for_now() {
+        let scratch = Scratch::new();
+        let binary = scratch.0.join("slow");
+        place_executable(&binary, b"#!/bin/sh\nsleep 5\necho omacharts 0.2.15\n");
+        assert!(matches!(probe(&binary, Duration::from_millis(200)), Err(Unstarted::ForNow(_))));
+    }
+
+    #[test]
+    fn only_a_failure_that_would_happen_again_is_definite() {
+        use crate::launch::{refused, Refused};
+        assert!(Failure::Mismatch { asset: asset() }.definite());
+        assert!(Failure::Broken("no".into()).definite());
+        for passing in [
+            Failure::NotNow("slow".into()),
+            Failure::Network("offline".into()),
+            Failure::Disk(io::Error::from_raw_os_error(28)),
+        ] {
+            assert!(!passing.definite(), "{passing}");
+        }
+
+        let scratch = Scratch::new();
+        let there = scratch.0.join("there");
+        fs::write(&there, b"").unwrap();
+        let gone = scratch.0.join("gone");
+        let errno = io::Error::from_raw_os_error;
+        assert!(matches!(refused(&errno(8), &there), Refused::Definitely(_)), "ENOEXEC");
+        assert!(matches!(refused(&errno(80), &there), Refused::Definitely(_)), "ELIBBAD");
+        assert!(matches!(refused(&errno(2), &there), Refused::Definitely(_)), "no interpreter");
+        assert_eq!(refused(&errno(2), &gone), Refused::Vanished, "tidied away meanwhile");
+        for passing in [12, 11, 13, 26, 24] {
+            assert!(matches!(refused(&errno(passing), &there), Refused::ForNow(_)), "errno {passing}");
+        }
+    }
+
+    #[test]
+    fn a_release_whose_binary_is_not_up_yet_is_being_published_and_asked_again() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let mut fake = Fake::releasing("0.2.15");
+        fake.assets.clear();
+        for download in [false, true] {
+            let checked = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), download).unwrap();
+            assert_eq!(checked, Checked::Publishing { latest: v("0.2.15") });
+            assert_eq!(checked.restart_brings(v("0.2.14"), v("0.2.14")), None);
+        }
+        assert!(fake.opened.borrow().is_empty());
+        assert!(shelf.check_due(SystemTime::now()), "not counted as a check");
+        assert!(on_shelf(&shelf).is_empty());
+    }
+
+    #[test]
+    fn a_check_is_noted_only_once_it_has_its_answer() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let _ = check(&Offline, &shelf, v("0.2.14"), &|| v("0.2.14"), true);
+        assert!(shelf.check_due(SystemTime::now()), "offline");
+        fs::write(scratch.0.join("versions"), b"").unwrap();
+        let _ = check(&Fake::releasing("0.2.15"), &shelf, v("0.2.14"), &|| v("0.2.14"), true);
+        fs::remove_file(scratch.0.join("versions")).unwrap();
+        assert!(shelf.check_due(SystemTime::now()), "a download that could not be saved");
+        check(&Fake::releasing("0.2.15"), &shelf, v("0.2.14"), &|| v("0.2.14"), false).unwrap();
+        assert!(!shelf.check_due(SystemTime::now()), "an answer");
     }
 
     #[test]
@@ -909,40 +1278,179 @@ mod tests {
         shelve(&shelf, "0.2.15");
         fs::create_dir_all(shelf.root.join(".incoming-0.2.17-1")).unwrap();
         fs::create_dir_all(shelf.root.join("0.2.18")).unwrap(); // no binary: not complete
-        let (version, binary) = shelf.choose(v("0.2.14"), |_| true).unwrap();
-        assert_eq!(version, v("0.2.16"));
-        assert_eq!(binary, shelf.root.join("0.2.16/omacharts"));
+        let chosen = shelf.choose(v("0.2.14"), |_| true).unwrap();
+        assert_eq!(chosen.version, v("0.2.16"));
+        assert_eq!(chosen.binary, shelf.root.join("0.2.16/omacharts"));
+        assert_eq!(chosen.folder, shelf.root.join("0.2.16"));
 
-        shelf.mark_bad(v("0.2.16"));
-        assert_eq!(shelf.choose(v("0.2.14"), |_| true).map(|(v, _)| v), Some(v("0.2.15")));
+        shelf.mark_bad(v("0.2.16"), "a test says so");
+        assert_eq!(version_of(shelf.choose(v("0.2.14"), |_| true)), Some(v("0.2.15")));
         assert_eq!(shelf.choose(v("0.2.16"), |_| true), None);
+        assert_eq!(why_bad(&shelf, "0.2.16"), "a test says so\n");
     }
 
     #[test]
-    fn a_hand_over_that_never_reached_main_marks_its_version_bad() {
+    fn three_launches_in_a_row_that_end_before_the_version_is_healthy_give_it_up() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         shelve(&shelf, "0.2.15");
         shelve(&shelf, "0.2.16");
-        fs::write(shelf.root.join("0.2.16").join(trying(4242)), b"").unwrap();
-
-        // Still alive: a launch in flight, not a failure.
-        assert_eq!(shelf.choose(v("0.2.14"), |_| true).map(|(v, _)| v), Some(v("0.2.16")));
-        // Gone with its marker still there: it died before reaching `main`.
-        assert_eq!(shelf.choose(v("0.2.14"), |pid| pid != 4242).map(|(v, _)| v), Some(v("0.2.15")));
-        assert!(shelf.root.join("0.2.16").join(BAD).exists());
-        // And it stays skipped once the marker is gone.
-        let _ = fs::remove_file(shelf.root.join("0.2.16").join(trying(4242)));
-        assert_eq!(shelf.choose(v("0.2.14"), |_| true).map(|(v, _)| v), Some(v("0.2.15")));
+        let folder = shelf.root.join("0.2.16");
+        let alive = |pid: u32| pid >= 1000;
+        // Launches in flight are not failures, however many.
+        for pid in 2000..2005 {
+            fs::write(folder.join(trying(pid)), b"").unwrap();
+        }
+        assert_eq!(version_of(shelf.choose(v("0.2.14"), alive)), Some(v("0.2.16")));
+        // Ended before it was healthy: two may be bad luck.
+        for pid in [1, 2] {
+            fs::write(folder.join(trying(pid)), b"").unwrap();
+        }
+        assert_eq!(version_of(shelf.choose(v("0.2.14"), alive)), Some(v("0.2.16")));
+        // Three is the version.
+        fs::write(folder.join(trying(3)), b"").unwrap();
+        assert_eq!(version_of(shelf.choose(v("0.2.14"), alive)), Some(v("0.2.15")));
+        assert!(why_bad(&shelf, "0.2.16").contains("3 launches"), "{}", why_bad(&shelf, "0.2.16"));
     }
+
+    #[test]
+    fn a_version_that_has_been_healthy_is_never_given_up_on() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        shelve(&shelf, "0.2.15");
+        shelve(&shelf, "0.2.16");
+        let folder = shelf.root.join("0.2.16");
+        for pid in 1..10 {
+            fs::write(folder.join(trying(pid)), b"").unwrap();
+        }
+        mark_healthy(&folder);
+        assert!(folder.join(HEALTHY).exists());
+        assert!(!fs::read_dir(&folder).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with(".trying-")), "every marker cleared");
+
+        for pid in 1..10 {
+            fs::write(folder.join(trying(pid)), b"").unwrap();
+        }
+        let chosen = shelf.choose(v("0.2.14"), |_| false).unwrap();
+        assert_eq!(chosen.version, v("0.2.16"));
+        assert!(chosen.healthy);
+        shelf.mark_bad(v("0.2.16"), "nope");
+        assert!(!folder.join(BAD).exists());
+    }
+
+    #[test]
+    fn the_launcher_says_which_folder_it_handed_over_to() {
+        let told = Told { installed_version: v("0.2.14"), installed: PathBuf::from("/usr/bin/omacharts"), folder: Some(PathBuf::from("/home/a/.local/share/omacharts/versions/0.2.16")) };
+        assert_eq!(Told::decode(&told.encode()), Some(told.clone()));
+        let none = Told { folder: None, ..told };
+        assert_eq!(Told::decode(&none.encode()), Some(none.clone()));
+        assert_eq!(Told::decode("0.2.14\u{1f}/usr/bin/omacharts"), Some(none), "the two-field form still reads");
+        assert_eq!(Told::decode("nonsense"), None);
+    }
+
+    #[test]
+    fn a_folder_reached_through_a_symbolic_link_is_the_same_folder() {
+        let scratch = Scratch::new();
+        let real = scratch.0.join("real/versions/0.2.16");
+        fs::create_dir_all(&real).unwrap();
+        shelve(&Shelf::new(scratch.0.join("real/versions")), "0.2.16");
+        std::os::unix::fs::symlink(scratch.0.join("real"), scratch.0.join("linked")).unwrap();
+        let exe = fs::canonicalize(real.join(BINARY)).unwrap();
+        assert!(runs_from(&exe, &scratch.0.join("linked/versions/0.2.16")));
+        assert!(runs_from(&exe, &real));
+        assert!(!runs_from(&exe, &scratch.0.join("linked/versions")));
+        assert!(under(&exe, &scratch.0.join("linked/versions")));
+    }
+
+    #[test]
+    fn the_settings_are_backed_up_before_a_version_that_never_ran_here_opens_them() {
+        let scratch = Scratch::new();
+        let data = scratch.0.join("data");
+        fs::create_dir_all(&data).unwrap();
+        let settings = data.join("omacharts.db");
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "b");
+        let shelf = Shelf::new(data.join("versions"));
+        shelve(&shelf, "0.2.16");
+        let folder = shelf.root.join("0.2.16");
+
+        backup_before_first_open(&folder, &settings);
+        assert!(folder.join(BACKED_UP).exists());
+        assert_eq!(crate::backup::list(&settings).len(), 1);
+
+        // Once is enough, and a version that has run needs none.
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "c");
+        backup_before_first_open(&folder, &settings);
+        let _ = fs::remove_file(folder.join(BACKED_UP));
+        mark_healthy(&folder);
+        backup_before_first_open(&folder, &settings);
+        assert_eq!(crate::backup::list(&settings).len(), 1);
+
+        // Nothing to back up on a first launch.
+        let fresh = Scratch::new();
+        let folder = fresh.0.join("0.2.16");
+        fs::create_dir_all(&folder).unwrap();
+        backup_before_first_open(&folder, &fresh.0.join("omacharts.db"));
+        assert!(folder.join(BACKED_UP).exists());
+    }
+
+    #[test]
+    fn a_reset_clears_everything_but_a_newer_version_that_has_run() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        shelve(&shelf, "0.2.15");
+        shelve(&shelf, "0.2.16");
+        mark_healthy(&shelf.root.join("0.2.15"));
+        shelf.mark_bad(v("0.2.17"), "no");
+        fs::create_dir_all(shelf.root.join(".incoming-0.2.18-1")).unwrap();
+        shelf.note_checked();
+        shelf.reset(v("0.2.14"), false).unwrap();
+        assert_eq!(on_shelf(&shelf), ["0.2.15"]);
+        assert!(shelf.check_due(SystemTime::now()));
+        // Not newer than installed: nothing needs it.
+        shelf.reset(v("0.2.15"), false).unwrap();
+        assert!(on_shelf(&shelf).is_empty());
+
+        shelve(&shelf, "0.2.16");
+        mark_healthy(&shelf.root.join("0.2.16"));
+        shelf.reset(v("0.2.14"), true).unwrap();
+        assert!(on_shelf(&shelf).is_empty());
+        assert_eq!(Shelf::new(scratch.0.join("nowhere")).reset(v("0.2.14"), true).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_version_another_process_finished_first_is_kept_as_it_is() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        shelve(&shelf, "0.2.15");
+        let binary = shelf.root.join("0.2.15").join(BINARY);
+        let before = fs::metadata(&binary).unwrap().ino();
+        fs::write(shelf.root.join("0.2.15").join(trying(1)), b"").unwrap();
+        shelf.install(&Fake::releasing("0.2.15"), v("0.2.15"), &asset()).unwrap();
+        assert_eq!(fs::metadata(&binary).unwrap().ino(), before, "never taken apart: it may be running");
+        assert!(shelf.root.join("0.2.15").join(trying(1)).exists());
+        assert_eq!(on_shelf(&shelf), ["0.2.15"], "and its download is gone");
+
+        // Something that is not a finished version in the way: refused, and
+        // left alone.
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        fs::create_dir_all(shelf.root.join("0.2.15")).unwrap();
+        fs::write(shelf.root.join("0.2.15/note"), b"mine").unwrap();
+        let failed = shelf.install(&Fake::releasing("0.2.15"), v("0.2.15"), &asset()).unwrap_err();
+        assert!(matches!(failed, Failure::Disk(_)), "{failed}");
+        assert_eq!(fs::read(shelf.root.join("0.2.15/note")).unwrap(), b"mine");
+    }
+
+    use std::os::unix::fs::MetadataExt;
 
     #[test]
     fn a_process_handed_over_to_never_hands_over_again() {
         // The guard is the variable: run the real launch path in a copy of
         // this test binary sitting in a version's folder, with the variable
         // set as the launcher sets it and a newer version beside it. The
-        // copy must carry on as itself, know what is installed, clear the
-        // variable, and remove the marker the launcher left for it.
+        // copy must carry on as itself, know what is installed and which
+        // folder it runs from — named through a symbolic link, as a data
+        // folder moved to another disk would be — and clear the variable.
+        // The marker the launcher left stays until the version is healthy.
         const CHILD: &str = "OMACHARTS_TEST_AT_LAUNCH";
         if std::env::var_os(CHILD).is_some() {
             let exe = std::env::current_exe().unwrap();
@@ -953,29 +1461,63 @@ mod tests {
             let origin = origin().unwrap();
             assert_eq!(origin.installed_version, v("0.2.14"));
             assert_eq!(origin.installed, Path::new("/usr/bin/omacharts"));
-            assert!(origin.handed_over);
+            assert!(origin.handed_over());
+            assert!(marker.exists(), "not healthy yet");
+            healthy();
             assert!(!marker.exists());
+            assert!(exe.parent().unwrap().join(HEALTHY).exists());
             println!("carried on as itself");
             return;
         }
         let scratch = Scratch::new();
-        let versions = scratch.0.join("omacharts/versions");
+        let versions = scratch.0.join("real/omacharts/versions");
         let running = Version::running();
         let here = versions.join(running.to_string());
         fs::create_dir_all(&here).unwrap();
         let copy = here.join(BINARY);
         place_copy(&std::env::current_exe().unwrap(), &copy);
         shelve(&Shelf::new(versions.clone()), &Version(running.0 + 1, 0, 0).to_string());
-        let output = std::process::Command::new(&copy)
+        std::os::unix::fs::symlink(scratch.0.join("real"), scratch.0.join("linked")).unwrap();
+        let told = Told {
+            installed_version: v("0.2.14"),
+            installed: PathBuf::from("/usr/bin/omacharts"),
+            folder: Some(scratch.0.join("linked/omacharts/versions").join(running.to_string())),
+        };
+        let output = std::process::Command::new(scratch.0.join("linked/omacharts/versions").join(running.to_string()).join(BINARY))
             .args(["--exact", "update::tests::a_process_handed_over_to_never_hands_over_again", "--nocapture"])
             .env(CHILD, "1")
-            .env("XDG_DATA_HOME", &scratch.0)
+            .env("XDG_DATA_HOME", scratch.0.join("linked"))
             .env(SOURCE_ENV, "http://127.0.0.1:9")
-            .env(LAUNCHER_ENV, "0.2.14\u{1f}/usr/bin/omacharts")
+            .env(LAUNCHER_ENV, told.encode())
             .output()
             .unwrap();
         let said = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success() && said.contains("carried on as itself"), "{said}");
+    }
+
+    #[test]
+    fn a_process_told_of_a_folder_it_does_not_run_from_is_not_a_download() {
+        const CHILD: &str = "OMACHARTS_TEST_NOT_FROM";
+        if std::env::var_os(CHILD).is_some() {
+            at_launch();
+            let origin = origin().unwrap();
+            assert!(!origin.handed_over());
+            settle(true);
+            println!("not a download");
+            return;
+        }
+        let scratch = Scratch::new();
+        let folder = scratch.0.join("0.2.16");
+        fs::create_dir_all(&folder).unwrap();
+        let told = Told { installed_version: v("0.2.14"), installed: PathBuf::from("/usr/bin/omacharts"), folder: Some(folder.clone()) };
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "update::tests::a_process_told_of_a_folder_it_does_not_run_from_is_not_a_download", "--nocapture"])
+            .env(CHILD, "1")
+            .env(LAUNCHER_ENV, told.encode())
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("not a download"));
+        assert!(!folder.join(HEALTHY).exists(), "nothing written to a folder it is not");
     }
 
     #[test]
@@ -1030,14 +1572,17 @@ mod tests {
                 .unwrap();
             String::from_utf8_lossy(&output.stdout).into_owned()
         };
-        let said = run();
         let running = Version::running();
-        assert!(said.contains(&format!("handed over: {running}\u{1f}")), "{said}");
-        assert!(said.contains("| --exact |"), "the arguments go along: {said}");
-        assert!(said.contains(".trying-"), "the marker is left for the new process to clear: {said}");
-
-        // The script never cleared its marker and has exited, so it is a
-        // version that did not start: the next launch skips it.
+        // The script never shows itself healthy and exits, three times: a
+        // version that does not run. The fourth launch carries on as itself.
+        for _ in 0..crate::launch::UNHEALTHY_LIMIT {
+            let said = run();
+            assert!(said.contains(&format!("handed over: {running}\u{1f}")), "{said}");
+            assert!(said.contains(&format!("\u{1f}{}", dir.display())), "the folder is named: {said}");
+            assert!(said.contains("| --exact |"), "the arguments go along: {said}");
+            assert!(said.contains(".trying-"), "the marker is left for the new process to clear: {said}");
+            assert!(!dir.join(BAD).exists());
+        }
         let said = run();
         assert!(said.contains("carried on as itself"), "{said}");
         assert!(dir.join(BAD).exists());
@@ -1060,13 +1605,33 @@ mod tests {
         for version in ["0.2.12", "0.2.14", "0.2.15", "0.2.16"] {
             shelve(&shelf, version);
         }
-        shelf.mark_bad(v("0.2.13"));
-        shelf.mark_bad(v("0.2.17"));
-        shelf.mark_bad(v("0.2.18"));
+        shelf.mark_bad(v("0.2.13"), "no");
+        shelf.mark_bad(v("0.2.17"), "no");
+        shelf.mark_bad(v("0.2.18"), "no");
         fs::create_dir_all(shelf.root.join(".incoming-0.2.19-77")).unwrap();
         fs::create_dir_all(shelf.root.join(".incoming-0.2.19-78")).unwrap();
         shelf.tidy(v("0.2.14"), |pid| pid == 78);
         assert_eq!(on_shelf(&shelf), [".incoming-0.2.19-78", "0.2.16", "0.2.18"]);
+    }
+
+    #[test]
+    fn tidying_keeps_the_newest_version_that_has_run_until_a_newer_one_has() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        for version in ["0.2.15", "0.2.16", "0.2.17"] {
+            shelve(&shelf, version);
+        }
+        mark_healthy(&shelf.root.join("0.2.15"));
+        mark_healthy(&shelf.root.join("0.2.16"));
+        shelf.tidy(v("0.2.14"), |_| true);
+        assert_eq!(on_shelf(&shelf), ["0.2.16", "0.2.17"]);
+        // If 0.2.17 is given up on, 0.2.16 is still there to run.
+        shelf.mark_bad(v("0.2.17"), "no");
+        assert_eq!(version_of(shelf.choose(v("0.2.14"), |_| true)), Some(v("0.2.16")));
+        mark_healthy(&shelf.root.join("0.2.17"));
+        let _ = fs::remove_file(shelf.root.join("0.2.17").join(BAD));
+        shelf.tidy(v("0.2.14"), |_| true);
+        assert_eq!(on_shelf(&shelf), ["0.2.17"]);
     }
 
     #[test]
@@ -1119,6 +1684,7 @@ mod tests {
         for other in [
             Checked::UpToDate { latest: v("0.2.15") },
             Checked::Available { latest: v("0.2.15") },
+            Checked::Publishing { latest: v("0.2.15") },
             Checked::Overtaken { version: v("0.2.15") },
         ] {
             assert_eq!(other.restart_brings(v("0.2.14"), v("0.2.14")), None);
