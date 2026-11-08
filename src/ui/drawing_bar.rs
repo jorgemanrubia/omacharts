@@ -554,6 +554,29 @@ impl DrawingBar {
                         cr.arc(ring.0, ring.1, 2.25, 0.0, std::f64::consts::TAU);
                         let _ = cr.stroke();
                     }
+                    // Levels across a swing: its two ends at full ink, two
+                    // levels between them at the golden ratios, quieter,
+                    // and the swing itself as a faint diagonal under them.
+                    // Spaced as the ratios are, so it is a retracement and
+                    // not a list.
+                    Some(Kind::Fib) => {
+                        let (left, right) = (4.5, w - 4.5);
+                        let (top, bottom) = (5.5, h - 5.5);
+                        cr.set_line_width(1.0);
+                        cr.set_source_rgba(r, g, b, a * 0.4);
+                        cr.set_dash(&[1.5, 2.0], 0.0);
+                        cr.move_to(left, bottom);
+                        cr.line_to(right, top);
+                        let _ = cr.stroke();
+                        cr.set_dash(&[], 0.0);
+                        for (ratio, ink) in [(0.0, 1.0), (0.382, 0.6), (0.618, 0.6), (1.0, 1.0)] {
+                            let y = (top + (bottom - top) * ratio).round() + 0.5;
+                            cr.set_source_rgba(r, g, b, a * ink);
+                            cr.move_to(left, y);
+                            cr.line_to(right, y);
+                            let _ = cr.stroke();
+                        }
+                    }
                     Some(Kind::Text) => {
                         // A capital I with its serifs: the mark every
                         // application puts on its text tool, and the one

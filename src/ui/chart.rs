@@ -1597,6 +1597,19 @@ impl State {
             let end = corners.last().copied().unwrap_or(anchor);
             return Projected { from: anchor, to: end, ..Projected::through(drawing.kind, corners) };
         }
+        // A retracement is its two ends, and a height for each level it
+        // draws: through the price scale, since on a log scale the levels
+        // are not evenly spaced on screen.
+        if drawing.kind == DrawingKind::Fib {
+            let look = &drawing.style(&self.configs).fib;
+            let levels = look
+                .enabled()
+                .map(|level| {
+                    scale.to_y(level.price(drawing.from.price, drawing.to.price), plan.price_y, plan.price_h)
+                })
+                .collect();
+            return Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)).with_levels(levels);
+        }
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
@@ -3571,6 +3584,19 @@ impl ChartView {
             if drawing.kind.is_text() {
                 return;
             }
+            // A retracement's thickness is its levels': every one steps.
+            // Worked out first, so a step at the end of the range changes
+            // nothing and leaves the drawing on its configuration.
+            if drawing.kind == DrawingKind::Fib {
+                let mut fib = drawing.style(&configs).fib.clone();
+                for level in fib.levels.iter_mut() {
+                    level.stroke.width = (level.stroke.width + by).clamp(drawings::MIN_WIDTH, drawings::MAX_WIDTH);
+                }
+                if fib != drawing.style(&configs).fib {
+                    drawing.edit_style(&configs, |style| style.fib = fib.clone());
+                }
+                return;
+            }
             let now = drawing.style(&configs).width;
             let next = (now + by).clamp(drawings::MIN_WIDTH, drawings::MAX_WIDTH);
             if next != now {
@@ -3663,7 +3689,11 @@ impl ChartView {
             if drawing.kind.is_text() {
                 return;
             }
-            drawing.edit_style(&configs, |style| style.width = width);
+            let fib = drawing.kind == DrawingKind::Fib;
+            drawing.edit_style(&configs, |style| match fib {
+                true => style.fib.set_width(width),
+                false => style.width = width,
+            });
         });
     }
 
@@ -3675,9 +3705,13 @@ impl ChartView {
             .iter()
             .filter_map(|i| state.drawings.get(*i))
             .filter(|d| !d.kind.is_text())
-            .map(|d| d.style(&state.configs).width);
+            .map(|d| match d.kind {
+                // A retracement's is its levels', when they share one.
+                DrawingKind::Fib => d.style(&state.configs).fib.width(),
+                _ => Some(d.style(&state.configs).width),
+            });
         let first = seen.next()?;
-        seen.all(|other| other == first).then_some(first)
+        seen.all(|other| other == first).then_some(first).flatten()
     }
 
     /// The arrow and head the selection shares, if it is all of one mind.
@@ -8370,6 +8404,7 @@ fn draw_drawing(
         DrawingKind::Text => {}
         DrawingKind::Profile => draw_profile_drawing(cr, state, projected, drawing, style, &colour, to_y),
         DrawingKind::Vwap => draw_vwap_drawing(cr, state, projected, drawing, style, &colour, to_y, selected),
+        DrawingKind::Fib => draw_fib_drawing(cr, state, projected, drawing, style, &colour),
     }
     if !typing {
         draw_label(cr, state, projected, drawing, style);
@@ -8999,6 +9034,139 @@ fn draw_profile_drawing(
     cr.move_to(from, y);
     cr.line_to(to, y);
     let _ = cr.stroke();
+}
+
+/// A Fibonacci retracement: a level across its span at each ratio it
+/// draws, each in its own colour, thickness and pattern at the strength a
+/// level gets, the line from the swing's start to its end under them, and a
+/// small label at the left of each level with its ratio and its price.
+fn draw_fib_drawing(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    style: &drawings::Style,
+    colour: &str,
+) {
+    let theme = &state.theme;
+    let (left, right) = (projected.from.0.min(projected.to.0), projected.from.0.max(projected.to.0));
+    cr.save().ok();
+    // The swing itself, a quiet dashed guide.
+    colors::set_source_alpha(cr, colour, drawings::FIB_TREND_ALPHA);
+    cr.set_line_width(1.0);
+    cr.set_dash(&[4.0, 4.0], 0.0);
+    cr.move_to(projected.from.0, projected.from.1);
+    cr.line_to(projected.to.0, projected.to.1);
+    let _ = cr.stroke();
+    let levels: Vec<(&drawings::FibLevel, f64)> = style.fib.enabled().zip(projected.levels.iter().copied()).collect();
+    for (level, y) in &levels {
+        if level.stroke.is_hidden() {
+            continue;
+        }
+        let width = level.stroke.width;
+        // On the pixel grid, as the chart's own lines are, so a hairline is
+        // one pixel and not two half-lit ones.
+        let y = match (width.round() as i64) % 2 {
+            1 => y.round() + 0.5,
+            _ => y.round(),
+        };
+        colors::set_source_alpha(cr, &level.paint(&style.colour).hex(theme), drawings::FIB_ALPHA);
+        cr.set_line_width(width);
+        cr.set_dash(&level.stroke.style.dashes(width), 0.0);
+        cr.move_to(left, y);
+        cr.line_to(right, y);
+        let _ = cr.stroke();
+    }
+    cr.set_dash(&[], 0.0);
+    if style.fib.labelled() && right - left >= 1.0 {
+        draw_fib_labels(cr, state, drawing, style, &levels, left, right);
+    }
+    cr.restore().ok();
+}
+
+/// The ratio and the price of each level, small, above its left end, in
+/// the level's colour as drawn and held to what small text needs.
+///
+/// The labels go where the span starts on screen: at the left edge of the
+/// plot when the span runs off it, so a retracement scrolled half away still
+/// reads, and nowhere when it has gone, or when what is left of it is
+/// narrower than a label. A label that would sit on top of another is left
+/// out: on a short swing the levels are closer together than a line of text
+/// is tall. The swing's two ends, 0% and 100%, are placed first, so the
+/// ones dropped are from the middle.
+fn draw_fib_labels(
+    cr: &cairo::Context,
+    state: &State,
+    drawing: &Drawing,
+    style: &drawings::Style,
+    levels: &[(&drawings::FibLevel, f64)],
+    left: f64,
+    right: f64,
+) {
+    let theme = &state.theme;
+    let bg = &theme.ui.background;
+    // The plot, as the chart clipped it for its drawings.
+    let (plot_left, _, plot_right, _) = cr.clip_extents().unwrap_or((f64::MIN, 0.0, f64::MAX, 0.0));
+    let (shown_left, shown_right) = (left.max(plot_left), right.min(plot_right));
+    if shown_right <= shown_left {
+        return;
+    }
+    let cut = left < plot_left;
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(drawings::FIB_LABEL_SIZE);
+    let places = state.tick().map(|tick| omacharts_engine::on_tick(0.0, tick).1).unwrap_or(2);
+    for (level, y) in fib_label_slots(levels).into_iter().map(|at| &levels[at]) {
+        let price = || grouped_decimals(level.price(drawing.from.price, drawing.to.price), places);
+        let text = match (style.fib.fib_labels, style.fib.price_labels) {
+            (true, true) => format!("{}  {}", level.name(), price()),
+            (true, false) => level.name(),
+            _ => price(),
+        };
+        let Ok(extents) = cr.text_extents(&text) else { continue };
+        let x = shown_left + 4.0;
+        // What is left of a span scrolled off the left is no place for a
+        // label that would overrun it onto the candles past its end.
+        if cut && x + extents.x_advance() + 2.0 > shown_right {
+            continue;
+        }
+        let drawn = omacharts_engine::theme::mix(&level.paint(&style.colour).hex(theme), bg, 1.0 - drawings::FIB_ALPHA);
+        let ink = omacharts_engine::theme::held_to(&drawn, bg, drawings::TEXT_CONTRAST, None);
+        // A plate of the chart's own background behind the text, so a label
+        // laid over candles still reads, and reads as nothing else.
+        let baseline = y - 4.0;
+        colors::set_source_alpha(cr, bg, 0.85);
+        cr.rectangle(
+            (x - 2.0).round(),
+            (baseline - drawings::FIB_LABEL_SIZE + 1.0).round(),
+            (extents.x_advance() + 4.0).round(),
+            drawings::FIB_LABEL_SIZE + 1.0,
+        );
+        let _ = cr.fill();
+        colors::set_source(cr, &ink);
+        cr.move_to(x, baseline);
+        let _ = cr.show_text(&text);
+    }
+}
+
+/// Which levels get a label, by where they are in `levels`: the swing's two
+/// ends first, 0% and 100%, then each other level whose label would not sit
+/// on one already placed, a line of text being taller than the gap between
+/// two levels of a short swing.
+fn fib_label_slots(levels: &[(&drawings::FibLevel, f64)]) -> Vec<usize> {
+    let is_end = |level: &drawings::FibLevel| {
+        drawings::same_ratio(level.ratio, 0.0) || drawings::same_ratio(level.ratio, 1.0)
+    };
+    let mut order: Vec<usize> = (0..levels.len()).collect();
+    order.sort_by_key(|at| !is_end(levels[*at].0));
+    let mut placed: Vec<usize> = Vec::new();
+    for at in order {
+        let y = levels[at].1;
+        if placed.iter().any(|other| (y - levels[*other].1).abs() < drawings::FIB_LABEL_SIZE + 1.0) {
+            continue;
+        }
+        placed.push(at);
+    }
+    placed
 }
 
 /// An anchored VWAP drawing: its line, from the anchor bar to the last, in
@@ -11257,6 +11425,42 @@ mod tests {
         });
     }
 
+    /// A retracement already as thick or as thin as a level goes stays on
+    /// its configuration when stepped further, with nothing to undo; one
+    /// step back from the end is a step like any other.
+    #[test]
+    fn a_retracement_at_the_end_of_the_thickness_range_is_left_alone() {
+        crate::ui::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes()
+                .into_iter()
+                .next()
+                .expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let view = ChartView::new(theme, scheme);
+            {
+                let mut s = view.state.borrow_mut();
+                let mut thickest = s.configs.of(DrawingKind::Fib, 1).clone();
+                thickest.fib.set_width(drawings::MAX_WIDTH);
+                s.configs.set(DrawingKind::Fib, 1, thickest);
+                let mut drawing = Drawing::new(DrawingKind::Fib, Anchor::new(1, 1.0), Anchor::new(5, 2.0));
+                drawing.follow(1);
+                s.drawings = vec![drawing];
+                s.selected = vec![0];
+            }
+            view.step_width(drawings::WIDTH_STEP);
+            {
+                let s = view.state.borrow();
+                assert_eq!(s.drawings[0].config, Some(1), "a step past the end took it off its configuration");
+                assert!(s.undo.is_empty(), "a step that changed nothing can be undone");
+            }
+            view.step_width(-drawings::WIDTH_STEP);
+            let s = view.state.borrow();
+            assert_eq!(s.drawings[0].config, None);
+            assert_eq!(s.drawings[0].style(&s.configs).fib.width(), Some(drawings::MAX_WIDTH - drawings::WIDTH_STEP));
+            assert_eq!(s.undo.len(), 1);
+        });
+    }
+
     /// A right-click with a drawing half laid down drops it and keeps the
     /// tool in hand, for another go.
     #[test]
@@ -12400,6 +12604,212 @@ mod drawing_tests {
         assert_eq!(anchor_on_a_bar(&state.bars, earlier).ts, state.bars[0].ts);
         let on = Anchor::new(state.bars[7].ts, 1.0);
         assert_eq!(anchor_on_a_bar(&state.bars, on), on);
+    }
+
+    /// A retracement's levels are where their prices are on the chart's
+    /// scale, 0 at the end of the drag and 1 at its start, whichever way it
+    /// was dragged.
+    #[test]
+    fn a_retracement_puts_0_where_the_drag_ended_up_or_down() {
+        let mut state = charted(60);
+        state.visible = 60;
+        let (w, h) = (800.0, 400.0);
+        let (first, visible) = state.slice();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        let (low, high) = (Anchor::new(state.bars[10].ts, 99.0), Anchor::new(state.bars[40].ts, 109.0));
+        for (from, to) in [(low, high), (high, low)] {
+            let drawing = Drawing::new(DrawingKind::Fib, from, to);
+            let projected = state.project(&plan, &scale, &drawing);
+            assert_eq!(projected.levels.len(), drawings::FIB_RATIOS.len());
+            assert!((projected.levels[0] - to_y(to.price)).abs() < 1e-9, "0 is the end of the drag");
+            assert!((projected.levels[6] - to_y(from.price)).abs() < 1e-9, "1 is its start");
+            let golden = to.price + (from.price - to.price) * 0.618;
+            assert!((projected.levels[4] - to_y(golden)).abs() < 1e-9);
+            assert_eq!(projected.hit(projected.to.0, projected.to.1), Some(Grip::To));
+        }
+        // Dragged up, 0.618 is under the middle; dragged down, over it.
+        let up = state.project(&plan, &scale, &Drawing::new(DrawingKind::Fib, low, high));
+        let down = state.project(&plan, &scale, &Drawing::new(DrawingKind::Fib, high, low));
+        let middle = to_y(104.0);
+        assert!(up.levels[4] > middle && down.levels[4] < middle);
+    }
+
+    /// On a swing too short for every label, the two ends keep theirs and
+    /// the levels between give way.
+    #[test]
+    fn a_short_swing_keeps_the_labels_at_its_ends() {
+        let levels = drawings::fib_levels();
+        // 0% at 100 px and 100% at 130: 30 px for seven labels.
+        let at: Vec<(&drawings::FibLevel, f64)> = levels.iter().map(|level| (level, 100.0 + level.ratio * 30.0)).collect();
+        let slots = fib_label_slots(&at);
+        let names: Vec<String> = slots.iter().map(|i| at[*i].0.name()).collect();
+        assert!(names.contains(&"0%".to_string()) && names.contains(&"100%".to_string()), "{names:?}");
+        for (i, a) in slots.iter().enumerate() {
+            for b in &slots[i + 1..] {
+                assert!((at[*a].1 - at[*b].1).abs() >= drawings::FIB_LABEL_SIZE + 1.0, "{names:?} overlap");
+            }
+        }
+        // A tall one labels them all.
+        let tall: Vec<(&drawings::FibLevel, f64)> = levels.iter().map(|level| (level, level.ratio * 400.0)).collect();
+        assert_eq!(fib_label_slots(&tall).len(), 7);
+    }
+
+    /// A retracement scrolled off the left paints nothing, labels
+    /// included; one half off keeps its labels whole, at the edge of the
+    /// plot, and drops the ends' labels last on a swing too short for all.
+    #[test]
+    fn a_retracements_labels_stay_inside_the_plot() {
+        let mut state = charted(60);
+        state.visible = 30;
+        let (w, h) = (800.0, 400.0);
+        let (first, _) = state.slice();
+        assert!(first >= 20, "the first bars are off the left: {first}");
+        let plan = layout(&state, w, h);
+        let paint = |state: &State| -> Vec<u8> {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                draw_drawings(&cr, state, &plan, &scale, false);
+            }
+            surface.flush();
+            surface.data().unwrap().to_vec()
+        };
+        let stride = w as usize * 4;
+        let inked_in = |pixels: &[u8], x0: f64, x1: f64| {
+            pixels
+                .chunks(4)
+                .enumerate()
+                .filter(|(i, p)| {
+                    let x = ((i * 4) % stride / 4) as f64;
+                    p[3] > 0 && x >= x0 && x < x1
+                })
+                .count()
+        };
+        let fib = |state: &State, from: usize, to: usize, labelled: bool| {
+            let mut drawing = Drawing::new(
+                DrawingKind::Fib,
+                Anchor::new(state.bars[from].ts, 99.0),
+                Anchor::new(state.bars[to].ts, 109.0),
+            );
+            if !labelled {
+                drawing.edit_style(&state.configs, |s| s.fib.fib_labels = false);
+            }
+            drawing
+        };
+
+        state.drawings = vec![fib(&state, 2, 10, true)];
+        assert_eq!(inked_in(&paint(&state), 0.0, w), 0, "a retracement off the left still painted");
+
+        // Half off: the labels sit at the plot's left edge, whole.
+        state.drawings = vec![fib(&state, first - 10, (first + 15).min(59), true)];
+        let labelled = paint(&state);
+        state.drawings = vec![fib(&state, first - 10, (first + 15).min(59), false)];
+        let bare = paint(&state);
+        let edge = plan.plot_x;
+        assert!(
+            inked_in(&labelled, edge, edge + 40.0) > inked_in(&bare, edge, edge + 40.0),
+            "no labels at the plot's left edge"
+        );
+
+        // Half off with too little left of it for a label: none.
+        state.drawings = vec![fib(&state, first - 10, first, true)];
+        let thin = paint(&state);
+        state.drawings = vec![fib(&state, first - 10, first, false)];
+        assert_eq!(thin, paint(&state), "a label overran a sliver of a span");
+    }
+
+    /// A level that is switched off is not drawn and not picked; a level's
+    /// colour, thickness and pattern each change what is painted; and the
+    /// labels are one switch for all of them.
+    #[test]
+    fn a_retracement_paints_each_level_as_it_is_set() {
+        let mut state = charted(60);
+        state.visible = 60;
+        let (w, h) = (800.0, 400.0);
+        let drawing = Drawing::new(
+            DrawingKind::Fib,
+            Anchor::new(state.bars[10].ts, 99.0),
+            Anchor::new(state.bars[40].ts, 109.0),
+        );
+        let paint = |state: &State| -> Vec<u8> {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                draw_drawings(&cr, state, &plan, &scale, false);
+            }
+            surface.flush();
+            surface.data().unwrap().to_vec()
+        };
+        let inked = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[3] > 0).count();
+        let configs = state.configs.clone();
+        let with = |edit: &dyn Fn(&mut drawings::Style)| {
+            let mut changed = drawing.clone();
+            changed.edit_style(&configs, |s| edit(s));
+            changed
+        };
+        state.drawings = vec![drawing.clone()];
+        let plain = paint(&state);
+        assert!(inked(&plain) > 0, "nothing painted");
+
+        state.drawings = vec![with(&|s| s.fib.price_labels = true)];
+        let priced = paint(&state);
+        assert!(inked(&priced) > inked(&plain), "a price beside each ratio painted nothing");
+        state.drawings = vec![with(&|s| {
+            s.fib.fib_labels = false;
+            s.fib.price_labels = true;
+        })];
+        let prices = paint(&state);
+        assert!(inked(&prices) < inked(&priced), "the ratios are still drawn beside the prices");
+        assert_ne!(prices, plain, "a price label looks like a ratio label");
+
+        state.drawings = vec![with(&|s| s.fib.fib_labels = false)];
+        let unlabelled = paint(&state);
+        assert!(inked(&unlabelled) < inked(&plain), "the labels painted nothing");
+
+        state.drawings = vec![with(&|s| {
+            s.fib.fib_labels = false;
+            s.fib.level_mut(0.5).unwrap().enabled = false;
+        })];
+        assert!(inked(&paint(&state)) < inked(&unlabelled), "a level switched off is still drawn");
+
+        state.drawings = vec![with(&|s| {
+            s.fib.fib_labels = false;
+            s.fib.level_mut(0.5).unwrap().colour = Some(drawings::Paint::fixed("#ff00ff"));
+        })];
+        let coloured = paint(&state);
+        assert_ne!(coloured, unlabelled, "the colour changed nothing");
+        assert_eq!(inked(&coloured), inked(&unlabelled), "only the colour changed");
+
+        state.drawings = vec![with(&|s| {
+            s.fib.fib_labels = false;
+            s.fib.level_mut(0.5).unwrap().stroke.width = 4.0;
+        })];
+        assert!(inked(&paint(&state)) > inked(&unlabelled), "the thickness changed nothing");
+
+        state.drawings = vec![with(&|s| {
+            s.fib.fib_labels = false;
+            s.fib.level_mut(0.5).unwrap().stroke.style = drawings::LineStyle::Dotted;
+        })];
+        assert!(inked(&paint(&state)) < inked(&unlabelled), "a dotted level is as solid as before");
+
+        // Switched off, a level is not where the drawing is picked.
+        let (first, visible) = state.slice();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let hidden = with(&|s| s.fib.level_mut(0.5).unwrap().enabled = false);
+        let projected = state.project(&plan, &scale, &hidden);
+        let y = scale.to_y(104.0, plan.price_y, plan.price_h);
+        let x = projected.from.0 + (projected.to.0 - projected.from.0) * 0.9;
+        assert_eq!(projected.hit(x, y), None);
+        assert_eq!(state.project(&plan, &scale, &drawing).hit(x, y), Some(Grip::Body));
     }
 
     /// The bands are drawn round the line when asked for, and not otherwise.

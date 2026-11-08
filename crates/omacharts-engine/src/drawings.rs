@@ -416,14 +416,22 @@ pub enum Kind {
     /// comes from the bars. Moved by its anchor alone, since moved whole it
     /// would be a VWAP from another bar.
     Vwap,
+    /// A Fibonacci retracement: a level at each of the ratios between its
+    /// two anchors' prices, drawn across the span they mark out. Dragged
+    /// from where a swing starts to where it ends, so 0 is the end and 1
+    /// the start, and a level reads as how far the move has been given
+    /// back. Moved whole, since unlike the two above it is drawn through
+    /// its anchors' prices.
+    Fib,
 }
 
 impl Kind {
     /// Every kind, in the order the tools are offered: the plain line
     /// first, then the two that are a line with one thing added, then the
     /// shapes, then the words, then the two that are read off the bars: the
-    /// profile, and the anchored VWAP under it.
-    pub const ALL: [Kind; 9] = [
+    /// profile, and the anchored VWAP under it; then the retracement, under
+    /// the VWAP.
+    pub const ALL: [Kind; 10] = [
         Kind::Line,
         Kind::Horizontal,
         Kind::Arrow,
@@ -433,6 +441,7 @@ impl Kind {
         Kind::Text,
         Kind::Profile,
         Kind::Vwap,
+        Kind::Fib,
     ];
 
     /// The kinds that are a shape, which is every kind that can carry text
@@ -461,6 +470,7 @@ impl Kind {
             Kind::Text => "Text",
             Kind::Profile => "Volume profile",
             Kind::Vwap => "Anchored VWAP",
+            Kind::Fib => "Fib retracement",
         }
     }
 
@@ -475,6 +485,7 @@ impl Kind {
             Kind::Text => "text",
             Kind::Profile => "profile",
             Kind::Vwap => "avwap",
+            Kind::Fib => "fib",
         }
     }
 
@@ -504,6 +515,12 @@ impl Kind {
                     .any(|name| key.eq_ignore_ascii_case(name))
                     .then_some(Kind::Vwap)
             })
+            .or_else(|| {
+                ["fibonacci", "retracement", "fib-retracement"]
+                    .iter()
+                    .any(|name| key.eq_ignore_ascii_case(name))
+                    .then_some(Kind::Fib)
+            })
     }
 
     /// Whether this kind has an inside: a fill, and room for text in it.
@@ -523,7 +540,7 @@ impl Kind {
     /// profile cannot, since it is read for its rows and has no inside free
     /// of them.
     pub fn takes_text(self) -> bool {
-        !self.reads_bars()
+        !self.reads_bars() && self != Kind::Fib
     }
 
     /// Whether what it draws is worked out from the bars it covers rather
@@ -1087,6 +1104,9 @@ pub struct Style {
     /// same way.
     #[serde(default, skip_serializing_if = "VwapLook::is_default")]
     pub vwap: VwapLook,
+    /// What only a Fibonacci retracement has: its levels and their labels.
+    #[serde(default, skip_serializing_if = "FibLook::is_default")]
+    pub fib: FibLook,
 }
 
 /// An anchored VWAP's own properties: the study's, as one drawing carries
@@ -1193,6 +1213,196 @@ pub const MAX_VWAP_DEVIATIONS: f64 = 6.0;
 
 pub use crate::indicators::{LineStyle, Stroke};
 pub use crate::indicators::vwap::Source as VwapSource;
+
+/// The ratios a Fibonacci retracement draws a level at, from the end of the
+/// swing back to its start: the seven every charting tool ships with.
+pub const FIB_RATIOS: [f64; 7] = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0];
+
+/// How much of its colour a retracement's level gets. Seven lines across a
+/// swing at full strength are a cage over the candles; at this one they are
+/// read as levels, the candles stay in front, and a theme's text colour
+/// becomes the soft grey the default is meant to be rather than white or
+/// black. The edge of a box is drawn at a strength of its own for the same
+/// reason.
+pub const FIB_ALPHA: f64 = 0.7;
+
+/// And the line from the swing's start to its end, which says which way
+/// it was drawn and carries its grips: a guide, quieter than any level.
+pub const FIB_TREND_ALPHA: f64 = 0.4;
+
+/// The size a level's label is set at, in pixels: the chart's axis labels'
+/// own, since a ratio and a price are read the way the axis is.
+pub const FIB_LABEL_SIZE: f64 = 11.0;
+
+/// The thickness a level is drawn at when nobody chose one: a hairline.
+pub const FIB_WIDTH: f64 = 1.0;
+
+/// A Fibonacci retracement's own properties: its seven levels and what
+/// their labels say.
+///
+/// All of it is part of the style, so all of it is part of a configuration:
+/// a look saved as configuration N brings every level's colour, thickness
+/// and pattern back with it.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "StoredFibLook")]
+pub struct FibLook {
+    /// Always the seven of [`FIB_RATIOS`], in that order, each switched on
+    /// or off rather than added or taken away, so a level keeps its look
+    /// while it is hidden.
+    pub levels: Vec<FibLevel>,
+    /// Whether each level is labelled with its ratio, 0.618.
+    pub fib_labels: bool,
+    /// Whether each level is labelled with its price. Off unless asked for:
+    /// the price axis already reads a level's price, and seven of them
+    /// crowd a short swing.
+    pub price_labels: bool,
+}
+
+impl Default for FibLook {
+    fn default() -> FibLook {
+        FibLook { levels: fib_levels(), fib_labels: true, price_labels: false }
+    }
+}
+
+/// A retracement's look as stored, read the way it was written before the
+/// labels were two: one `labels` switch said both, ratio and price, so it
+/// sets both when the two are not there.
+#[derive(Deserialize)]
+struct StoredFibLook {
+    #[serde(default = "fib_levels", deserialize_with = "stored_fib_levels")]
+    levels: Vec<FibLevel>,
+    #[serde(default)]
+    fib_labels: Option<bool>,
+    #[serde(default)]
+    price_labels: Option<bool>,
+    #[serde(default)]
+    labels: Option<bool>,
+}
+
+impl From<StoredFibLook> for FibLook {
+    fn from(stored: StoredFibLook) -> FibLook {
+        let shipped = FibLook::default();
+        FibLook {
+            levels: stored.levels,
+            fib_labels: stored.fib_labels.or(stored.labels).unwrap_or(shipped.fib_labels),
+            price_labels: stored.price_labels.or(stored.labels).unwrap_or(shipped.price_labels),
+        }
+    }
+}
+
+impl FibLook {
+    /// Whether any label is drawn.
+    pub fn labelled(&self) -> bool {
+        self.fib_labels || self.price_labels
+    }
+
+    fn is_default(&self) -> bool {
+        *self == FibLook::default()
+    }
+
+    /// The levels that are drawn.
+    pub fn enabled(&self) -> impl Iterator<Item = &FibLevel> {
+        self.levels.iter().filter(|level| level.enabled)
+    }
+
+    /// The thickness every level shares, or `None` when they differ.
+    pub fn width(&self) -> Option<f64> {
+        let first = self.levels.first()?.stroke.width;
+        self.levels.iter().all(|level| level.stroke.width == first).then_some(first)
+    }
+
+    /// Every level at one thickness: what a thickness picked for the whole
+    /// drawing means.
+    pub fn set_width(&mut self, width: f64) {
+        for level in self.levels.iter_mut() {
+            level.stroke.width = width;
+        }
+    }
+
+    /// The level at a ratio, to change it.
+    pub fn level_mut(&mut self, ratio: f64) -> Option<&mut FibLevel> {
+        self.levels.iter_mut().find(|level| same_ratio(level.ratio, ratio))
+    }
+}
+
+/// One level of a retracement.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct FibLevel {
+    pub ratio: f64,
+    pub enabled: bool,
+    /// `None` is the drawing's own colour, and follows it: one colour for
+    /// every level is the default, and changing it changes them all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<Paint>,
+    pub stroke: Stroke,
+}
+
+impl FibLevel {
+    pub fn new(ratio: f64) -> FibLevel {
+        FibLevel { ratio, enabled: true, colour: None, stroke: Stroke::new(FIB_WIDTH, LineStyle::Solid) }
+    }
+
+    /// The colour it is drawn in, on a drawing of `colour`.
+    pub fn paint<'a>(&'a self, colour: &'a Paint) -> &'a Paint {
+        self.colour.as_ref().unwrap_or(colour)
+    }
+
+    /// Its price on a swing from `start` to `end`: the end at 0 and the
+    /// start at 1, whichever way the swing went.
+    pub fn price(&self, start: f64, end: f64) -> f64 {
+        end + (start - end) * self.ratio
+    }
+
+    /// The ratio as it is written on the chart and typed on a command line:
+    /// `0`, `0.236`, `0.5`, `1`.
+    pub fn name(&self) -> String {
+        fib_ratio_name(self.ratio)
+    }
+}
+
+/// A ratio as a level is labelled: a percentage, with its decimal only
+/// where it has one, so 61.8% and 50% rather than 0.618 and 50.0%.
+pub fn fib_ratio_name(ratio: f64) -> String {
+    let text = format!("{:.1}", ratio * 100.0);
+    let text = text.strip_suffix(".0").unwrap_or(&text);
+    match text {
+        "-0" => "0%".to_string(),
+        other => format!("{other}%"),
+    }
+}
+
+/// Two ratios are the same level when they agree to the third place, which
+/// is as far as any of the seven is written.
+pub fn same_ratio(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.0005
+}
+
+/// The seven levels, every one on, solid, a hairline, in the drawing's
+/// colour.
+pub fn fib_levels() -> Vec<FibLevel> {
+    FIB_RATIOS.into_iter().map(FibLevel::new).collect()
+}
+
+/// The levels as stored, or the seven as shipped when what is stored is not
+/// the seven: a store written by some later build with other ratios should
+/// open rather than fail.
+fn stored_fib_levels<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Vec<FibLevel>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Levels(Vec<FibLevel>),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Stored::deserialize(from)? {
+        Stored::Levels(levels)
+            if levels.len() == FIB_RATIOS.len()
+                && levels.iter().zip(FIB_RATIOS).all(|(level, ratio)| same_ratio(level.ratio, ratio)) =>
+        {
+            levels
+        }
+        _ => fib_levels(),
+    })
+}
 
 /// A volume profile drawing's own properties: the study's, as one drawing
 /// carries them. The rows are the drawing's fill, the value area at its
@@ -1347,6 +1557,7 @@ impl Style {
             text: TextStyle::of(preset),
             profile: ProfileLook::default(),
             vwap: VwapLook::default(),
+            fib: FibLook::default(),
         }
     }
 
@@ -1365,6 +1576,7 @@ impl Style {
             text: TextStyle::of(preset),
             profile: ProfileLook::default(),
             vwap: VwapLook::default(),
+            fib: FibLook::default(),
         }
     }
 
@@ -1481,6 +1693,55 @@ impl Style {
         Style::line(preset)
     }
 
+    /// A Fibonacci retracement in one colour: every level in the preset's
+    /// colour, a solid hairline, labelled.
+    pub fn fib(preset: Preset) -> Style {
+        Style { width: FIB_WIDTH, ..Style::line(preset) }
+    }
+
+    /// The nine retracement configurations.
+    ///
+    /// One colour each and no fills, so a retracement is a set of levels
+    /// rather than a rainbow. Not the nine presets in order, as the other
+    /// kinds are: those start with Up and Down, and a retracement is not up
+    /// or down, it is a ruler laid over a move either way. So the first is
+    /// Ink — the chart's own text colour with the tint taken out, drawn at
+    /// [`FIB_ALPHA`], a soft grey on a dark theme and on a light one — with
+    /// the levels told apart by pattern: the swing's ends solid, the half
+    /// dashed, the rest dotted, so the eye finds the frame and the middle
+    /// before the ratios between. The second is the same Ink with every
+    /// level solid. Three to eight
+    /// are the colour presets in the places every other kind has them, so
+    /// configuration four is amber here as it is everywhere. The ninth is
+    /// Ink at the five levels most people read, without 0.236 and 0.786.
+    pub fn fib_configurations() -> Vec<Style> {
+        let graded = {
+            let mut style = Style::fib(Preset::Ink);
+            for level in style.fib.levels.iter_mut() {
+                level.stroke.style = match level.ratio {
+                    r if same_ratio(r, 0.0) || same_ratio(r, 1.0) => LineStyle::Solid,
+                    r if same_ratio(r, 0.5) => LineStyle::Dashed,
+                    _ => LineStyle::Dotted,
+                };
+            }
+            style
+        };
+        let sparse = {
+            let mut style = Style::fib(Preset::Ink);
+            for level in style.fib.levels.iter_mut() {
+                level.enabled = !(same_ratio(level.ratio, 0.236) || same_ratio(level.ratio, 0.786));
+            }
+            style
+        };
+        let mut nine = vec![graded, Style::fib(Preset::Ink)];
+        nine.extend(
+            [Preset::Blue, Preset::Amber, Preset::Violet, Preset::Teal, Preset::Orange, Preset::Cyan]
+                .map(Style::fib),
+        );
+        nine.push(sparse);
+        nine
+    }
+
     /// The configuration this kind starts from.
     pub fn of(kind: Kind, preset: Preset) -> Style {
         match kind {
@@ -1493,6 +1754,7 @@ impl Style {
             Kind::Text => Style::text(preset),
             Kind::Profile => Style::profile(preset),
             Kind::Vwap => Style::vwap(preset),
+            Kind::Fib => Style::fib(preset),
         }
     }
 
@@ -1542,6 +1804,8 @@ pub struct Configurations {
     pub profile: Vec<Style>,
     #[serde(default)]
     pub vwap: Vec<Style>,
+    #[serde(default)]
+    pub fib: Vec<Style>,
 }
 
 /// How many configurations each kind has.
@@ -1579,6 +1843,7 @@ impl Default for Configurations {
             text: nine(Style::text),
             profile: (1..=CONFIGURATIONS).map(Style::profile_configuration).collect(),
             vwap: nine(Style::vwap),
+            fib: Style::fib_configurations(),
         }
     }
 }
@@ -1641,6 +1906,7 @@ impl Configurations {
             Kind::Text => &self.text,
             Kind::Profile => &self.profile,
             Kind::Vwap => &self.vwap,
+            Kind::Fib => &self.fib,
         }
     }
 
@@ -1655,6 +1921,7 @@ impl Configurations {
             Kind::Text => &mut self.text,
             Kind::Profile => &mut self.profile,
             Kind::Vwap => &mut self.vwap,
+            Kind::Fib => &mut self.fib,
         }
     }
 
@@ -2130,6 +2397,8 @@ impl Drawing {
             // The anchor, on the bar the line starts from: dragged to
             // another bar, the VWAP starts from that one.
             Kind::Vwap => &[Grip::From],
+            // The swing's two ends, which are its two anchors.
+            Kind::Fib => &[Grip::From, Grip::To],
             // Answered above, where the number of them is known.
             Kind::Zigzag => &[],
         }
@@ -2211,11 +2480,28 @@ pub struct Projected {
     /// to select — which is the right answer for a word nobody has laid out
     /// yet, and a state that lasts exactly one frame.
     pub words: Option<(f64, f64, f64, f64)>,
+    /// A retracement's levels that are drawn, as heights on screen, and
+    /// empty for every other kind. Worked out by the chart, which is the
+    /// only one that knows whether its price scale is linear: on a log
+    /// scale the levels are not evenly spaced between the anchors.
+    pub levels: Vec<f64>,
 }
 
 impl Projected {
     pub fn new(kind: Kind, from: (f64, f64), to: (f64, f64)) -> Projected {
-        Projected { kind, from, to, corners: Vec::new(), words: None }
+        Projected { kind, from, to, corners: Vec::new(), words: None, levels: Vec::new() }
+    }
+
+    /// A retracement's projection: its two ends, and its levels' heights.
+    pub fn with_levels(self, levels: Vec<f64>) -> Projected {
+        Projected { levels, ..self }
+    }
+
+    /// A retracement's levels as segments across the span its ends mark
+    /// out.
+    pub fn level_segments(&self) -> Vec<((f64, f64), (f64, f64))> {
+        let (left, right) = ordered(self.from.0, self.to.0);
+        self.levels.iter().map(|y| ((left, *y), (right, *y))).collect()
     }
 
     /// A projection through a run of corners: the first and the last are
@@ -2224,7 +2510,7 @@ impl Projected {
     pub fn through(kind: Kind, corners: Vec<(f64, f64)>) -> Projected {
         let from = corners.first().copied().unwrap_or((0.0, 0.0));
         let to = corners.last().copied().unwrap_or(from);
-        Projected { kind, from, to, corners, words: None }
+        Projected { kind, from, to, corners, words: None, levels: Vec::new() }
     }
 
     /// The same projection, told where its words landed.
@@ -2350,6 +2636,14 @@ impl Projected {
                 .segments()
                 .iter()
                 .any(|(a, b)| distance_to_segment((x, y), *a, *b) <= reach),
+            // Any of its levels, or the line from the swing's start to its
+            // end: what is drawn, and not the empty space between levels,
+            // which belongs to the candles there.
+            Kind::Fib => self
+                .level_segments()
+                .iter()
+                .chain(std::iter::once(&(self.from, self.to)))
+                .any(|(a, b)| distance_to_segment((x, y), *a, *b) <= reach),
             // Its span and the prices it reached, which the chart puts in
             // its anchors when it projects it.
             Kind::Rect | Kind::Profile => {
@@ -2388,6 +2682,11 @@ impl Projected {
             Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag | Kind::Vwap => self
                 .segments()
                 .iter()
+                .any(|(a, b)| segment_meets_box(*a, *b, left, top, right, bottom)),
+            Kind::Fib => self
+                .level_segments()
+                .iter()
+                .chain(std::iter::once(&(self.from, self.to)))
                 .any(|(a, b)| segment_meets_box(*a, *b, left, top, right, bottom)),
             // The box the shape fills. A dragged selection is a rough
             // gesture over a region, not a click: catching an ellipse whose
@@ -3303,14 +3602,16 @@ mod configuration_tests {
     }
 
     /// Nine of every kind, named by the preset of that number, so Alt+4 is
-    /// amber whichever tool is in hand.
+    /// amber whichever tool is in hand. A volume profile has nine of its
+    /// own, and a retracement keeps three to eight with neutrals where the
+    /// others have Up and Down; their own tests say why.
     #[test]
     fn the_nine_are_the_nine_presets_for_every_kind() {
         let configs = Configurations::default();
         for kind in Kind::ALL {
             assert_eq!(configs.list(kind).len(), CONFIGURATIONS as usize);
             for (at, preset) in Preset::ALL.into_iter().enumerate() {
-                if kind == Kind::Profile {
+                if kind == Kind::Profile || (kind == Kind::Fib && !(3..=8).contains(&(at + 1))) {
                     continue;
                 }
                 assert_eq!(configs.of(kind, at as u8 + 1), &Style::of(kind, preset));
@@ -3728,7 +4029,8 @@ mod edge_grip_tests {
             assert_eq!(Kind::from_key(key), Some(Kind::Vwap), "{key}");
         }
         // Offered straight after the profile: its button is the one under it.
-        assert_eq!(Kind::ALL[Kind::ALL.len() - 2..], [Kind::Profile, Kind::Vwap]);
+        let at = Kind::ALL.iter().position(|k| *k == Kind::Vwap).unwrap();
+        assert_eq!(Kind::ALL[at - 1], Kind::Profile);
     }
 
     /// The line it is drawn as is points worked out from the bars, and none
@@ -3823,6 +4125,144 @@ mod edge_grip_tests {
         let configs: Configurations = serde_json::from_value(stored).unwrap();
         assert_eq!(configs.list(Kind::Vwap).len(), CONFIGURATIONS as usize);
         assert!(configs.is_default(Kind::Vwap, 4));
+    }
+
+    /// A retracement is two anchors, moved whole and by either end, and the
+    /// tool is offered straight after the anchored VWAP.
+    #[test]
+    fn a_retracement_is_two_ends_moved_whole_or_by_either() {
+        let mut drawing = Drawing::new(Kind::Fib, Anchor::new(100, 10.0), Anchor::new(300, 20.0));
+        assert_eq!(drawing.grips(), vec![Grip::From, Grip::To]);
+        drawing.drag_grip(Grip::To, Anchor::new(400, 30.0));
+        assert_eq!((drawing.to.ts, drawing.to.price), (400, 30.0));
+        assert_eq!((drawing.from.ts, drawing.from.price), (100, 10.0), "the other end stays");
+        drawing.shift(50, 1.0);
+        assert_eq!((drawing.from.ts, drawing.from.price, drawing.to.price), (150, 11.0, 31.0));
+        assert!(!Kind::Fib.takes_text() && !Kind::Fib.reads_bars() && !Kind::Fib.one_anchor());
+        for key in ["fib", "FIB", "fibonacci", "retracement", "fib-retracement"] {
+            assert_eq!(Kind::from_key(key), Some(Kind::Fib), "{key}");
+        }
+        assert_eq!(Kind::ALL[Kind::ALL.len() - 2..], [Kind::Vwap, Kind::Fib]);
+    }
+
+    /// Direction follows the drag: 0 is where the hand let go and 1 where it
+    /// started, so a swing dragged up and one dragged down put 0.618 on
+    /// opposite sides of the middle.
+    #[test]
+    fn a_retracements_levels_follow_the_direction_it_was_drawn() {
+        let level = |ratio: f64| FibLevel::new(ratio);
+        // Up from 100 to 200: 0 at the top, 0.618 well below the half.
+        assert_eq!(level(0.0).price(100.0, 200.0), 200.0);
+        assert_eq!(level(1.0).price(100.0, 200.0), 100.0);
+        assert!((level(0.618).price(100.0, 200.0) - 138.2).abs() < 1e-9);
+        // Down from 200 to 100: the same ratio, above it.
+        assert!((level(0.618).price(200.0, 100.0) - 161.8).abs() < 1e-9);
+        assert_eq!(level(0.5).price(200.0, 100.0), 150.0);
+        let names: Vec<String> = fib_levels().iter().map(FibLevel::name).collect();
+        assert_eq!(names, ["0%", "23.6%", "38.2%", "50%", "61.8%", "78.6%", "100%"]);
+        assert_eq!(fib_ratio_name(1.272), "127.2%", "a level past the swing reads the same way");
+        assert_eq!(fib_ratio_name(-0.0), "0%");
+    }
+
+    /// Picked on a level or on the line between its ends, held by those ends,
+    /// and not picked in the empty space between two levels.
+    #[test]
+    fn a_retracement_is_picked_on_its_levels_and_held_by_its_ends() {
+        let projected = Projected::new(Kind::Fib, (100.0, 300.0), (300.0, 100.0))
+            .with_levels(vec![100.0, 150.0, 200.0, 250.0, 300.0]);
+        assert_eq!(projected.hit(100.0, 300.0), Some(Grip::From));
+        assert_eq!(projected.hit(300.0, 100.0), Some(Grip::To));
+        assert_eq!(projected.hit(260.0, 150.0), Some(Grip::Body), "on a level");
+        assert_eq!(projected.hit(200.0, 200.0), Some(Grip::Body), "on the line between the ends");
+        assert_eq!(projected.hit(260.0, 175.0), None, "between two levels");
+        assert_eq!(projected.hit(340.0, 150.0), None, "past the span");
+        assert!(projected.touches((250.0, 240.0, 20.0, 20.0)), "a box over a level takes it");
+        assert!(!projected.touches((250.0, 165.0, 20.0, 10.0)), "a box between levels does not");
+    }
+
+    /// One colour a configuration and nothing filled; none of them Up or
+    /// Down; the first is Ink, drawn soft: neither black nor white, and a
+    /// grey on every theme the app ships.
+    #[test]
+    fn the_nine_retracement_configurations_are_quiet_and_one_colour_each() {
+        let configs = Configurations::default();
+        assert_eq!(configs.list(Kind::Fib).len(), CONFIGURATIONS as usize);
+        for n in 1..=CONFIGURATIONS {
+            let style = configs.of(Kind::Fib, n);
+            assert!(style.fib.levels.iter().all(|level| level.colour.is_none()), "configuration {n}");
+            assert!(style.fib.fib_labels && !style.fib.price_labels, "configuration {n} labels ratios only");
+            assert!(
+                !matches!(style.colour, Paint::Preset { preset: Preset::Up | Preset::Down }),
+                "configuration {n} says up or down"
+            );
+        }
+        assert_eq!(configs.of(Kind::Fib, 1).colour, Paint::preset(Preset::Ink));
+        assert_eq!(configs.of(Kind::Fib, 2).colour, Paint::preset(Preset::Ink));
+        assert_eq!(configs.of(Kind::Fib, 4).colour, Paint::preset(Preset::Amber), "four is amber, as everywhere");
+        assert_ne!(configs.of(Kind::Fib, 1), configs.of(Kind::Fib, 2));
+        // The first, the one a new retracement takes, tells the levels apart
+        // by pattern; the second is the same, every level solid.
+        let patterns = |n: u8| -> Vec<LineStyle> {
+            configs.of(Kind::Fib, n).fib.levels.iter().map(|level| level.stroke.style).collect()
+        };
+        use LineStyle::{Dashed, Dotted, Solid};
+        assert_eq!(patterns(1), [Solid, Dotted, Dotted, Dashed, Dotted, Dotted, Solid]);
+        assert_eq!(patterns(2), [Solid; 7]);
+        assert_ne!(configs.of(Kind::Fib, 1), configs.of(Kind::Fib, 9));
+        for theme in crate::theme::builtin_themes() {
+            let bg = &theme.ui.background;
+            let drawn = mix(&colour(&theme, Preset::Ink), bg, 1.0 - FIB_ALPHA);
+            let ink = Oklch::of(&drawn).unwrap();
+            assert!(ink.c < 0.04, "{}: {drawn} has a hue", theme.name);
+            assert!((0.12..0.9).contains(&ink.l), "{}: {drawn} is black or white", theme.name);
+            assert!(contrast_ratio(&drawn, bg) >= 2.5, "{}: {drawn} is lost on {bg}", theme.name);
+        }
+    }
+
+    /// A line's stored style says nothing about a retracement; a
+    /// retracement's reads back as written; and a store from before the
+    /// kind, or with levels this build does not draw, opens with the seven.
+    #[test]
+    fn a_retracements_look_is_stored_and_read_back() {
+        let plain = serde_json::to_value(Style::line(Preset::Up)).unwrap();
+        assert!(plain.get("fib").is_none(), "{plain}");
+        let mut style = Style::fib(Preset::Teal);
+        style.fib.fib_labels = false;
+        style.fib.price_labels = true;
+        let level = style.fib.level_mut(0.618).unwrap();
+        level.colour = Some(Paint::fixed("#aabbcc"));
+        level.stroke = Stroke::new(2.5, LineStyle::Dashed);
+        style.fib.level_mut(0.236).unwrap().enabled = false;
+        let json = serde_json::to_string(&style).unwrap();
+        assert_eq!(serde_json::from_str::<Style>(&json).unwrap(), style);
+
+        let mut odd = serde_json::to_value(&style).unwrap();
+        odd["fib"]["levels"] = serde_json::json!([{ "ratio": 0.5, "enabled": true, "stroke": { "width": 1.0, "style": "solid" } }]);
+        let read: Style = serde_json::from_value(odd).unwrap();
+        assert_eq!(read.fib.levels, fib_levels());
+        assert!(!read.fib.fib_labels && read.fib.price_labels, "the rest of the look survives");
+
+        // Before the labels were two, one switch said both.
+        for (labels, both) in [(true, true), (false, false)] {
+            let mut old = serde_json::to_value(&style).unwrap();
+            let fib = old["fib"].as_object_mut().unwrap();
+            fib.remove("fib_labels");
+            fib.remove("price_labels");
+            fib.insert("labels".into(), labels.into());
+            let read: Style = serde_json::from_value(old).unwrap();
+            assert_eq!((read.fib.fib_labels, read.fib.price_labels), (both, both), "labels: {labels}");
+            assert_eq!(read.fib.levels, style.fib.levels);
+        }
+        let mut bare = serde_json::to_value(&style).unwrap();
+        bare["fib"] = serde_json::json!({});
+        let read: Style = serde_json::from_value(bare).unwrap();
+        assert_eq!(read.fib, FibLook::default(), "ratios only unless told otherwise");
+
+        let mut stored = serde_json::to_value(Configurations::default()).unwrap();
+        stored.as_object_mut().unwrap().remove("fib");
+        let configs: Configurations = serde_json::from_value(stored).unwrap();
+        assert_eq!(configs.list(Kind::Fib).len(), CONFIGURATIONS as usize);
+        assert!(configs.is_default(Kind::Fib, 2));
     }
 
     /// Every profile configuration is configuration 1's look in another

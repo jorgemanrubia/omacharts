@@ -304,7 +304,7 @@ const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"
 /// list before the parser sees anything, so an alias the engine understands
 /// and the table does not is an alias nobody can use.
 const DRAWING_KINDS: &[&str] =
-    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp", "avwap", "vwap"];
+    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp", "avwap", "vwap", "fib", "fibonacci", "retracement", "fib-retracement"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
@@ -991,7 +991,7 @@ pub const SURFACE: &[Noun] = &[
                 args: &[
                     Arg::req("ACTION", "what to do")
                         .of(&["list", "add", "set", "remove", "clear", "configs", "configure", "reset-configs"]),
-                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, a volume profile of the bars between them, words at the first, or an anchored VWAP from the first")
+                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, a volume profile of the bars between them, words at the first, an anchored VWAP from the first, or a Fibonacci retracement of the swing from the first to the second")
                         .of(DRAWING_KINDS),
                 ],
                 flags: &[
@@ -1003,7 +1003,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("point", "ANCHOR", POINT).repeating(),
                     Flag::valued("config", "N", "the configuration, 1-9, a drawing follows, or the one to configure"),
                     Flag::valued("color", "COLOUR", "a line's colour, or a box's edge: a preset name or #rrggbb"),
-                    Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge; 0 leaves an anchored VWAP only its bands"),
+                    Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge, or every level of a retracement; 0 leaves an anchored VWAP only its bands"),
                     Flag::valued("arrow", "WHERE", "which ends of a line wear an arrowhead").of(ARROWS),
                     Flag::valued("head", "SHAPE", "the arrowhead's shape").of(HEADS),
                     Flag::valued("border", "BOOL", "whether a box has an edge, or a filled volume profile an outline").of(SWITCHES),
@@ -1033,6 +1033,13 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("band-color", "COLOUR", "a band's colour: a preset name, #rrggbb, or `line` for the line's own"),
                     Flag::valued("band-width", "F", "the thickness of a band's edges in pixels; 0 draws none"),
                     Flag::valued("band-style", "STYLE", "how a band's edges are drawn").of(LINE_STYLES),
+                    Flag::valued("levels", "LIST", "which of a Fibonacci retracement's levels are drawn: any of 0, 0.236, 0.382, 0.5, 0.618, 0.786 and 1, or the same as percentages (61.8%), comma-separated, all, or none"),
+                    Flag::valued("level", "RATIO", "the retracement level, such as 0.618, the --level-* flags change (default: every one)"),
+                    Flag::valued("level-color", "COLOUR", "a level's colour: a preset name, #rrggbb, or `drawing` for the drawing's own"),
+                    Flag::valued("level-width", "F", "a level's thickness in pixels"),
+                    Flag::valued("level-style", "STYLE", "how a level is drawn").of(LINE_STYLES),
+                    Flag::valued("fib-labels", "BOOL", "whether a retracement's levels are labelled with their ratio, as 61.8% (on unless set)").of(SWITCHES),
+                    Flag::valued("price-labels", "BOOL", "whether a retracement's levels are labelled with their price (off unless set)").of(SWITCHES),
                 ],
                 example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,
