@@ -780,10 +780,12 @@ omacharts chart drawing set --id 3 --band 3 --band-deviations 2.5 --band-color v
 
 **A Fibonacci retracement** (`fib`, or `fibonacci`, `retracement`) spans the
 swing from `--from` to `--to`: 0 is at `--to` and 1 at `--from`, so the levels
-follow the direction it was drawn. It has the seven levels 0, 0.236, 0.382,
-0.5, 0.618, 0.786 and 1, all on, each a solid hairline in the drawing's
+follow the direction it was drawn. It has the seven levels 0%, 23.6%, 38.2%,
+50%, 61.8%, 78.6% and 100% (typed as ratios, 0.618, or percentages, 61.8%),
+all on, each a hairline in the drawing's
 `--color`. `--levels` says which are drawn (ratios comma-separated, `all` or
-`none`), `--labels on|off` whether each is labelled with its ratio and price,
+`none`), `--fib-labels on|off` whether each is labelled with its ratio (on
+unless set) and `--price-labels on|off` with its price (off unless set),
 and `--level-color` (a colour, or `drawing` for the drawing's own),
 `--level-width` and `--level-style` change a level's look; `--level RATIO`
 says which, and without it they change all seven. `--width` sets every
@@ -794,7 +796,7 @@ takes no words.
 ```
 omacharts chart drawing add fib --from 2026-09-08,178 --to 2026-09-19,192
 omacharts chart drawing set --id 4 --level 0.618 --level-color amber --level-style dashed
-omacharts chart drawing set --id 4 --levels 0,0.5,0.618,1 --labels off
+omacharts chart drawing set --id 4 --levels 0,0.5,0.618,1 --price-labels on
 ```
 
 **Any other drawing can carry words.** `--text` on a line, a box or an ellipse is a

@@ -2582,7 +2582,8 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
     // And only a retracement has these.
     if kind == omacharts_engine::DrawingKind::Fib {
         out["fib"] = json!({
-            "labels": style.fib.labels,
+            "fib_labels": style.fib.fib_labels,
+            "price_labels": style.fib.price_labels,
             "levels": style.fib.levels.iter().map(|level| json!({
                 "level": level.ratio,
                 "enabled": level.enabled,
@@ -2697,9 +2698,11 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                 Some(width) => format!("{width}px"),
                 None => "mixed widths".to_string(),
             };
-            let labels = match look.labels {
-                true => "labelled",
-                false => "no labels",
+            let labels = match (look.fib_labels, look.price_labels) {
+                (true, false) => "ratio labels",
+                (true, true) => "ratio and price labels",
+                (false, true) => "price labels",
+                (false, false) => "no labels",
             };
             format!("{}, {width}, {levels}, {labels}", style.colour.spell())
         }
@@ -2759,7 +2762,8 @@ struct StyleEdits {
     level_colour: Option<Option<omacharts_engine::Paint>>,
     level_width: Option<f64>,
     level_style: Option<LineStyle>,
-    labels: Option<bool>,
+    fib_labels: Option<bool>,
+    price_labels: Option<bool>,
 }
 
 impl StyleEdits {
@@ -2883,11 +2887,11 @@ impl StyleEdits {
             Some(text) if text.eq_ignore_ascii_case("drawing") => Some(None),
             Some(_) => Some(paint("level-color")?),
         };
-        let labels = match arg(m, "labels").map(String::as_str) {
-            None => None,
-            Some("on") => Some(true),
-            Some("off") => Some(false),
-            Some(other) => return Err(Fault::usage(format!("--labels is on or off, not {other:?}"))),
+        let switch = |id: &str| match arg(m, id).map(String::as_str) {
+            None => Ok(None),
+            Some("on") => Ok(Some(true)),
+            Some("off") => Ok(Some(false)),
+            Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
         };
         Ok(StyleEdits {
             levels,
@@ -2895,7 +2899,8 @@ impl StyleEdits {
             level_colour,
             level_width: bounded(m, "level-width", MIN_WIDTH, MAX_WIDTH)?,
             level_style: pattern("level-style")?,
-            labels,
+            fib_labels: switch("fib-labels")?,
+            price_labels: switch("price-labels")?,
             source,
             line: pattern("style")?,
             bands,
@@ -2955,7 +2960,8 @@ impl StyleEdits {
             && self.levels.is_none()
             && self.level.is_none()
             && !self.edits_a_level()
-            && self.labels.is_none()
+            && self.fib_labels.is_none()
+            && self.price_labels.is_none()
     }
 
     /// Whether anything is said about the look of a retracement's level, as
@@ -2999,10 +3005,12 @@ impl StyleEdits {
                 "--band says which band the --band-* flags change; give one of them too".into(),
             ));
         }
-        let fib_only = self.levels.is_some() || self.level.is_some() || self.edits_a_level() || self.labels.is_some();
+        let fib_only = self.levels.is_some() || self.level.is_some() || self.edits_a_level()
+            || self.fib_labels.is_some()
+            || self.price_labels.is_some();
         if fib_only && kind != omacharts_engine::DrawingKind::Fib {
             return Err(Fault::usage(format!(
-                "--levels, --labels and the --level flags are a Fibonacci retracement's; a {} has none",
+                "--levels, --fib-labels, --price-labels and the --level flags are a Fibonacci retracement's; a {} has none",
                 kind.label().to_lowercase()
             )));
         }
@@ -3044,8 +3052,11 @@ impl StyleEdits {
                 level.stroke.style = pattern;
             }
         }
-        if let Some(labels) = self.labels {
-            style.fib.labels = labels;
+        if let Some(on) = self.fib_labels {
+            style.fib.fib_labels = on;
+        }
+        if let Some(on) = self.price_labels {
+            style.fib.price_labels = on;
         }
         if let Some(arrow) = self.arrow {
             style.arrow = arrow;
@@ -4038,9 +4049,15 @@ fn read_bands(text: &str) -> Result<Vec<usize>, Fault> {
 /// percentage, `61.8`. Only the seven it draws.
 fn read_fib_level(text: &str) -> Option<f64> {
     use omacharts_engine::drawings::{same_ratio, FIB_RATIOS};
-    let text = text.trim().trim_end_matches('%');
-    let value: f64 = text.parse().ok()?;
-    let ratio = if value > 1.0 { value / 100.0 } else { value };
+    // A ratio, 0.618; a percentage, 61.8 or 61.8%. A number past 1 can only
+    // be a percentage, and one with a % sign always is, so 1% is not 100%.
+    let text = text.trim();
+    let (number, percent) = match text.strip_suffix('%') {
+        Some(number) => (number.trim(), true),
+        None => (text, false),
+    };
+    let value: f64 = number.parse().ok()?;
+    let ratio = if percent || value > 1.0 { value / 100.0 } else { value };
     FIB_RATIOS.into_iter().find(|r| same_ratio(*r, ratio))
 }
 
@@ -8108,7 +8125,7 @@ mod tests {
         let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         let out = run(
-            "chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --levels 0,0.382,0.5,0.618,1 --labels off",
+            "chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --levels 0,0.382,0.5,0.618,1 --fib-labels off",
             &store,
         );
         assert_eq!(out.code, 0, "{}", out.err);
@@ -8117,7 +8134,7 @@ mod tests {
         let drawing = &listed["drawings"][0];
         assert_eq!(drawing["kind"], "fib");
         let fib = &drawing["style"]["fib"];
-        assert_eq!(fib["labels"], false);
+        assert_eq!((&fib["fib_labels"], &fib["price_labels"]), (&json!(false), &json!(false)));
         let enabled: Vec<f64> = fib["levels"]
             .as_array()
             .unwrap()
@@ -8129,7 +8146,7 @@ mod tests {
 
         let id = drawing["id"].as_i64().unwrap();
         let set = run(
-            &format!("chart drawing set --book Macro --id {id} --level 61.8 --level-color amber --level-width 2.5 --level-style dashed --labels on"),
+            &format!("chart drawing set --book Macro --id {id} --level 61.8 --level-color amber --level-width 2.5 --level-style dashed --price-labels on"),
             &store,
         );
         assert_eq!(set.code, 0, "{}", set.err);
@@ -8141,7 +8158,7 @@ mod tests {
         assert_eq!(golden["width"], 2.5);
         assert_eq!(golden["style"], "dashed");
         assert_eq!(fib["levels"][3]["color"], serde_json::Value::Null, "only the one level changed");
-        assert_eq!(fib["labels"], true);
+        assert_eq!((&fib["fib_labels"], &fib["price_labels"]), (&json!(false), &json!(true)), "one switch, not both");
 
         // Every level at once, and back to the drawing's colour.
         let all = run(&format!("chart drawing set --book Macro --id {id} --width 2 --level-color drawing"), &store);
@@ -8150,16 +8167,21 @@ mod tests {
         let levels = listed["drawings"][0]["style"]["fib"]["levels"].as_array().unwrap().clone();
         assert!(levels.iter().all(|level| level["width"] == 2.0 && level["color"].is_null()), "{levels:?}");
 
-        for bad in ["--levels 0.3", "--level 0.7 --level-width 2", "--level 0.5", "--text hello", "--source close"] {
+        for bad in ["--levels 0.3", "--levels 1%", "--level 0.7 --level-width 2", "--level 0.5", "--fib-labels maybe", "--text hello", "--source close"] {
             let out = run(&format!("chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 {bad}"), &store);
             assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad}: {}", out.err);
         }
-        let other = run("chart drawing add line --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --labels off", &store);
+        let other = run("chart drawing add line --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --price-labels on", &store);
         assert_eq!(other.code, crate::cli::EXIT_USAGE, "a line has no level labels");
         let configured = run("chart drawing configure fib --config 3 --levels all --level 0 --level-style dotted", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
         let configs = run("chart drawing configs fib", &store);
-        assert!(configs.out.contains("fib 1  ink, 1px, every level, labelled"), "{}", configs.out);
+        assert!(configs.out.contains("fib 1  ink, 1px, every level, ratio labels"), "{}", configs.out);
+        assert!(configs.out.contains("fib 9  ink, 1px, levels 0% 38.2% 50% 61.8% 100%"), "{}", configs.out);
+        let percents = run("chart drawing configure fib --config 5 --levels 0%,50%,61.8,100%", &store);
+        assert_eq!(percents.code, 0, "{}", percents.err);
+        let configs = run("chart drawing configs fib", &store);
+        assert!(configs.out.contains("levels 0% 50% 61.8% 100%"), "{}", configs.out);
         assert!(configs.out.contains("fib 3  blue") && configs.out.contains("(edited)"), "{}", configs.out);
     }
 

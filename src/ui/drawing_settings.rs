@@ -634,8 +634,11 @@ fn fib_summary(style: &Style) -> String {
     if look.levels.iter().any(|level| level.colour.is_some()) {
         words.push("own colours".to_string());
     }
-    if !look.labels {
-        words.push("no labels".to_string());
+    match (look.fib_labels, look.price_labels) {
+        (true, false) => {}
+        (true, true) => words.push("prices".to_string()),
+        (false, true) => words.push("prices, no ratios".to_string()),
+        (false, false) => words.push("no labels".to_string()),
     }
     words.join(", ")
 }
@@ -1072,19 +1075,27 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
 
-            let labels = adw::SwitchRow::new();
-            labels.set_title("Labels");
-            labels.set_active(style.borrow().fib.labels);
-            {
-                let style = style.clone();
-                let emit = emit.clone();
-                labels.connect_active_notify(move |row| {
-                    style.borrow_mut().fib.labels = row.is_active();
-                    emit();
-                });
+            type Get = fn(&drawings::FibLook) -> bool;
+            type Set = fn(&mut drawings::FibLook, bool);
+            let switches: [(&str, Get, Set); 2] = [
+                ("Fib labels", |look| look.fib_labels, |look, on| look.fib_labels = on),
+                ("Price labels", |look| look.price_labels, |look, on| look.price_labels = on),
+            ];
+            for (title, get, set) in switches {
+                let row = adw::SwitchRow::new();
+                row.set_title(title);
+                row.set_active(get(&style.borrow().fib));
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    row.connect_active_notify(move |row| {
+                        set(&mut style.borrow_mut().fib, row.is_active());
+                        emit();
+                    });
+                }
+                group.add(&row);
+                shows.push(Rc::new(move |s: &Style| row.set_active(get(&s.fib))));
             }
-            group.add(&labels);
-            shows.push(Rc::new(move |s: &Style| labels.set_active(s.fib.labels)));
 
             let levels = adw::PreferencesGroup::new();
             levels.set_title("Levels");

@@ -9083,7 +9083,7 @@ fn draw_fib_drawing(
         let _ = cr.stroke();
     }
     cr.set_dash(&[], 0.0);
-    if style.fib.labels && right - left >= 1.0 {
+    if style.fib.labelled() && right - left >= 1.0 {
         draw_fib_labels(cr, state, drawing, style, &levels, left);
     }
     cr.restore().ok();
@@ -9114,8 +9114,12 @@ fn draw_fib_labels(
             continue;
         }
         last = Some(*y);
-        let price = level.price(drawing.from.price, drawing.to.price);
-        let text = format!("{}  {}", level.name(), grouped_decimals(price, places));
+        let price = || grouped_decimals(level.price(drawing.from.price, drawing.to.price), places);
+        let text = match (style.fib.fib_labels, style.fib.price_labels) {
+            (true, true) => format!("{}  {}", level.name(), price()),
+            (true, false) => level.name(),
+            _ => price(),
+        };
         let drawn = omacharts_engine::theme::mix(&level.paint(&style.colour).hex(theme), bg, 1.0 - drawings::FIB_ALPHA);
         let ink = omacharts_engine::theme::held_to(&drawn, bg, drawings::TEXT_CONTRAST, None);
         // A plate of the chart's own background behind the text, so a label
@@ -12596,18 +12600,29 @@ mod drawing_tests {
         let plain = paint(&state);
         assert!(inked(&plain) > 0, "nothing painted");
 
-        state.drawings = vec![with(&|s| s.fib.labels = false)];
+        state.drawings = vec![with(&|s| s.fib.price_labels = true)];
+        let priced = paint(&state);
+        assert!(inked(&priced) > inked(&plain), "a price beside each ratio painted nothing");
+        state.drawings = vec![with(&|s| {
+            s.fib.fib_labels = false;
+            s.fib.price_labels = true;
+        })];
+        let prices = paint(&state);
+        assert!(inked(&prices) < inked(&priced), "the ratios are still drawn beside the prices");
+        assert_ne!(prices, plain, "a price label looks like a ratio label");
+
+        state.drawings = vec![with(&|s| s.fib.fib_labels = false)];
         let unlabelled = paint(&state);
         assert!(inked(&unlabelled) < inked(&plain), "the labels painted nothing");
 
         state.drawings = vec![with(&|s| {
-            s.fib.labels = false;
+            s.fib.fib_labels = false;
             s.fib.level_mut(0.5).unwrap().enabled = false;
         })];
         assert!(inked(&paint(&state)) < inked(&unlabelled), "a level switched off is still drawn");
 
         state.drawings = vec![with(&|s| {
-            s.fib.labels = false;
+            s.fib.fib_labels = false;
             s.fib.level_mut(0.5).unwrap().colour = Some(drawings::Paint::fixed("#ff00ff"));
         })];
         let coloured = paint(&state);
@@ -12615,13 +12630,13 @@ mod drawing_tests {
         assert_eq!(inked(&coloured), inked(&unlabelled), "only the colour changed");
 
         state.drawings = vec![with(&|s| {
-            s.fib.labels = false;
+            s.fib.fib_labels = false;
             s.fib.level_mut(0.5).unwrap().stroke.width = 4.0;
         })];
         assert!(inked(&paint(&state)) > inked(&unlabelled), "the thickness changed nothing");
 
         state.drawings = vec![with(&|s| {
-            s.fib.labels = false;
+            s.fib.fib_labels = false;
             s.fib.level_mut(0.5).unwrap().stroke.style = drawings::LineStyle::Dotted;
         })];
         assert!(inked(&paint(&state)) < inked(&unlabelled), "a dotted level is as solid as before");

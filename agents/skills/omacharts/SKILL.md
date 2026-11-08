@@ -283,9 +283,12 @@ omacharts chart drawing configure avwap --config 5 --bands 1,2,3 --band 3 --band
 **A Fibonacci retracement is a drawing of two anchors.** `fib` spans the
 swing from `--from` to `--to`, with 0 at `--to` and 1 at `--from`, so drag
 order is direction: from a low to a high for the pullback levels. Its seven
-levels (0, 0.236, 0.382, 0.5, 0.618, 0.786, 1) are all on and in the
-drawing's colour. `--levels` picks which are drawn, `--labels on|off` hides
-the ratio-and-price labels, and `--level RATIO` with `--level-color`,
+levels (0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100%; typed as ratios or
+percentages) are all on and in the
+drawing's colour, each labelled with its ratio. `--levels` picks which are
+drawn, `--fib-labels on|off` and `--price-labels on|off` say whether a
+level's label shows its ratio and its price (ratio on, price off unless set),
+and `--level RATIO` with `--level-color`,
 `--level-width` or `--level-style` restyles one level; without `--level`
 they change all seven. It takes no `--text`.
 

@@ -1237,33 +1237,63 @@ pub const FIB_LABEL_SIZE: f64 = 11.0;
 /// The thickness a level is drawn at when nobody chose one: a hairline.
 pub const FIB_WIDTH: f64 = 1.0;
 
-/// A Fibonacci retracement's own properties: its seven levels and whether
-/// they are labelled.
+/// A Fibonacci retracement's own properties: its seven levels and what
+/// their labels say.
 ///
 /// All of it is part of the style, so all of it is part of a configuration:
 /// a look saved as configuration N brings every level's colour, thickness
 /// and pattern back with it.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "StoredFibLook")]
 pub struct FibLook {
     /// Always the seven of [`FIB_RATIOS`], in that order, each switched on
     /// or off rather than added or taken away, so a level keeps its look
     /// while it is hidden.
-    #[serde(default = "fib_levels", deserialize_with = "stored_fib_levels")]
     pub levels: Vec<FibLevel>,
-    /// Whether each level is labelled with its ratio and its price.
-    #[serde(default = "FibLook::shown")]
-    pub labels: bool,
+    /// Whether each level is labelled with its ratio, 0.618.
+    pub fib_labels: bool,
+    /// Whether each level is labelled with its price. Off unless asked for:
+    /// the price axis already reads a level's price, and seven of them
+    /// crowd a short swing.
+    pub price_labels: bool,
 }
 
 impl Default for FibLook {
     fn default() -> FibLook {
-        FibLook { levels: fib_levels(), labels: true }
+        FibLook { levels: fib_levels(), fib_labels: true, price_labels: false }
+    }
+}
+
+/// A retracement's look as stored, read the way it was written before the
+/// labels were two: one `labels` switch said both, ratio and price, so it
+/// sets both when the two are not there.
+#[derive(Deserialize)]
+struct StoredFibLook {
+    #[serde(default = "fib_levels", deserialize_with = "stored_fib_levels")]
+    levels: Vec<FibLevel>,
+    #[serde(default)]
+    fib_labels: Option<bool>,
+    #[serde(default)]
+    price_labels: Option<bool>,
+    #[serde(default)]
+    labels: Option<bool>,
+}
+
+impl From<StoredFibLook> for FibLook {
+    fn from(stored: StoredFibLook) -> FibLook {
+        let shipped = FibLook::default();
+        FibLook {
+            levels: stored.levels,
+            fib_labels: stored.fib_labels.or(stored.labels).unwrap_or(shipped.fib_labels),
+            price_labels: stored.price_labels.or(stored.labels).unwrap_or(shipped.price_labels),
+        }
     }
 }
 
 impl FibLook {
-    fn shown() -> bool {
-        true
+    /// Whether any label is drawn.
+    pub fn labelled(&self) -> bool {
+        self.fib_labels || self.price_labels
     }
 
     fn is_default(&self) -> bool {
@@ -1330,13 +1360,14 @@ impl FibLevel {
     }
 }
 
-/// A ratio as it is written: no trailing zeros, so 0.5 rather than 0.500.
+/// A ratio as a level is labelled: a percentage, with its decimal only
+/// where it has one, so 61.8% and 50% rather than 0.618 and 50.0%.
 pub fn fib_ratio_name(ratio: f64) -> String {
-    let text = format!("{ratio:.3}");
-    let text = text.trim_end_matches('0').trim_end_matches('.');
+    let text = format!("{:.1}", ratio * 100.0);
+    let text = text.strip_suffix(".0").unwrap_or(&text);
     match text {
-        "" | "-0" => "0".to_string(),
-        other => other.to_string(),
+        "-0" => "0%".to_string(),
+        other => format!("{other}%"),
     }
 }
 
@@ -1675,9 +1706,11 @@ impl Style {
     /// kinds are: those start with Up and Down, and a retracement is not up
     /// or down, it is a ruler laid over a move either way. So the first is
     /// Ink — the chart's own text colour with the tint taken out, drawn at
-    /// [`FIB_ALPHA`], a soft grey on a dark theme and on a light one —
-    /// and the second is Ink with the levels told apart by pattern: the
-    /// swing's ends solid, the half dashed, the rest dotted. Three to eight
+    /// [`FIB_ALPHA`], a soft grey on a dark theme and on a light one — with
+    /// the levels told apart by pattern: the swing's ends solid, the half
+    /// dashed, the rest dotted, so the eye finds the frame and the middle
+    /// before the ratios between. The second is the same Ink with every
+    /// level solid. Three to eight
     /// are the colour presets in the places every other kind has them, so
     /// configuration four is amber here as it is everywhere. The ninth is
     /// Ink at the five levels most people read, without 0.236 and 0.786.
@@ -1700,7 +1733,7 @@ impl Style {
             }
             style
         };
-        let mut nine = vec![Style::fib(Preset::Ink), graded];
+        let mut nine = vec![graded, Style::fib(Preset::Ink)];
         nine.extend(
             [Preset::Blue, Preset::Amber, Preset::Violet, Preset::Teal, Preset::Orange, Preset::Cyan]
                 .map(Style::fib),
@@ -4126,7 +4159,9 @@ mod edge_grip_tests {
         assert!((level(0.618).price(200.0, 100.0) - 161.8).abs() < 1e-9);
         assert_eq!(level(0.5).price(200.0, 100.0), 150.0);
         let names: Vec<String> = fib_levels().iter().map(FibLevel::name).collect();
-        assert_eq!(names, ["0", "0.236", "0.382", "0.5", "0.618", "0.786", "1"]);
+        assert_eq!(names, ["0%", "23.6%", "38.2%", "50%", "61.8%", "78.6%", "100%"]);
+        assert_eq!(fib_ratio_name(1.272), "127.2%", "a level past the swing reads the same way");
+        assert_eq!(fib_ratio_name(-0.0), "0%");
     }
 
     /// Picked on a level or on the line between its ends, held by those ends,
@@ -4155,7 +4190,7 @@ mod edge_grip_tests {
         for n in 1..=CONFIGURATIONS {
             let style = configs.of(Kind::Fib, n);
             assert!(style.fib.levels.iter().all(|level| level.colour.is_none()), "configuration {n}");
-            assert!(style.fib.labels, "configuration {n} is labelled");
+            assert!(style.fib.fib_labels && !style.fib.price_labels, "configuration {n} labels ratios only");
             assert!(
                 !matches!(style.colour, Paint::Preset { preset: Preset::Up | Preset::Down }),
                 "configuration {n} says up or down"
@@ -4165,6 +4200,14 @@ mod edge_grip_tests {
         assert_eq!(configs.of(Kind::Fib, 2).colour, Paint::preset(Preset::Ink));
         assert_eq!(configs.of(Kind::Fib, 4).colour, Paint::preset(Preset::Amber), "four is amber, as everywhere");
         assert_ne!(configs.of(Kind::Fib, 1), configs.of(Kind::Fib, 2));
+        // The first, the one a new retracement takes, tells the levels apart
+        // by pattern; the second is the same, every level solid.
+        let patterns = |n: u8| -> Vec<LineStyle> {
+            configs.of(Kind::Fib, n).fib.levels.iter().map(|level| level.stroke.style).collect()
+        };
+        use LineStyle::{Dashed, Dotted, Solid};
+        assert_eq!(patterns(1), [Solid, Dotted, Dotted, Dashed, Dotted, Dotted, Solid]);
+        assert_eq!(patterns(2), [Solid; 7]);
         assert_ne!(configs.of(Kind::Fib, 1), configs.of(Kind::Fib, 9));
         for theme in crate::theme::builtin_themes() {
             let bg = &theme.ui.background;
@@ -4184,7 +4227,8 @@ mod edge_grip_tests {
         let plain = serde_json::to_value(Style::line(Preset::Up)).unwrap();
         assert!(plain.get("fib").is_none(), "{plain}");
         let mut style = Style::fib(Preset::Teal);
-        style.fib.labels = false;
+        style.fib.fib_labels = false;
+        style.fib.price_labels = true;
         let level = style.fib.level_mut(0.618).unwrap();
         level.colour = Some(Paint::fixed("#aabbcc"));
         level.stroke = Stroke::new(2.5, LineStyle::Dashed);
@@ -4196,7 +4240,23 @@ mod edge_grip_tests {
         odd["fib"]["levels"] = serde_json::json!([{ "ratio": 0.5, "enabled": true, "stroke": { "width": 1.0, "style": "solid" } }]);
         let read: Style = serde_json::from_value(odd).unwrap();
         assert_eq!(read.fib.levels, fib_levels());
-        assert!(!read.fib.labels, "the rest of the look survives");
+        assert!(!read.fib.fib_labels && read.fib.price_labels, "the rest of the look survives");
+
+        // Before the labels were two, one switch said both.
+        for (labels, both) in [(true, true), (false, false)] {
+            let mut old = serde_json::to_value(&style).unwrap();
+            let fib = old["fib"].as_object_mut().unwrap();
+            fib.remove("fib_labels");
+            fib.remove("price_labels");
+            fib.insert("labels".into(), labels.into());
+            let read: Style = serde_json::from_value(old).unwrap();
+            assert_eq!((read.fib.fib_labels, read.fib.price_labels), (both, both), "labels: {labels}");
+            assert_eq!(read.fib.levels, style.fib.levels);
+        }
+        let mut bare = serde_json::to_value(&style).unwrap();
+        bare["fib"] = serde_json::json!({});
+        let read: Style = serde_json::from_value(bare).unwrap();
+        assert_eq!(read.fib, FibLook::default(), "ratios only unless told otherwise");
 
         let mut stored = serde_json::to_value(Configurations::default()).unwrap();
         stored.as_object_mut().unwrap().remove("fib");
