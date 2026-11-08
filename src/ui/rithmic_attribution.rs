@@ -4,8 +4,9 @@
 //! Shown only where somebody connects to Rithmic: in its login dialog, on the
 //! Data page while Rithmic is one of the feeds or there is a Rithmic login, and
 //! in the menu a chart's feed dot opens when Rithmic is one of the feeds it
-//! offers. `sign_in_dialogs` is how the rest of the app reaches it. Nothing here is drawn on a chart, and with no Rithmic set up the app
-//! shows none of it.
+//! offers. `sign_in_dialogs` is how the rest of the app reaches it. Nothing
+//! here is drawn on a chart, and with no Rithmic set up the app shows none of
+//! it.
 //!
 //! The artwork is Rithmic's own, from its developer kit, as it was supplied:
 //! `assets/rithmic/`. "Market Data by Rithmic" is the variant Rithmic offers a
