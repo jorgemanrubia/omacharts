@@ -873,7 +873,9 @@ on](#which-chart-a-command-acts-on)). `KIND` is `line`, `hline`, `arrow`,
 volume profile of the span between `--from` and `--to`, whose prices are
 ignored; `--color` is its outline and `--fill` its background, and it takes no
 `--text`), or `avwap` (or `vwap`: an anchored VWAP from the bar at `--from` to
-the last bar, whose price is ignored; it takes no `--text`). The tools and their
+the last bar, whose price is ignored; it takes no `--text`), or `fib` (or
+`fibonacci`, `retracement`: a Fib retracement of the swing from `--from` to
+`--to`, with 0 at `--to`; it takes no `--text`). The tools and their
 configurations are in [Drawings](/manual/drawings/). Whether a chart shows
 other charts' drawings and sends its own is `chart set --show-drawings` and
 `--send-drawings`, each `on` or `off`:
@@ -907,7 +909,7 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--point ANCHOR` | An anchor, repeated | A zig-zag's corners in order, two at least. `--from` and `--to` alone give it one leg |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
 | `--color C` | A colour | A line's colour; a box's or circle's edge |
-| `--width F` | 0.5 to 12; 0 on an anchored VWAP | A line's thickness; an edge's. 0 leaves an anchored VWAP only its bands |
+| `--width F` | 0.5 to 12; 0 on an anchored VWAP | A line's thickness; an edge's; every level of a Fib retracement. 0 leaves an anchored VWAP only its bands |
 | `--arrow WHERE` | `none`, `end`, `start`, `both` | Which ends have an arrowhead |
 | `--head SHAPE` | `filled`, `open`, `barb` | The arrowhead |
 | `--border B` | `on`, `off` | Whether a box or circle has an edge |
@@ -934,6 +936,13 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--band-color C` | A colour; `line` | The band's colour; `line` follows the line's |
 | `--band-width F` | 0 to 12 | The thickness of the band's edges; 0 draws none |
 | `--band-style S` | `solid`, `dashed`, `dotted` | How the band's edges are drawn |
+| `--levels LIST` | Any of `0,0.236,0.382,0.5,0.618,0.786,1`; `all`; `none` | Which of a Fib retracement's levels are drawn; all by default. A percentage, `61.8` or `61.8%`, is read as its ratio |
+| `--level RATIO` | One of the seven | The level the `--level-*` flags change. Without it they change all seven |
+| `--level-color C` | A colour; `drawing` | The level's colour; `drawing` follows the drawing's |
+| `--level-width F` | 0.5 to 12 | The level's thickness |
+| `--level-style S` | `solid`, `dashed`, `dotted` | How the level is drawn |
+| `--fib-labels B` | `on`, `off` | Whether a Fib retracement's levels are labelled with their ratio, as a percentage (61.8%); on by default |
+| `--price-labels B` | `on`, `off` | Whether a Fib retracement's levels are labelled with their price; off by default |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
 | `--order WHERE` | `front`, `back` | Brings it to the front or sends it to the back |
 
@@ -941,7 +950,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--poc-width`, `--source`, `--style`, `--bands` and the `--band-*` flags gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--poc-width`, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 

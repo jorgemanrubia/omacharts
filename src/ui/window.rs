@@ -240,6 +240,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+T", "Write on the chart: click, then type"),
             ("Alt+V", "Draw a volume profile of the bars dragged across"),
             ("Alt+W", "Anchor a VWAP: click the bar it starts from"),
+            ("Alt+F", "Draw a Fibonacci retracement: drag from the swing's start to its end"),
             ("Alt+M", "Measure: click the start, then the end"),
             ("Ctrl+Shift+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
@@ -11395,6 +11396,11 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Profile)
         });
         actions.add_action(&draw_profile);
+
+        let draw_fib = gio::SimpleAction::new("draw-fib", None);
+        let this = self.clone();
+        draw_fib.connect_activate(move |_, _| this.arm_drawing(omacharts_engine::DrawingKind::Fib));
+        actions.add_action(&draw_fib);
 
         let draw_avwap = gio::SimpleAction::new("draw-avwap", None);
         let this = self.clone();
