@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use gtk::cairo;
 use gtk::prelude::*;
-use crate::ui::text_editor;
+use crate::text_editor;
 use omacharts_engine::drawings::{
     self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Scope,
 };
@@ -41,12 +41,16 @@ use omacharts_engine::{
     Range, Tag, Theme, Timeframe,
 };
 
-use crate::trading::{OrderKind, Side};
-use crate::ui::colors;
+use crate::colors;
+use crate::marks::{
+    AnyPrice, KeptRules, LabelSide, MarkDrag, MarkEvent, MarkLink, MarkRules, MarkTab, PriceMark, MARK_NEAR,
+};
 use gtk::glib;
 
-pub(crate) const PRICE_AXIS_W: f64 = 64.0;
-pub(crate) const TIME_AXIS_H: f64 = 24.0;
+/// How wide the price axis is, and how tall the time axis: for whoever
+/// lays something beside or under them.
+pub const PRICE_AXIS_W: f64 = 64.0;
+pub const TIME_AXIS_H: f64 = 24.0;
 const PAD: f64 = 10.0;
 /// How far past either end of the series the chart can be panned: empty
 /// columns before the first bar or after the last, so there is room to move
@@ -82,6 +86,17 @@ const EDGE_GRAB: f64 = 4.0;
 const PANE_CONTROL: f64 = 13.0;
 /// Left edge to left edge of two neighbouring corner controls.
 const CONTROL_PITCH: f64 = PANE_CONTROL + 2.0;
+
+/// How many pixels wide an OHLC bar's line and ticks may be drawn, and are
+/// unless asked otherwise.
+pub const MIN_OHLC_THICKNESS: u8 = 1;
+pub const MAX_OHLC_THICKNESS: u8 = 4;
+pub const DEFAULT_OHLC_THICKNESS: u8 = 2;
+
+/// A thickness the chart draws: from one pixel to four.
+pub fn clamp_thickness(thickness: u8) -> u8 {
+    thickness.clamp(MIN_OHLC_THICKNESS, MAX_OHLC_THICKNESS)
+}
 
 /// Fewest bars we will zoom into, and the most we will put on screen at once.
 ///
@@ -213,7 +228,7 @@ struct State {
     /// fade out under its edge, and the last price and the crosshair's
     /// price stop below it rather than slide under.
     covered_axis_top: f64,
-    /// The square under the price axis holds the window's trading toggle,
+    /// The square under the price axis holds a control of the window's,
     /// so the range the view holds to is not written there.
     axis_corner_taken: bool,
     /// How far in from the chart's left edge the window's drawing tools'
@@ -237,12 +252,12 @@ struct State {
     /// the marker could ever be reached, because a chart with no bars returns
     /// before it is drawn.
     trouble: Option<FetchFailure>,
-    /// This chart's account's position and working orders in what it
-    /// shows, pushed by the window; empty, which costs nothing, without a
-    /// login.
+    /// The price marks laid over the chart by whoever embeds it, and the
+    /// rules a drag on them keeps to; empty, which costs nothing, unless
+    /// somebody marks it.
     marks: Marks,
     /// Which end of their lines the marks' labels sit at.
-    order_labels: LabelSide,
+    mark_labels: LabelSide,
     /// The handle at the end of a mark the pointer is over, lit.
     hover_mark: Option<MarkHit>,
     loading: bool,
@@ -416,37 +431,11 @@ enum Drag {
     /// Shift and a press on empty chart: a box dragged out from `from`,
     /// in pixels, that selects every drawing it touches as it goes.
     Marquee { from: (f64, f64), to: (f64, f64) },
-    /// An exit pulled out of the position's tab, or an order's line taken
-    /// to another price: `at` is where the hand has it, on the tick, and
-    /// `allowed` whether it may go there with the market where it is. Only
-    /// a preview until the release; nothing is sent from here.
-    Mark { what: MarkDrag, at: f64, allowed: bool },
-}
-
-/// What a drag on the marks is doing.
-#[derive(Clone, PartialEq, Debug)]
-enum MarkDrag {
-    /// Placing an exit of this kind for the position.
-    Exit(OrderKind),
-    /// Moving the working order with this basket.
-    Move(String),
-}
-
-/// What the hand did to the marks, for the window, which owns the session:
-/// the chart previews and says, and never sends anything itself.
-#[derive(Clone, PartialEq, Debug)]
-pub enum TradeEvent {
-    /// An exit of `kind` for the position, at `price`.
-    ExitAt { kind: OrderKind, price: f64 },
-    /// The working order `basket`, to `price`.
-    Move { basket: String, price: f64 },
-    /// The working order's ×.
-    Cancel(String),
-    /// The position's ×.
-    Flatten,
-    /// The × of a position held in another month of the chart's root:
-    /// flatten that contract.
-    FlattenHeld(String),
+    /// A mark's tab pulled out, or a mark's line taken to another price:
+    /// `at` is where the hand has it, on the tick, and `allowed` whether
+    /// the mark's rules let it go there. Only a preview until the release;
+    /// nothing is said from here.
+    Mark { what: Grab, at: f64, allowed: bool },
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -1273,14 +1262,14 @@ impl State {
             axis_corner_taken: false,
             axis_start_taken: 0.0,
             bar_style: BarStyle::default(),
-            ohlc_thickness: crate::chart_defaults::DEFAULT_OHLC_THICKNESS,
+            ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             bars_hidden: false,
             show_grid: false,
             clock: Clock::default(),
             drag: None,
             trouble: None,
             marks: Marks::default(),
-            order_labels: LabelSide::default(),
+            mark_labels: LabelSide::default(),
             hover_mark: None,
             loading: false,
             price_zoom: 1.0,
@@ -1644,7 +1633,7 @@ impl State {
     }
 
     fn with_words(&self, projected: Projected, drawing: &Drawing) -> Projected {
-        match crate::ui::text::block(
+        match crate::text::block(
             drawing.kind,
             projected.bounds(),
             &drawing.text,
@@ -2252,7 +2241,8 @@ pub struct ChartView {
     /// Told when a drawing was added, moved or deleted, so it can be written
     /// down. The chart never touches the store.
     on_drawing: Handler<dyn Fn(DrawingEvent)>,
-    on_trade: Handler<dyn Fn(TradeEvent)>,
+    /// Told what the hand did to the marks.
+    on_mark: Handler<dyn Fn(MarkEvent)>,
     /// Right-clicking a drawing, which has a menu of its own: about the
     /// drawing and nothing else.
     on_drawing_menu: Handler<dyn Fn(f64, f64)>,
@@ -2315,7 +2305,7 @@ impl ChartView {
             on_pane_move: Rc::new(RefCell::new(None)),
             on_axis_menu: Rc::new(RefCell::new(None)),
             on_drawing: Rc::new(RefCell::new(None)),
-            on_trade: Rc::new(RefCell::new(None)),
+            on_mark: Rc::new(RefCell::new(None)),
             on_drawing_menu: Rc::new(RefCell::new(None)),
             on_drawing_properties: Rc::new(RefCell::new(None)),
             on_indicator: Rc::new(RefCell::new(None)),
@@ -2339,22 +2329,18 @@ impl ChartView {
         *self.on_drawing.borrow_mut() = Some(Box::new(handler));
     }
 
-    /// Who hears what the hand does to the orders and the position.
-    pub fn set_trade_handler(&self, handler: impl Fn(TradeEvent) + 'static) {
-        *self.on_trade.borrow_mut() = Some(Box::new(handler));
+    /// Who hears what the hand does to the marks: a ×, a mark let go at
+    /// another price, a tab dragged out.
+    pub fn set_mark_handler(&self, handler: impl Fn(MarkEvent) + 'static) {
+        *self.on_mark.borrow_mut() = Some(Box::new(handler));
     }
 
-    fn tell_trade(&self, event: TradeEvent) {
-        if let Some(handler) = self.on_trade.borrow().as_ref() {
+    /// Say `event` to whoever hears the marks, as a hand on them would
+    /// have: for tests, which have no hand.
+    pub fn tell_mark(&self, event: MarkEvent) {
+        if let Some(handler) = self.on_mark.borrow().as_ref() {
             handler(event);
         }
-    }
-
-    /// Let go of a mark as a hand would have: what the release says, to
-    /// whoever hears it. For the window's tests, which have no hand.
-    #[cfg(test)]
-    pub fn drop_mark(&self, event: TradeEvent) {
-        self.tell_trade(event);
     }
 
     pub fn set_drawing_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
@@ -2701,7 +2687,7 @@ impl ChartView {
             if matches!(s.drag, Some(Drag::Place { .. })) {
                 s.drag = None;
             }
-            // An order being dragged goes back where it was, unsent.
+            // A mark being dragged goes back where it was, unsaid.
             let dragging = matches!(s.drag, Some(Drag::Mark { .. }));
             if dragging {
                 s.drag = None;
@@ -3394,8 +3380,8 @@ impl ChartView {
     }
 
     /// Lay `drawing` down alone and select it, for a test that needs one.
-    #[cfg(test)]
-    pub(crate) fn select_only(&self, drawing: Drawing) {
+    #[doc(hidden)]
+    pub fn select_only(&self, drawing: Drawing) {
         let mut state = self.state.borrow_mut();
         state.drawings = vec![drawing];
         state.selected = vec![0];
@@ -3429,7 +3415,7 @@ impl ChartView {
             let style = drawing.style(&state.configs).clone();
             let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
             let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
-            let align = crate::ui::text::placement(drawing.kind, &drawing.text).alignment();
+            let align = crate::text::placement(drawing.kind, &drawing.text).alignment();
             (drawing.text.clone(), style, ink, align)
         };
 
@@ -3487,7 +3473,7 @@ impl ChartView {
             let state = self.state.borrow();
             let Some(drawing) = state.drawings.get(editing.index.get()) else { return };
             let style = drawing.style(&state.configs);
-            let at = crate::ui::text::placement(drawing.kind, &drawing.text);
+            let at = crate::text::placement(drawing.kind, &drawing.text);
             let size = editing.measure(&style.text, at.alignment(), at);
             let plan = layout(&state, width, height);
             let (first, visible) = state.slice();
@@ -3951,7 +3937,7 @@ impl ChartView {
         }
     }
 
-    /// Say whether the window's trading toggle stands in the square under
+    /// Say whether a control of the window's stands in the square under
     /// the price axis.
     pub fn set_axis_corner_taken(&self, taken: bool) {
         let changed = {
@@ -3965,7 +3951,7 @@ impl ChartView {
         }
     }
 
-    #[cfg(test)]
+    /// Whether the window has said its toggle stands in the axis corner.
     pub fn axis_corner_taken(&self) -> bool {
         self.state.borrow().axis_corner_taken
     }
@@ -3984,7 +3970,7 @@ impl ChartView {
         }
     }
 
-    #[cfg(test)]
+    /// How far in the window has said its toggle stands over the time axis.
     pub fn axis_start_taken(&self) -> f64 {
         self.state.borrow().axis_start_taken
     }
@@ -4052,7 +4038,7 @@ impl ChartView {
     /// How thick an OHLC bar is drawn, in pixels; held to what the setting
     /// allows.
     pub fn set_ohlc_thickness(&self, thickness: u8) {
-        self.state.borrow_mut().ohlc_thickness = crate::chart_defaults::clamp_thickness(thickness);
+        self.state.borrow_mut().ohlc_thickness = clamp_thickness(thickness);
         self.redraw();
     }
 
@@ -4223,25 +4209,17 @@ impl ChartView {
         self.redraw();
     }
 
-    /// Show this chart's account's position and working orders on it, or
-    /// nothing; and `held`, positions in other months of the same root,
-    /// which the chart shows so that one held past a roll is not lost from
-    /// sight. Redrawn only when they change.
-    pub fn set_marks(
-        &self,
-        position: Option<PositionMark>,
-        held: Vec<PositionMark>,
-        orders: Vec<OrderMark>,
-        limits: (Option<f64>, Option<f64>),
-    ) {
-        let marks = Marks { position, held, orders, limits };
+    /// Lay `marks` over the chart, in the order they are drawn, with the
+    /// `rules` a drag on them keeps to — [`AnyPrice`] for none. Redrawn only
+    /// when either changes.
+    pub fn set_marks<R: MarkRules + PartialEq>(&self, marks: Vec<PriceMark>, rules: R) {
         {
             let mut state = self.state.borrow_mut();
-            if state.marks == marks {
+            if state.marks.same(&marks, &rules) {
                 return;
             }
-            state.marks = marks;
-            // What was being dragged filled, or went, under the hand.
+            state.marks = Marks { lines: marks, rules: Box::new(rules) };
+            // What was being dragged went under the hand.
             if let Some(Drag::Mark { what, .. }) = &state.drag
                 && state.mark_dragged(what).is_none()
             {
@@ -4251,52 +4229,17 @@ impl ChartView {
         self.redraw();
     }
 
+    /// The marks the chart is laid over with, as they were given.
+    pub fn price_marks(&self) -> Vec<PriceMark> {
+        self.state.borrow().marks.lines.clone()
+    }
+
     /// Put the marks' labels at `side` of the chart. Redrawn only when it
     /// changes.
-    pub fn set_order_labels(&self, side: LabelSide) {
-        if std::mem::replace(&mut self.state.borrow_mut().order_labels, side) != side {
+    pub fn set_mark_labels(&self, side: LabelSide) {
+        if std::mem::replace(&mut self.state.borrow_mut().mark_labels, side) != side {
             self.redraw();
         }
-    }
-
-    /// What the chart is marked with: the position's words, and each
-    /// order's.
-    #[cfg(test)]
-    pub fn marks(&self) -> (Option<String>, Vec<String>) {
-        let state = self.state.borrow();
-        let position = state.marks.position.as_ref().map(PositionMark::words);
-        (position, state.marks.orders.iter().map(OrderMark::words).collect())
-    }
-
-    /// How each order drawn is linked, if it is.
-    #[cfg(test)]
-    pub fn mark_links(&self) -> Vec<Option<LinkMark>> {
-        self.state.borrow().marks.orders.iter().map(|order| order.link).collect()
-    }
-
-    /// Each mark as it is drawn: the position's words and whether it is
-    /// faint, then each order's words, price and whether it is faint.
-    #[cfg(test)]
-    #[allow(clippy::type_complexity)]
-    pub fn mark_states(&self) -> (Option<(String, bool)>, Vec<(String, f64, bool)>) {
-        let state = self.state.borrow();
-        let position = state.marks.position.as_ref().map(|held| (held.words(), held.dim));
-        let orders = state.marks.orders.iter().map(|order| (order.words(), order.price, order.dim)).collect();
-        (position, orders)
-    }
-
-    /// The positions held in other months of the root, as drawn: each one's
-    /// words and whether it is faint.
-    #[cfg(test)]
-    pub fn held_elsewhere(&self) -> Vec<(String, bool)> {
-        self.state.borrow().marks.held.iter().map(|held| (held.words(), held.dim)).collect()
-    }
-
-    /// The exit tabs the position wears.
-    #[cfg(test)]
-    pub fn exit_tabs(&self) -> Vec<OrderKind> {
-        let state = self.state.borrow();
-        state.marks.position.as_ref().map(|held| held.exits.iter().map(|tab| tab.kind).collect()).unwrap_or_default()
     }
 
     /// The price at height `y` of the chart, on the scale it is drawn at,
@@ -4543,7 +4486,7 @@ impl ChartView {
                     && s.indicator_at(w, h, x, y).is_some();
                 let holding = match &s.drag {
                     Some(Drag::Grip { index, grip, .. }) => Some(s.grip_cursor(*index, *grip, true)),
-                    // An order in hand: where it may not go, the pointer says
+                    // A mark in hand: where it may not go, the pointer says
                     // so before the release does nothing.
                     Some(Drag::Mark { allowed: false, .. }) => Some("not-allowed"),
                     Some(Drag::Mark { .. }) => Some("ns-resize"),
@@ -4572,7 +4515,7 @@ impl ChartView {
                 // pointer itself. A handle in the middle of an edge that
                 // looks like every other handle is a handle nobody tries.
                 (.., Some(cursor)) => cursor,
-                // An order's line: it can be dragged to another price.
+                // A mark's line: it can be dragged to another price.
                 _ if mark_line => "ns-resize",
                 // A hand over an indicator: a click there selects it. No
                 // highlight on hover, which across a dense chart would
@@ -4646,7 +4589,7 @@ impl ChartView {
 
             let (width, height) = (area.width() as f64, area.height() as f64);
             let mut s = state.borrow_mut();
-            // The scale stays put under an order being dragged.
+            // The scale stays put under a mark being dragged.
             if matches!(s.drag, Some(Drag::Mark { .. })) {
                 return glib::Propagation::Stop;
             }
@@ -4728,7 +4671,7 @@ impl ChartView {
                 let mark = free
                     .then(|| s.mark_under(w, h, x, y))
                     .flatten()
-                    .filter(|mark| matches!(mark, MarkHit::Close(_) | MarkHit::Flatten | MarkHit::FlattenHeld(_)));
+                    .filter(|mark| matches!(mark, MarkHit::Close(_)));
                 (hit, mark)
             };
             if let Some(mark) = mark {
@@ -4765,13 +4708,9 @@ impl ChartView {
             if still.as_ref() != Some(&mark) {
                 return;
             }
-            let event = match mark {
-                MarkHit::Close(basket) => TradeEvent::Cancel(basket),
-                MarkHit::FlattenHeld(contract) => TradeEvent::FlattenHeld(contract),
-                _ => TradeEvent::Flatten,
-            };
+            let MarkHit::Close(id) = mark else { return };
             if let Some(view) = view.upgrade() {
-                view.tell_trade(event);
+                view.tell_mark(MarkEvent::Close(id));
             }
         });
         self.area.add_controller(controls);
@@ -4886,13 +4825,13 @@ impl ChartView {
             return;
         }
         let region = region_at(x, y, width, height);
-        // A mark's tab, pulled out: an exit follows the hand, at the price
+        // A mark's tab, pulled out: its line follows the hand, at the price
         // under it, until the release says where.
         if region == Region::Plot
-            && let Some(MarkHit::Exit(kind)) = s.mark_under(width, height, x, y)
+            && let Some(MarkHit::Tab { mark, tab }) = s.mark_under(width, height, x, y)
             && let Some((at, _)) = s.tick_price_at(width, height, y)
         {
-            let what = MarkDrag::Exit(kind);
+            let what = Grab::Tab { mark, tab };
             let allowed = s.mark_allowed(&what, at);
             s.drag = Some(Drag::Mark { what, at, allowed });
             s.hover_mark = None;
@@ -4959,15 +4898,15 @@ impl ChartView {
                     view.tell_indicator(IndicatorEvent::Picked(None));
                 }
             };
-            // An order's line, under no drawing: taken to another price,
-            // starting where it is so nothing jumps. Its × too: a press
-            // there that moves on is a drag, not a cancel.
+            // A draggable mark's line, under no drawing: taken to another
+            // price, starting where it is so nothing jumps. Its × too: a
+            // press there that moves on is a drag, not a close.
             if drawing.is_none()
                 && !shift_only
-                && let Some(MarkHit::Line(basket) | MarkHit::Close(basket)) = s.mark_under(width, height, x, y)
-                && let Some(at) = s.marks.orders.iter().find(|order| order.basket == basket).map(|order| order.price)
+                && let Some(MarkHit::Line(id) | MarkHit::Close(id)) = s.mark_under(width, height, x, y)
+                && let Some(at) = s.marks.lines.iter().find(|mark| mark.id == id && mark.draggable).map(|mark| mark.price)
             {
-                s.drag = Some(Drag::Mark { what: MarkDrag::Move(basket), at, allowed: true });
+                s.drag = Some(Drag::Mark { what: Grab::Move(id), at, allowed: true });
                 s.hover_mark = None;
                 drop(s);
                 pointer.queue_draw();
@@ -5281,19 +5220,19 @@ impl ChartView {
                     let Some(view) = view.upgrade() else { return };
                     view.pointer.queue_draw();
                     let from = state.borrow().mark_dragged(&what).map(|dragged| dragged.from);
-                    // A tab pressed and let go where it was is no exit: it
-                    // would be one at the position's own price.
+                    // A tab pressed and let go where it was places nothing:
+                    // it would be at its mark's own price.
                     let travelled = offset_x.hypot(offset_y) > drag_threshold();
                     let event = match (what, from) {
                         (_, None) => return,
                         _ if !allowed => return,
-                        (MarkDrag::Exit(_), Some(_)) if !travelled => return,
-                        (MarkDrag::Exit(kind), Some(_)) => TradeEvent::ExitAt { kind, price: at },
+                        (Grab::Tab { .. }, Some(_)) if !travelled => return,
+                        (Grab::Tab { mark, tab }, Some(_)) => MarkEvent::Tab { mark, tab, price: at },
                         // Back where it was: nothing to move.
-                        (MarkDrag::Move(_), Some(from)) if (from - at).abs() < 1e-9 => return,
-                        (MarkDrag::Move(basket), Some(_)) => TradeEvent::Move { basket, price: at },
+                        (Grab::Move(_), Some(from)) if (from - at).abs() < 1e-9 => return,
+                        (Grab::Move(mark), Some(_)) => MarkEvent::Move { mark, price: at },
                     };
-                    view.tell_trade(event);
+                    view.tell_mark(event);
                     return;
                 }
                 // Pressed and released in place: the first anchor is down
@@ -5755,7 +5694,7 @@ fn draw_goto_day(cr: &cairo::Context, state: &State, columns: &Columns, plan: &L
 /// goes when a hand moves the view, which is when it stops being true.
 fn draw_range(cr: &cairo::Context, state: &State, width: f64, height: f64) {
     let Some(range) = state.range else { return };
-    // The trading toggle's corner, on the chart it stands over.
+    // The window's control's corner, on the chart it stands over.
     if state.axis_corner_taken {
         return;
     }
@@ -6782,130 +6721,14 @@ fn stroke_pane_line(
     cr.restore().ok();
 }
 
-/// A working order on the chart: its line at its price, its price on the
-/// axis and its label inside the plot, in its colour and its kind's
-/// pattern. The colour is its money's, profit or loss, for an exit, and
-/// its side's for an order that opens or adds, which has no money to
-/// speak of.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OrderMark {
-    /// The broker's id for it, which a drag or its × hands back.
-    pub basket: String,
-    pub side: Side,
-    pub kind: OrderKind,
-    pub qty: u32,
-    pub price: f64,
-    /// "▲ L 1", "L 2": its kind and size, filled in its colour. Empty
-    /// for a market order on its way, which has only a body.
-    pub tag: String,
-    /// After the tag, in the ink: an exit's P&L if it fills, "Buying 1…"
-    /// for a market order.
-    pub body: Option<String>,
-    pub price_text: String,
-    /// The whole mark's: its line, its label's outline, its tag's fill,
-    /// its × and its chip. An exit's money's, an entry's side's.
-    pub colour: String,
-    pub style: LineStyle,
-    /// Pending: not yet working at the exchange, or asked to move or go
-    /// and not yet answered. Drawn faint, and not to be taken hold of
-    /// until it is. A market order is always this, beside the last price,
-    /// until it fills.
-    pub dim: bool,
-    /// Linked with the position's other exit: drawn joined to it.
-    pub link: Option<LinkMark>,
-}
-
-/// How an exit is linked with the other, which the line joining them says:
-/// solid where the broker holds it, dashed where the app does, which lasts
-/// only while it runs, and faint until the broker has confirmed either.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LinkMark {
-    pub holder: crate::trading::Holder,
-    pub pending: bool,
-}
-
-impl OrderMark {
-    /// Its label in one line, for the tests: "L 1 · +$125.00".
-    #[cfg(test)]
-    fn words(&self) -> String {
-        words(&self.tag, self.body.as_deref())
-    }
-}
-
-/// A label's tag and body as one line: "L 1 · +$125.00", "▲ L 1".
-#[cfg(test)]
-fn words(tag: &str, body: Option<&str>) -> String {
-    match body {
-        Some(body) if tag.is_empty() => body.to_string(),
-        Some(body) => format!("{tag} · {body}"),
-        None => tag.to_string(),
-    }
-}
-
-/// The position held, at its average price: a heavier line, in the profit
-/// or loss colour once the broker's P&L has come and in the long or short
-/// colour until then, its chip filled once there is money to say.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PositionMark {
-    /// The contract it is held in.
-    pub contract: String,
-    pub price: f64,
-    /// "▲ 1", or "ESZ6 ▼ 2" for one held in another month: its side and
-    /// size, filled in its colour.
-    pub tag: String,
-    /// Its open P&L, "+$125.00", once it has come.
-    pub body: Option<String>,
-    pub price_text: String,
-    /// The whole mark's: its money's sign once the P&L has come, its
-    /// side's until then.
-    pub colour: String,
-    pub style: LineStyle,
-    /// Contracts held: positive long, negative short.
-    pub net: i32,
-    /// The exits it can still be given, a tab each beside its pill.
-    pub exits: Vec<ExitTab>,
-    /// Being flattened: drawn faint until the book says it is gone.
-    pub dim: bool,
-    /// What one point of its price is worth on one contract, and in what,
-    /// so a dragged exit can say what it would realise.
-    pub point: Option<f64>,
-    pub currency: Option<String>,
-    /// The colours money gained and lost are written in.
-    pub profit: String,
-    pub loss: String,
-}
-
-impl PositionMark {
-    /// Its label in one line, for the tests: "▲ 1 · +$125.00".
-    #[cfg(test)]
-    fn words(&self) -> String {
-        words(&self.tag, self.body.as_deref())
-    }
-}
-
-/// A tab beside the position's label, dragged out to place an exit: the
-/// target (a limit) or the stop, outlined in the look of the order it
-/// would make, the profit colour for the one and the loss colour for the
-/// other.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExitTab {
-    pub kind: OrderKind,
-    pub colour: String,
-    pub style: LineStyle,
-}
-
 /// What on a mark the pointer is over.
 #[derive(Clone, Debug, PartialEq)]
-pub enum MarkHit {
-    /// An order's ×: cancel it.
+pub(crate) enum MarkHit {
+    /// A mark's ×.
     Close(String),
-    /// The position's ×: flatten it.
-    Flatten,
-    /// The × of a position held in another month: flatten that contract.
-    FlattenHeld(String),
-    /// One of the position's tabs: drag out an exit of this kind.
-    Exit(OrderKind),
-    /// An order's line or its label: drag it to another price.
+    /// One of a mark's tabs: drag it out.
+    Tab { mark: String, tab: String },
+    /// A draggable mark's line or its label: drag it to another price.
     Line(String),
 }
 
@@ -6922,40 +6745,9 @@ const MARK_EDGE: f64 = 8.0;
 const MARK_PAD: f64 = 9.0;
 const TAG_PAD: f64 = 8.0;
 const TAB_PAD: f64 = 7.0;
-
-/// Which end of the chart the marks' labels sit at: the trader's choice
-/// in Preferences → Trading.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LabelSide {
-    /// At the plot's left edge, the tag at the edge and the × towards the
-    /// bars: they never move with the bars.
-    #[default]
-    Left,
-    /// By the price axis, in the room after the last bar.
-    Right,
-}
-
-impl LabelSide {
-    pub const ALL: [LabelSide; 2] = [LabelSide::Left, LabelSide::Right];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            LabelSide::Left => "left",
-            LabelSide::Right => "right",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<LabelSide> {
-        LabelSide::ALL.into_iter().find(|side| side.key() == key)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            LabelSide::Left => "Left",
-            LabelSide::Right => "Right",
-        }
-    }
-}
+/// How heavy the line of a draggable mark with no line of its own is in
+/// hand.
+const MARK_WEIGHT: f64 = 1.5;
 
 /// Where the marks go across the plot: the side their labels sit at, and
 /// the line's run, from the plot's left edge to the last bar — or to the
@@ -6982,24 +6774,11 @@ impl Lane {
     }
 }
 
-/// How heavy an order's line is: a stop heavier than a limit, so the two
-/// are told apart when they wear the same pattern, and both apart from the
-/// last price's hairline.
-fn order_weight(kind: OrderKind) -> f64 {
-    match kind {
-        OrderKind::Stop => 2.0,
-        _ => 1.5,
-    }
-}
-
-/// The position's line: solid by default, as heavy as a stop's.
-const POSITION_WEIGHT: f64 = 2.0;
-
 /// Where a mark's pieces sit across the plot, at the end of its line the
 /// labels are put at: the label in one piece — the tag, the body, the × —
-/// and the position's tabs beside it, on the side towards the bars.
-/// Worked out here for the drawing and the pointer both, so a × is
-/// clicked exactly where it is drawn.
+/// and its tabs beside it, on the side towards the bars. Worked out here
+/// for the drawing and the pointer both, so a × is clicked exactly where it
+/// is drawn.
 struct MarkRow {
     /// The tag: the label's left end. No width when there is no tag.
     tag_x: f64,
@@ -7010,7 +6789,8 @@ struct MarkRow {
     /// ×, where it would be, the label ending a gap short of it.
     cap_x: f64,
     capped: bool,
-    tabs: Vec<(OrderKind, f64, f64)>,
+    /// Each tab, by its place among the mark's tabs, and where it sits.
+    tabs: Vec<(usize, f64, f64)>,
 }
 
 impl MarkRow {
@@ -7055,16 +6835,16 @@ fn baseline(cr: &cairo::Context, y: f64) -> f64 {
 }
 
 /// Where the label of a mark saying `tag` and `body` sits, with a × when
-/// `capped`, and the position's `tabs` beside it. At the right, from the
-/// axis: the ×, the body, the tag, the tabs. At the left, from the edge:
-/// the tag, the body, the ×, the tabs — L before STP either way.
+/// `capped`, and its `tabs` beside it. At the right, from the axis: the ×,
+/// the body, the tag, the tabs. At the left, from the edge: the tag, the
+/// body, the ×, the tabs — in their order either way.
 fn mark_row(
     cr: &cairo::Context,
     lane: Lane,
     tag: &str,
     body: Option<&str>,
     capped: bool,
-    tabs: &[ExitTab],
+    tabs: &[MarkTab],
 ) -> MarkRow {
     let advance = |text: &str| cr.text_extents(text).map_or(0.0, |e| e.x_advance());
     if lane.side == LabelSide::Left {
@@ -7084,12 +6864,13 @@ fn mark_row(
         let mut left = if capped { cap_x + MARK_CAP } else { right };
         let placed = tabs
             .iter()
-            .map(|tab| {
-                let w = advance(crate::trading::exit_tab(tab.kind)) + 2.0 * TAB_PAD;
+            .enumerate()
+            .map(|(n, tab)| {
+                let w = advance(&tab.text) + 2.0 * TAB_PAD;
                 left += MARK_GAP;
                 let at = left;
                 left += w;
-                (tab.kind, at, w)
+                (n, at, w)
             })
             .collect();
         return MarkRow { tag_x, tag_w, body, cap_x, capped, tabs: placed };
@@ -7108,24 +6889,18 @@ fn mark_row(
     left -= tag_w;
     let tag_x = left;
     let mut placed = Vec::with_capacity(tabs.len());
-    // The last tab nearest the label: L, STP, label.
-    for tab in tabs.iter().rev() {
-        let w = advance(crate::trading::exit_tab(tab.kind)) + 2.0 * TAB_PAD;
+    // The last tab nearest the label, so they read in their order.
+    for (n, tab) in tabs.iter().enumerate().rev() {
+        let w = advance(&tab.text) + 2.0 * TAB_PAD;
         left -= MARK_GAP + w;
-        placed.push((tab.kind, left, w));
+        placed.push((n, left, w));
     }
     MarkRow { tag_x, tag_w, body, cap_x, capped, tabs: placed }
 }
 
-/// Where an order's label sits: its tag, its body and its ×.
-fn order_row(cr: &cairo::Context, lane: Lane, order: &OrderMark) -> MarkRow {
-    let body = order.body.as_deref();
-    mark_row(cr, lane, &order.tag, body, order.kind != OrderKind::Market, &[])
-}
-
-/// Where a position's label sits: its tabs, its tag, its body and its ×.
-fn held_row(cr: &cairo::Context, lane: Lane, held: &PositionMark) -> MarkRow {
-    mark_row(cr, lane, &held.tag, held.body.as_deref(), true, &held.exits)
+/// Where a mark's label sits: its tag, its body, its × and its tabs.
+fn label_row(cr: &cairo::Context, lane: Lane, mark: &PriceMark) -> MarkRow {
+    mark_row(cr, lane, &mark.tag, mark.body.as_deref(), mark.closable, &mark.tabs)
 }
 
 /// A context to measure words in, off screen.
@@ -7136,10 +6911,11 @@ fn measuring() -> Option<cairo::Context> {
     Some(cr)
 }
 
-/// What of the marks is under `(x, y)`: a ×, a tab, or an order's line
-/// within [`crate::trading::NEAR`] of it — where the line runs, and its
-/// label, its × not. The handles first, so a × over another order's line
-/// is the ×. An order asked to move or go is not to be taken hold of.
+/// What of the marks is under `(x, y)`: a ×, a tab, or a draggable mark's
+/// line within [`MARK_NEAR`] of it — where the line runs, and its label,
+/// its × not. The handles first, so a × over another mark's line is the ×:
+/// a raised mark's, then a fixed mark's, then a draggable one's, each in
+/// the order they were given. A faint mark is not to be taken hold of.
 fn mark_at(
     plan: &Layout,
     lane: Lane,
@@ -7154,153 +6930,138 @@ fn mark_at(
     let shown = |at: f64| at >= plan.price_y && at <= plan.price_y + plan.price_h;
     let cr = measuring()?;
     let within = |left: f64, w: f64, at: f64| x >= left - 1.0 && x <= left + w + 1.0 && (y - at).abs() <= MARK_H / 2.0;
-    if let Some(held) = marks.position.as_ref().filter(|held| !held.dim) {
-        let at = to_y(held.price).round();
-        if shown(at) {
-            let row = held_row(&cr, lane, held);
-            if within(row.cap_x, MARK_CAP, at) {
-                return Some(MarkHit::Flatten);
-            }
-            if let Some((kind, ..)) = row.tabs.iter().find(|(_, left, w)| within(*left, *w, at)) {
-                return Some(MarkHit::Exit(*kind));
-            }
+    // A mark's × or one of its tabs, when the pointer is on one.
+    let handle = |mark: &PriceMark, row: &MarkRow, at: f64| {
+        if row.capped && within(row.cap_x, MARK_CAP, at) {
+            return Some(MarkHit::Close(mark.id.clone()));
+        }
+        let (n, ..) = row.tabs.iter().find(|(_, left, w)| within(*left, *w, at))?;
+        Some(MarkHit::Tab { mark: mark.id.clone(), tab: mark.tabs[*n].id.clone() })
+    };
+    let live = || marks.lines.iter().filter(|mark| !mark.dim);
+    for mark in live().filter(|mark| mark.raised).chain(live().filter(|mark| !mark.raised && !mark.draggable)) {
+        let at = to_y(mark.price).round();
+        if shown(at)
+            && let Some(hit) = handle(mark, &label_row(&cr, lane, mark), at)
+        {
+            return Some(hit);
         }
     }
-    for held in marks.held.iter().filter(|held| !held.dim) {
-        let at = to_y(held.price).round();
-        if shown(at) && within(held_row(&cr, lane, held).cap_x, MARK_CAP, at) {
-            return Some(MarkHit::FlattenHeld(held.contract.clone()));
-        }
-    }
-    let mut nearest: Option<(&OrderMark, f64)> = None;
-    for order in marks.orders.iter().filter(|order| !order.dim) {
-        let at = to_y(order.price).round();
+    let mut nearest: Option<(&PriceMark, f64)> = None;
+    for mark in live().filter(|mark| !mark.raised && mark.draggable) {
+        let at = to_y(mark.price).round();
         if !shown(at) {
             continue;
         }
-        let row = order_row(&cr, lane, order);
-        if row.capped && within(row.cap_x, MARK_CAP, at) {
-            return Some(MarkHit::Close(order.basket.clone()));
+        let row = label_row(&cr, lane, mark);
+        if let Some(hit) = handle(mark, &row, at) {
+            return Some(hit);
         }
         let off = (at - y).abs();
         let on_cap = row.capped && x >= row.cap_x - 1.0 && x <= row.cap_x + MARK_CAP + 1.0;
         let on_label = x >= row.left() - 1.0 && x <= row.right() + 1.0;
         let along = (x <= lane.end || on_label) && !on_cap;
-        if off <= crate::trading::NEAR && along && nearest.is_none_or(|(_, best)| off < best) {
-            nearest = Some((order, off));
+        if off <= MARK_NEAR && along && nearest.is_none_or(|(_, best)| off < best) {
+            nearest = Some((mark, off));
         }
     }
-    nearest.map(|(order, _)| MarkHit::Line(order.basket.clone()))
+    nearest.map(|(mark, _)| MarkHit::Line(mark.id.clone()))
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// The marks a chart is handed, and the rules a drag on them keeps to.
 struct Marks {
-    position: Option<PositionMark>,
-    /// Positions in other months of the chart's root: drawn as the
-    /// position is, named with their contract, with a × and no tabs.
-    held: Vec<PositionMark>,
-    orders: Vec<OrderMark>,
-    /// The day's lowest and highest prices the exchange takes an order at,
-    /// as far as they are known: nothing is let go past them.
-    limits: (Option<f64>, Option<f64>),
+    lines: Vec<PriceMark>,
+    rules: Box<dyn KeptRules>,
+}
+
+impl Default for Marks {
+    fn default() -> Marks {
+        Marks { lines: Vec::new(), rules: Box::new(AnyPrice) }
+    }
 }
 
 impl Marks {
     fn is_empty(&self) -> bool {
-        self.position.is_none() && self.held.is_empty() && self.orders.is_empty()
+        self.lines.is_empty()
+    }
+
+    /// The same marks under the same rules: nothing to redraw. With no
+    /// marks the rules have nothing to say, so none are the same as any.
+    fn same(&self, lines: &[PriceMark], rules: &dyn KeptRules) -> bool {
+        self.lines == lines && (lines.is_empty() || self.rules.same(rules.as_any()))
     }
 }
 
-/// What a dragged mark is: its side and kind, its tag, its look, and the
-/// price its ticks are counted from.
+/// What a drag on the marks is doing.
+#[derive(Clone, PartialEq, Debug)]
+enum Grab {
+    /// One of a mark's tabs, dragged out.
+    Tab { mark: String, tab: String },
+    /// A draggable mark, taken to another price.
+    Move(String),
+}
+
+/// What a dragged mark is: its tag, its look, and the price it started
+/// from.
 struct Dragged<'a> {
-    side: Side,
-    kind: OrderKind,
-    tag: String,
+    mark: &'a str,
+    tab: Option<&'a str>,
+    tag: &'a str,
     from: f64,
     colour: &'a str,
     style: LineStyle,
+    weight: f64,
 }
 
 impl State {
-    /// The order or exit a drag is about, while it is still on the chart.
-    fn mark_dragged(&self, what: &MarkDrag) -> Option<Dragged<'_>> {
+    /// The mark, or the mark's tab, a drag is about, while it is still on
+    /// the chart and not faint.
+    fn mark_dragged(&self, what: &Grab) -> Option<Dragged<'_>> {
         match what {
-            MarkDrag::Exit(kind) => {
-                let held = self.marks.position.as_ref().filter(|held| !held.dim)?;
-                let tab = held.exits.iter().find(|tab| tab.kind == *kind)?;
-                let side = crate::trading::exit_side(held.net);
+            Grab::Tab { mark, tab } => {
+                let held = self.marks.lines.iter().find(|held| held.id == *mark && !held.dim)?;
+                let tab = held.tabs.iter().find(|known| known.id == *tab)?;
                 Some(Dragged {
-                    side,
-                    kind: *kind,
-                    tag: crate::trading::mark_tag(*kind, side, true, &held.net.unsigned_abs().to_string()),
+                    mark: &held.id,
+                    tab: Some(&tab.id),
+                    tag: &tab.tag,
                     from: held.price,
                     colour: &tab.colour,
                     style: tab.style,
+                    weight: tab.weight,
                 })
             }
-            MarkDrag::Move(basket) => {
-                let order = self.marks.orders.iter().find(|order| order.basket == *basket && !order.dim)?;
+            Grab::Move(id) => {
+                let mark = self.marks.lines.iter().find(|mark| mark.id == *id && mark.draggable && !mark.dim)?;
                 Some(Dragged {
-                    side: order.side,
-                    kind: order.kind,
-                    tag: order.tag.clone(),
-                    from: order.price,
-                    colour: &order.colour,
-                    style: order.style,
+                    mark: &mark.id,
+                    tab: None,
+                    tag: &mark.tag,
+                    from: mark.price,
+                    colour: &mark.colour,
+                    style: mark.style,
+                    weight: mark.line.unwrap_or(MARK_WEIGHT),
                 })
             }
         }
     }
 
-    /// What the exit a drag is about would realise if it filled at `at`,
-    /// and the position it closes: `None` for an order that is not an
-    /// exit, or with no position or no worth of a point to count it in.
-    fn drag_pnl(&self, what: &MarkDrag, at: f64) -> Option<(f64, &PositionMark)> {
-        let held = self.marks.position.as_ref()?;
-        let point = held.point?;
-        let qty = match what {
-            MarkDrag::Exit(_) => held.net.unsigned_abs(),
-            MarkDrag::Move(basket) => {
-                let order = self.marks.orders.iter().find(|order| order.basket == *basket)?;
-                if !crate::trading::is_exit(order.side, order.kind, held.net) {
-                    return None;
-                }
-                order.qty
-            }
-        };
-        Some((crate::trading::exit_pnl(held.price, held.net, qty, point, at), held))
+    /// What the rules are asked about `dragged` in hand at `at`.
+    fn drag_query<'a>(&self, dragged: &Dragged<'a>, at: f64, places: usize) -> MarkDrag<'a> {
+        MarkDrag {
+            mark: dragged.mark,
+            tab: dragged.tab,
+            from: dragged.from,
+            at,
+            last: self.bars.last().map(|bar| bar.close),
+            tick: self.tick(),
+            places,
+        }
     }
 
-    /// What the body of `dragged`'s label, in hand at `at`, says, and the
-    /// colour the mark wears when that is money: an exit only what it
-    /// would realise there, in the profit or loss colour of that, any
-    /// other order where it would be and how far it has come, and where
-    /// it may not go, why.
-    fn preview_label(
-        &self,
-        what: &MarkDrag,
-        dragged: &Dragged<'_>,
-        at: f64,
-        allowed: bool,
-        places: usize,
-    ) -> (String, Option<&str>) {
-        if !allowed {
-            let text = match crate::trading::past_limit(at, self.marks.limits) {
-                Some(limit) => crate::trading::past_limit_preview(&grouped_decimals(limit, places)),
-                None => {
-                    let last = self.bars.last().map_or(at, |bar| bar.close);
-                    crate::trading::refused_text(dragged.kind, at, last)
-                }
-            };
-            return (text, None);
-        }
-        if let Some((pnl, held)) = self.drag_pnl(what, at) {
-            let colour = if pnl < 0.0 { held.loss.as_str() } else { held.profit.as_str() };
-            return (crate::trading::pnl_text(pnl, held.currency.as_deref()), Some(colour));
-        }
-        let ticks = self.tick().map(|tick| crate::trading::ticks_between(dragged.from, at, tick));
-        (crate::trading::preview_text(&grouped_decimals(at, places), ticks), None)
+    /// The places a price `at` is written to, on the series' tick.
+    fn places_at(&self, at: f64) -> usize {
+        self.tick().map_or(2, |tick| omacharts_engine::on_tick(at, tick).1)
     }
 
     /// The price at height `y` of the price plot, on the series' tick, and
@@ -7319,21 +7080,14 @@ impl State {
         })
     }
 
-    /// May the drag `what` let go at `at`, with the market at the last
-    /// bar's close?
-    fn mark_allowed(&self, what: &MarkDrag, at: f64) -> bool {
-        let Some(last) = self.bars.last().map(|bar| bar.close) else { return false };
-        if crate::trading::past_limit(at, self.marks.limits).is_some() {
+    /// May the drag `what` let go at `at`? Never with no bars, and never
+    /// for a mark that is gone; otherwise as the rules say.
+    fn mark_allowed(&self, what: &Grab, at: f64) -> bool {
+        if self.bars.is_empty() {
             return false;
         }
-        match (what, self.mark_dragged(what)) {
-            (MarkDrag::Exit(kind), Some(_)) => {
-                let net = self.marks.position.as_ref().map_or(0, |held| held.net);
-                crate::trading::exit_allowed(*kind, net, at, last)
-            }
-            (MarkDrag::Move(_), Some(order)) => crate::trading::side_allowed(order.kind, order.side, at, last),
-            (_, None) => false,
-        }
+        let Some(dragged) = self.mark_dragged(what) else { return false };
+        self.marks.rules.rules().allowed(&self.drag_query(&dragged, at, self.places_at(at)))
     }
 
     /// What of the marks is under the pointer at `(x, y)`, on a chart
@@ -7364,7 +7118,7 @@ impl State {
             true => (plan.plot_x + (lead + visible) as f64 * column_w).min(plot_end),
             false => plot_end,
         };
-        Lane { side: self.order_labels, plot_x: plan.plot_x, plot_w: plan.plot_w, end }
+        Lane { side: self.mark_labels, plot_x: plan.plot_x, plot_w: plan.plot_w, end }
     }
 }
 
@@ -7385,10 +7139,10 @@ enum Boxed<'a> {
     Outlined(&'a str),
 }
 
-/// How a mark's chip is boxed: filled in the mark's colour once that is
-/// its money's, outlined in it while it is only its side's.
-fn chip_look(colour: &str, money: bool) -> Boxed<'_> {
-    match money {
+/// How a mark's chip is boxed: filled in the mark's colour, or outlined in
+/// it.
+fn chip_look(colour: &str, filled: bool) -> Boxed<'_> {
+    match filled {
         true => Boxed::Filled(Tag::on(colour)),
         false => Boxed::Outlined(colour),
     }
@@ -7465,14 +7219,14 @@ fn draw_mark_label(cr: &cairo::Context, row: &MarkRow, y: f64, label: &Label, ba
     }
 }
 
-/// The orders and the position, drawn under the last price's tag: lines
-/// from the plot's left edge to the last bar, the last price's over them
-/// all, then over every line its label at the end of the chart the
-/// trader chose — the tag, the body and the × in one piece — and the
-/// position's exit tabs beside its label, the orders' prices on the axis
-/// spread apart with the last price's where they would cover each other.
-/// The position has no chip there: the last price's beside it says
-/// enough. Returns where the last price's chip goes, when it had to move.
+/// The marks, drawn under the last price's tag: lines from the plot's left
+/// edge to the last bar, the last price's over them all, then over every
+/// line its label at the end of the chart chosen — the tag, the body and
+/// the × in one piece, and the mark's tabs beside it — the raised marks'
+/// over the line joining linked marks and everybody else's under it, and
+/// the marks' prices on the axis spread apart with the last price's where
+/// they would cover each other. Returns where the last price's chip goes,
+/// when it had to move.
 #[allow(clippy::too_many_arguments)]
 fn draw_marks(
     cr: &cairo::Context,
@@ -7531,7 +7285,7 @@ fn draw_marks(
         cr.rectangle(x - pad, y - h / 2.0 - pad, w + 2.0 * pad, h + 2.0 * pad);
         let _ = cr.fill();
     };
-    // A mark asked to move or go is drawn faint until the broker answers.
+    // A faint mark is drawn at less than full strength.
     let faint = |cr: &cairo::Context, dim: bool, paint: &dyn Fn(&cairo::Context)| match dim {
         true => {
             cr.push_group();
@@ -7552,96 +7306,70 @@ fn draw_marks(
     };
     let lit = state.hover_mark.as_ref();
     let ys = |price: f64| Some(to_y(price).round()).filter(|y| shown(*y));
-    let orders: Vec<(&OrderMark, f64)> =
-        state.marks.orders.iter().filter_map(|order| Some((order, ys(order.price)?))).collect();
-    let held: Vec<(&PositionMark, f64)> =
-        state.marks.held.iter().filter_map(|held| Some((held, ys(held.price)?))).collect();
-    let position = state.marks.position.as_ref().and_then(|held| Some((held, ys(held.price)?)));
+    let marks: Vec<(&PriceMark, f64)> =
+        state.marks.lines.iter().filter_map(|mark| Some((mark, ys(mark.price)?))).collect();
 
     // Every line first, the last price's last of them, over every mark's
-    // so it still reads with the price sitting on the entry; and then
-    // every label on top, so that no line, the mark's own or another's at
-    // the same price, is drawn through words.
-    for (order, y) in &orders {
-        // A market order on its way has no price of its own: its label
-        // beside the last price, and no line.
-        if order.kind != OrderKind::Market {
-            // Heavier than the last price's hairline, so a dashed one can
-            // never be taken for its dashes; a stop heavier than a limit.
-            faint(cr, order.dim, &|cr| line(cr, *y, &order.colour, order.style, order_weight(order.kind)));
+    // so it still reads with the price sitting on a mark; and then every
+    // label on top, so that no line, the mark's own or another's at the
+    // same price, is drawn through words.
+    for (mark, y) in &marks {
+        if let Some(weight) = mark.line {
+            faint(cr, mark.dim, &|cr| line(cr, *y, &mark.colour, mark.style, weight));
         }
-    }
-    for (held, y) in held.iter().chain(&position) {
-        faint(cr, held.dim, &|cr| line(cr, *y, &held.colour, held.style, POSITION_WEIGHT));
     }
     draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
 
-    let mut chips: Vec<(f64, &str, Option<Boxed>, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
-    for (order, y) in &orders {
-        let row = order_row(cr, lane, order);
-        let body = order.body.as_deref().map(|body| (body, None));
-        // A market order is always on its way, and has no × and no price.
-        let market = order.kind == OrderKind::Market;
-        ground(cr, order.dim || market, &|cr| row.path(cr, *y));
-        faint(cr, order.dim || market, &|cr| {
-            let lit = lit.is_some_and(|hit| *hit == MarkHit::Close(order.basket.clone()));
-            let label = Label { colour: &order.colour, tag: &order.tag, body, lit };
-            draw_mark_label(cr, &row, *y, &label, background, ink);
-        });
-        if !market {
-            // An exit's chip is filled in its money's colour, an entry's
-            // outlined in its side's.
-            chips.push((y + 0.5, &order.price_text, Some(chip_look(&order.colour, order.body.is_some())), order.dim));
-        }
-    }
-    for (held, y) in &held {
-        let row = held_row(cr, lane, held);
-        ground(cr, held.dim, &|cr| row.path(cr, *y));
-        faint(cr, held.dim, &|cr| {
-            let lit = lit == Some(&MarkHit::FlattenHeld(held.contract.clone()));
-            let body = held.body.as_deref().map(|body| (body, None));
-            let label = Label { colour: &held.colour, tag: &held.tag, body, lit };
-            draw_mark_label(cr, &row, *y, &label, background, ink);
-        });
-        chips.push((y + 0.5, &held.price_text, Some(chip_look(&held.colour, held.body.is_some())), held.dim));
-    }
-    draw_link(cr, lane, &orders, ink, &faint);
-    if let Some((held, y)) = position {
-        let row = held_row(cr, lane, held);
-        let tab_h = MARK_H - 2.0;
-        ground(cr, held.dim, &|cr| {
+    let tab_h = MARK_H - 2.0;
+    // A mark's label and its tabs.
+    let label = |cr: &cairo::Context, mark: &PriceMark, y: f64| {
+        let row = label_row(cr, lane, mark);
+        ground(cr, mark.dim, &|cr| {
             row.path(cr, y);
             for (_, x, w) in &row.tabs {
                 cr.rectangle(*x, y - tab_h / 2.0, *w, tab_h);
             }
         });
-        faint(cr, held.dim, &|cr| {
-            let lit_cap = lit == Some(&MarkHit::Flatten);
-            let body = held.body.as_deref().map(|body| (body, None));
-            let label = Label { colour: &held.colour, tag: &held.tag, body, lit: lit_cap };
+        faint(cr, mark.dim, &|cr| {
+            let lit_cap = lit.is_some_and(|hit| matches!(hit, MarkHit::Close(id) if *id == mark.id));
+            let body = mark.body.as_deref().map(|body| (body, None));
+            let label = Label { colour: &mark.colour, tag: &mark.tag, body, lit: lit_cap };
             draw_mark_label(cr, &row, y, &label, background, ink);
-            for (kind, x, w) in &row.tabs {
-                let Some(tab) = held.exits.iter().find(|tab| tab.kind == *kind) else { continue };
-                if lit == Some(&MarkHit::Exit(*kind)) {
+            for (n, x, w) in &row.tabs {
+                let tab = &mark.tabs[*n];
+                if lit.is_some_and(|hit| matches!(hit, MarkHit::Tab { mark: on, tab: which } if *on == mark.id && *which == tab.id)) {
                     halo(cr, *x, y, *w, tab_h);
                 }
                 pill_path(cr, x + 0.5, y - tab_h / 2.0 + 0.5, w - 1.0, tab_h - 1.0);
                 colors::set_source(cr, background);
                 let _ = cr.fill_preserve();
-                // Its dashes are its kind's, and a stop's outline heavier
-                // than a target's as its line is, so it is told by more
-                // than its colour.
-                let weight = order_weight(tab.kind) / order_weight(OrderKind::Limit);
-                cr.set_line_width(weight);
-                cr.set_dash(&tab.style.dashes(weight), 0.0);
+                // Its dashes are its own, and its outline as heavy as it
+                // asks, so it is told by more than its colour.
+                cr.set_line_width(tab.outline);
+                cr.set_dash(&tab.style.dashes(tab.outline), 0.0);
                 colors::set_source(cr, &tab.colour);
                 let _ = cr.stroke();
                 cr.set_dash(&[], 0.0);
                 colors::set_source(cr, ink);
                 cr.move_to(x + TAB_PAD, baseline(cr, y));
-                let _ = cr.show_text(crate::trading::exit_tab(*kind));
+                let _ = cr.show_text(&tab.text);
             }
         });
+    };
+
+    let mut chips: Vec<(f64, &str, Option<Boxed>, bool)> = Vec::with_capacity(state.marks.lines.len() + 1);
+    for (mark, y) in marks.iter().filter(|(mark, _)| !mark.raised) {
+        label(cr, mark, *y);
+        if let Some(at) = &mark.chip {
+            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
+        }
+    }
+    draw_link(cr, lane, &marks, ink, &faint);
+    for (mark, y) in marks.iter().filter(|(mark, _)| mark.raised) {
+        label(cr, mark, *y);
+        if let Some(at) = &mark.chip {
+            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
+        }
     }
     let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
@@ -7669,20 +7397,13 @@ fn draw_marks(
     moved
 }
 
-/// The line joining linked exits, on the side of their labels that faces
+/// The line joining linked marks, on the side of their labels that faces
 /// the plot: from the top one to the bottom one, with a short stroke into
-/// each. Solid where the broker holds the link, dashed where the app does,
-/// faint while either is pending.
-fn draw_link(
-    cr: &cairo::Context,
-    lane: Lane,
-    orders: &[(&OrderMark, f64)],
-    ink: &str,
-    faint: Faint,
-) {
-    let linked: Vec<(MarkRow, f64, LinkMark)> = orders
+/// each. Dashed if any of them asks, faint while any is pending.
+fn draw_link(cr: &cairo::Context, lane: Lane, marks: &[(&PriceMark, f64)], ink: &str, faint: Faint) {
+    let linked: Vec<(MarkRow, f64, MarkLink)> = marks
         .iter()
-        .filter_map(|(order, y)| Some((order_row(cr, lane, order), *y, order.link?)))
+        .filter_map(|(mark, y)| Some((label_row(cr, lane, mark), *y, mark.link?)))
         .collect();
     if linked.len() < 2 {
         return;
@@ -7701,10 +7422,10 @@ fn draw_link(
     let top = linked.iter().map(|(_, y, _)| *y).fold(f64::MAX, f64::min);
     let bottom = linked.iter().map(|(_, y, _)| *y).fold(f64::MIN, f64::max);
     let pending = linked.iter().any(|(.., link)| link.pending);
-    let app = linked.iter().any(|(.., link)| link.holder == crate::trading::Holder::App);
+    let dashed = linked.iter().any(|(.., link)| link.dashed);
     faint(cr, pending, &|cr| {
         cr.set_line_width(1.0);
-        cr.set_dash(if app { &[3.0, 2.0] } else { &[] }, 0.0);
+        cr.set_dash(if dashed { &[3.0, 2.0] } else { &[] }, 0.0);
         colors::set_source_alpha(cr, ink, 0.7);
         cr.move_to(x, top + 0.5);
         cr.line_to(x, bottom + 0.5);
@@ -7720,21 +7441,20 @@ fn draw_link(
 /// Paint what is given, faint or not.
 type Faint<'a> = &'a dyn Fn(&cairo::Context, bool, &dyn Fn(&cairo::Context));
 
-/// How far the line joining linked exits stands off their labels.
+/// How far the line joining linked marks stands off their labels.
 const LINK_GAP: f64 = 4.0;
 
-/// An order being dragged: a ghost of its line where the hand has it, in
-/// the colour of the money an exit would realise there and in its own
-/// look otherwise, its label without a × saying what it would be and how
-/// far it has come, and its price on the axis. Muted, saying why, where
-/// it may not go.
+/// A mark being dragged: a ghost of its line where the hand has it, in the
+/// colour the rules say and in its own look otherwise, its label without a
+/// × saying what the rules say, and its price on the axis. Muted where it
+/// may not go.
 #[allow(clippy::too_many_arguments)]
 fn draw_mark_preview(
     cr: &cairo::Context,
     state: &State,
     plan: &Layout,
     width: f64,
-    what: &MarkDrag,
+    what: &Grab,
     at: f64,
     allowed: bool,
     to_y: &impl Fn(f64) -> f64,
@@ -7744,20 +7464,20 @@ fn draw_mark_preview(
     if y < plan.price_y || y > plan.price_y + plan.price_h {
         return;
     }
-    let tick = state.tick();
-    let places = tick.map_or(2, |tick| omacharts_engine::on_tick(at, tick).1);
+    let places = state.places_at(at);
     let price = grouped_decimals(at, places);
-    let (text, money) = state.preview_label(what, &dragged, at, allowed, places);
-    let colour = match (allowed, money) {
-        (true, Some(money)) => money,
+    let preview = state.marks.rules.rules().preview(&state.drag_query(&dragged, at, places), allowed);
+    let colour = match (allowed, preview.colour.as_deref()) {
+        (true, Some(colour)) => colour,
         (true, None) => dragged.colour,
         (false, _) => state.theme.ui.text_muted.as_str(),
     };
+    let text = preview.text.as_str();
     cr.save().ok();
     mark_font(cr);
     let line_y = y + 0.5;
     let lane = state.lane(plan);
-    let weight = order_weight(dragged.kind);
+    let weight = dragged.weight;
     cr.set_line_width(weight);
     cr.set_dash(&dragged.style.dashes(weight), 0.0);
     colors::set_source_alpha(cr, colour, 0.6);
@@ -7765,12 +7485,12 @@ fn draw_mark_preview(
     cr.line_to(lane.end, line_y);
     let _ = cr.stroke();
     cr.set_dash(&[], 0.0);
-    // The label where the order's own would be, the ×'s place left empty.
-    let row = mark_row(cr, lane, &dragged.tag, Some(&text), false, &[]);
+    // The label where the mark's own would be, the ×'s place left empty.
+    let row = mark_row(cr, lane, dragged.tag, Some(text), false, &[]);
     // The words in the ink, and in the muted colour with the rest where
-    // the order may not go.
+    // the mark may not go.
     let body_colour = (!allowed).then_some(colour);
-    let label = Label { colour, tag: &dragged.tag, body: Some((&text, body_colour)), lit: false };
+    let label = Label { colour, tag: dragged.tag, body: Some((text, body_colour)), lit: false };
     draw_mark_label(cr, &row, line_y, &label, &state.theme.ui.background, &state.theme.ui.text);
     let axis_x = plan.plot_x + plan.plot_w;
     axis_font(cr);
@@ -7799,7 +7519,7 @@ fn draw_last_price(
     width: f64,
     decimals: usize,
     to_y: &impl Fn(f64) -> f64,
-    // Where the tag goes when orders on the axis moved it.
+    // Where the tag goes when marks' chips on the axis moved it.
     tag_at: Option<f64>,
 ) {
     let Some(last) = state.bars.last() else { return };
@@ -7929,7 +7649,7 @@ fn draw_crosshair(
     cr.restore().ok();
 
     // Price under the pointer, only while it is over the price plot, and
-    // not while an order is dragged: its own price is on the axis then.
+    // not while a mark is dragged: its own price is on the axis then.
     let dragging = matches!(state.drag, Some(Drag::Mark { .. }));
     if py >= price_y && py <= price_y + price_h && !dragging {
         label_on_axis(
@@ -8567,7 +8287,7 @@ const EDITING_PAD: f64 = 1.0;
 
 /// The ground under the words being typed: the colour the ink was held
 /// against, put down so that what is on screen while somebody types is as
-/// readable as what they will get. See [`crate::ui::text::draw`] for why a
+/// readable as what they will get. See [`crate::text::draw`] for why a
 /// label needs its ground drawn at all.
 fn draw_editing_ground(cr: &cairo::Context, state: &State, drawing: &Drawing) {
     let Some((x, y, w, h)) = state.editing_at else { return };
@@ -8575,7 +8295,7 @@ fn draw_editing_ground(cr: &cairo::Context, state: &State, drawing: &Drawing) {
     let ground = drawings::text_ground(drawing.kind, style, &state.theme);
     colors::set_source(cr, &ground);
     let pad = EDITING_PAD;
-    crate::ui::drawing_settings::rounded(cr, x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad, 3.0);
+    crate::shapes::rounded(cr, x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad, 3.0);
     let _ = cr.fill();
 }
 
@@ -8597,8 +8317,8 @@ fn draw_label(
     let Some((x, y, _, _)) = projected.words else { return };
     let ground = drawings::text_ground(drawing.kind, style, &state.theme);
     let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
-    let at = crate::ui::text::placement(drawing.kind, &drawing.text);
-    crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
+    let at = crate::text::placement(drawing.kind, &drawing.text);
+    crate::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
 }
 
 /// One leg of a stroke, with either end pulled in by half the line's width
@@ -8642,7 +8362,7 @@ fn arrowhead(
     width: f64,
     shape: omacharts_engine::ArrowHead,
 ) {
-    crate::ui::drawing_settings::paint_head(cr, tail, tip, width, 6.0 + 3.0 * width, shape);
+    crate::shapes::paint_head(cr, tail, tip, width, 6.0 + 3.0 * width, shape);
 }
 
 /// The visible bar closest in time to `ts`, if any is near enough to mean it.
@@ -8934,7 +8654,7 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 /// The colours a volume pane paints a rising and a falling bar: the
 /// indicator's own when somebody chose them, otherwise the candles' own —
 /// the chart's candles, or the colouring the indicator chose for itself.
-pub(crate) fn volume_colours(
+pub fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
@@ -8959,7 +8679,7 @@ pub(crate) fn volume_colours(
 
 /// How solid a volume pane's bars are drawn, kept within what the row offers
 /// so a hand-edited chart cannot make them vanish.
-pub(crate) fn volume_opacity(indicator: &Indicator) -> f64 {
+pub fn volume_opacity(indicator: &Indicator) -> f64 {
     use omacharts_engine::indicators::{DEFAULT_VOLUME_OPACITY, MIN_VOLUME_OPACITY};
     match indicator.params {
         omacharts_engine::Params::Volume { opacity, .. } if opacity.is_finite() => {
@@ -9782,6 +9502,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::marks::{AxisChip, MarkPreview};
 
     /// The bug: a chart that could not fetch told the user the symbol had no
     /// data, which on a first run reads as the app not having the S&P 500.
@@ -10619,6 +10340,127 @@ mod tests {
         assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
     }
 
+    /// Rules for the tests' marks: a position of `net` held at `avg`, a
+    /// point worth `point`, exits on the side that closes it — a limit
+    /// above the market and a stop below it for a long — and what an exit
+    /// would realise as the label in hand.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Exits {
+        avg: f64,
+        net: i32,
+        point: f64,
+        /// Each draggable mark: its id, whether it sells, whether it is a
+        /// stop, its size.
+        orders: Vec<(String, bool, bool, u32)>,
+        profit: String,
+        loss: String,
+    }
+
+    impl Exits {
+        /// A limit waits for a better price and a stop for a worse one.
+        fn rests(stop: bool, sell: bool, at: f64, last: f64) -> bool {
+            match stop == sell {
+                true => at < last,
+                false => at > last,
+            }
+        }
+
+        /// The order a drag would make or move: whether it is a stop,
+        /// whether it sells, and its size.
+        fn dragged(&self, drag: &MarkDrag) -> Option<(bool, bool, u32)> {
+            match drag.tab {
+                Some(tab) => Some((tab == "stop", self.net > 0, self.net.unsigned_abs())),
+                None => self.orders.iter().find(|(id, ..)| id == drag.mark).map(|(_, sell, stop, qty)| (*stop, *sell, *qty)),
+            }
+        }
+
+        fn money(value: f64) -> String {
+            let sign = if value < 0.0 { "-" } else { "+" };
+            let cents = (value.abs() * 100.0).round() as u64;
+            format!("{sign}${}.{:02}", grouped_decimals((cents / 100) as f64, 0), cents % 100)
+        }
+    }
+
+    impl MarkRules for Exits {
+        fn allowed(&self, drag: &MarkDrag) -> bool {
+            let (Some(last), Some((stop, sell, _))) = (drag.last, self.dragged(drag)) else { return false };
+            Exits::rests(stop, sell, drag.at, last)
+        }
+
+        fn preview(&self, drag: &MarkDrag, allowed: bool) -> MarkPreview {
+            if !allowed {
+                return MarkPreview { text: "Not allowed".into(), colour: None };
+            }
+            match self.dragged(drag) {
+                Some((_, sell, qty)) if self.net != 0 && sell == (self.net > 0) => {
+                    let closed = f64::from(qty.min(self.net.unsigned_abs()));
+                    let pnl = (drag.at - self.avg) * f64::from(self.net.signum()) * closed * self.point;
+                    let colour = if pnl < 0.0 { &self.loss } else { &self.profit };
+                    MarkPreview { text: Exits::money(pnl), colour: Some(colour.clone()) }
+                }
+                _ => AnyPrice.preview(drag, allowed),
+            }
+        }
+    }
+
+    /// The test marks' look: a tab of `kind` in `colour`, dashed as asked.
+    fn exit(stop: bool, colour: &str, style: LineStyle, net: i32) -> MarkTab {
+        let weight = if stop { 2.0 } else { 1.5 };
+        MarkTab {
+            id: if stop { "stop" } else { "limit" }.into(),
+            text: if stop { "STP" } else { "L" }.into(),
+            tag: format!("{} {}", if stop { "STP" } else { "L" }, net.unsigned_abs()),
+            colour: colour.into(),
+            style,
+            outline: weight / 1.5,
+            weight,
+        }
+    }
+
+    /// A working order as a mark: a line, a ×, its price on the axis, and
+    /// to be taken to another one.
+    fn order_mark(id: &str, price: f64, tag: &str, stop: bool, colour: &str, style: LineStyle) -> PriceMark {
+        PriceMark {
+            chip: Some(AxisChip { text: grouped_decimals(price, 2), filled: false }),
+            style,
+            line: Some(if stop { 2.0 } else { 1.5 }),
+            closable: true,
+            draggable: true,
+            ..PriceMark::new(id, price, tag, colour)
+        }
+    }
+
+    /// A position as a mark: a heavier line, a ×, its tabs, over the line
+    /// joining linked marks, and no chip.
+    fn position(price: f64, tag: &str, body: &str, colour: &str, tabs: Vec<MarkTab>) -> PriceMark {
+        PriceMark {
+            body: Some(body.into()),
+            line: Some(2.0),
+            closable: true,
+            tabs,
+            raised: true,
+            ..PriceMark::new("position", price, tag, colour)
+        }
+    }
+
+    /// The mark `id` on the chart, to change.
+    fn mark_mut<'a>(state: &'a mut State, id: &str) -> &'a mut PriceMark {
+        state.marks.lines.iter_mut().find(|mark| mark.id == id).expect("the mark")
+    }
+
+    fn the_mark<'a>(state: &'a State, id: &str) -> &'a PriceMark {
+        state.marks.lines.iter().find(|mark| mark.id == id).expect("the mark")
+    }
+
+    /// The rules as the chart holds them, to change.
+    fn rules_of(state: &State) -> Exits {
+        state.marks.rules.as_any().downcast_ref::<Exits>().expect("the tests' rules").clone()
+    }
+
+    fn set_rules(state: &mut State, rules: Exits) {
+        state.marks.rules = Box::new(rules);
+    }
+
     /// A chart of 300 bars marked with a long position, its two exit tabs,
     /// and a working sell limit, both well inside the plot.
     fn marked() -> State {
@@ -10627,40 +10469,20 @@ mod tests {
         let plan = layout(&state, 600.0, 400.0);
         let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
         let (low, high) = scale.prices();
-        let tab = |kind| ExitTab { kind, colour: "#ff0000".into(), style: LineStyle::Dashed };
+        let avg = low + (high - low) * 0.3;
+        let tabs = vec![exit(false, "#ff0000", LineStyle::Dashed, 1), exit(true, "#ff0000", LineStyle::Dashed, 1)];
+        let mut b1 = order_mark("B1", low + (high - low) * 0.7, "L 1", false, "#ff0000", LineStyle::Dotted);
+        b1.chip = Some(AxisChip { text: "2".into(), filled: false });
         state.marks = Marks {
-            held: Vec::new(),
-            position: Some(PositionMark {
-                contract: "ESZ6".into(),
-                price: low + (high - low) * 0.3,
-                tag: "▲ 1".into(),
-                body: Some("+$125.00".into()),
-                price_text: "1".into(),
-                colour: "#00ff00".into(),
-                style: LineStyle::Solid,
+            lines: vec![b1, position(avg, "▲ 1", "+$125.00", "#00ff00", tabs)],
+            rules: Box::new(Exits {
+                avg,
                 net: 1,
-                exits: vec![tab(OrderKind::Limit), tab(OrderKind::Stop)],
-                dim: false,
-                point: Some(50.0),
-                currency: Some("USD".into()),
+                point: 50.0,
+                orders: vec![("B1".into(), true, false, 1)],
                 profit: "#00aa00".into(),
                 loss: "#aa0000".into(),
             }),
-            orders: vec![OrderMark {
-                basket: "B1".into(),
-                side: Side::Sell,
-                kind: OrderKind::Limit,
-                qty: 1,
-                price: low + (high - low) * 0.7,
-                tag: "L 1".into(),
-                body: None,
-                price_text: "2".into(),
-                colour: "#ff0000".into(),
-                style: LineStyle::Dotted,
-                dim: false,
-                link: None,
-            }],
-            limits: (None, None),
         };
         state
     }
@@ -10676,17 +10498,18 @@ mod tests {
         let last = state.bars.last().unwrap().close;
         let up = state.scheme.up.clone();
         let down = state.scheme.down.clone();
-        let tab = |kind, colour: &str, style| ExitTab { kind, colour: colour.into(), style };
-        let position = state.marks.position.as_mut().unwrap();
-        position.price = last;
-        position.body = Some("+$0.00".into());
-        position.price_text = grouped_decimals(last, 2);
-        position.colour = up.clone();
-        position.exits = vec![tab(OrderKind::Limit, &up, LineStyle::Solid), tab(OrderKind::Stop, &down, LineStyle::Dashed)];
-        let order = &mut state.marks.orders[0];
+        let held = mark_mut(&mut state, "position");
+        held.price = last;
+        held.body = Some("+$0.00".into());
+        held.colour = up.clone();
+        held.tabs = vec![exit(false, &up, LineStyle::Solid, 1), exit(true, &down, LineStyle::Dashed, 1)];
+        let order = mark_mut(&mut state, "B1");
         order.tag = "▲ STP 2".into();
         order.colour = up;
         order.style = LineStyle::Dashed;
+        let mut rules = rules_of(&state);
+        rules.avg = last;
+        set_rules(&mut state, rules);
         state
     }
 
@@ -10702,10 +10525,10 @@ mod tests {
             let (first, visible, _) = state.view();
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
-            let held = state.marks.position.clone().unwrap();
+            let held = the_mark(&state, "position").clone();
             let y = scale.to_y(held.price, plan.price_y, plan.price_h).round() as usize;
             let cr = measuring().unwrap();
-            let row = held_row(&cr, state.lane(&plan), &held);
+            let row = label_row(&cr, state.lane(&plan), &held);
             let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
             let at = |x: f64| {
                 let i = (y * w as usize + x as usize) * 4;
@@ -10758,8 +10581,8 @@ mod tests {
                 }
                 save_png(surface, &format!("{folder}/position-marks-{name}-{}x.png", scale as u32));
             }
-            state.marks.orders[0].dim = true;
-            state.marks.position.as_mut().unwrap().dim = true;
+            mark_mut(&mut state, "B1").dim = true;
+            mark_mut(&mut state, "position").dim = true;
             let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
             {
                 let cr = cairo::Context::new(&surface).unwrap();
@@ -10782,7 +10605,7 @@ mod tests {
         for side in LabelSide::ALL {
             for (theme, name) in [(0, "dark"), (3, "light")] {
                 let mut state = at_the_last_price(theme);
-                state.order_labels = side;
+                state.mark_labels = side;
                 state.hover_mark = None;
                 let look = omacharts_engine::theme_trading(&state.theme, Default::default());
                 let (first, visible, _) = state.view();
@@ -10790,34 +10613,31 @@ mod tests {
                 let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
                 let (low, high) = scale.prices();
                 let last = state.bars.last().unwrap().close;
-                let held = state.marks.position.as_mut().unwrap();
+                let held = mark_mut(&mut state, "position");
                 held.price = last - (high - low) * 0.03;
                 held.body = Some("+$62.50".into());
                 held.colour = look.profit.clone();
                 held.style = look.position;
-                held.exits = Vec::new();
-                held.profit = look.profit.clone();
-                held.loss = look.loss.clone();
+                held.tabs = Vec::new();
                 let avg = held.price;
-                let order = |basket: &str, kind, tag: &str, at: f64, colour: &str, style, money: f64| OrderMark {
-                    basket: basket.into(),
-                    side: Side::Sell,
-                    kind,
-                    qty: 1,
-                    price: at,
-                    tag: tag.into(),
-                    body: Some(crate::trading::pnl_text(money, Some("USD"))),
-                    price_text: grouped_decimals(at, 2),
-                    colour: colour.into(),
-                    style,
-                    dim: false,
-                    link: None,
+                let order = |id: &str, stop: bool, tag: &str, at: f64, colour: &str, style, money: f64| PriceMark {
+                    body: Some(Exits::money(money)),
+                    chip: Some(AxisChip { text: grouped_decimals(at, 2), filled: true }),
+                    ..order_mark(id, at, tag, stop, colour, style)
                 };
                 let (tp, sl) = (last + (high - last) * 0.6, avg - (high - low) * 0.2);
-                state.marks.orders = vec![
-                    order("TP", OrderKind::Limit, "L 1", tp, &look.profit, look.limit, (tp - avg) * 50.0),
-                    order("SL", OrderKind::Stop, "STP 1", sl, &look.loss, look.stop, (sl - avg) * 50.0),
+                let held = the_mark(&state, "position").clone();
+                state.marks.lines = vec![
+                    order("TP", false, "L 1", tp, &look.profit, look.limit, (tp - avg) * 50.0),
+                    order("SL", true, "STP 1", sl, &look.loss, look.stop, (sl - avg) * 50.0),
+                    held,
                 ];
+                let mut rules = rules_of(&state);
+                rules.avg = avg;
+                rules.orders = vec![("TP".into(), true, false, 1), ("SL".into(), true, true, 1)];
+                rules.profit = look.profit.clone();
+                rules.loss = look.loss.clone();
+                set_rules(&mut state, rules.clone());
                 let shot = |state: &State, file: &str| {
                     let surface =
                         cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
@@ -10831,68 +10651,52 @@ mod tests {
                 };
                 let side = side.key();
                 shot(&state, &format!("labels-{side}-{name}.png"));
-                state.marks.position.as_mut().unwrap().price = last;
+                mark_mut(&mut state, "position").price = last;
+                rules.avg = last;
+                set_rules(&mut state, rules);
                 shot(&state, &format!("labels-{side}-{name}-on-entry.png"));
                 let at = sl - (high - low) * 0.08;
-                let what = MarkDrag::Move("SL".into());
+                let what = Grab::Move("SL".into());
                 state.drag = Some(Drag::Mark { allowed: state.mark_allowed(&what, at), what, at });
                 shot(&state, &format!("labels-{side}-{name}-drag.png"));
             }
         }
     }
 
-    /// What a mark in hand says: an exit only what it would realise where
-    /// the hand is, long and short, a target and a stop, an exit bigger
-    /// than the position counting only the position; an order that adds
-    /// to the position what it is and how far it has come; and where it
-    /// may not go, why.
+    /// A mark in hand is asked about as it is: the mark, the tab, where it
+    /// started from, where the hand has it and the market's last price; and
+    /// its label says what the rules say, in the colour they say.
     #[test]
-    fn a_dragged_exit_says_what_it_would_realise() {
-        let mut state = marked();
-        let avg = state.marks.position.as_ref().unwrap().price;
-        let label = |state: &State, what: MarkDrag, at: f64, allowed: bool| {
-            let dragged = state.mark_dragged(&what).expect("in hand");
-            let (text, colour) = state.preview_label(&what, &dragged, at, allowed, 2);
-            (text, colour.map(str::to_string))
-        };
-        let profit = Some("#00aa00".to_string());
-        let loss = Some("#aa0000".to_string());
+    fn a_mark_in_hand_says_what_its_rules_say() {
+        let state = marked();
+        let avg = the_mark(&state, "position").price;
+        let last = state.bars.last().map(|bar| bar.close);
+        let target = Grab::Tab { mark: "position".into(), tab: "limit".into() };
+        let dragged = state.mark_dragged(&target).expect("in hand");
+        let query = state.drag_query(&dragged, avg + 5.0, 2);
+        assert_eq!(
+            query,
+            MarkDrag { mark: "position", tab: Some("limit"), from: avg, at: avg + 5.0, last, tick: state.tick(), places: 2 }
+        );
+        assert_eq!((dragged.tag, dragged.colour, dragged.weight), ("L 1", "#ff0000", 1.5));
+        let said = state.marks.rules.rules().preview(&query, true);
+        assert_eq!(said, MarkPreview { text: "+$250.00".into(), colour: Some("#00aa00".into()) });
 
-        // Long 1 ES: the target 5 points up, the stop 2 down.
-        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Limit), avg + 5.0, true), ("+$250.00".into(), profit.clone()));
-        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Stop), avg - 2.0, true), ("-$100.00".into(), loss.clone()));
-        // The working sell limit is an exit too; one for 2 closes only the 1.
-        state.marks.orders[0].qty = 2;
-        assert_eq!(label(&state, MarkDrag::Move("B1".into()), avg + 1.0, true), ("+$50.00".into(), profit.clone()));
-        // Refused: why, not money.
-        let (text, colour) = label(&state, MarkDrag::Exit(OrderKind::Stop), avg + 50_000.0, false);
-        assert!(text.contains("not allowed"), "{text}");
-        assert_eq!(colour, None);
+        let moved = Grab::Move("B1".into());
+        let dragged = state.mark_dragged(&moved).expect("in hand");
+        assert_eq!((dragged.mark, dragged.tab, dragged.from), ("B1", None, the_mark(&state, "B1").price));
+        assert!(state.mark_dragged(&Grab::Move("B9".into())).is_none(), "no such mark");
+        assert!(state.mark_dragged(&Grab::Move("position".into())).is_none(), "the position is not draggable");
+        assert!(state.mark_dragged(&Grab::Tab { mark: "position".into(), tab: "market".into() }).is_none());
 
-        // Short 2 NQ at $20 a point: the target 10 down, the stop 3 up, and
-        // a buy stop for 1 of the 2.
-        let held = state.marks.position.as_mut().unwrap();
-        held.net = -2;
-        held.point = Some(20.0);
-        state.marks.orders[0].side = Side::Buy;
-        state.marks.orders[0].kind = OrderKind::Stop;
-        state.marks.orders[0].qty = 1;
-        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Limit), avg - 10.0, true), ("+$400.00".into(), profit));
-        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Stop), avg + 3.0, true), ("-$120.00".into(), loss.clone()));
-        assert_eq!(label(&state, MarkDrag::Move("B1".into()), avg + 3.0, true), ("-$60.00".into(), loss));
-
-        // A sell adds to a short: no money, where it is and how far it
-        // has come.
-        state.marks.orders[0].side = Side::Sell;
-        let price = grouped_decimals(avg + 3.0, 2);
-        let (text, colour) = label(&state, MarkDrag::Move("B1".into()), avg + 3.0, true);
-        assert!(text.starts_with(&price) && text.ends_with(" ticks"), "{text}");
-        assert_eq!(colour, None);
-        // With nothing held there is no exit to count.
-        state.marks.position = None;
-        let (text, colour) = label(&state, MarkDrag::Move("B1".into()), avg + 3.0, true);
-        assert!(text.starts_with(&price), "{text}");
-        assert_eq!(colour, None);
+        // With no rules, anywhere, saying the price.
+        let mut free = marked();
+        free.marks.rules = Box::new(AnyPrice);
+        let at = avg + 5.0;
+        assert!(free.mark_allowed(&target, at));
+        let dragged = free.mark_dragged(&target).unwrap();
+        let said = free.marks.rules.rules().preview(&free.drag_query(&dragged, at, 2), true);
+        assert_eq!(said, MarkPreview { text: grouped_decimals(at, 2), colour: None });
     }
 
     /// While an exit is in hand its pill is drawn over the chart, in the
@@ -10905,11 +10709,12 @@ mod tests {
         let (first, visible, _) = state.view();
         let plan = layout(&state, w, h);
         let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
-        let avg = state.marks.position.as_ref().unwrap().price;
+        let avg = the_mark(&state, "position").price;
         let last = state.bars.last().unwrap().close;
         // A target is a limit above the market for a long.
         let at = last.max(avg) + (scale.prices().1 - last.max(avg)) / 2.0;
-        assert!(state.mark_allowed(&MarkDrag::Exit(OrderKind::Limit), at));
+        let target = Grab::Tab { mark: "position".into(), tab: "limit".into() };
+        assert!(state.mark_allowed(&target, at));
         // Rows of the plot with the profit colour in them.
         let green = |pixels: &[u8]| -> Vec<usize> {
             (plan.price_y as usize..(plan.price_y + plan.price_h) as usize)
@@ -10923,7 +10728,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(green(&frame(w, h, |cr| draw_pointer(cr, w, h, &state))), Vec::<usize>::new(), "no money before the drag");
-        state.drag = Some(Drag::Mark { what: MarkDrag::Exit(OrderKind::Limit), at, allowed: true });
+        state.drag = Some(Drag::Mark { what: target, at, allowed: true });
         // The drag widens the price range to keep the hand's price in it.
         let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
         let y = scale.to_y(at, plan.price_y, plan.price_h).round() as usize;
@@ -10950,20 +10755,23 @@ mod tests {
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
             let (low, high) = scale.prices();
-            let held = state.marks.position.as_mut().unwrap();
+            let held = mark_mut(&mut state, "position");
             held.price -= (high - low) * 0.15;
-            held.profit = look.profit.clone();
-            held.loss = look.loss.clone();
             let avg = held.price;
+            let mut rules = rules_of(&state);
+            rules.avg = avg;
+            rules.profit = look.profit.clone();
+            rules.loss = look.loss.clone();
+            set_rules(&mut state, rules);
             // A resting target, saying what it would realise, in its colour.
-            let order = &mut state.marks.orders[0];
-            order.side = Side::Sell;
-            order.kind = OrderKind::Limit;
+            let order = mark_mut(&mut state, "B1");
             order.colour = look.profit.clone();
             order.style = look.limit;
+            order.line = Some(1.5);
             order.price = avg + (high - low) * 0.25;
             order.tag = "L 1".into();
-            order.body = Some(crate::trading::pnl_text((order.price - avg) * 50.0, Some("USD")));
+            order.body = Some(Exits::money((order.price - avg) * 50.0));
+            order.chip.as_mut().unwrap().filled = true;
             let shot = |state: &State, file: &str| {
                 let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
                 {
@@ -10976,37 +10784,35 @@ mod tests {
             };
             shot(&state, &format!("drag-pnl-resting-{name}.png"));
             let last = state.bars.last().unwrap().close;
-            let target = state.marks.orders[0].price;
-            for (kind, at, file) in [
-                (OrderKind::Limit, last + (target - last) * 0.5, "tp"),
-                (OrderKind::Stop, avg - (avg - low) * 0.5, "sl"),
-            ] {
-                state.drag = Some(Drag::Mark { what: MarkDrag::Exit(kind), at, allowed: state.mark_allowed(&MarkDrag::Exit(kind), at) });
+            let target = the_mark(&state, "B1").price;
+            for (tab, at, file) in [("limit", last + (target - last) * 0.5, "tp"), ("stop", avg - (avg - low) * 0.5, "sl")] {
+                let what = Grab::Tab { mark: "position".into(), tab: tab.into() };
+                state.drag = Some(Drag::Mark { allowed: state.mark_allowed(&what, at), what, at });
                 shot(&state, &format!("drag-pnl-{file}-{name}.png"));
             }
         }
     }
 
-    /// The ×, the tabs and an order's line are found where they are drawn:
+    /// The ×, the tabs and a mark's line are found where they are drawn:
     /// a × is a ×, not the line it sits on; the line is grabbed within a
     /// few pixels of it, label included; and nothing is found far from all
-    /// of them, on a mark asked to move, or with a tool in hand.
+    /// of them, on a faint mark, or with a tool in hand.
     #[test]
     fn a_marks_handles_and_its_line_are_found_where_they_are_drawn() {
         let (w, h) = (600.0, 400.0);
         for side in LabelSide::ALL {
             let mut state = marked();
-            state.order_labels = side;
+            state.mark_labels = side;
             let (first, visible, _) = state.view();
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
             let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
             let cr = measuring().unwrap();
             let lane = state.lane(&plan);
-            let order = state.marks.orders[0].clone();
-            let held = state.marks.position.clone().unwrap();
+            let order = the_mark(&state, "B1").clone();
+            let held = the_mark(&state, "position").clone();
             let (order_y, held_y) = (to_y(order.price).round(), to_y(held.price).round());
-            let row = order_row(&cr, lane, &order);
+            let row = label_row(&cr, lane, &order);
             let at = |x: f64, y: f64| mark_at(&plan, lane, &state.marks, x, y, &to_y);
             // Somewhere along the line, clear of every label.
             let mid = (plan.plot_x + lane.end) / 2.0;
@@ -11016,21 +10822,22 @@ mod tests {
             assert_eq!(at(row.tag_x + 10.0, order_y), Some(MarkHit::Line("B1".into())), "{side:?}: the label is the line's");
             assert_eq!(at(mid, order_y + 12.0), None, "{side:?}: too far from it");
 
-            let row = held_row(&cr, lane, &held);
-            assert_eq!(at(row.cap_x + 3.0, held_y), Some(MarkHit::Flatten), "{side:?}");
-            let tab = |kind: OrderKind| *row.tabs.iter().find(|(k, ..)| *k == kind).unwrap();
-            let (_, tp, tw) = tab(OrderKind::Limit);
-            assert_eq!(at(tp + tw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Limit)), "{side:?}");
-            let (_, sl, sw) = tab(OrderKind::Stop);
-            assert_eq!(at(sl + sw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Stop)), "{side:?}");
+            let row = label_row(&cr, lane, &held);
+            assert_eq!(at(row.cap_x + 3.0, held_y), Some(MarkHit::Close("position".into())), "{side:?}");
+            let tab = |n: usize| *row.tabs.iter().find(|(k, ..)| *k == n).unwrap();
+            let (_, tp, tw) = tab(0);
+            let hit = |tab: &str| Some(MarkHit::Tab { mark: "position".into(), tab: tab.into() });
+            assert_eq!(at(tp + tw / 2.0, held_y), hit("limit"), "{side:?}");
+            let (_, sl, sw) = tab(1);
+            assert_eq!(at(sl + sw / 2.0, held_y), hit("stop"), "{side:?}");
             assert!(tp < sl, "{side:?}: L left of STP");
-            assert_eq!(at(mid, held_y), None, "{side:?}: a position's line is not dragged");
+            assert_eq!(at(mid, held_y), None, "{side:?}: a mark that is not draggable is not dragged");
 
-            state.marks.orders[0].dim = true;
-            let row = order_row(&cr, lane, &order);
-            assert_eq!(mark_at(&plan, lane, &state.marks, mid, order_y, &to_y), None, "an order on its way");
+            mark_mut(&mut state, "B1").dim = true;
+            let row = label_row(&cr, lane, &order);
+            assert_eq!(mark_at(&plan, lane, &state.marks, mid, order_y, &to_y), None, "a faint mark");
             assert_eq!(mark_at(&plan, lane, &state.marks, row.cap_x + 3.0, order_y, &to_y), None);
-            state.marks.orders[0].dim = false;
+            mark_mut(&mut state, "B1").dim = false;
             assert!(state.mark_under(w, h, mid, order_y).is_some());
             state.tool = Some(DrawingKind::Line);
             assert_eq!(state.mark_under(w, h, mid, order_y), None, "a tool in hand takes the press");
@@ -11041,7 +10848,7 @@ mod tests {
     }
 
     /// The labels' two places. At the left: tag at the plot's edge, the ×
-    /// towards the bars and the position's tabs after it, L then STP. At
+    /// towards the bars and the mark's tabs after it, in their order. At
     /// the right: by the axis as ever, the tabs before the label. Either
     /// way the labels stay put as the bars scroll, and the lines stop at
     /// the last bar, or at the plot's edge with the last bar past it.
@@ -11049,24 +10856,24 @@ mod tests {
     fn the_labels_sit_at_either_side_and_the_lines_stop_at_the_last_bar() {
         let (w, h) = (600.0, 400.0);
         let mut state = marked();
-        assert_eq!(state.order_labels, LabelSide::Left, "left unless chosen");
+        assert_eq!(state.mark_labels, LabelSide::Left, "left unless chosen");
         let plan = layout(&state, w, h);
         let cr = measuring().unwrap();
-        let held = state.marks.position.clone().unwrap();
+        let held = the_mark(&state, "position").clone();
         let plot_end = plan.plot_x + plan.plot_w;
 
         let lane = state.lane(&plan);
         assert!(lane.end > plan.plot_x + plan.plot_w / 2.0 && lane.end < plot_end - 10.0, "room after the bars: {lane:?}");
-        let row = held_row(&cr, lane, &held);
+        let row = label_row(&cr, lane, &held);
         assert_eq!(row.tag_x, plan.plot_x + MARK_EDGE, "the tag at the edge");
         let (body_x, body_w) = row.body.unwrap();
         assert!(row.tag_x < body_x && body_x + body_w <= row.cap_x, "tag, body, ×");
         assert!(row.tabs.iter().all(|(_, x, _)| *x > row.cap_x + MARK_CAP), "the tabs after the ×");
-        assert_eq!(row.tabs[0].0, OrderKind::Limit, "L first");
+        assert_eq!(row.tabs[0].0, 0, "the first first");
 
-        state.order_labels = LabelSide::Right;
+        state.mark_labels = LabelSide::Right;
         let lane = state.lane(&plan);
-        let row = held_row(&cr, lane, &held);
+        let row = label_row(&cr, lane, &held);
         assert_eq!(row.right(), plot_end - MARK_EDGE, "the × by the axis");
         assert!(row.tabs.iter().all(|(_, x, _)| *x < row.tag_x), "the tabs before the label");
 
@@ -11074,27 +10881,27 @@ mod tests {
         // run across the plot, and the labels are where they were.
         for side in LabelSide::ALL {
             let mut back = marked();
-            back.order_labels = side;
-            let before = held_row(&cr, back.lane(&plan), &held).tag_x;
+            back.mark_labels = side;
+            let before = label_row(&cr, back.lane(&plan), &held).tag_x;
             let (first, ..) = back.view();
             back.anchored = false;
             back.first = first.saturating_sub(100);
             back.lead = 0;
             assert_eq!(back.lane(&plan).end, plot_end, "{side:?}: the last bar is past the edge");
-            assert_eq!(held_row(&cr, back.lane(&plan), &held).tag_x, before, "{side:?}: the label stays put");
+            assert_eq!(label_row(&cr, back.lane(&plan), &held).tag_x, before, "{side:?}: the label stays put");
         }
     }
 
-    /// With the price on the entry, the last price's dashes are drawn over
-    /// the position's line, and alone past the last bar.
+    /// With the price on a mark, the last price's dashes are drawn over the
+    /// mark's line, and alone past the last bar.
     #[test]
-    fn the_last_prices_line_is_over_the_positions() {
+    fn the_last_prices_line_is_over_the_marks() {
         let (w, h) = (600.0, 400.0);
         for side in LabelSide::ALL {
             let mut state = marked();
-            state.order_labels = side;
+            state.mark_labels = side;
             let last = state.bars.last().unwrap().close;
-            state.marks.position.as_mut().unwrap().price = last;
+            mark_mut(&mut state, "position").price = last;
             let (first, visible, _) = state.view();
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
@@ -11105,7 +10912,7 @@ mod tests {
                 let i = (y * w as usize + x) * 4;
                 (pixels[i + 2], pixels[i + 1], pixels[i]) == (0, 255, 0)
             };
-            let row = held_row(&measuring().unwrap(), lane, state.marks.position.as_ref().unwrap());
+            let row = label_row(&measuring().unwrap(), lane, the_mark(&state, "position"));
             // Clear of the label and its tabs, along the bars.
             let from = row.tabs.iter().map(|(_, x, w)| x + w).fold(row.right(), f64::max) as usize + 4;
             let to = match side {
@@ -11117,28 +10924,14 @@ mod tests {
                 LabelSide::Right => (plan.plot_x as usize + 4, to),
             };
             let over = (from..to).filter(|x| !green(*x)).count();
-            assert!(over > (to - from) / 4, "{side:?}: the last price's dashes over the position's line: {over}");
+            assert!(over > (to - from) / 4, "{side:?}: the last price's dashes over the mark's line: {over}");
         }
     }
 
-    /// Only the position's line is solid: a limit, a stop, a target and a
-    /// stop loss are dashed, and a stop heavier than a limit.
+    /// The axis carries the price of every mark that asks for a chip and
+    /// the last price's, and nothing for a mark that asks for none.
     #[test]
-    fn only_the_positions_line_is_solid() {
-        for theme in omacharts_engine::theme::builtin_themes() {
-            let look = omacharts_engine::theme_trading(&theme, Default::default());
-            assert_eq!(look.limit, LineStyle::Dashed, "{}: a limit, a target among them", theme.name);
-            assert_eq!(look.stop, LineStyle::Dashed, "{}: a stop, a stop loss among them", theme.name);
-            assert_eq!(look.position, LineStyle::Solid, "{}", theme.name);
-        }
-        assert!(order_weight(OrderKind::Stop) > order_weight(OrderKind::Limit));
-        assert!(order_weight(OrderKind::Limit) > 1.0, "heavier than the last price's hairline");
-    }
-
-    /// The axis carries every order's price and the last price's, and not
-    /// the position's, which the last price's beside it makes redundant.
-    #[test]
-    fn the_axis_has_no_chip_for_the_position() {
+    fn the_axis_has_no_chip_for_a_mark_without_one() {
         let (w, h) = (600.0, 400.0);
         let state = marked();
         let mut bare = marked();
@@ -11156,32 +10949,26 @@ mod tests {
                 pixels[i..i + 3] != unmarked[i..i + 3]
             })
         };
-        assert!(ink(state.marks.orders[0].price), "the order's chip");
-        assert!(!ink(state.marks.position.as_ref().unwrap().price), "no chip for the position");
+        assert!(ink(the_mark(&state, "B1").price), "the order's chip");
+        assert!(!ink(the_mark(&state, "position").price), "no chip for the position");
     }
 
-    /// What an order in hand is and where it may go: an exit is the side
-    /// that closes the position, counted from its price, and goes only on
-    /// its own side of the market; a moved order keeps its own side and
-    /// kind. Once what is dragged has gone from the chart there is nothing
-    /// to let go of.
+    /// A mark in hand goes only where its rules let it, and its preview is
+    /// drawn on the layer over the chart either way. Once what is dragged
+    /// has gone from the chart there is nothing to let go of.
     #[test]
-    fn an_order_in_hand_goes_only_where_it_may() {
+    fn a_mark_in_hand_goes_only_where_its_rules_let_it() {
         let mut state = marked();
         let last = state.bars.last().unwrap().close;
-        let stop = MarkDrag::Exit(OrderKind::Stop);
-        let dragged = state.mark_dragged(&stop).unwrap();
-        assert_eq!((dragged.side, dragged.kind, dragged.tag.as_str()), (Side::Sell, OrderKind::Stop, "STP 1"));
-        assert_eq!(dragged.from, state.marks.position.as_ref().unwrap().price);
+        let stop = Grab::Tab { mark: "position".into(), tab: "stop".into() };
         assert!(state.mark_allowed(&stop, last - 5.0), "a long's stop below the market");
         assert!(!state.mark_allowed(&stop, last + 5.0));
-        let target = MarkDrag::Exit(OrderKind::Limit);
+        let target = Grab::Tab { mark: "position".into(), tab: "limit".into() };
         assert!(state.mark_allowed(&target, last + 5.0));
         assert!(!state.mark_allowed(&target, last - 5.0));
-        let moved = MarkDrag::Move("B1".into());
+        let moved = Grab::Move("B1".into());
         assert!(state.mark_allowed(&moved, last + 5.0), "a sell limit stays above");
         assert!(!state.mark_allowed(&moved, last - 5.0));
-        assert!(state.mark_dragged(&MarkDrag::Move("B9".into())).is_none());
 
         // The preview is drawn on the layer over the chart, allowed or not.
         let (w, h) = (600.0, 400.0);
@@ -11194,22 +10981,15 @@ mod tests {
         assert!(painted(&refused) > painted(&quiet) + 200, "no refused preview");
         assert!(refused != shown);
 
-        // Not past the day's limits, on either side, whatever the side.
+        // Gone under the hand: the position and its tabs.
         state.drag = None;
-        state.marks.limits = (Some(last - 10.0), Some(last + 10.0));
-        assert!(state.mark_allowed(&target, last + 5.0), "a target inside the limits");
-        assert!(!state.mark_allowed(&target, last + 15.0), "past the high limit");
-        assert!(state.mark_allowed(&stop, last - 5.0));
-        assert!(!state.mark_allowed(&stop, last - 15.0), "past the low limit");
-        state.drag = Some(Drag::Mark { what: target.clone(), at: last + 15.0, allowed: false });
-        let past = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
-        assert!(painted(&past) > painted(&quiet) + 200, "no preview past the limit");
-        state.marks.limits = (None, None);
-
-        // Filled under the hand: the position and its tabs are gone.
-        state.marks.position = None;
+        state.marks.lines.retain(|mark| mark.id != "position");
         assert!(state.mark_dragged(&target).is_none());
         assert!(!state.mark_allowed(&target, last + 5.0));
+        // And with no bars there is no market to go to either side of.
+        let mut empty = marked();
+        empty.bars.clear();
+        assert!(!empty.mark_allowed(&moved, last + 5.0));
     }
 
     /// The handles are drawn: a chart with marks paints more than the same
@@ -11220,13 +11000,30 @@ mod tests {
         let (w, h) = (600.0, 400.0);
         let mut state = marked();
         let with = frame(w, h, |cr| draw(cr, w, h, &state));
-        state.marks.position.as_mut().unwrap().exits.clear();
+        mark_mut(&mut state, "position").tabs.clear();
         let without_tabs = frame(w, h, |cr| draw(cr, w, h, &state));
         assert!(with != without_tabs, "the tabs drew nothing");
         state.marks = Marks::default();
         let bare = frame(w, h, |cr| draw(cr, w, h, &state));
         let plain = charted(300);
         assert!(bare == frame(w, h, |cr| draw(cr, w, h, &plain)), "no marks, the same picture");
+    }
+
+    /// Handed the same marks and the same rules, the chart has nothing to
+    /// redraw; a change to either is a change, and with no marks at all the
+    /// rules make none.
+    #[test]
+    fn the_same_marks_under_the_same_rules_are_no_change() {
+        let state = marked();
+        let lines = state.marks.lines.clone();
+        let rules = rules_of(&state);
+        assert!(state.marks.same(&lines, &rules));
+        let mut other = rules.clone();
+        other.avg += 1.0;
+        assert!(!state.marks.same(&lines, &other), "other rules");
+        assert!(!state.marks.same(&lines, &AnyPrice), "rules of another kind");
+        assert!(!state.marks.same(&lines[..1], &rules), "other marks");
+        assert!(Marks::default().same(&[], &rules), "nothing marked, whatever the rules");
     }
 
     /// ES trades in quarters, and a price written beside its axis has to be
@@ -11514,7 +11311,7 @@ mod tests {
     /// screenshot leaving it out.
     #[test]
     fn the_pointer_layer_covers_the_chart_exactly() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let theme = omacharts_engine::theme::builtin_themes()
                 .into_iter()
                 .next()
@@ -11540,7 +11337,7 @@ mod tests {
     /// a look of its own as the properties would.
     #[test]
     fn the_stroke_keys_step_every_selected_drawing() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let theme = omacharts_engine::theme::builtin_themes()
                 .into_iter()
                 .next()
@@ -11587,7 +11384,7 @@ mod tests {
     /// step back from the end is a step like any other.
     #[test]
     fn a_retracement_at_the_end_of_the_thickness_range_is_left_alone() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let theme = omacharts_engine::theme::builtin_themes()
                 .into_iter()
                 .next()
@@ -11622,7 +11419,7 @@ mod tests {
     /// tool in hand, for another go.
     #[test]
     fn a_drawing_half_laid_down_is_dropped_and_the_tool_kept() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let theme = omacharts_engine::theme::builtin_themes()
                 .into_iter()
                 .next()
@@ -11651,7 +11448,7 @@ mod tests {
     /// question.
     #[test]
     fn the_pointer_layer_lets_every_event_through_to_the_chart() {
-        crate::ui::on_gtk(|| {
+        crate::on_gtk(|| {
             let theme = omacharts_engine::theme::builtin_themes()
                 .into_iter()
                 .next()

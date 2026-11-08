@@ -342,7 +342,7 @@ neighbour are the same number. `bin/perf-compare`'s header has the whole of the
 reasoning; read it before changing a threshold.
 
 Two things follow for anyone adding to the harness. It must stay inside
-`examples/perf.rs` and `src/ui/chart/bench.rs`, because the comparison copies
+`examples/perf.rs` and `crates/omacharts-chart/src/view/bench.rs`, because the comparison copies
 those two files onto the older revision — a harness that reached into a third
 file could not be grafted, and the job would stop comparing and start reporting.
 And a scenario has to be idempotent: its allocation counts are taken from a

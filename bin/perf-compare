@@ -62,7 +62,12 @@ cd "$(dirname "$0")/.."
 # between two harnesses; the code being measured — the drawing, the store, the
 # indicators, the index — is the revision's own. Which is also why the harness
 # is kept to these two files and why neither of them is in the draw path.
-harness=(examples/perf.rs src/ui/chart/bench.rs)
+harness=(examples/perf.rs crates/omacharts-chart/src/view/bench.rs)
+
+# Where a harness file lived before it moved, for a revision older than the
+# move: the chart's bench was in the app until the chart became a crate of
+# its own, and is the same file at either path.
+declare -A before=([crates/omacharts-chart/src/view/bench.rs]=src/ui/chart/bench.rs)
 
 # What counts as a regression. The allocation thresholds have a floor as well
 # as a percentage because 5% of nine allocations is rounding, and a row that
@@ -195,7 +200,11 @@ echo "comparing $(git rev-parse --short HEAD) against $(git rev-parse --short "$
 
 git worktree add --detach "$tree" "$base" >&2
 for file in "${harness[@]}"; do
-  cp "$file" "$tree/$file"
+  into=$file
+  if [[ ! -d "$tree/$(dirname "$file")" && -n "${before[$file]:-}" ]]; then
+    into=${before[$file]}
+  fi
+  cp "$file" "$tree/$into"
 done
 
 if ! base_bin=$(build_at "$tree" "$targets/base"); then

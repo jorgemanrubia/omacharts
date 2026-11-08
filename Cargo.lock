@@ -1488,12 +1488,24 @@ dependencies = [
  "gio",
  "gtk4",
  "libadwaita",
+ "omacharts-chart",
  "omacharts-engine",
  "pangocairo",
  "rithmic",
  "rusqlite",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "omacharts-chart"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "gtk4",
+ "omacharts-engine",
+ "pangocairo",
 ]
 
 [[package]]

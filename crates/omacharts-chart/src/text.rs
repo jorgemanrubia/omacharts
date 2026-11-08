@@ -211,13 +211,13 @@ pub fn draw(
     let layout = layout(text, style, align);
     cr.move_to(x, y);
     pangocairo::functions::layout_path(cr, &layout);
-    crate::ui::colors::set_source(cr, ground);
+    crate::colors::set_source(cr, ground);
     cr.set_line_width(HALO);
     cr.set_line_join(gtk::cairo::LineJoin::Round);
     // Preserved, so the fill below is the same outlines rather than a second
     // layout laid over the first a fraction off.
     let _ = cr.stroke_preserve();
-    crate::ui::colors::set_source(cr, colour);
+    crate::colors::set_source(cr, colour);
     let _ = cr.fill();
     // The path is spent, but say so: anything stroking after this would
     // otherwise stroke the glyphs.

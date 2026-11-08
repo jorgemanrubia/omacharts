@@ -498,7 +498,7 @@ fn corner(html: &mut String, row: &Row) {
 }
 
 /// One pane: the ring if focused, then the chart inside it, drawn the way
-/// `src/ui/chart.rs` draws it, with the crosshair if `pointer`.
+/// `crates/omacharts-chart/src/view.rs` draws it, with the crosshair if `pointer`.
 #[allow(clippy::too_many_arguments)]
 fn pane(
     html: &mut String,
