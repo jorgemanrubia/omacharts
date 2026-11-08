@@ -1283,7 +1283,8 @@ def shot_plan(script):
 
         0: look dawn                     the picture opens on this look
         12-16: fade dusk                 crossfade to another look
-        40-44: sweep dawn                or a soft edge sweeping across
+        40-44: sweep dawn                or a soft edge sweeping across,
+        52-57: sweep dusk from bottom-right   from that corner (top-left unless set)
         0: camera 41.5% 38% 14           a camera key: centre, as % of the
                                          frame, and how close (1 is all of it)
         96: end                          where the picture ends
@@ -1296,9 +1297,12 @@ def shot_plan(script):
         t0 = float(t0)
         t1 = float(t1) if t1 else t0
         if verb in ("look", "fade", "sweep"):
+            origin = "top-left"
+            if verb == "sweep" and len(args) == 3 and args[1] == "from":
+                origin, args = args[2], args[:1]
             if len(args) != 1 or not any(l["name"] == args[0] for l in script.looks):
                 die(f"no look called {' '.join(args)!r}: {line!r}")
-            fades.append({"t0": t0, "t1": t1, "look": args[0], "sweep": verb == "sweep"})
+            fades.append({"t0": t0, "t1": t1, "look": args[0], "sweep": verb == "sweep", "from": origin})
             moments.append((t1 + 0.2, f"{args[0]}"))
             if t1 > t0:
                 moments.append(((t0 + t1) / 2, f"{args[0]}-mid"))
@@ -1934,9 +1938,13 @@ def compose(script, voiced, plan, raw, offset):
         recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
     if still:
         # The fade overlaps the recording's lead-in, where nothing happens yet.
-        inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + COVER_FADE:.3f}", "-i", str(still), *recording]
-        video = (f"[0:v]format=yuv420p,setsar=1[c];[1:v]fps={FPS},format=yuv420p,setsar=1[r];"
-                 f"[c][r]xfade=transition=fade:duration={COVER_FADE}:offset={intro:.3f}[v0]")
+        # `cover_fade` lengthens it, for a slow video.
+        cover_fade = float(script.meta.get("cover_fade", COVER_FADE))
+        inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + cover_fade:.3f}", "-i", str(still), *recording]
+        # Both sides in the same (limited) range: a still came in full range
+        # and the first blended frame of the dissolve stepped a level darker.
+        video = (f"[0:v]scale=out_range=tv,format=yuv420p,setsar=1[c];[1:v]fps={FPS},scale=out_range=tv,format=yuv420p,setsar=1[r];"
+                 f"[c][r]xfade=transition=fade:duration={cover_fade}:offset={intro:.3f}[v0]")
     else:
         inputs = [*recording]
         video = f"[0:v]fps={FPS},format=yuv420p,setsar=1[v0]"
@@ -1946,8 +1954,9 @@ def compose(script, voiced, plan, raw, offset):
         # card resolves out of it; the last frame is held under the fade.
         n = len([a for a in inputs if a == "-i"])
         inputs += ["-loop", "1", "-framerate", str(FPS), "-t", f"{outro:.3f}", "-i", str(ending)]
-        video += (f";[v0]tpad=stop_mode=clone:stop_duration={END_FADE:.3f}[v1];[{n}:v]format=yuv420p,setsar=1[e];"
-                  f"[v1][e]xfade=transition=fade:duration={END_FADE}:offset={intro + plan['total']:.3f}[v]")
+        end_fade = float(script.meta.get("end_fade", END_FADE))
+        video += (f";[v0]tpad=stop_mode=clone:stop_duration={end_fade:.3f}[v1];[{n}:v]scale=out_range=tv,format=yuv420p,setsar=1[e];"
+                  f"[v1][e]xfade=transition=fade:duration={end_fade}:offset={intro + plan['total']:.3f}[v]")
     else:
         video += ";[v0]null[v]"
     audio_input = len([a for a in inputs if a == "-i"])
@@ -1955,8 +1964,8 @@ def compose(script, voiced, plan, raw, offset):
     maps = ["-filter_complex", video, "-map", "[v]", "-map", f"{audio_input}:a"]
     run(["ffmpeg", "-v", "error", "-y", *inputs, *maps, "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "slow", "-crf", "14",
          "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", str(final)])
-    run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
-         "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "slow",
+         "-crf", "15", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
     if not script.music_driven:
         subtitles(voiced, plan, out / f"{script.slug}.srt", intro)
     review = out / "review"
@@ -2030,16 +2039,19 @@ def loudnorm(source, target, linear=False):
     # Two passes: measure, then apply the gain that lands on -14 LUFS, the
     # level YouTube plays everything back at.
     if linear:
-        # A recording with a wide range — a piano, an orchestra — is only
-        # turned up or down, never compressed: loudnorm leaves its linear
-        # mode for a dynamic one when the range is wider than it allows, and
-        # pumps. As near -14 as the peaks let it go, under -1 dBTP.
+        # A recording with a wide range — a piano, an orchestra — is turned
+        # up, never compressed: loudnorm leaves its linear mode for a dynamic
+        # one when the range is wider than it allows, and pumps. To -16 LUFS,
+        # the most it takes without squashing, with a limiter that touches
+        # only the loudest moment, under -1 dBTP; YouTube never turns a quiet
+        # video up, and at -18 the quiet passages vanish on a laptop.
         found = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(source), "-af", "ebur128=peak=true", "-f", "null", "-"],
                                capture_output=True, text=True).stderr
         level = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", found)[-1])
         peak = float(re.findall(r"Peak:\s+(-?[\d.]+) dBFS", found)[-1])
-        gain = min(-14 - level, -1 - peak)
-        run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-af", f"volume={gain:.2f}dB,aresample=48000", str(target)])
+        gain = -16 - level
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-af",
+             f"volume={gain:.2f}dB,aresample=192000,alimiter=limit=0.85:attack=5:release=80:level=false,aresample=48000", str(target)])
         return
     measured = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(source), "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json",
                                "-f", "null", "-"], capture_output=True, text=True).stderr

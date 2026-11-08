@@ -185,7 +185,7 @@ them, in seconds from the end of the cover:
 |---|---|
 | `T: look <name>` | the picture is that look from T (the first one opens it) |
 | `T0-T1: fade <name>` | a crossfade to that look, eased, from T0 to T1; fades may not overlap |
-| `T0-T1: sweep <name>` | the new look sweeping in from the top-left corner behind a soft edge: for a change between a dark theme and a light one, which dissolved evenly passes through a washed-out grey |
+| `T0-T1: sweep <name> [from <corner>]` | the new look sweeping in from a corner (top-left unless set) behind a soft edge, blended in linear light: for a change between a dark theme and a light one, which dissolved evenly passes through a washed-out grey |
 | `T: camera <x%> <y%> <scale>` | a camera key: the centre of the view, as % of the frame, and how close (1 is the whole frame). Between keys the scale moves evenly in its logarithm, eased out of the first key and into the last, smooth through the rest, and the centre follows the view's width, as a camera dollying back does |
 | `T: end` | where the picture ends; the end card follows |
 
@@ -194,7 +194,8 @@ them, in seconds from the end of the cover:
 | `studio_scale` | output pixels per layout pixel: 2 is the usual 4K; 8 captures 15360x8640, sharp to a camera of about 8 |
 | `music_from` | seconds into `music_file` the soundtrack starts, for an excerpt |
 | `music_fade_in` | seconds it fades in over, 0.05 unless set |
-| `master` | `linear` to master by gain alone, for a recording with a wide range |
+| `master` | `linear` to master by gain to -16 LUFS with a peak limiter, never compressed, for a recording with a wide range |
+| `cover_fade`, `end_fade` | seconds the cover dissolves into the picture and the picture into the end card (0.6 and 0.4 unless set); longer suits a slow video |
 
 A **Frame** section holds the actions that put every chart's window where
 it belongs — each chart focused and its range set, then a wheel nudge to

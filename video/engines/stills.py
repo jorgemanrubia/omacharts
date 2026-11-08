@@ -155,20 +155,35 @@ def draw(pyramid, cx, cy, scale, out_w, out_h):
     return a
 
 
-SWEEP_EDGE = 0.4  # the sweep's soft edge, as a share of its travel
+SWEEP_EDGE = 0.12  # the sweep's soft edge, as a share of its travel: wider, and most of the frame is a grey blend
 
 
-def sweep_mask(w, h, alpha):
-    """How much of the new look shows at each pixel, a soft edge travelling
-    from the top-left corner to the bottom-right: a light change between a
-    dark theme and a light one, which dissolved evenly passes through a
-    flat, washed-out grey."""
-    if not hasattr(sweep_mask, "ramp"):
+def sweep_mask(w, h, alpha, origin="top-left"):
+    """How much of the new look shows at each pixel: a soft edge travelling
+    across the frame from a corner. A light change between a dark theme and
+    a light one, dissolved evenly, passes through a flat, washed-out grey."""
+    ramps = sweep_mask.__dict__.setdefault("ramps", {})
+    if origin not in ramps:
         x = np.linspace(0, 1, w, dtype=np.float32)[None, :]
         y = np.linspace(0, 1, h, dtype=np.float32)[:, None]
-        sweep_mask.ramp = (0.6 * x + 0.4 * y)
-    u = np.clip((alpha * (1 + SWEEP_EDGE) - sweep_mask.ramp) / SWEEP_EDGE, 0, 1)
+        if "right" in origin:
+            x = 1 - x
+        if "bottom" in origin:
+            y = 1 - y
+        ramps[origin] = 0.6 * x + 0.4 * y
+    u = np.clip((alpha * (1 + SWEEP_EDGE) - ramps[origin]) / SWEEP_EDGE, 0, 1)
     return (u * u * (3 - 2 * u))[:, :, None]
+
+
+# Blending in linear light: the middle of a dark-to-light edge is bright,
+# as light is, rather than the muddy grey a blend of gamma-coded values is.
+TO_LINEAR = ((np.arange(256, dtype=np.float32) / 255) ** 2.2)
+FROM_LINEAR = np.clip(np.round((np.linspace(0, 1, 4096, dtype=np.float32) ** (1 / 2.2)) * 255), 0, 255).astype(np.uint8)
+
+
+def blend_linear(old, new, mask):
+    mixed = TO_LINEAR[old] * (1 - mask) + TO_LINEAR[new] * mask
+    return FROM_LINEAR[np.clip((mixed * 4095 + 0.5).astype(np.int32), 0, 4095)]
 
 
 def main():
@@ -192,6 +207,7 @@ def main():
                 current = fade["look"]
             elif t >= fade["t0"]:
                 sweep = fade.get("sweep", False)
+                origin = fade.get("from", "top-left")
                 u = (t - fade["t0"]) / (fade["t1"] - fade["t0"])
                 coming, alpha = fade["look"], (u if sweep else smooth(u))
                 break
@@ -200,9 +216,7 @@ def main():
         cx, cy, scale = camera.at(t)
         frame = draw(looks[current], cx, cy, scale, w, h) if current else np.zeros((h, w, 3), np.uint8)
         if coming and sweep:
-            mask = sweep_mask(w, h, alpha)
-            new = draw(looks[coming], cx, cy, scale, w, h)
-            frame = (frame * (1 - mask) + new * mask + 0.5).astype(np.uint8)
+            frame = blend_linear(frame, draw(looks[coming], cx, cy, scale, w, h), sweep_mask(w, h, alpha, origin))
         elif coming:
             frame = cv2.addWeighted(frame, 1 - alpha, draw(looks[coming], cx, cy, scale, w, h), alpha, 0)
         encoder.stdin.write(frame.tobytes())

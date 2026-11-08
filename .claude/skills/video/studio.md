@@ -260,9 +260,16 @@ Proven on 2026-11-08 with the Clair de lune pull-back. What it took:
   the start and crawls at the end; in its logarithm it feels the same
   speed from one candle to the whole screen. The centre is moved with the
   view's width, not the clock, which is how a straight dolly back looks.
-- **Classical music is mastered by gain alone** (`master: linear`):
-  loudnorm leaves its linear mode for a dynamic one when a recording's
-  range is wider than it allows, and a piano pumps.
+- **Classical music is mastered by gain and a limiter** (`master:
+  linear`): loudnorm leaves its linear mode for a dynamic one when a
+  recording's range is wider than it allows, and a piano pumps. Gain to
+  -16 LUFS, the most a brass quintet took without squashing, and a limiter
+  under -1 dBTP on the loudest moment; at -18, where gain alone stopped
+  for the peaks, the quiet ending vanished on laptop speakers.
+- **Same range into a dissolve.** The cover and end card are full-range
+  stills; dissolved straight into the limited-range picture, the first
+  blended frame stepped a level darker. Both go through
+  `scale=out_range=tv` first.
 
 ## Shutting it down
 
