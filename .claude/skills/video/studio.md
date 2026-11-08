@@ -259,6 +259,20 @@ Proven on 2026-11-08 with the Clair de lune pull-back. What it took:
   latents with nothing to hear. Of three seeds, one kept the start exact;
   the others changed it slightly, so compare before choosing. Each chord's
   onset, read with librosa, is where its look switches.
+- **Cut a stretch by recomposing over it, not splicing.** To take five bars
+  out before the chords, the bars went (a whole number of them, so the bar
+  phase held) and ACE-Step repainted a window across the join so the music
+  leads into the chords as if written that way. Outside its window a
+  repaint is bit for bit the source, but its edges are not clean: the
+  last 40–60 ms of the window drop out on every seed, and one seed fell
+  to near-silence at its start. Crossfade back to the source over each
+  edge, equal power, across sustained notes — on the left, holding the
+  source until the repaint's first attack. Check every 10 ms of level
+  across both edges, and the beat grid through the window.
+- **Cut the picture with the camera hurried, not jumped.** The shot's
+  `hurry` plays the rest of the camera's settle in the time the cut leaves,
+  leaving and arriving at the path's own speed, so everything before the
+  cut is drawn exactly as before.
 - **Sample it down properly.** A still is kept as a pyramid of halvings
   and each frame blended from the two levels either side of its scale
   (trilinear): sampled straight from 16K to 4K, thin lines shimmer as the

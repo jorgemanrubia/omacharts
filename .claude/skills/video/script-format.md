@@ -187,6 +187,7 @@ them, in seconds from the end of the cover:
 | `T0-T1: fade <name>` | a crossfade to that look, eased, from T0 to T1; fades may not overlap |
 | `T0-T1: sweep <name> [from <corner>]` | the new look sweeping in from a corner (top-left unless set) behind a soft edge, blended in linear light: for a change between a dark theme and a light one, which dissolved evenly passes through a washed-out grey |
 | `T: camera <x%> <y%> <scale>` | a camera key: the centre of the view, as % of the frame, and how close (1 is the whole frame). Between keys the scale moves evenly in its logarithm, eased out of the first key and into the last, smooth through the rest, and the centre follows the view's width, as a camera dollying back does |
+| `T0-T1: hurry TO` | the camera's own path from T0 to TO, played between T0 and T1: for a stretch cut out of the picture and its music. Camera keys after T0 stay on the camera's own clock; looks and the end are in picture time |
 | `T: end` | where the picture ends; the end card follows |
 
 | Frontmatter | Means |

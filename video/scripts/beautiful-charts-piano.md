@@ -10,8 +10,8 @@ cover_fade: 1.5
 end_card: 4
 end_fade: 1.0
 music: tender, slightly playful piano with celesta sparkle and soft pizzicato, warm strings swelling gently to a heartfelt peak, then settling; original, generated for this video
-music_file: video/out/beautiful-charts-piano/music/3-playful-piano-celesta-strings-ten-chords.flac
-music_source: generated for this video with ACE-Step 1.5 (bin/video's music engine), seed 2202, 92 BPM; its ending repainted (seed 3137) into ten struck chords, D7 G Am F to C, the original kept to 63.3 s and crossfaded into the repaint over half a second, the last chord lifted 4 dB; prompts in video/out/beautiful-charts-piano/sources.txt and outro/job.json
+music_file: video/out/beautiful-charts-piano/music/3-playful-piano-celesta-strings-ten-chords-bridged.flac
+music_source: generated for this video with ACE-Step 1.5 (bin/video's music engine), seed 2202, 92 BPM; its ending repainted (seed 3137) into ten struck chords, D7 G Am F to C, the original kept to 63.3 s and crossfaded into the repaint over half a second, the last chord lifted 4 dB; then five bars before the chords cut, and the bridge over the cut (65.9-71 s) recomposed by ACE-Step repaint (seed 4237), the rest kept bit for bit; prompts in video/out/beautiful-charts-piano/sources.txt and outro/job.json
 music_licence: original music made for this project; no third-party rights
 music_fade: 1.5
 master: linear
@@ -43,9 +43,10 @@ strings, to one heartfelt peak and settles.
 4. **Dawn** (38.5–42). As the strings come in, daylight (Rosé Pine)
    sweeps across, and the pull-back arrives on the whole desk at the
    music's peak (55).
-5. **Night returns** (59–79). Nord falls from the opposite corner as the
-   music drops, then Tokyo Night, the camera still easing back.
-6. **Ten chords** (82–97). The music closes on ten struck chords, D7, G,
+5. **Dusk** (59–66). Nord falls from the opposite corner as the music
+   drops, the camera still easing back, and the music flows straight into
+   the closing chords.
+6. **Ten chords** (69–84). The music closes on ten struck chords, D7, G,
    A minor and F resolving to C. On each one the whole desk turns to
    another Omarchy theme, light and dark in turn: Catppuccin Latte,
    Gruvbox, Flexoki Light, Retro 82, Lupine, Ristretto, White, Matte Black,
@@ -269,7 +270,10 @@ music's peak, and keeps easing back while the night returns. Candle and
 theme changes are crossfades on the phrases; the two changes between
 dark and light sweep across from opposite corners. Then, held on the
 whole desk, a crisp change of theme on each of the ten closing chords,
-every one landing on its chord's onset (measured from the track).
+every one landing on its chord's onset (measured from the track). Five
+bars of the music before the chords were cut, and the bridge over the
+cut recomposed: the camera plays the rest of its settle in the time left,
+so it arrives at rest on the first chord without a jump.
 
     0: look ink
     0: camera 44.39% 21.84% 7.6
@@ -283,19 +287,19 @@ every one landing on its chord's onset (measured from the track).
     38.5-42: sweep dawn
     55: camera 49.2% 50.8% 1.1
     59.5-63: sweep dusk from bottom-right
-    75.5-79.5: fade night
+    64.91-68.8: hurry 81.8
     81.8: camera 50% 50% 1
-    81.82-81.94: fade chord-catppuccin-latte
-    83.12-83.24: fade chord-gruvbox
-    84.42-84.54: fade chord-flexoki-light
-    85.72-85.84: fade chord-retro-82
-    87.02-87.14: fade chord-lupine
-    88.32-88.44: fade chord-ristretto
-    89.64-89.76: fade chord-white
-    90.94-91.06: fade chord-matte-black
-    93.38-93.50: fade dawn
-    96.40-96.52: fade night
-    97.6: end
+    68.77-68.89: fade chord-catppuccin-latte
+    70.07-70.19: fade chord-gruvbox
+    71.37-71.49: fade chord-flexoki-light
+    72.67-72.79: fade chord-retro-82
+    73.99-74.11: fade chord-lupine
+    75.27-75.39: fade chord-ristretto
+    76.59-76.71: fade chord-white
+    77.89-78.01: fade chord-matte-black
+    80.33-80.45: fade dawn
+    83.35-83.47: fade night
+    84.58: end
 
 ## Pronunciation
 

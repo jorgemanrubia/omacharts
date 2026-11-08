@@ -13,7 +13,13 @@ The plan, written by bin/video from a script's Shot:
      "looks": {"dawn": "/path/dawn.png", ...},           # every still the same size
      "fades": [{"t0": 0, "t1": 0, "look": "dawn"}, ...],  # in order; t0 == t1 is a cut;
                                                           # "sweep": true for a soft diagonal sweep
-     "camera": [{"t": 0, "x": 0.41, "y": 0.37, "scale": 14}, ...]}
+     "camera": [{"t": 0, "x": 0.41, "y": 0.37, "scale": 14}, ...],
+     "hurries": [{"t0": 64.9, "t1": 68.8, "to": 81.8}, ...]}  # optional
+
+A hurry plays the camera's own path from t0 to `to` in the time from t0
+to t1, and the rest of it that much sooner: a stretch of the picture cut
+out, with the camera's path before it untouched and no jump across it. It
+leaves t0 and arrives at t1 at the path's own speed, faster between.
 
 The camera's x and y are the centre of the view as fractions of the still,
 and its scale how close it is: 1 is the whole still. Between keys the scale
@@ -123,6 +129,21 @@ class Camera:
         return a["x"] + lam * (b["x"] - a["x"]), a["y"] + lam * (b["y"] - a["y"]), scale
 
 
+def camera_time(t, hurries):
+    """Where on its own path the camera is at picture time t."""
+    shift = 0.0
+    for h in sorted(hurries, key=lambda h: h["t0"]):
+        t0, t1 = h["t0"] + shift, h["t1"] + shift
+        if t <= h["t0"]:
+            break
+        if t < h["t1"]:
+            u = (t - h["t0"]) / (h["t1"] - h["t0"])
+            extra = (h["to"] - h["t0"]) - (h["t1"] - h["t0"])
+            return h["t0"] + shift + (t - h["t0"]) + extra * (3 * u * u - 2 * u * u * u)
+        shift += (h["to"] - h["t0"]) - (h["t1"] - h["t0"])
+    return t + shift
+
+
 def draw(pyramid, cx, cy, scale, out_w, out_h):
     """The view of one still: centre (cx, cy) as fractions, at `scale`."""
     sw, sh = pyramid.size
@@ -213,7 +234,7 @@ def main():
                 break
             else:
                 break
-        cx, cy, scale = camera.at(t)
+        cx, cy, scale = camera.at(camera_time(t, plan.get("hurries", [])))
         frame = draw(looks[current], cx, cy, scale, w, h) if current else np.zeros((h, w, 3), np.uint8)
         if coming and sweep:
             frame = blend_linear(frame, draw(looks[coming], cx, cy, scale, w, h), sweep_mask(w, h, alpha, origin))

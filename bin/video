@@ -1311,7 +1311,7 @@ def shot_plan(script):
                                          frame, and how close (1 is all of it)
         96: end                          where the picture ends
     """
-    fades, camera, moments, end = [], [], [], None
+    fades, camera, hurries, moments, end = [], [], [], [], None
     for line in script.shot:
         when, _, what = line.partition(":")
         verb, *args = what.split()
@@ -1333,6 +1333,13 @@ def shot_plan(script):
                 die(f"camera takes x% y% scale: {line!r}")
             camera.append({"t": t0, "x": percent(args[0]), "y": percent(args[1]), "scale": float(args[2])})
             moments.append((t0, f"camera-{args[2]}"))
+        elif verb == "hurry":
+            # `T0-T1: hurry TO`: the camera's path from T0 to TO played in
+            # T0..T1, for a stretch cut from the picture; keys stay where
+            # they were, on the camera's own clock.
+            if len(args) != 1 or t1 <= t0 or float(args[0]) <= t1:
+                die(f"hurry is T0-T1: hurry TO, with TO past T1: {line!r}")
+            hurries.append({"t0": t0, "t1": t1, "to": float(args[0])})
         elif verb == "end":
             end = t0
         else:
@@ -1343,7 +1350,7 @@ def shot_plan(script):
     for a, b in zip(fades, fades[1:]):
         if b["t0"] < a["t1"]:
             die(f"the fade to {b['look']} starts before the one to {a['look']} has finished")
-    return {"fades": fades, "camera": camera, "duration": end}, sorted(m for m in moments if m[0] <= end)
+    return {"fades": fades, "camera": camera, "hurries": hurries, "duration": end}, sorted(m for m in moments if m[0] <= end)
 
 
 def render_stills(script, capture=True):
