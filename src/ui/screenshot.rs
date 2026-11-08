@@ -113,7 +113,7 @@ const LEFT_OUT: &[&str] = &[
 /// than to any window, which is also why putting an image there cannot disturb
 /// what is on screen.
 pub struct Shot {
-    texture: gdk::Texture,
+    pub(crate) texture: gdk::Texture,
     display: gdk::Display,
     /// What to call the file, without a folder and without `.png`.
     stem: String,

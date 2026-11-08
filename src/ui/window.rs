@@ -1763,6 +1763,61 @@ mod outside_change_tests {
         });
     }
 
+    /// A screenshot draws the chart title where the header shows it, and an
+    /// untitled chart's empty slot, which is only the Add title placeholder
+    /// waiting for a hover, leaves nothing there.
+    #[test]
+    fn a_screenshot_of_a_titled_chart_shows_its_title_in_the_header() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            // On screen, since a widget that is not shown draws nothing.
+            window.window.set_default_size(1000, 600);
+            window.window.present();
+            let settle = || {
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..30 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            };
+            let pixels = |texture: &gtk::gdk::Texture| {
+                let stride = texture.width() as usize * 4;
+                let mut bytes = vec![0; stride * texture.height() as usize];
+                texture.download(&mut bytes, stride);
+                (bytes, stride)
+            };
+            window.set_chart_title("Semis desk");
+            settle();
+            assert!(pane.root.is_mapped(), "the chart never came on screen");
+            let at = pane.title_button.compute_bounds(&pane.root).expect("the title has a place");
+            let titled = screenshot::chart(&pane, &window.theme()).expect("a screenshot").texture;
+            window.set_chart_title("");
+            settle();
+            let untitled = screenshot::chart(&pane, &window.theme()).expect("a screenshot").texture;
+            window.window.close();
+
+            let scale = titled.width() as f32 / pane.root.width() as f32;
+            let ((titled, stride), (untitled, _)) = (pixels(&titled), pixels(&untitled));
+            let rows = (at.y() * scale) as usize..((at.y() + at.height()) * scale) as usize;
+            let columns = (at.x() * scale) as usize * 4..((at.x() + at.width()) * scale) as usize * 4;
+            let region = |bytes: &[u8]| -> Vec<u8> {
+                rows.clone().flat_map(|row| bytes[row * stride..][columns.clone()].to_vec()).collect()
+            };
+            let (titled, untitled) = (region(&titled), region(&untitled));
+            let ground = untitled[..4].to_vec();
+            assert!(
+                untitled.chunks(4).all(|pixel| pixel == ground),
+                "an untitled chart's empty slot drew something into the screenshot"
+            );
+            assert!(
+                titled.chunks(4).any(|pixel| pixel != ground),
+                "the title is not in the screenshot where the header shows it"
+            );
+        });
+    }
+
     /// Edit chart title… asks in a dialog, offering the title the chart has, and
     /// an empty answer is one: the chart is untitled again.
     #[test]
