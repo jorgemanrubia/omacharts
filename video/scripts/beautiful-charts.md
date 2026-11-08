@@ -5,8 +5,11 @@ length: 60s
 theme: tokyo-night
 timing: music
 music_tempo: 120
+music_file: video/out/beautiful-charts/music/candidate-3-seed1074.flac
 cover: 3.4
 music: warm, groovy electronic at 120 BPM in 4/4, thirty bars, instrumental. A tight, round kick, crisp closed hi-hats, a clap on two and four, a rounded analog bass and a bright plucked synth arpeggio, with warm pads underneath. Shape, in bars. One and two, a filtered pickup, the pluck and a muffled kick only. Three to six, the kick opens up and the bass enters, still sparse. Seven to fourteen, a build, hats and claps come in and the filter opens bar by bar, ending in a one-bar snare roll. Fifteen to twenty-two, the drop, the full groove with a strong downbeat on every bar. Twenty-three to twenty-six, a break, the kick drops out, pads and hats carry it, and a riser in bar twenty-six. Twenty-seven to twenty-nine, the full groove again with a lead on top. Thirty, a final hit that rings out. Playful and confident, clean and tasteful, never aggressive or festival-sized, with no vocals
+music_bpm: 119.988
+music_downbeat: 0.528
 ---
 
 ## Brief

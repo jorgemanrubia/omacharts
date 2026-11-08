@@ -1546,21 +1546,22 @@ def camera_plan(script, total):
                 elif verb == "flash":
                     flashes.append({"t": round(t, 3), "strength": float(args[0]) if args else 0.35})
     moves.sort(key=lambda m: m["t"])
-    keys = [{"t": 0.0, **full, "ease": "hold"}]
+    keys = [{**full, "t": 0.0, "ease": "hold"}]
     for i, move in enumerate(moves):
         state = {k: move[k] for k in ("x", "y", "scale")}
         nxt = moves[i + 1]["t"] if i + 1 < len(moves) else total
         if move["verb"] == "drift":
-            keys.append({"t": move["t"], **keys[-1], "ease": "hold"} if keys[-1]["t"] < move["t"] else keys.pop())
-            keys.append({"t": min(nxt, move["t"] + move["beats"] * period), **state, "ease": "glide"})
+            if keys[-1]["t"] < move["t"]:
+                keys.append({**keys[-1], "t": move["t"], "ease": "hold"})
+            keys.append({**state, "t": min(nxt, move["t"] + move["beats"] * period), "ease": "glide"})
             continue
-        keys.append({"t": move["t"], **{k: keys[-1][k] for k in ("x", "y", "scale")}, "ease": "hold"})
-        keys.append({"t": min(nxt, move["t"] + snap), **state, "ease": "snap"})
+        keys.append({**{k: keys[-1][k] for k in ("x", "y", "scale")}, "t": move["t"], "ease": "hold"})
+        keys.append({**state, "t": min(nxt, move["t"] + snap), "ease": "snap"})
         if move["beats"]:
             back = move["t"] + move["beats"] * period
             if back < nxt - 1e-3:
-                keys.append({"t": back - snap, **state, "ease": "hold"})
-                keys.append({"t": back, **full, "ease": "smooth"})
+                keys.append({**state, "t": back - snap, "ease": "hold"})
+                keys.append({**full, "t": back, "ease": "smooth"})
     keys = [k for i, k in enumerate(keys) if i == 0 or k["t"] > keys[i - 1]["t"] - 1e-6]
     for k in keys:
         k["t"] = round(k["t"], 3)
