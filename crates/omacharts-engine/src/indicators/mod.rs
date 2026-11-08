@@ -1509,9 +1509,11 @@ mod tests {
 
         // Caching these would mean storing and invalidating derived values to
         // save a few milliseconds a repaint. The budget here is deliberately
-        // loose; it exists to catch an indicator that becomes quadratic.
+        // loose; it exists to catch an indicator that becomes quadratic. It
+        // is 80 ms rather than 50 because shared CI runners measure up to
+        // about 70 ms for the same work, with no change to the engine.
         assert!(
-            per_repaint < std::time::Duration::from_millis(50),
+            per_repaint < std::time::Duration::from_millis(80),
             "all four indicators over 12k bars took {per_repaint:?}"
         );
         eprintln!("all indicators over 12k bars: {per_repaint:?} per repaint");
