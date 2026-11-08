@@ -220,7 +220,7 @@ dark and light sweep across from opposite corners.
     38.5-42: sweep dawn
     55: camera 49.2% 50.8% 1.1
     59.5-63: sweep dusk from bottom-right
-    66-70: fade night
+    69.5-73.5: fade night
     74.5: camera 50% 50% 1
     74.5: end
 

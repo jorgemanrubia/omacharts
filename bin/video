@@ -69,7 +69,10 @@ TAIL = 1.5
 COVER = 2.5  # the cover held at the start, before it fades into the first scene
 COVER_FADE = 0.6
 END_FADE = 0.4  # the dissolve into the end card, from its beat: the last hit lands on the picture
-SETTLE = 1.0  # the app on screen, silent, between the cover's fade and the first word
+SETTLE = 1.0
+# A dissolve that rounds its blend: xfade's own `fade` truncates it, and its
+# first frame showed as a whole picture stepping half a level darker.
+FADE_EXPR = "'A*P+B*(1-P)+0.5'"  # the app on screen, silent, between the cover's fade and the first word
 
 
 def die(message):
@@ -1944,7 +1947,7 @@ def compose(script, voiced, plan, raw, offset):
         # Both sides in the same (limited) range: a still came in full range
         # and the first blended frame of the dissolve stepped a level darker.
         video = (f"[0:v]scale=out_range=tv,format=yuv420p,setsar=1[c];[1:v]fps={FPS},scale=out_range=tv,format=yuv420p,setsar=1[r];"
-                 f"[c][r]xfade=transition=fade:duration={cover_fade}:offset={intro:.3f}[v0]")
+                 f"[c][r]xfade=transition=custom:expr={FADE_EXPR}:duration={cover_fade}:offset={intro:.3f}[v0]")
     else:
         inputs = [*recording]
         video = f"[0:v]fps={FPS},format=yuv420p,setsar=1[v0]"
@@ -1956,7 +1959,7 @@ def compose(script, voiced, plan, raw, offset):
         inputs += ["-loop", "1", "-framerate", str(FPS), "-t", f"{outro:.3f}", "-i", str(ending)]
         end_fade = float(script.meta.get("end_fade", END_FADE))
         video += (f";[v0]tpad=stop_mode=clone:stop_duration={end_fade:.3f}[v1];[{n}:v]scale=out_range=tv,format=yuv420p,setsar=1[e];"
-                  f"[v1][e]xfade=transition=fade:duration={end_fade}:offset={intro + plan['total']:.3f}[v]")
+                  f"[v1][e]xfade=transition=custom:expr={FADE_EXPR}:duration={end_fade}:offset={intro + plan['total']:.3f}[v]")
     else:
         video += ";[v0]null[v]"
     audio_input = len([a for a in inputs if a == "-i"])

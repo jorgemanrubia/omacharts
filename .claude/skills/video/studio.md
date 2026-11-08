@@ -266,10 +266,11 @@ Proven on 2026-11-08 with the Clair de lune pull-back. What it took:
   -16 LUFS, the most a brass quintet took without squashing, and a limiter
   under -1 dBTP on the loudest moment; at -18, where gain alone stopped
   for the peaks, the quiet ending vanished on laptop speakers.
-- **Same range into a dissolve.** The cover and end card are full-range
-  stills; dissolved straight into the limited-range picture, the first
-  blended frame stepped a level darker. Both go through
-  `scale=out_range=tv` first.
+- **A dissolve that rounds.** ffmpeg's `xfade=transition=fade` truncates
+  its blend to 8 bits, so every blended frame sits half a level under the
+  frames either side, and the first one showed as the whole picture
+  stepping darker. The cover and end card dissolve with a custom
+  expression, `A*P+B*(1-P)+0.5`, which rounds.
 
 ## Shutting it down
 
