@@ -82,8 +82,9 @@ and 25.1. There are two flashes in all, at 17.1 and 30.1.
    - a volume profile over the last range;
    - an anchored VWAP line from the April low.
 5. **Finale** (bars 27–29). TSLA on three charts. The daily, May to
-   October 2026, takes the left sixty percent with a fifty-day average
-   and volume. The hourly sits top right in OHLC bars with twenty and
+   October 2024, takes the left sixty percent with a fifty-day average
+   and volume. The hourly, a fortnight
+   of April 2025, sits top right in OHLC bars with twenty and
    fifty EMAs. The five-minute sits bottom right, Soft and hollow, with
    VWAP and bands. Starship at 27, Catppuccin Latte at 28, and Tokyo Night
    at 29, which holds. Latte is the bookend: the first switch was Tokyo
@@ -171,7 +172,7 @@ hidden from the start, and nothing here shows them.
     cli chart set --template none --symbol TSLA --resolution 1D --style candles --colouring theme --hollow-up off --indicators on --drawings on --grid off
     cli chart split horizontal
     cli chart split vertical --chart pos:1
-    cli chart indicator add sma --chart pos:0 --period 50 --color Amber
+    cli chart indicator add sma --chart pos:0 --period 50 --color Blue
     cli chart indicator add volume --chart pos:0
     cli chart set --chart pos:1 --resolution 1h --style ohlc --colouring theme --session regular --grid off
     cli chart indicator add ema --chart pos:1 --period 20 --color Blue
@@ -180,7 +181,7 @@ hidden from the start, and nothing here shows them.
     cli chart indicator add vwap --chart pos:2 --bands 1,2 --color Blue
     cli chartbook template save Finale
     cli chart set --chart pos:0 --symbol NVDA --grid off
-    cli chart drawing add line --from 2024-01-03,47.32 --to 2024-06-20,99.3 --color teal --width 2 --chart pos:0
+    cli chart drawing add line --from 2024-04-19,75.61 --to 2024-06-20,105 --color teal --width 2 --chart pos:0
     cli chart drawing add hline --from 2023-08-24,50.55 --to 2024-06-20,50.55 --color amber --chart pos:0
     cli chart set --chart pos:0 --symbol GC --grid off
     cli chart drawing add rect --from 2025-02-10,2974 --to 2025-03-12,2844.1 --config 3 --chart pos:0
@@ -190,8 +191,8 @@ hidden from the start, and nothing here shows them.
     cli chart set --chart pos:0 --symbol NQ --grid off
     cli chart drawing add line --from 2025-05-23,20727 --to 2025-10-23,24174 --color teal --width 1.5 --chart pos:0
     cli chart drawing add line --from 2025-05-23,22290 --to 2025-10-23,25737 --color teal --width 1.5 --chart pos:0
-    cli chart drawing add hline --from 2025-10-09,25394 --to 2025-10-23,25394 --color amber --chart pos:0
-    cli chart drawing add profile --from 2025-09-22,24000 --to 2025-10-23,25400 --config 5 --chart pos:0
+    cli chart drawing add hline --from 2025-09-22,25394 --to 2025-10-23,25394 --color amber --chart pos:0
+    cli chart drawing add profile --from 2025-09-22,24000 --to 2025-10-23,25400 --config 1 --profile-style filled --align right --transparency 0.55 --poc-color violet --chart pos:0
     cli chart drawing add avwap --from 2025-04-21,17700 --color cyan --bands none --chart pos:0
     cli chart set --chart pos:0 --symbol TSLA --grid off
     key ctrl+shift+b
@@ -212,7 +213,7 @@ hidden from the start, and nothing here shows them.
 **Picture.** The cover's fade ends on 3.1 to show NVDA daily from July
 2023 to June 2024 in Tokyo Night. The candles are vivid on a log scale,
 with the blue fifty-day and amber two-hundred-day averages and a volume
-strip. A teal trendline rides the lows from January into June, and an
+strip. A teal trendline rides the lows from the April dip into June, and an
 amber level marks the August 2023 high that the January breakout cleared.
 At once the camera starts a slow push toward the breakout. On 4.1 the
 whole window turns light: Catppuccin Latte, the same chart and lines.
@@ -244,10 +245,10 @@ closes the dialog and the pointer slips back to the edge and hides.
   before the drop.
 
     @9.1: early 3; theme everforest; zoom 50% 50% 1; cli chartbook template apply Build; cli chart set --symbol GC --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
-    @9.2: key ctrl+shift+s
+    @9.2: key ctrl+shift+s; cursor show
     @9.4: click 59% 26%
     @10.1: click 59% 37%
-    @10.3: key Escape; move -0.4% 50%
+    @10.3: key Escape; move -0.4% 50%; cursor hide
     @11.1: early 1.5; zoom 68% 40% 1.5; cli chart set --colouring theme-soft; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @12.1: early 1.5; cli chart set --colouring theme; cli chart range "2024/12/30..2025/04/02"; scroll 50% 45% -1; scroll 50% 45% 1; move -0.4% 50%
     @13.1: theme flexoki-light
@@ -311,15 +312,17 @@ starts to drift right. On 26.1 Ctrl and H brings in the drawings:
 Starship, and a barely perceptible push begins. On 28.1 the window turns
 to Catppuccin Latte. On 29.1 it lands back on Tokyo Night, where the
 video began, and holds as the push goes on. The three charts:
-- left, about sixty percent wide, the daily from May to October 2026 in
-  vivid candles. It has an amber fifty-day average and volume: a slide
-  into August, then a long climb back;
-- top right, the hourly over two weeks in OHLC bars, with blue twenty and
-  amber fifty EMAs;
+- left, about sixty percent wide, the daily from May to October 2024 in
+  vivid candles. It has a blue fifty-day average and volume: a flat
+  base, a July surge, a dip into August, then a climb into the October
+  gap;
+- top right, the hourly over two weeks of April 2025 in OHLC bars, with
+  blue twenty and amber fifty EMAs: a slide to the April low and the
+  rebound;
 - bottom right, the five-minute over one session in Soft hollow candles,
   with VWAP and its bands.
 
-    @27.1: early 1.5; theme starship; zoom 50% 50% 1; drift 50% 50% 1.1 12; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2026/10/15..2026/10/28"; cli chart focus pos:2; cli chart range "2026/10/27..2026/10/27"; cli chart focus pos:0; cli chart range "2026/05/01..2026/10/30"; scroll 30% 45% -1; scroll 30% 45% 1; scroll 80% 25% -1; scroll 80% 25% 1; scroll 80% 75% -1; scroll 80% 75% 1; move -0.4% 50%
+    @27.1: early 1.5; theme starship; zoom 50% 50% 1; drift 50% 50% 1.1 12; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2025/04/16..2025/05/01"; cli chart focus pos:2; cli chart range "2026/10/29..2026/10/29"; cli chart focus pos:0; cli chart range "2024/05/01..2024/10/31"; scroll 30% 45% -1; scroll 30% 45% 1; scroll 80% 25% -1; scroll 80% 25% 1; scroll 80% 75% -1; scroll 80% 75% 1; move -0.4% 50%
     @28.1: theme catppuccin-latte; pulse 0.025
     @29.1: theme tokyo-night; pulse 0.025
 
