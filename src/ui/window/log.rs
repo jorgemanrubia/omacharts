@@ -37,6 +37,12 @@ pub(super) struct Messages {
     pub lost: RefCell<std::collections::HashSet<crate::live::Series>>,
     /// Each login's trouble as last said, so that it is said once.
     pub troubled: RefCell<std::collections::HashMap<String, String>>,
+    /// The notice that an update is ready, while it is showing.
+    pub update: RefCell<Option<Rc<crate::ui::notice::UpdateNotice>>>,
+    /// The version it offers.
+    pub update_shown: Cell<Option<crate::update::Version>>,
+    /// The version whose notice was dismissed: not offered again this run.
+    pub update_dismissed: Cell<Option<crate::update::Version>>,
 }
 
 impl Messages {
@@ -50,6 +56,9 @@ impl Messages {
             window: RefCell::new(None),
             lost: RefCell::new(Default::default()),
             troubled: RefCell::new(Default::default()),
+            update: RefCell::new(None),
+            update_shown: Cell::new(None),
+            update_dismissed: Cell::new(None),
         }
     }
 }
@@ -137,6 +146,14 @@ impl Window {
             }
         };
         notice.say(entry, others);
+        self.place_update_notice();
+    }
+
+    /// How tall the error notice is, while there is one.
+    pub(super) fn notice_height(&self) -> Option<i32> {
+        let notice = self.messages.notice.borrow().clone()?;
+        let (_, natural, _, _) = notice.revealer.measure(gtk::Orientation::Vertical, -1);
+        Some(natural)
     }
 
     /// ✕ on the notice: gone, and the main menu wears a dot until the Log
@@ -153,6 +170,7 @@ impl Window {
         if let (Some(notice), Some(overlay)) = (notice, self.trade.overlay.borrow().as_ref()) {
             overlay.remove_overlay(&notice.revealer);
         }
+        self.place_update_notice();
     }
 
     /// The Log, opened from the main menu or the notice: the notice and the

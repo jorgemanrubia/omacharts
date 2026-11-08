@@ -1423,6 +1423,36 @@ pub const SURFACE: &[Noun] = &[
             },
         ],
     },
+    Noun {
+        name: "update",
+        about: "Newer releases, downloaded and used from the next launch",
+        // In the process it was typed in: a download is minutes on a slow
+        // line, and a command handed to the window runs inside its main loop.
+        // Neither verb reads the database.
+        local: true,
+        verbs: &[
+            Verb {
+                name: "check",
+                about: "Ask GitHub for the newest release, and say whether it is newer. Downloads nothing",
+                args: &[],
+                flags: &[],
+                example: "omacharts update check --json",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "download",
+                about: "Download the newest release now, whatever Preferences says; the next launch uses it",
+                args: &[],
+                flags: &[],
+                example: "omacharts update download",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+        ],
+    },
 ];
 
 /// The values this table offers have to be the values the engine accepts.

@@ -154,5 +154,17 @@ jobs:
           # releases/latest/download/omacharts-<arch>.pkg.tar.zst is always
           # the newest package and the README never has to change.
           cp "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst
+          # The app alone, for its own updater: it downloads
+          # releases/download/<tag>/omacharts-<arch>.gz, checks it against the
+          # .sha256 beside it, and the package's launcher runs it from the
+          # user's data folder in place of the installed app. Taken out of
+          # the package rather than built again, so it is exactly the binary
+          # pacman would install.
+          command -v zstd >/dev/null || { sudo apt-get update && sudo apt-get install -y zstd; }
+          tar --zstd -xOf "$package" usr/lib/omacharts/omacharts | gzip -9n > omacharts-${{ matrix.arch }}.gz
+          for asset in omacharts-${{ matrix.arch }}.gz omacharts-${{ matrix.arch }}.pkg.tar.zst; do
+            sha256sum "$asset" > "$asset.sha256"
+          done
           gh release upload "$GITHUB_REF_NAME" \
-            "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst --clobber
+            "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst omacharts-${{ matrix.arch }}.pkg.tar.zst.sha256 \
+            omacharts-${{ matrix.arch }}.gz omacharts-${{ matrix.arch }}.gz.sha256 --clobber

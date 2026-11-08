@@ -240,6 +240,9 @@ pub fn dispatch(
         ("backup", "create") => backup_create(store, json),
         ("backup", "restore") => backup_restore(store, m, json, live),
 
+        ("update", "check") => update_now(json, false),
+        ("update", "download") => update_now(json, true),
+
         _ => Err(Fault::usage(format!("no such command: {noun} {verb}"))),
     };
 
@@ -5686,6 +5689,53 @@ fn backup_restore(
 }
 
 // -- shared -------------------------------------------------------------
+
+/// `update check` and `update download`: ask GitHub now, whenever the last
+/// check was, and with `download` put a newer release in place for the next
+/// launch.
+///
+/// Only an installed omacharts updates. Anything else — a build in
+/// `target/`, the tests — is refused before anything is asked for, which is
+/// also what keeps the example run by the tests off the network.
+fn update_now(as_json: bool, download: bool) -> Result<String, Fault> {
+    use crate::update::{self, Checked, Shelf, Version};
+    let origin = update::origin().ok_or_else(|| {
+        Fault::new(
+            super::EXIT_REFUSED,
+            format!("only the installed omacharts updates itself, {}; this one is not", update::INSTALLED_AT),
+        )
+    })?;
+    let shelf = Shelf::new(update::shelf_dir());
+    let running = Version::running();
+    let installed = || update::installed_version(origin);
+    let checked = update::check(&update::GitHub::new(), &shelf, running, &installed, download)
+        .map_err(|failure| Fault::new(super::EXIT_ERROR, format!("update: {failure}")))?;
+    let installed = installed();
+    let ready = checked.restart_brings(running, installed);
+    let (latest, text) = match checked {
+        Checked::UpToDate { latest } => (latest, format!("up to date · {} is the newest release", latest.max(running))),
+        Checked::Available { latest } => (latest, format!("{latest} is available · `omacharts update download` gets it")),
+        Checked::Ready { latest, .. } => (
+            latest,
+            match ready {
+                Some(version) => format!("{version} is ready · the next launch uses it"),
+                None => format!("up to date · {} is the newest release", latest.max(running)),
+            },
+        ),
+        Checked::Overtaken { version } => (version, format!("up to date · {installed} was installed meanwhile")),
+    };
+    said(
+        as_json,
+        json!({
+            "running": running.to_string(),
+            "installed": installed.to_string(),
+            "latest": latest.to_string(),
+            "ready": ready.map(|version| version.to_string()),
+            "available": matches!(checked, Checked::Available { .. }),
+        }),
+        text,
+    )
+}
 
 /// Say what happened, in whichever form was asked for.
 ///

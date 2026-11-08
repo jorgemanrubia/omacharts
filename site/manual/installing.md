@@ -25,7 +25,22 @@ curl -fLo /tmp/omacharts.pkg.tar.zst \
   && sudo pacman -U /tmp/omacharts.pkg.tar.zst
 ```
 
-A package installed this way is not updated with the rest of the system until Omarchy's repository catches up. Run the same line again for the next release.
+Either way, Omacharts keeps itself up to date from there ([Updates](#updates)).
+
+## Updates
+
+Omacharts downloads each new release from GitHub in the background and checks it against the release's published checksum. When one is ready, a notice in the window's corner says **Omacharts 0.2.15 is ready** with **Restart to update**. Restarting, or just quitting and opening it again, starts the new version where you left off.
+
+Nothing needs <kbd>sudo</kbd>: the package's files are never touched. Downloads go to `~/.local/share/omacharts/versions/`, which holds only the newest. Once the package catches up with a download, through `omarchy update` or `pacman -Syu`, the download is deleted and the package's own version runs.
+
+Turn it off with Preferences › General › Updates › **Update automatically**. What is already downloaded stays in use until the package catches up.
+
+| Command | Does |
+|---|---|
+| `omacharts update check` | Asks GitHub for the newest release and says whether it is newer. |
+| `omacharts update download` | Downloads it now, whatever the switch says. The next launch uses it. |
+
+A build from a working tree never updates itself.
 
 ## From source
 
@@ -43,7 +58,8 @@ The first build takes minutes.
 
 | Path | What |
 |---|---|
-| `/usr/bin/omacharts` | The app and the `omacharts` command. |
+| `/usr/bin/omacharts` | The `omacharts` command. It starts the app, or a newer downloaded version. |
+| `/usr/lib/omacharts/omacharts` | The app. |
 | `/usr/share/applications/org.omacharts.Omacharts.desktop` | The launcher entry, **Omacharts**, under Office and Finance. |
 | `/usr/share/icons/hicolor/*/apps/org.omacharts.Omacharts.*` | The icon. |
 | `/usr/share/man/man1/omacharts.1` | `man omacharts`, with every command. |
@@ -78,7 +94,7 @@ Everything you made stays, and installing again later picks up where you left of
 
 | Path | What |
 |---|---|
-| `~/.local/share/omacharts/` | Your settings, chartbooks, watchlists, drawings and themes; the backups; the downloaded prices. |
+| `~/.local/share/omacharts/` | Your settings, chartbooks, watchlists, drawings and themes; the backups; the downloaded prices; a downloaded update. |
 | `~/.config/omacharts/` | Your sign-in to a feed, if you signed in to one. |
 | `~/.config/omarchy/plugins/omacharts.watchlist/` | The Omarchy plugin, unless you removed it first. |
 | `<Pictures>/Omacharts/` | Screenshots you kept. |

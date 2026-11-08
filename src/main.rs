@@ -17,6 +17,16 @@ use omacharts::ui::Window;
 const APP_ID: &str = "com.jorgemanrubia.Omacharts";
 
 fn main() -> glib::ExitCode {
+    // Before anything else: learn from the launcher what is installed, which
+    // is what the updater compares against. An app that is itself the
+    // installed command becomes a newer download here, with an exec, and
+    // nothing done above this line would survive it. See `omacharts::launch`.
+    omacharts::update::at_launch();
+    // Started by "Restart to update": the window it replaces is closing, and
+    // this has to wait for it to let go of the application id, or the launch
+    // would be handed to the window that is on its way out.
+    omacharts::update::wait_for_restart(app_is_running);
+
     omacharts::feeds::identify();
     let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
 

@@ -91,6 +91,9 @@ curl -fLo /tmp/omacharts.pkg.tar.zst \
   && sudo pacman -U /tmp/omacharts.pkg.tar.zst
 ```
 
+Either way, the app keeps itself current between packages: it downloads each
+new release in the background, without `sudo`, and offers to restart into it.
+
 ### From source
 
 On Arch, x86_64 or aarch64, you can build the same package from a clone:
