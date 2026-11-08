@@ -252,6 +252,13 @@ Proven on 2026-11-08 with the Clair de lune pull-back. What it took:
   position, so two looks crossfade without a seam while the camera moves.
   A pane added or taken away does move things: keep panes the same in
   every look.
+- **A new ending for a generated track.** ACE-Step repaints part of a
+  track and keeps the rest (`task_type: repaint`, the track as
+  `src_audio`, padded with silence to run longer): the piano theme kept its
+  first 62.5 s bit for bit and gained ten struck chords, joined in the
+  latents with nothing to hear. Of three seeds, one kept the start exact;
+  the others changed it slightly, so compare before choosing. Each chord's
+  onset, read with librosa, is where its look switches.
 - **Sample it down properly.** A still is kept as a pyramid of halvings
   and each frame blended from the two levels either side of its scale
   (trilinear): sampled straight from 16K to 4K, thin lines shimmer as the

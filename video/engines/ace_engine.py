@@ -8,6 +8,12 @@ it), with the checkout and a job file:
 and, for a track a video is cut to, optionally "bpm", "keyscale" and
 "timesignature" ("4" for 4/4), which ACE-Step keeps to.
 
+To rewrite part of a track and keep the rest — a new ending — the job also
+names "src_audio" and "task_type": "repaint", with "repainting_start" and
+"repainting_end" (-1 for the end) in seconds; "duration" may run past the
+source, padded with silence, to lengthen it. ACE-Step blends the join in
+its latents, so it cannot be heard.
+
 Each candidate gets its own seed, so they differ; the seed is in the file
 name, so a candidate can be made again.
 """
@@ -35,7 +41,8 @@ def main():
     for i in range(job["count"]):
         seed = job.get("seed", 1000) + i * 37
         started = time.monotonic()
-        extra = {k: job[k] for k in ("bpm", "keyscale", "timesignature") if job.get(k)}
+        extra = {k: job[k] for k in ("bpm", "keyscale", "timesignature", "task_type", "src_audio", "repainting_start",
+                                     "repainting_end", "repaint_mode", "repaint_strength", "repaint_wav_crossfade_sec") if k in job}
         params = GenerationParams(caption=job["caption"], instrumental=True, duration=job["duration"], seed=seed, **extra)
         result = generate_music(dit, llm, params, GenerationConfig(batch_size=1, audio_format="flac"), save_dir=os.path.join(job["out"], ".work"))
         if not result.success:

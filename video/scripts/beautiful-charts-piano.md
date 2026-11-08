@@ -3,14 +3,15 @@ title: Beautiful charts
 stage: render
 timing: stills
 studio_scale: 8
+build: 0db337c
 theme: ethereal
 cover: 3
 cover_fade: 1.5
-end_card: 3
-end_fade: 1.2
+end_card: 2.4
+end_fade: 1.0
 music: tender, slightly playful piano with celesta sparkle and soft pizzicato, warm strings swelling gently to a heartfelt peak, then settling; original, generated for this video
-music_file: video/out/beautiful-charts-piano/music/3-playful-piano-celesta-strings.flac
-music_source: generated for this video with ACE-Step 1.5 (bin/video's music engine), seed 2202, 92 BPM, 84 s; prompt in video/out/beautiful-charts-piano/sources.txt
+music_file: video/out/beautiful-charts-piano/music/3-playful-piano-celesta-strings-ten-chords.flac
+music_source: generated for this video with ACE-Step 1.5 (bin/video's music engine), seed 2202, 92 BPM; its ending from 62.5 s repainted (seed 3137) into ten struck chords, D7 G Am F to C; prompts in video/out/beautiful-charts-piano/sources.txt and outro/job.json
 music_licence: original music made for this project; no third-party rights
 music_fade: 1.5
 master: linear
@@ -43,8 +44,13 @@ strings, to one heartfelt peak and settles.
    sweeps across, and the pull-back arrives on the whole desk at the
    music's peak (55).
 5. **Night returns** (59–74). Nord falls from the opposite corner as the
-   music drops, then Tokyo Night, the camera still easing back, to the last
-   notes and the end card.
+   music drops, then Tokyo Night, the camera still easing back.
+6. **Ten chords** (82–97). The music closes on ten struck chords, D7, G,
+   A minor and F resolving to C. On each one the whole desk turns to
+   another Omarchy theme, dark and light in turn: Catppuccin, Catppuccin
+   Latte, Gruvbox, Flexoki Light, Retro 82, Lupine, Ristretto, White, Matte
+   Black, and home to Tokyo Night on the last chord, which rings out into
+   the end card.
 
 **Music.** Original, generated for this video: no rights to clear.
 
@@ -200,13 +206,69 @@ and lies under today's price, so no chart shows a live last-price line.
 
     theme tokyo-night
 
+### chord-catppuccin
+
+**Picture.** The whole desk in Catppuccin, the hero Vivid and filled.
+
+    theme catppuccin
+
+### chord-catppuccin-latte
+
+**Picture.** The whole desk in Catppuccin Latte, light, the hero Vivid and filled.
+
+    theme catppuccin-latte
+
+### chord-gruvbox
+
+**Picture.** The whole desk in Gruvbox, the hero Vivid and filled.
+
+    theme gruvbox
+
+### chord-flexoki-light
+
+**Picture.** The whole desk in Flexoki Light, the hero Vivid and filled.
+
+    theme flexoki-light
+
+### chord-retro-82
+
+**Picture.** The whole desk in Retro 82, the hero Vivid and filled.
+
+    theme retro-82
+
+### chord-lupine
+
+**Picture.** The whole desk in Lupine, light, the hero Vivid and filled.
+
+    theme lupine
+
+### chord-ristretto
+
+**Picture.** The whole desk in Ristretto, the hero Vivid and filled.
+
+    theme ristretto
+
+### chord-white
+
+**Picture.** The whole desk in White, the hero Vivid and filled.
+
+    theme white
+
+### chord-matte-black
+
+**Picture.** The whole desk in Matte Black, the hero Vivid and filled.
+
+    theme matte-black
+
 ## Shot
 
 The camera opens at 7.6× on the hero candle, holds a breath, and pulls
 back without stopping, evenly in its logarithm, to the whole desk on the
 music's peak, and keeps easing back while the night returns. Candle and
 theme changes are crossfades on the phrases; the two changes between
-dark and light sweep across from opposite corners.
+dark and light sweep across from opposite corners. Then, held on the
+whole desk, a crisp change of theme on each of the ten closing chords,
+every one landing on its chord's onset (measured from the track).
 
     0: look ink
     0: camera 44.39% 21.84% 7.6
@@ -222,7 +284,17 @@ dark and light sweep across from opposite corners.
     59.5-63: sweep dusk from bottom-right
     69.5-73.5: fade night
     74.5: camera 50% 50% 1
-    74.5: end
+    81.82-81.94: fade chord-catppuccin
+    83.12-83.24: fade chord-catppuccin-latte
+    84.42-84.54: fade chord-gruvbox
+    85.72-85.84: fade chord-flexoki-light
+    87.02-87.14: fade chord-retro-82
+    88.32-88.44: fade chord-lupine
+    89.64-89.76: fade chord-ristretto
+    90.94-91.06: fade chord-white
+    93.38-93.50: fade chord-matte-black
+    96.40-96.52: fade night
+    97.6: end
 
 ## Pronunciation
 

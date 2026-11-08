@@ -203,6 +203,11 @@ clear the range's label — run after every look's own actions: changing how
 one chart draws sends every chart back to its latest bars, and the looks
 must line up to the pixel.
 
+Each look is kept until the setup, the frame or a look before it changes,
+so looks added at the end are the only ones captured; pin `build:` to the
+commit the others were captured with, so a newer app cannot draw them a
+pixel apart.
+
 `bin/video stills <slug>` captures the looks and opens a sheet of them;
 `render` captures what changed and draws the video; `recompose` draws it
 again from the captured looks, for a change to the Shot or the music.

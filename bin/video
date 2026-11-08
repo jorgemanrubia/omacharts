@@ -1224,24 +1224,37 @@ def beats(script):
 # candle and stay sharp.
 
 
-def looks_key(script, build):
-    text = json.dumps([build, script.meta.get("studio_scale"), script.meta.get("theme"), script.setup, script.frame,
-                       [(look["name"], look["actions"]) for look in script.looks]])
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+def looks_keys(script, build):
+    """A key for each look: what it took to make it — the build, the setup,
+    the frame, and every look's actions up to and including its own, since
+    each is made on top of the one before. A look whose key is unchanged is
+    kept, so adding looks to the end captures only the new ones."""
+    base = [build, script.meta.get("studio_scale"), script.meta.get("theme"), script.setup, script.frame]
+    keys, steps = {}, []
+    for look in script.looks:
+        steps.append(look["actions"])
+        keys[look["name"]] = hashlib.sha256(json.dumps(base + steps).encode()).hexdigest()[:16]
+    return keys
 
 
 def capture_stills(script, force=False):
-    """Every look as a still, in order, each on top of the one before. Kept
-    until the setup or a look changes."""
+    """Every look as a still, in order, each on top of the one before. A look
+    is kept until the setup, the frame or a look before it changes. Pin the
+    build (`build:` a commit) to add looks to ones captured before: a newer
+    app may draw a pixel differently, and the looks must line up."""
     folder = script.out / "looks"
-    binary = omacharts_build(script.meta.get("build") or os.environ.get("VIDEO_BUILD") or "main")
-    key = looks_key(script, str(binary.stat().st_mtime))
-    stamp = folder / "key.txt"
-    if not force and stamp.exists() and stamp.read_text().strip() == key and all((folder / f"{l['name']}.png").exists() for l in script.looks):
+    ref = script.meta.get("build") or os.environ.get("VIDEO_BUILD") or "main"
+    binary = omacharts_build(ref)
+    keys = looks_keys(script, ref if re.fullmatch(r"[0-9a-f]{7,40}", ref) else str(binary.stat().st_mtime))
+    stamp = folder / "keys.json"
+    kept = json.loads(stamp.read_text()) if stamp.exists() and not force else {}
+    fresh = {name for name, key in keys.items() if kept.get(name) == key and (folder / f"{name}.png").exists()}
+    if len(fresh) == len(keys):
         say(f"the looks are as they were captured; {folder.relative_to(ROOT)}")
         return folder
-    shutil.rmtree(folder, ignore_errors=True)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    if fresh:
+        say(f"keeping {len(fresh)} looks; capturing {len(keys) - len(fresh)}")
     events = []
     with Studio(script) as studio:
         for action in script.setup:
@@ -1250,9 +1263,13 @@ def capture_stills(script, force=False):
         for look in script.looks:
             # The look, then every chart's window set again: changing how
             # one chart draws sends every chart back to its latest bars.
+            # A kept look is still made, for the ones after it, but not
+            # captured again.
             for action in look["actions"] + script.frame:
                 studio.perform(action, events)
                 time.sleep(0.3)
+            if look["name"] in fresh:
+                continue
             # The pointer off the charts, in the gap round the window, where
             # it shows no chart's corner buttons; the app done drawing. The
             # app's own picture of the chartbook, not the screen's: it leaves
@@ -1261,8 +1278,10 @@ def capture_stills(script, force=False):
             studio.hand.move(*studio.at(-0.4, 50))
             time.sleep(1.2)
             studio.cli(f"chartbook screenshot --output {folder / (look['name'] + '.png')}")
+            kept[look["name"]] = keys[look["name"]]
+            stamp.write_text(json.dumps(kept, indent=1))
             say(f"  {look['name']}")
-    stamp.write_text(key + "\n")
+    stamp.write_text(json.dumps(keys, indent=1))
     # A small copy of each, side by side, to look at.
     sheet = folder / "sheet.jpg"
     names = [folder / f"{l['name']}.png" for l in script.looks]
