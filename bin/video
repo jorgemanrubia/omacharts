@@ -1248,6 +1248,13 @@ def render(script):
                 for action in rest:
                     studio.perform(action, events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)
         pause(zero + plan["total"] - time.monotonic())
+        if script.music_driven:
+            # Cues that ran behind the clock — themes wait on the app's poll
+            # — are cut back onto their beats afterwards, so the recording
+            # runs until the last of them has finished painting.
+            late = max((e.get("done", 0) for e in events if e.get("scene") is not None), default=0)
+            pause(zero + late + 4.0 - time.monotonic())
+            say(f"the last cue finished {late - plan['total']:+.1f}s from the end of the timeline")
         recorder.send_signal(signal.SIGINT)
         recorder.wait(timeout=30)
     studio.keep_data()
@@ -1291,22 +1298,26 @@ def anchor_cues(script, plan, events, raw, offset):
     # grey picture of the change from one to the other barely moves.
     w, h = 256, 144
     total = plan["total"]
-    frames = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total + 3:.3f}",
+    frames = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0, offset):.3f}", "-i", str(raw),
                              "-vf", f"fps={FPS},scale={w}:{h}:flags=area,format=rgb24", "-f", "rawvideo", "-"],
                             capture_output=True, check=True).stdout
     video = np.frombuffer(frames, dtype=np.uint8).reshape(-1, h, w, 3)
     changed = np.zeros(len(video))
     for i in range(1, len(video)):
         changed[i] = (np.abs(video[i].astype(np.int16) - video[i - 1]).max(axis=2) > 8).mean()
+    # A cue's theme and the rest of its steps are anchored apart, both to
+    # the cue's beat: the theme is waited on before the rest go.
     cues, lasts = {}, {}
     for event in events:
         if event.get("scene") is not None and str(event.get("cue", "")).startswith("@") and event["verb"] in SHOWN_VERBS:
-            cues.setdefault(event["cue"], event)
-            lasts[event["cue"]] = event
+            key = (event["cue"], event["verb"] == "theme")
+            cues.setdefault(key, event)
+            lasts[key] = event
     order = sorted(cues.values(), key=lambda e: e["t"])
     anchors, report = [], []
     for i, first in enumerate(order):
         cue = first["cue"]
+        key = (cue, first["verb"] == "theme")
         planned = script.beat_time(cue) - script.cover_length
         if first["verb"] in POINTER_VERBS:
             at = first["done"] - 0.07 if first["verb"] != "drag" else first["t"] + 0.1
@@ -1340,7 +1351,7 @@ def anchor_cues(script, plan, events, raw, offset):
                 report.append(f"  {cue:>8}: nothing changed on screen; left where it fell")
                 continue
             starts = settles = (start + hit[0]) / FPS
-            last = lasts[cue]
+            last = lasts[key]
             if last is not first and last["verb"] in ("key", "cli"):
                 # A cue of several steps — a chartbook rebuilt, its windows
                 # set — is seen finished: from the last frame that still
@@ -1581,7 +1592,7 @@ def polish(script, raw, offset, total):
         plan = timeline(script, voice_scenes(script))
         anchors = anchor_cues(script, plan, events, raw, offset)
         straight = script.out / "straight.mkv"
-        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total + 3:.3f}",
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw),
              "-c:v", "libx264", "-preset", "ultrafast", "-qp", "8", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an", str(straight)])
         remap_recording(straight, anchors, total, public / "recording.mp4")
         straight.unlink()

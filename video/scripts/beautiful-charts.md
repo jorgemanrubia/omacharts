@@ -1,12 +1,15 @@
 ---
 title: Beautiful charts
-stage: brief
+stage: script
 length: 60s
 theme: tokyo-night
 timing: music
 music_tempo: 120
 music_file: video/out/beautiful-charts/music/candidate-3-seed1074.flac
-cover: 3.4
+cover: 3.93
+music_end: 30.1
+music_fade: 1.0
+end_card: 3
 music: warm, groovy electronic at 120 BPM in 4/4, thirty bars, instrumental. A tight, round kick, crisp closed hi-hats, a clap on two and four, a rounded analog bass and a bright plucked synth arpeggio, with warm pads underneath. Shape, in bars. One and two, a filtered pickup, the pluck and a muffled kick only. Three to six, the kick opens up and the bass enters, still sparse. Seven to fourteen, a build, hats and claps come in and the filter opens bar by bar, ending in a one-bar snare roll. Fifteen to twenty-two, the drop, the full groove with a strong downbeat on every bar. Twenty-three to twenty-six, a break, the kick drops out, pads and hats carry it, and a riser in bar twenty-six. Twenty-seven to twenty-nine, the full groove again with a lead on top. Thirty, a final hit that rings out. Playful and confident, clean and tasteful, never aggressive or festival-sized, with no vocals
 music_bpm: 119.988
 music_downbeat: 0.528
@@ -30,145 +33,303 @@ the desktop switches to Catppuccin Latte and the whole chart, dark until
 then, turns light in a single frame. Its averages and drawings change with
 it.
 
-**Beats.** Bars are counted from the track's first downbeat, at 120 BPM
-(two seconds a bar). Big changes land on downbeats, small ones on beat
-three. Each section after the first opens with Ctrl and Alt and right
-arrow, the next chartbook, on its first downbeat. The theme switch lands
-on that same downbeat, so the new chart and the new colours arrive
-together. The cursor stays hidden except in beat 2. The theme changes
-at most once a bar, always on a downbeat. Only charts are ever on
-screen. Every chartbook has its watchlist sidebar hidden (Ctrl and Shift
-and B, off camera) and its drawing tools hidden. The drawings on the
-charts stay.
+**Beats.** Bars are counted from the track's first downbeat, about two
+seconds each. The track has a sparse intro (1–8), the kick and a build
+(9–16, a fill on 16), the drop (17–23), a one-bar break (24), the full
+groove again (25–29) and a last hit (30). Each section is a new look on
+the window's one chartbook, applied on its first downbeat together with
+the theme switch. The theme changes at most once a bar, always on a
+downbeat. Only charts are on screen: the sidebar and the drawing tools
+stay hidden, and the drawings on the charts stay. The header shows only
+symbol and resolution. The cursor appears only for the dialog in the
+build. Pulses land on downbeats in 17–23 and 25–29, strongest at 17.1
+and 25.1. There are two flashes in all, at 17.1 and 30.1.
 
-1. **Intro: one chart, three themes** (bars 3 to 6, 0:04 to 0:12). NVDA
-   daily over a year, in vivid candles. Fifty- and two-hundred-day
-   averages, a volume strip, a rising trendline along the year's lows and
-   a dashed level at the old high it broke. Theme changes: Tokyo Night at
-   bar 3, Catppuccin Latte at bar 4, Retro 82 at bar 5. The camera pushes
-   in slowly from the full frame to about 1.15 times across the four bars.
-   Bar 6 is a hold, with no change, a breath before the build.
-   *Hoping to see:* a steady climb with clear swing lows and one clean
-   breakout over a prior high.
+1. **Intro** (bars 3–8). NVDA daily, mid-2023 to mid-2024, in vivid candles.
+   It has the fifty- and two-hundred-day averages, volume, a teal
+   trendline along the lows and an amber level at the old high it broke.
+   Tokyo Night at 3, Catppuccin Latte at 4, Retro 82 at 6. A slow push
+   reaches about 1.15× by bar 7. Bars 7–8 hold.
+2. **Build** (bars 9–16). Gold (GC) daily, January to March 2025, with a
+   twenty-day EMA, a box round its February range and a level at the top
+   of it. It arrives in Everforest, in Monochrome hollow candles. A person
+   opens Chart settings (9.3) and picks Quiet (10.1), then closes it
+   (10.3). From then the look cuts on each downbeat: Soft at 11 as the
+   camera snaps to 1.5× on the range and breakout, then Vivid at 12. At
+   13, Flexoki Light and nothing else, so hollow Vivid gets its bar. Then
+   OHLC bars at 14 and swapped colours at 15. The camera eases back to the
+   full frame under the fill at 16.
+3. **Drop** (bars 17–23). Four markets in a two-by-two:
+   - Bitcoin daily, winter 2022–23, with Bollinger Bands and hollow
+     candles;
+   - ES fifteen-minute over one session, with VWAP and two bands,
+     Session Times shading and 3 px OHLC bars;
+   - Apple weekly, 2023–24, with ten- and forty-week averages and MACD,
+     in Soft;
+   - crude four-hour, December–January, with a twenty EMA, RSI and a
+     support level, in Quiet.
 
-2. **Build: the bars themselves** (bars 7 to 14, 0:12 to 0:28). Gold
-   futures (GC) daily over three months, about sixty-five bars, wide
-   enough for the styles to read. A twenty-day EMA, a box around a
-   sideways range and a level at its top. The colour climbs with the
-   filter, from none to full. The chart arrives at bar 7 in Everforest, in
-   Monochrome candles with hollow rises, so direction still reads. Chart
-   settings opens on 7.3 (Ctrl and Shift and S). Hollow up bars is on from
-   the start and stays on, so every candle colouring is seen hollow. The
-   dialog sits over the right of the window, with the bars in the left
-   sixty percent of the chart. The camera holds a frame of about 1.25
-   times that takes in both the bars and the dialog's Bars group. The
-   cursor glides, eased and gently curved, to the row on the "and" before
-   each change, and clicks the choice on the downbeat:
-   - bar 8, Quiet;
-   - bar 9, Soft;
-   - bar 10, Vivid, with 10.3 left empty;
-   - bar 11, the theme switches to Flexoki Light and nothing else
-     changes, so the switch has its moment and hollow Vivid candles get a
-     full bar;
-   - bar 12, OHLC bars;
-   - bar 13, Swap up and down colours on;
-   - bar 14, Esc on the downbeat closes the dialog, and the camera pulls
-     back to the full frame under the snare roll, clear before the hit.
+   The theme changes each bar: Hackerman, Rosé Pine, Nord, White,
+   Kanagawa, Matte Black, Gruvbox. Bars 17–19 show the full grid. From
+   20, the camera snaps to one chart a bar: Bitcoin, ES, Apple, crude.
+4. **Break** (bars 24–26). Nasdaq futures (NQ) daily, April to October
+   2025, in Ethereal, in bare Monochrome hollow candles. It's still for a
+   bar. At 25 the indicators come in (the twenty and fifty EMAs and
+   volume) as the camera drifts left to right at 1.3×. At 26 the drawings
+   come in:
+   - a teal channel;
+   - an amber level at the high;
+   - a volume profile over the last range;
+   - an anchored VWAP line from the April low.
+5. **Finale** (bars 27–29). TSLA on three charts. The daily, May to
+   October 2026, takes the left sixty percent with a fifty-day average
+   and volume. The hourly sits top right in OHLC bars with twenty and
+   fifty EMAs. The five-minute sits bottom right, Soft and hollow, with
+   VWAP and bands. Starship at 27, Catppuccin Latte at 28, and Tokyo Night
+   at 29, which holds. Latte is the bookend: the first switch was Tokyo
+   Night to Latte, the last Latte to Tokyo Night.
+6. **End** (bar 30). On the last hit a pulse and a flash resolve into the
+   end card, held three seconds while the music finishes.
 
-   *Hoping to see:* a trend leg, a pause and a break out of it, with a mix
-   of up and down days.
+**Where each change comes from.** Every section's look is applied off
+camera by commands at its downbeat, shown finished on the beat. The
+camera, pulses and flashes are drawn afterwards. On camera, a person
+acts only three times:
+- opening Chart settings and choosing Quiet in the build;
+- the two reveals in the break, Ctrl and Shift and H for the indicators,
+  then Ctrl and H for the drawings.
 
-3. **Drop: four markets, a theme every bar** (bars 15 to 22, 0:28 to
-   0:44). A two-by-two chartbook, each chart with its own setup and bar
-   look:
-   - top left, Bitcoin (BTC-USD) daily over six months: Bollinger Bands
-     (20, 2) with their band shaded, in hollow-up candles;
-   - top right, S&P 500 futures (ES) fifteen-minute bars over the last
-     three sessions: VWAP with its first and second bands, overnight hours
-     shaded by Session Times, OHLC bars three pixels thick;
-   - bottom left, Apple (AAPL) weekly over three years: ten- and
-     forty-week averages and a MACD strip, Soft candles;
-   - bottom right, crude oil (CL) four-hour bars over two months: a
-     twenty-period EMA, an RSI strip and a horizontal support level, Quiet
-     candles. If Quiet candles fade out in a quarter of the frame, the
-     storyboard swaps the looks of crude and Apple.
-
-   The theme changes on every downbeat: Hackerman, Rosé Pine, Nord,
-   White, Kanagawa, Lupine, Matte Black, Gruvbox. Light and dark
-   alternate until the last two, which are both dark. Bars 15 to 18 hold the
-   full grid. From bar 19 the camera cuts in at about 1.9 times, on the
-   downbeat, to one chart per bar: Bitcoin, then ES, Apple and crude.
-   The crude close-up holds through bar 22. The chartbook change at 23.1 is
-   the return to the full frame.
-   *Hoping to see:* bands that pinch and then widen on Bitcoin, an ES
-   session that trends away from VWAP, a long Apple uptrend with a MACD
-   crossover, and crude bouncing off a level.
-
-4. **Break: a chart built up in layers** (bars 23 to 26, 0:44 to 0:52).
-   Nasdaq futures (NQ) daily over six months, in Ethereal, in Monochrome
-   candles with hollow rises. Bar 23 shows the bars alone. On bar 24,
-   Ctrl and Shift and H brings in the twenty- and fifty-day EMAs and
-   volume. On bar 25, Ctrl and H brings in the drawings. They are:
-   - a trendline channel along the advance;
-   - a level at the high;
-   - a volume profile over the last range, drawn with the volume profile
-     tool, so it is a drawing and arrives with Ctrl and H;
-   - an anchored VWAP from the six-month low, its line only, without
-     bands.
-
-   The camera drifts left to right at about 1.3 times through bars 23 to
-   25. It eases back to the full frame across bar 26, under the riser.
-   *Hoping to see:* a clean six-month advance with one range near the end
-   for the profile.
-
-5. **Finale: back home** (bars 27 to 30, 0:52 to 1:00). Tesla (TSLA) on
-   three charts. The daily over six months takes the left sixty percent,
-   in vivid candles, with a fifty-day average and volume. The hourly over
-   two weeks sits top right, in OHLC bars, with twenty- and fifty-period
-   EMAs. The five-minute over the last session sits bottom right, in Soft
-   hollow-up candles, with VWAP and its bands. The theme changes once a
-   bar: Starship at 27.1, Catppuccin Latte at 28.1, then Tokyo Night at
-   29.1, where it holds. Latte is a deliberate bookend. The video's first
-   switch was Tokyo Night to Latte, and its last is Latte to Tokyo Night.
-   The camera pushes in gently through bars 29 and 30. On the final hit, at
-   30.1, the picture gives one pulse and a brief flash. It then fades to
-   black over the last two beats.
-   *Hoping to see:* a big daily swing, with visible structure on the
-   hourly and five-minute charts.
-
-**Where each change comes from.** Several of these changes aren't a single
-key, which affects how they fit the beat.
-- **Single chords, which can land on any beat:** next chartbook (Ctrl and
-  Alt and right arrow), hide or show the indicators (Ctrl and Shift and H)
-  and the drawings (Ctrl and H), and opening Chart settings (Ctrl and Shift
-  and S). The desktop theme switch is also a single, instant change.
-- **Two clicks:** each change in the Chart settings dialog (Colouring,
-  Style, Hollow up bars, Swap up and down colours). That's why beat 2 keeps
-  the dialog open for six bars, and why every one of its changes is set up
-  on the "and" before the downbeat. The colouring is only in that dialog.
-  The bar style is also in the chart menu (Bar style, then OHLC bars), but
-  that's three clicks, so it isn't used.
-- Everything else is built off camera, in setup: the five chartbooks in
-  strip order, the indicators, the drawings, the windows from Go to, and
-  the hidden layers in the Nasdaq book. In every chartbook, the watchlist
-  sidebar is hidden (Ctrl and Shift and B) and the drawing tools are
-  hidden (Ctrl and Shift and D). The header shows only the symbol and
-  resolution.
+The volume profile and the anchored VWAP are drawings, so they arrive
+with Ctrl and H. The build's later looks (Soft, Vivid, OHLC, swapped)
+are cuts, with no dialog on screen.
 
 **What the source changes.**
-- Theme switches use the studio's `theme <name>` action, which rewrites
-  the studio home's `~/.local/state/omarchy/current/theme`. The app
-  follows the desktop theme. The video makes sixteen theme switches, on
-  downbeats only and never two in one bar. Between them they use fifteen
-  themes, five of them light.
-- A music-driven video renders without key badges, and pane labels count
-  as on-screen text, so it has neither. The camera moves stay.
-- While a chart's indicators or drawings are hidden, its header shows a
-  small struck-through mark after the resolution. That happens in bars 23
-  and 24 of the break. It goes as each layer comes in.
-- The cover keeps the standard card, but it's held for bars one and two,
-  about 3.4 seconds counting its fade, rather than 2.5. That way the first
-  chart arrives on a downbeat. It's one bar more of the same cover.
-- Futures by root on Yahoo (ES, NQ, GC, CL) are ten minutes delayed. That
-  doesn't matter here. Drawing anchors and the exact windows are set
-  against the real data when setup is written.
+- One chartbook holds the whole video. Each section is a chartbook
+  template applied to it, so no tab strip ever shows and there's no
+  chartbook switch on camera.
+- The cover is held 3.93 seconds and fades by 4.53, so NVDA is fully in
+  on bar 3.1.
+- Lupine is dropped, so the drop has seven themes for its seven bars.
+  There are fifteen theme switches over fourteen themes, four of them
+  light.
+- While the break's layers are hidden, the header shows small
+  struck-through marks after the resolution. They go as each layer comes
+  in.
+
+## Setup
+
+One chartbook and five chartbook templates (Intro, Build, Drop, Break,
+Finale) are built, with every drawing placed on its symbol. Gridlines are
+off everywhere. The sidebar is hidden while the Finale arrangement is
+showing, and its divider is dragged to sixty percent, which its template
+keeps. The pointer is parked in the gap at the window's left edge. Then
+the Intro look goes on NVDA. A custom range leaves a clipped date label
+at the right of the time axis until the chart is panned, so each range is
+followed by a left and right arrow on its chart. The drawing tools are
+hidden from the start, and nothing here shows them.
+
+    cli config set show_grid off
+    cli config set chart_header symbol,resolution
+    cli chart set --template none --symbol NVDA --resolution 1D --style candles --colouring theme --hollow-up off --log-scale on --grid off
+    cli chart indicator add sma --period 50 --color Blue
+    cli chart indicator add sma --period 200 --color Amber
+    cli chart indicator add volume --height 0.15
+    cli chartbook template save Intro
+    cli chartbook template apply none
+    cli chart set --template none --symbol GC --resolution 1D --style candles --colouring theme-mono --hollow-up on --log-scale off --grid off
+    cli chart indicator add ema --period 20 --color Amber
+    cli chartbook template save Build
+    cli chartbook template apply none
+    cli chart set --template none --grid off
+    cli chart split horizontal
+    cli chart split vertical --chart pos:0
+    cli chart split vertical --chart pos:2
+    cli chart set --chart pos:0 --symbol BTC --resolution 1D --style candles --colouring theme --hollow-up on --grid off
+    cli chart indicator add bollinger --chart pos:0 --period 20 --deviations 2 --color Violet
+    cli chart set --chart pos:2 --symbol ES --resolution 15m --style ohlc --thickness 3 --colouring theme --session extended --grid off
+    cli chart indicator add vwap --chart pos:2 --bands 1,2 --color Blue
+    cli chart indicator add session_times --chart pos:2
+    cli chart indicator set session_times --chart pos:2 --shade-alpha 0.08
+    cli chart set --chart pos:1 --symbol AAPL --resolution 1W --style candles --colouring theme-soft --hollow-up off --grid off
+    cli chart indicator add sma --chart pos:1 --period 10 --color Blue
+    cli chart indicator add sma --chart pos:1 --period 40 --color Amber
+    cli chart indicator add macd --chart pos:1 --height 0.24
+    cli chart set --chart pos:3 --symbol CL --resolution 4h --style candles --colouring theme-quiet --hollow-up off --grid off
+    cli chart indicator add ema --chart pos:3 --period 20 --color Amber
+    cli chart indicator add rsi --chart pos:3 --height 0.2
+    cli chartbook template save Drop
+    cli chartbook template apply none
+    cli chart close --chart pos:3
+    cli chart close --chart pos:2
+    cli chart close --chart pos:1
+    cli chart set --chart pos:0 --template none --symbol NQ --resolution 1D --style candles --colouring theme-mono --hollow-up on --grid off
+    cli chart indicator add ema --period 20 --color Blue
+    cli chart indicator add ema --period 50 --color Violet
+    cli chart indicator add volume
+    cli chartbook template save Break
+    cli chartbook template apply none
+    cli chart set --template none --symbol TSLA --resolution 1D --style candles --colouring theme --hollow-up off --indicators on --drawings on --grid off
+    cli chart split horizontal
+    cli chart split vertical --chart pos:1
+    cli chart indicator add sma --chart pos:0 --period 50 --color Amber
+    cli chart indicator add volume --chart pos:0
+    cli chart set --chart pos:1 --resolution 1h --style ohlc --colouring theme --session regular --grid off
+    cli chart indicator add ema --chart pos:1 --period 20 --color Blue
+    cli chart indicator add ema --chart pos:1 --period 50 --color Amber
+    cli chart set --chart pos:2 --resolution 5m --style candles --colouring theme-soft --hollow-up on --session regular --grid off
+    cli chart indicator add vwap --chart pos:2 --bands 1,2 --color Blue
+    cli chartbook template save Finale
+    cli chart set --chart pos:0 --symbol NVDA --grid off
+    cli chart drawing add line --from 2024-01-03,47.32 --to 2024-06-20,99.3 --color teal --width 2 --chart pos:0
+    cli chart drawing add hline --from 2023-08-24,50.55 --to 2024-06-20,50.55 --color amber --chart pos:0
+    cli chart set --chart pos:0 --symbol GC --grid off
+    cli chart drawing add rect --from 2025-02-10,2974 --to 2025-03-12,2844.1 --config 3 --chart pos:0
+    cli chart drawing add hline --from 2025-02-11,2974 --to 2025-04-04,2974 --color amber --chart pos:0
+    cli chart set --chart pos:0 --symbol CL --grid off
+    cli chart drawing add hline --from 2025-12-16,55.60 --to 2026-01-16,55.60 --color amber --chart pos:0
+    cli chart set --chart pos:0 --symbol NQ --grid off
+    cli chart drawing add line --from 2025-05-23,20727 --to 2025-10-23,24174 --color teal --width 1.5 --chart pos:0
+    cli chart drawing add line --from 2025-05-23,22290 --to 2025-10-23,25737 --color teal --width 1.5 --chart pos:0
+    cli chart drawing add hline --from 2025-10-09,25394 --to 2025-10-23,25394 --color amber --chart pos:0
+    cli chart drawing add profile --from 2025-09-22,24000 --to 2025-10-23,25400 --config 5 --chart pos:0
+    cli chart drawing add avwap --from 2025-04-21,17700 --color cyan --bands none --chart pos:0
+    cli chart set --chart pos:0 --symbol TSLA --grid off
+    key ctrl+shift+b
+    drag 50.15% 30% 60% 30%
+    move -0.4% 50%
+    cli chartbook template apply Intro
+    cli chart set --symbol NVDA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale on --indicators on --drawings on --grid off
+    cli chart range "2023/07/01..2024/06/20"
+    key Left
+    key Right
+    key Escape
+
+## Script
+
+### 1. Intro
+
+**Picture.** The cover's fade ends on 3.1 to show NVDA daily from July
+2023 to June 2024 in Tokyo Night. The candles are vivid on a log scale,
+with the blue fifty-day and amber two-hundred-day averages and a volume
+strip. A teal trendline rides the lows from January into June, and an
+amber level marks the August 2023 high that the January breakout cleared.
+At once the camera starts a slow push toward the breakout. On 4.1 the
+whole window turns light: Catppuccin Latte, the same chart and lines.
+Retro 82 follows on 6.1, deep navy with warm text. By bar 7 the push
+rests at about 1.15×, and bars 7 and 8 hold still while the kick rises.
+
+    @3.1: drift 55% 50% 1.15 16
+    @4.1: theme catppuccin-latte
+    @6.1: theme retro-82
+
+### 2. Build
+
+**Picture.** On the kick at 9.1 the chart is gold, January to March 2025,
+in Everforest and in the full frame. The candles are Monochrome, rises
+hollow, with an amber twenty-day EMA. A soft blue box holds the February
+range, and an amber level runs along its top into the March breakout. On
+9.3 Chart settings opens over the middle of the window. The pointer
+glides in from the left edge to the Colouring row, opens its list on the
+off-beat and picks Quiet on 10.1: the candles turn two greys. On 10.3 Esc
+closes the dialog and the pointer slips back to the edge and hides.
+- 11.1: the candles go Soft, slate and sand, and the camera snaps to
+  about 1.5× on the range and the breakout.
+- 12.1: Vivid.
+- 13.1: Flexoki Light, warm paper. Nothing else changes, so the hollow
+  Vivid candles get the whole bar.
+- 14.1: OHLC bars, two pixels.
+- 15.1: up and down swap colour.
+- 16.1: the camera eases back to the full frame under the fill, settled
+  before the drop.
+
+    @9.1: early 3; theme everforest; zoom 50% 50% 1; cli chartbook template apply Build; cli chart set --symbol GC --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart range "2024/12/30..2025/04/02"; key Left; key Right
+    @9.3: key ctrl+shift+s
+    @9.4.5: click 59% 26%
+    @10.1: click 59% 37%
+    @10.3: key Escape; move -0.4% 50%
+    @11.1: cli chart set --colouring theme-soft; zoom 62% 38% 1.5
+    @12.1: cli chart set --colouring theme
+    @13.1: theme flexoki-light
+    @14.1: cli chart set --style ohlc --thickness 2
+    @15.1: cli chart set --swap-colours on
+    @16.1: zoom 50% 50% 1
+
+### 3. Drop
+
+**Picture.** On the drop at 17.1, with a flash and the strongest pulse,
+the window is four markets in Hackerman, green on near-black. Bitcoin is
+the focused chart, with the accent ring. Every downbeat brings a light
+pulse and a theme: Rosé Pine on 18.1 and Nord on 19.1, over the full
+grid. From 20.1 the camera cuts in to one chart a bar at about 1.9×:
+Bitcoin in White, ES in Kanagawa, Apple in Matte Black and crude in
+Gruvbox. The crude close-up holds to the end of bar 23. The four charts:
+- top left, Bitcoin daily from late November 2022 to late February 2023,
+  in hollow candles, with violet Bollinger Bands. They hug a flat winter
+  and then open wide around the January surge;
+- top right, ES fifteen-minute over one session, as 3 px OHLC bars. A
+  flat morning, then a slide away from VWAP through its first and second
+  bands, with the overnight hours shaded;
+- bottom left, Apple weekly over 2023 and 2024 in Soft candles, with blue
+  ten-week and amber forty-week averages and a MACD strip;
+- bottom right, crude oil four-hour from mid-December to mid-January in
+  Quiet candles. An amber twenty EMA, an amber support level at the
+  December low and an RSI strip.
+
+    @17.1: early 3; theme hackerman; flash; pulse 0.05; cli chartbook template apply Drop; cli chart set --chart pos:0 --symbol BTC --style candles --colouring theme --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol AAPL --style candles --colouring theme-soft --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol ES --style ohlc --thickness 3 --colouring theme --swap-colours off --session extended --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:3 --symbol CL --style candles --colouring theme-quiet --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:0; cli chart range "2022/11/25..2023/02/25"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/16..2026/10/16"; key Left; key Right; cli chart focus pos:1; cli chart range "2023/01/01..2024/12/31"; key Left; key Right; cli chart focus pos:3; cli chart range "2025/12/12..2026/01/14"; key Left; key Right; cli chart focus pos:0
+    @18.1: theme rose-pine; pulse 0.025
+    @19.1: theme nord; pulse 0.025
+    @20.1: theme white; zoom 25% 25% 1.9; pulse 0.025
+    @21.1: theme kanagawa; zoom 75% 25% 1.9; pulse 0.025
+    @22.1: theme matte-black; zoom 25% 75% 1.9; pulse 0.025
+    @23.1: theme gruvbox; zoom 75% 75% 1.9; pulse 0.025
+
+### 4. Break
+
+**Picture.** On 24.1 the music thins to its one-bar break, and the
+picture cuts to the full frame. The chart is Nasdaq futures daily, April
+to October 2025, in Ethereal, deep navy with peach text. It shows bare
+Monochrome candles with hollow rises, climbing steadily, with nothing
+else on the chart. Nothing moves for the whole bar. On 25.1 the groove
+comes back with a strong pulse, and Ctrl and Shift and H brings in the
+blue twenty and violet fifty EMAs and the volume strip. At the same
+moment the camera steps in to about 1.3× on the left of the chart and
+starts to drift right. On 26.1 Ctrl and H brings in the drawings:
+- a teal channel along the advance from May;
+- an amber level at the October high;
+- a volume profile over the last range;
+- a cyan anchored VWAP line from the April low.
+
+    @24.1: early 3; theme ethereal; zoom 50% 50% 1; cli chartbook template apply Break; cli chart set --symbol NQ --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators off --drawings off --grid off; cli chart range "2025/04/14..2025/10/23"; key Left; key Right
+    @25.1: key ctrl+shift+h; pulse 0.05; zoom 35% 50% 1.3
+    @25.2: drift 65% 50% 1.3 7
+    @26.1: key ctrl+h; pulse 0.025
+
+### 5. Finale
+
+**Picture.** On 27.1 the cut to the full frame is TSLA on three charts in
+Starship. On 28.1 the window turns to Catppuccin Latte and the camera
+starts a gentle push. On 29.1 it lands back on Tokyo Night, where the
+video began, and holds as the push goes on. The three charts:
+- left, about sixty percent wide, the daily from May to October 2026 in
+  vivid candles. It has an amber fifty-day average and volume: a slide
+  into August, then a long climb back;
+- top right, the hourly over two weeks in OHLC bars, with blue twenty and
+  amber fifty EMAs;
+- bottom right, the five-minute over one session in Soft hollow candles,
+  with VWAP and its bands.
+
+    @27.1: early 1.5; theme starship; zoom 50% 50% 1; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2026/10/15..2026/10/28"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/27..2026/10/27"; key Left; key Right; cli chart focus pos:0; cli chart range "2026/05/01..2026/10/30"; key Left; key Right
+    @28.1: theme catppuccin-latte; drift 50% 50% 1.08 8; pulse 0.025
+    @29.1: theme tokyo-night; pulse 0.025
+
+### 6. End
+
+**Picture.** The last hit at 30.1 lands with a pulse and a flash on the
+TSLA charts in Tokyo Night. They resolve into the end card, held three
+seconds while the music's tail fades.
+
+    @30.1: pulse 0.05; flash
+
+## Pronunciation
+
+None. The video has no narration.
