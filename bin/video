@@ -1365,16 +1365,28 @@ def anchor_cues(script, plan, events, raw, offset):
             starts = (max(start, turn - int(0.3 * FPS)) + lead[0]) / FPS if len(lead) else turn / FPS
             settles = turn / FPS
         else:
-            # From just before its keys land to just before the next cue's.
-            start = max(1, int((first["done"] - 0.45) * FPS))
+            # From when its first step starts — a chord through
+            # virtual-keyboard lands well before its run ends — but never
+            # before the cue ahead of it was done, to just before the next
+            # cue's.
+            lands = first["t"]
+            # Every earlier step, a pointer parked among them: a chart
+            # repaints as the pointer leaves it.
+            before = max((e["done"] + 0.05 for e in events if e.get("scene") is not None and e.get("done") is not None
+                          and e["t"] < first["t"] and e.get("cue") != cue), default=0)
+            start = max(1, int(max(lands, before) * FPS))
             stop = int((order[i + 1]["t"] + 0.05) * FPS) if i + 1 < len(order) else int((first["done"] + 2.6) * FPS)
-            hit = np.nonzero(changed[start:stop] > 0.0012)[0]
+            # The step's own change, not the tail of the one before it (a
+            # list closing, a repaint finishing): the first frame that
+            # changes at least half as much as the most in the window.
+            window = changed[start:stop]
+            hit = np.nonzero(window > max(0.0012, 0.5 * (window.max() if len(window) else 0)))[0]
             if not len(hit):
                 report.append(f"  {cue:>8}: nothing changed on screen; left where it fell")
                 continue
             starts = settles = (start + hit[0]) / FPS
             last = lasts[key]
-            if last is not first and last["verb"] in ("key", "cli"):
+            if last is not first:
                 # A cue of several steps — a chartbook rebuilt, its windows
                 # set — is seen finished: from the last frame that still
                 # changed after its last step, so what showed while it was
