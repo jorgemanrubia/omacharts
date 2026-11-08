@@ -591,9 +591,10 @@ impl ChartPane {
         overlay.add_overlay(&corner);
 
         // The three are laid over the chart independently, so on a narrow
-        // chart the centred strip lands on the symbol. It steps aside rather
-        // than overlap, and the resolution beside the symbol offers the same
-        // list. Decided
+        // chart the centred row lands on the symbol or under the corner. It
+        // slides along to clear them, and steps aside altogether when there
+        // is no room between them; for the strip, the resolution beside the
+        // symbol offers the same list. Decided
         // where the overlay places it, the one moment every width involved
         // is known.
         //
@@ -626,12 +627,12 @@ impl ChartPane {
                 // steps its legend past the drawing toggle after it is built.
                 let left = legend_box.margin_start() + natural(legend_row.upcast_ref());
                 let right = natural(corner_box.upcast_ref()) + corner_box.margin_end();
-                strip_row.set_child_visible(strip_fits(
-                    overlay.width(),
-                    left,
-                    natural(strip_row.upcast_ref()),
-                    right,
-                ));
+                let (_, size) = strip_row.preferred_size();
+                let start = center_start(overlay.width(), left, size.width(), right);
+                if strip_row.is_child_visible() != start.is_some() {
+                    strip_row.set_child_visible(start.is_some());
+                }
+                return start.map(|x| gtk::gdk::Rectangle::new(x, 0, size.width(), size.height()));
             }
             None
         });
@@ -1481,11 +1482,13 @@ fn corner_margin(clearance: i32) -> i32 {
     }
 }
 
-/// Whether a strip `strip` wide, centred in `width`, clears what sits at
-/// either edge — `left` and `right` of it — with a little air on each side.
-fn strip_fits(width: i32, left: i32, strip: i32, right: i32) -> bool {
-    let start = (width - strip) / 2;
-    start >= left + STRIP_GAP && start + strip <= width - right - STRIP_GAP
+/// Where a row `center` wide starts across `width`: centred, or slid
+/// towards whichever side has room so it clears what sits at either edge —
+/// `left` and `right` of it — with a little air on each side. `None` when
+/// even that leaves no room, and the row is not shown.
+fn center_start(width: i32, left: i32, center: i32, right: i32) -> Option<i32> {
+    let (lowest, highest) = (left + STRIP_GAP, width - right - STRIP_GAP - center);
+    (lowest <= highest).then(|| ((width - center) / 2).clamp(lowest, highest))
 }
 
 /// The air the strip keeps from what is beside it.
@@ -2303,13 +2306,16 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_shows_only_where_it_clears_both_corners() {
-        // A wide chart: room on either side.
-        assert!(strip_fits(1200, 160, 300, 40));
-        // Narrow: centred, it would start on top of the symbol.
-        assert!(!strip_fits(500, 160, 300, 40));
-        // Or end under the maximize corner, when that is the wider of the two.
-        assert!(!strip_fits(600, 40, 300, 160));
+    fn the_center_row_steps_aside_from_the_corners_and_hides_only_without_room() {
+        // A wide chart: centred, with room on either side.
+        assert_eq!(center_start(1200, 160, 300, 40), Some(450));
+        // A half-width chart: centred, a title would run under the corner,
+        // so it slides left until it clears it.
+        assert_eq!(center_start(496, 106, 95, 218), Some(175));
+        // Or right, off the symbol, when that is the wider of the two.
+        assert_eq!(center_start(600, 250, 100, 40), Some(258));
+        // Narrow: no room between the two at all.
+        assert_eq!(center_start(500, 160, 300, 40), None);
     }
 
     #[test]
