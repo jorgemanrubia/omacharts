@@ -231,6 +231,39 @@ its frontmatter, `@bar.beat` cues; script-format.md). Proven on
 - ffmpeg 8 dropped `-filter_complex_script`; a graph in a file is
   `-/filter_complex FILE`.
 
+## Made from stills
+
+A video whose charts stay put and only change their look (`timing:
+stills`) is not recorded: each look is a still, and the picture is drawn
+from them by `video/engines/stills.py` (numpy and OpenCV, run with `uv`).
+Proven on 2026-11-08 with the Clair de lune pull-back. What it took:
+
+- **Draw large.** A headless output at `studio_scale: 8` is 15360x8640 with
+  the layout of a 1920x1080 window, and GTK draws it crisp: a candle a few
+  layout pixels wide is a solid block forty pixels across, so a camera of
+  8 on a 4K frame is still drawn 1:1. grim captures it in a second or two,
+  a 600 KB PNG.
+- **The app's own picture.** Each look is `chartbook screenshot`, not
+  the screen: it is drawn at the output's density and leaves out the focus
+  ring, the corner buttons and the gaps round the window. The focused
+  chart still shows its indicator legend, so every indicator is added with
+  `--legend off`.
+- **Stills line up.** A theme, a palette or a bar style changes nothing's
+  position, so two looks crossfade without a seam while the camera moves.
+  A pane added or taken away does move things: keep panes the same in
+  every look.
+- **Sample it down properly.** A still is kept as a pyramid of halvings
+  and each frame blended from the two levels either side of its scale
+  (trilinear): sampled straight from 16K to 4K, thin lines shimmer as the
+  camera moves, and switching levels shows as a step in sharpness.
+- **Move in the logarithm.** A pull-back at a steady pace in scale races at
+  the start and crawls at the end; in its logarithm it feels the same
+  speed from one candle to the whole screen. The centre is moved with the
+  view's width, not the clock, which is how a straight dolly back looks.
+- **Classical music is mastered by gain alone** (`master: linear`):
+  loudnorm leaves its linear mode for a dynamic one when a recording's
+  range is wider than it allows, and a piano pumps.
+
 ## Shutting it down
 
 Find the studio's processes by `XDG_RUNTIME_DIR=<studio dir>` in

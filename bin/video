@@ -14,6 +14,7 @@
     bin/video render SCRIPT         record, mix and encode the video
     bin/video recompose SCRIPT      mix and encode the last recording again
     bin/video beats SCRIPT          read the pinned track's tempo and downbeats
+    bin/video stills SCRIPT         capture a stills video's looks, then look at them
     bin/video show FILE|URL         play or open it where the author watches
     bin/video page SCRIPT           open the script's page on GitHub there
     bin/video studio [SCRIPT] [--upto N]
@@ -104,6 +105,11 @@ class Script:
         self.setup = []
         self.scenes = []
         self.pronunciation = {}
+        # A video made from stills (`timing: stills`): its looks, each a
+        # still of the app, and the shot that moves a camera over them.
+        self.looks = []  # [{"name", "picture", "actions"}]
+        self.frame = []  # actions that put every chart's window back, after each look
+        self.shot = []  # timeline lines, as written
         self._parse(body)
 
     @staticmethod
@@ -130,6 +136,18 @@ class Script:
                 continue
             if section == "setup" and line.startswith("    ") and line.strip():
                 self.setup.append(parse_action(line.strip()))
+            elif section == "looks":
+                heading = re.match(r"### (\S+)", line)
+                if heading:
+                    self.looks.append({"name": heading[1], "picture": "", "actions": []})
+                elif self.looks and line.startswith("    ") and line.strip():
+                    self.looks[-1]["actions"].append(parse_action(line.strip()))
+                elif self.looks and line.startswith("**Picture.**"):
+                    self.looks[-1]["picture"] = line[len("**Picture.**") :].strip()
+            elif section == "frame" and line.startswith("    ") and line.strip():
+                self.frame.append(parse_action(line.strip()))
+            elif section == "shot" and line.startswith("    ") and line.strip():
+                self.shot.append(line.strip())
             elif section == "pronunciation" and line.startswith("- "):
                 word, _, spoken = line[2:].partition(":")
                 self.pronunciation[word.strip()] = spoken.strip()
@@ -156,7 +174,7 @@ class Script:
                     field = None
                 elif field:
                     setattr(scene, field, getattr(scene, field) + " " + line.strip())
-        if not self.scenes and self.meta.get("timing") != "music":
+        if not self.scenes and self.meta.get("timing") not in ("music", "stills"):
             # A music-driven video composes its music before its script.
             die(f"{self.path.name} has no scenes yet — it is at the {self.meta.get('stage', 'brief')} stage")
 
@@ -173,7 +191,12 @@ class Script:
 
     @property
     def music_driven(self):
-        return self.meta.get("timing") == "music"
+        # A stills video is cut to its music too, by the second.
+        return self.meta.get("timing") in ("music", "stills")
+
+    @property
+    def from_stills(self):
+        return self.meta.get("timing") == "stills"
 
     @property
     def cover_length(self):
@@ -360,6 +383,10 @@ class Studio:
         self.pids = []
         self.build = (script.meta.get("build") if script else None) or os.environ.get("VIDEO_BUILD") or "main"
         self.music_driven = bool(script and script.music_driven)
+        # Layout pixels to output pixels: 2 draws the usual 4K. A video built
+        # from stills can ask for 4 (`studio_scale: 4`), an 8K frame of the
+        # same layout, for a camera that goes close without going soft.
+        self.scale = int((script.meta.get("studio_scale") if script else None) or os.environ.get("VIDEO_SCALE") or 2)
 
     # Bringing it up
 
@@ -491,7 +518,7 @@ class Studio:
         # Cut to music, only charts are seen: the pointer hides once it has
         # rested a moment, and shows again when a hand moves it.
         idle = 1 if getattr(self, "music_driven", False) else 0
-        return f"""hl.monitor({{ output = "REC", mode = "{SIZE[0]}x{SIZE[1]}@{FPS}", position = "0x0", scale = 2 }})
+        return f"""hl.monitor({{ output = "REC", mode = "{LAYOUT[0] * self.scale}x{LAYOUT[1] * self.scale}@{FPS}", position = "0x0", scale = {self.scale} }})
 hl.config({{
   general = {{ gaps_in = 5, gaps_out = 10, border_size = 2,
     col = {{ active_border = "rgb({hexa('accent', '#7aa2f7')})", inactive_border = "rgb({hexa('muted', '#414868')})" }} }},
@@ -1182,6 +1209,140 @@ def beats(script):
     return found
 
 
+# --- Stills ------------------------------------------------------------------------
+#
+# A video can be made from stills of the app instead of a recording
+# (`timing: stills`): its Looks section names each look — a theme, a bar
+# style, a palette — as actions applied on top of the one before, and each is
+# captured as one still, all of the same layout and the same bars, so any two
+# line up to the pixel. Its Shot moves a camera over them and crossfades from
+# one look to the next. `studio_scale: 8` draws the window at 15360x8640, the
+# same layout at eight times the pixels, so the camera can start on a single
+# candle and stay sharp.
+
+
+def looks_key(script, build):
+    text = json.dumps([build, script.meta.get("studio_scale"), script.meta.get("theme"), script.setup, script.frame,
+                       [(look["name"], look["actions"]) for look in script.looks]])
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def capture_stills(script, force=False):
+    """Every look as a still, in order, each on top of the one before. Kept
+    until the setup or a look changes."""
+    folder = script.out / "looks"
+    binary = omacharts_build(script.meta.get("build") or os.environ.get("VIDEO_BUILD") or "main")
+    key = looks_key(script, str(binary.stat().st_mtime))
+    stamp = folder / "key.txt"
+    if not force and stamp.exists() and stamp.read_text().strip() == key and all((folder / f"{l['name']}.png").exists() for l in script.looks):
+        say(f"the looks are as they were captured; {folder.relative_to(ROOT)}")
+        return folder
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    events = []
+    with Studio(script) as studio:
+        for action in script.setup:
+            studio.perform(action, events)
+        studio.frameless()
+        for look in script.looks:
+            # The look, then every chart's window set again: changing how
+            # one chart draws sends every chart back to its latest bars.
+            for action in look["actions"] + script.frame:
+                studio.perform(action, events)
+                time.sleep(0.3)
+            # The pointer off the charts, in the gap round the window, where
+            # it shows no chart's corner buttons; the app done drawing. The
+            # app's own picture of the chartbook, not the screen's: it leaves
+            # out the focus ring, the corner buttons and the window's gaps,
+            # at the output's full density.
+            studio.hand.move(*studio.at(-0.4, 50))
+            time.sleep(1.2)
+            studio.cli(f"chartbook screenshot --output {folder / (look['name'] + '.png')}")
+            say(f"  {look['name']}")
+    stamp.write_text(key + "\n")
+    # A small copy of each, side by side, to look at.
+    sheet = folder / "sheet.jpg"
+    names = [folder / f"{l['name']}.png" for l in script.looks]
+    cols = 4
+    rows = math.ceil(len(names) / cols)
+    inputs = sum((["-i", str(n)] for n in names), [])
+    pad = cols * rows - len(names)
+    graph = ";".join(f"[{i}:v]scale=960:540:flags=area,drawtext=text='{script.looks[i]['name']}':x=12:y=12:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6[s{i}]" for i in range(len(names)))
+    graph += "".join(f";color=black:s=960x540:d=1[p{j}]" for j in range(pad))
+    cells = "".join(f"[s{i}]" for i in range(len(names))) + "".join(f"[p{j}]" for j in range(pad))
+    layout = "|".join(f"{(k % cols) * 960}_{(k // cols) * 540}" for k in range(cols * rows))
+    graph += f";{cells}xstack=inputs={cols * rows}:layout={layout}[out]"
+    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", "-frames:v", "1", "-q:v", "3", str(sheet)])
+    say(f"{len(names)} looks in {folder.relative_to(ROOT)}; sheet.jpg shows them all")
+    return folder
+
+
+def shot_plan(script):
+    """The Shot as the stills engine reads it, and the moments worth a
+    review frame. Lines, each at seconds into the picture (after the cover):
+
+        0: look dawn                     the picture opens on this look
+        12-16: fade dusk                 crossfade to another look
+        40-44: sweep dawn                or a soft edge sweeping across
+        0: camera 41.5% 38% 14           a camera key: centre, as % of the
+                                         frame, and how close (1 is all of it)
+        96: end                          where the picture ends
+    """
+    fades, camera, moments, end = [], [], [], None
+    for line in script.shot:
+        when, _, what = line.partition(":")
+        verb, *args = what.split()
+        t0, _, t1 = when.strip().partition("-")
+        t0 = float(t0)
+        t1 = float(t1) if t1 else t0
+        if verb in ("look", "fade", "sweep"):
+            if len(args) != 1 or not any(l["name"] == args[0] for l in script.looks):
+                die(f"no look called {' '.join(args)!r}: {line!r}")
+            fades.append({"t0": t0, "t1": t1, "look": args[0], "sweep": verb == "sweep"})
+            moments.append((t1 + 0.2, f"{args[0]}"))
+            if t1 > t0:
+                moments.append(((t0 + t1) / 2, f"{args[0]}-mid"))
+        elif verb == "camera":
+            if len(args) != 3:
+                die(f"camera takes x% y% scale: {line!r}")
+            camera.append({"t": t0, "x": percent(args[0]), "y": percent(args[1]), "scale": float(args[2])})
+            moments.append((t0, f"camera-{args[2]}"))
+        elif verb == "end":
+            end = t0
+        else:
+            die(f"unknown shot step {verb!r}: {line!r}")
+    if not fades or not camera or end is None:
+        die(f"{script.path.name}'s Shot needs a look, a camera key and an end")
+    fades.sort(key=lambda f: f["t0"])
+    for a, b in zip(fades, fades[1:]):
+        if b["t0"] < a["t1"]:
+            die(f"the fade to {b['look']} starts before the one to {a['look']} has finished")
+    return {"fades": fades, "camera": camera, "duration": end}, sorted(m for m in moments if m[0] <= end)
+
+
+def render_stills(script, capture=True):
+    """A stills video: its looks captured (or kept), the camera run over them,
+    then composed like any other — cover, music, end card."""
+    folder = capture_stills(script) if capture else script.out / "looks"
+    shot, moments = shot_plan(script)
+    used = {f["look"] for f in shot["fades"]}
+    plan = {"width": SIZE[0], "height": SIZE[1], "fps": FPS, **shot,
+            "looks": {name: str(folder / f"{name}.png") for name in used}}
+    (script.out / "shot.json").write_text(json.dumps(plan, indent=1))
+    picture = script.out / "picture.mkv"
+    say(f"drawing {shot['duration']:.1f}s of picture from {len(used)} looks — a few minutes")
+    run(["uv", "run", "--quiet", str(ENGINES / "stills.py"), str(script.out / "shot.json"), str(picture)])
+    total = shot["duration"]
+    compose(script, [], {"scenes": [], "total": total}, picture, 0.0)
+    review = script.out / "review"
+    intro = float(script.meta.get("cover", COVER))
+    for i, (t, label) in enumerate(moments):
+        run(["ffmpeg", "-v", "error", "-y", "-ss", f"{intro + t:.2f}", "-i", str(script.out / f"{script.slug}-1080p.mp4"), "-frames:v", "1",
+             str(review / f"{i:02d}-{t:05.1f}s-{label}.jpg")])
+    say(f"review/ has a frame at every look and camera key")
+
+
+
 # --- Render ------------------------------------------------------------------------
 
 
@@ -1218,6 +1379,8 @@ def timeline(script, voiced):
 
 
 def render(script):
+    if script.from_stills:
+        return render_stills(script)
     voiced = voice_scenes(script)
     plan = timeline(script, voiced)
     out = script.out
@@ -1291,6 +1454,9 @@ def recompose(script):
     """The last recording made again into a video, without recording it
     again: for a change to the camera, the music or the cover, which are
     all drawn afterwards. Cues must be where they were when it was recorded."""
+    if script.from_stills:
+        # The camera and the fades again, over the looks as last captured.
+        return render_stills(script, capture=False)
     raw, saved = script.out / "raw.mkv", script.out / "offset.txt"
     if not (raw.exists() and saved.exists() and (script.out / "events.json").exists()):
         die(f"no recording of {script.slug} to compose again; run bin/video render {script.slug}")
@@ -1720,8 +1886,11 @@ def compose(script, voiced, plan, raw, offset):
     mix = "".join(f"[v{i}]" for i in range(len(voiced)))
     # Every line is padded to the picture before the mix: padding after amix
     # stops at the last word, and a bare apad there never ends at all.
-    graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,atrim=0:{total:.3f}[out]"
-    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
+    if voiced:
+        graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,atrim=0:{total:.3f}[out]"
+        run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
+    else:
+        run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", f"{total:.3f}", str(voice)])
 
     track = music_track(script)
     audio = out / "mix.wav"
@@ -1731,8 +1900,12 @@ def compose(script, voiced, plan, raw, offset):
         # on, faded only at the very end, mastered as it is.
         track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
         tail = float(script.meta.get("music_fade", 1.5))
-        graph = (f"[0:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{total:.3f},"
-                 f"afade=t=in:d=0.05,afade=t=out:st={max(0, total - tail):.2f}:d={tail:.2f}[out]")
+        # `music_from` starts the track that far in, for an excerpt;
+        # `music_fade_in` eases it in from there.
+        start = float(script.meta.get("music_from", 0))
+        rise = float(script.meta.get("music_fade_in", 0.05))
+        graph = (f"[0:a]aresample=48000,aformat=channel_layouts=stereo,atrim={start:.3f}:{start + total:.3f},asetpts=PTS-STARTPTS,"
+                 f"afade=t=in:d={rise:.2f},afade=t=out:st={max(0, total - tail):.2f}:d={tail:.2f}[out]")
         run(["ffmpeg", "-v", "error", "-y", "-i", str(track), "-filter_complex", graph, "-map", "[out]", str(audio)])
     elif track:
         track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
@@ -1750,12 +1923,12 @@ def compose(script, voiced, plan, raw, offset):
         say("no music_file in the frontmatter; rendering without music")
         shutil.copy(voice, audio)
     master = out / "master.wav"
-    loudnorm(audio, master)
+    loudnorm(audio, master, linear=script.meta.get("master") == "linear")
 
     final = out / f"{script.slug}.mp4"
     preview = out / f"{script.slug}-1080p.mp4"
     say("encoding")
-    if script.meta.get("polish", "on") != "off":
+    if script.meta.get("polish", "on") != "off" and not script.from_stills:
         recording = ["-i", str(polish(script, raw, offset, plan["total"]))]
     else:
         recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
@@ -1853,9 +2026,21 @@ def audible_end(track):
     return starts[-1] if starts and len(ends) == len(starts) and float(ends[-1]) >= length - 0.05 else length
 
 
-def loudnorm(source, target):
+def loudnorm(source, target, linear=False):
     # Two passes: measure, then apply the gain that lands on -14 LUFS, the
     # level YouTube plays everything back at.
+    if linear:
+        # A recording with a wide range — a piano, an orchestra — is only
+        # turned up or down, never compressed: loudnorm leaves its linear
+        # mode for a dynamic one when the range is wider than it allows, and
+        # pumps. As near -14 as the peaks let it go, under -1 dBTP.
+        found = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(source), "-af", "ebur128=peak=true", "-f", "null", "-"],
+                               capture_output=True, text=True).stderr
+        level = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", found)[-1])
+        peak = float(re.findall(r"Peak:\s+(-?[\d.]+) dBFS", found)[-1])
+        gain = min(-14 - level, -1 - peak)
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-af", f"volume={gain:.2f}dB,aresample=48000", str(target)])
+        return
     measured = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(source), "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json",
                                "-f", "null", "-"], capture_output=True, text=True).stderr
     m = json.loads(measured[measured.rindex("{") : measured.rindex("}") + 1])
@@ -2053,6 +2238,11 @@ def main():
             show(script.out / f"{script.slug}-1080p.mp4")
     elif verb == "beats":
         beats(need())
+    elif verb == "stills":
+        script = need()
+        folder = capture_stills(script, force="--force" in rest)
+        if not os.environ.get("VIDEO_NO_SHOW"):
+            show(folder / "sheet.jpg")
     elif verb == "show":
         show(rest[0])
     elif verb == "page":

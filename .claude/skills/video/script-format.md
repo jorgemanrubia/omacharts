@@ -162,3 +162,46 @@ The author steers by writing in the file as well as in chat. A line starting
 Applying notes means making the change and deleting the note line. A note
 that cannot be applied as written stays, with a `> reply:` line under it
 saying why, so the question goes back to them in the file they are reading.
+
+## Made from stills
+
+A video whose charts never change, only their look — a camera pulling back
+from one candle to a whole workspace while themes and palettes change —
+says `timing: stills`. It has no scenes. Its **Setup** builds the layout
+once; its **Looks** are stills of it, each `### name` with a **Picture**
+line and the actions that make it, applied on top of the look before (a
+`theme`, a `cli chart set --colouring …`); its **Shot** runs a camera over
+them, in seconds from the end of the cover:
+
+    ## Shot
+
+        0: look dawn
+        0: camera 41.5% 38% 14
+        18-24: fade dusk
+        70: camera 50% 50% 1
+        96: end
+
+| Step | Means |
+|---|---|
+| `T: look <name>` | the picture is that look from T (the first one opens it) |
+| `T0-T1: fade <name>` | a crossfade to that look, eased, from T0 to T1; fades may not overlap |
+| `T0-T1: sweep <name>` | the new look sweeping in from the top-left corner behind a soft edge: for a change between a dark theme and a light one, which dissolved evenly passes through a washed-out grey |
+| `T: camera <x%> <y%> <scale>` | a camera key: the centre of the view, as % of the frame, and how close (1 is the whole frame). Between keys the scale moves evenly in its logarithm, eased out of the first key and into the last, smooth through the rest, and the centre follows the view's width, as a camera dollying back does |
+| `T: end` | where the picture ends; the end card follows |
+
+| Frontmatter | Means |
+|---|---|
+| `studio_scale` | output pixels per layout pixel: 2 is the usual 4K; 8 captures 15360x8640, sharp to a camera of about 8 |
+| `music_from` | seconds into `music_file` the soundtrack starts, for an excerpt |
+| `music_fade_in` | seconds it fades in over, 0.05 unless set |
+| `master` | `linear` to master by gain alone, for a recording with a wide range |
+
+A **Frame** section holds the actions that put every chart's window where
+it belongs — each chart focused and its range set, then a wheel nudge to
+clear the range's label — run after every look's own actions: changing how
+one chart draws sends every chart back to its latest bars, and the looks
+must line up to the pixel.
+
+`bin/video stills <slug>` captures the looks and opens a sheet of them;
+`render` captures what changed and draws the video; `recompose` draws it
+again from the captured looks, for a change to the Shot or the music.
