@@ -48,6 +48,7 @@ use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
 mod log;
+mod marks;
 mod trade;
 use trade::Trade;
 
@@ -3530,7 +3531,11 @@ impl Window {
         // What the hand did to the orders and the position on it, which the
         // window sends, never the chart.
         let trader = self.clone();
-        pane.view.set_trade_handler(move |event| trader.trade_from_chart(id, event));
+        pane.view.set_mark_handler(move |event| {
+            if let Some(event) = marks::trade_event(event) {
+                trader.trade_from_chart(id, event);
+            }
+        });
 
         let menu_owner = self.clone();
         pane.view.set_drawing_menu_handler(move |x, y| {
@@ -3691,7 +3696,7 @@ impl Window {
     fn is_editor(widget: &gtk::Widget) -> bool {
         let mut at = Some(widget.clone());
         while let Some(widget) = at {
-            if widget.has_css_class(crate::ui::text_editor::CLASS) {
+            if widget.has_css_class(crate::ui::chart::TEXT_EDITOR_CLASS) {
                 return true;
             }
             at = widget.parent();

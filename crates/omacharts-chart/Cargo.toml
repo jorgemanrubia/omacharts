@@ -1,0 +1,15 @@
+[package]
+name = "omacharts-chart"
+version = "0.1.0"
+edition = "2024"
+description = "The omacharts chart as a GTK4 widget: bars, indicators, drawings and price marks, drawn and handled."
+license = "MIT"
+
+[dependencies]
+omacharts-engine = { path = "../omacharts-engine" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
+chrono-tz = "0.10.4"
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_10"] }
+# A drawing's text is rich text, laid out by Pango and put on the chart's
+# own cairo context: see `text`.
+pangocairo = "0.22"

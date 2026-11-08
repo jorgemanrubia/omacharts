@@ -934,25 +934,12 @@ button.trading-toggle {
 .drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
 .drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
 .menu-choice { padding: 2px 6px; min-width: 0; min-height: 0; border-radius: 5px; font-size: 0.9em; }
-/* Typing on the chart: nothing behind the glyphs, so what is under them is
-   the chart. The caret is the accent, which is the one thing on a text
-   widget that has to be found rather than read, and a ring in the same
-   colour says where the words will end up without drawing a field around
-   them. */
-/* The view and its text layer are transparent so the chart shows through.
-   The selection is NOT — it was in this list, under `selection:focus`, which
-   is the selection you have while you are typing: every range you took was
-   taken invisibly. */
-.drawing-text-editor, .drawing-text-editor text { background: none; background-color: transparent; }
-/* The caret is the accent, which is the one thing on a text widget that has
-   to be found rather than read. Nothing else: the words are already in the
-   drawing's own face, size and ink, over the drawing's own ground, and a
-   border or a highlight round them would be the one thing on screen that
-   changes when the edit is committed. A chart you can type on should not
-   flinch when you press Enter. */
-.drawing-text-editor { caret-color: @accent_bg_color; }
-.drawing-text-editor text selection, .drawing-text-editor text selection:focus { background-color: alpha(@accent_bg_color, 0.45); color: @window_fg_color; }
-/* The nine places, as a block of nine cells rather than nine buttons: no
+",
+    );
+    // Typing on the chart, which the chart styles itself.
+    css.push_str(omacharts_chart::STYLESHEET);
+    css.push_str(
+        "/* The nine places, as a block of nine cells rather than nine buttons: no
    padding between them, one ring around the lot, and the lit one filled. */
 .drawing-place-grid { padding: 2px; border-radius: 7px; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
 .drawing-place-cell { padding: 1px; min-width: 0; min-height: 0; border-radius: 4px; opacity: 0.55; }

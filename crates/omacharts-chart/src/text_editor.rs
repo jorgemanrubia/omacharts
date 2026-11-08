@@ -46,7 +46,7 @@ fn dress(style: &TextStyle, ink: &str) {
     let family = style
         .family_name()
         .map(str::to_string)
-        .or_else(crate::ui::text::system_family)
+        .or_else(crate::text::system_family)
         .unwrap_or_else(|| "sans-serif".to_string());
     // Quoted, because a family name has spaces in it as often as not and an
     // unquoted one would be read as a list.
@@ -145,11 +145,6 @@ impl Editing {
         Text { spans, at }.tidied()
     }
 
-    /// Whether anything has been typed.
-    pub fn is_empty(&self) -> bool {
-        self.view.buffer().char_count() == 0
-    }
-
     /// Take all of it, the way opening a field to edit a name does.
     ///
     /// A label is a handful of words that is usually being replaced rather
@@ -204,8 +199,8 @@ impl Editing {
         match text.is_empty() {
             // An empty editor still needs a caret's worth of height, or it
             // would open as a sliver and the caret would not be visible.
-            true => (0.0, crate::ui::text::measure(&Text::plain("X"), style, align).1),
-            false => crate::ui::text::measure(&text, style, align),
+            true => (0.0, crate::text::measure(&Text::plain("X"), style, align).1),
+            false => crate::text::measure(&text, style, align),
         }
     }
 }
@@ -268,7 +263,7 @@ pub fn build(
     // Except the digits, which have no CSS: the chart sets labels with
     // tabular figures, and without the same here a label with a number in it
     // would be a different width under the caret than beside it.
-    base.set_font_features(Some(crate::ui::text::FIGURES));
+    base.set_font_features(Some(crate::text::FIGURES));
     table.add(&base);
 
     let bold = gtk::TextTag::new(Some("bold"));

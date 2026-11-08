@@ -509,7 +509,7 @@ impl Window {
         self.trade.pending.borrow_mut().clear();
         self.trade.linking.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
-            pane.view.set_marks(None, Vec::new(), Vec::new(), (None, None));
+            pane.view.set_marks(Vec::new(), super::marks::TradeRules::default());
             self.write_size_of(pane);
         }
     }
@@ -978,8 +978,8 @@ impl Window {
 
     /// What the hand did to the marks on the chart `id`: the chart only
     /// says, and this is what sends.
-    pub(super) fn trade_from_chart(self: &Rc<Self>, id: u32, event: crate::ui::chart::TradeEvent) {
-        use crate::ui::chart::TradeEvent;
+    pub(super) fn trade_from_chart(self: &Rc<Self>, id: u32, event: super::marks::TradeEvent) {
+        use super::marks::TradeEvent;
         let Some(pane) = self.pane(id) else { return };
         self.focus(id);
         match event {
@@ -1464,7 +1464,7 @@ impl Window {
         self.trade.order_labels.set(side);
         let panes = self.panes.borrow().clone();
         for pane in &panes {
-            pane.view.set_order_labels(side);
+            pane.view.set_mark_labels(side);
         }
     }
 
@@ -1532,9 +1532,9 @@ impl Window {
             return;
         }
         self.write_size_of(pane);
-        pane.view.set_order_labels(self.trade.order_labels.get());
+        pane.view.set_mark_labels(self.trade.order_labels.get());
         let Ok(target) = self.order_target(pane) else {
-            return pane.view.set_marks(None, Vec::new(), Vec::new(), (None, None));
+            return pane.view.set_marks(Vec::new(), super::marks::TradeRules::default());
         };
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
@@ -1581,14 +1581,14 @@ impl Window {
         let link_of = |basket: &str, tag: Option<&str>| {
             let made = links.iter().find(|link| link.account == key && link.baskets.iter().any(|known| known == basket));
             match made {
-                Some(link) => Some(crate::ui::chart::LinkMark { holder: link.holder, pending: false }),
+                Some(link) => Some(super::marks::LinkMark { holder: link.holder, pending: false }),
                 None => asked
                     .iter()
                     .find(|asked| asked.account == key && asked.has(basket, tag))
-                    .map(|asked| crate::ui::chart::LinkMark { holder: asked.holder, pending: true }),
+                    .map(|asked| super::marks::LinkMark { holder: asked.holder, pending: true }),
             }
         };
-        let mut orders: Vec<crate::ui::chart::OrderMark> = view
+        let mut orders: Vec<super::marks::OrderMark> = view
             .book
             .working(&key, &target.contract)
             .filter_map(|order| {
@@ -1607,7 +1607,7 @@ impl Window {
                 // What is left of it to fill is what it would still close.
                 let left = order.qty.saturating_sub(order.filled);
                 let (body, colour) = order_look(order.side, order.kind, left, at);
-                Some(crate::ui::chart::OrderMark {
+                Some(super::marks::OrderMark {
                     basket: order.basket_id.clone(),
                     side: order.side,
                     kind: order.kind,
@@ -1652,7 +1652,7 @@ impl Window {
                 ),
                 (_, None) => continue,
             };
-            orders.push(crate::ui::chart::OrderMark {
+            orders.push(super::marks::OrderMark {
                 basket: String::new(),
                 side: order.side,
                 kind: order.kind,
@@ -1671,7 +1671,7 @@ impl Window {
         // a month this chart is not of: drawn with their contract's name,
         // so that what is held is never out of sight.
         let root = pane.instrument.borrow().as_ref().map(|i| i.root().to_string()).unwrap_or_default();
-        let held_elsewhere: Vec<crate::ui::chart::PositionMark> = view
+        let held_elsewhere: Vec<super::marks::PositionMark> = view
             .book
             .positions
             .iter()
@@ -1679,7 +1679,7 @@ impl Window {
             .filter(|held| omacharts_engine::specs::root_of(&held.contract) == root)
             .filter_map(|held| {
                 let at = held.avg?;
-                Some(crate::ui::chart::PositionMark {
+                Some(super::marks::PositionMark {
                     contract: held.contract.clone(),
                     price: at,
                     tag: format!("{} {}", held.contract, trading::held_tag(held.net)),
@@ -1706,9 +1706,9 @@ impl Window {
                 .into_iter()
                 .filter(|(kind, _, _)| target.capabilities.kinds.contains(kind))
                 .filter(|(kind, _, _)| trading::exit_offered(view.book.working(&key, &target.contract), held.net, *kind))
-                .map(|(kind, style, colour)| crate::ui::chart::ExitTab { kind, colour: colour.clone(), style })
+                .map(|(kind, style, colour)| super::marks::ExitTab { kind, colour: colour.clone(), style })
                 .collect();
-            Some(crate::ui::chart::PositionMark {
+            Some(super::marks::PositionMark {
                 contract: target.contract.clone(),
                 price: at,
                 tag: trading::held_tag(held.net),
@@ -1727,7 +1727,8 @@ impl Window {
         });
         drop(pending);
         drop(asked);
-        pane.view.set_marks(position, held_elsewhere, orders, self.limits_of(pane, &target));
+        let rules = super::marks::TradeRules::new(position.as_ref(), &orders, self.limits_of(pane, &target));
+        pane.view.set_marks(super::marks::price_marks(position.as_ref(), &held_elsewhere, &orders), rules);
     }
 
     /// Say each step of an order placed or cancelled here, once, when the
@@ -1759,6 +1760,7 @@ pub(super) mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use super::super::marks::MarksSeen as _;
     use omacharts_engine::FetchFailure;
     use crate::store::Store;
     use crate::trading::fake::Kept;
@@ -2407,7 +2409,7 @@ pub(super) mod tests {
     #[test]
     fn nothing_is_sent_past_the_day_s_price_limit() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
             let log = super::super::log::tests::private(&window);
             settle(&window, || pane.view.last_price().is_some());
@@ -2550,7 +2552,7 @@ pub(super) mod tests {
     #[test]
     fn the_marks_cross_cancels_an_order_and_flattens_the_position() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
             let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
             window.desk.tell();
@@ -2666,7 +2668,7 @@ pub(super) mod tests {
     #[test]
     fn an_order_dragged_to_a_new_price_is_moved_there() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
             settle(&window, || pane.view.last_price().is_some());
             let last = pane.view.last_price().expect("a last price");
@@ -2716,7 +2718,7 @@ pub(super) mod tests {
     #[test]
     fn exits_pulled_out_of_the_position_are_placed_and_linked() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             use trading::{Holder, Linking};
             for linking in [Linking::AfterTheFact, Linking::AtSubmission, Linking::None] {
                 let (window, pane, session, key) = long_es(linking);
@@ -2769,7 +2771,7 @@ pub(super) mod tests {
                 assert_eq!(links[0].holder, held, "{linking:?}");
                 // Drawn solid once made, in its holder's look.
                 let drawn: Vec<_> = pane.view.mark_links().into_iter().flatten().collect();
-                assert_eq!(drawn, vec![crate::ui::chart::LinkMark { holder: held, pending: false }; 2], "{linking:?}");
+                assert_eq!(drawn, vec![super::super::marks::LinkMark { holder: held, pending: false }; 2], "{linking:?}");
 
                 pane.view.drop_mark(TradeEvent::Flatten);
                 settle(&window, || pane.view.mark_states().0.is_none() && working().is_empty());
@@ -2786,7 +2788,7 @@ pub(super) mod tests {
     #[test]
     fn either_exit_may_come_first_on_a_long_or_a_short() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             use trading::Linking;
             for linking in [Linking::AfterTheFact, Linking::AtSubmission, Linking::None] {
                 let (window, pane, session, key) = long_es(linking);
@@ -2847,7 +2849,7 @@ pub(super) mod tests {
     #[test]
     fn the_app_cancels_the_other_exit_once_one_fills() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             let (window, pane, session, key) = long_es(trading::Linking::None);
             settle(&window, || pane.view.last_price().is_some());
             let last = pane.view.last_price().expect("a last price");
@@ -2903,7 +2905,7 @@ pub(super) mod tests {
     #[test]
     fn a_position_held_past_the_roll_stays_on_the_chart_named_with_its_contract() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
             assert!(pane.view.held_elsewhere().is_empty());
             // The root rolls to March: the broker now trades ES as ESH7.
@@ -2962,7 +2964,7 @@ pub(super) mod tests {
     #[test]
     fn what_is_asked_is_pending_until_the_broker_confirms_it() {
         crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
+            use super::super::marks::TradeEvent;
             use std::sync::atomic::Ordering;
             let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
             settle(&window, || pane.view.last_price().is_some());

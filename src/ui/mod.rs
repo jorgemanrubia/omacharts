@@ -1,10 +1,12 @@
 //! The widgets.
 
-pub mod chart;
+/// The chart itself is a crate of its own; it is here under the name the
+/// rest of the app has always reached it by.
+pub use omacharts_chart as chart;
+pub use omacharts_chart::{colors, text};
 pub mod book_templates;
 pub mod chart_settings;
 pub mod controls;
-pub mod colors;
 pub mod dialogs;
 pub mod drop_line;
 pub mod notice;
@@ -24,8 +26,6 @@ pub mod trading_settings;
 pub mod screenshot;
 pub mod search;
 pub mod shortcuts;
-pub mod text;
-pub mod text_editor;
 pub mod trading_panel;
 pub mod watchlist;
 pub mod window;

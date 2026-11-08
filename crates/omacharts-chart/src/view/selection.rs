@@ -8,7 +8,7 @@ use omacharts_engine::drawings::distance_to_segment;
 use omacharts_engine::theme::Mode;
 use omacharts_engine::Theme;
 
-use crate::ui::colors;
+use crate::colors;
 use omacharts_engine::indicators::profile::{Align, Style};
 use omacharts_engine::indicators::{Output, Pane, Profile};
 

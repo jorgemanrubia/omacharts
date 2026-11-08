@@ -19,14 +19,8 @@ pub const SETTING_SWAP_COLOURS: &str = "swap_colours";
 pub const SETTING_HOLLOW_UP: &str = "hollow_up";
 /// How many pixels wide an OHLC bar's line and ticks are drawn.
 pub const SETTING_OHLC_THICKNESS: &str = "ohlc_thickness";
-pub const MIN_OHLC_THICKNESS: u8 = 1;
-pub const MAX_OHLC_THICKNESS: u8 = 4;
-pub const DEFAULT_OHLC_THICKNESS: u8 = 2;
-
-/// A thickness the setting allows: from one pixel to four.
-pub fn clamp_thickness(thickness: u8) -> u8 {
-    thickness.clamp(MIN_OHLC_THICKNESS, MAX_OHLC_THICKNESS)
-}
+/// The range it takes is the chart's own.
+pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";

@@ -6,10 +6,13 @@ description = "Fast, beautiful charting software for Omarchy"
 license = "MIT"
 
 [workspace]
-members = [".", "crates/omacharts-engine", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
+members = [".", "crates/omacharts-engine", "crates/omacharts-chart", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
 
 [dependencies]
 omacharts-engine = { path = "crates/omacharts-engine" }
+# The chart itself: one chart drawn and handled, as a widget the window
+# embeds, in a crate of its own so that it can be embedded elsewhere too.
+omacharts-chart = { path = "crates/omacharts-chart" }
 # A broker login's trading session, which the app keeps one of per login.
 rithmic = { path = "crates/rithmic" }
 # Sierra Chart's DTC server, a broker login's trading session too.
