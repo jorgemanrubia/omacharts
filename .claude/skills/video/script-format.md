@@ -139,8 +139,10 @@ And four actions for the camera and the beat, drawn afterwards:
 | `zoom <x%> <y%> <scale> [beats]` | the camera snaps there, settling within a beat, and holds: for `beats`, then back, or until the next move. `zoom 50% 50% 1` is the whole frame |
 | `drift <x%> <y%> <scale> <beats>` | the camera glides there over that many beats |
 | `pulse [strength]` | the picture kicks closer for an instant on a drum (0.035 unless set) |
-| `punch [strength]` | a harder kick that falls back over most of a beat (0.09 unless set) |
+| `punch [strength]` | the picture thrown closer on the beat and settling within it: `punch 0.2` is 1.2x back to 1.0 (0.1 unless set) |
 | `pulses <strength> <count> [every]` | a kick every `every` beats (1 unless set), `count` of them from the cue: a section's drum |
+| `pan <x%> <y%> <scale>` | a whip-pan: the camera thrown to a new framing in one beat, eased in and out, blurred with its speed |
+| `push <x%> <y%> <scale> <beats>` | a riser push: slow to start and quickening into the next beat, for a build |
 | `whip [left\|right]` | the picture flung out before the beat and the next flung in after it, blurred: a cut thrown, not just made |
 | `flash [strength]` | a brief lift toward white, under a cut (0.35 unless set) |
 | `early <seconds>` | fire the cue's steps that much before its beat, for a slow cue; it is shown finished on its beat |
