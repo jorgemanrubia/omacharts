@@ -418,6 +418,8 @@ impl ChartPane {
         title_entry.add_css_class("readout-symbol");
         title_entry.add_css_class("chart-title-entry");
         title_entry.set_valign(gtk::Align::Center);
+        // Its own width, centred, even while an untitled slot spans the top.
+        title_entry.set_halign(gtk::Align::Center);
         gtk::prelude::EntryExt::set_alignment(&title_entry, 0.5);
         title_entry.set_max_length(TITLE_MAX_LENGTH);
         title_entry.set_width_chars(title_width(""));
@@ -427,6 +429,9 @@ impl ChartPane {
         title_part.set_vhomogeneous(false);
         title_part.set_valign(gtk::Align::Center);
         title_part.set_height_request(SYMBOL_ROW_HEIGHT);
+        // Given more than it asks for only when it is the whole centre of an
+        // untitled chart, which then answers the pointer across the top.
+        title_part.set_hexpand(true);
         title_part.add_named(&title_button, Some("shown"));
         title_part.add_named(&title_entry, Some("editing"));
         title_part.set_visible_child_name("shown");
@@ -542,7 +547,8 @@ impl ChartPane {
         // Spaced as the line on the left is, for when the center holds more
         // than the strip.
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        top.set_halign(gtk::Align::Center);
+        // Placed by the overlay below, which centres it itself.
+        top.set_halign(gtk::Align::Fill);
         top.set_valign(gtk::Align::Start);
         top.set_margin_top(6);
 
@@ -604,6 +610,7 @@ impl ChartPane {
         // against the line as it will be drawn.
         let (legend_box, legend_row, strip_row, corner_box, strip_part) =
             (legend.clone(), bar.clone(), top.clone(), corner.clone(), strip.clone());
+        let (lone_title, untitled) = (title_part.clone(), title_button.clone());
         overlay.connect_get_child_position(move |overlay, child| {
             let natural = |w: &gtk::Widget| w.preferred_size().1.width();
             if child == legend_box.upcast_ref::<gtk::Widget>()
@@ -628,11 +635,17 @@ impl ChartPane {
                 let left = legend_box.margin_start() + natural(legend_row.upcast_ref());
                 let right = natural(corner_box.upcast_ref()) + corner_box.margin_end();
                 let (_, size) = strip_row.preferred_size();
-                let start = center_start(overlay.width(), left, size.width(), right);
-                if strip_row.is_child_visible() != start.is_some() {
-                    strip_row.set_child_visible(start.is_some());
+                // An untitled chart's title, alone in the centre, is the
+                // whole of the top between the two sides: pointed at
+                // anywhere there it offers Add title, and clicked, it edits.
+                let spans = untitled.has_css_class(TITLE_UNTITLED)
+                    && strip_row.first_child().is_some_and(|child| child == lone_title)
+                    && lone_title.next_sibling().is_none();
+                let place = center_place(overlay.width(), left, size.width(), right, spans);
+                if strip_row.is_child_visible() != place.is_some() {
+                    strip_row.set_child_visible(place.is_some());
                 }
-                return start.map(|x| gtk::gdk::Rectangle::new(x, 0, size.width(), size.height()));
+                return place.map(|(x, width)| gtk::gdk::Rectangle::new(x, 0, width, size.height()));
             }
             None
         });
@@ -1001,6 +1014,13 @@ impl ChartPane {
             }
             self.header_row.append(button);
         }
+    }
+
+    /// Whether the title can be typed where it stands: the header has it,
+    /// and has room for the row it is in.
+    pub fn title_in_view(&self) -> bool {
+        self.shows(crate::header::Part::Title)
+            && self.title_part.parent().is_some_and(|row| row.is_child_visible())
     }
 
     /// Whether the header has `part` in it, so the window only works out what
@@ -1489,6 +1509,17 @@ fn corner_margin(clearance: i32) -> i32 {
 fn center_start(width: i32, left: i32, center: i32, right: i32) -> Option<i32> {
     let (lowest, highest) = (left + STRIP_GAP, width - right - STRIP_GAP - center);
     (lowest <= highest).then(|| ((width - center) / 2).clamp(lowest, highest))
+}
+
+/// Where the centre row goes and how wide: its own width, placed by
+/// [`center_start`], or, when it `spans`, all the room between the two
+/// sides, so long as that holds its own width.
+fn center_place(width: i32, left: i32, center: i32, right: i32, spans: bool) -> Option<(i32, i32)> {
+    let start = center_start(width, left, center, right)?;
+    match spans {
+        true => Some((left + STRIP_GAP, width - right - STRIP_GAP - (left + STRIP_GAP))),
+        false => Some((start, center)),
+    }
 }
 
 /// The air the strip keeps from what is beside it.
@@ -2316,6 +2347,18 @@ mod tests {
         assert_eq!(center_start(600, 250, 100, 40), Some(258));
         // Narrow: no room between the two at all.
         assert_eq!(center_start(500, 160, 300, 40), None);
+    }
+
+    #[test]
+    fn an_untitled_center_spans_the_room_between_the_two_sides() {
+        // A title, or the strip, is as wide as it is, where it fits.
+        assert_eq!(center_place(1200, 160, 90, 40, false), Some((555, 90)));
+        // An untitled chart's lone title takes all the top between the two
+        // sides, with the same air either side.
+        assert_eq!(center_place(1200, 160, 90, 40, true), Some((168, 984)));
+        assert_eq!(center_place(496, 106, 95, 218, true), Some((114, 156)));
+        // And no more than a title would have where there is no room.
+        assert_eq!(center_place(300, 160, 90, 100, true), None);
     }
 
     #[test]

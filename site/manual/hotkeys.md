@@ -108,6 +108,7 @@ From anywhere:
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Hides every drawing, or shows them again | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides every indicator, or shows them again | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides the bars, or shows them again in the style they had | [Hiding the bars](/manual/charts/#hiding-the-bars) |
+| <kbd>F2</kbd> | With no drawing selected, edits the chart title: in the header when it shows the chart title, otherwise in the **Chart title** dialog. With a drawing selected, F2 is the drawing's (below) | [Chart titles](/manual/charts/#chart-titles) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Chart template N, in the order they are listed | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No chart template | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>PgUp</kbd> <kbd>PgDn</kbd> | The previous or next chart template | [Chart templates](/manual/chart-templates/) |
@@ -141,7 +142,7 @@ With drawings selected:
 
 | Key | Does | See |
 |---|---|---|
-| <kbd>Enter</kbd> / <kbd>F2</kbd> | Puts the caret in the drawing's text | [Drawings](/manual/drawings/) |
+| <kbd>Enter</kbd> / <kbd>F2</kbd> | Puts the caret in the selected drawing's text. With no drawing selected, F2 edits the chart title instead | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>Enter</kbd> | The drawing's properties | [Drawings](/manual/drawings/) |
 | <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Nudges it a pixel. Ten with <kbd>Shift</kbd> | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Brings it to the front, or sends it to the back | [Drawings](/manual/drawings/) |

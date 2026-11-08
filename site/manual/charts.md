@@ -463,12 +463,40 @@ Edit it in Preferences › Charts › **Header**, or right-click the header or t
 
 ### Chart titles
 
-A chart can have a chart title, shown by the header's **Chart title** part. A chart has none until it is given one.
+A chart can have a chart title, shown by the header's **Chart title** part, centred across the top. A chart has none until it is given one, and then that place is empty.
 
-- Click the chart title in the header and type. <kbd>Enter</kbd> or clicking away keeps it, <kbd>Esc</kbd> puts the old one back. On a chart with no title the place is empty, and pointing at it shows **Add title**.
-- Or choose **Edit chart title…** in the [chart menu](#the-chart-menu), or type it in the **Title** row of [Chart settings](/manual/chart-settings/).
+There are five ways to edit it:
 
-Leave it blank to remove the chart title. A chart made by splitting another starts with none. From the CLI it is `chart set --title` ([Changing charts from the CLI](/manual/cli/#charts)).
+- **In the header.** Point anywhere across the top of the chart, between the two sides of the header, and an untitled chart shows **Add title** there. Click, and type where it stands. Click an existing chart title to change it the same way. <kbd>Enter</kbd> or clicking away keeps it, <kbd>Esc</kbd> puts the old one back, and blank removes it.
+- **<kbd>F2</kbd>**, with no drawing selected. It edits the chart title in the header, or opens the **Chart title** dialog when the header leaves the chart title out or has no room for it. With a drawing selected, <kbd>F2</kbd> puts the caret in the drawing's text instead ([Drawings](/manual/drawings/)).
+- **Edit chart title…** in the [chart menu](#the-chart-menu), which opens the **Chart title** dialog. **Save** keeps what is typed, blank included, and **Cancel** changes nothing.
+- The **Title** row at the top of [Chart settings](/manual/chart-settings/), which changes it as it is typed.
+- `chart set --title`, and `--title ""` to remove it ([Changing charts from the CLI](/manual/cli/#charts)).
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  omacharts chart set --symbol NVDA --resolution 1D
+  key ctrl+shift+b
+  click 300 22
+  type Semis desk
+capture: bin/headless-window shot /tmp/title-editing.png
+crop: 0,0,2420,120   (the header, up to the price axis)
+-->
+{% include figure.html src="/assets/manual/charts/chart-title-editing.png" alt="The top of an NVDA daily chart with Semis desk being typed into the chart title's place in the header" caption="Typing a chart title where it stands." %}
+
+<!-- regenerate:
+as above, then
+  key Return
+  run bin/virtual-pointer --extent 1280x720 --button right click 300 150
+  click 386 325           # Edit chart title…
+capture: bin/headless-window shot /tmp/title-dialog.png
+crop: 940,460,680,520   (the whole dialog)
+-->
+{% include figure.html src="/assets/manual/charts/chart-title-dialog.png" alt="The Chart title dialog, with a Title field holding Semis desk and Cancel and Save buttons" caption="The Chart title dialog, from Edit chart title… or F2." %}
+
+A chart made by splitting another starts with no chart title.
 
 ## The chart menu
 
@@ -496,7 +524,7 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
-| **Edit chart title…** | Asks for the chart title. Blank removes it | [Chart titles](#chart-titles) |
+| **Edit chart title…** | Asks for the chart title, with its key. Blank removes it | [Chart titles](#chart-titles) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |

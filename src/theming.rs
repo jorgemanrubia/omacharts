@@ -716,6 +716,9 @@ entry.range-date > image:hover { opacity: 0.9; }
    field: the same words, at the same weight, with a caret in them. */
 .chart-title.chart-title-untitled label { opacity: 0; transition: opacity 120ms ease-out; }
 .chart-title.chart-title-untitled:hover label { opacity: 0.5; font-weight: 400; }
+/* Untitled, it spans the top of the chart: the words answer the pointer, not
+   a wash the width of the chart. */
+.chart-title.chart-title-untitled:hover { background: none; }
 entry.chart-title-entry {
   background: alpha(currentColor, 0.12);
   border: none;

@@ -131,6 +131,10 @@ pub const BINDINGS: &[Binding] = &[
     global("win.close-chartbook", &["<Ctrl><Shift><Alt>x"]),
     // A bare key, which an entry has to see first.
     careful("win.shortcuts", &["question"]),
+    // F2 is what renames the thing in hand on every desktop. Careful, not
+    // global: a selected drawing with words on it takes F2 for its own text
+    // first, and a box being typed in keeps it.
+    careful("chart.edit-title", &["F2"]),
     // The trading keys, there only with a trading account. Never while
     // something is typed, and never taken from a label being written, so
     // the window's key controller handles them, not an accelerator: an

@@ -220,6 +220,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+H", "Show or hide the drawings"),
             ("Ctrl+Shift+H", "Show or hide the indicators"),
             ("Ctrl+Alt+Shift+H", "Hide the bars, or show them as they were"),
+            ("F2", "Edit the chart title, with no drawing selected"),
             ("Ctrl+Alt+Shift+1 … 9", "Chart template N, in the order they are listed"),
             ("Ctrl+Alt+Shift+0", "No chart template"),
             ("Ctrl+Alt+Shift+PgUp PgDn", "Previous or next chart template"),
@@ -1667,6 +1668,98 @@ mod outside_change_tests {
             let listed: serde_json::Value =
                 serde_json::from_str(&command(&window, &["chart", "list", "--json"])).expect("JSON");
             assert_eq!(listed["charts"][0]["title"], serde_json::Value::Null);
+        });
+    }
+
+    /// F2 with a drawing selected puts the caret in its text, as it always
+    /// has, and leaves the chart title alone; with nothing selected, it is
+    /// the chart title's.
+    #[test]
+    fn f2_is_a_selected_drawing_s_text_and_otherwise_the_chart_title() {
+        use omacharts_engine::drawings::{Anchor, Drawing, Kind as DrawingKind, Text};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            let mut note = Drawing::new(DrawingKind::Text, Anchor::new(1, 1.0), Anchor::new(1, 1.0));
+            note.text = Text::plain("Earnings");
+            pane.view.select_only(note);
+
+            window.press_f2();
+            assert!(pane.view.is_typing_text(), "F2 left the selected drawing's text alone");
+            assert!(!pane.editing_title(), "F2 took the chart title from a selected drawing");
+            assert!(window.window.visible_dialog().is_none());
+        });
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            assert!(!pane.view.has_selection());
+            window.press_f2();
+            assert!(pane.editing_title(), "F2 with nothing selected did not edit the chart title");
+            assert!(!pane.view.is_typing_text());
+        });
+    }
+
+    /// F2 edits the chart title where the header shows it, and in the
+    /// dialog where it does not: left out of the header, or with no room for
+    /// the row it is in. The menu row says F2.
+    #[test]
+    fn f2_edits_the_chart_title_in_the_header_or_else_in_the_dialog() {
+        use crate::header::{Header, Part};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            let rows = menu_rows(window.chart_menu_model(100.0).upcast_ref());
+            assert!(rows.iter().any(|(label, ..)| label == "Edit chart title…"));
+            assert_eq!(shortcuts::accel("chart.edit-title"), Some("F2"));
+
+            window.edit_chart_title();
+            assert!(pane.editing_title(), "F2 did not edit in the header");
+            assert!(window.window.visible_dialog().is_none());
+            pane.finish_title_edit(false);
+
+            pane.header_center.set_child_visible(false);
+            window.edit_chart_title();
+            assert!(!pane.editing_title());
+            let dialog = window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("the dialog");
+            assert_eq!(dialog.heading().as_deref(), Some("Chart title"));
+            dialog.force_close();
+            pane.header_center.set_child_visible(true);
+
+            *pane.header.borrow_mut() = Header { center: Vec::new(), ..Header::standard() };
+            pane.arrange_header();
+            assert!(!pane.shows(Part::Title));
+            window.edit_chart_title();
+            assert!(!pane.editing_title());
+            window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("the dialog").force_close();
+        });
+    }
+
+    /// Untitled, the title is the whole top of the chart between the two
+    /// sides, so the pointer finds Add title anywhere there; titled, it is
+    /// as wide as its words.
+    #[test]
+    fn an_untitled_chart_offers_its_title_across_the_top() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            let lay_out = || {
+                pane.root.measure(gtk::Orientation::Horizontal, -1);
+                pane.root.measure(gtk::Orientation::Vertical, 1000);
+                pane.root.size_allocate(&gtk::Allocation::new(0, 0, 1000, 600), -1);
+            };
+            lay_out();
+            let wide = pane.title_button.width();
+            assert!(wide > 600, "untitled, it is only {wide} wide of 1000");
+            assert_eq!(pane.title_button.cursor().and_then(|c| c.name()).as_deref(), Some("pointer"));
+
+            window.set_chart_title("Rates");
+            lay_out();
+            let narrow = pane.title_button.width();
+            assert!(narrow > 0 && narrow < 200, "titled, it is {narrow} wide");
         });
     }
 
@@ -6319,6 +6412,12 @@ impl Window {
                     this.show_shortcuts();
                     return glib::Propagation::Stop;
                 }
+                // F2: a selected drawing's text, or, with none selected, the
+                // chart title. A box being typed in keeps it.
+                Key::F2 if !ctrl && !alt && !shift && !this.is_typing() => {
+                    this.press_f2();
+                    return glib::Propagation::Stop;
+                }
                 // Ctrl+W closes the chartbook, and closes the window when
                 // that was the only one — which is what it has always done,
                 // and what every tabbed application does with the last tab.
@@ -9790,6 +9889,29 @@ impl Window {
         self.chart_changed_elsewhere();
     }
 
+    /// F2, on the focused chart: with a drawing selected, its text, as it
+    /// always was (the chart caught that first when it had the keyboard;
+    /// this is the same from anywhere else); with none, the chart title.
+    pub fn press_f2(self: &Rc<Self>) {
+        let view = self.focused_pane().view.clone();
+        match view.has_selection() {
+            true => {
+                view.edit_selected_text();
+            }
+            false => self.edit_chart_title(),
+        }
+    }
+
+    /// The focused chart's title typed where the header shows it, or
+    /// asked for in the dialog when the header leaves it out or has no room.
+    pub fn edit_chart_title(self: &Rc<Self>) {
+        let pane = self.focused_pane();
+        match pane.title_in_view() {
+            true => pane.begin_title_edit(),
+            false => self.ask_chart_title(),
+        }
+    }
+
     /// Edit chart title…: the focused chart's title, asked for in a dialog the
     /// way a chartbook template's name is, where blank takes the title away.
     pub fn ask_chart_title(self: &Rc<Self>) {
@@ -10976,7 +11098,7 @@ impl Window {
         shortcuts::append(&menu, "Gridlines", "chart.grid");
         shortcuts::append(&menu, "Indicators", "chart.show-indicators");
         shortcuts::append(&menu, "Drawings", "chart.show-drawings");
-        menu.append(Some("Edit chart title\u{2026}"), Some("chart.edit-title"));
+        shortcuts::append(&menu, "Edit chart title\u{2026}", "chart.edit-title");
         if orders.is_some() {
             outer.append_section(None, &menu);
         }
