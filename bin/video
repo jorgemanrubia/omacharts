@@ -1409,22 +1409,25 @@ def remap_recording(source, anchors, total, target):
     from each beat to the next it plays straight on from that change, and
     where the next change came sooner than its beat the last frame before it
     begins is held, never letting it show early — nor a theme half drawn.
-    The jumps fall on the beats, where the picture changes anyway."""
-    frame = 1 / FPS
+    The jumps fall on the beats, where the picture changes anyway.
+
+    Counted in whole frames: cut in seconds, forty segments each rounded by
+    the encoder drifted the picture a quarter of a second behind the music
+    by the end of a cut."""
+    f = lambda seconds: int(round(seconds * FPS))
     points = [(0.0, 0.0, 0.0)] + [a for a in anchors if 0 < a[0] < total]
     parts, labels = [], []
     for i, (planned, starts, settles) in enumerate(points):
         until = points[i + 1][0] if i + 1 < len(points) else total
-        length = until - planned
-        if length < frame:
+        length = f(until) - f(planned)
+        if length < 1:
             continue
-        start = max(0.0, settles)
+        start = f(max(0.0, settles))
         stop = start + length
         if i + 1 < len(points):
-            stop = min(stop, max(start + frame, points[i + 1][1] - frame))
-        parts.append(f"[0:v]trim=start={start:.4f}:end={stop:.4f},setpts=PTS-STARTPTS,"
-                     f"tpad=stop_mode=clone:stop_duration={max(0.0, length - (stop - start)) + frame:.4f},"
-                     f"trim=duration={length:.4f}[s{len(labels)}]")
+            stop = min(stop, max(start + 1, f(points[i + 1][1]) - 1))
+        parts.append(f"[0:v]trim=start_frame={start}:end_frame={stop},setpts=PTS-STARTPTS,"
+                     f"tpad=stop_mode=clone:stop={length - (stop - start)},trim=end_frame={length}[s{len(labels)}]")
         labels.append(f"[s{len(labels)}]")
     graph = ";".join(parts) + f";{''.join(labels)}concat=n={len(labels)}:v=1:a=0[v]"
     script = target.with_suffix(".graph")
