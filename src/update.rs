@@ -659,9 +659,34 @@ mod tests {
     fn shelve(shelf: &Shelf, version: &str) {
         let dir = shelf.root.join(version);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(BINARY), script_saying(version)).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir.join(BINARY), fs::Permissions::from_mode(0o755)).unwrap();
+        place_executable(&dir.join(BINARY), &script_saying(version));
+    }
+
+    /// Make `path` an executable holding `contents`, never opening it for
+    /// writing in this process.
+    ///
+    /// Tests run on many threads, and some of them start processes. A child
+    /// forked while this process holds a file open for writing holds it too,
+    /// until it execs, and running the file in that moment fails with "text
+    /// file busy" — which the launch path takes for a version that cannot
+    /// start, and marks bad. So the file is written by `install`, in a process
+    /// of its own, from a copy nothing ever runs.
+    fn place_executable(path: &Path, contents: &[u8]) {
+        let source = path.with_file_name(format!(".source-{}", std::process::id()));
+        fs::write(&source, contents).unwrap();
+        place_copy(&source, path);
+        fs::remove_file(&source).unwrap();
+    }
+
+    /// `source` copied to `path` as an executable, as [`place_executable`].
+    fn place_copy(source: &Path, path: &Path) {
+        let status = std::process::Command::new("/usr/bin/install")
+            .arg("-m755")
+            .arg(source)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "install {} {}", source.display(), path.display());
     }
 
     fn on_shelf(shelf: &Shelf) -> Vec<String> {
@@ -939,7 +964,7 @@ mod tests {
         let here = versions.join(running.to_string());
         fs::create_dir_all(&here).unwrap();
         let copy = here.join(BINARY);
-        fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+        place_copy(&std::env::current_exe().unwrap(), &copy);
         shelve(&Shelf::new(versions.clone()), &Version(running.0 + 1, 0, 0).to_string());
         let output = std::process::Command::new(&copy)
             .args(["--exact", "update::tests::a_process_handed_over_to_never_hands_over_again", "--nocapture"])
@@ -990,9 +1015,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // Says what it was given, and whether the marker is there.
         let script = "#!/bin/sh\necho \"handed over: $OMACHARTS_LAUNCHER | $1 | $(ls -A \"$(dirname \"$0\")\" | tr '\\n' ' ')\"\n";
-        fs::write(dir.join(BINARY), script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir.join(BINARY), fs::Permissions::from_mode(0o755)).unwrap();
+        place_executable(&dir.join(BINARY), script.as_bytes());
 
         let test = "update::tests::a_launch_execs_the_newer_version_with_its_arguments_and_the_guard_set";
         let run = || {
