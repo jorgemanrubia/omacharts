@@ -24,7 +24,7 @@ mod selection;
 pub use selection::ProfileSpot;
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::cairo;
@@ -246,14 +246,27 @@ struct State {
     /// The handle at the end of a mark the pointer is over, lit.
     hover_mark: Option<MarkHit>,
     loading: bool,
-    /// Multiplier on the auto-fitted price range. 1.0 shows exactly what the
-    /// visible bars need; above that is zoomed in.
+    /// Multiplier on the held price range. 1.0 shows exactly the range that
+    /// was held; above that is zoomed in.
     price_zoom: f64,
-    /// Vertical shift, as a fraction of the auto-fitted range.
+    /// Vertical shift, as a fraction of the held range.
     price_offset: f64,
-    /// While true the price scale follows the data and the two values above
-    /// are held at their neutral settings.
+    /// While true the price scale follows the data and the values above and
+    /// below are held at their neutral settings.
     price_auto: bool,
+    /// The price range the scale was fitted to when it was taken off
+    /// automatic, low and high in prices rather than on the axis, so it
+    /// means the same on a log axis or a linear one.
+    ///
+    /// What a held scale's zoom and offset are worked on. It used to be the
+    /// fit of whatever bars were on screen, which moved with them: a held
+    /// scale stretched and shrank as the chart was scrolled sideways. Fixed
+    /// once it is taken, so scrolling moves the time axis and nothing else.
+    ///
+    /// Empty while automatic, and on a held scale nobody has drawn yet — one
+    /// restored before the chart had a size — which the first frame fills
+    /// with what it fits. A cell for that reason: drawing reads the state.
+    price_base: Cell<Option<(f64, f64)>>,
     /// Whether the price axis is logarithmic: equal distances on it are equal
     /// ratios rather than equal differences. Asked for, not promised — see
     /// [`PriceScale`] for when it is drawn linear anyway.
@@ -1125,7 +1138,7 @@ fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale>
         }
         false => span * PRICE_AIR,
     };
-    let (low, high) = state.price_window(low, high);
+    let (low, high) = state.price_window(low, high, log);
     Some(PriceScale { low, high, log })
 }
 
@@ -1273,6 +1286,7 @@ impl State {
             price_zoom: 1.0,
             price_offset: 0.0,
             price_auto: true,
+            price_base: Cell::new(None),
             price_log: false,
             drawings: Vec::new(),
             show_drawings: true,
@@ -1836,19 +1850,44 @@ impl State {
         None
     }
 
-    /// The price range to draw, after the user's scaling.
+    /// The price range to draw, after the user's scaling, from the fit of
+    /// the bars on screen: `low` and `high` on the axis, logarithms when
+    /// `log`.
     ///
-    /// The auto fit is always the starting point, so taking manual control
-    /// never makes the chart jump — it stretches around what was already on
-    /// screen.
-    fn price_window(&self, low: f64, high: f64) -> (f64, f64) {
+    /// Automatic draws the fit. Held draws the range held when it was taken
+    /// off automatic, zoomed and shifted — which starts as the fit then, so
+    /// taking manual control never makes the chart jump, and stays put
+    /// however the bars on screen change after.
+    fn price_window(&self, low: f64, high: f64, log: bool) -> (f64, f64) {
         if self.price_auto {
             return (low, high);
         }
+        let (low, high) = self.held_range(low, high, log);
         let range = (high - low).max(f64::EPSILON);
         let middle = (low + high) / 2.0 + range * self.price_offset;
         let half = range / 2.0 / self.price_zoom.clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
         (middle - half, middle + half)
+    }
+
+    /// The range a held scale works on, on the axis: the one it holds, or
+    /// the fit it is handed if it holds none yet, which it then keeps.
+    fn held_range(&self, low: f64, high: f64, log: bool) -> (f64, f64) {
+        let to_price = |value: f64| if log { value.exp() } else { value };
+        let fit = (to_price(low), to_price(high));
+        let (held_low, held_high) = self.price_base.get().unwrap_or_else(|| {
+            self.price_base.set(Some(fit));
+            fit
+        });
+        if !log {
+            return (held_low, held_high);
+        }
+        if held_low > 0.0 {
+            return (held_low.ln(), held_high.ln());
+        }
+        // Held on a linear axis down to zero or below, which has no
+        // logarithm: the log axis holds its own fit from here instead.
+        self.price_base.set(Some(fit));
+        (low, high)
     }
 
     /// Shift the view by a number of bars. Positive moves forward in time.
@@ -1943,22 +1982,50 @@ impl State {
     }
 
     /// Stretch or compress the price scale, taking it off automatic.
-    fn scale_price(&mut self, factor: f64) {
-        if self.price_auto {
-            self.price_auto = false;
-            self.price_zoom = 1.0;
-            self.price_offset = 0.0;
-        }
+    fn scale_price(&mut self, factor: f64, width: f64, height: f64) {
+        self.hold_price(width, height);
         self.price_zoom = (self.price_zoom * factor).clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
+    }
+
+    /// Take the price scale off automatic, holding exactly what a chart of
+    /// this size shows now, so nothing jumps. A scale already held is left
+    /// as it is.
+    fn hold_price(&mut self, width: f64, height: f64) {
+        if !self.price_auto {
+            return;
+        }
+        self.price_auto = false;
+        self.price_zoom = 1.0;
+        self.price_offset = 0.0;
+        self.price_base.set(None);
+        // Too small to have been drawn — a chart restored before it has a
+        // size — and the first frame holds what it fits instead.
+        if width <= PRICE_AXIS_W + PAD || height <= TIME_AXIS_H + PAD {
+            return;
+        }
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return;
+        }
+        // A held scale with nothing held yet keeps the fit it is asked
+        // about, which is what the chart was showing a moment ago.
+        let plan = layout(self, width, height);
+        let _ = price_range(self, &self.bars[first..first + visible], &plan);
+    }
+
+    /// Put the price scale back to fitting the bars on screen.
+    fn free_price(&mut self) {
+        self.price_auto = true;
+        self.price_zoom = 1.0;
+        self.price_offset = 0.0;
+        self.price_base.set(None);
     }
 
     /// Back to fitting the data, at the live edge, with the resting margin
     /// past it.
     fn reset_view(&mut self) {
         self.range = None;
-        self.price_auto = true;
-        self.price_zoom = 1.0;
-        self.price_offset = 0.0;
+        self.free_price();
         self.visible = 160;
         self.anchored = true;
         self.overhang = RIGHT_MARGIN;
@@ -1987,6 +2054,10 @@ impl State {
             self.overhang = RIGHT_MARGIN;
             self.lead = 0;
             self.visible = 160;
+            // A held range is in this series' prices, which another
+            // symbol's need not be anywhere near: it holds its own fit,
+            // zoomed and shifted as this one was.
+            self.price_base.set(None);
         }
         self.fit_range();
         changed
@@ -4054,10 +4125,9 @@ impl ChartView {
     pub fn set_price_auto(&self, auto: bool) {
         {
             let mut state = self.state.borrow_mut();
-            state.price_auto = auto;
-            if auto {
-                state.price_zoom = 1.0;
-                state.price_offset = 0.0;
+            match auto {
+                true => state.free_price(),
+                false => state.hold_price(self.area.width() as f64, self.area.height() as f64),
             }
         }
         self.redraw();
@@ -4072,9 +4142,8 @@ impl ChartView {
 
     /// Make the price axis logarithmic or linear.
     ///
-    /// Leaves the axis automatic or held as it was. A held axis keeps its
-    /// zoom and offset, which are fractions of the fitted range and so mean
-    /// the same window on either scale.
+    /// Leaves the axis automatic or held as it was. A held axis keeps the
+    /// prices it holds, top and bottom, on either scale.
     pub fn set_price_log(&self, log: bool) {
         self.state.borrow_mut().price_log = log;
         self.redraw();
@@ -4604,7 +4673,7 @@ impl ChartView {
             match (region, shift, ctrl) {
                 (Region::PriceAxis, _, _) | (Region::Plot, false, true) => {
                     // Same sense as dragging the axis.
-                    s.scale_price(2f64.powf(notches / 4.0));
+                    s.scale_price(2f64.powf(notches / 4.0), width, height);
                 }
                 (Region::Plot, true, _) => {
                     let columns = s.columns() as f64;
@@ -4974,11 +5043,7 @@ impl ChartView {
                 Region::PriceAxis => {
                     // Touching the axis takes the scale off automatic, from
                     // exactly where it was, so nothing jumps.
-                    if s.price_auto {
-                        s.price_auto = false;
-                        s.price_zoom = 1.0;
-                        s.price_offset = 0.0;
-                    }
+                    s.hold_price(width, height);
                     Drag::PriceScale { zoom: s.price_zoom }
                 }
                 Region::TimeAxis => Drag::TimeScale { visible: s.columns() },
@@ -5365,11 +5430,7 @@ impl ChartView {
             let mut s = state.borrow_mut();
             let was_auto = s.price_auto;
             match region {
-                Region::PriceAxis => {
-                    s.price_auto = true;
-                    s.price_zoom = 1.0;
-                    s.price_offset = 0.0;
-                }
+                Region::PriceAxis => s.free_price(),
                 Region::TimeAxis => {
                     s.visible = 160;
                     s.anchored = true;
@@ -5390,11 +5451,7 @@ impl ChartView {
 
     /// Put the price scale back to fitting the data.
     pub fn reset_price_scale(&self) {
-        let mut state = self.state.borrow_mut();
-        state.price_auto = true;
-        state.price_zoom = 1.0;
-        state.price_offset = 0.0;
-        drop(state);
+        self.state.borrow_mut().free_price();
         self.redraw();
     }
 
@@ -10206,6 +10263,92 @@ mod tests {
 
     /// A chart with a volume strip under it, which is the arrangement that
     /// has corner controls as well as a crosshair.
+    /// The price scale over what is on screen, as a frame would draw it.
+    fn drawn_scale(state: &State, width: f64, height: f64) -> PriceScale {
+        let plan = layout(state, width, height);
+        let (first, visible) = state.slice();
+        price_range(state, &state.bars[first..first + visible], &plan).expect("bars to measure")
+    }
+
+    fn same_scale(a: PriceScale, b: PriceScale) -> bool {
+        (a.low - b.low).abs() < 1e-9 && (a.high - b.high).abs() < 1e-9 && a.log == b.log
+    }
+
+    /// The bug: with the price scale off automatic, scrolling sideways still
+    /// changed how big the bars looked, because the held window was a zoom
+    /// and an offset on the fit of whatever bars were on screen — and the
+    /// fit moved with them. Held means held: a pan, a trackpad scroll, a
+    /// time zoom or new bars move the time axis and nothing else.
+    #[test]
+    fn a_held_price_scale_stays_put_as_the_view_scrolls() {
+        for log in [false, true] {
+            let mut state = charted(400);
+            state.instrument = Some(named("ES"));
+            state.price_log = log;
+            state.visible = 160;
+            state.overhang = 0;
+            let (w, h) = (1200.0, 600.0);
+            let plot_w = layout(&state, w, h).plot_w;
+            let fitted = drawn_scale(&state, w, h);
+            // Taking hold of the axis starts from exactly what was drawn.
+            state.hold_price(w, h);
+            assert!(!state.price_auto);
+            let held = drawn_scale(&state, w, h);
+            assert!(same_scale(held, fitted), "{log}: nothing jumps on taking hold");
+            let columns = state.columns();
+            for step in [-150.0, -60.0, 90.0, 40.0] {
+                state.pan_by(step, plot_w);
+                assert!(same_scale(drawn_scale(&state, w, h), held), "{log}: moved by a pan of {step}");
+                assert_eq!(state.columns(), columns, "a bar stays as wide");
+            }
+            state.zoom_time(2.0, 0.5, plot_w);
+            assert!(same_scale(drawn_scale(&state, w, h), held), "{log}: moved by a time zoom");
+            // A refresh of the same series, with bars that reach higher.
+            state.replace_series(named("ES"), state.timeframe, ramp(420));
+            assert!(same_scale(drawn_scale(&state, w, h), held), "{log}: moved by new bars");
+            assert!(!state.price_auto, "and is still held");
+        }
+    }
+
+    /// Automatic is what it was: the scale follows the bars on screen.
+    #[test]
+    fn an_automatic_price_scale_follows_the_view_as_it_scrolls() {
+        let mut state = charted(400);
+        state.visible = 160;
+        state.overhang = 0;
+        let (w, h) = (1200.0, 600.0);
+        let plot_w = layout(&state, w, h).plot_w;
+        let before = drawn_scale(&state, w, h);
+        state.pan_by(-200.0, plot_w);
+        let after = drawn_scale(&state, w, h);
+        assert!(after.high < before.high, "the older, lower bars are fitted");
+        assert!(state.price_auto);
+    }
+
+    /// Stretching a held scale and dragging it up and down are still worked
+    /// out on the window it was holding, and letting go of it fits again.
+    #[test]
+    fn a_held_price_scale_is_stretched_from_where_it_was_and_let_go_of() {
+        let mut state = charted(400);
+        state.visible = 160;
+        state.overhang = 0;
+        let (w, h) = (1200.0, 600.0);
+        let plot_w = layout(&state, w, h).plot_w;
+        let fitted = drawn_scale(&state, w, h);
+        state.scale_price(2.0, w, h);
+        let stretched = drawn_scale(&state, w, h);
+        assert!((stretched.span() - fitted.span() / 2.0).abs() < 1e-9, "twice as tall a price");
+        state.pan_by(-120.0, plot_w);
+        assert!(same_scale(drawn_scale(&state, w, h), stretched));
+        state.free_price();
+        assert!(state.price_auto);
+        let refitted = drawn_scale(&state, w, h);
+        assert!(!same_scale(refitted, stretched), "fits the bars now on screen");
+        // Held again, it holds this fit, not the one it let go of.
+        state.hold_price(w, h);
+        assert!(same_scale(drawn_scale(&state, w, h), refitted));
+    }
+
     /// Panning past either end opens room there — as much as
     /// `OVERHANG_PX` at this zoom, never the whole view — which new bars
     /// do not close, and which a reset puts back to the resting margin.
