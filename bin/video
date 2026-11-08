@@ -207,7 +207,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": (3, 4),
-                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1}
+                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1, "cursor": 1}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -698,6 +698,20 @@ hl.config({{
         self.frame_colours()
         time.sleep(0.05)
 
+    def cursor(self, shown):
+        """The pointer drawn or not. A video cut to music shows only charts,
+        so its pointer is hidden except where a hand is seen at work."""
+        self.hyprctl("eval", f'hl.config({{ cursor = {{ invisible = {"false" if shown else "true"} }} }})')
+
+    def frameless(self):
+        """Only the window: no border round it — in a music-driven video the
+        theme's accent there framed every picture — and no pointer. The
+        gaps stay, in the theme's background, for the pointer to rest in off
+        the charts. After the sync marker, which is the border."""
+        self.hyprctl("eval", "hl.config({ general = { border_size = 0 } })")
+        self.cursor(False)
+        time.sleep(0.4)
+
     def shot(self, path):
         subprocess.run(["grim", "-c", "-o", "REC", str(path)], env=self.env, check=True)
 
@@ -732,6 +746,10 @@ hl.config({{
             self.focus(args[0])
         elif verb == "theme":
             self.desktop_theme(args[0])
+        elif verb == "cursor":
+            if args[0] not in ("show", "hide"):
+                die(f"cursor is show or hide, not {args[0]!r}")
+            self.cursor(args[0] == "show")
         # When the action finished: a click lands just before it.
         event["done"] = round(now + time.monotonic() - began, 3)
         events.append(event)
@@ -980,6 +998,8 @@ def board(script):
     with Studio(script) as studio:
         for action in script.setup:
             studio.perform(action, events)
+        if script.music_driven:
+            studio.frameless()
         time.sleep(1.5)
         studio.shot(stills / "00-setup.png")
         steps = stills / "steps"
@@ -1219,6 +1239,8 @@ def render(script):
         time.sleep(0.3)
         studio.border(None)
         time.sleep(0.4)
+        if script.music_driven:
+            studio.frameless()
         zero = time.monotonic()
         for v, s in zip(voiced, plan["scenes"]):
             for cue, at in sorted(s["cues"].items(), key=lambda kv: kv[1]):

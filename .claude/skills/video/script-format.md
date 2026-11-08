@@ -139,6 +139,8 @@ And four actions for the camera and the beat, drawn afterwards:
 | `drift <x%> <y%> <scale> <beats>` | the camera glides there over that many beats |
 | `pulse [strength]` | the picture kicks closer for an instant on a drum (0.035 unless set) |
 | `flash [strength]` | a brief lift toward white, under a cut (0.35 unless set) |
+| `early <seconds>` | fire the cue's steps that much before its beat, for a slow cue; it is shown finished on its beat |
+| `cursor show` / `cursor hide` | the pointer drawn or not; hidden from the start in a video timed to music, and the border round the window goes |
 
 ## Notes
 
