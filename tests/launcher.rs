@@ -6,20 +6,29 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 
 const INSTALLED: &str = env!("CARGO_PKG_VERSION");
 
+/// One test at a time. A file written on one thread while another forks to
+/// run something is still open for writing in that child until it execs, and
+/// running the file in that moment fails with "text file busy" — here, or in
+/// the launcher, which would take the version for broken.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 struct Prefix {
     root: PathBuf,
+    _turn: MutexGuard<'static, ()>,
 }
 
 impl Prefix {
     fn new(name: &str) -> Prefix {
+        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = std::env::temp_dir().join(format!("omacharts-launcher-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::copy(env!("CARGO_BIN_EXE_omacharts-launch"), root.join("bin/omacharts")).unwrap();
-        let prefix = Prefix { root };
+        let prefix = Prefix { root, _turn: turn };
         prefix.script(&prefix.root.join("lib/omacharts/omacharts"), "packaged");
         prefix
     }
