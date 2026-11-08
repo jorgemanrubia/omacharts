@@ -633,6 +633,7 @@ pub(crate) mod tests {
             // For good: a provider's own sign-in dialog is the provider's,
             // and the registry is the one place that maps a feed to it.
             ("src/ui/rithmic_login.rs", "Rithmic's own login dialog"),
+            ("src/ui/rithmic_attribution.rs", "Rithmic's own artwork and notices, which its terms ask for"),
             ("src/ui/sierra_setup.rs", "Sierra Chart's own setup dialog"),
             ("src/ui/sierra_login.rs", "Sierra Chart's own trading login dialog"),
             // The flag table names what each flag switches on.

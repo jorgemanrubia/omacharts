@@ -4450,8 +4450,10 @@ impl Window {
         let Some(pane) = self.pane(id) else { return menu };
         let section = gio::Menu::new();
         let instrument = pane.instrument.borrow().clone();
+        let mut credited = Vec::new();
         if let Some(instrument) = instrument {
             let (serving, _, in_force) = self.feeds_serving(&pane, &instrument);
+            credited = serving.iter().map(|feed| feed.provider.id()).collect();
             Self::mark_choice(&pane, "feed", in_force.unwrap_or_default().to_variant());
             for feed in &serving {
                 let own = feed.provider.id();
@@ -4462,6 +4464,9 @@ impl Window {
         }
         let status = pane.feed_in_trouble().then(|| pane.feed_status_words()).flatten();
         menu.append_section(status.as_deref(), &section);
+        // The artwork a feed on offer has to show, under the feeds; the dot
+        // fills the room left for it as the menu opens.
+        crate::ui::sign_in_dialogs::leave_room_for_credits(&menu, &credited);
         menu
     }
 
