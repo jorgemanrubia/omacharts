@@ -215,10 +215,10 @@ strip. A teal trendline rides the lows from January into June, and an
 amber level marks the August 2023 high that the January breakout cleared.
 At once the camera starts a slow push toward the breakout. On 4.1 the
 whole window turns light: Catppuccin Latte, the same chart and lines.
-Retro 82 follows on 6.1, deep navy with warm text. By bar 7 the push
-rests at about 1.15×, and bars 7 and 8 hold still while the kick rises.
+Retro 82 follows on 6.1, deep navy with warm text. The push runs to 8.1,
+reaching about 1.15×, and bar 8 holds still while the kick rises.
 
-    @3.1: drift 55% 50% 1.15 16
+    @3.1: drift 55% 50% 1.15 20
     @4.1: theme catppuccin-latte
     @6.1: theme retro-82
 
@@ -228,7 +228,7 @@ rests at about 1.15×, and bars 7 and 8 hold still while the kick rises.
 in Everforest and in the full frame. The candles are Monochrome, rises
 hollow, with an amber twenty-day EMA. A soft blue box holds the February
 range, and an amber level runs along its top into the March breakout. On
-9.3 Chart settings opens over the middle of the window. The pointer
+9.2 Chart settings opens over the middle of the window. The pointer
 glides in from the left edge to the Colouring row, opens its list on the
 off-beat and picks Quiet on 10.1: the candles turn two greys. On 10.3 Esc
 closes the dialog and the pointer slips back to the edge and hides.
@@ -243,16 +243,16 @@ closes the dialog and the pointer slips back to the edge and hides.
   before the drop.
 
     @9.1: early 3; theme everforest; zoom 50% 50% 1; cli chartbook template apply Build; cli chart set --symbol GC --style candles --colouring theme-mono --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart range "2024/12/30..2025/04/02"; key Left; key Right
-    @9.3: key ctrl+shift+s
-    @9.4.5: click 59% 26%
+    @9.2: key ctrl+shift+s
+    @9.4: click 59% 26%
     @10.1: click 59% 37%
     @10.3: key Escape; move -0.4% 50%
-    @11.1: cli chart set --colouring theme-soft; zoom 62% 38% 1.5
+    @11.1: cli chart set --colouring theme-soft; zoom 68% 40% 1.5
     @12.1: cli chart set --colouring theme
     @13.1: theme flexoki-light
     @14.1: cli chart set --style ohlc --thickness 2
     @15.1: cli chart set --swap-colours on
-    @16.1: zoom 50% 50% 1
+    @16.1: drift 50% 50% 1 4
 
 ### 3. Drop
 
@@ -260,7 +260,7 @@ closes the dialog and the pointer slips back to the edge and hides.
 the window is four markets in Hackerman, green on near-black. Bitcoin is
 the focused chart, with the accent ring. Every downbeat brings a light
 pulse and a theme: Rosé Pine on 18.1 and Nord on 19.1, over the full
-grid. From 20.1 the camera cuts in to one chart a bar at about 1.9×:
+grid. From 20.1 the camera cuts in to one chart a bar at about 2×:
 Bitcoin in White, ES in Kanagawa, Apple in Matte Black and crude in
 Gruvbox. The crude close-up holds to the end of bar 23. The four charts:
 - top left, Bitcoin daily from late November 2022 to late February 2023,
@@ -278,10 +278,10 @@ Gruvbox. The crude close-up holds to the end of bar 23. The four charts:
     @17.1: early 3; theme hackerman; flash; pulse 0.05; cli chartbook template apply Drop; cli chart set --chart pos:0 --symbol BTC --style candles --colouring theme --hollow-up on --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol AAPL --style candles --colouring theme-soft --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol ES --style ohlc --thickness 3 --colouring theme --swap-colours off --session extended --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:3 --symbol CL --style candles --colouring theme-quiet --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:0; cli chart range "2022/11/25..2023/02/25"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/16..2026/10/16"; key Left; key Right; cli chart focus pos:1; cli chart range "2023/01/01..2024/12/31"; key Left; key Right; cli chart focus pos:3; cli chart range "2025/12/12..2026/01/14"; key Left; key Right; cli chart focus pos:0
     @18.1: theme rose-pine; pulse 0.025
     @19.1: theme nord; pulse 0.025
-    @20.1: theme white; zoom 25% 25% 1.9; pulse 0.025
-    @21.1: theme kanagawa; zoom 75% 25% 1.9; pulse 0.025
-    @22.1: theme matte-black; zoom 25% 75% 1.9; pulse 0.025
-    @23.1: theme gruvbox; zoom 75% 75% 1.9; pulse 0.025
+    @20.1: theme white; zoom 25% 25% 2; pulse 0.025
+    @21.1: theme kanagawa; zoom 75% 25% 2; pulse 0.025
+    @22.1: theme matte-black; zoom 25% 75% 2; pulse 0.025
+    @23.1: theme gruvbox; zoom 75% 75% 2; pulse 0.025
 
 ### 4. Break
 
@@ -307,8 +307,8 @@ starts to drift right. On 26.1 Ctrl and H brings in the drawings:
 ### 5. Finale
 
 **Picture.** On 27.1 the cut to the full frame is TSLA on three charts in
-Starship. On 28.1 the window turns to Catppuccin Latte and the camera
-starts a gentle push. On 29.1 it lands back on Tokyo Night, where the
+Starship, and a barely perceptible push begins. On 28.1 the window turns
+to Catppuccin Latte. On 29.1 it lands back on Tokyo Night, where the
 video began, and holds as the push goes on. The three charts:
 - left, about sixty percent wide, the daily from May to October 2026 in
   vivid candles. It has an amber fifty-day average and volume: a slide
@@ -318,8 +318,8 @@ video began, and holds as the push goes on. The three charts:
 - bottom right, the five-minute over one session in Soft hollow candles,
   with VWAP and its bands.
 
-    @27.1: early 1.5; theme starship; zoom 50% 50% 1; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2026/10/15..2026/10/28"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/27..2026/10/27"; key Left; key Right; cli chart focus pos:0; cli chart range "2026/05/01..2026/10/30"; key Left; key Right
-    @28.1: theme catppuccin-latte; drift 50% 50% 1.08 8; pulse 0.025
+    @27.1: early 1.5; theme starship; zoom 50% 50% 1; drift 50% 50% 1.1 12; pulse 0.025; cli chartbook template apply Finale; cli chart set --chart pos:0 --symbol TSLA --style candles --colouring theme --hollow-up off --swap-colours off --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:1 --symbol TSLA --style ohlc --colouring theme --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart set --chart pos:2 --symbol TSLA --style candles --colouring theme-soft --hollow-up on --swap-colours off --session regular --log-scale off --indicators on --drawings on --grid off; cli chart focus pos:1; cli chart range "2026/10/15..2026/10/28"; key Left; key Right; cli chart focus pos:2; cli chart range "2026/10/27..2026/10/27"; key Left; key Right; cli chart focus pos:0; cli chart range "2026/05/01..2026/10/30"; key Left; key Right
+    @28.1: theme catppuccin-latte; pulse 0.025
     @29.1: theme tokyo-night; pulse 0.025
 
 ### 6. End
