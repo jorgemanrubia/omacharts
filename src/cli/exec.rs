@@ -3424,6 +3424,7 @@ struct Edits {
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
     profile_width: Option<f64>,
+    profile_method: Option<omacharts_engine::indicators::profile::Method>,
     outline: Option<bool>,
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
@@ -3538,6 +3539,12 @@ impl Edits {
                 omacharts_engine::indicators::profile::MIN_WIDTH,
                 omacharts_engine::indicators::profile::MAX_WIDTH,
             )?,
+            profile_method: match arg(m, "profile-method") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::profile::Method::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a calculation method; use total or delta"))
+                })?),
+            },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
             colouring: match arg(m, "colouring").map(String::as_str) {
@@ -3633,6 +3640,7 @@ impl Edits {
             && self.profile_style.is_none()
             && self.align.is_none()
             && self.profile_width.is_none()
+            && self.profile_method.is_none()
             && self.outline.is_none()
             && self.outline_color.is_none()
             && self.outline_width.is_none()
@@ -3776,6 +3784,12 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["width"] = json!(share),
                 false => return Err(refuse("profile width")),
+            }
+        }
+        if let Some(method) = self.profile_method {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["method"] = json!(method.key()),
+                false => return Err(refuse("calculation method")),
             }
         }
         if let Some(on) = self.outline {
@@ -7242,6 +7256,30 @@ mod tests {
         assert_eq!(width(&store), Some(0.6), "a refused width leaves the one there");
         let out = run("chart indicator set rsi --book Macro --profile-width 0.5", &store);
         assert_ne!(out.code, 0, "an RSI has no profile to widen");
+    }
+
+    #[test]
+    fn a_volume_profile_measures_the_total_until_told_to_measure_the_delta() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let method = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["method"].as_str().map(str::to_string)
+        };
+        assert_eq!(method(&store).as_deref(), Some("total"));
+
+        let out = run("chart indicator set volume_profile --book Macro --profile-method delta", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(method(&store).as_deref(), Some("delta"));
+
+        let out = run("chart indicator set volume_profile --book Macro --profile-method net", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(method(&store).as_deref(), Some("delta"), "a refused method leaves the one there");
+        let out = run("chart indicator set rsi --book Macro --profile-method delta", &store);
+        assert_ne!(out.code, 0, "an RSI has no rows to measure");
     }
 
     #[test]

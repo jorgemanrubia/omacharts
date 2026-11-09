@@ -61,8 +61,9 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | Setting | Default | Allowed |
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
+| **Calculation method** | Total volume | Total volume, or Ask volume - bid volume |
 | **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 800 |
-| **Value area %** | 70% | 10 to 100% |
+| **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
 | **Outline** | Off | On for an edge round filled rows. Always on in the Outline style. Off, its colour and thickness are greyed |
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline thickness** | 1 px | 0.5 to 6 px |
@@ -72,6 +73,8 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
 | **Width** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
+
+**Ask volume - bid volume** draws each row as what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the colour the chart's candles rise in, rows where sellers took more in the colour they fall in, swapped when the candles are. The point of control is the row furthest either way, and there is no value area. Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn. The legend reads **VP Δ**.
 
 **Automatic** gives every period rows of the same height, a round multiple of the instrument's price step, about 400 to a typical period. A period too quiet for 40 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too. With **Automatic** off, **Rows** is the number of rows each period is divided into.
 

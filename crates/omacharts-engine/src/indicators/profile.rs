@@ -140,10 +140,63 @@ impl Align {
     }
 }
 
+/// What each row of a profile measures: everything that traded at its
+/// price, or how much more was bought there than sold, the volume traded at
+/// the ask less that traded at the bid. The second is known only where the
+/// source says which side each trade took, so it is drawn only from volume
+/// at price, never estimated from bars.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Method {
+    #[default]
+    Total,
+    Delta,
+}
+
+impl Method {
+    pub const ALL: [Method; 2] = [Method::Total, Method::Delta];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Method::Total => "Total volume",
+            Method::Delta => "Ask volume - bid volume",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Method::Total => "total",
+            Method::Delta => "delta",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Method> {
+        Method::ALL.into_iter().find(|m| m.key() == key)
+    }
+
+    /// What a level adds to its row.
+    fn of(self, level: &crate::ladders::Level) -> f64 {
+        match self {
+            Method::Total => level.volume() as f64,
+            Method::Delta => level.at_ask as f64 - level.at_bid as f64,
+        }
+    }
+
+    /// Whether a ladder holding `level` says anything this method measures.
+    fn counts(self, level: &crate::ladders::Level) -> bool {
+        match self {
+            Method::Total => level.volume() > 0,
+            Method::Delta => level.at_ask + level.at_bid > 0,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct ProfileRow {
     pub low: f64,
     pub high: f64,
+    /// What traded in the row; for a delta profile, the ask volume less the
+    /// bid volume, so below zero where more was sold.
     pub volume: f64,
 }
 
@@ -160,11 +213,16 @@ pub struct Profile {
     pub first_bar: usize,
     pub last_bar: usize,
     pub rows: Vec<ProfileRow>,
-    /// Row holding the most volume.
+    /// Row holding the most volume; for a delta profile, the greatest delta
+    /// either way.
     pub poc: usize,
-    /// Inclusive row range covering `value_area` of the volume.
+    /// Inclusive row range covering `value_area` of the volume. A delta has
+    /// none, a share of a sum that cancels itself out being no share of
+    /// anything, so it is the point of control alone.
     pub value_area: (usize, usize),
+    /// The longest row: the most volume, or the greatest delta either way.
     pub max_volume: f64,
+    /// Everything traded, or for a delta profile the period's net delta.
     pub total_volume: f64,
 }
 
@@ -224,7 +282,7 @@ pub fn compute(
     kind: Option<InstrumentKind>,
     merged: &[i64],
 ) -> Vec<Profile> {
-    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None)
+    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None, Method::Total)
 }
 
 /// What traded at each price, for a chart whose source says: the ladder of
@@ -240,6 +298,9 @@ pub struct AtPrice<'a> {
 /// [`compute`], drawing each period from the volume that actually traded at
 /// each price when `at_price` knows it. Without it, or for a period it does
 /// not know, the volume of each bar is spread over its range as always.
+///
+/// A [`Method::Delta`] profile has nothing to spread: which side a trade took
+/// is not in a bar. A period `at_price` does not know has no profile.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_with(
     bars: &[Bar],
@@ -250,6 +311,7 @@ pub fn compute_with(
     kind: Option<InstrumentKind>,
     merged: &[i64],
     at_price: Option<&AtPrice>,
+    method: Method,
 ) -> Vec<Profile> {
     let mut out = Vec::new();
     if bars.is_empty() {
@@ -279,11 +341,12 @@ pub fn compute_with(
         let bucket = reset.bucket(bars[start].ts, session_origin);
         let exact = at_price.and_then(|at| {
             let ladder = (at.of)(slice)?;
-            ladder.levels.iter().any(|level| level.volume() > 0).then_some((ladder, at.tick_size))
+            ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
         });
-        let profile = match exact {
-            Some((ladder, tick)) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick),
-            None => one(slice, start, bucket, grid, value_area),
+        let profile = match (exact, method) {
+            (Some((ladder, tick)), _) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick, method),
+            (None, Method::Total) => one(slice, start, bucket, grid, value_area),
+            (None, Method::Delta) => None,
         };
         if let Some(mut profile) = profile {
             profile.parts = parts(slice, reset, session_origin);
@@ -535,7 +598,7 @@ fn one(
         running += whole[row];
         *volume += running;
     }
-    finish(bars, offset, start_ts, low, step, volumes, value_area)
+    finish(bars, offset, start_ts, low, step, volumes, value_area, Method::Total)
 }
 
 /// `step` rounded up to whole ticks of `tick`, and never under one.
@@ -573,7 +636,10 @@ fn smoothed_ticks(step: f64, tick: f64, span: f64) -> f64 {
 /// Rows are whole ticks tall and cover the period's bars and its ladder
 /// both, so the price that traded at the high has a row of its own.
 ///
-/// Volume a provider reported with no price at all is in no row.
+/// Volume a provider reported with no price at all is in no row. For a
+/// delta, each price's ask volume less its bid volume, and volume with no
+/// known aggressor in neither.
+#[allow(clippy::too_many_arguments)]
 fn one_exact(
     bars: &[Bar],
     offset: usize,
@@ -582,6 +648,7 @@ fn one_exact(
     value_area: f64,
     ladder: &Ladder,
     tick: f64,
+    method: Method,
 ) -> Option<Profile> {
     let (mut low, mut high) = (f64::MAX, f64::MIN);
     for bar in bars {
@@ -606,18 +673,19 @@ fn one_exact(
     let rows = rows.clamp(MIN_ROWS, MAX_ROWS);
     let mut volumes = vec![0.0f64; rows];
     for (at, level) in ladder.iter() {
-        let volume = level.volume();
-        if volume == 0 {
+        let volume = method.of(level);
+        if volume == 0.0 {
             continue;
         }
         let row = ((to_price(at, tick) - base) / step + HAIR).floor();
         let row = (row.max(0.0) as usize).min(rows - 1);
-        volumes[row] += volume as f64;
+        volumes[row] += volume;
     }
-    finish(bars, offset, start_ts, base, step, volumes, value_area)
+    finish(bars, offset, start_ts, base, step, volumes, value_area, method)
 }
 
 /// A profile from its rows' volumes: the point of control, the value area.
+#[allow(clippy::too_many_arguments)]
 fn finish(
     bars: &[Bar],
     offset: usize,
@@ -626,21 +694,30 @@ fn finish(
     step: f64,
     volumes: Vec<f64>,
     value_area: f64,
+    method: Method,
 ) -> Option<Profile> {
     let total: f64 = volumes.iter().sum();
     let poc = volumes
         .iter()
+        .map(|v| match method {
+            Method::Total => *v,
+            Method::Delta => v.abs(),
+        })
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)?;
-    let max_volume = volumes[poc];
+    let max_volume = volumes[poc].abs();
+    let value_area = match method {
+        Method::Total => expand_value_area(&volumes, poc, total, value_area),
+        Method::Delta => (poc, poc),
+    };
     Some(Profile {
         start_ts,
         parts: vec![start_ts],
         end_ts: bars.last()?.ts,
         first_bar: offset,
         last_bar: offset + bars.len() - 1,
-        value_area: expand_value_area(&volumes, poc, total, value_area),
+        value_area,
         rows: (0..volumes.len())
             .map(|i| ProfileRow {
                 low: low + i as f64 * step,

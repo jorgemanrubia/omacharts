@@ -345,6 +345,7 @@ impl Kind {
                 poc_width: 1.0,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
+                method: profile::Method::Total,
                 merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
@@ -450,6 +451,10 @@ pub enum Params {
         /// at before it could be chosen.
         #[serde(default = "profile::default_width")]
         width: f64,
+        /// What each row measures: all the volume at its price, or the ask
+        /// volume less the bid volume there. Missing, the total it always was.
+        #[serde(default)]
+        method: profile::Method,
         /// Where each period starts that was merged into the one before it,
         /// as the start of its reset period. Several in a row make one
         /// composite of them all.
@@ -680,7 +685,12 @@ impl Indicator {
                 format!("BB {period} {deviations}")
             }
             Params::Macd { fast, slow, signal, .. } => format!("MACD {fast} {slow} {signal}"),
-            Params::VolumeProfile { reset, .. } => format!("VP · {}", effective(*reset).label()),
+            // A delta is a different fact about the same prices, and two
+            // profiles of one period are told apart by which they show.
+            Params::VolumeProfile { reset, method, .. } => match method {
+                profile::Method::Total => format!("VP · {}", effective(*reset).label()),
+                profile::Method::Delta => format!("VP Δ · {}", effective(*reset).label()),
+            },
             Params::Volume { .. } => "Volume".to_string(),
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
                 format!("{} {period}", self.kind.short_name())
@@ -1125,7 +1135,12 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
-        (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, .. }) => {
+        (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, method, .. }) => {
+            // Which side each trade took is in no bar: a delta is drawn from
+            // volume at price or not at all.
+            if let Some(unmet) = unmet(Needs::VolumeAtPrice, context).filter(|_| *method == profile::Method::Delta) {
+                return unmet;
+            }
             // Days are cut by the exchange's calendar, which needs the
             // instrument; a chart without one has no ladders either.
             let days = context.ladders.and(context.instrument).map(Days::new);
@@ -1146,6 +1161,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 kind,
                 merged,
                 at_price.as_ref(),
+                *method,
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
@@ -1701,6 +1717,29 @@ mod tests {
         assert_eq!(width, 0.4);
     }
 
+    /// A profile stored before it could measure anything else measures what
+    /// it always did, and is named as it always was.
+    #[test]
+    fn a_profile_written_before_its_method_could_be_chosen_is_the_total() {
+        let json = r#"{"id": 1, "kind": "volume_profile", "visible": true,
+            "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7}}"#;
+        let indicator: Indicator = serde_json::from_str(json).expect("an older profile");
+        let Params::VolumeProfile { method, .. } = indicator.params else { unreachable!() };
+        assert_eq!(method, profile::Method::Total);
+        assert_eq!(indicator.describe(None), "VP · Session");
+    }
+
+    #[test]
+    fn a_delta_profile_says_so_in_the_legend() {
+        let mut indicator = Indicator::new(1, Kind::VolumeProfile);
+        if let Params::VolumeProfile { method, .. } = &mut indicator.params {
+            *method = profile::Method::Delta;
+        }
+        assert_eq!(indicator.describe(None), "VP Δ · Session");
+        let back: Indicator = serde_json::from_str(&serde_json::to_string(&indicator).unwrap()).unwrap();
+        assert_eq!(back, indicator);
+    }
+
     /// A strip stored above the price, from when it could be put there, comes
     /// back below it: nothing in the app could move it back down.
     #[test]
@@ -1991,6 +2030,82 @@ mod tests {
                 Output::Profiles(profiles) => profiles,
                 other => panic!("not profiles: {other:?}"),
             }
+        }
+
+        /// What a delta profile of `bars` draws, whatever that is.
+        fn delta_of(bars: &[Bar], instrument: &Instrument, rows: Option<usize>, ladders: Option<&Held>) -> Output {
+            let mut indicator = Indicator::new(1, Kind::VolumeProfile);
+            if let Params::VolumeProfile { rows: r, reset, method, .. } = &mut indicator.params {
+                *r = rows;
+                *reset = Reset::Session;
+                *method = profile::Method::Delta;
+            }
+            let context = Context::of(instrument, Timeframe::minutes(1), chrono_tz::UTC).with_ladders(ladders);
+            compute_in(&indicator, bars, &context)
+        }
+
+        /// Each row of a delta profile is what was bought at the ask less
+        /// what was sold at the bid at its prices, worked out here minute by
+        /// minute and price by price; its point of control is the greatest
+        /// either way, and it has no value area beyond it.
+        #[test]
+        fn a_delta_profile_is_the_ask_volume_less_the_bid_volume_at_each_price() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            let held = Held::of(&series);
+            for rows in [None, Some(24)] {
+                let Output::Profiles(profiles) = delta_of(&bars, &instrument, rows, Some(&held)) else {
+                    panic!("a delta profile on a chart with ladders")
+                };
+                assert_eq!(profiles.len(), 3, "{rows:?}");
+                for profile in &profiles {
+                    let (from, to) = (bars[profile.first_bar].ts, bars[profile.last_bar].ts + 60);
+                    let mut expected = vec![0.0; profile.rows.len()];
+                    for minute in series.minutes().filter(|m| (from..to).contains(&m.ts)) {
+                        for (tick, level) in minute.ladder.iter() {
+                            let price = to_price(tick, TICK);
+                            let row = profile
+                                .rows
+                                .iter()
+                                .position(|r| price >= r.low - 1e-6 && price < r.high - 1e-6)
+                                .expect("every price has a row");
+                            expected[row] += level.at_ask as f64 - level.at_bid as f64;
+                        }
+                    }
+                    let got: Vec<f64> = profile.rows.iter().map(|r| r.volume).collect();
+                    assert_eq!(got, expected, "{rows:?} at {from}");
+                    assert!(got.iter().any(|d| *d > 0.0) && got.iter().any(|d| *d < 0.0), "both sides");
+                    let most = got.iter().fold(0.0f64, |most, d| most.max(d.abs()));
+                    assert_eq!(profile.max_volume, most);
+                    assert_eq!(profile.rows[profile.poc].volume.abs(), most);
+                    assert_eq!(profile.value_area, (profile.poc, profile.poc));
+                    assert_eq!(profile.total_volume, got.iter().sum::<f64>(), "the net delta");
+                }
+            }
+        }
+
+        /// A delta is never estimated: with no ladders it is one line
+        /// saying what it needs, a period from before they begin is not
+        /// drawn, and a feed that never says the aggressor draws nothing.
+        #[test]
+        fn a_delta_profile_is_drawn_only_from_volume_at_price() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            assert_eq!(delta_of(&bars, &instrument, None, None), Output::Unmet(NEEDS_VOLUME_AT_PRICE));
+            assert!(!profile_of(&bars, &instrument, None, None).is_empty(), "the total is estimated as ever");
+
+            let mut held = Held::of(&series);
+            held.floor = bars[2_000].ts;
+            let Output::Profiles(late) = delta_of(&bars, &instrument, Some(24), Some(&held)) else {
+                panic!("profiles")
+            };
+            let all = profile_of(&bars, &instrument, Some(24), Some(&held));
+            assert_eq!(all.len(), 3);
+            assert_eq!(late.iter().map(|p| p.start_ts).collect::<Vec<_>>(), vec![all[2].start_ts]);
+
+            let (series, bars) = sessions_of(&instrument, false);
+            let held = Held::of(&series);
+            assert_eq!(delta_of(&bars, &instrument, None, Some(&held)), Output::Profiles(Vec::new()));
         }
 
         /// The profile drawn from ladders is the sum, row by row, of what

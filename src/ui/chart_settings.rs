@@ -14,7 +14,7 @@ use omacharts_engine::indicators::{
     self, Kind, LineStyle, Params, Reset, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
     MIN_PANE_SHARE,
 };
-use omacharts_engine::indicators::profile::{Align, Style};
+use omacharts_engine::indicators::profile::{Align, Method, Style};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
@@ -1783,27 +1783,50 @@ fn parameters_group(
             ));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::VolumeProfile { reset, rows, value_area, .. } => {
+        Params::VolumeProfile { reset, rows, value_area, method, .. } => {
             group.add(&reset_row(owner, refresh, id, *reset));
+            let method_row = choice_row(
+                owner,
+                refresh,
+                id,
+                PROFILE_METHOD_LABEL,
+                &Method::ALL.map(Method::label),
+                Method::ALL.iter().position(|m| m == method),
+                |indicator, at| {
+                    if let Params::VolumeProfile { method, .. } = &mut indicator.params {
+                        *method = Method::ALL[at];
+                    }
+                },
+            );
+            group.add(&method_row);
             for row in rows_rows(owner, refresh, id, *rows) {
                 group.add(&row);
             }
-            group.add(
-                &percent_row(
-                    owner,
-                    refresh,
-                    id,
-                    "Value area %",
-                    *value_area,
-                    0.10,
-                    1.0,
-                    move |indicator, share| {
-                        if let Params::VolumeProfile { value_area, .. } = &mut indicator.params {
-                            *value_area = share;
-                        }
-                    },
-                ),
+            let area_row = percent_row(
+                owner,
+                refresh,
+                id,
+                "Value area %",
+                *value_area,
+                0.10,
+                1.0,
+                move |indicator, share| {
+                    if let Params::VolumeProfile { value_area, .. } = &mut indicator.params {
+                        *value_area = share;
+                    }
+                },
             );
+            // A delta has no value area: its rows cancel each other out, so
+            // a share of their sum is a share of nothing.
+            area_row.set_sensitive(has_value_area(*method));
+            method_row.connect_selected_notify({
+                let area_row = area_row.clone();
+                move |row| {
+                    let method = Method::ALL.get(row.selected() as usize).copied().unwrap_or_default();
+                    area_row.set_sensitive(has_value_area(method));
+                }
+            });
+            group.add(&area_row);
         }
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
@@ -1950,6 +1973,14 @@ const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
 
 /// The volume profile row that says how much of its room it takes.
 const PROFILE_WIDTH_LABEL: &str = "Width";
+
+/// The volume profile row that says what its rows measure.
+const PROFILE_METHOD_LABEL: &str = "Calculation method";
+
+/// Whether a volume profile measuring by `method` has a value area to set.
+fn has_value_area(method: Method) -> bool {
+    method == Method::Total
+}
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape, side and width.
@@ -2953,6 +2984,16 @@ mod tests {
     // the suite may do, from its own thread, and a second one asking would
     // take the whole run down with it — so these ask the arithmetic the rows
     // are built from instead.
+
+    /// The method row offers both, the total first as the default, and
+    /// only the total has a value area to set.
+    #[test]
+    fn a_profile_offers_its_methods_and_a_value_area_only_for_the_total() {
+        assert_eq!(Method::ALL.map(Method::label), ["Total volume", "Ask volume - bid volume"]);
+        assert_eq!(Method::ALL[0], Method::default());
+        assert!(has_value_area(Method::Total));
+        assert!(!has_value_area(Method::Delta));
+    }
 
     #[test]
     fn a_stored_fraction_is_shown_as_whole_percent() {

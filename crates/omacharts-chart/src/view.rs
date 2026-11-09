@@ -8731,29 +8731,53 @@ pub fn volume_opacity(indicator: &Indicator) -> f64 {
     }
 }
 
-/// The colour a volume profile's outline is stroked in, in either style:
-/// the outline's own when chosen, the profile's colour when not.
-fn profile_outline_colour(
-    chosen: Option<&omacharts_engine::theme::ColorChoice>,
-    drawn: &Drawn,
-    theme: &omacharts_engine::Theme,
-) -> String {
-    chosen.map(|c| c.resolve(theme)).unwrap_or_else(|| drawn.color.clone())
+/// The colours one side of a volume profile is drawn in: its rows', and
+/// the outline round them.
+#[derive(Clone, Debug, PartialEq)]
+struct ProfileInk {
+    side: selection::Side,
+    fill: String,
+    edge: String,
 }
 
-/// The colour a volume profile is seen in, which is what its selection is
-/// drawn in: its rows' for the filled style, its outline's for the outline
-/// style, where the rows' colour is drawn nowhere.
-fn profile_shown_colour<'a>(
-    style: omacharts_engine::indicators::profile::Style,
-    outline: &'a str,
-    drawn: &'a Drawn,
-) -> &'a str {
-    match style {
-        omacharts_engine::indicators::profile::Style::Filled => &drawn.color,
-        omacharts_engine::indicators::profile::Style::Outline => outline,
+impl ProfileInk {
+    /// What the side is seen in, which is what its selection is drawn in:
+    /// its rows' colour for the filled style, its outline's for the outline
+    /// style, where the rows' colour is drawn nowhere.
+    fn shown(&self, style: omacharts_engine::indicators::profile::Style) -> &str {
+        match style {
+            omacharts_engine::indicators::profile::Style::Filled => &self.fill,
+            omacharts_engine::indicators::profile::Style::Outline => &self.edge,
+        }
     }
 }
+
+/// The sides a volume profile is drawn as. A total is one, in the profile's
+/// colour. A delta is two, in the colours the chart's candles go up and
+/// down in, swapped or not, from whatever scheme they wear: bought and sold
+/// read the way rising and falling do. An outline colour chosen is the
+/// outline's on either; unchosen, the outline is the rows' own.
+fn profile_inks(
+    method: omacharts_engine::indicators::profile::Method,
+    outline: Option<&omacharts_engine::theme::ColorChoice>,
+    drawn: &Drawn,
+    state: &State,
+) -> Vec<ProfileInk> {
+    use omacharts_engine::indicators::profile::Method;
+    let ink = |side, fill: &str| ProfileInk {
+        side,
+        fill: fill.to_string(),
+        edge: outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| fill.to_string()),
+    };
+    match method {
+        Method::Total => vec![ink(selection::Side::All, &drawn.color)],
+        Method::Delta => vec![ink(selection::Side::Up, &state.scheme.up), ink(selection::Side::Down, &state.scheme.down)],
+    }
+}
+
+/// How strongly a delta's rows are filled: all as strongly as a total's
+/// value area, a delta having none to set apart.
+const DELTA_ROW_ALPHA: f64 = 0.30;
 
 /// One histogram per period, anchored where its period begins.
 fn draw_profiles(
@@ -8764,14 +8788,15 @@ fn draw_profiles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let (chosen, edged, outline, outline_width, poc_width) = match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { poc_color, outline: edged, outline_color, outline_width, poc_width, .. } => {
-            (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width)
-        }
-        _ => (None, false, None, 1.0, 1.0),
+    use omacharts_engine::indicators::profile::Method;
+    let (chosen, edged, outline, outline_width, poc_width, method) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile {
+            poc_color, outline: edged, outline_color, outline_width, poc_width, method, ..
+        } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method),
+        _ => (None, false, None, 1.0, 1.0, Method::Total),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
-    let outline = profile_outline_colour(outline, drawn, &state.theme);
+    let inks = profile_inks(method, outline, drawn, state);
     let look = selection::profile_look(drawn);
     let style = look.style;
 
@@ -8786,33 +8811,41 @@ fn draw_profiles(
             omacharts_engine::indicators::profile::Style::Filled => {
                 let (area_low, area_high) = profile.value_area_bounds();
                 for row in &profile.rows {
-                    if row.volume <= 0.0 {
+                    let Some(ink) = inks.iter().find(|ink| ink.side.length(row.volume) > 0.0) else {
                         continue;
-                    }
-                    let (from, to) = area.row(row.volume / profile.max_volume);
+                    };
+                    let (from, to) = area.row(row.volume.abs() / profile.max_volume);
                     let top = to_y(row.high);
                     let height = (to_y(row.low) - top).max(1.0);
-                    let inside = row.low >= area_low && row.high <= area_high;
-                    colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
+                    let alpha = match method {
+                        Method::Total if row.low >= area_low && row.high <= area_high => 0.30,
+                        Method::Total => 0.14,
+                        Method::Delta => DELTA_ROW_ALPHA,
+                    };
+                    colors::set_source_alpha(cr, &ink.fill, alpha);
                     cr.rectangle(from, top, to - from, height);
                     let _ = cr.fill();
                 }
                 if edged {
-                    colors::set_source_alpha(cr, &outline, drawings::PROFILE_EDGE_ALPHA);
                     cr.set_line_width(outline_width.max(0.5));
                     cr.set_line_join(cairo::LineJoin::Miter);
-                    selection::profile_path(cr, &area, profile, to_y);
-                    let _ = cr.stroke();
+                    for ink in &inks {
+                        colors::set_source_alpha(cr, &ink.edge, drawings::PROFILE_EDGE_ALPHA);
+                        selection::profile_path(cr, &area, profile, to_y, ink.side);
+                        let _ = cr.stroke();
+                    }
                 }
             }
             // Only the shape the rows make, so the candles under it stay
             // as plain as they are without it.
             omacharts_engine::indicators::profile::Style::Outline => {
-                colors::set_source_alpha(cr, &outline, 0.75);
                 cr.set_line_width(outline_width.max(0.5));
                 cr.set_line_join(cairo::LineJoin::Miter);
-                selection::profile_path(cr, &area, profile, to_y);
-                let _ = cr.stroke();
+                for ink in &inks {
+                    colors::set_source_alpha(cr, &ink.edge, 0.75);
+                    selection::profile_path(cr, &area, profile, to_y, ink.side);
+                    let _ = cr.stroke();
+                }
             }
         }
 
@@ -8828,8 +8861,9 @@ fn draw_profiles(
         let _ = cr.stroke();
 
         if state.picked == Some(drawn.indicator.id) {
-            let shown = profile_shown_colour(style, &outline, drawn);
-            selection::outline_profile(cr, &state.theme, shown, profile, &area, to_y);
+            for ink in &inks {
+                selection::outline_profile(cr, &state.theme, ink.shown(style), profile, &area, to_y, ink.side);
+            }
         }
     }
 }
@@ -8883,7 +8917,7 @@ fn draw_profile_drawing(
         }
     }
     cr.set_line_join(cairo::LineJoin::Miter);
-    selection::profile_path(cr, &area, &profile, to_y);
+    selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
     let _ = cr.stroke();
 
     let y = to_y(profile.poc_price()).round() + 0.5;

@@ -146,7 +146,7 @@ fn on_overlay_shape(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64
         profile.rows.iter().any(|row| {
             let top = to_y(row.high);
             let bottom = top + (to_y(row.low) - top).max(1.0);
-            row.volume > 0.0 && area.covers(x, row.volume / profile.max_volume) && (top..=bottom).contains(&y)
+            row.volume != 0.0 && area.covers(x, row.volume.abs() / profile.max_volume) && (top..=bottom).contains(&y)
         })
     })
 }
@@ -241,23 +241,78 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
     }
 }
 
+/// Which of a profile's rows a shape is made of: all of them, for a total,
+/// or for a delta those on one side of nothing, each side drawn in its own
+/// colour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Side {
+    All,
+    Up,
+    Down,
+}
+
+impl Side {
+    /// How far a row of `volume` reaches in this shape.
+    pub(super) fn length(self, volume: f64) -> f64 {
+        match self {
+            Side::All | Side::Up => volume.max(0.0),
+            Side::Down => (-volume).max(0.0),
+        }
+    }
+}
+
 /// The shape a profile's rows make together: along the edge they grow from,
 /// and back the stepped way their ends make. Narrower than a few pixels the
 /// steps are a smear, and the edge says it alone.
-pub(super) fn profile_path(cr: &cairo::Context, area: &ProfileBox, profile: &Profile, to_y: &dyn Fn(f64) -> f64) {
+///
+/// One side of a delta is a shape for each run of rows on that side, so the
+/// edge is not drawn in its colour along rows the other side holds.
+pub(super) fn profile_path(
+    cr: &cairo::Context,
+    area: &ProfileBox,
+    profile: &Profile,
+    to_y: &dyn Fn(f64) -> f64,
+    side: Side,
+) {
     let mut rows: Vec<_> = profile.rows.iter().collect();
     rows.sort_by(|a, b| b.high.total_cmp(&a.high));
-    let (top, bottom) = (to_y(rows[0].high), to_y(rows[rows.len() - 1].low));
-    cr.move_to(area.edge, top);
-    if area.span >= 4.0 {
-        for row in &rows {
-            let end = area.edge + area.towards * area.span * (row.volume.max(0.0) / profile.max_volume);
-            cr.line_to(end, to_y(row.high));
-            cr.line_to(end, to_y(row.low));
+    if side == Side::All {
+        let (top, bottom) = (to_y(rows[0].high), to_y(rows[rows.len() - 1].low));
+        cr.move_to(area.edge, top);
+        if area.span >= 4.0 {
+            for row in &rows {
+                let end = area.edge + area.towards * area.span * (side.length(row.volume) / profile.max_volume);
+                cr.line_to(end, to_y(row.high));
+                cr.line_to(end, to_y(row.low));
+            }
         }
+        cr.line_to(area.edge, bottom);
+        cr.close_path();
+        return;
     }
-    cr.line_to(area.edge, bottom);
-    cr.close_path();
+    let mut open: Option<f64> = None;
+    for row in &rows {
+        let length = side.length(row.volume);
+        if length <= 0.0 {
+            if let Some(bottom) = open.take() {
+                cr.line_to(area.edge, bottom);
+                cr.close_path();
+            }
+            continue;
+        }
+        if open.is_none() {
+            cr.move_to(area.edge, to_y(row.high));
+        }
+        let reach = if area.span >= 4.0 { area.span * length / profile.max_volume } else { 0.0 };
+        let end = area.edge + area.towards * reach;
+        cr.line_to(end, to_y(row.high));
+        cr.line_to(end, to_y(row.low));
+        open = Some(to_y(row.low));
+    }
+    if let Some(bottom) = open {
+        cr.line_to(area.edge, bottom);
+        cr.close_path();
+    }
 }
 
 /// On what an indicator draws in its own strip.
@@ -479,9 +534,9 @@ pub(super) fn glow_bar(cr: &cairo::Context, (x, top, w, h): (f64, f64, f64, f64)
 
 const BAR_GLOW: f64 = 2.0;
 
-/// The outline of a selected volume profile, the shape its rows make.
-/// Stroked twice, as a wide glow and then a thin line, both in the
-/// profile's colour.
+/// The outline of a selected volume profile, the shape its rows on `side`
+/// make. Stroked twice, as a wide glow and then a thin line, both in the
+/// colour those rows are seen in.
 pub(super) fn outline_profile(
     cr: &cairo::Context,
     theme: &Theme,
@@ -489,11 +544,12 @@ pub(super) fn outline_profile(
     profile: &Profile,
     area: &ProfileBox,
     to_y: &impl Fn(f64) -> f64,
+    side: Side,
 ) {
     if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
         return;
     }
-    let path = |cr: &cairo::Context| profile_path(cr, area, profile, to_y);
+    let path = |cr: &cairo::Context| profile_path(cr, area, profile, to_y, side);
     cr.save().ok();
     cr.set_line_join(cairo::LineJoin::Round);
     cr.set_line_width(5.0);
@@ -719,15 +775,68 @@ mod tests {
     #[test]
     fn a_selected_profile_is_outlined_in_the_colour_it_is_drawn_in() {
         use omacharts_engine::theme::ColorChoice;
+        use profile::Method;
         let state = profiled(profile::Align::Left, 0.4);
         let drawn = &state.indicators[0];
         let amber = ColorChoice::Fixed { hex: "#ffaa00".to_string() };
-        let outline = super::super::profile_outline_colour(Some(&amber), drawn, &state.theme);
-        assert_eq!(super::super::profile_shown_colour(profile::Style::Outline, &outline, drawn), "#ffaa00");
-        assert_eq!(super::super::profile_shown_colour(profile::Style::Filled, &outline, drawn), drawn.color);
+        let inks = super::super::profile_inks(Method::Total, Some(&amber), drawn, &state);
+        assert_eq!(inks.len(), 1);
+        assert_eq!(inks[0].shown(profile::Style::Outline), "#ffaa00");
+        assert_eq!(inks[0].shown(profile::Style::Filled), drawn.color);
         // With no outline colour chosen, the outline is the profile's own.
-        let unset = super::super::profile_outline_colour(None, drawn, &state.theme);
-        assert_eq!(super::super::profile_shown_colour(profile::Style::Outline, &unset, drawn), drawn.color);
+        let unset = super::super::profile_inks(Method::Total, None, drawn, &state);
+        assert_eq!(unset[0].shown(profile::Style::Outline), drawn.color);
+        // A delta is seen, and outlined when selected, in both its colours.
+        let delta = super::super::profile_inks(Method::Delta, None, drawn, &state);
+        let shown: Vec<&str> = delta.iter().map(|ink| ink.shown(profile::Style::Filled)).collect();
+        assert_eq!(shown, vec![state.scheme.up.as_str(), state.scheme.down.as_str()]);
+        let outlined = super::super::profile_inks(Method::Delta, Some(&amber), drawn, &state);
+        assert!(outlined.iter().all(|ink| ink.shown(profile::Style::Outline) == "#ffaa00"));
+    }
+
+    /// Bought rows are drawn in the colour the chart's candles rise in and
+    /// sold rows in the colour they fall in, whatever scheme they wear and
+    /// swapped with them.
+    #[test]
+    fn a_delta_profile_is_drawn_in_the_colours_the_candles_rise_and_fall_in() {
+        use profile::Method;
+        use super::Side;
+        let mut state = profiled(profile::Align::Left, 0.4);
+        let drawn = state.indicators[0].clone();
+        let fills = |state: &State| -> Vec<(Side, String)> {
+            super::super::profile_inks(Method::Delta, None, &drawn, state)
+                .into_iter()
+                .map(|ink| (ink.side, ink.fill))
+                .collect()
+        };
+        let (up, down) = (state.scheme.up.clone(), state.scheme.down.clone());
+        assert_ne!(up, down);
+        assert_eq!(fills(&state), vec![(Side::Up, up.clone()), (Side::Down, down.clone())]);
+
+        state.scheme = state.scheme.worn(true, false);
+        assert_eq!(fills(&state), vec![(Side::Up, down.clone()), (Side::Down, up.clone())], "swapped");
+
+        for theme in omacharts_engine::theme::builtin_themes() {
+            for scheme in omacharts_engine::theme::bar_schemes(&theme) {
+                state.scheme = scheme.clone();
+                assert_eq!(fills(&state), vec![(Side::Up, scheme.up.clone()), (Side::Down, scheme.down.clone())]);
+            }
+        }
+        let mut custom = state.scheme.clone();
+        custom.up = "#123456".to_string();
+        custom.down = "#654321".to_string();
+        state.scheme = custom;
+        assert_eq!(fills(&state), vec![(Side::Up, "#123456".to_string()), (Side::Down, "#654321".to_string())]);
+    }
+
+    /// Each side of a delta reaches as far as its rows do on that side and
+    /// not at all on the other's; a total is every row it has.
+    #[test]
+    fn each_side_of_a_delta_is_its_own_rows() {
+        use super::Side;
+        assert_eq!([Side::Up.length(3.0), Side::Up.length(-3.0)], [3.0, 0.0]);
+        assert_eq!([Side::Down.length(3.0), Side::Down.length(-3.0)], [0.0, 3.0]);
+        assert_eq!([Side::All.length(3.0), Side::All.length(0.0)], [3.0, 0.0]);
     }
 
     /// What is drawn in the margin is what a click there picks.
