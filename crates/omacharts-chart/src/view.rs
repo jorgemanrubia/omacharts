@@ -36,8 +36,9 @@ use omacharts_engine::drawings::{
 use omacharts_engine::bars::Unit;
 use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
+use omacharts_engine::indicators::profile::DELTA_COLOURINGS;
 use omacharts_engine::{
-    grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
+    grouped_decimals, Bar, BarColouring, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
 };
 
@@ -174,6 +175,14 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
+    /// The colouring chosen in Preferences, and whether it is worn the
+    /// other way round: what a delta profile with no colouring of its own
+    /// is painted in, rather than this chart's.
+    house: (BarColouring, bool),
+    /// A delta profile's bought and sold colours, for the house colouring
+    /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
+    /// theme or the house colouring changes rather than on every frame.
+    delta_inks: [(String, String); 1 + DELTA_COLOURINGS.len()],
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
@@ -1277,6 +1286,8 @@ impl State {
             bars: Vec::new(),
             echo: None,
             last_ink: LastInk::of(&theme),
+            delta_inks: delta_inks(&theme, HOUSE_LOOK),
+            house: HOUSE_LOOK,
             theme,
             price_tags: price_tags(&scheme),
             scheme,
@@ -2102,6 +2113,19 @@ impl State {
         // about, which is what the chart was showing a moment ago.
         let plan = layout(self, width, height);
         let _ = price_range(self, &self.bars[first..first + visible], &plan);
+    }
+
+    /// The bought and sold colours a delta profile is painted in: its own
+    /// colouring's, or the house colouring's when it has none, or one that
+    /// is not offered to a delta.
+    fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
+        let chosen = match &drawn.indicator.params {
+            omacharts_engine::Params::VolumeProfile { colouring, .. } => *colouring,
+            _ => None,
+        };
+        let at = chosen.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
+        let (up, down) = &self.delta_inks[at];
+        (up, down)
     }
 
     /// Whether the price scale is automatic, and the zoom and shift of a
@@ -4479,9 +4503,24 @@ impl ChartView {
         {
             let mut state = self.state.borrow_mut();
             state.last_ink = LastInk::of(&theme);
+            state.delta_inks = delta_inks(&theme, state.house);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
+        }
+        self.redraw();
+    }
+
+    /// The colouring chosen in Preferences and whether it is worn swapped,
+    /// which a delta profile with no colouring of its own is painted in.
+    pub fn set_house_look(&self, colouring: BarColouring, swapped: bool) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.house == (colouring, swapped) {
+                return;
+            }
+            state.house = (colouring, swapped);
+            state.delta_inks = delta_inks(&state.theme, state.house);
         }
         self.redraw();
     }
@@ -8953,8 +8992,47 @@ fn profile_inks(
     };
     match method {
         Method::Total => vec![ink(selection::Side::All, &drawn.color)],
-        Method::Delta => vec![ink(selection::Side::Up, &state.scheme.up), ink(selection::Side::Down, &state.scheme.down)],
+        Method::Delta => {
+            let (up, down) = state.delta_ink(drawn);
+            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
+        }
     }
+}
+
+/// What a chart is told the house colouring is until it is told otherwise:
+/// the one Preferences opens with.
+const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
+
+/// A delta profile's bought and sold colours, for the house colouring and
+/// then each colouring a delta can be given, in the order
+/// [`DELTA_COLOURINGS`] offers them. Each is the colouring's rise and fall,
+/// swapped when the house colouring is: red for a rise is said once, in
+/// Preferences, and a delta reads the way the candles do.
+fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
+    let pair = |colouring: BarColouring| {
+        let scheme = colouring.scheme(theme).worn(swapped, false);
+        (scheme.up, scheme.down)
+    };
+    let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
+    inks[0] = pair(house);
+    for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
+        inks[at + 1] = pair(colouring);
+    }
+    inks
+}
+
+/// A delta profile's bought and sold colours, as a pair of hex colours: the
+/// house colouring's, or the one the profile chose of
+/// [`DELTA_COLOURINGS`].
+pub fn delta_colours(
+    colouring: Option<BarColouring>,
+    theme: &Theme,
+    house: BarColouring,
+    swapped: bool,
+) -> (String, String) {
+    let inks = delta_inks(theme, (house, swapped));
+    let at = colouring.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
+    inks[at].clone()
 }
 
 /// How strongly a delta's rows are filled: all as strongly as a total's

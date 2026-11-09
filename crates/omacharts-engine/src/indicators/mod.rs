@@ -346,6 +346,7 @@ impl Kind {
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
+                colouring: None,
                 merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
@@ -455,6 +456,13 @@ pub enum Params {
         /// volume less the bid volume there. Missing, the total it always was.
         #[serde(default)]
         method: profile::Method,
+        /// The colouring a delta's bought and sold rows are painted in, as
+        /// a chart's rising and falling bars are: unset, the colouring
+        /// chosen in Preferences, and following it as it changes; set, one
+        /// of [`profile::DELTA_COLOURINGS`] of its own. A total is in the
+        /// profile's colour and pays this no mind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        colouring: Option<BarColouring>,
         /// Where each period starts that was merged into the one before it,
         /// as the start of its reset period. Several in a row make one
         /// composite of them all.
@@ -1727,6 +1735,28 @@ mod tests {
         let Params::VolumeProfile { method, .. } = indicator.params else { unreachable!() };
         assert_eq!(method, profile::Method::Total);
         assert_eq!(indicator.describe(None), "VP · Session");
+    }
+
+    /// A delta's colouring is written down only once one is picked, by the
+    /// key a chart's colouring is, and a profile written before it could be
+    /// picked follows Preferences.
+    #[test]
+    fn a_delta_profile_keeps_the_colouring_picked_for_it() {
+        let json = r#"{"id": 1, "kind": "volume_profile", "visible": true,
+            "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7, "method": "delta"}}"#;
+        let older: Indicator = serde_json::from_str(json).expect("an older profile");
+        let Params::VolumeProfile { colouring, .. } = &older.params else { unreachable!() };
+        assert_eq!(*colouring, None);
+        assert!(!serde_json::to_string(&older).unwrap().contains("colouring"), "nothing picked, nothing written");
+
+        let mut picked = older.clone();
+        if let Params::VolumeProfile { colouring, .. } = &mut picked.params {
+            *colouring = Some(BarColouring::Quiet);
+        }
+        let json = serde_json::to_string(&picked).unwrap();
+        assert!(json.contains(r#""colouring":"theme-quiet""#), "{json}");
+        let back: Indicator = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, picked);
     }
 
     #[test]

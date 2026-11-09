@@ -2009,6 +2009,61 @@ mod outside_change_tests {
         });
     }
 
+    /// A volume profile's settings offer a colouring right under its
+    /// calculation method while it measures the delta, and none for the
+    /// total; picking one paints the delta in it.
+    #[test]
+    fn a_delta_profile_offers_a_colouring_under_its_method() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            // Read again after each change: a change can rebuild the page.
+            let rows = || {
+                let method = titled::<adw::ComboRow>(&window, "Calculation method").pop().expect("the method row");
+                let colouring = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring row");
+                (method, colouring)
+            };
+            // Its own switch rather than whether it is drawn: the dialog is
+            // never shown here.
+            let shown = |row: &adw::ComboRow| row.property::<bool>("visible");
+            let (method, row) = rows();
+            assert!(!shown(&row), "a total has no colouring");
+            assert_eq!(method.next_sibling().as_ref(), Some(row.upcast_ref()), "right under the method");
+
+            method.set_selected(1);
+            let (method, row) = rows();
+            assert_eq!(method.selected(), 1);
+            assert!(shown(&row), "a delta has one");
+            assert_eq!(method.next_sibling().as_ref(), Some(row.upcast_ref()), "right under the method");
+            assert_eq!(row.selected(), 0, "the default, to begin with");
+            let names: Vec<String> = (0..row.model().map_or(0, |m| m.n_items()))
+                .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
+                .collect();
+            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet"]);
+
+            row.set_selected(3);
+            let stored = window.indicators();
+            let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
+            assert!(
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { colouring: Some(BarColouring::Quiet), .. }),
+                "{params:?}"
+            );
+            let (method, row) = rows();
+            assert_eq!(row.selected(), 3, "shown as picked");
+            method.set_selected(0);
+            let (_, row) = rows();
+            assert!(!shown(&row), "hidden again for the total");
+        });
+    }
+
     /// A chart's settings, open while a command changes its colouring, its
     /// switches and its volume pane's palette, show what the command did —
     /// and showing it changes nothing more.
@@ -3453,6 +3508,8 @@ impl Window {
         pane.colouring.set(look.colouring);
         pane.swapped.set(look.swapped);
         pane.hollow_up.set(look.hollow_up);
+        let (house, swapped) = self.house_look();
+        pane.view.set_house_look(house, swapped);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -4862,6 +4919,14 @@ impl Window {
         // the timer would mean watching a dash for up to a minute after
         // typing the symbol.
         self.backfill();
+    }
+
+    /// The colouring chosen in Preferences, and whether it is worn the other
+    /// way round: what a delta profile with no colouring of its own is
+    /// painted in, on every chart.
+    pub fn house_look(&self) -> (BarColouring, bool) {
+        let theming = self.theming.borrow();
+        (theming.colouring(), theming.swapped())
     }
 
     /// Adopt a theme or bar scheme chosen outside this window, and repaint.
@@ -6949,8 +7014,10 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             bar.restyle();
         }
+        let (house, swapped) = self.house_look();
         for pane in self.panes.borrow().iter() {
             pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+            pane.view.set_house_look(house, swapped);
             self.apply_marks_to(pane);
             // The colour is the theme's answer about the mode, which has just
             // changed.

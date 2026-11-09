@@ -1059,44 +1059,74 @@ mod tests {
         // A delta is seen, and outlined when selected, in both its colours.
         let delta = super::super::profile_inks(Method::Delta, None, drawn, &state);
         let shown: Vec<&str> = delta.iter().map(|ink| ink.shown(profile::Style::Filled)).collect();
-        assert_eq!(shown, vec![state.scheme.up.as_str(), state.scheme.down.as_str()]);
+        let (up, down) = &state.delta_inks[0];
+        assert_eq!(shown, vec![up.as_str(), down.as_str()]);
         let outlined = super::super::profile_inks(Method::Delta, Some(&amber), drawn, &state);
         assert!(outlined.iter().all(|ink| ink.shown(profile::Style::Outline) == "#ffaa00"));
     }
 
-    /// Bought rows are drawn in the colour the chart's candles rise in and
-    /// sold rows in the colour they fall in, whatever scheme they wear and
-    /// swapped with them.
+    /// Bought rows are drawn in the colour bars rise in and sold rows in the
+    /// colour they fall in: of the colouring chosen in Preferences, swapped
+    /// with it, whatever this chart's candles wear, until the profile picks
+    /// a colouring of its own; and as the house colouring changes.
     #[test]
-    fn a_delta_profile_is_drawn_in_the_colours_the_candles_rise_and_fall_in() {
+    fn a_delta_profile_is_drawn_in_the_colours_bars_rise_and_fall_in() {
+        use omacharts_engine::BarColouring;
         use profile::Method;
         use super::Side;
         let mut state = profiled(profile::Align::Left, 0.4);
-        let drawn = state.indicators[0].clone();
-        let fills = |state: &State| -> Vec<(Side, String)> {
-            super::super::profile_inks(Method::Delta, None, &drawn, state)
+        let mut drawn = state.indicators[0].clone();
+        let fills = |state: &State, drawn: &Drawn| -> Vec<(Side, String)> {
+            super::super::profile_inks(Method::Delta, None, drawn, state)
                 .into_iter()
                 .map(|ink| (ink.side, ink.fill))
                 .collect()
         };
-        let (up, down) = (state.scheme.up.clone(), state.scheme.down.clone());
-        assert_ne!(up, down);
-        assert_eq!(fills(&state), vec![(Side::Up, up.clone()), (Side::Down, down.clone())]);
+        let pair = |state: &State, colouring: BarColouring, swapped: bool| {
+            let scheme = colouring.scheme(&state.theme).worn(swapped, false);
+            vec![(Side::Up, scheme.up), (Side::Down, scheme.down)]
+        };
+        assert_ne!(state.scheme.up, state.scheme.down);
+        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "the house's Vivid to begin with");
 
-        state.scheme = state.scheme.worn(true, false);
-        assert_eq!(fills(&state), vec![(Side::Up, down.clone()), (Side::Down, up.clone())], "swapped");
+        // The chart's own candles are not what it follows.
+        state.scheme = BarColouring::Quiet.scheme(&state.theme).worn(true, false);
+        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "not the chart's");
 
         for theme in omacharts_engine::theme::builtin_themes() {
-            for scheme in omacharts_engine::theme::bar_schemes(&theme) {
-                state.scheme = scheme.clone();
-                assert_eq!(fills(&state), vec![(Side::Up, scheme.up.clone()), (Side::Down, scheme.down.clone())]);
+            state.theme = theme;
+            for house in BarColouring::ALL {
+                for swapped in [false, true] {
+                    state.house = (house, swapped);
+                    state.delta_inks = super::super::delta_inks(&state.theme, state.house);
+                    drawn.indicator.params = with_colouring(&drawn.indicator.params, None);
+                    assert_eq!(fills(&state, &drawn), pair(&state, house, swapped), "{house:?} {swapped}");
+                    for own in profile::DELTA_COLOURINGS {
+                        drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(own));
+                        assert_eq!(fills(&state, &drawn), pair(&state, own, swapped), "{own:?} over {house:?}");
+                        let (up, down) = super::super::delta_colours(Some(own), &state.theme, house, swapped);
+                        assert_eq!(vec![(Side::Up, up), (Side::Down, down)], pair(&state, own, swapped));
+                    }
+                }
             }
         }
-        let mut custom = state.scheme.clone();
-        custom.up = "#123456".to_string();
-        custom.down = "#654321".to_string();
-        state.scheme = custom;
-        assert_eq!(fills(&state), vec![(Side::Up, "#123456".to_string()), (Side::Down, "#654321".to_string())]);
+        // A colouring a delta is not offered, from a hand-edited chart, is
+        // the house's.
+        state.house = (BarColouring::Soft, false);
+        state.delta_inks = super::super::delta_inks(&state.theme, state.house);
+        drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(BarColouring::Monochrome));
+        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Soft, false));
+    }
+
+    fn with_colouring(
+        params: &omacharts_engine::Params,
+        chosen: Option<omacharts_engine::BarColouring>,
+    ) -> omacharts_engine::Params {
+        let mut params = params.clone();
+        if let omacharts_engine::Params::VolumeProfile { colouring, .. } = &mut params {
+            *colouring = chosen;
+        }
+        params
     }
 
     /// Each side of a delta reaches as far as its rows do on that side and

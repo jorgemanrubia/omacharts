@@ -140,6 +140,15 @@ impl Align {
     }
 }
 
+/// The colourings a delta can be painted in: the chart's own, less the one
+/// that paints a rise and a fall alike, which would leave bought and sold
+/// the same colour.
+pub const DELTA_COLOURINGS: [crate::theme::BarColouring; 3] = [
+    crate::theme::BarColouring::Vivid,
+    crate::theme::BarColouring::Soft,
+    crate::theme::BarColouring::Quiet,
+];
+
 /// What each row of a profile measures: everything that traded at its
 /// price, or how much more was bought there than sold, the volume traded at
 /// the ask less that traded at the bid. The second is known only where the

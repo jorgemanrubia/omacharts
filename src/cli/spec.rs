@@ -292,9 +292,11 @@ const LINKS: &[&str] = &["focus", "follow", "pinned"];
 /// other two are `vivid` with that switch on, on every chart.
 const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
 /// What a volume pane's bars may be painted from: the chart's own colouring,
-/// or one of the four palettes.
+/// or one of the four palettes; and a delta volume profile's two sides: the
+/// colouring chosen in Preferences, or one of the three that tell a rise
+/// from a fall.
 const VOLUME_COLOURINGS: &[&str] =
-    &["chart", "theme", "theme-soft", "theme-quiet", "theme-mono"];
+    &["chart", "default", "theme", "theme-soft", "theme-quiet", "theme-mono"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -391,7 +393,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles, or a colouring of their own").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (chart), or a colouring of their own; and a delta volume profile's bought and sold rows: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),

@@ -3437,8 +3437,12 @@ struct Edits {
     poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
-    /// `Some(None)` puts volume back on the chart's own colouring.
+    /// `Some(None)` puts volume back on the chart's own colouring, and a
+    /// volume profile on the one chosen in Preferences.
     colouring: Option<Option<omacharts_engine::BarColouring>>,
+    /// The word `colouring` was given as, since `chart` and `default` are
+    /// each one kind's and not the other's.
+    colouring_word: Option<String>,
     opacity: Option<f64>,
     color: Option<ColorChoice>,
     width: Option<f64>,
@@ -3555,11 +3559,12 @@ impl Edits {
             down_color: colour(m, "down-color")?,
             colouring: match arg(m, "colouring").map(String::as_str) {
                 None => None,
-                Some("chart") => Some(None),
+                Some("chart" | "default") => Some(None),
                 Some(text) => Some(Some(omacharts_engine::BarColouring::from_key(text).ok_or_else(
                     || Fault::usage(format!("{text:?} is not a bar colouring")),
                 )?)),
             },
+            colouring_word: arg(m, "colouring").cloned(),
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -3833,9 +3838,27 @@ impl Edits {
             }
         }
         if let Some(colouring) = &self.colouring {
-            match kind == IndicatorKind::Volume {
-                true => params["colouring"] = to_value(colouring)?,
-                false => return Err(refuse("colouring")),
+            let word = self.colouring_word.as_deref().unwrap_or_default();
+            match kind {
+                IndicatorKind::Volume if word == "default" => {
+                    return Err(Fault::usage("volume follows the chart's colouring; use chart".to_string()));
+                }
+                IndicatorKind::VolumeProfile if word == "chart" => {
+                    return Err(Fault::usage(
+                        "a volume profile follows the colouring chosen in Preferences; use default".to_string(),
+                    ));
+                }
+                IndicatorKind::VolumeProfile
+                    if colouring.is_some_and(|c| !omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c)) =>
+                {
+                    return Err(Fault::usage(format!(
+                        "{word} paints bought and sold alike; a volume profile takes default, theme, theme-soft or theme-quiet"
+                    )));
+                }
+                IndicatorKind::Volume | IndicatorKind::VolumeProfile => {
+                    params["colouring"] = to_value(colouring)?;
+                }
+                _ => return Err(refuse("colouring")),
             }
         }
         if let Some(opacity) = self.opacity {
@@ -7323,6 +7346,41 @@ mod tests {
         assert_eq!(method(&store).as_deref(), Some("delta"), "a refused method leaves the one there");
         let out = run("chart indicator set rsi --book Macro --profile-method delta", &store);
         assert_ne!(out.code, 0, "an RSI has no rows to measure");
+    }
+
+    /// A volume profile's delta follows the colouring chosen in Preferences
+    /// until a command picks one of the three that tell bought from sold,
+    /// and `default` puts it back; the words that are the volume strip's
+    /// own, and Monochrome, are refused and leave it as it was.
+    #[test]
+    fn a_volume_profile_takes_a_colouring_of_its_own_and_gives_it_back() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        let colouring = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
+        };
+        assert_eq!(colouring(&store), None, "Preferences' to begin with");
+
+        let out = run("chart indicator set volume_profile --book Macro --colouring theme-quiet", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"));
+
+        for refused in ["chart", "theme-mono", "loud"] {
+            let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {refused}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"), "a refusal leaves it as it was");
+
+        let out = run("chart indicator set volume_profile --book Macro --colouring default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(colouring(&store), None);
+
+        run("chart indicator add volume --book Macro", &store);
+        let out = run("chart indicator set volume --book Macro --colouring default", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "volume follows the chart, not Preferences");
     }
 
     #[test]

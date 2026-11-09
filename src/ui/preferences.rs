@@ -582,6 +582,7 @@ fn build_charts_page(context: &Rc<Context>) {
         let store = context.store.clone();
         let defaults = defaults.clone();
         let footer = footer.clone();
+        let window = context.window.clone();
         Rc::new(move |change| {
             let mut next = defaults.get();
             change(&mut next);
@@ -590,9 +591,15 @@ fn build_charts_page(context: &Rc<Context>) {
             if next == defaults.get() {
                 return;
             }
+            let look = (next.colouring, next.swapped) != (defaults.get().colouring, defaults.get().swapped);
             next.save(&store);
             defaults.set(next);
             offer(&footer, true);
+            // The colouring is the house's as well as new charts': what a
+            // delta profile that chose none of its own is painted in, now.
+            if look {
+                window.adopt_theming();
+            }
         })
     };
 

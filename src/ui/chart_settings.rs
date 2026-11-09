@@ -14,7 +14,7 @@ use omacharts_engine::indicators::{
     self, Kind, LineStyle, Params, Reset, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
     MIN_PANE_SHARE,
 };
-use omacharts_engine::indicators::profile::{Align, Method, Style};
+use omacharts_engine::indicators::profile::{Align, Method, Style, DELTA_COLOURINGS};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
@@ -1783,7 +1783,7 @@ fn parameters_group(
             ));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::VolumeProfile { reset, rows, value_area, method, .. } => {
+        Params::VolumeProfile { reset, rows, value_area, method, colouring, .. } => {
             group.add(&reset_row(owner, refresh, id, *reset));
             let method_row = choice_row(
                 owner,
@@ -1799,6 +1799,20 @@ fn parameters_group(
                 },
             );
             group.add(&method_row);
+            // How a delta's bought and sold rows are painted, as the bars'
+            // colouring is chosen: Preferences' own first, then the
+            // colourings that tell a rise from a fall.
+            let offered = &DELTA_COLOURINGS;
+            let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
+            names.extend(offered.iter().map(|c| c.label()));
+            let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
+            let colouring_row = choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, current, move |indicator, at| {
+                if let Params::VolumeProfile { colouring, .. } = &mut indicator.params {
+                    *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
+                }
+            });
+            colouring_row.set_visible(has_colouring(*method));
+            group.add(&colouring_row);
             for row in rows_rows(owner, refresh, id, *rows) {
                 group.add(&row);
             }
@@ -1821,9 +1835,11 @@ fn parameters_group(
             area_row.set_sensitive(has_value_area(*method));
             method_row.connect_selected_notify({
                 let area_row = area_row.clone();
+                let colouring_row = colouring_row.clone();
                 move |row| {
                     let method = Method::ALL.get(row.selected() as usize).copied().unwrap_or_default();
                     area_row.set_sensitive(has_value_area(method));
+                    colouring_row.set_visible(has_colouring(method));
                 }
             });
             group.add(&area_row);
@@ -1980,6 +1996,20 @@ const PROFILE_METHOD_LABEL: &str = "Calculation method";
 /// Whether a volume profile measuring by `method` has a value area to set.
 fn has_value_area(method: Method) -> bool {
     method == Method::Total
+}
+
+/// The volume profile row that says how a delta's two sides are painted.
+const PROFILE_COLOURING_LABEL: &str = "Colouring";
+
+/// What a delta profile's colouring row offers first: the colouring chosen
+/// on the Defaults page of Preferences, whatever that is.
+const PROFILE_FOLLOWS_DEFAULTS: &str = "Default";
+
+/// Whether a volume profile measuring by `method` is painted in a colouring:
+/// a delta is, bought and sold as rising and falling bars; a total is in
+/// the profile's own colour.
+fn has_colouring(method: Method) -> bool {
+    method == Method::Delta
 }
 
 /// How a volume profile is drawn: its outline, its rows, its point of
@@ -2993,6 +3023,19 @@ mod tests {
         assert_eq!(Method::ALL[0], Method::default());
         assert!(has_value_area(Method::Total));
         assert!(!has_value_area(Method::Delta));
+    }
+
+    /// A delta offers the colourings that tell a rise from a fall, by the
+    /// names a chart's own colouring row gives them, after the default;
+    /// a total offers none.
+    #[test]
+    fn a_delta_profile_offers_the_two_toned_colourings_after_the_default() {
+        let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label()).collect();
+        assert_eq!(names, ["Vivid", "Soft", "Quiet"]);
+        assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label() == *name)));
+        assert_eq!(PROFILE_FOLLOWS_DEFAULTS, "Default");
+        assert!(has_colouring(Method::Delta));
+        assert!(!has_colouring(Method::Total));
     }
 
     #[test]

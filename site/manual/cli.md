@@ -558,7 +558,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | `chart` to follow the chart's colouring, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` for one of its own | Volume ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | Volume: `chart` to follow the chart's colouring, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` for one of its own. Volume profile: `default` to follow Preferences, or `theme`, `theme-soft`, `theme-quiet` | Volume, volume profile ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
