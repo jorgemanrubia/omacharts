@@ -903,8 +903,39 @@ fn theme_colors_group(context: &Rc<Context>, group_name: &str) -> adw::Preferenc
         row.add_suffix(&button);
         group.add(&row);
     }
+    if group_name == LAST_PRICE_GROUP {
+        group.add(&last_price_row(context, &theme));
+    }
     group
 }
+
+/// The group the last price's colour is edited in, with the chart's other
+/// furniture.
+const LAST_PRICE_GROUP: &str = "Other";
+
+/// The last price's tag and line, as the theme draws them: its own colour
+/// once somebody sets one, otherwise the one worked out from its palette.
+fn last_price_row(context: &Rc<Context>, theme: &omacharts_engine::Theme) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(LAST_PRICE_LABEL);
+    let button = color_button(&omacharts_engine::theme::theme_last_price(theme));
+    let ctx = context.clone();
+    button.connect_rgba_notify(move |button| {
+        let hex = colors::to_hex(&button.rgba());
+        let mut theme = ctx.theming.borrow().theme();
+        if !theme.source.is_editable() {
+            return;
+        }
+        theme.last_price = Some(hex);
+        ctx.store.save_theme(&theme);
+        ctx.theming.borrow_mut().reload_custom(&ctx.store);
+        apply(&ctx);
+    });
+    row.add_suffix(&button);
+    row
+}
+
+const LAST_PRICE_LABEL: &str = "Last price";
 
 /// The theme's indicator palette. Editing these changes every overlay that
 /// chose a colour by name rather than by hex.

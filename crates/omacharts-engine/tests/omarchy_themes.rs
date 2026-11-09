@@ -726,3 +726,27 @@ fn every_shipped_theme_has_a_neutral_of_its_own() {
     let latte = Oklch::of(&by_name("catppuccin-latte").neutral()).unwrap();
     assert!(latte.l < 0.4 && (250.0..300.0).contains(&latte.h), "catppuccin-latte's neutral is not a dark blue-grey: {latte:?}");
 }
+
+/// The last price on every shipped theme is its own colour: light on a
+/// dark chart and readable on a light one, and round the wheel from both
+/// candles, so its line is never taken for one.
+#[test]
+fn every_shipped_theme_has_a_last_price_apart_from_its_candles() {
+    use omacharts_engine::theme::{theme_last_price, Mode};
+    for (name, theme) in fixtures() {
+        let price = theme_last_price(&theme);
+        let colour = Oklch::of(&price).expect("a colour");
+        let ratio = contrast_ratio(&price, &theme.ui.background);
+        match theme.mode {
+            Mode::Dark => assert!(colour.l >= 0.85 && ratio >= 7.0, "{name}: {price} is not light ({ratio:.1})"),
+            Mode::Light => assert!(ratio >= 4.5, "{name}: {price} does not read ({ratio:.1})"),
+        }
+        let bars = theme_bars(&theme);
+        for candle in [&bars.up, &bars.down] {
+            let candle = Oklch::of(candle).unwrap();
+            if candle.c >= 0.03 {
+                assert!(hue_gap(colour.h, candle.h) >= 35.0, "{name}: {price} is a candle's hue");
+            }
+        }
+    }
+}

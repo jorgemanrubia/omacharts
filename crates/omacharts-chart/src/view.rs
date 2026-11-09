@@ -177,6 +177,9 @@ struct State {
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
+    /// The last price's colour and its tag, from the theme, worked out
+    /// whenever the theme changes rather than on every frame.
+    last_ink: LastInk,
     /// The feed's latest trade when the bars drawn leave it out, a chart
     /// of the regular session out of hours: the price is the price,
     /// whatever candles are shown. `None` when the last bar has it.
@@ -1273,6 +1276,7 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
+            last_ink: LastInk::of(&theme),
             theme,
             price_tags: price_tags(&scheme),
             scheme,
@@ -4408,6 +4412,7 @@ impl ChartView {
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
+            state.last_ink = LastInk::of(&theme);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
@@ -7490,7 +7495,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
         }
     }
-    let last = last_price(state).map(|(price, _)| to_y(price).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price(state).map(|price| to_y(price).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -7641,12 +7646,14 @@ fn draw_last_price(
     // Where the tag goes when marks' chips on the axis moved it.
     tag_at: Option<f64>,
 ) {
-    let Some((price, rising)) = last_price(state) else { return };
+    let Some(price) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    let tag = &state.price_tags[if rising { 0 } else { 1 }];
+    // In the last price's own colour, the line's: one thing on the chart,
+    // whose rise or fall the candles and the header already say.
+    let tag = &state.last_ink.tag;
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
         draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
@@ -7664,16 +7671,11 @@ fn draw_last_price(
     );
 }
 
-/// The last price, and whether it is up: the last bar's close against its
-/// open, or, when the feed has traded since where the bars drawn leave out,
-/// that trade against the last close drawn, the move since the session the
-/// chart shows.
-fn last_price(state: &State) -> Option<(f64, bool)> {
+/// The last price: the feed's latest trade when the bars drawn leave it
+/// out, else the last bar's close.
+fn last_price(state: &State) -> Option<f64> {
     let last = state.bars.last()?;
-    Some(match state.latest {
-        Some(price) => (price, price >= last.close),
-        None => (last.close, last.close >= last.open),
-    })
+    Some(state.latest.unwrap_or(last.close))
 }
 
 /// The last price's dashed line across the plot.
@@ -7685,16 +7687,15 @@ fn draw_last_price_line(
     price_y: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let Some((price, rising)) = last_price(state) else { return };
+    let Some(price) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    let colour = if rising { &state.scheme.up } else { &state.scheme.down };
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
-    colors::set_source_alpha(cr, colour, 0.7);
+    colors::set_source_alpha(cr, &state.last_ink.line, 0.7);
     cr.move_to(plot_x, y);
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
@@ -7865,6 +7866,20 @@ fn draw_pane_value(
         width,
         &state.theme.ui.crosshair,
     );
+}
+
+/// The last price's colour on the theme, and its tag filled in it.
+#[derive(Clone)]
+struct LastInk {
+    line: String,
+    tag: Tag,
+}
+
+impl LastInk {
+    fn of(theme: &Theme) -> LastInk {
+        let line = omacharts_engine::theme::theme_last_price(theme);
+        LastInk { tag: Tag::on(&line), line }
+    }
 }
 
 /// The last-price tag for each direction: the same fill and label the bar
@@ -10483,28 +10498,28 @@ mod tests {
     }
 
     /// A chart of the regular session out of hours: the last price is the
-    /// feed's newest trade, not the last close drawn, up or down against
-    /// that close, and following each trade; the scale reaches it while
+    /// feed's newest trade, not the last close drawn, following each
+    /// trade; the scale reaches it while
     /// the chart shows its end, and not once it is panned back.
     #[test]
     fn the_last_price_is_the_feed_s_newest_trade_whatever_the_bars_drawn() {
         let mut state = charted(100);
         let last = *state.bars.last().unwrap();
-        assert_eq!(last_price(&state), Some((last.close, last.close >= last.open)));
+        assert_eq!(last_price(&state), Some(last.close));
 
         let plan = layout(&state, 600.0, 400.0);
         let (first, visible, _) = state.view();
         let (low, high) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
         let away = high + (high - low);
         state.latest = Some(away);
-        assert_eq!(last_price(&state), Some((away, true)), "above the close drawn");
+        assert_eq!(last_price(&state), Some(away), "not the close drawn");
         let (_, reach) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
         assert!(reach >= away, "the scale reaches it: {reach} for {away}");
         let (_, back) = price_range(&state, &state.bars[..50], &plan).unwrap().prices();
         assert!(back < away, "panned back, the bars alone");
 
         state.latest = Some(last.close - 1.0);
-        assert_eq!(last_price(&state), Some((last.close - 1.0, false)), "the next trade, below it");
+        assert_eq!(last_price(&state), Some(last.close - 1.0), "the next trade");
 
         // The line and the tag stand at it.
         let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
@@ -10512,6 +10527,30 @@ mod tests {
         let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
         let stride = 600 * 4;
         assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
+    }
+
+    /// The last price is drawn in the theme's own colour for it, the tag
+    /// and the line alike, and in one somebody set on a theme of their own.
+    #[test]
+    fn the_last_price_is_in_the_theme_s_colour() {
+        let mut theme = omacharts_engine::theme::builtin_themes().remove(0);
+        let state = State::blank(theme.clone(), omacharts_engine::theme::theme_bars(&theme));
+        let derived = omacharts_engine::theme::theme_last_price(&theme);
+        assert_eq!(state.last_ink.line, derived);
+        assert_eq!(state.last_ink.tag, Tag::on(&derived));
+
+        theme.last_price = Some("#ffcc00".into());
+        let mut state = charted(20);
+        state.last_ink = LastInk::of(&theme);
+        assert_eq!(state.last_ink.tag, Tag::on("#ffcc00"));
+        let close = state.bars.last().unwrap().close;
+        let to_y = |price: f64| 100.0 - (price - close);
+        let pixels = frame(200.0, 200.0, |cr| draw_last_price_line(cr, &state, 0.0, 200.0, 0.0, &to_y));
+        let row = &pixels[100 * 200 * 4..101 * 200 * 4];
+        // Cairo's bytes are blue, green, red, alpha: a yellow has no blue.
+        let inked: Vec<&[u8]> = row.chunks(4).filter(|pixel| pixel[3] != 0).collect();
+        assert!(!inked.is_empty(), "a line on the price's row");
+        assert!(inked.iter().all(|pixel| pixel[0] == 0 && pixel[2] > pixel[1]), "in the yellow set: {:?}", inked[0]);
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
@@ -10716,6 +10755,7 @@ mod tests {
         let mut state = marked();
         state.scheme = omacharts_engine::theme::theme_bars(&theme);
         state.price_tags = price_tags(&state.scheme);
+        state.last_ink = LastInk::of(&theme);
         state.theme = theme;
         let last = state.bars.last().unwrap().close;
         let up = state.scheme.up.clone();

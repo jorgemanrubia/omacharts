@@ -212,6 +212,10 @@ pub struct Theme {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Boxed: most themes have none, and every theme is carried about.
     pub trading: Option<Box<TradingLook>>,
+    /// The last price's colour, set by hand on a theme of its own. Absent,
+    /// it is worked out from the palette; see [`theme_last_price`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<String>,
 }
 
 /// How a theme draws orders and positions, as somebody set it. Every slot
@@ -384,6 +388,65 @@ pub fn theme_trading(theme: &Theme, inverted: bool) -> TradingColours {
         limit: look.limit.unwrap_or(LineStyle::Dashed),
         stop: look.stop.unwrap_or(LineStyle::Dashed),
         position: look.position.unwrap_or(LineStyle::Solid),
+    }
+}
+
+/// The palette's colours the last price may be drawn in, the first that
+/// stands apart from the candles taken: a cyan reads as no candle's on
+/// any theme that has one, and the others follow far round the wheel.
+const LAST_PRICE_SWATCHES: [&str; 5] = ["Cyan", "Amber", "Teal", "Blue", "Violet"];
+
+/// How far round the wheel the last price stands from either candle, at
+/// least, so that its line across the chart is never taken for one.
+const LAST_PRICE_HUE_GAP: f64 = 40.0;
+
+/// Below this a colour, in OKLCh chroma, is a grey with no hue to speak of.
+const LAST_PRICE_TINT: f64 = 0.03;
+
+/// How light the last price is on a dark theme, at least, in OKLCh
+/// lightness: a pale tint of its swatch, which stands out over the
+/// candles and the profiles the line crosses rather than sitting among
+/// them.
+const LAST_PRICE_LIGHT: f64 = 0.86;
+
+/// The contrast the last price is held to on a light theme, at least:
+/// a line that must be found at a glance on a pale chart, darkened in its
+/// own hue until it is.
+const LAST_PRICE_ON_LIGHT: ContrastBand = ContrastBand::new(4.5, 21.0);
+
+/// The last price's colour on `theme`: its own if somebody set one;
+/// otherwise the first of the palette's cyan, amber, teal, blue and violet
+/// far enough round the wheel from both candles, as a pale tint of itself
+/// on a dark theme and darkened in its own hue until it reads on a light
+/// one. A theme without the swatches takes its accent the same way.
+///
+/// Worked out when the theme is put on, never on a frame.
+pub fn theme_last_price(theme: &Theme) -> String {
+    if let Some(hex) = &theme.last_price {
+        return hex.clone();
+    }
+    let bars = theme_bars(theme);
+    // A grey candle has no hue to keep away from.
+    let hues: Vec<f64> = [&bars.up, &bars.down]
+        .into_iter()
+        .filter_map(|hex| Oklch::of(hex))
+        .filter(|c| c.c >= LAST_PRICE_TINT)
+        .map(|c| c.h)
+        .collect();
+    let apart = |hex: &str| {
+        Oklch::of(hex).is_some_and(|c| c.c >= LAST_PRICE_TINT && hues.iter().all(|h| hue_gap(c.h, *h) >= LAST_PRICE_HUE_GAP))
+    };
+    let base = LAST_PRICE_SWATCHES
+        .into_iter()
+        .filter_map(|name| theme.swatch(name).map(|swatch| swatch.hex.clone()))
+        .find(|hex| apart(hex))
+        .unwrap_or_else(|| theme.ui.accent.clone());
+    match theme.mode {
+        Mode::Dark => match Oklch::of(&base) {
+            Some(colour) if colour.l < LAST_PRICE_LIGHT => colour.with_lightness(LAST_PRICE_LIGHT).hex(),
+            _ => base,
+        },
+        Mode::Light => held_to(&base, &theme.ui.background, LAST_PRICE_ON_LIGHT, None),
     }
 }
 
@@ -851,6 +914,7 @@ fn midnight() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -879,6 +943,7 @@ fn carbon() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -912,6 +977,7 @@ fn paper() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -942,6 +1008,7 @@ fn daylight() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -1780,6 +1847,35 @@ mod tests {
         theme.ui.surface_variant = background.into();
         theme.ui.border = background.into();
         theme
+    }
+
+    /// The last price is a pale tint of the palette's cyan on a dark theme
+    /// and a darkened one on a light theme, the next of the palette's
+    /// colours when the cyan is a candle's, and whatever somebody set on a
+    /// theme of their own; a theme stored before it could be set has none.
+    #[test]
+    fn the_last_price_is_a_palette_colour_apart_from_the_candles_unless_set() {
+        let themes = builtin_themes();
+        let dark = themes.iter().find(|t| t.mode == Mode::Dark).unwrap();
+        let light = themes.iter().find(|t| t.mode == Mode::Light).unwrap();
+        let tint = |theme: &Theme| Oklch::of(&theme_last_price(theme)).unwrap();
+        let cyan = |theme: &Theme| Oklch::of(&theme.swatch("Cyan").unwrap().hex).unwrap();
+        assert!(tint(dark).l >= LAST_PRICE_LIGHT - 0.01, "pale on a dark chart");
+        assert!(hue_gap(tint(dark).h, cyan(dark).h) < 5.0, "and the cyan's own hue");
+        assert!(contrast_ratio(&theme_last_price(light), &light.ui.background) >= 4.5, "reads on a light one");
+        assert!(hue_gap(tint(light).h, cyan(light).h) < 5.0);
+
+        let mut cyan_up = dark.clone();
+        cyan_up.bars = Some(BarScheme { up: dark.swatch("Cyan").unwrap().hex.clone(), ..theme_bars(dark) });
+        let amber = Oklch::of(&dark.swatch("Amber").unwrap().hex).unwrap();
+        assert!(hue_gap(tint(&cyan_up).h, amber.h) < 5.0, "the cyan is a candle's, so the amber");
+
+        let mut own = dark.clone();
+        own.last_price = Some("#ffcc00".into());
+        assert_eq!(theme_last_price(&own), "#ffcc00");
+        let stored = serde_json::to_string(dark).unwrap();
+        assert!(!stored.contains("last_price"), "nothing written unless set");
+        assert_eq!(serde_json::from_str::<Theme>(&stored).unwrap().last_price, None);
     }
 
     /// The neutral is a name like the others, stored as a name and
