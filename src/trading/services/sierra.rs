@@ -736,6 +736,45 @@ mod tests {
         session.sign_out();
     }
 
+    /// The pair reached the server and its answer was lost, and the server
+    /// will not cancel it: it does not know the orders by the ids they were
+    /// sent under, or it refuses. Either way the pair is still working, so
+    /// the stop is not put back beside it — never two stops — and the
+    /// position is said to need looking at.
+    #[test]
+    fn a_pair_taken_unheard_that_will_not_cancel_keeps_the_stop_out() {
+        for cancels in [dtc::fake::Cancels::ClientIdUnknown, dtc::fake::Cancels::RefusedInPairs("Cancel refused".into())] {
+            let fake = fake_long(2);
+            let session = impatient(&fake);
+            let basket = session.place(&sell(OrderKind::Stop, 2, 7_580.0)).expect("the stop");
+            let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+            fake.set_pairs(dtc::fake::Pairs::TakenSilently);
+            fake.set_cancels(cancels.clone());
+            let ran = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_650.0), Some(&stop)).run(session.as_ref(), "Sim1");
+            assert_eq!(ran.restored, None, "{cancels:?}: put back beside the pair");
+            assert!(ran.unsure.as_deref().is_some_and(|why| why.contains("still working")), "{cancels:?}: {ran:?}");
+            assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![(2, 7_650.0)]), "{cancels:?}: one stop, the pair's");
+            session.sign_out();
+        }
+    }
+
+    /// The pair reached the server unheard, and its target filled at once,
+    /// closing the position: the stop is not put back on nothing held.
+    #[test]
+    fn a_pair_taken_unheard_whose_target_filled_puts_nothing_back() {
+        let fake = fake_long(2);
+        let session = impatient(&fake);
+        let basket = session.place(&sell(OrderKind::Stop, 2, 7_580.0)).expect("the stop");
+        let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+        fake.set_pairs(dtc::fake::Pairs::FilledSilently(1));
+        let ran = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_650.0), Some(&stop)).run(session.as_ref(), "Sim1");
+        assert_eq!(ran.restored, None, "a stop put back on a flat position: {ran:?}");
+        assert!(ran.unsure.as_deref().is_some_and(|why| why.contains("target filled")), "{ran:?}");
+        assert_eq!(on_the_server(&fake), (vec![], vec![]));
+        assert!(session.book().position("Sim1", "ESZ6").is_none_or(|held| held.net == 0));
+        session.sign_out();
+    }
+
     /// Only the target of the pair is taken: the stop goes back in alone at
     /// once, and the app links it with the target, while it runs.
     #[test]

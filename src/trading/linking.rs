@@ -66,11 +66,15 @@
 //! back in alone at once**, as it was: the pair refused, only the other of
 //! it taken (then the app links the two, while it runs), or no answer at
 //! all. With no answer the pair may yet arrive, so what the book holds of
-//! it is cancelled first and the one cancelled placed back only once that
-//! is answered: never two stops. If even that goes unanswered nothing more
-//! is sent, and the position is said to need looking at. If the first
-//! cancel is not answered, nothing is placed — the one cancelled may still
-//! be working — unless the book says it is cancelled, when it goes back in.
+//! it is cancelled first and the one cancelled placed back only once every
+//! one of the pair is confirmed gone: cancelled, or, its cancel refused,
+//! not among what the trading service then lists as working. Never two
+//! stops, and never one put back on a position a leg of the pair closed:
+//! if a cancel goes unanswered, a leg is still listed or one filled,
+//! nothing more is sent, and the position is said to need looking at. If
+//! the first cancel is not answered, nothing is placed — the one cancelled
+//! may still be working — unless the book says it is cancelled, when it
+//! goes back in.
 //!
 //! - **A target working, a stop added**: between the two steps the
 //!   position has no target, and it had no stop before: it is exposed to
@@ -502,12 +506,9 @@ fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderReq
         // The pair may be on its way: whatever the book holds of it is
         // cancelled first, so that the one put back is never a second.
         let book = session.book();
-        let on_its_way: Vec<String> = sized
-            .iter()
-            .filter_map(|order| tagged(&book, &order.tag))
-            .filter(|order| order.status.working())
-            .map(|order| order.basket_id.clone())
-            .collect();
+        let legs: Vec<String> = sized.iter().filter_map(|order| tagged(&book, &order.tag)).map(|order| order.basket_id.clone()).collect();
+        let on_its_way: Vec<String> =
+            legs.iter().filter(|basket| book.order(basket).is_some_and(|order| order.status.working())).cloned().collect();
         drop(book);
         if on_its_way.iter().all(|basket| confirmed(&session.book(), basket)) && on_its_way.len() == 2 {
             // Both taken after all: the pair is working and linked.
@@ -515,12 +516,37 @@ fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderReq
             ran.link = Some(Ok(Link { account: account.to_string(), baskets: on_its_way, holder: Holder::TradingService }));
             return ran;
         }
+        let mut refused = false;
         for basket in &on_its_way {
-            if let Err(Failure::Unanswered(_)) = session.cancel(account, basket) {
-                ran.unsure = Some(format!("no answer from the trading service: the {what} may not be working, check the account"));
-                return ran;
+            match session.cancel(account, basket) {
+                Ok(()) => {}
+                Err(Failure::Unanswered(_)) => {
+                    ran.unsure = Some(format!("no answer from the trading service: the {what} may not be working, check the account"));
+                    return ran;
+                }
+                Err(Failure::Refused(_)) => refused = true,
             }
         }
+        // A cancel refused is no word that the order is gone: the trading
+        // service may hold it and not cancel it, or not know it by the id
+        // it was sent under. What it lists as working is asked for, and the
+        // one cancelled goes back only once every one of the pair is gone
+        // from it, none of them filled.
+        if refused && session.refresh().is_err() {
+            ran.unsure = Some(format!("the new pair could not be confirmed cancelled: the {what} was not put back, check the account"));
+            return ran;
+        }
+        let book = session.book();
+        if let Some(leg) = legs.iter().filter_map(|basket| book.order(basket)).find(|order| order.filled > 0) {
+            let leg = if leg.kind == OrderKind::Stop { "stop" } else { "target" };
+            ran.unsure = Some(format!("the new pair was taken after all and its {leg} filled: the {what} was not put back, check the position"));
+            return ran;
+        }
+        if legs.iter().any(|basket| book.order(basket).is_some_and(|order| order.status.working())) {
+            ran.unsure = Some(format!("the new pair is still working and would not cancel: the {what} was not put back, check the account"));
+            return ran;
+        }
+        drop(book);
         put_back(session, &mut ran, restore);
         return ran;
     }
