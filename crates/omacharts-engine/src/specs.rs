@@ -231,13 +231,14 @@ mod tests {
         assert!(!track_together("ES", "NQ"));
         assert!(!track_together("MES", "MNQ"));
         assert!(track_together("ZN", "ZN"));
-        // Every micro and what it tracks are roots the contracts table knows.
+        // Every micro and what it tracks are roots the contracts table knows,
+        // each with a tick of its own: an order on a micro is never rounded
+        // to its full-size contract's.
         for (micro, full) in MICROS {
-            if !["M6A", "M6B", "M6E"].contains(micro) {
-                assert!(tick(micro).is_some(), "{micro}");
-            }
+            assert!(tick(micro).is_some(), "{micro}");
             assert!(tick(full).is_some(), "{full}");
         }
+        assert_eq!((tick("M6E"), tick("6E")), (Some(0.0001), Some(0.00005)));
     }
 
     /// A one-tick move on one contract, in dollars, as the exchanges give it.
@@ -256,6 +257,9 @@ mod tests {
             ("6J", 6.25),
             ("6B", 6.25),
             ("6A", 5.0),
+            ("M6E", 1.25),
+            ("M6A", 1.0),
+            ("M6B", 0.625),
             ("6C", 5.0),
             ("6S", 6.25),
             ("ZB", 31.25),
