@@ -109,8 +109,9 @@ impl Part {
     ];
 
     /// The section it is in until somebody places it, or `None` for a part
-    /// that is only there once somebody adds it. The feed is at home on the
-    /// left because it costs nothing: with one feed it draws nothing and
+    /// that is only there once somebody adds it. The day's move follows the
+    /// resolution, the last word of the line saying what the chart is of.
+    /// The feed is at home on the left because it costs nothing: with one feed it draws nothing and
     /// takes no room. The account, the day's P&L, Buy, Sell and the
     /// quantity lead the corner, the account first, saying what the rest
     /// trade on, ahead of the three controls that always stood in it, in
@@ -123,7 +124,7 @@ impl Part {
             Part::Title => Some(Section::Center),
             Part::Symbol => Some(Section::Left),
             Part::Resolution => Some(Section::Left),
-            Part::Change => None,
+            Part::Change => Some(Section::Left),
             Part::Template => None,
             Part::Account => Some(Section::Right),
             Part::Feed => Some(Section::Left),
@@ -364,6 +365,16 @@ const BEFORE_ACCOUNT_MOVED: [(&str, &str); 3] = [
     (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
 ];
 
+/// The header that shipped before the day's move was in it, as
+/// Preferences wrote it out: read as [`Header::standard`] too, so a header
+/// that was only ever the standard one gets the move after the resolution.
+/// A left of anybody's own was written without it, and is kept so.
+const BEFORE_CHANGE: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution"),
+    (CENTER_SETTING, "title"),
+    (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
+];
+
 /// Whether what is stored is `old`, a standard header of an earlier build:
 /// some section written, and every written one as it shipped.
 fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
@@ -383,7 +394,9 @@ fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
 pub fn load(store: &Store) -> Header {
     let pnl_moved = BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
         && store.setting(SETTING).is_some();
-    if pnl_moved || stored_as(store, &BEFORE_TITLES) || stored_as(store, &BEFORE_ACCOUNT_MOVED) {
+    if pnl_moved || stored_as(store, &BEFORE_TITLES) || stored_as(store, &BEFORE_ACCOUNT_MOVED)
+        || stored_as(store, &BEFORE_CHANGE)
+    {
         return Header::standard();
     }
     let mut header = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
@@ -422,6 +435,22 @@ pub fn change_text(change_pct: f64) -> String {
     format!("{change_pct:+.2}%")
 }
 
+/// The colour a day's move is written in: the theme's own up and down,
+/// its palette's green and rose unless somebody set its candles by hand,
+/// turned round only on a chart whose rises are red. Not the chart's bar
+/// colouring: Monochrome candles still have a green rise here. A move of
+/// exactly nothing has none, and is written in the header's own text.
+pub fn change_colour(theme: &omacharts_engine::Theme, swapped: bool, change: f64) -> Option<String> {
+    use omacharts_engine::Direction;
+    let bars = omacharts_engine::theme::theme_bars(theme);
+    let (up, down) = if swapped { (bars.down, bars.up) } else { (bars.up, bars.down) };
+    match Direction::of_change(change) {
+        Direction::Up => Some(up),
+        Direction::Down => Some(down),
+        Direction::Flat => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,14 +481,14 @@ mod tests {
     }
 
     /// Out of the box the left is the data feed's dot and then the line
-    /// every chart always had; the center the chart's title, and the right
+    /// every chart always had, ending on the day's move; the center the chart's title, and the right
     /// the day's P&L, Buy, Sell and the quantity ahead of the three
     /// controls that always stood in its corner, in their order. The
     /// stripe is only there once somebody adds it.
     #[test]
     fn the_standard_header_is_the_line_the_title_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
         assert_eq!(header.center, vec![Part::Title]);
         assert!(!header.contains(Part::Stripe));
         assert_eq!(
@@ -486,6 +515,31 @@ mod tests {
         store.set_setting(SETTING, "feed,symbol,resolution,account");
         store.set_setting(RIGHT_SETTING, "trade,day_pnl,size,settings,maximize,link");
         assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account], "a right of its own");
+    }
+
+    /// A header saved as the one that shipped before the day's move was in
+    /// it is the standard one now, the move after the resolution, whether
+    /// all of it was written down or some; a left of anybody's own, or a
+    /// header that differs in anything, is kept as it was saved, without it.
+    #[test]
+    fn the_old_standard_header_gains_the_day_s_move() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_CHANGE {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
+        store.remove_setting(CENTER_SETTING);
+        assert_eq!(load(&store), Header::standard());
+
+        store.set_setting(SETTING, "symbol,resolution");
+        assert_eq!(load(&store).left, vec![Part::Symbol, Part::Resolution], "a left of its own");
+        assert!(!load(&store).contains(Part::Change));
+
+        store.set_setting(SETTING, "feed,symbol,resolution");
+        store.set_setting(RIGHT_SETTING, "settings,maximize,link");
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution], "a right of its own");
+        assert!(!load(&store).contains(Part::Change));
     }
 
     /// A header saved as the one that shipped with the P&L at the end of
@@ -584,7 +638,7 @@ mod tests {
         assert_eq!(Part::every_shown(true), Part::ALL.to_vec());
 
         let mut header = Header::standard();
-        assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution]);
+        assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
         header.set_shown(Section::Left, vec![Part::Symbol, Part::Feed], false);
         assert_eq!(header.left, vec![Part::Symbol, Part::Feed]);
         header.set_shown(Section::Right, vec![Part::Link], false);
@@ -614,6 +668,20 @@ mod tests {
         let store = Store::memory().unwrap();
         store.set_setting(SETTING, "volume,change,symbol");
         assert_eq!(load(&store).left, vec![Part::Change, Part::Symbol]);
+    }
+
+    /// Green up and red down, from the palette, whatever the chart's own
+    /// bar colouring; red up turns them round; nothing at all is the text.
+    #[test]
+    fn a_change_is_coloured_from_the_palette() {
+        let theme = omacharts_engine::theme::builtin_themes().remove(0);
+        let green = theme.swatch("Green").unwrap().hex.clone();
+        let rose = theme.swatch("Rose").unwrap().hex.clone();
+        assert_eq!(change_colour(&theme, false, 0.01), Some(green.clone()), "a cent up");
+        assert_eq!(change_colour(&theme, false, -0.01), Some(rose.clone()), "a cent down");
+        assert_eq!(change_colour(&theme, false, 0.0), None);
+        assert_eq!(change_colour(&theme, true, 1.0), Some(rose));
+        assert_eq!(change_colour(&theme, true, -1.0), Some(green));
     }
 
     #[test]

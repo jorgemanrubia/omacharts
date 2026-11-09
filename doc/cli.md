@@ -227,9 +227,10 @@ which is the same setting `template default` writes.
 
 ## The header
 
-The line at a chart's top-left shows its symbol and resolution, and can also
-show the day's move — as a percentage, in the chart's own colours for a rise
-and a fall — and the name of its chart template. It is one line for the whole
+The line at a chart's top-left shows its data feed, symbol, resolution and the
+day's move — as a percentage, in the theme's green for a rise and red for a
+fall, swapped on a chart set to red up — and can also show the name of its
+chart template. It is one line for the whole
 app: every chart in every chartbook shows the same parts, in the order given,
 and a window that is open changes them all at once:
 

@@ -9441,16 +9441,14 @@ impl Window {
             let routed = self.route_pane(pane, &instrument)?;
             crate::cli::quote(&self.store, routed.feed.provider.as_ref(), &instrument)
         });
-        // In the chart's own colours for a rise and a fall, as its candles
-        // are painted — a chart whose rises are red says so here too.
-        let scheme = pane_scheme(pane, &self.theme());
-        let direction = |change: f64| omacharts_engine::Direction::of_change(change);
+        // In the theme's green and red, a chart whose rises are red saying
+        // so here too; see `header::change_colour`.
         match quote {
             Some(quote) => {
                 pane.change_basis.set(Some((quote.last - quote.change, crate::cli::session_day(quote.as_of))));
                 pane.change_shown.set(Some(hundredths(quote.change_pct)));
-                let colour = scheme.outline(direction(quote.change)).to_string();
-                pane.write_change(Some((quote.change_pct, &colour)));
+                let colour = crate::header::change_colour(&self.theme(), pane.swapped.get(), quote.change);
+                pane.write_change(Some((quote.change_pct, colour.as_deref())));
             }
             None => {
                 pane.change_basis.set(None);
@@ -9474,9 +9472,8 @@ impl Window {
         if pane.change_shown.replace(Some(hundredths(change_pct))) == Some(hundredths(change_pct)) {
             return;
         }
-        let scheme = pane_scheme(pane, &self.theme());
-        let colour = scheme.outline(omacharts_engine::Direction::of_change(change)).to_string();
-        pane.write_change(Some((change_pct, &colour)));
+        let colour = crate::header::change_colour(&self.theme(), pane.swapped.get(), change);
+        pane.write_change(Some((change_pct, colour.as_deref())));
     }
 
     /// Delete a template. Its charts keep what it was showing them.

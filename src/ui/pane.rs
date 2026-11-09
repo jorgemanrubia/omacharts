@@ -403,6 +403,10 @@ impl ChartPane {
         let change_label = gtk::Label::new(None);
         change_label.add_css_class("readout-symbol");
         change_label.set_valign(gtk::Align::Center);
+        // Nothing, and no room, until there is a move to write: it is in
+        // every header now, and a chart opening ahead of its quote must
+        // not open with a gap after the resolution.
+        change_label.set_visible(false);
         let template_label = gtk::Label::new(None);
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
@@ -1262,13 +1266,19 @@ impl ChartPane {
         self.size_label.text().to_string()
     }
 
-    /// The day's move, in `colour`; nothing at all until there is one.
-    pub fn write_change(&self, change: Option<(f64, &str)>) {
+    /// The day's move, in `colour`, or the header's text when it has none;
+    /// nothing at all until there is one.
+    pub fn write_change(&self, change: Option<(f64, Option<&str>)>) {
         match change {
             Some((pct, colour)) => {
                 let text = gtk::glib::markup_escape_text(&crate::header::change_text(pct));
-                let colour = gtk::glib::markup_escape_text(colour);
-                self.change_label.set_markup(&format!("<span foreground=\"{colour}\">{text}</span>"));
+                match colour {
+                    Some(colour) => {
+                        let colour = gtk::glib::markup_escape_text(colour);
+                        self.change_label.set_markup(&format!("<span foreground=\"{colour}\">{text}</span>"));
+                    }
+                    None => self.change_label.set_markup(&text),
+                }
                 self.change_label.set_visible(true);
             }
             None => {

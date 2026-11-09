@@ -2002,18 +2002,18 @@ mod tests {
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
             assert_eq!(right.group.title(), "Right");
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
             assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Template, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
 
             // Out of the center, the title is offered by all three.
             center.set(Vec::new());
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(left.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
             // The stripe into the left is offered by none.
             left.set(vec![Part::Symbol, Part::Stripe]);
             assert_eq!(
@@ -2061,11 +2061,11 @@ mod tests {
                 header_sections(moved, move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             restore();
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
             assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);
             // And the lists go on from there.
             center.set(Vec::new());

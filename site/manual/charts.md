@@ -452,12 +452,12 @@ The header is the line at a chart's top-left and the row centred across its top.
 |---|---|
 | **Symbol** | The symbol, with its venue. Click it to [find another](/manual/symbols/) |
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
-| **Daily change** | The day's move as a percentage, in the chart's up and down colours. The same figure as the sidebar's |
+| **Daily change** | The day's move as a percentage, green for a rise and red for a fall in the theme's own tones, swapped on a chart set to red up, and in the header's text when it has not moved. The same figure as the sidebar's |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
 | **Chart title** | The chart's own title. Click it to [edit it](#chart-titles) |
 | **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
 
-Out of the box the left shows the symbol and the resolution, and the center the chart title.
+Out of the box the left shows the data feed, the symbol, the resolution and the daily change, and the center the chart title.
 
 Edit it in Preferences › Charts › **Header**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
 
