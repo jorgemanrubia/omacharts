@@ -8287,8 +8287,14 @@ impl Window {
         let this = self.clone();
         let done = at_price.done();
         glib::spawn_future_local(async move {
-            while let Ok(done) = done.recv().await {
-                let panes = at_price.finished(done);
+            while let Ok(first) = done.recv().await {
+                // Whatever else is back by now goes in before the charts
+                // are worked out again, once: a scroll back asks a day of
+                // pieces at a time.
+                let mut panes = at_price.finished(first);
+                while let Ok(more) = done.try_recv() {
+                    panes.extend(at_price.finished(more));
+                }
                 this.recompute_panes(&panes);
             }
         });

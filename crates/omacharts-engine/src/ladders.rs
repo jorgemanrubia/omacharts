@@ -23,6 +23,7 @@
 //! reports with no price at all is in [`Sides::unknown`] alone.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
 
@@ -520,6 +521,13 @@ impl Day {
         self.total = total;
     }
 
+    /// What traded in the minutes of this day opening in `from..to`.
+    pub fn piece(&self, from: i64, to: i64) -> Ladder {
+        let (a, b) = self.span(from, to);
+        let parts: Vec<&Ladder> = self.minutes[a..b].iter().map(|m| &m.ladder).collect();
+        sum(&parts)
+    }
+
     /// The indices of the minutes opening in `from..to`.
     fn span(&self, from: i64, to: i64) -> (usize, usize) {
         let a = self.minutes.partition_point(|m| m.ts < from);
@@ -800,14 +808,26 @@ impl HeldDay {
     }
 }
 
+/// The part of trading day `day` a span `from..to` cuts: its minutes
+/// opening in `from..to`, summed. What a period that starts or ends inside
+/// a day needs of it, held in place of the day's minutes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Piece {
+    pub day: i64,
+    pub from: i64,
+    pub to: i64,
+}
+
 /// What a chart holds of a contract's ladders: the total of every day its
-/// bars reach, the minutes of only the days a period cuts, and the minute
-/// forming now.
+/// bars reach, the pieces of the days a period cuts, the minutes of the days
+/// sealed live, and the minute forming now.
 ///
 /// A year of minutes decoded is some 280 MB, and a session profile is
-/// answered by day totals alone, so minutes are loaded a day at a time as a
-/// span needs them — see [`Held::cut`] — and a span this cannot answer
-/// exactly is answered with `None`, never with part of it.
+/// answered by day totals alone. A period that cuts a day — a regular
+/// session cuts every one — needs only that part of it, so the part is read
+/// and summed elsewhere and held as one ladder, a few kilobytes, rather than
+/// the day's minutes, a megabyte: see [`Held::take_wanted`]. A span this
+/// cannot answer exactly is answered with `None`, never with part of it.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Held {
     pub tick_size: f64,
@@ -820,9 +840,15 @@ pub struct Held {
     pub floor: i64,
     /// The first trading day held from its start, for spans counted in days.
     pub floor_day: i64,
-    /// Days a span was asked of and could not be answered for want of their
-    /// minutes, for the caller to load: see [`Held::take_wanted`].
-    pub wanted: RefCell<Vec<i64>>,
+    /// The parts of days without their minutes that spans have cut, each
+    /// summed.
+    pub pieces: HashMap<Piece, Ladder>,
+    /// Pieces a span was asked of and could not be answered without, for the
+    /// caller to read: see [`Held::take_wanted`].
+    pub wanted: RefCell<Vec<Piece>>,
+    /// Pieces that answered a span since [`Held::take_used`] last took them:
+    /// what is not to be let go to make room.
+    pub used: RefCell<HashSet<Piece>>,
 }
 
 impl Held {
@@ -836,19 +862,41 @@ impl Held {
         let days: Vec<HeldDay> = series.days.iter().cloned().filter_map(HeldDay::whole).collect();
         let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
         let floor_day = days.first().map_or(i64::MAX, |d| d.day.day + 1);
-        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day, wanted: RefCell::default() }
+        Held { tick_size: series.tick_size, days, floor, floor_day, ..Held::default() }
     }
 
     pub fn is_empty(&self) -> bool {
         self.days.is_empty() && self.forming.is_none()
     }
 
-    /// The days [`Self::between`] was asked about and could not answer for
-    /// want of their minutes, newest first, taken.
-    pub fn take_wanted(&self) -> Vec<i64> {
+    /// The pieces [`Self::between`] was asked about and could not answer
+    /// without, newest day first, taken.
+    pub fn take_wanted(&self) -> Vec<Piece> {
         let mut wanted = std::mem::take(&mut *self.wanted.borrow_mut());
-        wanted.sort_unstable_by(|a, b| b.cmp(a));
+        wanted.sort_unstable_by(|a, b| b.day.cmp(&a.day).then(b.from.cmp(&a.from)));
         wanted
+    }
+
+    /// The pieces that answered a span since this was last called, taken.
+    pub fn take_used(&self) -> HashSet<Piece> {
+        std::mem::take(&mut *self.used.borrow_mut())
+    }
+
+    /// Put in a piece read for a span, unless its day has since come whole
+    /// or gone. Whether it went in.
+    pub fn put_piece(&mut self, piece: Piece, ladder: Ladder) -> bool {
+        let Ok(at) = self.days.binary_search_by_key(&piece.day, |d| d.day.day) else { return false };
+        if self.days[at].whole {
+            return false;
+        }
+        self.pieces.insert(piece, ladder);
+        true
+    }
+
+    /// Roughly what the pieces hold, in bytes.
+    pub fn piece_bytes(&self) -> usize {
+        self.pieces.values().map(|l| l.levels.capacity() * std::mem::size_of::<Level>()).sum::<usize>()
+            + self.pieces.len() * std::mem::size_of::<(Piece, Ladder)>()
     }
 
     /// Roughly what it holds, in bytes.
@@ -864,6 +912,7 @@ impl Held {
                     + (d.day.minutes.capacity() - d.day.minutes.len()) * std::mem::size_of::<Minute>()
             })
             .sum::<usize>()
+            + self.piece_bytes()
             + self.forming.as_ref().map_or(0, minute)
     }
 
@@ -879,9 +928,11 @@ impl Held {
         self.span(from, to).filter(|d| !d.whole && !d.inside(from, to)).map(|d| d.day.day).collect()
     }
 
-    /// Put a day's minutes in, in place of its total alone.
+    /// Put a day's minutes in, in place of its total alone and any pieces.
     pub fn load(&mut self, day: Day) {
         let Some(held) = HeldDay::whole(day) else { return };
+        let number = held.day.day;
+        self.pieces.retain(|piece, _| piece.day != number);
         match self.days.binary_search_by_key(&held.day.day, |d| d.day.day) {
             Ok(at) => self.days[at] = held,
             Err(at) => self.days.insert(at, held),
@@ -892,7 +943,7 @@ impl Held {
     /// forming one included: whole days by their totals, the loose minutes
     /// at either end one by one. `None` when that cannot be told exactly:
     /// the span starts before [`Self::floor`], or cuts a day whose minutes
-    /// are not loaded.
+    /// are not loaded and whose piece is not read yet.
     pub fn between(&self, from: i64, to: i64) -> Option<Ladder> {
         if from < self.floor {
             return None;
@@ -906,11 +957,20 @@ impl Held {
                 let (i, j) = held.day.span(from, to);
                 parts.extend(held.day.minutes[i..j].iter().map(|m| &m.ladder));
             } else {
-                let mut wanted = self.wanted.borrow_mut();
-                if !wanted.contains(&held.day.day) {
-                    wanted.push(held.day.day);
+                let piece = Piece { day: held.day.day, from, to };
+                match self.pieces.get(&piece) {
+                    Some(ladder) => {
+                        parts.push(ladder);
+                        self.used.borrow_mut().insert(piece);
+                    }
+                    None => {
+                        let mut wanted = self.wanted.borrow_mut();
+                        if !wanted.contains(&piece) {
+                            wanted.push(piece);
+                        }
+                        short = true;
+                    }
                 }
-                short = true;
             }
         }
         if short {
@@ -961,6 +1021,8 @@ impl Held {
             held.day.insert(minute);
         } else {
             held.day.total.add(&minute);
+            // A piece of it may have had this minute in its span.
+            self.pieces.retain(|piece, _| piece.day != number);
         }
     }
 }
@@ -1696,7 +1758,7 @@ mod tests {
             .map(|d| HeldDay::total(d.day, d.first_ts().unwrap(), d.last_ts().unwrap(), d.total.clone()))
             .collect::<Vec<_>>();
         let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
-        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day: i64::MIN, wanted: RefCell::default() }
+        Held { tick_size: series.tick_size, days, floor, floor_day: i64::MIN, ..Held::default() }
     }
 
     /// A chart holds day totals and loads a day's minutes only when a span
@@ -1745,6 +1807,45 @@ mod tests {
         held.seal(days.of(next), forming);
         assert_eq!(held.forming, None);
         assert_eq!(everything(&held), before + 5);
+    }
+
+    /// A span that cuts days held by their totals asks for the pieces it
+    /// cuts, not the days; with them in it answers what summing every
+    /// minute answers, and holds no day's minutes. A day that comes whole,
+    /// or takes a minute while held by its total, lets its pieces go.
+    #[test]
+    fn a_span_that_cuts_days_is_answered_from_their_pieces() {
+        let instrument = es();
+        let days = Days::new(&instrument);
+        let mut rng = Rng(0x0b1e_c7ed);
+        let series = series(&mut rng, &days, at(2026, 10, 12, 0, 0), 5);
+        let mut held = by_totals(&series);
+        let (from, to) = (days.start(series.days[1].day) + 3 * 3_600 + 420, days.start(series.days[3].day) + 5 * 3_600);
+
+        assert_eq!(held.between(from, to), None);
+        let wanted = held.take_wanted();
+        assert_eq!(wanted.iter().map(|p| p.day).collect::<Vec<_>>(), vec![series.days[3].day, series.days[1].day]);
+        assert!(held.take_wanted().is_empty(), "taken");
+        for piece in &wanted {
+            let day = series.days.iter().find(|d| d.day == piece.day).unwrap();
+            assert!(held.put_piece(*piece, day.piece(piece.from, piece.to)));
+        }
+        assert_eq!(trimmed(&held.between(from, to).unwrap()), trimmed(&brute(&series, from, to)));
+        assert!(held.days.iter().all(|d| !d.whole), "no day's minutes");
+        assert_eq!(held.take_used().len(), 2, "both drawn from");
+        assert!(held.take_wanted().is_empty());
+
+        // A day come whole answers from its minutes; its piece goes.
+        held.load(series.days[1].clone());
+        assert_eq!(held.pieces.len(), 1);
+        assert!(!held.put_piece(wanted[1], Ladder::new()), "not for a whole day");
+        assert_eq!(trimmed(&held.between(from, to).unwrap()), trimmed(&brute(&series, from, to)));
+
+        // A minute sealed into a day held by its total: its piece may be stale.
+        let last = series.days[3].last_ts().unwrap();
+        held.seal(series.days[3].day, Minute::opening(last + 60, 7_500.0));
+        assert!(held.pieces.is_empty());
+        assert_eq!(held.between(from, to), None);
     }
 
     /// Spans counted in days, for daily bars: the totals of the days named,

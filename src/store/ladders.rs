@@ -206,7 +206,8 @@ impl Store {
     /// month is a few hundred kilobytes rather than a month of decoded
     /// minutes. A day with minutes sealed live and not yet folded into its
     /// row comes whole, its tail applied. The floor is the first minute
-    /// stored for `key` at all: the provider's history goes no further.
+    /// stored for `key` at all, or the start of the span known whole it is
+    /// in: the provider's history goes no further.
     pub fn load_ladder_held(&self, key: &str, days: &Days, from_day: i64, to_day: i64) -> Held {
         let mut held = Held::new(0.0);
         let tailed: Vec<i64> = self
@@ -250,7 +251,14 @@ impl Store {
                 |r| r.get(0),
             )
             .ok()
-            .flatten();
+            .flatten()
+            // From where the span it is in was known: nothing traded between
+            // there and the first minute, so a period from before the first
+            // trade — the bar it falls in, say — is known whole all the same.
+            .map(|floor| {
+                let known = spans(&self.conn, key, floor, floor).unwrap_or_default();
+                known.iter().find(|(a, b)| (*a..*b).contains(&floor)).map_or(floor, |(a, _)| (*a).min(floor))
+            });
         held.floor = floor.unwrap_or(i64::MAX);
         held.floor_day = match floor {
             Some(floor) => {
@@ -497,6 +505,25 @@ mod tests {
         assert_eq!(store.ladder_coverage(KEY), vec![(0, 540)]);
         assert_eq!(store.missing_ladders(KEY, 0, 600), vec![(540, 600)], "the forming minute is not held yet");
         assert_totals_exact(&back);
+    }
+
+    /// The provider asked from the first bar's open, whose first trade came
+    /// minutes later: the ladders are known from where they were asked, so a
+    /// period from that open is drawn from them, not estimated.
+    #[test]
+    fn the_floor_is_where_the_span_known_whole_begins() {
+        let store = Store::memory().unwrap();
+        let days = Days::fixed(0);
+        let minutes = [minute(1_080, 30_000, 2, 1), minute(1_140, 30_001, 1, 1)];
+        store.save_ladder_history(KEY, TICK, &days, 0, 3_600, &minutes).unwrap();
+        let held = store.load_ladder_held(KEY, &days, 0, 1);
+        assert_eq!(held.floor, 0, "not the first trade's minute, 1080");
+        assert_eq!(held.between(0, 3_600).map(|l| l.sides.volume()), Some(5));
+
+        // Minutes sealed live with nothing known before them start where they do.
+        let live = Store::memory().unwrap();
+        live.append_ladder_minute(KEY, TICK, 0, &minute(600, 30_000, 1, 1), None).unwrap();
+        assert_eq!(live.load_ladder_held(KEY, &days, 0, 1).floor, 600);
     }
 
     /// A disconnect is a hole the loader fills, and the provider's minutes

@@ -408,6 +408,14 @@ pub trait Ladders: Send + Sync {
     /// further back than this.
     fn history_days(&self) -> u32;
 
+    /// The contract `symbol` is served from now, when a root is served as
+    /// its front month and that month rolls: the ladders of one month are
+    /// not another's, so what is kept is kept by contract. `None` for a feed
+    /// whose symbol is the contract.
+    fn contract(&self, _symbol: &str) -> Option<String> {
+        None
+    }
+
     /// The minutes of `symbol` opening in `from..to`, unix seconds, oldest
     /// first, priced in whole ticks of `tick_size`. One request, made now,
     /// on the caller's thread, which is never the one drawing the window.

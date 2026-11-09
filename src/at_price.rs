@@ -10,9 +10,16 @@
 //!
 //! **What is loaded.** A chart's ladders start as the stored total of every
 //! trading day its bars reach: a session profile over a month is answered
-//! from those alone. The minutes of a day are read only when a period cuts
-//! through it, and only for the newest [`MAX_WHOLE_DAYS`] such days; an
-//! older one keeps the estimate.
+//! from those alone. A period that cuts through a day — a regular session
+//! cuts every one — has that part of the day read on this registry's thread,
+//! summed there, and held as one ladder, a piece, rather than the day's
+//! minutes: every period a chart shows is drawn from what traded, however
+//! far back, in a few kilobytes a period. Pieces are let go only past
+//! [`PIECE_BYTES`], and never one the charts just drew from.
+//!
+//! **Which contract.** A root served as its front month is kept under the
+//! month it is read from, so the ladders of the month before a roll are
+//! never drawn under the month after's bars.
 //!
 //! **What is asked.** On the first chart of a contract the store is asked
 //! which minutes from the chart's first bar to now it knows nothing about —
@@ -34,42 +41,47 @@
 //! Nothing here runs on a timer.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use omacharts_engine::ladders::{Day, Days, Held, Minute};
+use omacharts_engine::ladders::{Day, Days, Held, Ladder, Minute, Piece};
 use omacharts_engine::{Instrument, LadderUpdate, Provider, Subscription};
 
 use crate::store::Store;
 
-/// The most days whose minutes one contract's charts hold at once. A day is
-/// about a megabyte decoded; past this a period that cuts an older day is
-/// drawn from the estimate rather than from more memory.
-pub const MAX_WHOLE_DAYS: usize = 12;
+/// The most one contract's pieces hold, in bytes. A session's piece is some
+/// ten kilobytes, so this is thousands of periods; past it pieces no chart
+/// drew from last go first, and a period past what that frees keeps the
+/// estimate rather than taking more memory.
+pub const PIECE_BYTES: usize = 64 << 20;
 
 /// How long after a minute closes the provider is taken to have it whole.
 pub const SETTLED: i64 = 30;
 
 /// What the registry's thread is asked to do, in order.
+///
+/// `key` is the charts' name for a contract, `stored` the store's: the
+/// contract it is read from, which for a root is the month it rolled to.
 enum Job {
     /// Fill the store's holes in `from..now` from the provider, then read
     /// back what a chart holds from `from` on.
-    Load { key: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
+    Load { key: String, stored: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
     /// The feed is back: fill the store's holes in `from..now` from the
     /// provider, and read back whole the days that changed.
-    Fill { key: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
-    /// One day's minutes.
-    Day { key: String, day: i64 },
+    Fill { key: String, stored: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
+    /// The parts of one day that spans cut, each summed.
+    Pieces { key: String, stored: String, day: i64, pieces: Vec<Piece> },
     /// A minute sealed live, and the span the feed knows complete.
-    Append { key: String, tick_size: f64, day: i64, minute: Minute, covered: Option<(i64, i64)> },
+    Append { stored: String, tick_size: f64, day: i64, minute: Minute, covered: Option<(i64, i64)> },
 }
 
 /// What the thread hands back.
 pub enum Done {
-    Loaded { key: String, from: i64, held: Held, asked: Vec<(i64, i64)> },
-    Day { key: String, day: Day },
+    Loaded { key: String, from: i64, held: Box<Held>, asked: Vec<(i64, i64)> },
+    /// Pieces of one day, summed; none for a day the store does not have.
+    Pieces { key: String, pieces: Vec<(Piece, Ladder)> },
     /// A fill after the feed came back: the days it changed, whole.
     Filled { key: String, days: Vec<Day>, asked: Vec<(i64, i64)> },
 }
@@ -83,6 +95,8 @@ struct Mailbox {
 
 struct Entry {
     symbol: String,
+    /// What the store keeps it under: see [`Job`].
+    stored: String,
     instrument: Instrument,
     days: Days,
     tick_size: f64,
@@ -96,8 +110,10 @@ struct Entry {
     _live: Option<Box<dyn Subscription>>,
     /// Minutes that sealed before the load came back, put in after it.
     early: Vec<Minute>,
-    /// Days whose minutes have been asked for.
-    asked: HashSet<i64>,
+    /// Pieces asked for and not back yet.
+    asked: HashSet<Piece>,
+    /// The pieces held, in the order they came.
+    pieces: VecDeque<Piece>,
     /// Fills on their way.
     filling: usize,
     /// Minutes sealed live while a fill was on its way, put back on top of
@@ -204,9 +220,11 @@ impl AtPrice {
             entry.watchers.insert(pane);
             if from < entry.from {
                 entry.from = from;
+                let stored = entry.stored.clone();
                 drop(entries);
                 self.send(Job::Load {
                     key: key.to_string(),
+                    stored,
                     symbol: symbol.to_string(),
                     instrument: instrument.clone(),
                     tick_size,
@@ -218,10 +236,12 @@ impl AtPrice {
         }
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let live = self.open(symbol, tick_size, &mailbox);
+        let stored = stored_key(key, symbol, self.provider.ladders().and_then(|ladders| ladders.contract(symbol)));
         entries.insert(
             key.to_string(),
             Entry {
                 symbol: symbol.to_string(),
+                stored: stored.clone(),
                 instrument: instrument.clone(),
                 days: Days::new(instrument),
                 tick_size,
@@ -233,6 +253,7 @@ impl AtPrice {
                 _live: live,
                 early: Vec::new(),
                 asked: HashSet::new(),
+                pieces: VecDeque::new(),
                 filling: 0,
                 sealed_meanwhile: Vec::new(),
                 refill_at: None,
@@ -241,6 +262,7 @@ impl AtPrice {
         drop(entries);
         self.send(Job::Load {
             key: key.to_string(),
+            stored,
             symbol: symbol.to_string(),
             instrument: instrument.clone(),
             tick_size,
@@ -304,24 +326,40 @@ impl AtPrice {
         read(entries.get(key).filter(|entry| entry.loaded).map(|entry| &entry.held))
     }
 
-    /// Ask for the minutes of the days the last computation of `key` found
-    /// it could not answer without, newest first, up to [`MAX_WHOLE_DAYS`].
+    /// Ask for the pieces the last computation of `key` found it could not
+    /// answer without, a job a day, newest first; first making room for
+    /// them, if the pieces are over [`PIECE_BYTES`], by letting go of the
+    /// oldest that computation did not draw from.
     pub fn load_wanted(&self, key: &str) {
-        let mut asks = Vec::new();
-        {
+        let mut asks: Vec<(i64, Vec<Piece>)> = Vec::new();
+        let stored = {
             let mut entries = self.entries.borrow_mut();
             let Some(entry) = entries.get_mut(key) else { return };
-            let whole = entry.held.days.iter().filter(|d| d.whole).count();
-            let room = MAX_WHOLE_DAYS.saturating_sub(whole.max(entry.asked.len()));
-            let fresh: Vec<i64> =
-                entry.held.take_wanted().into_iter().filter(|d| !entry.asked.contains(d)).take(room).collect();
-            for day in fresh {
-                entry.asked.insert(day);
-                asks.push(day);
+            let used = entry.held.take_used();
+            let wanted = entry.held.take_wanted();
+            if wanted.is_empty() {
+                return;
             }
-        }
-        for day in asks {
-            self.send(Job::Day { key: key.to_string(), day });
+            entry.make_room(&used);
+            if entry.held.piece_bytes() >= PIECE_BYTES {
+                // Everything held was just drawn from: the rest keep the
+                // estimate rather than push it out.
+                return;
+            }
+            for piece in wanted {
+                // Wanted by a computation before it came back.
+                if entry.held.pieces.contains_key(&piece) || !entry.asked.insert(piece) {
+                    continue;
+                }
+                match asks.last_mut() {
+                    Some((day, pieces)) if *day == piece.day => pieces.push(piece),
+                    _ => asks.push((piece.day, vec![piece])),
+                }
+            }
+            entry.stored.clone()
+        };
+        for (day, pieces) in asks {
+            self.send(Job::Pieces { key: key.to_string(), stored: stored.clone(), day, pieces });
         }
     }
 
@@ -349,16 +387,49 @@ impl AtPrice {
                         held.load(day.day);
                     }
                 }
+                // Pieces are kept but for days the provider was just asked
+                // about, which may have changed.
+                let changed = |day: i64| asked.iter().any(|(a, b)| (entry.days.of(*a)..=entry.days.of(b - 1)).contains(&day));
+                let order = std::mem::take(&mut entry.pieces);
+                for piece in order {
+                    if changed(piece.day) {
+                        continue;
+                    }
+                    if let Some(ladder) = entry.held.pieces.remove(&piece)
+                        && held.put_piece(piece, ladder)
+                    {
+                        entry.pieces.push_back(piece);
+                    }
+                }
+                entry.asked.retain(|piece| !changed(piece.day));
                 if held.tick_size <= 0.0 {
                     held.tick_size = entry.tick_size;
                 }
-                entry.held = held;
+                entry.held = *held;
                 entry.loaded = true;
                 entry.watchers.iter().copied().collect()
             }
-            Done::Day { key, day } => {
+            Done::Pieces { key, pieces } => {
                 let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
-                entry.held.load(day);
+                let mut any = false;
+                for (piece, ladder) in pieces {
+                    // Not asked for any more: a load since may have changed it.
+                    if !entry.asked.remove(&piece) {
+                        continue;
+                    }
+                    if entry.held.put_piece(piece, ladder) {
+                        entry.pieces.push_back(piece);
+                        any = true;
+                    }
+                }
+                // Pieces a day let go of when it came whole leave the order.
+                if entry.pieces.len() > 2 * entry.held.pieces.len() + 64 {
+                    let held = &entry.held.pieces;
+                    entry.pieces.retain(|piece| held.contains_key(piece));
+                }
+                if !any {
+                    return Vec::new();
+                }
                 entry.watchers.iter().copied().collect()
             }
             Done::Filled { key, days, asked } => {
@@ -430,7 +501,7 @@ impl AtPrice {
                     };
                     let day = entry.days.of(minute.ts);
                     appends.push(Job::Append {
-                        key: key.clone(),
+                        stored: entry.stored.clone(),
                         tick_size: entry.tick_size,
                         day,
                         minute: minute.clone(),
@@ -452,6 +523,7 @@ impl AtPrice {
                     entry.filling += 1;
                     fills.push(Job::Fill {
                         key: key.clone(),
+                        stored: entry.stored.clone(),
                         symbol: entry.symbol.clone(),
                         instrument: entry.instrument.clone(),
                         tick_size: entry.tick_size,
@@ -471,6 +543,41 @@ impl AtPrice {
     /// The symbol a key is served as, for tests and reports.
     pub fn symbol_of(&self, key: &str) -> Option<String> {
         self.entries.borrow().get(key).map(|entry| entry.symbol.clone())
+    }
+}
+
+/// What the store keeps `key`'s ladders under: the key itself, or, for a
+/// symbol the feed reads from a contract of another name — a root's front
+/// month — the key and that contract.
+fn stored_key(key: &str, symbol: &str, contract: Option<String>) -> String {
+    match contract {
+        Some(contract) if contract != symbol => format!("{key}@{contract}"),
+        _ => key.to_string(),
+    }
+}
+
+impl Entry {
+    /// Let go of the oldest pieces not in `used` until what is held is under
+    /// [`PIECE_BYTES`], or nothing unused is left to let go.
+    fn make_room(&mut self, used: &HashSet<Piece>) {
+        let mut bytes = self.held.piece_bytes();
+        if bytes < PIECE_BYTES {
+            return;
+        }
+        let mut kept = VecDeque::with_capacity(self.pieces.len());
+        while let Some(piece) = self.pieces.pop_front() {
+            if bytes >= PIECE_BYTES && !used.contains(&piece) {
+                if let Some(ladder) = self.held.pieces.remove(&piece) {
+                    bytes = bytes.saturating_sub(
+                        ladder.levels.capacity() * std::mem::size_of::<omacharts_engine::ladders::Level>()
+                            + std::mem::size_of::<(Piece, Ladder)>(),
+                    );
+                }
+            } else {
+                kept.push_back(piece);
+            }
+        }
+        self.pieces = kept;
     }
 }
 
@@ -514,30 +621,34 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
     let Some(ladders) = provider.ladders() else { return };
     while let Ok(job) = inbox.recv() {
         let answer = match job {
-            Job::Load { key, symbol, instrument, tick_size, from, now } => {
+            Job::Load { key, stored, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
                 let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
-                let _ = store.compact_ladders(&key, days.of(now));
-                let asked = fill(&store, ladders, &key, &symbol, tick_size, &days, from, now);
-                let held = store.load_ladder_held(&key, &days, days.of(from), days.of(now) + 1);
-                Done::Loaded { key, from, held, asked }
+                let _ = store.compact_ladders(&stored, days.of(now));
+                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
+                let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
+                Done::Loaded { key, from, held: Box::new(held), asked }
             }
-            Job::Fill { key, symbol, instrument, tick_size, from, now } => {
+            Job::Fill { key, stored, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
                 let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
-                let asked = fill(&store, ladders, &key, &symbol, tick_size, &days, from, now);
+                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
                 let mut numbers: Vec<i64> = asked.iter().flat_map(|(a, b)| days.of(*a)..=days.of(b - 1)).collect();
                 numbers.sort_unstable();
                 numbers.dedup();
-                let changed = numbers.into_iter().filter_map(|day| store.load_ladder_day(&key, day)).collect();
+                let changed = numbers.into_iter().filter_map(|day| store.load_ladder_day(&stored, day)).collect();
                 Done::Filled { key, days: changed, asked }
             }
-            Job::Day { key, day } => match store.load_ladder_day(&key, day) {
-                Some(day) => Done::Day { key, day },
+            // The day is read and dropped here; only its pieces cross.
+            Job::Pieces { key, stored, day, pieces } => match store.load_ladder_day(&stored, day) {
+                Some(day) => {
+                    let pieces = pieces.into_iter().map(|piece| (piece, day.piece(piece.from, piece.to))).collect();
+                    Done::Pieces { key, pieces }
+                }
                 None => continue,
             },
-            Job::Append { key, tick_size, day, minute, covered } => {
-                let _ = store.append_ladder_minute(&key, tick_size, day, &minute, covered);
+            Job::Append { stored, tick_size, day, minute, covered } => {
+                let _ = store.append_ladder_minute(&stored, tick_size, day, &minute, covered);
                 continue;
             }
         };
@@ -830,6 +941,128 @@ mod tests {
         sync(&at_price, 9);
         assert_eq!(asked.lock().unwrap().spans.len(), 3, "and nothing more");
         at_price.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Everything back from the thread within a few seconds, put in place.
+    fn settle_all(at_price: &AtPrice, until: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !until() {
+            assert!(std::time::Instant::now() < deadline, "the thread did not answer in time");
+            match at_price.done().try_recv() {
+                Ok(done) => {
+                    at_price.finished(done);
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+    }
+
+    /// A regular session cuts every trading day it is in. Twenty days back,
+    /// far more than a chart ever held the minutes of, every one is drawn
+    /// from what traded once its piece is read — a few kilobytes each, and
+    /// never the days' minutes.
+    #[test]
+    fn every_period_that_cuts_a_day_is_answered_however_far_back() {
+        let path = scratch("pieces");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        let back = 20 * 86_400;
+        at_price.want(1, KEY, "ES", &es(), NOW - back);
+        settle(&at_price);
+
+        // Three hours from 03:20 UTC on each of the twenty days before:
+        // inside a CME day, never the whole of one.
+        let spans: Vec<(i64, i64)> = (1..=20).map(|k| (NOW - k * 86_400, NOW - k * 86_400 + 3 * HOUR)).collect();
+        let answers = || {
+            at_price.with_held(KEY, |held| {
+                let held = held.unwrap();
+                spans.iter().map(|(a, b)| held.between(*a, *b).map(|l| l.sides.volume())).collect::<Vec<_>>()
+            })
+        };
+        assert!(answers().iter().all(Option::is_none), "the days are held by their totals alone");
+        at_price.load_wanted(KEY);
+        settle_all(&at_price, || answers().iter().all(Option::is_some));
+        assert!(answers().iter().all(|volume| *volume == Some(180 * 5)), "three hours of minutes, five each");
+        at_price.with_held(KEY, |held| {
+            let held = held.unwrap();
+            assert!(held.days.iter().all(|d| !d.whole), "no day's minutes were read into memory");
+            assert_eq!(held.pieces.len(), 20);
+            assert!(held.piece_bytes() < 20 * 4_096, "{} bytes", held.piece_bytes());
+        });
+
+        // Asked again, nothing more goes to the thread: all are held.
+        answers();
+        at_price.load_wanted(KEY);
+        assert!(at_price.entries.borrow().get(KEY).unwrap().asked.is_empty());
+        at_price.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A feed that reads a root from its front month: the month is part of
+    /// what is kept, so the month after a roll never draws the one before.
+    struct Monthly(Fake, &'static str);
+
+    impl Ladders for Monthly {
+        fn serves(&self, symbol: &str) -> bool {
+            Ladders::serves(&self.0, symbol)
+        }
+        fn history_days(&self) -> u32 {
+            self.0.history_days()
+        }
+        fn contract(&self, _: &str) -> Option<String> {
+            Some(self.1.to_string())
+        }
+        fn minutes(&self, symbol: &str, tick: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
+            self.0.minutes(symbol, tick, from, to)
+        }
+        fn watch(&self, symbol: &str, tick: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
+            self.0.watch(symbol, tick, sink)
+        }
+    }
+
+    impl Provider for Monthly {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn label(&self) -> &'static str {
+            "Fake"
+        }
+        fn delay_minutes(&self, _: InstrumentKind) -> u32 {
+            0
+        }
+        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+            Some(instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            &[]
+        }
+        fn bars(&self, _: &str, _: Timeframe, _: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+            Ok(Vec::new())
+        }
+        fn ladders(&self) -> Option<&dyn Ladders> {
+            Some(self)
+        }
+    }
+
+    #[test]
+    fn a_root_is_kept_by_the_month_it_is_read_from_and_a_roll_reads_afresh() {
+        let path = scratch("roll");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        for month in ["ESZ26_FUT_CME", "ESH27_FUT_CME"] {
+            let at_price = AtPrice::new(Arc::new(Monthly(Fake(asked.clone()), month)), Some(path.clone())).unwrap();
+            at_price.set_clock(now);
+            at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
+            settle(&at_price);
+            at_price.shutdown();
+        }
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW - HOUR, NOW); 2], "the new month asked for afresh");
+        let store = Store::open_at(&path).unwrap();
+        assert!(!store.ladder_days("fake:ES@ESZ26_FUT_CME").is_empty());
+        assert!(!store.ladder_days("fake:ES@ESH27_FUT_CME").is_empty());
+        assert!(store.ladder_days(KEY).is_empty());
+        assert_eq!(stored_key(KEY, "ESZ26", Some("ESZ26".into())), KEY, "a dated contract is its own");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
