@@ -646,7 +646,12 @@ impl ChartPane {
                 // An untitled chart's title, alone in the centre, is the
                 // whole of the top between the two sides: pointed at
                 // anywhere there it offers Add title, and clicked, it edits.
+                // Being typed into, it is a title again, its own width and
+                // centred over the chart where a title is drawn: spanning,
+                // the entry sat in the middle of the room between the two
+                // sides, left of centre beside a wide corner.
                 let spans = untitled.has_css_class(TITLE_UNTITLED)
+                    && lone_title.visible_child_name().as_deref() != Some("editing")
                     && strip_row.first_child().is_some_and(|child| child == lone_title)
                     && lone_title.next_sibling().is_none();
                 let place = center_place(overlay.width(), left, size.width(), right, spans);
@@ -2388,6 +2393,77 @@ mod tests {
         assert_eq!(center_place(496, 106, 95, 218, true), Some((114, 156)));
         // And no more than a title would have where there is no room.
         assert_eq!(center_place(300, 160, 90, 100, true), None);
+    }
+
+    /// F2 on an untitled chart types the title where a title is drawn:
+    /// centred over the chart, not in the middle of the room between the
+    /// two sides, which beside a wide corner is left of it. Moved to the
+    /// left of the header, it is typed there.
+    #[test]
+    fn an_untitled_title_is_typed_where_a_title_is_drawn() {
+        use crate::header::{Header, Part};
+        use gtk::gdk;
+        crate::ui::on_gtk(|| {
+            let Some(display) = gdk::Display::default() else { return };
+            if adw::init().is_err() {
+                return;
+            }
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&crate::theming::stylesheet(&theme, &scheme));
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            // A corner as wide as a trading one, so the room between the two
+            // sides is not centred on the chart.
+            pane.corner.prepend(&gtk::Label::new(Some("Buy  Sell  1 contract  +$1,250.00")));
+            let window = gtk::Window::new();
+            window.set_default_size(900, 300);
+            window.set_child(Some(&pane.root));
+            window.present();
+            let settle = || {
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..30 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            };
+            let middle = |widget: &gtk::Widget| {
+                let bounds = widget.compute_bounds(&pane.root).expect("laid out");
+                bounds.x() + bounds.width() / 2.0
+            };
+
+            pane.write_title("Plan");
+            settle();
+            let drawn = middle(pane.title_label.upcast_ref());
+            pane.write_title("");
+            settle();
+            pane.begin_title_edit();
+            settle();
+            let entry = pane.title_entry.upcast_ref::<gtk::Widget>();
+            assert!(entry.is_mapped(), "F2 did not show the entry");
+            assert!((middle(entry) - drawn).abs() <= 1.0, "typed at {}, drawn at {drawn}", middle(entry));
+            assert_eq!(gtk::prelude::EntryExt::alignment(&pane.title_entry), 0.5);
+            pane.finish_title_edit(false);
+
+            let standard = Header::standard();
+            let mut left = standard.left.clone();
+            left.push(Part::Title);
+            *pane.header.borrow_mut() = Header { left, center: Vec::new(), right: standard.right.clone() };
+            pane.arrange_header();
+            settle();
+            pane.begin_title_edit();
+            settle();
+            let entry = pane.title_entry.compute_bounds(&pane.root).expect("laid out");
+            let symbol = pane.symbol_button.compute_bounds(&pane.root).expect("laid out");
+            assert!(pane.title_part.parent().is_some_and(|row| row == pane.header_row));
+            assert!(entry.x() > symbol.x() + symbol.width(), "typed off the line it is in");
+            assert!(entry.x() < drawn - 100.0, "typed in the centre, not on the left");
+            pane.finish_title_edit(false);
+            window.close();
+        });
     }
 
     #[test]
