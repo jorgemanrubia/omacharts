@@ -4981,8 +4981,17 @@ impl Window {
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
-                    trading_symbol: pane.trading_symbol.borrow().as_ref().map(|traded| traded.symbol.clone()),
-                    trading_suffix: pane.trading_symbol.borrow().as_ref().and_then(|traded| traded.suffix.clone()),
+                    // One still to be found is written back as it was kept.
+                    trading_symbol: pane
+                        .trading_symbol
+                        .borrow()
+                        .as_ref()
+                        .map(|traded| traded.symbol.clone())
+                        .or_else(|| pane.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())),
+                    trading_suffix: match pane.trading_symbol.borrow().as_ref() {
+                        Some(traded) => traded.suffix.clone(),
+                        None => pane.trading_pending.borrow().as_ref().and_then(|(_, suffix)| suffix.clone()),
+                    },
                     auto_scale: pane.view.price_auto(),
                     price_window: pane.view.held_price_window().map(|(low, high)| [low, high]),
                     log_scale: pane.view.price_log(),
@@ -5236,10 +5245,15 @@ impl Window {
             *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
-            *pane.trading_symbol.borrow_mut() = stored
-                .trading_symbol
-                .as_deref()
-                .and_then(|symbol| self.index.find(symbol, stored.trading_suffix.as_deref()));
+            // The window opens on the curated half, which may not name it:
+            // then it waits for the rest, as the chart's own symbol does,
+            // and nothing is traded meanwhile.
+            if let Some(symbol) = stored.trading_symbol.as_deref() {
+                match self.index.find(symbol, stored.trading_suffix.as_deref()) {
+                    Some(traded) => *pane.trading_symbol.borrow_mut() = Some(traded),
+                    None => *pane.trading_pending.borrow_mut() = Some((symbol.to_string(), stored.trading_suffix.clone())),
+                }
+            }
             pane.view.set_price_auto(stored.auto_scale);
             if let (false, Some([low, high])) = (stored.auto_scale, stored.price_window) {
                 pane.view.hold_price_window(low, high);
@@ -5328,6 +5342,23 @@ impl Window {
             })
             .collect();
         let mut charted = false;
+        // Trading symbols first, so that a chart charted below is judged
+        // against the one it trades.
+        let trading: Vec<Rc<ChartPane>> =
+            self.panes.borrow().iter().filter(|pane| pane.trading_pending.borrow().is_some()).cloned().collect();
+        for pane in trading {
+            let Some((symbol, suffix)) = pane.trading_pending.borrow().clone() else { continue };
+            let Some(traded) = self.index.find(&symbol, suffix.as_deref()) else { continue };
+            pane.trading_pending.replace(None);
+            let charted_now = pane.instrument.borrow().clone();
+            match charted_now {
+                Some(instrument) if !instrument.tracks(&traded) => {}
+                _ => *pane.trading_symbol.borrow_mut() = Some(traded),
+            }
+            pane.write_readout();
+            self.apply_marks_to(&pane);
+            charted = true;
+        }
         for (pane, symbol, suffix) in waiting {
             if let Some(instrument) = self.index.find(&symbol, suffix.as_deref()) {
                 self.show_in(&pane, instrument);
@@ -7272,7 +7303,10 @@ impl Window {
         // whether or not one is signed in to say so yet.
         let signed_in = self.trading.borrow().logins.iter().any(|login| self.desk.session(&login.id).is_some());
         let note = (!signed_in).then_some("No trading service is signed in");
-        self.search.present_futures(over, note, move |instrument| this.set_trading_symbol(id, Some(instrument)));
+        // Only what tracks what it charts: its own root's months, its micro
+        // or its full-size contract.
+        let charted = self.pane(id).and_then(|pane| pane.instrument.borrow().clone());
+        self.search.present_futures(over, note, charted, move |instrument| this.set_trading_symbol(id, Some(instrument)));
     }
 
     /// Over the focused chart, which is the one a pick changes.
@@ -7692,6 +7726,12 @@ impl Window {
     /// in the background.
     fn show_in(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
         let timeframe = pane.timeframe.get();
+        // What it trades instead goes with what it charted, unless it
+        // tracks the new one too: NQ charted where ES was must not go on
+        // trading MES at NQ's prices.
+        if self.drop_trading_symbol_unless(pane, &instrument) {
+            self.save_soon();
+        }
         // A chart moved to something its chosen feed has no name for, or
         // whose feed has gone from the order, follows the order again.
         if self.settle_feed(pane, &instrument) {
@@ -8880,18 +8920,56 @@ impl Window {
         self.pane(id).and_then(|pane| pane.trading_symbol.borrow().clone())
     }
 
+    /// The trading symbol of chart `id` as its settings name it: the one
+    /// set, or the one kept with it that is still to be found.
+    pub fn trading_symbol_named(&self, id: u32) -> Option<String> {
+        let pane = self.pane(id)?;
+        let set = pane.trading_symbol.borrow().as_ref().map(|traded| traded.display_symbol());
+        set.or_else(|| pane.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone()))
+    }
+
+    /// Forget what `pane` trades instead when it does not track
+    /// `instrument`, which it is about to chart. True when it did.
+    fn drop_trading_symbol_unless(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
+        let traded = pane.trading_symbol.borrow().clone();
+        let stale = traded.is_some_and(|traded| !instrument.tracks(&traded));
+        // One still to be found is judged by its root, as written.
+        let waiting = pane.trading_pending.borrow().as_ref().is_some_and(|(symbol, _)| {
+            instrument.kind != omacharts_engine::InstrumentKind::FutureRoot
+                || !omacharts_engine::specs::track_together(instrument.root(), omacharts_engine::specs::root_of(symbol))
+        });
+        if stale {
+            pane.trading_symbol.replace(None);
+        }
+        if waiting {
+            pane.trading_pending.replace(None);
+        }
+        stale || waiting
+    }
+
     /// Have chart `id` trade `traded` rather than what it charts, or what
     /// it charts again for `None`: its header names both at once, and its
     /// orders, position, marks and P&L follow the trading contract.
     pub fn set_trading_symbol(self: &Rc<Self>, id: u32, traded: Option<Instrument>) {
         let Some(pane) = self.pane(id) else { return };
+        // Only what tracks what it charts, at its prices: MES for ES, never
+        // NQ. The picker offers nothing else.
+        let charted = pane.instrument.borrow().clone();
+        if let Some(traded) = &traded
+            && !charted.is_some_and(|charted| charted.tracks(traded))
+        {
+            return;
+        }
+        // Set or cleared by hand: whatever was waiting to be found is
+        // settled.
+        let waited = pane.trading_pending.replace(None).is_some();
         let same = |a: &Instrument, b: &Instrument| a.symbol == b.symbol && a.suffix == b.suffix;
         let unchanged = match (pane.trading_symbol.borrow().as_ref(), traded.as_ref()) {
             (None, None) => true,
             (Some(was), Some(now)) => same(was, now),
             _ => false,
         };
-        if unchanged {
+        if unchanged && !waited {
             return;
         }
         pane.trading_symbol.replace(traded);

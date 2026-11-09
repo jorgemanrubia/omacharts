@@ -270,6 +270,11 @@ pub struct ChartPane {
     /// for a chart of ES; `None` trades what it charts. Ignored, and never
     /// shown, while trading is off. See [`ChartPane::traded`].
     pub trading_symbol: RefCell<Option<Instrument>>,
+    /// A trading symbol kept with the chart that the catalogue could not
+    /// name yet, as its symbol and suffix: the window opens on the curated
+    /// half. Held until the rest arrives to name it, written back as it
+    /// was, and nothing is traded meanwhile — never what the chart charts.
+    pub trading_pending: RefCell<Option<(String, Option<String>)>>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -742,6 +747,7 @@ impl ChartPane {
             day_amount,
             trading_size: RefCell::new(None),
             trading_symbol: RefCell::new(None),
+            trading_pending: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
@@ -1307,9 +1313,19 @@ impl ChartPane {
         crate::features::trading().then(|| self.trading_symbol.borrow().clone()).flatten()
     }
 
+    /// The trading symbol kept with this chart that is not known yet,
+    /// while trading is on: nothing is traded from it until it is.
+    pub fn trading_unresolved(&self) -> Option<String> {
+        crate::features::trading().then(|| self.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())).flatten()
+    }
+
     /// What this chart's orders, positions and P&L are of: its trading
-    /// symbol, else what it charts.
+    /// symbol, else what it charts. Nothing while its trading symbol is
+    /// still to be found: never what it charts in its place.
     pub fn traded(&self) -> Option<Instrument> {
+        if self.trading_unresolved().is_some() {
+            return None;
+        }
         self.trading_instead().or_else(|| self.instrument.borrow().clone())
     }
 
@@ -1319,6 +1335,9 @@ impl ChartPane {
         let Some(charted) = self.instrument.borrow().as_ref().map(|i| i.display_symbol()) else {
             return String::new();
         };
+        if let Some(waiting) = self.trading_unresolved() {
+            return format!("{charted}/{waiting}");
+        }
         match self.trading_instead() {
             Some(traded) => format!("{charted}/{}", traded.display_symbol()),
             None => charted,

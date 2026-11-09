@@ -333,8 +333,8 @@ fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
             let (Some(window), Some(value), Some(clear)) = (window.upgrade(), value.upgrade(), clear.upgrade()) else {
                 return false;
             };
-            let traded = window.trading_symbol_of(id);
-            value.set_text(&traded.as_ref().map_or_else(|| "None".to_string(), |traded| traded.display_symbol()));
+            let traded = window.trading_symbol_named(id);
+            value.set_text(traded.as_deref().unwrap_or("None"));
             clear.set_visible(traded.is_some());
             value.root().is_some()
         }

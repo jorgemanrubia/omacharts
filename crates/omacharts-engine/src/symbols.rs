@@ -222,6 +222,16 @@ impl Instrument {
             .then(|| Instrument { symbol: crate::contracts::symbol(self.root(), month), ..self.clone() })
     }
 
+    /// Can a chart of this trade `other` instead, at the chart's prices?
+    /// Only a future, and only one tracking the same thing: another month
+    /// of its root, or its micro or full-size contract — MES for ES, ES
+    /// for MES — never NQ for ES.
+    pub fn tracks(&self, other: &Instrument) -> bool {
+        self.kind == InstrumentKind::FutureRoot
+            && other.kind == InstrumentKind::FutureRoot
+            && crate::specs::track_together(self.root(), other.root())
+    }
+
     /// The continuous root of a dated contract: `ES` for `ESH7`. Itself for
     /// anything else.
     pub fn as_root(&self) -> Instrument {

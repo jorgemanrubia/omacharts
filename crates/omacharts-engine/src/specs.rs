@@ -143,6 +143,35 @@ pub fn root_of(contract: &str) -> &str {
     }
 }
 
+/// The micro contracts and the full-size contract each tracks: the same
+/// index, metal, oil or currency at a fraction of the size, and so the
+/// same price, which is what lets a chart of one trade the other. CME
+/// Group's micro futures, by the root each is quoted against.
+const MICROS: &[(&str, &str)] = &[
+    ("MES", "ES"),
+    ("MNQ", "NQ"),
+    ("MYM", "YM"),
+    ("M2K", "RTY"),
+    ("MCL", "CL"),
+    ("MGC", "GC"),
+    ("SIL", "SI"),
+    ("M6E", "6E"),
+    ("M6A", "6A"),
+    ("M6B", "6B"),
+];
+
+/// The full-size root `root` tracks: "ES" for "MES", and itself for a root
+/// that is no micro.
+pub fn underlying(root: &str) -> &str {
+    MICROS.iter().find(|(micro, _)| *micro == root).map_or(root, |(_, full)| full)
+}
+
+/// Do the futures roots `a` and `b` track the same thing at the same
+/// price: the same root, or a full-size contract and its micro, either way?
+pub fn track_together(a: &str, b: &str) -> bool {
+    underlying(a) == underlying(b)
+}
+
 #[cfg(test)]
 pub(crate) fn forget(root: &str) {
     if let Some(all) = HEARD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -156,6 +185,28 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    /// A micro tracks its full-size contract and nothing else: ES and MES
+    /// either way, NQ never with MES, a root with itself.
+    #[test]
+    fn a_micro_tracks_its_full_size_contract_alone() {
+        for (micro, full) in [("MES", "ES"), ("MNQ", "NQ"), ("MYM", "YM"), ("M2K", "RTY"), ("MCL", "CL"), ("MGC", "GC"), ("SIL", "SI"), ("M6E", "6E")] {
+            assert!(track_together(micro, full) && track_together(full, micro), "{micro} {full}");
+            assert!(track_together(micro, micro));
+            assert_eq!(underlying(micro), full);
+        }
+        assert!(!track_together("NQ", "MES"));
+        assert!(!track_together("ES", "NQ"));
+        assert!(!track_together("MES", "MNQ"));
+        assert!(track_together("ZN", "ZN"));
+        // Every micro and what it tracks are roots the contracts table knows.
+        for (micro, full) in MICROS {
+            if !["M6A", "M6B", "M6E"].contains(micro) {
+                assert!(tick(micro).is_some(), "{micro}");
+            }
+            assert!(tick(full).is_some(), "{full}");
+        }
     }
 
     /// A one-tick move on one contract, in dollars, as the exchanges give it.

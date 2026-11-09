@@ -66,6 +66,10 @@ pub struct SymbolSearch {
     /// Futures alone, roots and their months, for a pick of what a chart
     /// trades: what a trading service takes an order on.
     futures_only: std::cell::Cell<bool>,
+    /// With `futures_only`, the futures root they must track, as
+    /// [`omacharts_engine::specs::underlying`] names it: ES for a chart of ES
+    /// or MES, which lists ES, MES and their months and nothing else.
+    tracking: RefCell<Option<String>>,
 }
 
 impl SymbolSearch {
@@ -80,6 +84,7 @@ impl SymbolSearch {
             asked: RefCell::new(HashSet::new()),
             lister: RefCell::new(None),
             futures_only: std::cell::Cell::new(false),
+            tracking: RefCell::new(None),
         });
         search.wire();
         search.populate("");
@@ -166,7 +171,8 @@ impl SymbolSearch {
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
-        let rows = rows_for(&self.index.get(), &self.expanded.borrow(), query, contracts::today(), self.futures_only.get());
+        let futures = self.futures_only.get().then(|| self.tracking.borrow().clone());
+        let rows = rows_for(&self.index.get(), &self.expanded.borrow(), query, contracts::today(), futures.as_ref().map(Option::as_deref));
         let weak = Rc::downgrade(self);
         for row in &rows {
             list.append(&widget_for(row, &weak));
@@ -322,6 +328,7 @@ impl SymbolSearch {
     /// makes "just start typing" feel like one gesture instead of two.
     pub fn present_with(self: &Rc<Self>, over: Over, query: &str, on_pick: impl Fn(Instrument) + 'static) {
         self.futures_only.set(false);
+        self.tracking.replace(None);
         self.frame.set_note(None);
         self.open(over, query, on_pick);
     }
@@ -329,10 +336,21 @@ impl SymbolSearch {
     /// Open it on the futures a trading service takes orders on, roots and
     /// their months, with `note` over them when there is something to say
     /// of the list: that no trading service is signed in. Typing searches
-    /// them all the same.
-    pub fn present_futures(self: &Rc<Self>, over: Over, note: Option<&str>, on_pick: impl Fn(Instrument) + 'static) {
+    /// them all the same. Only those tracking `tracking`, when it is a
+    /// future: its own months, its micro or its full-size contract; none at
+    /// all when it is not one, or there is nothing charted.
+    pub fn present_futures(self: &Rc<Self>, over: Over, note: Option<&str>, tracking: Option<Instrument>, on_pick: impl Fn(Instrument) + 'static) {
         self.futures_only.set(true);
-        self.frame.set_note(note);
+        let root = tracking
+            .filter(|charted| charted.kind == InstrumentKind::FutureRoot)
+            .map(|charted| omacharts_engine::specs::underlying(charted.root()).to_string());
+        let note = match &root {
+            Some(_) => note.map(str::to_string),
+            None => Some("Only a future can trade another contract".to_string()),
+        };
+        // Nothing tracks what is not a future: no root is named that.
+        self.tracking.replace(Some(root.unwrap_or_default()));
+        self.frame.set_note(note.as_deref());
         self.open(over, "", on_pick);
     }
 
@@ -444,9 +462,16 @@ fn futures_root(index: &SearchIndex, symbol: &str) -> Option<Instrument> {
 
 /// The rows for `query`: what it spells as a contract first, then the
 /// search's hits, each open root followed by its contracts. Only futures
-/// roots are hits when `futures_only`, and an empty query lists them all,
-/// the most traded first.
-fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today: NaiveDate, futures_only: bool) -> Vec<Row> {
+/// roots are hits when `futures` is given, and an empty query lists them
+/// all, the most traded first; only those tracking the root it names, when
+/// it names one.
+fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today: NaiveDate, futures: Option<Option<&str>>) -> Vec<Row> {
+    let futures_only = futures.is_some();
+    let tracks = |instrument: &Instrument| match futures.flatten() {
+        Some(root) => omacharts_engine::specs::underlying(instrument.root()) == root,
+        None => true,
+    };
+    let futures_root = |index: &SearchIndex, symbol: &str| futures_root(index, symbol).filter(|root| tracks(root));
     let mut rows = Vec::new();
     let contract_row = |root: &Instrument, listing: &Listing, nested: bool| {
         root.in_month(listing.month).map(|instrument| Row::Contract { instrument, listing: listing.clone(), nested })
@@ -475,7 +500,7 @@ fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today:
     let hits: Vec<&Instrument> = match futures_only {
         false => index.search(query, LIMIT).iter().filter_map(|hit| index.get(hit.index)).collect(),
         true if query.trim().is_empty() => {
-            let mut roots: Vec<&Instrument> = (0..index.len()).filter_map(|at| index.get(at)).filter(|i| is_root(i)).collect();
+            let mut roots: Vec<&Instrument> = (0..index.len()).filter_map(|at| index.get(at)).filter(|i| is_root(i) && tracks(i)).collect();
             roots.sort_by_key(|root| (root.tier, std::cmp::Reverse(root.popularity)));
             roots.truncate(LIMIT);
             roots
@@ -484,7 +509,7 @@ fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today:
             .search(query, usize::MAX)
             .iter()
             .filter_map(|hit| index.get(hit.index))
-            .filter(|instrument| is_root(instrument))
+            .filter(|instrument| is_root(instrument) && tracks(instrument))
             .take(LIMIT)
             .collect(),
     };

@@ -815,6 +815,14 @@ impl Window {
     /// Where an order from `pane` would go, or why it cannot: the one
     /// resolver the menu and the click both ask.
     pub(super) fn order_target(&self, pane: &ChartPane) -> Result<trading::Target, String> {
+        // Kept with the chart and not found yet: nothing is traded, and
+        // above all not what the chart charts in its place.
+        if let Some(waiting) = pane.trading_unresolved() {
+            return Err(match self.index.complete() {
+                true => format!("{waiting}, this chart's trading symbol, is not a symbol Omacharts knows"),
+                false => format!("Finding {waiting}, this chart's trading symbol…"),
+            });
+        }
         let view = self.trading.borrow();
         let chosen = pane.account.borrow().clone();
         let instrument = pane.traded();
@@ -830,12 +838,19 @@ impl Window {
     /// chart's own when the account's feed charts it, else the last trade
     /// the account's session has heard, which on a chart fed from elsewhere
     /// can be a long way off; the chart's while the session has none.
+    ///
+    /// A chart trading another contract than it charts is never judged by
+    /// its own prices: MES's order by MES's last trade, as the trading
+    /// service has it or as a chart of that very contract shows it, and by
+    /// nothing at all while neither knows one — see [`Self::unpriced`].
     pub(super) fn market_price(&self, pane: &ChartPane, target: &trading::Target) -> Option<f64> {
         let chart = pane.view.last_price();
-        // What it trades is not what it charts, so no feed charting it
-        // settles it: the trading service's last trade of it, else the chart's.
         if let Some(traded) = pane.trading_instead() {
-            return self.desk.session(&target.login.id).and_then(|session| session.last_price(&traded)).or(chart);
+            return self
+                .desk
+                .session(&target.login.id)
+                .and_then(|session| session.last_price(&traded))
+                .or_else(|| self.charted_price_of(target));
         }
         let Some(instrument) = pane.instrument.borrow().clone() else { return chart };
         let own = trading::data_feed_of(&target.login).map(|feed| feed.id);
@@ -847,6 +862,25 @@ impl Window {
             return chart;
         }
         self.desk.session(&target.login.id).and_then(|session| session.last_price(&instrument)).or(chart)
+    }
+
+    /// The last price of `target`'s contract on a chart in this window
+    /// that charts that contract itself, trading nothing else.
+    fn charted_price_of(&self, target: &trading::Target) -> Option<f64> {
+        let session = self.desk.session(&target.login.id)?;
+        self.panes.borrow().iter().filter(|other| other.trading_instead().is_none()).find_map(|other| {
+            let charted = other.instrument.borrow().clone()?;
+            let contract = session.contract_for(&charted).ok()?;
+            (contract.symbol == target.contract).then(|| other.view.last_price()).flatten()
+        })
+    }
+
+    /// Why a priced order from `pane` cannot be judged at all, when it
+    /// cannot: it trades another contract than it charts, and nothing
+    /// says what that contract last traded at.
+    pub(super) fn unpriced(&self, pane: &ChartPane, target: &trading::Target) -> Option<String> {
+        (pane.trading_instead().is_some() && self.market_price(pane, target).is_none())
+            .then(|| format!("no price of {} to judge it by: chart {} beside this one", target.contract, target.contract))
     }
 
     /// The day's lowest and highest prices the exchange takes an order on
@@ -900,6 +934,7 @@ impl Window {
         let last = self.market_price(&pane, &target);
         let limits = self.limits_of(&pane, &target);
         let size = self.size_of(&pane);
+        let unpriced = self.unpriced(&pane, &target);
         for (side, kind) in trading::menu_orders(&target.capabilities) {
             let price = (kind != OrderKind::Market).then_some(at).flatten();
             // One that could not go is left out, not greyed: the wrong side
@@ -929,6 +964,15 @@ impl Window {
             item.set_action_and_target_value(Some("chart.order"), Some(&value.to_variant()));
             section.append_item(&item);
         }
+        // Its limits and stops are left out for want of a price to judge
+        // them by: one greyed row says so.
+        if let Some(why) = unpriced {
+            let mut why = why;
+            if let Some(first) = why.get(..1) {
+                why = first.to_uppercase() + &why[1..];
+            }
+            section.append(Some(&why), Some(UNAVAILABLE));
+        }
 
         // Cancelling the order whose line the pointer is on.
         let view = self.trading.borrow();
@@ -955,6 +999,9 @@ impl Window {
         };
         if target.account.key() != account {
             return self.refuse_on(&target, "Not placed · the chart's account changed");
+        }
+        if let Some(why) = price.and_then(|_| self.unpriced(&pane, &target)) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let places = Self::tick_of(&pane, &target).map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
         let price_text = price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
@@ -1091,6 +1138,9 @@ impl Window {
         let Some(held) = held else { return self.refuse_on(&target, "Not placed · nothing held") };
         if !target.capabilities.kinds.contains(&kind) {
             return self.refuse_on(&target, &format!("Not placed · {} takes no {} orders", target.login.name, kind.key()));
+        }
+        if let Some(why) = self.unpriced(pane, &target) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         if let Some(last) = self.market_price(pane, &target)
             && !trading::exit_allowed(kind, held.net, price, last)
@@ -1251,6 +1301,9 @@ impl Window {
         let Some(order) = order.filter(|order| order.status.working()) else {
             return self.refuse_on(&target, "Not moved · filled meanwhile");
         };
+        if let Some(why) = self.unpriced(pane, &target) {
+            return self.refuse_on(&target, &format!("Not moved · {why}"));
+        }
         // The market may have crossed it while the hand was letting go.
         if let Some(last) = self.market_price(pane, &target)
             && !trading::side_allowed(order.kind, order.side, price, last)
@@ -4018,17 +4071,37 @@ pub(super) mod tests {
         });
     }
 
+    /// [`settle`], with time rather than turns as its bound: up to `secs`
+    /// seconds of the main loop, for a test that must not fail because
+    /// the machine is busy.
+    fn settle_for(window: &Rc<Window>, secs: u64, done: impl Fn() -> bool) -> bool {
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while std::time::Instant::now() < deadline {
+            window.desk.tell();
+            if done() {
+                return true;
+            }
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        done()
+    }
+
     /// A chart of ES set to trade MES charts ES and trades MES: its header
     /// says "ES/MES", Buy and the chart menu's orders go to MES's contract,
     /// the position drawn is MES's, marked to the chart's prices at MES's
-    /// point value while the trading service's market says nothing; set back to
-    /// none, it trades ES again.
+    /// point value while the trading service's market says nothing. A limit
+    /// is judged by MES's own last trade, never by ES's: with none known it
+    /// is not offered, nor placed, and the menu says why. Set back to none,
+    /// it trades ES again.
     #[test]
     fn a_chart_with_a_trading_symbol_trades_it_and_charts_its_own() {
         crate::ui::on_gtk(|| {
             let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let log = super::super::log::tests::private(&window);
             session.contracts.lock().unwrap().insert("MES".into(), "MESZ6".into());
-            settle(&window, || pane.view.last_price().is_some());
+            assert!(settle_for(&window, 30, || pane.view.last_price().is_some()), "no bars on the chart");
             let mes = window.index.find("MES", None).expect("MES in the curated half");
             window.set_trading_symbol(pane.id, Some(mes));
             assert_eq!(pane.symbol_button.label().as_deref(), Some("ES/MES"));
@@ -4037,31 +4110,149 @@ pub(super) mod tests {
             assert_eq!(pane.view.mark_states().0, None, "ES's position drawn on a chart trading MES");
 
             let last = pane.view.last_price().expect("a last price");
-            *session.last.lock().unwrap() = last - 10.0;
+            let bought = last - 10.0;
+            *session.last.lock().unwrap() = bought;
             *session.market.lock().unwrap() = None;
             pane.buy_button.emit_clicked();
             let held = |contract: &str| session.book().position("951", contract).map(|held| held.net);
-            assert!(settle(&window, || held("MESZ6") == Some(1)), "Buy did not buy MES");
+            assert!(settle_for(&window, 30, || held("MESZ6") == Some(1)), "Buy did not buy MES");
             assert_eq!(held("ESZ6"), Some(1), "Buy bought ES");
+            // Marked to the chart as it stands now, whatever it has moved
+            // to meanwhile: nothing runs between reading it and marking.
+            let now = pane.view.last_price().expect("a last price");
             window.mark_to_market();
             let marked = window.trading.borrow().book.position(&key, "MESZ6").and_then(|held| held.open_pnl);
-            assert_eq!(marked, Some(50.0), "not marked to the chart at MES's point value");
-            assert!(pane.view.mark_states().0.is_some_and(|(words, _)| words.ends_with("+$50.00")));
+            let expected = (now - bought) * 5.0;
+            assert!(marked.is_some_and(|marked| (marked - expected).abs() < 1e-6), "not marked to the chart at MES's point value: {marked:?}");
+            let pill = trading::pnl_text(expected, Some("USD"));
+            assert!(pane.view.mark_states().0.is_some_and(|(words, _)| words.ends_with(&pill)), "{:?} {pill}", pane.view.mark_states().0);
 
-            let below = (last / 0.25).round() * 0.25 - 40.0 * 0.25;
-            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's orders");
-            let value = order_target_value(Side::Buy, OrderKind::Limit, &key, Some(below));
-            actions.activate_action("order", Some(&value.to_variant()));
+            // No price of MES anywhere: ES's is no stand-in. The menu offers
+            // the market pair and says why there is nothing else, and a
+            // limit asked for anyway is not placed, and said.
+            let below = (now / 0.25).round() * 0.25 - 40.0 * 0.25;
+            let y = pane.view.y_of(below).expect("the price on screen");
+            let rows = labels(window.chart_menu_model(y).upcast_ref());
+            assert!(rows.iter().all(|(label, _)| !label.starts_with("Buy Limit")), "a limit judged by ES's prices: {rows:?}");
+            assert!(rows.iter().any(|(label, on)| label.starts_with("No price of MESZ6") && !on), "{rows:?}");
             let limit = || {
                 let book = session.book();
                 book.orders.iter().find(|order| order.kind == OrderKind::Limit).map(|order| order.contract.clone())
             };
-            assert!(settle(&window, || limit().is_some()), "the chart menu's limit was not sent");
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's orders");
+            let value = order_target_value(Side::Buy, OrderKind::Limit, &key, Some(below));
+            actions.activate_action("order", Some(&value.to_variant()));
+            settle_for(&window, 1, || false);
+            assert_eq!(limit(), None, "a limit placed with no price of MES to judge it by");
+            window.catch_up_log();
+            let said: Vec<String> = log.entries().into_iter().map(|e| e.line()).collect();
+            assert!(said.iter().any(|line| line.contains("Not placed · no price of MESZ6")), "not said: {said:#?}");
+
+            // MES's own last trade, from the trading service: judged by it.
+            *session.market.lock().unwrap() = Some(now);
+            actions.activate_action("order", Some(&value.to_variant()));
+            assert!(settle_for(&window, 30, || limit().is_some()), "the chart menu's limit was not sent");
             assert_eq!(limit().as_deref(), Some("MESZ6"));
 
             window.set_trading_symbol(pane.id, None);
             assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
             assert_eq!(window.order_target(&pane).map(|target| target.contract), Ok("ESZ6".into()));
+        });
+    }
+
+    /// What a chart trades instead goes with what it charted: moved from ES
+    /// to NQ it trades NQ, its header says NQ alone and nothing of MES is
+    /// kept, whether the chart was moved itself or followed another, while
+    /// another month of ES keeps it. A trading symbol that does not track
+    /// what is charted is never taken, and the picker lists only those that
+    /// do.
+    #[test]
+    fn a_trading_symbol_goes_with_what_it_tracked() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let find = |symbol: &str| window.index.find(symbol, None).expect(symbol);
+            window.show_in(&pane, find("ES"));
+            window.set_trading_symbol(pane.id, Some(find("MES")));
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES/MES"));
+            let march = find("ES").in_month(omacharts_engine::contracts::Month::new(2027, 3).unwrap()).unwrap();
+            window.show_in(&pane, march);
+            assert_eq!(window.trading_symbol_of(pane.id).map(|traded| traded.symbol), Some("MES".into()), "another month of ES");
+            window.show_in(&pane, find("NQ"));
+            assert_eq!(window.trading_symbol_of(pane.id), None, "NQ charted, MES traded");
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("NQ"));
+            assert_eq!(pane.traded().map(|traded| traded.symbol), Some("NQ".into()));
+
+            // Not taken where it does not track: NQ's chart trading MES.
+            window.set_trading_symbol(pane.id, Some(find("MES")));
+            assert_eq!(window.trading_symbol_of(pane.id), None, "MES set on a chart of NQ");
+            window.set_trading_symbol(pane.id, Some(find("MNQ")));
+            assert_eq!(window.trading_symbol_of(pane.id).map(|traded| traded.symbol), Some("MNQ".into()));
+
+            // A chart following another, moved by the rail.
+            window.split_focused(true);
+            for each in window.panes.borrow().iter() {
+                each.set_mode(omacharts_engine::LinkMode::Follow, None);
+            }
+            window.show_from_rail(find("ES"));
+            assert!(window.panes.borrow().iter().all(|each| each.trading_symbol.borrow().is_none()), "MNQ kept on a chart of ES");
+            let other = window.panes.borrow().iter().find(|each| each.id != window.focused.get()).cloned().expect("the other chart");
+            window.set_trading_symbol(other.id, Some(find("MES")));
+            window.show_from_rail(find("CL"));
+            assert_eq!(window.trading_symbol_of(other.id), None, "MES kept on a chart that followed to CL");
+
+            // The picker, on a chart of CL: CL, MCL and their months alone.
+            window.focus(other.id);
+            window.find_trading_symbol(other.id);
+            let listed = window.search.listed();
+            assert!(listed.iter().any(|symbol| symbol == "CL") && listed.iter().any(|symbol| symbol == "MCL"), "{listed:?}");
+            assert!(listed.iter().all(|symbol| omacharts_engine::specs::track_together(omacharts_engine::specs::root_of(symbol), "CL")), "{listed:?}");
+            let frame = window.search.frame();
+            frame.entry.set_text("MES");
+            assert!(settle(&window, || window.search.listed().is_empty()), "MES offered on a chart of CL: {:?}", window.search.listed());
+            frame.popover.popdown();
+        });
+    }
+
+    /// A trading symbol the window cannot name when it opens is kept,
+    /// waiting, never traded in the charted symbol's place: orders are
+    /// refused saying so, the header names it, and it is written back as
+    /// it was. Once it can be named it is traded.
+    #[test]
+    fn a_trading_symbol_not_found_yet_is_waited_for_and_never_replaced_by_the_chart() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
+            let store = window.store.clone();
+            let six = window.index.find("6E", None).expect("6E in the curated half");
+            session.contracts.lock().unwrap().insert("6E".into(), "6EZ6".into());
+            window.show_in(&pane, six);
+            // As a chart saved trading M6E, which no index here names.
+            pane.trading_pending.replace(Some(("M6E".into(), None)));
+            window.save_workspace();
+            assert!(store.setting("workspace").is_some_and(|json| json.contains("\"trading_symbol\":\"M6E\"")));
+
+            let again = self::window(&store);
+            let pane = again.focused_pane();
+            assert_eq!(pane.trading_unresolved().as_deref(), Some("M6E"));
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("6E/M6E"));
+            assert_eq!(pane.traded(), None, "6E traded in M6E's place");
+            let refused = again.order_target(&pane).expect_err("an order with its trading symbol unknown");
+            assert!(refused.contains("M6E"), "{refused}");
+            again.save_workspace();
+            assert!(store.setting("workspace").is_some_and(|json| json.contains("\"trading_symbol\":\"M6E\"")), "lost on the next save");
+
+            // Named at last: traded.
+            pane.trading_pending.replace(Some(("ESZ6".into(), None)));
+            again.resolve_pending();
+            assert_eq!(pane.trading_unresolved(), None);
+            assert_eq!(again.trading_symbol_of(pane.id), None, "ESZ6 does not track 6E");
+            let es = again.index.find("ES", None).expect("ES");
+            again.show_in(&pane, es);
+            pane.trading_pending.replace(Some(("MES".into(), None)));
+            again.resolve_pending();
+            assert_eq!(again.trading_symbol_of(pane.id).map(|traded| traded.symbol), Some("MES".into()));
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES/MES"));
         });
     }
 
@@ -4107,6 +4298,7 @@ pub(super) mod tests {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             let pane = window.focused_pane();
+            window.show_in(&pane, window.index.find("ES", None).expect("ES"));
             crate::ui::chart_settings::ChartSettings::present(&window);
             let dialog = window.window.visible_dialog().expect("the chart's settings");
             window.find_trading_symbol(pane.id);
@@ -4121,15 +4313,17 @@ pub(super) mod tests {
     }
 
     /// The trading symbol is picked from what a trading service takes
-    /// orders on: futures roots, opening on their months, and no stocks or
-    /// indexes. With no trading service signed in a plain line says so, and
-    /// typing still searches; once one is, the line goes.
+    /// orders on: futures roots tracking what is charted, opening on their
+    /// months, and no stocks or indexes. With no trading service signed in
+    /// a plain line says so, and typing still searches; once one is, the
+    /// line goes.
     #[test]
     fn the_trading_symbol_is_picked_from_futures() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             let pane = window.focused_pane();
+            window.show_in(&pane, window.index.find("ES", None).expect("ES"));
             let all = |listed: &[String]| {
                 listed.iter().all(|symbol| window.index.find(symbol, None).is_some_and(|found| found.kind == omacharts_engine::InstrumentKind::FutureRoot))
             };
@@ -4138,7 +4332,8 @@ pub(super) mod tests {
             let frame = window.search.frame();
             assert_eq!(frame.note().as_deref(), Some("No trading service is signed in"));
             let listed = window.search.listed();
-            assert!(["ES", "MES", "MNQ"].iter().all(|root| listed.iter().any(|symbol| symbol == root)), "{listed:?}");
+            assert!(["ES", "MES"].iter().all(|root| listed.iter().any(|symbol| symbol == root)), "{listed:?}");
+            assert!(!listed.iter().any(|symbol| symbol == "MNQ"), "MNQ offered to a chart of ES: {listed:?}");
             assert!(all(&listed), "futures alone: {listed:?}");
             frame.entry.set_text("MES");
             assert!(settle(&window, || window.search.listed().first().map(String::as_str) == Some("MES")), "{:?}", window.search.listed());
