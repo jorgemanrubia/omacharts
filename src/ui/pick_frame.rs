@@ -60,7 +60,15 @@ impl Over {
 /// The content of the window `from` is in, which the frame hangs from. Not
 /// `from` itself: a rail that has only just been asked to show is not laid
 /// out yet, and the frame is placed against whatever it hangs from.
+///
+/// Inside a dialog, the dialog's own content: a frame hung behind a modal
+/// dialog is drawn but never given the keyboard.
 fn window_content(from: &impl IsA<gtk::Widget>) -> gtk::Widget {
+    let from = from.as_ref();
+    let dialog = from.downcast_ref::<adw::Dialog>().cloned().or_else(|| from.ancestor(adw::Dialog::static_type()).and_downcast());
+    if let Some(content) = dialog.and_then(|dialog| dialog.child()) {
+        return content;
+    }
     from.root()
         .and_downcast::<adw::ApplicationWindow>()
         .and_then(|window| window.content())

@@ -298,12 +298,16 @@ pub const TITLE_LABEL: &str = "Title";
 
 pub const TRADING_SYMBOL_LABEL: &str = "Trading symbol";
 
+/// The Trading tab's icon: orders going out and fills coming back, apart
+/// from the lists the other tabs wear.
+pub const TRADING_ICON: &str = "network-transmit-receive-symbolic";
+
 /// What the chart trades, when trading is on: none, its own symbol, until
 /// one is picked, MES for a chart of ES. Its data stays what it charts.
 fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.set_title("Trading");
-    page.set_icon_name(Some("view-list-bullet-symbolic"));
+    page.set_icon_name(Some(TRADING_ICON));
     let group = adw::PreferencesGroup::new();
     let row = adw::ActionRow::new();
     row.set_title(TRADING_SYMBOL_LABEL);

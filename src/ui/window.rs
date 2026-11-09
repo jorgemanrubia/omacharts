@@ -6880,7 +6880,9 @@ impl Window {
     /// charts.
     pub fn find_trading_symbol(self: &Rc<Self>, id: u32) {
         let this = self.clone();
-        let over = Over::window(&self.window, crate::ui::chart_settings::TRADING_SYMBOL_LABEL);
+        // Over the chart settings it is asked from, which hold the keyboard.
+        let from: gtk::Widget = self.window.visible_dialog().map_or_else(|| self.window.clone().upcast(), |dialog| dialog.upcast());
+        let over = Over::window(&from, crate::ui::chart_settings::TRADING_SYMBOL_LABEL);
         self.search.present(over, move |instrument| this.set_trading_symbol(id, Some(instrument)));
     }
 

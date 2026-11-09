@@ -82,6 +82,18 @@ impl SymbolSearch {
         search
     }
 
+    /// The frame it is drawn in, for tests that look inside it.
+    #[cfg(test)]
+    pub fn frame(&self) -> &Rc<PickFrame> {
+        &self.frame
+    }
+
+    /// The symbols listed now, in order.
+    #[cfg(test)]
+    pub fn listed(&self) -> Vec<String> {
+        self.shown.borrow().iter().map(|instrument| instrument.symbol.clone()).collect()
+    }
+
     /// How to ask the feeds for a root's contracts; without it, a root
     /// opens on its rule alone.
     pub fn list_contracts_through(&self, lister: impl Fn(&Instrument, Box<dyn Fn()>) + 'static) {
