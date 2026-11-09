@@ -2103,7 +2103,8 @@ mod tests {
             assert_eq!(
                 corner(&pane),
                 vec![
-                    pane.day_part.clone().upcast::<gtk::Widget>(),
+                    pane.account_menu.clone().upcast::<gtk::Widget>(),
+                    pane.day_part.clone().upcast(),
                     pane.trade_part.clone().upcast(),
                     pane.size_menu.clone().upcast(),
                     pane.gear.clone().upcast(),
@@ -2122,8 +2123,9 @@ mod tests {
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
             header(Header::standard().left, Header::standard().right);
-            // The P&L, Buy and Sell and the quantity, then the three controls.
-            assert_eq!(corner(&pane).len(), 6);
+            // The account, the P&L, Buy and Sell and the quantity, then the
+            // three controls.
+            assert_eq!(corner(&pane).len(), 7);
         });
     }
 

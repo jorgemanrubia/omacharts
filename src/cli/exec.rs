@@ -6155,7 +6155,7 @@ mod tests {
         let store = bare();
         crate::features::set(&store, crate::features::Feature::Trading, true);
         use crate::header::{Header, Part};
-        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -9060,7 +9060,7 @@ mod tests {
         assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
         assert_eq!(
             crate::header::load(&store).right,
-            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
             "trading's parts kept where they were"
         );
     }

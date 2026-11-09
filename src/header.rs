@@ -109,12 +109,13 @@ impl Part {
     ];
 
     /// The section it is in until somebody places it, or `None` for a part
-    /// that is only there once somebody adds it. The account and the feed
-    /// are at home on the left because they cost nothing: with one account
-    /// or one feed each draws nothing and takes no room. The day's P&L,
-    /// Buy, Sell and the quantity lead the corner, ahead of the three
-    /// controls that always stood in it, in the order they stood; without
-    /// an account to trade on, they draw nothing either. The chart's title
+    /// that is only there once somebody adds it. The feed is at home on the
+    /// left because it costs nothing: with one feed it draws nothing and
+    /// takes no room. The account, the day's P&L, Buy, Sell and the
+    /// quantity lead the corner, the account first, saying what the rest
+    /// trade on, ahead of the three controls that always stood in it, in
+    /// the order they stood; with one account the account draws nothing,
+    /// and without an account to trade on, none of them does. The chart's title
     /// has the center, where the resolutions stripe stood before there were
     /// titles: the resolution beside the symbol already offers every one.
     pub fn home(self) -> Option<Section> {
@@ -124,7 +125,7 @@ impl Part {
             Part::Resolution => Some(Section::Left),
             Part::Change => None,
             Part::Template => None,
-            Part::Account => Some(Section::Left),
+            Part::Account => Some(Section::Right),
             Part::Feed => Some(Section::Left),
             Part::DayPnl => Some(Section::Right),
             Part::Trade => Some(Section::Right),
@@ -353,6 +354,16 @@ const BEFORE_TITLES: [(&str, &str); 3] = [
     (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
 ];
 
+/// The header that shipped while the account ended the left, as
+/// Preferences wrote it out: read as [`Header::standard`] too, so a header
+/// that was only ever the standard one gets the account at the head of the
+/// right, ahead of the P&L.
+const BEFORE_ACCOUNT_MOVED: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution,account"),
+    (CENTER_SETTING, "title"),
+    (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
+];
+
 /// Whether what is stored is `old`, a standard header of an earlier build:
 /// some section written, and every written one as it shipped.
 fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
@@ -372,7 +383,7 @@ fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
 pub fn load(store: &Store) -> Header {
     let pnl_moved = BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
         && store.setting(SETTING).is_some();
-    if pnl_moved || stored_as(store, &BEFORE_TITLES) {
+    if pnl_moved || stored_as(store, &BEFORE_TITLES) || stored_as(store, &BEFORE_ACCOUNT_MOVED) {
         return Header::standard();
     }
     let mut header = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
@@ -382,6 +393,12 @@ pub fn load(store: &Store) -> Header {
         parts.retain(|part| !placed.contains(part));
         placed.extend(parts.iter().copied());
         *header.section_mut(section) = parts;
+    }
+    // A left written before the account moved to the right said where the
+    // account was, or that it was not wanted: the standard right does not
+    // bring it back.
+    if store.setting(SETTING).is_some() && store.setting(RIGHT_SETTING).is_none() {
+        header.right.retain(|part| *part != Part::Account);
     }
     header
 }
@@ -442,13 +459,33 @@ mod tests {
     #[test]
     fn the_standard_header_is_the_line_the_title_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution]);
         assert_eq!(header.center, vec![Part::Title]);
         assert!(!header.contains(Part::Stripe));
         assert_eq!(
             header.right,
-            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
         );
+    }
+
+    /// A header saved as the one that shipped with the account at the end
+    /// of the left is the standard one now, the account leading the right;
+    /// one that differs from it in anything is kept as it was saved.
+    #[test]
+    fn the_old_standard_header_moves_the_account_to_the_right() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_ACCOUNT_MOVED {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        assert_eq!(load(&store).right[0], Part::Account);
+        store.set_setting(SETTING, "symbol,feed,resolution,account");
+        let kept = load(&store);
+        assert_eq!(kept.left, vec![Part::Symbol, Part::Feed, Part::Resolution, Part::Account]);
+        assert_eq!(kept.right, vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+        store.set_setting(SETTING, "feed,symbol,resolution,account");
+        store.set_setting(RIGHT_SETTING, "trade,day_pnl,size,settings,maximize,link");
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account], "a right of its own");
     }
 
     /// A header saved as the one that shipped with the P&L at the end of
@@ -512,7 +549,7 @@ mod tests {
     /// shown once, in the first of them.
     #[test]
     fn a_part_is_in_the_header_once() {
-        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         let mut header = Header::standard();
         header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
         assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: vec![Part::Title], right: corner.clone() });
@@ -549,9 +586,9 @@ mod tests {
         let mut header = Header::standard();
         assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution]);
         header.set_shown(Section::Left, vec![Part::Symbol, Part::Feed], false);
-        assert_eq!(header.left, vec![Part::Symbol, Part::Feed, Part::Account]);
+        assert_eq!(header.left, vec![Part::Symbol, Part::Feed]);
         header.set_shown(Section::Right, vec![Part::Link], false);
-        assert_eq!(header.right, vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link]);
+        assert_eq!(header.right, vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Link]);
     }
 
     /// The corner's controls are parts like the others: typed by name,
