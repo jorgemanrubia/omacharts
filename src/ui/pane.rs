@@ -678,6 +678,20 @@ impl ChartPane {
                     if typing { (natural(typed.upcast_ref()) - natural(untitled.upcast_ref())).max(0) } else { 0 };
                 let place = center_start(overlay.width(), left, size.width() + entry_room, right)
                     .and_then(|_| center_place(overlay.width(), left, size.width(), right, spans));
+                // Being typed into, the title keeps its place whatever it
+                // grows to: hidden, its entry would lose the keys and keep
+                // what was typed so far. It takes the room between the two
+                // sides, and no less than it needs.
+                let editing = lone_title.parent().is_some_and(|row| row == strip_row)
+                    && lone_title.visible_child_name().as_deref() == Some("editing");
+                let place = place.or_else(|| {
+                    editing.then(|| {
+                        let (least, _) = strip_row.preferred_size();
+                        let room = overlay.width() - right - STRIP_GAP - (left + STRIP_GAP);
+                        let width = size.width().min(room).max(least.width());
+                        ((left + STRIP_GAP).min(overlay.width() - width).max(0), width)
+                    })
+                });
                 if strip_row.is_child_visible() != place.is_some() {
                     strip_row.set_child_visible(place.is_some());
                 }
@@ -2578,6 +2592,30 @@ mod tests {
                 }
             }
             assert!(shown > 0 || window.width() < 900, "never shown in a {} wide window", window.width());
+
+            // Typed into where there was just room: a title far longer than
+            // the room keeps the entry, and the keys, until it is done.
+            let narrowest = (360..=900).step_by(12).find(|width| {
+                beside.set_size_request((window.width() - width).max(0), 1);
+                settle();
+                pane.title_in_view()
+            });
+            if let Some(width) = narrowest {
+                pane.write_title("");
+                settle();
+                pane.begin_title_edit();
+                settle();
+                let mut typed = String::new();
+                for word in ["Opening", "range", "breakout", "plan", "for", "the", "whole", "week", "ahead"] {
+                    typed.push_str(word);
+                    typed.push(' ');
+                    pane.title_entry.set_text(&typed);
+                    settle();
+                    assert!(pane.title_entry.is_mapped(), "the entry hid {width} wide, typing {typed:?}");
+                    assert!(pane.editing_title(), "the edit ended {width} wide, typing {typed:?}");
+                }
+                pane.finish_title_edit(false);
+            }
             window.close();
         });
     }
