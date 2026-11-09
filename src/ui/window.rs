@@ -1917,12 +1917,14 @@ mod outside_change_tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
+            // A new chart opens on no template, with no volume pane of its own.
+            command(&window, &["chart", "indicator", "add", "volume"]);
             let volume = window
                 .indicators()
                 .iter()
                 .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
                 .map(|i| i.id)
-                .expect("a volume pane on a new chart");
+                .expect("a volume pane added");
             let opacity = || {
                 let indicators = window.indicators();
                 crate::ui::chart::volume_opacity(indicators.iter().find(|i| i.id == volume).unwrap())
@@ -1957,12 +1959,14 @@ mod outside_change_tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
+            // A new chart opens on no template, with no volume pane of its own.
+            command(&window, &["chart", "indicator", "add", "volume"]);
             let volume = window
                 .indicators()
                 .iter()
                 .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
                 .map(|i| i.id)
-                .expect("a volume pane on a new chart");
+                .expect("a volume pane added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
             let colourings = titled::<adw::ComboRow>(&window, "Colouring");
             assert_eq!(colourings.len(), 2, "the chart's and the volume pane's");

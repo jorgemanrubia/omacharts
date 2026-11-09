@@ -5929,12 +5929,10 @@ mod tests {
         dispatch(&args, store, None, &super::super::Here)
     }
 
-    /// A store whose new charts open with nothing on them.
+    /// A store whose new charts open with nothing on them, said outright.
     ///
-    /// A fresh profile's charts open on the "Default" chart template, holding
-    /// volume — which the template tests below are about. Everything else
-    /// here counts indicators from an empty chart, and was written when that
-    /// is what a new chart was.
+    /// A fresh profile's charts open on none already; this names none as
+    /// the choice, which the tests below count indicators from.
     fn bare() -> Store {
         let store = Store::memory().unwrap();
         store.set_setting(
@@ -5944,14 +5942,34 @@ mod tests {
         store
     }
 
+    /// A store whose new charts open on the "Default" chart template,
+    /// holding volume, as somebody who chose it has them — which the
+    /// template tests below are about.
+    fn on_default() -> Store {
+        let store = Store::memory().unwrap();
+        let default = crate::templates::all(&store)[0].id;
+        store.set_setting(crate::chart_defaults::SETTING_TEMPLATE, &default.to_string());
+        store
+    }
+
     fn json_of(out: &Outcome) -> Value {
         assert_eq!(out.code, 0, "{}", out.err);
         serde_json::from_str(&out.out).unwrap()
     }
 
+    /// A new chart, of a new chartbook or a split's other half from
+    /// nothing, opens on no template; chosen as the default, a template is
+    /// what it opens on.
     #[test]
-    fn a_new_chart_opens_on_the_default_template() {
+    fn a_new_chart_opens_on_no_template_unless_one_was_chosen() {
         let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"], json!([]));
+        let charts = Workspace::load(&store);
+        assert_eq!(charts::panes(&charts.books()[0])[0]["template"], Value::Null);
+
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         let listed = json_of(&run("chart indicator list --book Macro --json", &store));
         assert_eq!(listed["indicators"][0]["kind"], "volume");
@@ -5962,7 +5980,7 @@ mod tests {
 
     #[test]
     fn templates_are_listed_made_renamed_and_deleted() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         assert_eq!(run("template create Swing", &store).code, 0);
         assert_eq!(run("template rename swing Swing2", &store).code, 0);
         let listed = json_of(&run("template list --json", &store));
@@ -6016,7 +6034,7 @@ mod tests {
     /// chartbook, and leaves a chart on no template alone.
     #[test]
     fn a_template_s_indicators_are_what_its_charts_show() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chartbook create Semis", &store);
@@ -6086,7 +6104,7 @@ mod tests {
     /// does: both charts on it take the indicator, and the reply says so.
     #[test]
     fn adding_to_a_chart_on_a_template_changes_the_template() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         run("chart split horizontal --book Macro", &store);
         let out = run("chart indicator add sma --book Macro --chart pos:0", &store);
@@ -6109,7 +6127,7 @@ mod tests {
     /// Nothing disappears from a chart when its template goes.
     #[test]
     fn deleting_a_template_leaves_its_charts_a_copy() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         run("template indicator add Default ema", &store);
         let out = run("template delete Default", &store);
@@ -6193,7 +6211,7 @@ mod tests {
 
     #[test]
     fn the_default_template_is_read_and_chosen_by_name() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("template create Swing", &store);
         assert!(run("template default", &store).out.contains("\"Default\""));
         assert_eq!(run("template default swing", &store).code, 0);

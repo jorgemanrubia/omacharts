@@ -178,7 +178,8 @@ read as the command having worked.
 A chart template is a named set of indicators that charts share. A chart on a
 template shows the template's indicators, and changing the template changes
 every chart on it at once, in every chartbook. A new profile has one called
-**Default**, holding the volume study, and new charts open with it.
+**Default**, holding the volume study. New charts open on no template until
+one is chosen with `template default`.
 
 ```
 omacharts template list
