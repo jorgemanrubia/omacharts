@@ -83,3 +83,50 @@ fn nothing_but_a_window_marks_a_downloaded_version_healthy_or_counts_against_it(
     }
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_window_launch_with_no_display_does_not_count_against_a_download() {
+    // A bus of its own, so the launch registers and GTK is started, and
+    // ends the process for want of a display, as from ssh or a script.
+    if !Path::new("/usr/bin/dbus-run-session").exists() {
+        eprintln!("no dbus-run-session here; skipped");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("omacharts-nodisplay-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let launcher = root.join("bin/omacharts");
+    place(Path::new(env!("CARGO_BIN_EXE_omacharts-launch")), &launcher);
+    let packaged = root.join("packaged.sh");
+    fs::write(&packaged, "#!/bin/sh\necho packaged\n").unwrap();
+    place(&packaged, &root.join("lib/omacharts/omacharts"));
+    let folder: PathBuf = root.join("home/.local/share/omacharts/versions").join(newer());
+    place(Path::new(env!("CARGO_BIN_EXE_omacharts")), &folder.join("omacharts"));
+    let runtime = root.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+
+    // Three, which would give it up if they counted.
+    for _ in 0..3 {
+        let output = Command::new("/usr/bin/dbus-run-session")
+            .arg("--")
+            .arg(&launcher)
+            .env("HOME", root.join("home"))
+            .env("XDG_DATA_HOME", root.join("home/.local/share"))
+            .env("XDG_CONFIG_HOME", root.join("home/.config"))
+            .env("XDG_CACHE_HOME", root.join("home/.cache"))
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("OMACHARTS_UPDATE_SOURCE", "http://127.0.0.1:9")
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .env_remove("OMACHARTS_LAUNCHER")
+            .env_remove("OMACHARTS_PROBE")
+            .env_remove("OMACHARTS_NO_UPDATE")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(!said.contains("packaged"), "the download was given up on: {said}");
+        assert!(!output.status.success(), "a window came up with no display?");
+    }
+    assert!(markers(&folder).is_empty(), "{:?}", markers(&folder));
+    let _ = fs::remove_dir_all(&root);
+}

@@ -194,6 +194,8 @@ fn run() -> glib::ExitCode {
                 // in-memory database at least puts a usable window on screen
                 // rather than nothing at all.
                 Err(error) => {
+                    // Not a version that runs here, however long it is up.
+                    omacharts::update::settings_unopened();
                     eprintln!("omacharts: {error}; carrying on without saving anything");
                     log_words::say(log_words::trouble(
                         "Settings",
@@ -369,6 +371,12 @@ fn run() -> glib::ExitCode {
         code
     });
 
+    // With no display to open, GTK ends the process while registering,
+    // before anything of ours could say so: from ssh or a script that is
+    // not the version failing, so it must not count against it.
+    if !display_reachable() {
+        omacharts::update::not_a_window();
+    }
     // Handed to a window another process keeps, this launch is not one, and
     // being killed while it waits for the answer says nothing about it.
     // Registering is the first thing running does anyway.
@@ -379,6 +387,23 @@ fn run() -> glib::ExitCode {
     // The arguments as typed, launch options included: these travel to
     // whichever process holds the window, and the flag is answered there.
     app.run_with_args(&launch)
+}
+
+/// Could GDK open a display? What its backends try, asked without starting
+/// GTK: a Wayland socket — `WAYLAND_DISPLAY`, or `wayland-0` when unset, in
+/// `XDG_RUNTIME_DIR` unless it is a path — or an X display named in
+/// `DISPLAY`. An environment variable and a `stat`.
+fn display_reachable() -> bool {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if set("DISPLAY").is_some() {
+        return true;
+    }
+    let socket = set("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
+    let socket = std::path::PathBuf::from(socket);
+    if socket.is_absolute() {
+        return socket.exists();
+    }
+    set("XDG_RUNTIME_DIR").is_some_and(|dir| std::path::Path::new(&dir).join(socket).exists())
 }
 
 /// Is a window already open?

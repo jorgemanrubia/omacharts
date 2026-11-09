@@ -214,10 +214,25 @@ pub fn window_starting() {
 /// download that would let it be are let go. Its folder says so for good,
 /// and every launch still marked as trying it is cleared.
 pub fn healthy() {
+    if SETTINGS_UNOPENED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     if let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) {
         mark_healthy(folder);
     }
 }
+
+/// The window could not open the settings and carries on with nothing
+/// saved. Up for hours, that is still not a version that runs here: one
+/// whose migration failed halfway would be called healthy, kept for good,
+/// and the copy that lets the settings be put back let go. So it is never
+/// called healthy, and its launch counts as one that did not run however it
+/// ends — three, and it is given up on.
+pub fn settings_unopened() {
+    SETTINGS_UNOPENED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+static SETTINGS_UNOPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn mark_healthy(folder: &Path) {
     if !folder.join(HEALTHY).exists() {
@@ -248,6 +263,9 @@ fn mark_healthy(folder: &Path) {
 /// that crashes never gets here, and its marker stays to count. Never marks
 /// the version healthy.
 pub fn settle() {
+    if SETTINGS_UNOPENED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
     let _ = fs::remove_file(folder.join(trying(std::process::id())));
 }
@@ -960,6 +978,11 @@ fn probe(binary: &Path, patience: Duration) -> Result<Version, Unstarted> {
             Ok(Some(status)) if matches!(status.code(), Some(126 | 127)) => {
                 return Err(Unstarted::Definitely(format!("--version ended with {status}")));
             }
+            // A Rust panic: answering `--version` touches nothing outside
+            // the binary, so it would panic every time.
+            Ok(Some(status)) if status.code() == Some(101) => {
+                return Err(Unstarted::Definitely(format!("--version panicked ({status})")));
+            }
             // A crash answering `--version` is the binary, every time. A
             // kill or a hang-up is something else's doing.
             Ok(Some(status)) if matches!(status.signal(), Some(4 | 5 | 6 | 7 | 8 | 11 | 31)) => {
@@ -1486,10 +1509,10 @@ mod tests {
     }
 
     #[test]
-    fn a_binary_whose_libraries_are_missing_cannot_run_here() {
+    fn a_binary_whose_libraries_are_missing_or_that_panics_cannot_run_here() {
         // The dynamic loader's exit when a library is missing or too old,
-        // and the shell's for a file it cannot execute.
-        for code in [127, 126] {
+        // the shell's for a file it cannot execute, and a Rust panic's.
+        for code in [127, 126, 101] {
             let scratch = Scratch::new();
             let shelf = scratch.shelf();
             let fake = Fake::with_binary("0.2.15", format!("#!/bin/sh\nexit {code}\n").as_bytes());
@@ -2152,9 +2175,10 @@ mod tests {
         // copy must carry on as itself, know what is installed and which
         // folder it runs from — named through a symbolic link, as a data
         // folder moved to another disk would be — and clear the variable.
-        // The marker the launcher left goes once `main` is reached, comes
-        // back only for a window, and leaves with the window on the way
-        // out; only a window up long enough marks the version healthy.
+        // The marker the launcher left stays until `main` knows the launch
+        // is not a window, comes back for a window, and leaves with the
+        // window on the way out; only a window up long enough marks the
+        // version healthy.
         const CHILD: &str = "OMACHARTS_TEST_AT_LAUNCH";
         if std::env::var_os(CHILD).is_some() {
             let exe = std::env::current_exe().unwrap();
@@ -2210,6 +2234,49 @@ mod tests {
             .unwrap();
         let said = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success() && said.contains("carried on as itself"), "{said}");
+    }
+
+    #[test]
+    fn a_window_that_could_not_open_the_settings_is_never_healthy_and_counts_as_not_running() {
+        const CHILD: &str = "OMACHARTS_TEST_UNOPENED";
+        if std::env::var_os(CHILD).is_some() {
+            let folder = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+            let marker = folder.join(trying(std::process::id()));
+            fs::write(&marker, b"").unwrap();
+            at_launch();
+            window_starting();
+            settings_unopened();
+            healthy();
+            assert!(!folder.join(HEALTHY).exists(), "up, but with nothing of theirs");
+            settle();
+            assert!(marker.exists(), "closed normally, and still a launch that did not run");
+            println!("not healthy");
+            return;
+        }
+        let scratch = Scratch::new();
+        let versions = scratch.0.join("omacharts/versions");
+        let running = Version::running();
+        let here = versions.join(running.to_string());
+        fs::create_dir_all(&here).unwrap();
+        place_copy(&std::env::current_exe().unwrap(), &here.join(BINARY));
+        let told = Told {
+            installed_version: v("0.2.14"),
+            installed: PathBuf::from("/usr/bin/omacharts"),
+            folder: Some(here.clone()),
+        };
+        let output = std::process::Command::new(here.join(BINARY))
+            .args(["--exact", "update::tests::a_window_that_could_not_open_the_settings_is_never_healthy_and_counts_as_not_running", "--nocapture"])
+            .env(CHILD, "1")
+            .env("XDG_DATA_HOME", &scratch.0)
+            .env(SOURCE_ENV, "http://127.0.0.1:9")
+            .env(LAUNCHER_ENV, told.encode())
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success() && said.contains("not healthy"), "{said}{}", String::from_utf8_lossy(&output.stderr));
+        assert!(!here.join(HEALTHY).exists());
+        let ended: Vec<_> = fs::read_dir(&here).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(".trying-")).collect();
+        assert_eq!(ended.len(), 1, "the launch counts toward giving it up");
     }
 
     #[test]
