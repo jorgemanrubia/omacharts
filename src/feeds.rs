@@ -612,6 +612,47 @@ pub(crate) mod tests {
         forget_login(&store, "sierra");
     }
 
+    /// Sierra Chart set up as a feed and added as a trading service, its
+    /// data folder named by a Wine path: a chart of ES, and of a contract
+    /// of it, is drawn from its files rather than Yahoo's.
+    #[test]
+    fn a_sierra_feed_with_a_sierra_service_serves_what_its_folder_holds() {
+        use crate::trading::{self, fake::Kept, Typed};
+        use omacharts_engine::providers::sierra::setup;
+        crate::features::force(crate::features::Feature::Sierra, true);
+        crate::features::force(crate::features::Feature::Trading, true);
+        let root = std::env::temp_dir().join(format!("omacharts-feeds-sierra-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Data")).unwrap();
+        std::fs::write(root.join("Sierra4.config"), b"").unwrap();
+        let wine = format!("Z:{}\\Data\\", root.display().to_string().replace('/', "\\"));
+        std::fs::write(root.join("DataFilesFolder.txt"), wine).unwrap();
+        let days = "Date,  Open,  High,  Low,  Close,  Volume,  OpenInterest\r\n\
+            2026/09/10, 6590.00, 6600.00, 6580.00, 6595.00, 1500000, 0\r\n";
+        std::fs::write(root.join("Data").join("ESZ26_FUT_CME.dly"), days).unwrap();
+
+        let store = store();
+        let sierra = providers::listed("sierra").unwrap();
+        set_up(&store, sierra, providers::Saved::default().with(setup::FOLDER, &root.display().to_string()).with(setup::PORT, "11099"));
+        add_feed(&store, "sierra");
+        let typed = Typed {
+            service: "sierra".into(),
+            name: "Sierra Chart".into(),
+            user: String::new(),
+            password: String::new(),
+            values: vec![(setup::HOST.into(), setup::DEFAULT_HOST.into()), (setup::PORT.into(), "11099".into())],
+        };
+        trading::add_login(&store, &Kept::default(), &typed).unwrap();
+
+        let seed = omacharts_engine::symbols::seed();
+        let es = seed.iter().find(|i| i.symbol == "ES").expect("ES").clone();
+        let feeds = Feeds::load(&store);
+        let served = feeds.route(&es).map(|(provider, _)| provider.id());
+        assert_eq!(served, Some("sierra"), "ES from {:?}", stored_order(&store));
+        let _ = std::fs::remove_dir_all(&root);
+        forget_login(&store, "sierra");
+    }
+
     /// The feed-only path is as it was: Sierra Chart added on the Data page
     /// adds no trading service login.
     #[test]

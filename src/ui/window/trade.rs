@@ -3448,6 +3448,60 @@ pub(super) mod tests {
     /// marks its open P&L to the chart's prices while the trading service's own say
     /// nothing; so does a root charted on Rithmic's feed for an account at
     /// Sierra Chart.
+    /// Sierra Chart set up as a feed and added as a trading service, with
+    /// three accounts listed: a chart of ES is drawn from its files on the
+    /// default account and on one of its own, and Sierra Chart chosen for
+    /// it stays chosen.
+    #[test]
+    fn a_chart_on_a_sierra_account_is_drawn_from_sierras_files() {
+        use omacharts_engine::providers::sierra::setup;
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Trading, true);
+            crate::features::set(&store, crate::features::Feature::Sierra, true);
+            crate::features::adopt(&store);
+            let root = std::env::temp_dir().join(format!("omacharts-window-sierra-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("Data")).unwrap();
+            std::fs::write(root.join("Sierra4.config"), b"").unwrap();
+            let days = "Date,  Open,  High,  Low,  Close,  Volume,  OpenInterest\r\n\
+                2026/09/10, 6590.00, 6600.00, 6580.00, 6595.00, 1500000, 0\r\n";
+            std::fs::write(root.join("Data").join("ESZ26_FUT_CME.dly"), days).unwrap();
+            let sierra = omacharts_engine::providers::listed("sierra").unwrap();
+            crate::feeds::set_up(&store, sierra, omacharts_engine::providers::Saved::default().with(setup::FOLDER, &root.display().to_string()).with(setup::PORT, "11099"));
+            crate::feeds::add_feed(&store, "sierra");
+            let typed = trading::Typed {
+                service: "sierra".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: vec![(setup::HOST.into(), setup::DEFAULT_HOST.into()), (setup::PORT.into(), "11099".into())],
+            };
+            let login = trading::add_login(&store, &trading::fake::Kept::default(), &typed).unwrap();
+            let accounts = ["E7029", "Sim1", "Sim2"].map(|id| trading::fake::tests::account(&login, id)).to_vec();
+            trading::cache_accounts(&store, &login, accounts);
+
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let feeds = crate::feeds::ordered(&store).into_iter().map(Arc::from).collect();
+            let window = Window::build_with(&app, store.clone(), feeds);
+            let ids: Vec<&str> = window.feeds().iter().map(|feed| feed.provider.id()).collect();
+            assert_eq!(ids, ["sierra", "yahoo"]);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES");
+            for account in [None, Some(format!("{login}/Sim1"))] {
+                pane.account.replace(account.clone());
+                let routed = window.route_pane(&pane, &es).map(|routed| routed.feed.provider.id());
+                assert_eq!(routed, Some("sierra"), "ES on {account:?}");
+            }
+            window.show_in(&pane, es.clone());
+            window.choose_feed(pane.id, Some("sierra".into()));
+            window.show_in(&pane, es.clone());
+            assert_eq!(pane.feed.borrow().as_deref(), Some("sierra"), "the feed chosen stays chosen");
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
+
     #[test]
     fn a_chart_on_one_service_shows_and_marks_what_an_account_on_another_holds() {
         crate::ui::on_gtk(|| {
