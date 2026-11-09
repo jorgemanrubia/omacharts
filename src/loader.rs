@@ -901,8 +901,9 @@ enum Outcome {
     /// The provider said no. `bars` is what the cache holds, for the window
     /// if this turns out to be the final answer.
     Failed { error: ProviderError, bars: Vec<Bar> },
-    /// The cached history had been adjusted out from under us and has been
-    /// dropped. The same request, sent again, now asks for everything — and
+    /// The cached history had been adjusted out from under us, or no longer
+    /// joins what the provider serves, and has been dropped. The same
+    /// request, sent again, now asks for everything — and
     /// is sent again by the queue, which keeps it the provider's gap away
     /// from this one like any other request.
     StartOver,
@@ -936,8 +937,8 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
             Outcome::Done(Response::Bars { key, timeframe: native, bars: cached })
         }
         Ok(fresh) => {
-            // If the overlap disagrees, the cached history was adjusted out
-            // from under us and cannot be trusted. Start over.
+            // If the overlap disagrees or is missing, the cached history
+            // cannot be trusted. Start over.
             if !cached.is_empty() && !overlap_agrees(&cached, &fresh) {
                 store.drop_series(&request.key, native);
                 return Outcome::StartOver;
@@ -1121,24 +1122,25 @@ fn failed(request: &Request, bars: Vec<Bar>, failure: FetchFailure) -> Response 
 /// same timestamps?
 ///
 /// Only completed bars count. The newest cached bar may have been forming when
-/// we stored it, so it is expected to differ and is excluded.
+/// we stored it, so its prices are expected to differ.
+///
+/// But the answer has to share at least one bar with the cache. A tail fetch
+/// asks from before the newest cached bar, so an answer that shares none
+/// started after the cache, and what happened in between is unknown.
 fn overlap_agrees(cached: &[Bar], fresh: &[Bar]) -> bool {
     let newest_complete = cached.last().map(|b| b.ts).unwrap_or(i64::MIN);
-    let mut compared = 0;
+    let mut shared = false;
     for bar in fresh {
-        if bar.ts >= newest_complete {
-            continue;
-        }
         if let Ok(at) = cached.binary_search_by_key(&bar.ts, |b| b.ts) {
-            compared += 1;
-            if !close(cached[at].close, bar.close) || !close(cached[at].open, bar.open) {
+            shared = true;
+            if bar.ts < newest_complete
+                && (!close(cached[at].close, bar.close) || !close(cached[at].open, bar.open))
+            {
                 return false;
             }
         }
     }
-    // No shared completed bars means nothing to contradict.
-    let _ = compared;
-    true
+    shared
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -1182,9 +1184,18 @@ mod tests {
     }
 
     #[test]
-    fn no_shared_history_is_not_a_disagreement() {
-        let cached = vec![bar(100, 10.0)];
+    fn an_answer_that_starts_after_the_cache_disagrees() {
+        let cached = vec![bar(100, 10.0), bar(200, 11.0)];
         let fresh = vec![bar(500, 50.0), bar(600, 60.0)];
+        assert!(!overlap_agrees(&cached, &fresh));
+    }
+
+    #[test]
+    fn sharing_only_the_forming_bar_agrees() {
+        // The newest cached bar opened the session, so it is the only one
+        // the overlap sends back.
+        let cached = vec![bar(100, 10.0), bar(200, 11.0)];
+        let fresh = vec![bar(200, 11.5), bar(300, 12.0)];
         assert!(overlap_agrees(&cached, &fresh));
     }
 
