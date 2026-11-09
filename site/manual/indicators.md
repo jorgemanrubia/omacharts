@@ -12,7 +12,7 @@ The indicators come in families, each with a page that has every indicator in it
 | Family | Indicators |
 |---|---|
 | [Averages and bands](/manual/indicators/averages-and-bands/) | Simple Moving Average, Exponential Moving Average, Volume Weighted Average Price, Bollinger Bands |
-| [Volume](/manual/indicators/volume/) | Volume, Volume Profile |
+| [Volume](/manual/indicators/volume/) | Volume, Volume Profile, Cumulative Delta |
 | [Momentum and volatility](/manual/indicators/momentum-and-volatility/) | Relative Strength Index, MACD, Average True Range, Stochastic |
 | [Sessions and time](/manual/indicators/session-times/) | Session Times |
 
@@ -168,7 +168,7 @@ The legend lists the chart's indicators under the symbol, faint until the pointe
 
 An indicator with **Show in chart legend** off in its settings has no line in the legend, and is still drawn. Hiding it is the switch on its row in the [Indicators page](#the-indicators-page). [Session Times](/manual/indicators/session-times/) starts out of the legend, and every other indicator in it.
 
-The label is the indicator's short name and its lengths, in the order its settings list them, such as **SMA 50** or **MACD 12 26 9**. A VWAP or a volume profile shows its period instead, such as **VWAP · Session**. When the period in use differs from the one chosen, the label names the one in use ([Reset periods](#reset-periods)). [Session Times](/manual/indicators/session-times/) names its ranges: **Sessions · ETH, London**.
+The label is the indicator's short name and its lengths, in the order its settings list them, such as **SMA 50** or **MACD 12 26 9**. A VWAP, a volume profile or a cumulative delta shows its period instead, such as **VWAP · Session**. When the period in use differs from the one chosen, the label names the one in use ([Reset periods](#reset-periods)). [Session Times](/manual/indicators/session-times/) names its ranges: **Sessions · ETH, London**.
 
 ## Hiding every indicator
 
@@ -222,7 +222,7 @@ A paste is a new indicator with the same settings, on the chart that has the key
 | Item | Does |
 |---|---|
 | **Period** buttons | A moving average only: 10, 20, 50, 100 or 200, the one in use ringed |
-| **Reset every** buttons | A VWAP or a volume profile only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)) |
+| **Reset every** buttons | A VWAP, a volume profile or a cumulative delta only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)), and Never for a cumulative delta |
 | **Merge with previous profile** | A volume profile only, over a profile with one before it ([Composite profiles](/manual/indicators/volume/#composite-profiles)) |
 | **Split composite profile** | A volume profile only, over a composite |
 | **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies it and removes it |
@@ -253,7 +253,7 @@ On a chart that is on a template, every change to its indicators changes the tem
 
 ## Reset periods
 
-The [VWAP](/manual/indicators/averages-and-bands/#volume-weighted-average-price) and the [volume profile](/manual/indicators/volume/#volume-profile) start over at the beginning of each period, chosen with **Reset every** in their settings.
+The [VWAP](/manual/indicators/averages-and-bands/#volume-weighted-average-price), the [volume profile](/manual/indicators/volume/#volume-profile) and the [cumulative delta](/manual/indicators/volume/#cumulative-delta) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
 
 | Period | Starts over |
 |---|---|

@@ -849,11 +849,37 @@ pub struct Held {
     /// Pieces that answered a span since [`Held::take_used`] last took them:
     /// what is not to be let go to make room.
     pub used: RefCell<HashSet<Piece>>,
+    /// Each minute's ask volume less its bid volume, oldest first, for days
+    /// held without their minutes: what a cumulative delta walks minute by
+    /// minute, some twenty kilobytes a day where the minutes are a megabyte.
+    /// Read only for the days a cumulative delta reached; see
+    /// [`Held::take_wanted_flows`].
+    pub flows: HashMap<i64, Vec<(i64, i64)>>,
+    /// Days whose flow a computation reached for and did not find.
+    pub wanted_flows: RefCell<Vec<i64>>,
+    /// Changes whenever what is held of a minute already past changes —
+    /// days loaded, flows put in — so a computation kept from before can
+    /// tell it has to start again. A minute sealed live does not change it:
+    /// that is the newest, and only the bars it falls in need doing again.
+    pub generation: u64,
+}
+
+/// A number no [`Held`] has had before.
+fn fresh_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Day {
+    /// Each minute's ask volume less its bid volume, by when it opens.
+    pub fn flow(&self) -> Vec<(i64, i64)> {
+        self.minutes.iter().map(|m| (m.ts, m.ladder.sides.delta())).collect()
+    }
 }
 
 impl Held {
     pub fn new(tick_size: f64) -> Held {
-        Held { tick_size, ..Held::default() }
+        Held { tick_size, generation: fresh_generation(), ..Held::default() }
     }
 
     /// Everything in `series`, minutes and all, trusted from its first
@@ -862,7 +888,7 @@ impl Held {
         let days: Vec<HeldDay> = series.days.iter().cloned().filter_map(HeldDay::whole).collect();
         let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
         let floor_day = days.first().map_or(i64::MAX, |d| d.day.day + 1);
-        Held { tick_size: series.tick_size, days, floor, floor_day, ..Held::default() }
+        Held { tick_size: series.tick_size, days, floor, floor_day, generation: fresh_generation(), ..Held::default() }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -928,11 +954,90 @@ impl Held {
         self.span(from, to).filter(|d| !d.whole && !d.inside(from, to)).map(|d| d.day.day).collect()
     }
 
+    /// The days a cumulative delta reached for and found neither minutes
+    /// nor a flow for, newest first, taken.
+    pub fn take_wanted_flows(&self) -> Vec<i64> {
+        let mut wanted = std::mem::take(&mut *self.wanted_flows.borrow_mut());
+        wanted.sort_unstable_by(|a, b| b.cmp(a));
+        wanted.dedup();
+        wanted
+    }
+
+    /// Put in a day's flow, unless the day has since come whole or gone.
+    /// Whether it went in.
+    pub fn put_flow(&mut self, day: i64, flow: Vec<(i64, i64)>) -> bool {
+        let Ok(at) = self.days.binary_search_by_key(&day, |d| d.day.day) else { return false };
+        if self.days[at].whole {
+            return false;
+        }
+        self.flows.insert(day, flow);
+        self.generation = fresh_generation();
+        true
+    }
+
+    /// Hand each minute opening in `from..to` to `each`, oldest first, as
+    /// its open and its ask volume less its bid volume, the forming one
+    /// included. `false`, with whatever was handed already to be thrown
+    /// away, when that cannot be told exactly: the span starts before
+    /// [`Self::floor`], or reaches a day held by its total alone whose flow
+    /// is not read yet, which is then asked for.
+    pub fn minute_deltas(&self, from: i64, to: i64, mut each: impl FnMut(i64, i64)) -> bool {
+        if from < self.floor {
+            return false;
+        }
+        let mut short = false;
+        for held in self.span(from, to) {
+            if held.whole {
+                let (i, j) = held.day.span(from, to);
+                if !short {
+                    held.day.minutes[i..j].iter().for_each(|m| each(m.ts, m.ladder.sides.delta()));
+                }
+            } else if let Some(flow) = self.flows.get(&held.day.day) {
+                if !short {
+                    let a = flow.partition_point(|(ts, _)| *ts < from);
+                    let b = flow.partition_point(|(ts, _)| *ts < to).max(a);
+                    flow[a..b].iter().for_each(|(ts, delta)| each(*ts, *delta));
+                }
+            } else {
+                let mut wanted = self.wanted_flows.borrow_mut();
+                if !wanted.contains(&held.day.day) {
+                    wanted.push(held.day.day);
+                }
+                short = true;
+            }
+        }
+        if short {
+            return false;
+        }
+        if let Some(forming) = self.forming.as_ref().filter(|m| (from..to).contains(&m.ts)) {
+            each(forming.ts, forming.ladder.sides.delta());
+        }
+        true
+    }
+
+    /// The ask volume less the bid volume of the trading days numbered
+    /// `from_day..to_day`, by their totals, and the forming minute if it is
+    /// in one of them: [`Self::days_between`] without building a ladder.
+    pub fn days_delta(&self, from_day: i64, to_day: i64, days: &Days) -> Option<i64> {
+        if from_day < self.floor_day {
+            return None;
+        }
+        let a = self.days.partition_point(|d| d.day.day < from_day);
+        let b = self.days.partition_point(|d| d.day.day < to_day).max(a);
+        let mut delta: i64 = self.days[a..b].iter().map(|d| d.day.total.sides.delta()).sum();
+        if let Some(forming) = self.forming.as_ref().filter(|m| (from_day..to_day).contains(&days.of(m.ts))) {
+            delta += forming.ladder.sides.delta();
+        }
+        Some(delta)
+    }
+
     /// Put a day's minutes in, in place of its total alone and any pieces.
     pub fn load(&mut self, day: Day) {
         let Some(held) = HeldDay::whole(day) else { return };
         let number = held.day.day;
         self.pieces.retain(|piece, _| piece.day != number);
+        self.flows.remove(&number);
+        self.generation = fresh_generation();
         match self.days.binary_search_by_key(&held.day.day, |d| d.day.day) {
             Ok(at) => self.days[at] = held,
             Err(at) => self.days.insert(at, held),
@@ -1020,6 +1125,13 @@ impl Held {
         if held.whole {
             held.day.insert(minute);
         } else {
+            if let Some(flow) = self.flows.get_mut(&number) {
+                let entry = (minute.ts, minute.ladder.sides.delta());
+                match flow.binary_search_by_key(&minute.ts, |(ts, _)| *ts) {
+                    Ok(at) => flow[at] = entry,
+                    Err(at) => flow.insert(at, entry),
+                }
+            }
             held.day.total.add(&minute);
             // A piece of it may have had this minute in its span.
             self.pieces.retain(|piece, _| piece.day != number);

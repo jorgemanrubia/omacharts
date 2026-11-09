@@ -11,6 +11,7 @@
 
 pub mod bands;
 pub mod bollinger;
+pub mod cvd;
 pub mod oscillators;
 pub mod periods;
 pub mod profile;
@@ -100,6 +101,7 @@ pub enum Kind {
     Bollinger,
     VolumeProfile,
     Volume,
+    Cvd,
     Rsi,
     Macd,
     Atr,
@@ -170,7 +172,7 @@ impl Category {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -179,6 +181,7 @@ impl Kind {
         // same picture, and somebody who has used one is looking for the other.
         Kind::Bollinger,
         Kind::VolumeProfile,
+        Kind::Cvd,
         Kind::Rsi,
         Kind::Macd,
         Kind::Atr,
@@ -189,7 +192,7 @@ impl Kind {
     pub fn category(self) -> Category {
         match self {
             Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
-            Kind::Volume | Kind::VolumeProfile => Category::Volume,
+            Kind::Volume | Kind::VolumeProfile | Kind::Cvd => Category::Volume,
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
@@ -204,11 +207,13 @@ impl Kind {
     }
 
     /// Whether it draws more exactly from volume at price when the chart's
-    /// source has it. Only the volume profile, which otherwise spreads each
-    /// bar's volume over its range. A chart holds ladders only while one of
-    /// its indicators says yes here or needs them outright.
+    /// source has it: the volume profile, which otherwise spreads each
+    /// bar's volume over its range, and the cumulative delta, which
+    /// otherwise estimates each bar's side from its direction. A chart holds
+    /// ladders only while one of its indicators says yes here or needs them
+    /// outright.
     pub fn uses_volume_at_price(self) -> bool {
-        matches!(self, Kind::VolumeProfile) || self.needs() == Needs::VolumeAtPrice
+        matches!(self, Kind::VolumeProfile | Kind::Cvd) || self.needs() == Needs::VolumeAtPrice
     }
 
     /// Whether a new one is named in the chart's legend. Session shading is
@@ -245,6 +250,7 @@ impl Kind {
             Kind::Macd => "Moving Average Convergence Divergence",
             Kind::VolumeProfile => "Volume Profile",
             Kind::Volume => "Volume",
+            Kind::Cvd => "Cumulative Delta",
             Kind::Rsi => "Relative Strength Index",
             Kind::Atr => "Average True Range",
             Kind::Stochastic => "Stochastic",
@@ -264,6 +270,7 @@ impl Kind {
             Kind::Macd => "MACD",
             Kind::VolumeProfile => "VP",
             Kind::Volume => "Vol",
+            Kind::Cvd => "CVD",
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
             Kind::Stochastic => "Stoch",
@@ -286,6 +293,10 @@ impl Kind {
             }
             Kind::VolumeProfile => &["volume profile", "vp", "poc", "value area", "tpo"],
             Kind::Volume => &["volume", "vol", "turnover"],
+            Kind::Cvd => &[
+                "cumulative delta", "cvd", "delta", "order flow", "cumulative volume delta", "volume delta",
+                "aggressor", "bid ask",
+            ],
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
             Kind::Atr => &["atr", "average true range", "volatility", "range", "stop"],
             Kind::Stochastic => &["stochastic", "stoch", "kd", "%k", "oscillator", "momentum", "overbought"],
@@ -306,6 +317,7 @@ impl Kind {
             Kind::Macd => "macd",
             Kind::VolumeProfile => "volume_profile",
             Kind::Volume => "volume",
+            Kind::Cvd => "cvd",
             Kind::Rsi => "rsi",
             Kind::Atr => "atr",
             Kind::Stochastic => "stochastic",
@@ -319,7 +331,7 @@ impl Kind {
     /// the order of the strips is edited where nothing has been computed: the
     /// settings list, and the command line.
     pub fn in_own_pane(self) -> bool {
-        matches!(self, Kind::Volume | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
+        matches!(self, Kind::Volume | Kind::Cvd | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
     }
 
     pub fn default_params(self) -> Params {
@@ -352,6 +364,12 @@ impl Kind {
                 merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
+            Kind::Cvd => Params::Cvd {
+                reset: Some(Reset::Session),
+                style: cvd::Style::Candles,
+                height: 0.16,
+                colouring: None,
+            },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
             // numbers Wilder published and the ones every other chart shows,
             // so a level somebody is watching elsewhere is the same level here.
@@ -393,6 +411,14 @@ pub const DEFAULT_VOLUME_OPACITY: f64 = 0.85;
 
 fn default_volume_opacity() -> f64 {
     DEFAULT_VOLUME_OPACITY
+}
+
+fn cvd_session() -> Option<Reset> {
+    Some(Reset::Session)
+}
+
+fn cvd_height() -> f64 {
+    0.16
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -503,6 +529,23 @@ pub enum Params {
         /// a choice opens at the default.
         #[serde(default = "default_volume_opacity")]
         opacity: f64,
+    },
+    Cvd {
+        /// The period the running delta starts again from nought at, or
+        /// `None` to run on from the first bar for ever. Missing, a session.
+        #[serde(default = "cvd_session")]
+        reset: Option<Reset>,
+        /// Candles or a line. Missing, candles.
+        #[serde(default)]
+        style: cvd::Style,
+        #[serde(default = "cvd_height")]
+        height: f64,
+        /// The colouring its rising and falling bars are painted in, as a
+        /// delta profile's bought and sold rows are: unset, the colouring
+        /// chosen in Preferences, and following it as it changes; set, one
+        /// of [`profile::DELTA_COLOURINGS`] of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        colouring: Option<BarColouring>,
     },
     Rsi {
         period: usize,
@@ -689,6 +732,17 @@ impl Indicator {
         self.describe(Some(timeframe))
     }
 
+    /// What the legend says of it on this chart: a cumulative delta any
+    /// part of which was `estimated` from bar direction says so with a ≈
+    /// after its name, "CVD ≈ · Session". See [`Output::is_estimated`].
+    pub fn legend_for(&self, timeframe: Timeframe, estimated: bool) -> String {
+        let label = self.label_for(timeframe);
+        match estimated && self.kind == Kind::Cvd {
+            true => label.replacen("CVD", "CVD ≈", 1),
+            false => label,
+        }
+    }
+
     fn describe(&self, timeframe: Option<Timeframe>) -> String {
         let effective = |reset: Reset| match timeframe {
             Some(timeframe) => reset.effective_for(timeframe),
@@ -711,6 +765,10 @@ impl Indicator {
                 profile::Method::Delta => format!("VP Δ · {}", effective(*reset).label()),
             },
             Params::Volume { .. } => "Volume".to_string(),
+            Params::Cvd { reset, .. } => match reset {
+                Some(reset) => format!("CVD · {}", effective(*reset).label()),
+                None => "CVD".to_string(),
+            },
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
                 format!("{} {period}", self.kind.short_name())
             }
@@ -831,6 +889,9 @@ pub struct Pane {
     pub guides: Vec<f64>,
     /// The pair of guides worth shading between, if any.
     pub band: Option<(f64, f64)>,
+    /// A bar of a cumulative delta for each bar, drawn as candles or a
+    /// line in place of `values`, which hold their closes.
+    pub delta: Option<Vec<cvd::DeltaBar>>,
 }
 
 /// The least of the chart's height a pane may be dragged down to. Below this
@@ -980,6 +1041,15 @@ fn reslot(indicators: &mut [Indicator], above: &[u32], below: &[u32]) {
 }
 
 impl Output {
+    /// Whether any part of it was estimated rather than read: a cumulative
+    /// delta's bars taken from their direction.
+    pub fn is_estimated(&self) -> bool {
+        match self {
+            Output::Pane(Pane { delta: Some(bars), .. }) => bars.iter().any(|bar| bar.estimated),
+            _ => false,
+        }
+    }
+
     /// The share of the chart's height this indicator wants for its own strip,
     /// if it needs one at all.
     pub fn pane_height(&self) -> Option<f64> {
@@ -1022,6 +1092,10 @@ pub struct Context<'a> {
     /// its indicators wants it. `None` on every chart of a source without
     /// ladders, which is then computed exactly as it always was.
     pub ladders: Option<&'a Held>,
+    /// What a cumulative delta worked out on this chart last time, so a
+    /// tick works out only the newest bars again. `None` works out every
+    /// bar every time.
+    pub memos: Option<&'a cvd::Memos>,
 }
 
 impl<'a> Context<'a> {
@@ -1034,12 +1108,19 @@ impl<'a> Context<'a> {
             instrument: Some(instrument),
             zone,
             ladders: None,
+            memos: None,
         }
     }
 
     /// The same chart, with its ladders.
     pub fn with_ladders(self, ladders: Option<&'a Held>) -> Context<'a> {
         Context { ladders, ..self }
+    }
+
+    /// The same chart, keeping what it worked out from one computation to
+    /// the next.
+    pub fn with_memos(self, memos: Option<&'a cvd::Memos>) -> Context<'a> {
+        Context { memos, ..self }
     }
 }
 
@@ -1078,6 +1159,7 @@ pub fn compute(
         instrument: None,
         zone: crate::clock::ChartZone::default().for_instrument(None),
         ladders: None,
+        memos: None,
     };
     compute_in(indicator, bars, &context)
 }
@@ -1115,6 +1197,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 // something: the quick average crossing the slow one.
                 guides: vec![0.0],
                 band: None,
+                delta: None,
             })
         }
         (Kind::Rsi, Params::Rsi { period, height, overbought, oversold }) => Output::Pane(Pane {
@@ -1125,6 +1208,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             bounds: Some((0.0, 100.0)),
             guides: vec![*oversold, 50.0, *overbought],
             band: Some((*oversold, *overbought)),
+            delta: None,
         }),
         (Kind::Atr, Params::Atr { period, height }) => Output::Pane(Pane {
             values: oscillators::atr(bars, *period),
@@ -1134,6 +1218,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             bounds: None,
             guides: Vec::new(),
             band: None,
+            delta: None,
         }),
         (
             Kind::Stochastic,
@@ -1148,6 +1233,34 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 bounds: Some((0.0, 100.0)),
                 guides: vec![*oversold, 50.0, *overbought],
                 band: Some((*oversold, *overbought)),
+                delta: None,
+            })
+        }
+        (Kind::Cvd, Params::Cvd { reset, height, .. }) => {
+            let reset = reset.map(|reset| reset.effective_for(timeframe));
+            let days = context.ladders.and(context.instrument).map(Days::new);
+            let source = match (context.ladders, &days) {
+                (Some(held), Some(days)) => Some(cvd::Source { held, days }),
+                _ => None,
+            };
+            let work = |memo: Option<&mut cvd::Memo>| {
+                cvd::compute(bars, reset, session_origin, timeframe, source.as_ref(), memo)
+            };
+            let delta = match context.memos {
+                Some(memos) => memos.with(indicator.id, |memo| work(Some(memo))),
+                None => work(None),
+            };
+            Output::Pane(Pane {
+                values: delta.iter().map(|bar| Some(bar.close)).collect(),
+                signal: None,
+                histogram: None,
+                height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
+                // Fitted: a running sum of contracts has no natural ceiling,
+                // and which side of nought it is on is the point.
+                bounds: None,
+                guides: vec![0.0],
+                band: None,
+                delta: Some(delta),
             })
         }
         (Kind::Volume, Params::Volume { height, .. }) => Output::Volume {
@@ -2122,6 +2235,41 @@ mod tests {
             compute_in(&indicator, bars, &context)
         }
 
+        /// A cumulative delta is the aggressors' on a chart with volume at
+        /// price, and says so as plain "CVD"; without it, it is estimated
+        /// from bar direction rather than refused, and the legend marks it
+        /// "CVD ≈". A delta profile on that same chart is still refused.
+        #[test]
+        fn a_cumulative_delta_is_estimated_where_a_delta_profile_is_refused() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            let held = Held::of(&series);
+            let indicator = Indicator::new(1, Kind::Cvd);
+            let minute = Timeframe::minutes(1);
+            let bare = Context::of(&instrument, minute, chrono_tz::UTC);
+            let rich = bare.with_ladders(Some(&held));
+
+            let estimated = compute_in(&indicator, &bars, &bare);
+            let real = compute_in(&indicator, &bars, &rich);
+            assert!(estimated.is_estimated());
+            assert!(!real.is_estimated());
+            assert_eq!(indicator.legend_for(minute, estimated.is_estimated()), "CVD ≈ · Session");
+            assert_eq!(indicator.legend_for(minute, real.is_estimated()), "CVD · Session");
+
+            // The aggressors' sum is not the bars' direction: the two differ.
+            let closes = |output: &Output| match output {
+                Output::Pane(Pane { delta: Some(delta), guides, .. }) => {
+                    assert_eq!(guides, &vec![0.0], "a zero line");
+                    delta.iter().map(|bar| bar.close).collect::<Vec<f64>>()
+                }
+                other => panic!("not a delta pane: {other:?}"),
+            };
+            assert_eq!(closes(&estimated).len(), bars.len());
+            assert_ne!(closes(&estimated), closes(&real));
+
+            assert!(matches!(delta_of(&bars, &instrument, None, None), Output::Unmet(_)), "no estimate for a profile");
+        }
+
         /// Each row of a delta profile is what was bought at the ask less
         /// what was sold at the bid at its prices, worked out here minute by
         /// minute and price by price; its point of control is the greatest
@@ -2296,7 +2444,7 @@ mod tests {
                 assert_eq!(unmet(kind.needs(), &bare), None);
             }
             let users: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.uses_volume_at_price()).collect();
-            assert_eq!(users, vec![Kind::VolumeProfile]);
+            assert_eq!(users, vec![Kind::VolumeProfile, Kind::Cvd]);
         }
     }
 }

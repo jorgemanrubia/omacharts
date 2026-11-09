@@ -2161,12 +2161,13 @@ impl State {
         let _ = price_range(self, &self.bars[first..first + visible], &plan);
     }
 
-    /// The bought and sold colours a delta profile is painted in: its own
-    /// colouring's, or the house colouring's when it has none, or one that
-    /// is not offered to a delta.
+    /// The bought and sold colours a delta profile or a cumulative delta is
+    /// painted in: its own colouring's, or the house colouring's when it has
+    /// none, or one that is not offered to a delta.
     fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
         let chosen = match &drawn.indicator.params {
-            omacharts_engine::Params::VolumeProfile { colouring, .. } => *colouring,
+            omacharts_engine::Params::VolumeProfile { colouring, .. }
+            | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
             _ => None,
         };
         let at = chosen.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
@@ -6633,7 +6634,7 @@ fn draw_pane_name(cr: &cairo::Context, state: &State, drawn: &Drawn, plot_x: f64
         false => colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8),
     }
     cr.move_to(plot_x + 2.0, top + 11.0);
-    let _ = cr.show_text(&drawn.indicator.label_for(state.timeframe));
+    let _ = cr.show_text(&drawn.indicator.legend_for(state.timeframe, drawn.output.is_estimated()));
 }
 
 /// Room at the top of a strip for its name, so a line at the top of its scale
@@ -6685,6 +6686,26 @@ fn on_screen<T>(series: &[T], first: usize, visible: usize) -> &[T] {
 /// which of three stacked panes is which, and a pane you have to count down to
 /// identify is a pane you misread.
 #[allow(clippy::too_many_arguments)]
+/// A cumulative delta's figure on the axis: whole contracts, grouped, up to
+/// a hundred thousand either way, and past that to three figures with K, M
+/// or B, so a stock's running total of millions of shares stays inside the
+/// axis.
+fn contracts(value: f64) -> String {
+    let size = value.abs();
+    let (scaled, unit) = match size {
+        _ if size >= 1e9 => (value / 1e9, "B"),
+        _ if size >= 1e6 => (value / 1e6, "M"),
+        _ if size >= 1e5 => (value / 1e3, "K"),
+        _ => return grouped_decimals(value.round(), 0),
+    };
+    let decimals = match scaled.abs() {
+        a if a >= 100.0 => 0,
+        a if a >= 10.0 => 1,
+        _ => 2,
+    };
+    format!("{scaled:.decimals$}{unit}")
+}
+
 fn draw_pane(
     cr: &cairo::Context,
     state: &State,
@@ -6751,6 +6772,8 @@ fn draw_pane(
     colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.75);
     let marks: Vec<(f64, String)> = if pane.bounds.is_some() {
         pane.guides.iter().map(|g| (*g, format!("{g:.0}"))).collect()
+    } else if pane.delta.is_some() {
+        vec![(low, contracts(low)), (high, contracts(high))]
     } else {
         let decimals = pane_decimals(pane, low, high);
         vec![(low, grouped_decimals(low, decimals)), (high, grouped_decimals(high, decimals))]
@@ -6765,6 +6788,38 @@ fn draw_pane(
     }
 
     draw_pane_name(cr, state, drawn, plot_x, top);
+
+    // A cumulative delta is its candles or its line, and its close on the
+    // axis, in place of the lines below.
+    if let Some(delta) = &pane.delta {
+        let shown = on_screen(delta, first, visible);
+        let line = matches!(
+            drawn.indicator.params,
+            omacharts_engine::Params::Cvd { style: omacharts_engine::indicators::cvd::Style::Line, .. }
+        );
+        let (up, down) = state.delta_ink(drawn);
+        let chip = match line {
+            true => {
+                draw_delta_line(cr, state, drawn, shown, columns, &strip, lit);
+                drawn.color.as_str()
+            }
+            false => {
+                draw_delta_candles(cr, state, shown, columns, &strip, (up, down), lit);
+                match delta.last() {
+                    Some(last) if last.close < last.open => down,
+                    _ => up,
+                }
+            }
+        };
+        let chips = delta
+            .last()
+            .map(|last| (to_y(last.close), contracts(last.close), chip))
+            .filter(|(y, _, _)| *y >= top && *y <= top + height)
+            .into_iter()
+            .collect();
+        draw_axis_chips(cr, state, chips, plot_x + plot_w, top + height, width);
+        return;
+    }
 
     // The lines last, over their own furniture.
     let stroke = drawn.indicator.stroke;
@@ -6823,6 +6878,117 @@ fn draw_pane(
         })
         .collect();
     draw_axis_chips(cr, state, chips, plot_x + plot_w, top + height, width);
+}
+
+/// The bars of a cumulative delta a column stands for, as one: from the
+/// first one's open to the last one's close, as far as any went either way.
+fn delta_column(bars: &[indicators::cvd::DeltaBar]) -> Option<indicators::cvd::DeltaBar> {
+    let (first, last) = (bars.first()?, bars.last()?);
+    let mut column = indicators::cvd::DeltaBar { close: last.close, starts: bars.iter().any(|b| b.starts), ..*first };
+    for bar in bars {
+        column.high = column.high.max(bar.high);
+        column.low = column.low.min(bar.low);
+    }
+    Some(column)
+}
+
+/// A cumulative delta's candles: rising ones in the up colour, falling ones
+/// in the down colour, each a body from where its running delta opened to
+/// where it closed and a wick to the furthest it went between. Solid, as
+/// the volume strip's bars are, so a wick reads against the zero line.
+fn draw_delta_candles(
+    cr: &cairo::Context,
+    state: &State,
+    bars: &[indicators::cvd::DeltaBar],
+    columns: &Columns,
+    to_y: &impl Fn(f64) -> f64,
+    (up, down): (&str, &str),
+    lit: bool,
+) {
+    cr.save().ok();
+    cr.set_line_width(1.0);
+    let passes: &[bool] = if lit { &[true, false] } else { &[false] };
+    for glow in passes.iter().copied() {
+        for rising in [false, true] {
+            let mut any = false;
+            for at in 0..columns.len() {
+                let Some(bar) = bars.get(columns.span(at)).and_then(delta_column) else { continue };
+                if (bar.close >= bar.open) != rising || !bar.close.is_finite() {
+                    continue;
+                }
+                any = true;
+                let (top, bottom) = (to_y(bar.open.max(bar.close)), to_y(bar.open.min(bar.close)));
+                let (x, w) = columns.tile(at).unwrap_or_else(|| columns.body(at));
+                let (top, h) = (top.round(), (bottom.round() - top.round()).max(1.0));
+                if glow {
+                    selection::glow_bar(cr, (x, top, w, h), false);
+                    continue;
+                }
+                cr.rectangle(x, top, w, h);
+                // The wick down the column's middle, through the body.
+                let cx = columns.x(at).round() + 0.5;
+                let (high, low) = (to_y(bar.high).round(), to_y(bar.low).round());
+                if high < top {
+                    cr.rectangle(cx - 0.5, high, 1.0, top - high);
+                }
+                if low > top + h {
+                    cr.rectangle(cx - 0.5, top + h, 1.0, low - top - h);
+                }
+            }
+            if any {
+                let alpha = if glow { selection::glow_alpha(&state.theme) } else { 1.0 };
+                colors::set_source_alpha(cr, if rising { up } else { down }, alpha);
+                let _ = cr.fill();
+            }
+        }
+    }
+    cr.restore().ok();
+}
+
+/// A cumulative delta as a line through each bar's close, in its own colour
+/// and stroke, lifted at each reset so a period's first bar is not joined to
+/// the last one's.
+fn draw_delta_line(
+    cr: &cairo::Context,
+    state: &State,
+    drawn: &Drawn,
+    bars: &[indicators::cvd::DeltaBar],
+    columns: &Columns,
+    to_y: &impl Fn(f64) -> f64,
+    lit: bool,
+) {
+    let stroke = drawn.indicator.stroke;
+    if stroke.is_hidden() {
+        return;
+    }
+    let point = |at: usize| {
+        let bar = bars.get(columns.span(at)).and_then(delta_column)?;
+        Some((columns.x(at), to_y(bar.close), bar.starts))
+    };
+    if lit {
+        selection::glow_line(cr, &state.theme, &drawn.color, stroke.width, columns, |at| {
+            point(at).map(|(x, y, _)| (x, y))
+        });
+    }
+    cr.save().ok();
+    cr.set_line_width(stroke.width);
+    cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
+    colors::set_source(cr, &drawn.color);
+    let mut pen_down = false;
+    for at in 0..columns.len() {
+        let Some((x, y, starts)) = point(at) else {
+            pen_down = false;
+            continue;
+        };
+        if pen_down && !starts {
+            cr.line_to(x, y);
+        } else {
+            cr.move_to(x, y);
+            pen_down = true;
+        }
+    }
+    let _ = cr.stroke();
+    cr.restore().ok();
 }
 
 /// Chips on the axis at their own heights, moved apart where they would cover
@@ -6895,6 +7061,11 @@ fn pane_range(
             low = low.min(*value);
             high = high.max(*value);
         }
+    }
+    // A cumulative delta's candles reach past their closes.
+    for bar in pane.delta.as_deref().map(|bars| on_screen(bars, first, visible)).unwrap_or_default() {
+        low = low.min(bar.low);
+        high = high.max(bar.high);
     }
     // A guide is part of the scale rather than something drawn on top of it.
     // A MACD's histogram is measured from its zero line, so the zero line has
@@ -8022,11 +8193,14 @@ fn draw_pane_value(
     };
     let (inner_top, inner_h) = pane_plot(row.top, row.height);
     let value = high - (py - inner_top) / inner_h * (high - low);
-    let decimals = pane_decimals(pane, low, high);
+    let text = match pane.delta.is_some() {
+        true => contracts(value),
+        false => grouped_decimals(value, pane_decimals(pane, low, high)),
+    };
     label_on_axis(
         cr,
         state,
-        &grouped_decimals(value, decimals),
+        &text,
         plan.plot_x + plan.plot_w,
         py.round() + 0.5,
         width,
@@ -10768,6 +10942,37 @@ mod tests {
         state
     }
 
+    /// A cumulative delta's axis keeps a futures total whole and grouped,
+    /// and shortens a stock's millions so they fit the axis.
+    #[test]
+    fn a_cumulative_delta_is_written_short_on_the_axis_only_when_it_is_large() {
+        assert_eq!(contracts(-2_145.0), "-2,145");
+        assert_eq!(contracts(18_821.4), "18,821");
+        assert_eq!(contracts(250_400.0), "250K");
+        assert_eq!(contracts(11_215_413.0), "11.2M");
+        assert_eq!(contracts(-1_424_661.0), "-1.42M");
+        assert_eq!(contracts(2_500_000_000.0), "2.50B");
+    }
+
+    /// A volume pane on Default, which every volume pane before its
+    /// Colouring was a delta's is, paints as the chart's candles do; one of
+    /// the three palettes, or a Monochrome kept from before, paints as that
+    /// palette does, as it always did.
+    #[test]
+    fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let scheme = BarColouring::Quiet.scheme(&theme);
+        let mut indicator = Indicator::new(1, indicators::Kind::Volume);
+        assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
+        for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
+            if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
+                *colouring = Some(own);
+            }
+            let painted = own.scheme(&theme);
+            assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
+        }
+    }
+
     /// A chart of the regular session out of hours: the last price is the
     /// feed's newest trade, not the last close drawn, following each
     /// trade; the scale reaches it while
@@ -12238,6 +12443,7 @@ mod tests {
             bounds: None,
             guides: guides.to_vec(),
             band: None,
+            delta: None,
         }
     }
 

@@ -304,6 +304,12 @@ pub struct ChartPane {
     /// The volume profile periods merged on this chart, kept with it: a
     /// composite is a study of this chart's, not of the indicator's.
     pub profile_merges: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
+    /// What each cumulative delta on this chart worked out last, so a tick
+    /// works out only its newest bars again.
+    pub cvd_memos: omacharts_engine::indicators::cvd::Memos,
+    /// The cumulative deltas on this chart any part of which is estimated
+    /// from bar direction, which the legend marks.
+    pub estimated: RefCell<Vec<u32>>,
     /// What the link icon is painted in, so a mode other than the default can
     /// be read off four charts at a glance rather than by opening four
     /// popovers. Held here because the drawing happens on every frame and the
@@ -750,6 +756,8 @@ impl ChartPane {
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             profile_merges: RefCell::new(Vec::new()),
+            cvd_memos: omacharts_engine::indicators::cvd::Memos::new(),
+            estimated: RefCell::new(Vec::new()),
             link_colour,
             glyph,
         });

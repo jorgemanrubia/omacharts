@@ -73,6 +73,9 @@ enum Job {
     Fill { key: String, stored: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
     /// The parts of one day that spans cut, each summed.
     Pieces { key: String, stored: String, day: i64, pieces: Vec<Piece> },
+    /// The flow of each of these days: every minute's ask volume less its
+    /// bid volume, for a cumulative delta.
+    Flows { key: String, stored: String, days: Vec<i64> },
     /// A minute sealed live, and the span the feed knows complete.
     Append { stored: String, tick_size: f64, day: i64, minute: Minute, covered: Option<(i64, i64)> },
 }
@@ -84,6 +87,8 @@ pub enum Done {
     Pieces { key: String, pieces: Vec<(Piece, Ladder)> },
     /// A fill after the feed came back: the days it changed, whole.
     Filled { key: String, days: Vec<Day>, asked: Vec<(i64, i64)> },
+    /// Days' flows; none for a day the store does not have.
+    Flows { key: String, flows: Vec<(i64, Vec<(i64, i64)>)> },
 }
 
 /// What the provider's thread leaves for the next drain: updates in order,
@@ -112,6 +117,8 @@ struct Entry {
     early: Vec<Minute>,
     /// Pieces asked for and not back yet.
     asked: HashSet<Piece>,
+    /// Days whose flows were asked for and are not back yet.
+    asked_flows: HashSet<i64>,
     /// The pieces held, in the order they came.
     pieces: VecDeque<Piece>,
     /// Fills on their way.
@@ -253,6 +260,7 @@ impl AtPrice {
                 _live: live,
                 early: Vec::new(),
                 asked: HashSet::new(),
+                asked_flows: HashSet::new(),
                 pieces: VecDeque::new(),
                 filling: 0,
                 sealed_meanwhile: Vec::new(),
@@ -331,6 +339,7 @@ impl AtPrice {
     /// them, if the pieces are over [`PIECE_BYTES`], by letting go of the
     /// oldest that computation did not draw from.
     pub fn load_wanted(&self, key: &str) {
+        self.load_wanted_flows(key);
         let mut asks: Vec<(i64, Vec<Piece>)> = Vec::new();
         let stored = {
             let mut entries = self.entries.borrow_mut();
@@ -361,6 +370,26 @@ impl AtPrice {
         for (day, pieces) in asks {
             self.send(Job::Pieces { key: key.to_string(), stored: stored.clone(), day, pieces });
         }
+    }
+
+    /// Ask for the flows of the days the last computation of `key` reached
+    /// for and found held by their totals alone, in one job, newest first.
+    /// A flow is some twenty kilobytes a day, so nothing is let go for them.
+    fn load_wanted_flows(&self, key: &str) {
+        let (stored, days) = {
+            let mut entries = self.entries.borrow_mut();
+            let Some(entry) = entries.get_mut(key) else { return };
+            let wanted = entry.held.take_wanted_flows();
+            let days: Vec<i64> = wanted
+                .into_iter()
+                .filter(|day| !entry.held.flows.contains_key(day) && entry.asked_flows.insert(*day))
+                .collect();
+            if days.is_empty() {
+                return;
+            }
+            (entry.stored.clone(), days)
+        };
+        self.send(Job::Flows { key: key.to_string(), stored, days });
     }
 
     /// The thread's answer, put in place. The charts to compute again.
@@ -402,6 +431,13 @@ impl AtPrice {
                     }
                 }
                 entry.asked.retain(|piece| !changed(piece.day));
+                // Flows likewise, but for days that came whole.
+                for (day, flow) in std::mem::take(&mut entry.held.flows) {
+                    if !changed(day) {
+                        held.put_flow(day, flow);
+                    }
+                }
+                entry.asked_flows.retain(|day| !changed(*day));
                 if held.tick_size <= 0.0 {
                     held.tick_size = entry.tick_size;
                 }
@@ -426,6 +462,20 @@ impl AtPrice {
                 if entry.pieces.len() > 2 * entry.held.pieces.len() + 64 {
                     let held = &entry.held.pieces;
                     entry.pieces.retain(|piece| held.contains_key(piece));
+                }
+                if !any {
+                    return Vec::new();
+                }
+                entry.watchers.iter().copied().collect()
+            }
+            Done::Flows { key, flows } => {
+                let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
+                let mut any = false;
+                for (day, flow) in flows {
+                    // Not asked for any more: a load since may have changed it.
+                    if entry.asked_flows.remove(&day) {
+                        any |= entry.held.put_flow(day, flow);
+                    }
                 }
                 if !any {
                     return Vec::new();
@@ -647,6 +697,12 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
                 }
                 None => continue,
             },
+            // Each day read and dropped here; only its flow crosses.
+            Job::Flows { key, stored, days } => {
+                let flows: Vec<(i64, Vec<(i64, i64)>)> =
+                    days.into_iter().filter_map(|day| Some((day, store.load_ladder_day(&stored, day)?.flow()))).collect();
+                Done::Flows { key, flows }
+            }
             Job::Append { stored, tick_size, day, minute, covered } => {
                 let _ = store.append_ladder_minute(&stored, tick_size, day, &minute, covered);
                 continue;

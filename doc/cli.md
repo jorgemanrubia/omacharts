@@ -117,7 +117,8 @@ Every indicator the app has, with every parameter it exposes:
 | `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
 | `atr` | `--period`, `--height` |
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
-| `volume` | `--height` |
+| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
+| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
@@ -1016,7 +1017,8 @@ all charts does in the preferences. One chart on its own is
 switch on for that chart. A volume pane follows the chart's colouring, swapped
 or not, unless given one of its own: `chart indicator set volume --colouring
 theme-soft`, which is painted its own way round whatever the chart's switch
-says, and `--colouring chart` to follow the chart again. A hollow rise never
+says, and `--colouring default` (or `chart`) to follow the chart again.
+Monochrome is refused for a volume pane, as for a delta. A hollow rise never
 reaches the volume: its bars are solid, with no body to leave open. They are
 the candles' own colours, drawn at `--opacity`, 0.2 to 1 and 0.85 unless set.
 

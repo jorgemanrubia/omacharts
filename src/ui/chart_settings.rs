@@ -14,7 +14,8 @@ use omacharts_engine::indicators::{
     self, Kind, LineStyle, Params, Reset, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
     MIN_PANE_SHARE,
 };
-use omacharts_engine::indicators::profile::{Align, Method, Style, DELTA_COLOURINGS};
+use omacharts_engine::indicators::cvd::Style;
+use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle, DELTA_COLOURINGS};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
@@ -858,6 +859,13 @@ impl Owner {
         self.app.theme()
     }
 
+    /// Whether a cumulative delta on the chart in front of whoever is
+    /// editing is estimated because its feed has no bid and ask volume.
+    /// Never for a template, which is on charts of every feed.
+    fn estimates_delta(&self) -> bool {
+        self.template.is_none() && !self.app.focused_pane_has_ladders()
+    }
+
     /// The focused chart's, for a template too: it is the chart in front of
     /// whoever is editing, and a template has no bars of its own.
     fn bar_scheme(&self) -> omacharts_engine::BarScheme {
@@ -1401,6 +1409,22 @@ fn appearance_group(
     // A strip's second line follows the theme the way a point of control
     // does: unset is the next colour along from the first line's, so the two
     // never come out the same.
+    // A cumulative delta's line is drawn only as a line: as candles it is
+    // in its colouring, and these rows would change nothing on screen.
+    if let Params::Cvd { style, .. } = &indicator.params {
+        let is_line = |params: &Params| matches!(params, Params::Cvd { style: Style::Line, .. });
+        group.set_visible(*style == Style::Line);
+        let weak = group.downgrade();
+        let owner = owner.clone();
+        owner.clone().app.watch_chart(move || {
+            let Some(group) = weak.upgrade().filter(|group| group.root().is_some()) else { return false };
+            if let Some(indicator) = owner.indicators().iter().find(|i| i.id == id) {
+                group.set_visible(is_line(&indicator.params));
+            }
+            true
+        });
+    }
+
     let second = match &indicator.params {
         Params::Stochastic { d_color, .. } => Some(("%D colour", d_color.clone())),
         Params::Macd { signal_color, .. } => Some(("Signal colour", signal_color.clone())),
@@ -1697,6 +1721,33 @@ fn parameters_group(
         Params::Volume { height, .. } => {
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
+        Params::Cvd { reset, style, height, colouring } => {
+            // Said once, here, rather than on the chart: the legend's ≈ is
+            // the mark there.
+            if owner.estimates_delta() {
+                group.set_description(Some(CVD_ESTIMATED));
+            }
+            group.add(&reset_row_of(owner, refresh, id, *reset, true));
+            let style_row = choice_row(
+                owner,
+                refresh,
+                id,
+                CVD_STYLE_LABEL,
+                &Style::ALL.map(Style::label),
+                Style::ALL.iter().position(|s| s == style),
+                |indicator, at| {
+                    if let Params::Cvd { style, .. } = &mut indicator.params {
+                        *style = Style::ALL[at];
+                    }
+                },
+            );
+            // After the change is made: the line's own rows come and go with it.
+            let app = owner.app.clone();
+            style_row.connect_selected_notify(move |_| app.chart_changed_elsewhere());
+            group.add(&style_row);
+            group.add(&colouring_row(owner, refresh, id, *colouring));
+            group.add(&pane_height_row(owner, refresh, id, *height));
+        }
         Params::Rsi { period, height, overbought, oversold } => {
             group.add(&spin_row(
                 owner, refresh, id, "Period", *period as f64, 2.0, 200.0, 1.0,
@@ -1817,18 +1868,7 @@ fn parameters_group(
                 },
             );
             group.add(&method_row);
-            // How a delta's bought and sold rows are painted, as the bars'
-            // colouring is chosen: Preferences' own first, then the
-            // colourings that tell a rise from a fall.
-            let offered = &DELTA_COLOURINGS;
-            let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
-            names.extend(offered.iter().map(|c| c.label()));
-            let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-            let colouring_row = choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, current, move |indicator, at| {
-                if let Params::VolumeProfile { colouring, .. } = &mut indicator.params {
-                    *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
-                }
-            });
+            let colouring_row = colouring_row(owner, refresh, id, *colouring);
             colouring_row.set_visible(has_colouring(*method));
             group.add(&colouring_row);
             for row in rows_rows(owner, refresh, id, *rows) {
@@ -1953,18 +1993,10 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
             }
         },
     );
-    // The chart's own colouring first, then the four palettes. A volume
-    // bar is a solid bar with no body to leave open, so the chart's
-    // switches reach it only as the swap, through the chart's scheme.
-    let offered = &BarColouring::ALL;
-    let mut names = vec![VOLUME_FOLLOWS_CHART];
-    names.extend(offered.iter().map(|c| c.label()));
-    let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-    let choice = choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
-        if let Params::Volume { colouring, .. } = &mut indicator.params {
-            *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
-        }
-    });
+    // The one a delta profile offers. Its Default is what volume always
+    // followed, the chart's own colouring, and Monochrome, which a delta is
+    // not offered, stays on offer to a volume pane already painted in it.
+    let choice = colouring_row(owner, refresh, id, *colouring);
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
     let up_row = colour_row(
@@ -2001,9 +2033,38 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
 /// The volume row that says how solid its bars are.
 pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
 
-/// What a volume pane's colouring row offers first: the way the chart
-/// paints its candles, whatever that is.
-const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
+/// The colouring row a volume pane, a delta volume profile and a
+/// cumulative delta share: **Default** first, then the colourings that tell
+/// a rise from a fall, [`DELTA_COLOURINGS`]. Default is the colouring
+/// chosen in Preferences for a delta, and the chart's own for volume, which
+/// is what it always followed. A colouring outside those three that an
+/// indicator already has — a volume pane painted Monochrome before — is
+/// offered last, so the row shows what is drawn.
+fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
+    let mut offered: Vec<BarColouring> = DELTA_COLOURINGS.to_vec();
+    if let Some(kept) = current.filter(|c| !offered.contains(c)) {
+        offered.push(kept);
+    }
+    let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
+    names.extend(offered.iter().map(|c| c.label()));
+    let at = current.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
+    choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, at, move |indicator, at| {
+        let chosen = at.checked_sub(1).and_then(|at| offered.get(at).copied());
+        match &mut indicator.params {
+            Params::Volume { colouring, .. }
+            | Params::VolumeProfile { colouring, .. }
+            | Params::Cvd { colouring, .. } => *colouring = chosen,
+            _ => {}
+        }
+    })
+}
+
+/// The cumulative delta row that picks candles or a line.
+const CVD_STYLE_LABEL: &str = "Style";
+
+/// What a cumulative delta's settings say, once, on a chart whose feed
+/// cannot tell bought from sold.
+pub const CVD_ESTIMATED: &str = "Estimated from bar direction: this feed has no bid and ask volume";
 
 /// The volume profile row that says how much of its room it takes.
 const PROFILE_WIDTH_LABEL: &str = "Width";
@@ -2062,7 +2123,7 @@ fn profile_style(
     // Filled rows wear an outline only when asked; the outline style is
     // nothing but one, so the switch is for the filled style, and the
     // outline's own two rows wait for there to be an outline.
-    let filled = *style == Style::Filled;
+    let filled = *style == ProfileStyle::Filled;
     let switch = adw::SwitchRow::new();
     switch.set_title("Outline");
     switch.set_active(*outline || !filled);
@@ -2169,9 +2230,9 @@ fn profile_style(
         });
     }
 
-    group.add(&choice_row(owner, refresh, id, "Style", &Style::ALL.map(Style::label), Style::ALL.iter().position(|s| s == style), |indicator, at| {
+    group.add(&choice_row(owner, refresh, id, "Style", &ProfileStyle::ALL.map(ProfileStyle::label), ProfileStyle::ALL.iter().position(|s| s == style), |indicator, at| {
         if let Params::VolumeProfile { style, .. } = &mut indicator.params {
-            *style = Style::ALL[at];
+            *style = ProfileStyle::ALL[at];
         }
     }));
     group.add(&choice_row(owner, refresh, id, "Alignment", &Align::ALL.map(Align::label), Align::ALL.iter().position(|a| a == align), |indicator, at| {
@@ -2426,11 +2487,30 @@ fn reset_row(
     id: u32,
     current: Reset,
 ) -> adw::ComboRow {
-    let names: Vec<&str> = Reset::ALL.iter().map(|r| r.label()).collect();
+    reset_row_of(owner, refresh, id, Some(current), false)
+}
+
+/// The Reset every row, and with `never` a last choice of never starting
+/// again, which `None` is: a cumulative delta's.
+fn reset_row_of(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    current: Option<Reset>,
+    never: bool,
+) -> adw::ComboRow {
+    let mut names: Vec<&str> = Reset::ALL.iter().map(|r| r.label()).collect();
+    if never {
+        names.push(omacharts_engine::indicators::cvd::NEVER);
+    }
+    let at = |reset: Option<Reset>| match reset {
+        Some(reset) => Reset::ALL.iter().position(|r| *r == reset).unwrap_or(0),
+        None => Reset::ALL.len(),
+    };
     let row = adw::ComboRow::new();
     row.set_title("Reset every");
     row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(Reset::ALL.iter().position(|r| *r == current).unwrap_or(0) as u32);
+    row.set_selected(at(current) as u32);
     // A period the chart is too coarse for cannot be picked: it would be
     // drawn as another. Only for a chart's own indicators — a template's
     // are on charts of every resolution.
@@ -2438,8 +2518,8 @@ fn reset_row(
         let timeframe = owner.app.focused_pane().timeframe.get();
         // The period being drawn, which a chosen one the chart is too coarse
         // for is not.
-        let in_use = current.effective_for(timeframe);
-        row.set_selected(Reset::ALL.iter().position(|r| *r == in_use).unwrap_or(0) as u32);
+        let in_use = current.map(|current| current.effective_for(timeframe));
+        row.set_selected(at(in_use) as u32);
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, item| {
             let label = gtk::Label::new(None);
@@ -2451,7 +2531,13 @@ fn reset_row(
         factory.connect_bind(move |_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
             let Some(label) = item.child().and_downcast::<gtk::Label>() else { return };
-            let Some(period) = Reset::ALL.get(item.position() as usize).copied() else { return };
+            let Some(period) = Reset::ALL.get(item.position() as usize).copied() else {
+                label.set_text(omacharts_engine::indicators::cvd::NEVER);
+                label.set_sensitive(true);
+                item.set_selectable(true);
+                item.set_activatable(true);
+                return;
+            };
             label.set_text(period.label());
             let possible = period.is_meaningful_for(timeframe);
             label.set_sensitive(possible);
@@ -2467,10 +2553,14 @@ fn reset_row(
     let owner = owner.clone();
     let refresh = refresh.clone();
     row.connect_selected_notify(move |row| {
-        let Some(chosen) = Reset::ALL.get(row.selected() as usize).copied() else { return };
+        let chosen = Reset::ALL.get(row.selected() as usize).copied();
+        if chosen.is_none() && !never {
+            return;
+        }
         update(&owner, id, |indicator| match &mut indicator.params {
-            Params::Vwap { reset, .. } => *reset = chosen,
-            Params::VolumeProfile { reset, .. } => *reset = chosen,
+            Params::Vwap { reset, .. } => *reset = chosen.unwrap_or_default(),
+            Params::VolumeProfile { reset, .. } => *reset = chosen.unwrap_or_default(),
+            Params::Cvd { reset, .. } => *reset = chosen,
             Params::MovingAverage { .. }
             | Params::Bollinger { .. }
             | Params::Volume { .. }

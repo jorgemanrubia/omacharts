@@ -2191,6 +2191,144 @@ mod outside_change_tests {
             );
         });
     }
+
+    /// The names a combo row offers, in order.
+    fn offered(row: &adw::ComboRow) -> Vec<String> {
+        (0..row.model().map_or(0, |m| m.n_items()))
+            .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
+            .collect()
+    }
+
+    /// A volume pane's Colouring is the delta profile's: Default first, which
+    /// is the chart's own as it always was, then the three that tell a rise
+    /// from a fall.
+    #[test]
+    fn a_volume_pane_offers_the_delta_profiles_colourings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume"]);
+            let volume = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
+                .map(|i| i.id)
+                .expect("a volume pane added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
+            let strip = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the volume pane's");
+            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(strip.selected(), 0, "the chart's own, to begin with");
+        });
+    }
+
+    /// A cumulative delta's settings: when it resets, with Never last; candles
+    /// or a line, the line's own rows offered only for a line, by a command
+    /// too; its colouring;
+    /// and, on a feed with no bid and ask volume, one line saying it is
+    /// estimated.
+    #[test]
+    fn a_cumulative_delta_is_set_up_from_its_settings() {
+        use omacharts_engine::indicators::{cvd, Params};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            // Intraday, so the session is a period it can be drawn by.
+            command(&window, &["chart", "set", "--resolution", "5m"]);
+            command(&window, &["chart", "indicator", "add", "cvd"]);
+            let cvd = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Cvd)
+                .map(|i| i.id)
+                .expect("a cumulative delta added");
+            let params = || window.indicators().iter().find(|i| i.id == cvd).expect("the delta").params.clone();
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, cvd);
+            // Read again after each change: a change can rebuild the page.
+            let reset = || titled::<adw::ComboRow>(&window, "Reset every").pop().expect("the reset");
+            let style = || {
+                titled::<adw::ComboRow>(&window, "Style")
+                    .into_iter()
+                    .filter(|row| offered(row) == ["Candles", "Line"])
+                    .last()
+                    .expect("the style row")
+            };
+            let colouring = || titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring");
+
+            let names = offered(&reset());
+            assert_eq!(names.last().map(String::as_str), Some(cvd::NEVER));
+            assert_eq!(names[reset().selected() as usize], "Session", "the session, to begin with");
+            assert_eq!(style().selected(), 0);
+            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet"]);
+
+            let group = reset().ancestor(adw::PreferencesGroup::static_type()).and_downcast::<adw::PreferencesGroup>();
+            let said = group.and_then(|g| g.description()).map(|d| d.to_string());
+            assert_eq!(said.as_deref(), Some(crate::ui::chart_settings::CVD_ESTIMATED), "a chart with no ladders");
+
+            let line_shown = || {
+                rows::<adw::PreferencesGroup>(window.window.upcast_ref())
+                    .into_iter()
+                    .find(|group| group.title() == "Line")
+                    .expect("the line's group")
+                    .property::<bool>("visible")
+            };
+            assert!(!line_shown(), "candles have no line to set");
+
+            let never = reset().model().map_or(0, |m| m.n_items()) - 1;
+            reset().set_selected(never);
+            assert!(matches!(params(), Params::Cvd { reset: None, .. }), "{:?}", params());
+            style().set_selected(1);
+            assert!(matches!(params(), Params::Cvd { style: cvd::Style::Line, .. }), "{:?}", params());
+            assert!(line_shown(), "a line's own rows");
+            colouring().set_selected(2);
+            assert!(matches!(params(), Params::Cvd { colouring: Some(BarColouring::Soft), .. }), "{:?}", params());
+
+            // The line's rows follow a command that draws it as candles again.
+            command(&window, &["chart", "indicator", "set", "cvd", "--cvd-style", "candles"]);
+            assert!(!line_shown(), "the line's rows stayed for candles");
+        });
+    }
+}
+
+/// The Reset every row of an indicator's menu: the periods, the one being
+/// drawn ringed, and with `never` a last button for never starting again,
+/// which only a cumulative delta has.
+fn reset_strip(
+    pane: &ChartPane,
+    presets: &gio::Menu,
+    rows: &mut Vec<(String, gtk::Widget)>,
+    current: Option<Reset>,
+    never: bool,
+) {
+    let item = gio::MenuItem::new(Some("Reset every"), None);
+    item.set_attribute_value("custom", Some(&"reset".to_variant()));
+    presets.append_item(&item);
+    // Ringed is the period being drawn: a chosen one the chart is
+    // too coarse for is drawn as another, and that is the one in use.
+    let timeframe = pane.timeframe.get();
+    let in_use = current.map(|reset| reset.effective_for(timeframe));
+    let mut choices: Vec<(String, glib::Variant, bool)> =
+        Reset::ALL.iter().map(|r| (r.label().to_string(), r.key().to_variant(), Some(*r) == in_use)).collect();
+    if never {
+        choices.push((omacharts_engine::indicators::cvd::NEVER.to_string(), "never".to_variant(), in_use.is_none()));
+    }
+    let strip = choice_strip(&choices, "chart.indicator-reset", "Reset every");
+    // A period the chart is too coarse for would be promoted to
+    // another the moment it was picked: greyed, and saying why,
+    // rather than a button that seems to do nothing.
+    let mut child = strip.first_child();
+    for period in Reset::ALL {
+        let Some(button) = child else { break };
+        if !period.is_meaningful_for(timeframe) {
+            button.set_sensitive(false);
+            button.set_tooltip_text(Some(&format!(
+                "Too few {} bars in a {} to draw it",
+                timeframe.label(),
+                period.label().to_lowercase()
+            )));
+        }
+        child = button.next_sibling();
+    }
+    rows.push(("reset".to_string(), strip));
 }
 
 /// Does this watchlist hold that symbol?
@@ -4998,9 +5136,15 @@ impl Window {
         self.backfill();
     }
 
+    /// Whether the focused chart's feed has volume at price for it: bid and
+    /// ask volume a cumulative delta can be read from rather than estimated.
+    pub fn focused_pane_has_ladders(&self) -> bool {
+        self.focused_pane().ladders.borrow().is_some()
+    }
+
     /// The colouring chosen in Preferences, and whether it is worn the other
-    /// way round: what a delta profile with no colouring of its own is
-    /// painted in, on every chart.
+    /// way round: what a delta profile or a cumulative delta with no
+    /// colouring of its own is painted in, on every chart.
     pub fn house_look(&self) -> (BarColouring, bool) {
         let theming = self.theming.borrow();
         (theming.colouring(), theming.swapped())
@@ -8323,7 +8467,7 @@ impl Window {
     /// them over the series the chart already holds, borrowed from it — and
     /// a chart cannot be handed its indicators while it is lending its bars.
     fn drawn_indicators(
-        &self,
+        self: &Rc<Self>,
         pane: &Rc<ChartPane>,
         instrument: &Instrument,
         timeframe: Timeframe,
@@ -8336,7 +8480,41 @@ impl Window {
             instrument,
             timeframe,
             self.clock_for(instrument).zone,
-        );
+        )
+        .with_memos(Some(&pane.cvd_memos));
+        let ids: Vec<u32> = all.iter().map(|indicator| indicator.id).collect();
+        pane.cvd_memos.keep(&ids);
+        let drawn = self.compute_drawn(pane, instrument, timeframe, bars, &all, colors, &context);
+        // The legend marks a cumulative delta that is estimated anywhere,
+        // and is built again only when which ones are changes — after this
+        // computation, since the chart may be lending its bars to it.
+        let estimated: Vec<u32> =
+            drawn.iter().filter(|d| d.output.is_estimated()).map(|d| d.indicator.id).collect();
+        if *pane.estimated.borrow() != estimated {
+            *pane.estimated.borrow_mut() = estimated;
+            let (this, pane) = (Rc::downgrade(self), Rc::downgrade(pane));
+            glib::idle_add_local_once(move || {
+                if let (Some(this), Some(pane)) = (this.upgrade(), pane.upgrade()) {
+                    this.rebuild_legend_of(&pane);
+                }
+            });
+        }
+        drawn
+    }
+
+    /// [`Self::drawn_indicators`]'s computation, on the context it made.
+    #[allow(clippy::too_many_arguments)]
+    fn compute_drawn(
+        &self,
+        pane: &Rc<ChartPane>,
+        instrument: &Instrument,
+        timeframe: Timeframe,
+        bars: &[omacharts_engine::Bar],
+        all: &[Indicator],
+        colors: Vec<String>,
+        context: &omacharts_engine::indicators::Context,
+    ) -> Vec<Drawn> {
+        let context = *context;
         let merges = pane.profile_merges.borrow();
         let compute = |context: &omacharts_engine::indicators::Context| -> Vec<Drawn> {
             all.iter()
@@ -9834,7 +10012,8 @@ impl Window {
                 }
             });
 
-            let label = gtk::Label::new(Some(&indicator.label_for(timeframe)));
+            let estimated = pane.estimated.borrow().contains(&id);
+            let label = gtk::Label::new(Some(&indicator.legend_for(timeframe, estimated)));
             label.add_css_class("legend-indicator");
             label.set_xalign(0.0);
             if !indicator.visible || !pane.view.show_indicators() {
@@ -10004,33 +10183,9 @@ impl Window {
                 rows.push(("period".to_string(), choice_strip(&choices, "chart.indicator-period", "Period")));
             }
             Some(Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. }) => {
-                let item = gio::MenuItem::new(Some("Reset every"), None);
-                item.set_attribute_value("custom", Some(&"reset".to_variant()));
-                presets.append_item(&item);
-                // Ringed is the period being drawn: a chosen one the chart is
-                // too coarse for is drawn as another, and that is the one in use.
-                let in_use = reset.effective_for(pane.timeframe.get());
-                let choices = Reset::ALL.map(|r| (r.label().to_string(), r.key().to_variant(), r == in_use));
-                let strip = choice_strip(&choices, "chart.indicator-reset", "Reset every");
-                // A period the chart is too coarse for would be promoted to
-                // another the moment it was picked: greyed, and saying why,
-                // rather than a button that seems to do nothing.
-                let timeframe = pane.timeframe.get();
-                let mut child = strip.first_child();
-                for period in Reset::ALL {
-                    let Some(button) = child else { break };
-                    if !period.is_meaningful_for(timeframe) {
-                        button.set_sensitive(false);
-                        button.set_tooltip_text(Some(&format!(
-                            "Too few {} bars in a {} to draw it",
-                            timeframe.label(),
-                            period.label().to_lowercase()
-                        )));
-                    }
-                    child = button.next_sibling();
-                }
-                rows.push(("reset".to_string(), strip));
+                reset_strip(&pane, &presets, &mut rows, Some(*reset), false);
             }
+            Some(Params::Cvd { reset, .. }) => reset_strip(&pane, &presets, &mut rows, *reset, true),
             _ => {}
         }
         if !rows.is_empty() {
@@ -11699,10 +11854,23 @@ impl Window {
         let reset = gio::SimpleAction::new("indicator-reset", Some(glib::VariantTy::STRING));
         let this = self.clone();
         reset.connect_activate(move |_, value| {
-            let Some(chosen) = value.and_then(|v| v.get::<String>()).and_then(|k| Reset::from_key(&k)) else { return };
+            let Some(key) = value.and_then(|v| v.get::<String>()) else { return };
+            // `never` is a cumulative delta's alone: one running total.
+            let chosen = match key.as_str() {
+                "never" => None,
+                key => match Reset::from_key(key) {
+                    Some(reset) => Some(reset),
+                    None => return,
+                },
+            };
             if let Some(id) = this.menu_indicator.borrow_mut().take() {
                 this.edit_indicator(id, |params| match params {
-                    Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } => *reset = chosen,
+                    Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } => {
+                        if let Some(chosen) = chosen {
+                            *reset = chosen;
+                        }
+                    }
+                    Params::Cvd { reset, .. } => *reset = chosen,
                     _ => {}
                 });
             }

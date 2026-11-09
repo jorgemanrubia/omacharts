@@ -275,11 +275,14 @@ const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
     "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "rsi", "macd", "atr",
-    "stochastic", "session_times",
+    "stochastic", "session_times", "cvd",
 ];
 /// The ranges Session Times offers ready made, and `custom`.
 const RANGE_PRESETS: &[&str] = &["eth", "rth", "asia", "london", "new_york", "custom"];
-const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
+/// What VWAP, a volume profile and a cumulative delta reset on, and
+/// `never`, which only a cumulative delta takes: one running sum.
+const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year", "never"];
+const CVD_STYLES: &[&str] = &["candles", "line"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const PROFILE_STYLES: &[&str] = &["filled", "outline"];
 const PROFILE_ALIGNS: &[&str] = &["left", "right"];
@@ -291,12 +294,12 @@ const LINKS: &[&str] = &["focus", "follow", "pinned"];
 /// `red-up` are what a released version took: `coloured` is `vivid`, and the
 /// other two are `vivid` with that switch on, on every chart.
 const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
-/// What a volume pane's bars may be painted from: the chart's own colouring,
-/// or one of the four palettes; and a delta volume profile's two sides: the
-/// colouring chosen in Preferences, or one of the three that tell a rise
-/// from a fall.
-const VOLUME_COLOURINGS: &[&str] =
-    &["chart", "default", "theme", "theme-soft", "theme-quiet", "theme-mono"];
+/// What a volume pane's bars may be painted from: the chart's own colouring
+/// (`default`, or `chart` as a released version spelled it), or one of the
+/// three palettes that tell a rise from a fall; and a delta volume profile's
+/// two sides and a cumulative delta's: the colouring chosen in Preferences,
+/// or one of the same three.
+const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -378,8 +381,9 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("signal-color", "COLOUR", "the MACD's signal line"),
     Flag::valued("k-smooth", "N", "bars the stochastic's %K is smoothed over"),
     Flag::valued("d-period", "N", "bars the stochastic's %D averages %K over"),
-    Flag::valued("anchor", "WHEN", "what VWAP and the volume profile reset on")
+    Flag::valued("anchor", "WHEN", "what VWAP, the volume profile and a cumulative delta reset on; never, a cumulative delta's alone, sums the whole history")
         .of(ANCHORS),
+    Flag::valued("cvd-style", "HOW", "a cumulative delta drawn as candles of its running sum, or as a line").of(CVD_STYLES),
     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
     Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
@@ -395,13 +399,13 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (chart), or a colouring of their own; and a delta volume profile's bought and sold rows: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
     Flag::valued("style", "STYLE", "how the line is drawn").of(LINE_STYLES),
-    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, MACD, ATR, stochastic"),
+    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, cumulative delta, RSI, MACD, ATR, stochastic"),
     Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
     Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
     Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
@@ -1678,7 +1682,7 @@ mod tests {
     #[test]
     fn the_anchors_on_offer_are_the_ones_that_exist() {
         let mut engine: Vec<&str> = Reset::ALL.iter().map(|r| r.key()).collect();
-        let mut offered = ANCHORS.to_vec();
+        let mut offered: Vec<&str> = ANCHORS.iter().copied().filter(|a| *a != "never").collect();
         offered.sort_unstable();
         engine.sort_unstable();
         assert_eq!(offered, engine);
@@ -1686,6 +1690,13 @@ mod tests {
 
     /// `LineStyle` is spelled by serde rather than by a `key` method, so this
     /// compares against what it actually serialises to.
+    #[test]
+    fn the_cumulative_delta_styles_on_offer_are_the_ones_that_exist() {
+        use omacharts_engine::indicators::cvd::Style;
+        let engine: Vec<&str> = Style::ALL.iter().map(|s| s.key()).collect();
+        assert_eq!(CVD_STYLES.to_vec(), engine);
+    }
+
     #[test]
     fn the_line_styles_on_offer_are_the_ones_that_exist() {
         let engine: Vec<String> = LineStyle::ALL

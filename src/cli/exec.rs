@@ -3423,7 +3423,9 @@ struct Edits {
     k_smooth: Option<u64>,
     d_period: Option<u64>,
     d_color: Option<ColorChoice>,
-    anchor: Option<Reset>,
+    /// `Some(None)` is `never`, which only a cumulative delta takes.
+    anchor: Option<Option<Reset>>,
+    cvd_style: Option<omacharts_engine::indicators::cvd::Style>,
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
     poc_color: Option<ColorChoice>,
@@ -3509,10 +3511,17 @@ impl Edits {
             k_smooth: count(m, "k-smooth")?,
             d_period: count(m, "d-period")?,
             d_color: colour(m, "d-color")?,
-            anchor: match arg(m, "anchor") {
+            anchor: match arg(m, "anchor").map(String::as_str) {
                 None => None,
-                Some(text) => Some(Reset::from_key(text).ok_or_else(|| {
+                Some("never") => Some(None),
+                Some(text) => Some(Some(Reset::from_key(text).ok_or_else(|| {
                     Fault::usage(format!("{text:?} is not an anchor; try session or week"))
+                })?)),
+            },
+            cvd_style: match arg(m, "cvd-style") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::cvd::Style::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a cumulative delta style; use candles or line"))
                 })?),
             },
             rows: match arg(m, "rows") {
@@ -3659,6 +3668,7 @@ impl Edits {
             && self.d_period.is_none()
             && self.d_color.is_none()
             && self.anchor.is_none()
+            && self.cvd_style.is_none()
             && self.rows.is_none()
             && self.value_area.is_none()
             && self.poc_color.is_none()
@@ -3772,9 +3782,22 @@ impl Edits {
             }
         }
         if let Some(anchor) = self.anchor {
-            match params.get("reset").is_some() {
-                true => params["reset"] = json!(anchor.key()),
-                false => return Err(refuse("anchor")),
+            match (params.get("reset").is_some(), anchor) {
+                (false, _) => return Err(refuse("anchor")),
+                (true, Some(anchor)) => params["reset"] = json!(anchor.key()),
+                (true, None) if kind == IndicatorKind::Cvd => params["reset"] = Value::Null,
+                (true, None) => {
+                    return Err(Fault::usage(format!(
+                        "{} always resets; never is a cumulative delta's",
+                        kind.short_name()
+                    )));
+                }
+            }
+        }
+        if let Some(style) = self.cvd_style {
+            match kind == IndicatorKind::Cvd {
+                true => params["style"] = json!(style.key()),
+                false => return Err(refuse("cumulative delta style")),
             }
         }
         if let Some(rows) = self.rows {
@@ -3873,23 +3896,21 @@ impl Edits {
         }
         if let Some(colouring) = &self.colouring {
             let word = self.colouring_word.as_deref().unwrap_or_default();
+            let telling = colouring.is_none_or(|c| omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c));
             match kind {
-                IndicatorKind::Volume if word == "default" => {
-                    return Err(Fault::usage("volume follows the chart's colouring; use chart".to_string()));
-                }
-                IndicatorKind::VolumeProfile if word == "chart" => {
-                    return Err(Fault::usage(
-                        "a volume profile follows the colouring chosen in Preferences; use default".to_string(),
-                    ));
-                }
-                IndicatorKind::VolumeProfile
-                    if colouring.is_some_and(|c| !omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c)) =>
-                {
+                IndicatorKind::VolumeProfile | IndicatorKind::Cvd if word == "chart" => {
                     return Err(Fault::usage(format!(
-                        "{word} paints bought and sold alike; a volume profile takes default, theme, theme-soft or theme-quiet"
+                        "{} follows the colouring chosen in Preferences; use default",
+                        kind.short_name()
                     )));
                 }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile => {
+                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd if !telling => {
+                    return Err(Fault::usage(format!(
+                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
+                        kind.short_name()
+                    )));
+                }
+                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd => {
                     params["colouring"] = to_value(colouring)?;
                 }
                 _ => return Err(refuse("colouring")),
@@ -7468,9 +7489,86 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(colouring(&store), None);
 
+    }
+
+    /// Volume's Colouring is the delta profile's: `default`, and `chart` as
+    /// it was spelled before, keep it painted as the chart paints its
+    /// candles, and the three palettes that tell a rise from a fall are its
+    /// own; Monochrome, which tells nothing, is refused.
+    #[test]
+    fn volume_takes_the_delta_profiles_colourings() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
         run("chart indicator add volume --book Macro", &store);
-        let out = run("chart indicator set volume --book Macro --colouring default", &store);
-        assert_eq!(out.code, super::super::EXIT_USAGE, "volume follows the chart, not Preferences");
+        let colouring = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
+        };
+        assert_eq!(colouring(&store), None, "the chart's own to begin with");
+
+        let out = run("chart indicator set volume --book Macro --colouring theme-soft", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"));
+
+        let out = run("chart indicator set volume --book Macro --colouring theme-mono", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"), "a refusal leaves it as it was");
+
+        for back in ["default", "chart"] {
+            run("chart indicator set volume --book Macro --colouring theme-quiet", &store);
+            let out = run(&format!("chart indicator set volume --book Macro --colouring {back}"), &store);
+            assert_eq!(out.code, 0, "{back}: {}", out.err);
+            assert_eq!(colouring(&store), None, "{back}");
+        }
+    }
+
+    /// A cumulative delta starts on the session, as candles, in the
+    /// colouring chosen in Preferences, and every one of those is a flag:
+    /// `never` makes it one running sum, which nothing else takes.
+    #[test]
+    fn a_cumulative_delta_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add cvd --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let params = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"].clone()
+        };
+        let made = params(&store);
+        assert_eq!(made["kind"], "cvd");
+        assert_eq!(made["reset"], "session");
+        assert_eq!(made["style"], "candles");
+        assert!(made.get("colouring").is_none(), "Preferences' colouring");
+
+        let out = run(
+            "chart indicator set cvd --book Macro --anchor never --cvd-style line --colouring theme-quiet --height 0.3",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let set = params(&store);
+        assert!(set["reset"].is_null(), "never: {set}");
+        assert_eq!(set["style"], "line");
+        assert_eq!(set["colouring"], "theme-quiet");
+        assert_eq!(set["height"], 0.3);
+
+        let out = run("chart indicator set cvd --book Macro --anchor week", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(params(&store)["reset"], "week");
+
+        for refused in ["--colouring chart", "--colouring theme-mono", "--rows 20", "--period 9"] {
+            let out = run(&format!("chart indicator set cvd --book Macro {refused}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(params(&store)["colouring"], "theme-quiet", "a refusal leaves it as it was");
+
+        run("chart indicator add vwap --book Macro", &store);
+        let out = run("chart indicator set vwap --book Macro --anchor never", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "a VWAP always resets");
+        let out = run("chart indicator set vwap --book Macro --cvd-style line", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
     }
 
     #[test]

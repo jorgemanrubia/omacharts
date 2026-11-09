@@ -548,7 +548,8 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--signal-color C` | A colour | MACD |
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
-| `--anchor P` | `session`, `week`, `month`, `quarter`, `year` | VWAP, volume profile |
+| `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, cumulative delta; `never` only for cumulative delta |
+| `--cvd-style S` | `candles`, `line` | Cumulative delta |
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
 | `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control |
@@ -560,10 +561,10 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | Volume: `chart` to follow the chart's colouring, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` for one of its own. Volume profile: `default` to follow Preferences, or `theme`, `theme-soft`, `theme-quiet` | Volume, volume profile ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
-| `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
+| `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
 | `--band-alpha F` | 0 to 1; 0.16 when not given | VWAP, Bollinger |
 | `--add-range`, `--remove-range`, `--range`, `--name`, `--from`, `--to`, `--zone`, `--shade-alpha` | See [Session Times](#session-times) | Session Times |
