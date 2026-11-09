@@ -51,6 +51,10 @@ pub struct Timing {
     pub backoff: Duration,
     /// The longest wait before reconnecting.
     pub backoff_cap: Duration,
+    /// How long an order sent and never heard of is kept once a listing
+    /// of the account's open orders leaves it out: past this, the server
+    /// never had it.
+    pub unheard: Duration,
 }
 
 impl Default for Timing {
@@ -61,6 +65,7 @@ impl Default for Timing {
             request: Duration::from_secs(10),
             backoff: Duration::from_millis(500),
             backoff_cap: Duration::from_secs(30),
+            unheard: Duration::from_secs(30),
         }
     }
 }
@@ -724,15 +729,20 @@ impl State {
 
     /// An open orders snapshot for `account` is done: what it did not list
     /// is no longer working, and goes, rather than be shown working when it
-    /// is not.
-    fn open_orders_listed(&mut self, account: &str, answers: &[Message]) {
+    /// is not. So does an order sent from here more than `unheard` ago that
+    /// the server has never said a word of, which the listing would have
+    /// named had the server had it: it never arrived, and drawn as working
+    /// it would be cancelled, linked and flattened around for ever.
+    fn open_orders_listed(&mut self, account: &str, answers: &[Message], unheard: Duration) {
         let listed: HashSet<String> = answers.iter().filter_map(|message| message.text("ServerOrderID")).collect();
+        let since = now() - unheard.as_secs() as i64;
         let mut at = 0;
         while at < self.orders.len() {
             let order = &self.orders[at];
+            let never_heard = order.server_id.is_none() && order.status == Status::Pending && self.told[at].0 == 0 && order.at <= since;
             let unlisted = order.account == account
                 && order.status.working()
-                && order.server_id.as_ref().is_some_and(|id| !listed.contains(id));
+                && (never_heard || order.server_id.as_ref().is_some_and(|id| !listed.contains(id)));
             if unlisted {
                 self.orders.remove(at);
                 self.told.remove(at);
@@ -946,7 +956,7 @@ impl Shared {
                     let mut state = lock(&self.state);
                     match what {
                         1 => state.positions_listed(account, &answers),
-                        2 => state.open_orders_listed(account, &answers),
+                        2 => state.open_orders_listed(account, &answers, self.timing.unheard),
                         _ => {}
                     }
                 }
@@ -1303,13 +1313,38 @@ impl Trading {
 
     /// Cancel the order `id` names, by the server's id or the client's, and
     /// wait until the server says it is cancelled, or why not.
+    ///
+    /// An order sent from here that the server had never said a word of,
+    /// whose cancel it refuses, is one it does not know: it leaves the
+    /// book, rather than stay drawn as working for ever. The refusal is
+    /// still the answer, since a server may refuse for other reasons an
+    /// order it has: only its listing of open orders says it has none.
     pub fn cancel(&self, id: &str) -> Result<(), Error> {
         let (order, since) = self.find(id)?;
         if !order.status.working() {
             return Err(Error::Rejected(format!("order {id} is no longer working")));
         }
         self.send_cancel(&order)?;
-        self.answered(id, since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working())
+        let answer = self.answered(id, since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
+        self.forget_unknown(&order, since, &answer);
+        answer
+    }
+
+    /// `order`, told of `since` times before its cancel was sent: out of the
+    /// book if the server refused the cancel of an order it had never said
+    /// a word of.
+    fn forget_unknown(&self, order: &Order, since: u64, answer: &Result<(), Error>) {
+        if since > 0 || !matches!(answer, Err(Error::Rejected(_))) {
+            return;
+        }
+        let mut state = lock(&self.shared.state);
+        let Some(at) = order.client_id.as_deref().and_then(|id| state.order_at(id)) else { return };
+        if state.orders[at].server_id.is_none() && state.orders[at].status == Status::Pending {
+            state.orders.remove(at);
+            state.told.remove(at);
+            drop(state);
+            self.shared.told();
+        }
     }
 
     fn send_cancel(&self, order: &Order) -> Result<(), Error> {
@@ -1384,13 +1419,21 @@ impl Trading {
                 .map(|(order, told)| (order.clone(), told.0))
                 .collect()
         };
-        for (order, _) in &working {
-            self.send_cancel(order)?;
-        }
+        // Every one tried, whatever became of the one before.
         let mut first = None;
+        let mut sent = Vec::new();
         for (order, since) in &working {
+            match self.send_cancel(order) {
+                Ok(()) => sent.push((order, *since)),
+                Err(error) => {
+                    first.get_or_insert(error);
+                }
+            }
+        }
+        for (order, since) in sent {
             let outcome =
-                self.answered(order.id(), *since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
+                self.answered(order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
+            self.forget_unknown(order, since, &outcome);
             if let Err(error) = outcome {
                 first.get_or_insert(error);
             }
@@ -1402,8 +1445,19 @@ impl Trading {
     /// cancelled first, then SUBMIT_FLATTEN_POSITION_ORDER has the server
     /// close what is held at the market. Waits until the server has taken
     /// the flatten, or refused it.
+    ///
+    /// The flatten goes whatever became of the cancels: an order that would
+    /// not cancel, or was never there to, must not keep the position open.
+    /// A cancel that failed is said once the flatten is answered.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<(), Error> {
-        self.cancel_where(|order| order.account == account && order.symbol == symbol)?;
+        let cancelled = self.cancel_where(|order| order.account == account && order.symbol == symbol);
+        let uncancelled = |error: Error| {
+            let why = match error {
+                Error::Rejected(why) | Error::Refused(why) => why,
+                error => error.to_string(),
+            };
+            Error::Rejected(format!("the position was flattened, but an order on it was not cancelled: {why}"))
+        };
         let held = lock(&self.shared.state)
             .positions
             .iter()
@@ -1411,7 +1465,7 @@ impl Trading {
             .map(|position| position.qty)
             .unwrap_or(0);
         if held == 0 {
-            return Ok(());
+            return cancelled;
         }
         let id = self.shared.next_client_id();
         self.shared.send(&Message::new(
@@ -1425,7 +1479,7 @@ impl Trading {
         })?;
         match status {
             Status::Rejected(why) => Err(Error::Rejected(why)),
-            _ => Ok(()),
+            _ => cancelled.map_err(uncancelled),
         }
     }
 

@@ -113,6 +113,25 @@ pub enum Pairs {
     /// One of the two, `_1` (0) or `_2` (1), rejected with the words, the
     /// other taken alone, linked to nothing.
     OneRejected(usize, String),
+    /// Taken with no word said, as [`Pairs::TakenSilently`], and the one
+    /// at `_1` (0) or `_2` (1) filled whole at its price at once, the
+    /// other cancelled by it, with no word said of that either.
+    FilledSilently(usize),
+}
+
+/// How the fake answers a cancel, besides cancelling what it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cancels {
+    /// The order it names cancelled, or said not to be working or found.
+    Answered,
+    /// An order named by its ClientOrderID alone is not found, though the
+    /// server holds it: a server that knows its orders only by its own ids.
+    ClientIdUnknown,
+    /// Every cancel of an order it holds refused, with the words.
+    Refused(String),
+    /// A cancel of either of an OCO pair it holds refused, with the
+    /// words; any other order cancelled as it would be.
+    RefusedInPairs(String),
 }
 
 /// The fake's world, which the builder sets up and the connections change.
@@ -136,6 +155,8 @@ struct World {
     reject_pairs: Option<String>,
     /// What becomes of the next OCO pairs: see [`Pairs`].
     pairs: Pairs,
+    /// How cancels are answered: see [`Cancels`].
+    cancels: Cancels,
     filling: Fills,
     market_price: f64,
     silent: bool,
@@ -162,6 +183,7 @@ impl Default for World {
             reject: None,
             reject_pairs: None,
             pairs: Pairs::Answered,
+            cancels: Cancels::Answered,
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
@@ -440,6 +462,11 @@ impl Fake {
     /// What becomes of the OCO pairs submitted from now on.
     pub fn set_pairs(&self, pairs: Pairs) {
         lock(&self.shared.world).pairs = pairs;
+    }
+
+    /// How cancels are answered from now on.
+    pub fn set_cancels(&self, cancels: Cancels) {
+        lock(&self.shared.world).cancels = cancels;
     }
 
     /// How orders placed from now on fill.
@@ -917,6 +944,19 @@ fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
             world.orders.extend(pair);
             return Vec::new();
         }
+        Pairs::FilledSilently(leg) => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+            for (at, order) in pair.iter_mut().enumerate() {
+                order.status = wire::ORDER_STATUS_OPEN;
+                order.oco = Some(ids[1 - at].clone());
+            }
+            let (qty, price) = (pair[leg].qty, pair[leg].price1);
+            world.orders.extend(pair);
+            let at = world.orders.len() - 2 + leg;
+            let _unsaid = fill(world, at, qty, price);
+            return Vec::new();
+        }
         Pairs::OneRejected(leg, text) => {
             let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
             let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
@@ -1069,6 +1109,21 @@ fn named<'a>(world: &'a mut World, message: &Message) -> Option<&'a mut FakeOrde
 }
 
 fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
+    match world.cancels.clone() {
+        Cancels::Answered => {}
+        Cancels::ClientIdUnknown if message.text("ServerOrderID").is_none() => return vec![not_found(message)],
+        Cancels::ClientIdUnknown => {}
+        Cancels::Refused(text) => {
+            if let Some(order) = named(world, message) {
+                return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+        Cancels::RefusedInPairs(text) => {
+            if let Some(order) = named(world, message).filter(|order| order.oco.is_some()) {
+                return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+    }
     match named(world, message) {
         Some(order) if order.working() => {
             order.status = wire::ORDER_STATUS_CANCELED;
@@ -1083,14 +1138,19 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
             pushes
         }
         Some(order) => vec![order_message(order, wire::ORDER_CANCEL_REJECTED, "Order is not working")],
-        None => vec![Message::new(
-            wire::ORDER_UPDATE,
-            json!({
-                "ServerOrderID": message.text_or_empty("ServerOrderID"), "ClientOrderID": message.text_or_empty("ClientOrderID"),
-                "OrderUpdateReason": wire::ORDER_CANCEL_REJECTED, "InfoText": "Order not found",
-            }),
-        )],
+        None => vec![not_found(message)],
     }
+}
+
+/// A cancel's refusal for an order the server does not hold.
+fn not_found(message: &Message) -> Message {
+    Message::new(
+        wire::ORDER_UPDATE,
+        json!({
+            "ServerOrderID": message.text_or_empty("ServerOrderID"), "ClientOrderID": message.text_or_empty("ClientOrderID"),
+            "OrderUpdateReason": wire::ORDER_CANCEL_REJECTED, "InfoText": "Order not found",
+        }),
+    )
 }
 
 fn replace(world: &mut World, message: &Message) -> Vec<Message> {
