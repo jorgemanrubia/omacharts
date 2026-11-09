@@ -63,6 +63,9 @@ pub struct SymbolSearch {
     /// Once is enough: what it says is kept by the engine.
     asked: RefCell<HashSet<String>>,
     lister: RefCell<Option<Lister>>,
+    /// Futures alone, roots and their months, for a pick of what a chart
+    /// trades: what a trading service takes an order on.
+    futures_only: std::cell::Cell<bool>,
 }
 
 impl SymbolSearch {
@@ -76,6 +79,7 @@ impl SymbolSearch {
             expanded: RefCell::new(HashSet::new()),
             asked: RefCell::new(HashSet::new()),
             lister: RefCell::new(None),
+            futures_only: std::cell::Cell::new(false),
         });
         search.wire();
         search.populate("");
@@ -162,7 +166,7 @@ impl SymbolSearch {
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
-        let rows = rows_for(&self.index.get(), &self.expanded.borrow(), query, contracts::today());
+        let rows = rows_for(&self.index.get(), &self.expanded.borrow(), query, contracts::today(), self.futures_only.get());
         let weak = Rc::downgrade(self);
         for row in &rows {
             list.append(&widget_for(row, &weak));
@@ -317,6 +321,22 @@ impl SymbolSearch {
     /// the keystroke that summoned the picker is not lost — which is what
     /// makes "just start typing" feel like one gesture instead of two.
     pub fn present_with(self: &Rc<Self>, over: Over, query: &str, on_pick: impl Fn(Instrument) + 'static) {
+        self.futures_only.set(false);
+        self.frame.set_note(None);
+        self.open(over, query, on_pick);
+    }
+
+    /// Open it on the futures a trading service takes orders on, roots and
+    /// their months, with `note` over them when there is something to say
+    /// of the list: that no trading service is signed in. Typing searches
+    /// them all the same.
+    pub fn present_futures(self: &Rc<Self>, over: Over, note: Option<&str>, on_pick: impl Fn(Instrument) + 'static) {
+        self.futures_only.set(true);
+        self.frame.set_note(note);
+        self.open(over, "", on_pick);
+    }
+
+    fn open(self: &Rc<Self>, over: Over, query: &str, on_pick: impl Fn(Instrument) + 'static) {
         *self.handler.borrow_mut() = Some(Box::new(on_pick));
         self.opening.set(true);
         self.expanded.borrow_mut().clear();
@@ -423,8 +443,10 @@ fn futures_root(index: &SearchIndex, symbol: &str) -> Option<Instrument> {
 }
 
 /// The rows for `query`: what it spells as a contract first, then the
-/// search's hits, each open root followed by its contracts.
-fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today: NaiveDate) -> Vec<Row> {
+/// search's hits, each open root followed by its contracts. Only futures
+/// roots are hits when `futures_only`, and an empty query lists them all,
+/// the most traded first.
+fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today: NaiveDate, futures_only: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     let contract_row = |root: &Instrument, listing: &Listing, nested: bool| {
         root.in_month(listing.month).map(|instrument| Row::Contract { instrument, listing: listing.clone(), nested })
@@ -450,8 +472,23 @@ fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today:
         None => {}
     }
 
-    for hit in index.search(query, LIMIT) {
-        let Some(instrument) = index.get(hit.index) else { continue };
+    let hits: Vec<&Instrument> = match futures_only {
+        false => index.search(query, LIMIT).iter().filter_map(|hit| index.get(hit.index)).collect(),
+        true if query.trim().is_empty() => {
+            let mut roots: Vec<&Instrument> = (0..index.len()).filter_map(|at| index.get(at)).filter(|i| is_root(i)).collect();
+            roots.sort_by_key(|root| (root.tier, std::cmp::Reverse(root.popularity)));
+            roots.truncate(LIMIT);
+            roots
+        }
+        true => index
+            .search(query, usize::MAX)
+            .iter()
+            .filter_map(|hit| index.get(hit.index))
+            .filter(|instrument| is_root(instrument))
+            .take(LIMIT)
+            .collect(),
+    };
+    for instrument in hits {
         if !is_root(instrument) {
             rows.push(Row::Listed { instrument: instrument.clone(), open: None });
             continue;
@@ -470,7 +507,7 @@ fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today:
     // knows more symbols than any list does — a company that listed this
     // morning has prices before it has an entry. Refusing to try is the app
     // asserting something it cannot know.
-    if let Some(guess) = rows.is_empty().then(|| unlisted(query)).flatten() {
+    if let Some(guess) = (rows.is_empty() && !futures_only).then(|| unlisted(query)).flatten() {
         rows.push(Row::Unlisted(guess));
     }
     rows

@@ -4095,6 +4095,52 @@ pub(super) mod tests {
         });
     }
 
+    /// The trading symbol is picked from what a trading service takes
+    /// orders on: futures roots, opening on their months, and no stocks or
+    /// indexes. With no trading service signed in a plain line says so, and
+    /// typing still searches; once one is, the line goes.
+    #[test]
+    fn the_trading_symbol_is_picked_from_futures() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let all = |listed: &[String]| {
+                listed.iter().all(|symbol| window.index.find(symbol, None).is_some_and(|found| found.kind == omacharts_engine::InstrumentKind::FutureRoot))
+            };
+
+            window.find_trading_symbol(pane.id);
+            let frame = window.search.frame();
+            assert_eq!(frame.note().as_deref(), Some("No trading service is signed in"));
+            let listed = window.search.listed();
+            assert!(["ES", "MES", "MNQ"].iter().all(|root| listed.iter().any(|symbol| symbol == root)), "{listed:?}");
+            assert!(all(&listed), "futures alone: {listed:?}");
+            frame.entry.set_text("MES");
+            assert!(settle(&window, || window.search.listed().first().map(String::as_str) == Some("MES")), "{:?}", window.search.listed());
+            assert!(all(&window.search.listed()), "{:?}", window.search.listed());
+            frame.entry.set_text("MESZ");
+            assert!(
+                settle(&window, || window.search.listed().first().is_some_and(|symbol| symbol.starts_with("MESZ"))),
+                "a month typed: {:?}",
+                window.search.listed()
+            );
+            frame.entry.set_text("AAPL");
+            assert!(settle(&window, || window.search.listed().is_empty()), "no stocks: {:?}", window.search.listed());
+            frame.popover.popdown();
+
+            // The chart's own search is everything again, with nothing said.
+            window.open_search_with("AAPL");
+            assert!(settle(&window, || window.search.listed().first().map(String::as_str) == Some("AAPL")));
+            assert_eq!(frame.note(), None);
+            frame.popover.popdown();
+
+            sign_in(&window, &store, &["951"]);
+            window.find_trading_symbol(pane.id);
+            assert_eq!(frame.note(), None, "signed in: nothing to say");
+            frame.popover.popdown();
+        });
+    }
+
     /// The trading symbol is the chart's, kept with it across a restart.
     /// With trading off there is no Trading page, the header says ES alone
     /// and orders would be of ES: the one kept is ignored, not lost, and

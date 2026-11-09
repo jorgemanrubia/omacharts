@@ -6887,7 +6887,11 @@ impl Window {
         // Over the chart settings it is asked from, which hold the keyboard.
         let from: gtk::Widget = self.window.visible_dialog().map_or_else(|| self.window.clone().upcast(), |dialog| dialog.upcast());
         let over = Over::window(&from, crate::ui::chart_settings::TRADING_SYMBOL_LABEL);
-        self.search.present(over, move |instrument| this.set_trading_symbol(id, Some(instrument)));
+        // What a trading service takes an order on, futures and their months,
+        // whether or not one is signed in to say so yet.
+        let signed_in = self.trading.borrow().logins.iter().any(|login| self.desk.session(&login.id).is_some());
+        let note = (!signed_in).then_some("No trading service is signed in");
+        self.search.present_futures(over, note, move |instrument| this.set_trading_symbol(id, Some(instrument)));
     }
 
     /// Over the focused chart, which is the one a pick changes.
