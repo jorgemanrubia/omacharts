@@ -22,14 +22,11 @@
 //!
 //! The position holds one exit, working alone, and the trader adds the
 //! other. The pair can only be formed by submitting both anew, so the one
-//! working has to be replaced, and two rules hold the order of the steps:
-//!
-//! 1. **Never unprotected**: a position that has a stop is never without
-//!    one, not even for a round trip.
-//! 2. **Never doubly protected in a way that could overfill**: never two
-//!    working exits that one price touches at once. Two stops (or two
-//!    targets) for the whole position, at the same price, both fill on the
-//!    same tick and turn a long into a short of the same size.
+//! working has to be replaced, and one rule holds the order of the steps:
+//! **never doubly protected in a way that could overfill** — never two
+//! working exits that one price touches at once. Two stops (or two
+//! targets) for the whole position, at the same price, both fill on the
+//! same tick and turn a long into a short of the same size.
 //!
 //! Neither reduce-only nor a position-sized quantity rescues an overlap:
 //! DTC has no reduce-only (`OpenOrClose` "is not used for futures"), and
@@ -40,32 +37,36 @@
 //! position, not a working exit. Sierra Chart's own "attached orders by
 //! position" is its trade window's, not its DTC server's.
 //!
-//! So it depends on which exit is working:
+//! So whichever exit is working, it is replaced the same way —
+//! [`Plan::Reform`]: cancel it, and once the trading service says it is
+//! cancelled, submit it again, at its price, with the new one as one pair,
+//! the stop first. Never two of a kind: the second is submitted only once
+//! the first is gone. The pair is sized to what is still held then — the
+//! one cancelled may have filled in part meanwhile, which is said — and a
+//! part of either filled later comes off the other (DTC's
+//! `PartialFillHandling`), so the two never close more than is held. If it
+//! filled whole, nothing is placed and that is said. If the pair is
+//! refused, the one cancelled goes back in alone at once, as it was, and
+//! the refusal is said. If the cancel is not answered, nothing is placed:
+//! the one cancelled may still be working.
 //!
-//! - **A target working, a stop added** — [`Plan::Reform`]: cancel the
-//!   target, and once the trading service says it is cancelled, submit the new stop
-//!   and the target again as one pair. Between the two the position has no
-//!   target, and it had no stop before: it is exposed to nothing it was not
-//!   already exposed to, and at most misses a fill at the target for one
-//!   round trip. Never two targets: the second is submitted only once the
-//!   first is gone. The pair is sized to what is still held then — the
-//!   target may have filled in part meanwhile — and a part of either
-//!   filled later comes off the other (DTC's `PartialFillHandling`), so the
-//!   two never close more than is held. If the pair is refused, the target
-//!   goes back in alone, as it was, and the refusal is said. If the cancel
-//!   is not answered, nothing is placed: the target may still be working.
-//! - **A stop working, a target added** — no safe order exists. Cancelling
-//!   the stop first leaves the position unprotected for a round trip, and
-//!   is worse if the pair is then refused; submitting the pair first has
-//!   two stops working at one price until the old one is cancelled. So the
-//!   foundation does neither: it places the target alone and holds the
-//!   link itself ([`Plan::PlaceThenWatch`]), as for a trading service that cannot
-//!   link at all, and says so. Placing the target first, or both at once,
-//!   gets a link the trading service holds.
+//! - **A target working, a stop added**: between the two steps the
+//!   position has no target, and it had no stop before: it is exposed to
+//!   nothing it was not already exposed to, and at most misses a fill at
+//!   the target for one round trip.
+//! - **A stop working, a target added**: between the two steps the
+//!   position has **no stop**, for one round trip — the one risk of this
+//!   plan, taken knowingly: a market that runs through the stop's price in
+//!   that window is not stopped out there. Longer if the pair is refused,
+//!   until the stop placed back alone is taken, which is why that is
+//!   placed at once. Submitting the pair first instead would have two
+//!   stops working at one price until the old one was cancelled, which is
+//!   the overfill the rule forbids. Placing the target first, or both at
+//!   once, has no such window.
 //!
 //! # The app's own link
 //!
-//! For a trading service that cannot link, and for the case above, the app watches
+//! For a trading service that cannot link at all, the app watches
 //! the two: when one fills or is cancelled, it cancels the other
 //! ([`due`], run by the desk on every change of the book). It belongs here
 //! rather than nowhere because two exits left unlinked are worse — the one
@@ -144,8 +145,9 @@ pub enum Plan {
     PlaceThenLink { place: Vec<OrderRequest>, with: Option<String> },
     /// Placed together, as one pair the trading service links.
     Pair([OrderRequest; 2]),
-    /// The working target `cancel` cancelled, then the new stop and the
-    /// target again placed as one pair, sized to what is held then.
+    /// The working exit `cancel` cancelled, then the pair placed: the stop
+    /// first and the target second, one of them `cancel` again at its
+    /// price, both sized to what is held then.
     Reform { cancel: Box<Order>, pair: [OrderRequest; 2] },
     /// Placed, and the app holds the link with `with`, when there is one.
     PlaceThenWatch { place: Vec<OrderRequest>, with: Option<String> },
@@ -159,21 +161,30 @@ impl Plan {
         let with = Some(sibling.basket_id.clone());
         match linking {
             Linking::AfterTheFact => Plan::PlaceThenLink { place: vec![exit], with },
-            // The working one a target: cancel it, then the pair.
-            Linking::AtSubmission if sibling.kind == OrderKind::Limit && exit.kind == OrderKind::Stop => {
+            // Cancel the working one, then the pair, the stop first.
+            Linking::AtSubmission if reformable(sibling.kind, exit.kind) => {
+                // A working target goes again for the new stop's quantity;
+                // a working stop for what it had left, exactly.
+                let qty = match sibling.kind {
+                    OrderKind::Stop => sibling.qty.saturating_sub(sibling.filled),
+                    _ => exit.qty,
+                };
                 let again = OrderRequest {
                     account: exit.account.clone(),
                     contract: sibling.contract.clone(),
                     exchange: sibling.exchange.clone(),
                     side: sibling.side,
-                    qty: exit.qty,
+                    qty,
                     kind: sibling.kind,
                     price: sibling.price,
                     tag: format!("{}:again", exit.tag),
                 };
-                Plan::Reform { cancel: Box::new(sibling.clone()), pair: [exit, again] }
+                let pair = match exit.kind {
+                    OrderKind::Stop => [exit, again],
+                    _ => [again, exit],
+                };
+                Plan::Reform { cancel: Box::new(sibling.clone()), pair }
             }
-            // The working one a stop: no order of steps is safe.
             Linking::AtSubmission | Linking::None => Plan::PlaceThenWatch { place: vec![exit], with },
         }
     }
@@ -259,9 +270,18 @@ pub struct Ran {
     /// The link made, or why there is none; `None` when there was nothing
     /// to link, or nothing was placed to link.
     pub link: Option<Result<Link, Failure>>,
-    /// A target cancelled to form a pair the trading service then refused, placed
-    /// back alone as it was.
+    /// An exit cancelled to form a pair the trading service then refused,
+    /// placed back alone as it was.
     pub restored: Option<(OrderRequest, Result<String, Failure>)>,
+    /// A reformed pair sized down from what was planned, as `(planned,
+    /// sent)`: the exit cancelled filled in part meanwhile.
+    pub resized: Option<(u32, u32)>,
+}
+
+/// Can a working exit of `working` and a new one of `added` be made one
+/// pair, the working one cancelled first? A stop and a target, either way.
+fn reformable(working: OrderKind, added: OrderKind) -> bool {
+    matches!((working, added), (OrderKind::Limit, OrderKind::Stop) | (OrderKind::Stop, OrderKind::Limit))
 }
 
 impl Ran {
@@ -356,35 +376,46 @@ fn left_to_close(session: &dyn Session, account: &str, cancelled: &Order, planne
     }
 }
 
-/// Cancel the working target, then place the new stop and the target again
-/// as one pair: see the module's notes for why in this order.
+/// Cancel the working exit, then place the pair, it among them: see the
+/// module's notes for why in this order.
 fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderRequest; 2]) -> Ran {
     let mut ran = Ran::default();
+    let what = if cancel.kind == OrderKind::Stop { "stop" } else { "target" };
     let cancelled = session.cancel(account, &cancel.basket_id);
     let failed = cancelled.clone().err();
     ran.cancelled = Some(cancelled);
     if let Some(why) = failed {
-        // Not cancelled, or no answer: the target may still be working, and
-        // a second one would overfill. Nothing is placed.
+        // Not cancelled, or no answer: it may still be working, and a
+        // second one would overfill. Nothing is placed. Refused because it
+        // filled meanwhile, that is what is said.
+        let filled = session
+            .book()
+            .order(&cancel.basket_id)
+            .is_some_and(|now| !now.status.working() && now.filled > cancel.filled);
         let why = match why {
-            Failure::Refused(said) => Failure::Refused(format!("the target could not be replaced: {said}")),
+            Failure::Refused(_) if filled => Failure::Refused(format!("nothing left to close: the {what} filled meanwhile")),
+            Failure::Refused(said) => Failure::Refused(format!("the {what} could not be replaced: {said}")),
             unanswered => unanswered,
         };
         ran.placed = pair.iter().map(|order| (order.clone(), Err(why.clone()))).collect();
         return ran;
     }
-    let left = left_to_close(session, account, cancel, pair[0].qty);
+    // The one placed again, which is the one cancelled.
+    let again = usize::from(pair[1].kind == cancel.kind);
+    let planned = pair[again].qty;
+    let left = left_to_close(session, account, cancel, planned);
     if left == 0 {
-        let why = Failure::Refused("nothing left to close: the target filled meanwhile".into());
+        let why = Failure::Refused(format!("nothing left to close: the {what} filled meanwhile"));
         ran.placed = pair.iter().map(|order| (order.clone(), Err(why.clone()))).collect();
         return ran;
     }
-    let sized = pair.clone().map(|order| OrderRequest { qty: left, ..order });
-    let target = sized[1].clone();
+    let sized = pair.clone().map(|order| OrderRequest { qty: order.qty.min(left), ..order });
+    let restore = sized[again].clone();
     ran = Ran { cancelled: ran.cancelled, ..pair_placed(session, account, sized) };
-    // Refused whole: the target back in alone, as it was before.
+    ran.resized = (left < planned).then_some((planned, left));
+    // Refused whole: the one cancelled back in alone, as it was, at once.
     if ran.placed.iter().all(|(_, placed)| matches!(placed, Err(Failure::Refused(_)))) {
-        let again = OrderRequest { tag: new_tag(), ..target };
+        let again = OrderRequest { tag: new_tag(), ..restore };
         let placed = session.place(&again);
         ran.restored = Some((again, placed));
     }
@@ -516,11 +547,13 @@ mod tests {
         assert_ne!(pair[0].tag, pair[1].tag, "each of the pair is known by its own tag");
         assert_eq!((plan.holder(), plan.cancelling(), plan.placing().len()), (Some(Holder::TradingService), Some("S"), 2));
 
-        // A stop working and a target added: no safe order of steps, so the
-        // app holds the link.
+        // A stop working and a target added: the stop cancelled, then the
+        // stop again, as it was, and the target as one pair, the stop first.
         let plan = Plan::exit(Linking::AtSubmission, target(1), Some(&stop_working));
-        assert!(matches!(plan, Plan::PlaceThenWatch { .. }), "{plan:?}");
-        assert_eq!((plan.holder(), plan.cancelling()), (Some(Holder::App), None));
+        let Plan::Reform { pair, .. } = &plan else { panic!("{plan:?}") };
+        assert_eq!((pair[0].kind, pair[0].price, pair[0].qty), (OrderKind::Stop, Some(7_600.0), 1));
+        assert_eq!((pair[1].kind, pair[1].price), (OrderKind::Limit, Some(7_640.0)));
+        assert_eq!((plan.holder(), plan.cancelling()), (Some(Holder::TradingService), Some("S")));
         let plan = Plan::exit(Linking::None, stop(1), Some(&target_working));
         assert_eq!(plan.holder(), Some(Holder::App));
 
@@ -651,24 +684,45 @@ mod tests {
         assert!(ran.restored.is_none());
     }
 
-    /// A target added to a working stop, where the trading service links only at
-    /// submission: placed alone, the stop never touched, and the app holds
-    /// the link.
+    /// A target added to a working stop, where the trading service links
+    /// only at submission: the stop cancelled, then the stop again and the
+    /// target as one pair, never two stops working; the pair refused, the
+    /// stop back alone at once; the stop filled meanwhile, nothing placed.
     #[test]
-    fn a_target_added_to_a_working_stop_is_never_paired_by_touching_the_stop() {
+    fn a_target_added_to_a_working_stop_reforms_the_pair_after_the_stop_is_cancelled() {
         let session = session(Linking::AtSubmission);
-        long(&session, 1);
-        let working_stop = first(&session, &stop(1));
-        let ran = Plan::exit(Linking::AtSubmission, target(1), Some(&working_stop)).run(&session, "951");
-        assert_eq!(ran.cancelled, None);
-        assert_eq!(*session.heard.lock().unwrap().last().unwrap(), "place");
-        assert!(session.book().order(&working_stop.basket_id).unwrap().status.working(), "the stop left alone");
-        let link = ran.link.unwrap().unwrap();
-        assert_eq!(link.holder, Holder::App);
-        assert_eq!(link.baskets[1], working_stop.basket_id);
-        // The target fills: the app cancels the stop.
-        session.fill(&link.baskets[0]);
-        assert_eq!(due(&link, &session.book()), Due::Cancel(vec![working_stop.basket_id.clone()]));
+        long(&session, 2);
+        let working_stop = first(&session, &stop(2));
+        let ran = Plan::exit(Linking::AtSubmission, target(2), Some(&working_stop)).run(&session, "951");
+        assert_eq!(ran.cancelled, Some(Ok(())));
+        let heard = session.heard.lock().unwrap().clone();
+        assert_eq!(heard[heard.len() - 2..], ["cancel", "pair"], "{heard:?}");
+        let now = working(&session);
+        assert_eq!(now.iter().filter(|order| order.kind == OrderKind::Stop).count(), 1, "one stop, never two");
+        let again = now.iter().find(|order| order.kind == OrderKind::Stop).unwrap();
+        assert_eq!((again.price, again.qty), (Some(7_590.0), 2), "the stop as it was");
+        assert_eq!(ran.link.unwrap().unwrap().holder, Holder::TradingService);
+
+        let session = self::session(Linking::AtSubmission);
+        long(&session, 2);
+        let working_stop = first(&session, &stop(2));
+        let plan = Plan::exit(Linking::AtSubmission, target(2), Some(&working_stop));
+        *session.refuse_pairs.lock().unwrap() = Some("Rejected at RMS".into());
+        let ran = plan.run(&session, "951");
+        let (again, placed) = ran.restored.expect("the stop placed again");
+        assert!(placed.is_ok());
+        assert_eq!((again.kind, again.price, again.qty), (OrderKind::Stop, Some(7_590.0), 2));
+        let now = working(&session);
+        assert_eq!((now.len(), now[0].kind), (1, OrderKind::Stop));
+
+        let session = self::session(Linking::AtSubmission);
+        long(&session, 3);
+        let working_stop = first(&session, &stop(3));
+        let plan = Plan::exit(Linking::AtSubmission, target(3), Some(&working_stop));
+        session.fill_part(&working_stop.basket_id, 1);
+        let ran = plan.run(&session, "951");
+        assert!(ran.placed.iter().all(|(order, placed)| placed.is_ok() && order.qty == 2), "{ran:?}");
+        assert_eq!(ran.resized, Some((3, 2)));
     }
 
     /// Either exit may go first, on every trading service: the second is placed and
@@ -692,9 +746,9 @@ mod tests {
                 let now = working(&session);
                 assert_eq!(now.len(), 2, "{round}: {now:?}");
                 assert!(link.baskets.iter().all(|basket| now.iter().any(|order| order.basket_id == *basket)), "{round}");
-                let expected = match (linking, first_kind) {
-                    (Linking::AfterTheFact, _) | (Linking::AtSubmission, OrderKind::Limit) => Holder::TradingService,
-                    _ => Holder::App,
+                let expected = match linking {
+                    Linking::AfterTheFact | Linking::AtSubmission => Holder::TradingService,
+                    Linking::None => Holder::App,
                 };
                 assert_eq!(link.holder, expected, "{round}");
             }

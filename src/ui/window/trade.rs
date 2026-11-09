@@ -1193,6 +1193,9 @@ impl Window {
                     Err(why) => this.refuse_as(&name, &format!("Not placed again · {why}")),
                 }
             }
+            if let Some((planned, sent)) = ran.resized {
+                this.say(log_words::note(&name, format!("Placed for {sent} · {} filled meanwhile", planned - sent)));
+            }
             match ran.link {
                 Some(Ok(link)) => {
                     let holder = link.holder;
@@ -2810,6 +2813,40 @@ pub(super) mod tests {
                 assert!(working().is_empty(), "an exit outlived the position it was for");
                 assert!(pane.view.mark_states().1.is_empty());
             }
+        });
+    }
+
+    /// A target added to a working stop where the service links only at
+    /// submission: at once, the stop is drawn faint while it is replaced
+    /// and the pair faint until it is taken; then both solid, the stop
+    /// where it was.
+    #[test]
+    fn a_stop_replaced_to_pair_it_with_a_target_is_drawn_pending_until_the_pair_is_taken() {
+        crate::ui::on_gtk(|| {
+            use super::super::marks::TradeEvent;
+            let (window, pane, session, key) = long_es(trading::Linking::AtSubmission);
+            settle(&window, || pane.view.last_price().is_some());
+            let last = pane.view.last_price().expect("a last price");
+            let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+            settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Limit] && !window.trade.placing.busy(&key));
+            let orders = || {
+                let mut orders: Vec<(f64, bool)> = pane.view.mark_states().1.into_iter().map(|(_, price, dim)| (price, dim)).collect();
+                orders.sort_by(|a, b| a.0.total_cmp(&b.0));
+                orders
+            };
+            assert_eq!(orders(), vec![(off(-40.0), false)]);
+
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
+            let now = orders();
+            assert!(now.iter().all(|(_, dim)| *dim), "not all drawn pending at once: {now:?}");
+            assert!(now.iter().any(|(price, _)| *price == off(-40.0)) && now.iter().any(|(price, _)| *price == off(40.0)), "{now:?}");
+
+            settle(&window, || !window.trade.placing.busy(&key) && orders().iter().all(|(_, dim)| !dim));
+            assert_eq!(orders(), vec![(off(-40.0), false), (off(40.0), false)], "one stop, where it was, and the target");
+            assert_eq!(session.pairs.load(std::sync::atomic::Ordering::Acquire), 1);
+            let heard = session.heard.lock().unwrap().clone();
+            assert_eq!(heard[heard.len() - 2..], ["cancel", "pair"], "{heard:?}");
         });
     }
 

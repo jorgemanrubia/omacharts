@@ -116,6 +116,8 @@ struct World {
     /// Say OCO orders are supported, and take a pair.
     oco: bool,
     reject: Option<String>,
+    /// Reject every OCO pair with this, single orders still taken.
+    reject_pairs: Option<String>,
     filling: Fills,
     market_price: f64,
     silent: bool,
@@ -140,6 +142,7 @@ impl Default for World {
             trading: true,
             oco: true,
             reject: None,
+            reject_pairs: None,
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
@@ -407,6 +410,12 @@ impl Fake {
     /// Reject every order placed from now on with `text`, or none.
     pub fn set_reject_orders(&self, text: Option<&str>) {
         lock(&self.shared.world).reject = text.map(str::to_string);
+    }
+
+    /// Reject every OCO pair submitted from now on with `text`, or none,
+    /// single orders still taken.
+    pub fn set_reject_pairs(&self, text: Option<&str>) {
+        lock(&self.shared.world).reject_pairs = text.map(str::to_string);
     }
 
     /// How orders placed from now on fill.
@@ -868,7 +877,7 @@ fn submitted(world: &mut World, message: &Message, leg: &str) -> FakeOrder {
 fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
     let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
     let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
-    let refused = match (&world.reject, world.oco) {
+    let refused = match (world.reject.as_ref().or(world.reject_pairs.as_ref()), world.oco) {
         (Some(text), _) => Some(text.clone()),
         (None, false) => Some("OCO orders are not supported".to_string()),
         (None, true) if !world.accounts.contains(&pair[0].account) => Some("Trade account not found".to_string()),

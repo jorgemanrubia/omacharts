@@ -481,6 +481,141 @@ mod tests {
         session.sign_out();
     }
 
+    /// Long `qty` ES at 7,600 on Sim1 with a stop working at 7,580 for all
+    /// of it, and a target at 7,650 for all of it asked for: the session,
+    /// the stop as the book has it, and the plan for the target.
+    fn stop_then_target(fake: &dtc::fake::Fake, qty: u32) -> (Arc<dyn Session>, Order, Plan) {
+        let session = Sierra.sign_in(&login(fake.port()), Box::new(|_| {})).expect("signed in");
+        session.refresh().expect("refreshed");
+        let exit = |kind, price| OrderRequest {
+            account: "Sim1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Sell,
+            qty,
+            kind,
+            price: Some(price),
+            tag: new_tag(),
+        };
+        let basket = session.place(&exit(OrderKind::Stop, 7_580.0)).expect("the stop");
+        let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+        let plan = Plan::exit(session.capabilities().link, exit(OrderKind::Limit, 7_650.0), Some(&stop));
+        (session, stop, plan)
+    }
+
+    /// Wait for the session's book to say `done`, as the server's updates
+    /// reach it.
+    fn until(session: &dyn Session, done: impl Fn(&Book) -> bool) -> bool {
+        for _ in 0..400 {
+            if done(&session.book()) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    fn fake_long(qty: i64) -> dtc::fake::Fake {
+        dtc::fake::Fake::builder().account("Sim1").position("Sim1", "ESZ26_FUT_CME", qty, 7_600.0).start()
+    }
+
+    /// A target added to a stop working on Sierra Chart: the stop is
+    /// cancelled, and only once the server says so do the stop, at its
+    /// price and quantity, and the target go as one OCO pair the server
+    /// holds, the stop first.
+    #[test]
+    fn a_target_added_to_a_working_stop_reforms_the_pair_after_the_stop_is_cancelled() {
+        let fake = fake_long(2);
+        let (session, stop, plan) = stop_then_target(&fake, 2);
+        assert!(matches!(plan, Plan::Reform { .. }), "{plan:?}");
+        assert_eq!((plan.cancelling(), plan.holder()), (Some(stop.basket_id.as_str()), Some(Holder::TradingService)));
+        let ran = plan.run(session.as_ref(), "Sim1");
+        assert_eq!(ran.cancelled, Some(Ok(())));
+        let link = ran.link.clone().expect("linked").expect("linked");
+        assert_eq!(link.holder, Holder::TradingService);
+        let kinds: Vec<u16> = fake
+            .received()
+            .iter()
+            .map(|message| message.kind())
+            .filter(|kind| [dtc::wire::CANCEL_ORDER, dtc::wire::SUBMIT_NEW_OCO_ORDER].contains(kind))
+            .collect();
+        assert_eq!(kinds, [dtc::wire::CANCEL_ORDER, dtc::wire::SUBMIT_NEW_OCO_ORDER], "the cancel answered, then the pair");
+        let pair = &fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER)[0];
+        assert_eq!((pair.int("OrderType_1"), pair.int("OrderType_2")), (Some(3), Some(2)), "the stop first");
+        assert_eq!((pair.int("Quantity_1"), pair.int("Quantity_2")), (Some(2), Some(2)));
+        assert!(until(session.as_ref(), |book| book.working("Sim1", "ESZ6").count() == 2));
+        let book = session.book();
+        assert!(!book.order(&stop.basket_id).is_some_and(|old| old.status.working()), "two stops working");
+        let stops: Vec<&Order> = book.working("Sim1", "ESZ6").filter(|order| order.kind == OrderKind::Stop).collect();
+        assert_eq!(stops.len(), 1, "one stop, never two");
+        assert_eq!((stops[0].price, stops[0].qty, stops[0].side), (Some(7_580.0), 2, Side::Sell), "the stop as it was");
+        assert!(link.baskets.contains(&stops[0].basket_id));
+        assert_eq!((ran.restored.clone(), ran.resized), (None, None));
+        session.sign_out();
+    }
+
+    /// The stop filled before its cancel was answered: the position is
+    /// closed, the cancel refused, and nothing is placed, which is said.
+    #[test]
+    fn a_stop_filled_while_it_is_being_replaced_places_nothing() {
+        let fake = fake_long(1);
+        let (session, stop, plan) = stop_then_target(&fake, 1);
+        fake.fill(&stop.basket_id, 1, 7_580.0);
+        assert!(until(session.as_ref(), |book| book.order(&stop.basket_id).is_some_and(|order| !order.status.working())));
+        let ran = plan.run(session.as_ref(), "Sim1");
+        assert!(matches!(ran.cancelled, Some(Err(Failure::Refused(_)))), "{:?}", ran.cancelled);
+        let said = Failure::Refused("nothing left to close: the stop filled meanwhile".into());
+        assert!(ran.placed.iter().all(|(_, placed)| *placed == Err(said.clone())), "{:?}", ran.placed);
+        assert!(fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER).is_empty(), "a pair for a closed position");
+        assert_eq!(fake.received_of(208).len(), 1, "only the stop was ever placed alone");
+        assert!(ran.restored.is_none());
+        session.sign_out();
+    }
+
+    /// The stop filled in part before it was cancelled: the pair is for
+    /// what is still held, and says so.
+    #[test]
+    fn a_stop_filled_in_part_while_it_is_being_replaced_sizes_the_pair_down() {
+        let fake = fake_long(3);
+        let (session, stop, plan) = stop_then_target(&fake, 3);
+        fake.fill(&stop.basket_id, 1, 7_580.0);
+        assert!(until(session.as_ref(), |book| {
+            book.order(&stop.basket_id).is_some_and(|order| order.filled == 1)
+                && book.position("Sim1", "ESZ6").is_some_and(|held| held.net == 2)
+        }));
+        let ran = plan.run(session.as_ref(), "Sim1");
+        assert_eq!(ran.cancelled, Some(Ok(())));
+        assert!(ran.placed.iter().all(|(order, placed)| placed.is_ok() && order.qty == 2), "{:?}", ran.placed);
+        assert_eq!(ran.resized, Some((3, 2)));
+        let pair = &fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER)[0];
+        assert_eq!((pair.int("Quantity_1"), pair.int("Quantity_2")), (Some(2), Some(2)));
+        assert!(ran.link.is_some_and(|link| link.is_ok()));
+        session.sign_out();
+    }
+
+    /// The pair refused after the stop was cancelled: the stop goes back in
+    /// alone at once, at its price and quantity, and the refusal is said.
+    #[test]
+    fn a_refused_pair_puts_the_stop_back_at_once() {
+        let fake = fake_long(2);
+        let (session, stop, plan) = stop_then_target(&fake, 2);
+        fake.set_reject_pairs(Some("Rejected at RMS"));
+        let ran = plan.run(session.as_ref(), "Sim1");
+        assert_eq!(ran.cancelled, Some(Ok(())));
+        assert!(ran.placed.iter().all(|(_, placed)| *placed == Err(Failure::Refused("Rejected at RMS".into()))), "{:?}", ran.placed);
+        assert_eq!(ran.link, None);
+        let (again, placed) = ran.restored.expect("the stop placed again");
+        let basket = placed.expect("the stop taken back");
+        assert_eq!((again.kind, again.price, again.qty), (OrderKind::Stop, Some(7_580.0), 2));
+        assert!(until(session.as_ref(), |book| book.order(&basket).is_some_and(|order| order.status.working())));
+        let book = session.book();
+        let working: Vec<&Order> = book.working("Sim1", "ESZ6").collect();
+        assert_eq!(working.len(), 1, "{working:?}");
+        assert_eq!((working[0].kind, working[0].price, working[0].qty), (OrderKind::Stop, Some(7_580.0), 2));
+        assert!(!book.order(&stop.basket_id).is_some_and(|old| old.status.working()));
+        session.sign_out();
+    }
+
     /// Closed while its flag is off: offered nowhere, and a saved login of
     /// it shown nowhere, though it is kept.
     #[test]
