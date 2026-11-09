@@ -3667,6 +3667,52 @@ pub(super) mod tests {
         });
     }
 
+    /// The author's chart after a restart: ES on account E7029 at Sierra
+    /// Chart, trading MES, which the folder has no files of. It is charted
+    /// from what it charts, ES, on Sierra Chart: the dot is drawn, and ES
+    /// is what is streamed, from Sierra Chart.
+    #[test]
+    fn a_chart_of_es_trading_mes_is_charted_from_sierra_after_a_restart() {
+        use omacharts_engine::providers::sierra::setup;
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Trading, true);
+            crate::features::set(&store, crate::features::Feature::Sierra, true);
+            let _folder = SierraFolder::set_up(&store, "trading-mes");
+            let typed = trading::Typed {
+                service: "sierra".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: vec![(setup::HOST.into(), setup::DEFAULT_HOST.into()), (setup::PORT.into(), "11099".into())],
+            };
+            let login = trading::add_login(&store, &Kept::default(), &typed).unwrap();
+            let accounts = ["E7029", "Sim1"].map(|id| trading::fake::tests::account(&login, id)).to_vec();
+            trading::cache_accounts(&store, &login, accounts);
+            assert_eq!(crate::feeds::stored_order(&store), ["sierra", "yahoo"]);
+            // A fresh process: nothing has read the flags yet.
+            crate::features::reset();
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build(&app, store.clone());
+            let pane = window.focused_pane();
+            pane.timeframe.set(omacharts_engine::Timeframe::minutes(2));
+            pane.account.replace(Some(format!("{login}/E7029")));
+            let es = window.index.find("ES", None).expect("ES");
+            let mes = window.index.find("MES", None).expect("MES");
+            window.show_in(&pane, es);
+            window.set_trading_symbol(pane.id, Some(mes));
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"));
+            assert!(pane.feed_dot_shown().is_some(), "the dot is drawn");
+            assert!(
+                settle(&window, || streamed(&window) == vec![("ES".to_string(), "sierra".to_string())]),
+                "ES streams from Sierra Chart: {:?}",
+                streamed(&window)
+            );
+            assert!(window.streaming().iter().any(|report| report.symbol == "ES"));
+        });
+    }
+
     /// A chart streaming ES from Sierra Chart, moved to MES and on Yahoo
     /// for it, streams ES from Sierra Chart again once it is back: after the
     /// stream it left was torn down, and after a bounce quicker than that.
