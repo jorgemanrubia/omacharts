@@ -172,6 +172,26 @@ pub fn track_together(a: &str, b: &str) -> bool {
     underlying(a) == underlying(b)
 }
 
+/// Are the dated contracts `a` and `b` one another's micro or full-size
+/// contract in the same month, "ESZ6" and "MESZ6": two sizes of one thing
+/// expiring together, which trade at the same price. Another month of
+/// either is not: a calendar spread apart. A year written in one digit
+/// and in two, "Z6" and "Z26", is the same year.
+pub fn same_month_sizes(a: &str, b: &str) -> bool {
+    let (root_a, root_b) = (root_of(a), root_of(b));
+    if root_a == a || root_b == b || root_a == root_b || !track_together(root_a, root_b) {
+        return false;
+    }
+    let month = |contract: &str, root: &str| {
+        let rest = &contract[root.len()..];
+        let (code, year) = rest.split_at(rest.char_indices().nth(1).map_or(rest.len(), |(at, _)| at));
+        (code.to_string(), year.to_string())
+    };
+    let ((code_a, year_a), (code_b, year_b)) = (month(a, root_a), month(b, root_b));
+    let years = if year_a.len() == year_b.len() { year_a == year_b } else { year_a.ends_with(&year_b) || year_b.ends_with(&year_a) };
+    code_a == code_b && years
+}
+
 #[cfg(test)]
 pub(crate) fn forget(root: &str) {
     if let Some(all) = HEARD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -189,6 +209,17 @@ mod tests {
 
     /// A micro tracks its full-size contract and nothing else: ES and MES
     /// either way, NQ never with MES, a root with itself.
+    #[test]
+    fn the_same_month_in_the_other_size_trades_at_the_same_price() {
+        assert!(same_month_sizes("ESZ6", "MESZ6") && same_month_sizes("MESZ6", "ESZ6"));
+        assert!(same_month_sizes("NQZ6", "MNQZ26"), "a year in one digit and in two");
+        assert!(!same_month_sizes("ESZ6", "MESH7"), "a calendar spread");
+        assert!(!same_month_sizes("ESZ6", "ESH7"), "another month of one size");
+        assert!(!same_month_sizes("ESZ6", "ESZ6"), "the contract itself is no stand-in");
+        assert!(!same_month_sizes("ESZ6", "MNQZ6"));
+        assert!(!same_month_sizes("ES", "MESZ6"), "a root names no month");
+    }
+
     #[test]
     fn a_micro_tracks_its_full_size_contract_alone() {
         for (micro, full) in [("MES", "ES"), ("MNQ", "NQ"), ("MYM", "YM"), ("M2K", "RTY"), ("MCL", "CL"), ("MGC", "GC"), ("SIL", "SI"), ("M6E", "6E")] {

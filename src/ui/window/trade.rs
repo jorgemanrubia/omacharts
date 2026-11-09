@@ -839,18 +839,16 @@ impl Window {
     /// the account's session has heard, which on a chart fed from elsewhere
     /// can be a long way off; the chart's while the session has none.
     ///
-    /// A chart trading another contract than it charts is never judged by
-    /// its own prices: MES's order by MES's last trade, as the trading
-    /// service has it or as a chart of that very contract shows it, and by
-    /// nothing at all while neither knows one — see [`Self::unpriced`].
+    /// A chart trading another contract than it charts is judged as
+    /// [`Self::judged_by`] says.
     pub(super) fn market_price(&self, pane: &ChartPane, target: &trading::Target) -> Option<f64> {
         let chart = pane.view.last_price();
-        if let Some(traded) = pane.trading_instead() {
-            return self
-                .desk
-                .session(&target.login.id)
-                .and_then(|session| session.last_price(&traded))
-                .or_else(|| self.charted_price_of(target));
+        if pane.trading_instead().is_some() {
+            return match self.judged_by(pane, target) {
+                super::marks::Market::Chart => chart,
+                super::marks::Market::At(price) => Some(price),
+                super::marks::Market::Unknown => None,
+            };
         }
         let Some(instrument) = pane.instrument.borrow().clone() else { return chart };
         let own = trading::data_feed_of(&target.login).map(|feed| feed.id);
@@ -862,6 +860,27 @@ impl Window {
             return chart;
         }
         self.desk.session(&target.login.id).and_then(|session| session.last_price(&instrument)).or(chart)
+    }
+
+    /// What an order from `pane`, and a mark dragged on it, is judged by.
+    /// A chart trading what it charts, its own last price. One trading
+    /// another contract, that contract's last trade, as the trading service
+    /// has it or as a chart of that very contract shows it; else, for the
+    /// other size of what it charts in the same month, MES of the month an
+    /// ES chart draws, the chart's own, which it trades at; else nothing,
+    /// since another month is a spread away — see [`Self::unpriced`].
+    pub(super) fn judged_by(&self, pane: &ChartPane, target: &trading::Target) -> super::marks::Market {
+        use super::marks::Market;
+        let Some(traded) = pane.trading_instead() else { return Market::Chart };
+        let session = self.desk.session(&target.login.id);
+        if let Some(price) = session.as_ref().and_then(|session| session.last_price(&traded)).or_else(|| self.charted_price_of(target)) {
+            return Market::At(price);
+        }
+        let drawn = pane.instrument.borrow().clone().and_then(|charted| session?.contract_for(&charted).ok());
+        match drawn.is_some_and(|drawn| omacharts_engine::specs::same_month_sizes(&drawn.symbol, &target.contract)) {
+            true => Market::Chart,
+            false => Market::Unknown,
+        }
     }
 
     /// The last price of `target`'s contract on a chart in this window
@@ -1839,7 +1858,8 @@ impl Window {
         });
         drop(pending);
         drop(asked);
-        let rules = super::marks::TradeRules::new(position.as_ref(), &orders, self.limits_of(pane, &target));
+        let rules = super::marks::TradeRules::new(position.as_ref(), &orders, self.limits_of(pane, &target))
+            .judged_by(self.judged_by(pane, &target));
         pane.view.set_marks(super::marks::price_marks(position.as_ref(), &held_elsewhere, &orders), rules);
     }
 
@@ -4092,9 +4112,10 @@ pub(super) mod tests {
     /// says "ES/MES", Buy and the chart menu's orders go to MES's contract,
     /// the position drawn is MES's, marked to the chart's prices at MES's
     /// point value while the trading service's market says nothing. A limit
-    /// is judged by MES's own last trade, never by ES's: with none known it
-    /// is not offered, nor placed, and the menu says why. Set back to none,
-    /// it trades ES again.
+    /// on MES of the month ES is charted in is judged by the chart, which it
+    /// trades at; on MES of another month only by that month's own last
+    /// trade: with none known it is not offered, nor placed, nor allowed in
+    /// hand, and the menu says why. Set back to none, it trades ES again.
     #[test]
     fn a_chart_with_a_trading_symbol_trades_it_and_charts_its_own() {
         crate::ui::on_gtk(|| {
@@ -4120,6 +4141,10 @@ pub(super) mod tests {
             // Marked to the chart as it stands now, whatever it has moved
             // to meanwhile: nothing runs between reading it and marking.
             let now = pane.view.last_price().expect("a last price");
+            // Not put off for having marked a moment ago, nor left to a
+            // marking already put off.
+            window.trade.marked_at.set(None);
+            window.trade.marking.set(false);
             window.mark_to_market();
             let marked = window.trading.borrow().book.position(&key, "MESZ6").and_then(|held| held.open_pnl);
             let expected = (now - bought) * 5.0;
@@ -4127,32 +4152,65 @@ pub(super) mod tests {
             let pill = trading::pnl_text(expected, Some("USD"));
             assert!(pane.view.mark_states().0.is_some_and(|(words, _)| words.ends_with(&pill)), "{:?} {pill}", pane.view.mark_states().0);
 
-            // No price of MES anywhere: ES's is no stand-in. The menu offers
-            // the market pair and says why there is nothing else, and a
-            // limit asked for anyway is not placed, and said.
+            // No price of MES anywhere, and MES of the month ES is charted
+            // in: two sizes of one thing, at one price, so the chart's own
+            // judges a limit, offered, placed and shown as allowed in hand.
             let below = (now / 0.25).round() * 0.25 - 40.0 * 0.25;
             let y = pane.view.y_of(below).expect("the price on screen");
-            let rows = labels(window.chart_menu_model(y).upcast_ref());
-            assert!(rows.iter().all(|(label, _)| !label.starts_with("Buy Limit")), "a limit judged by ES's prices: {rows:?}");
-            assert!(rows.iter().any(|(label, on)| label.starts_with("No price of MESZ6") && !on), "{rows:?}");
-            let limit = || {
-                let book = session.book();
-                book.orders.iter().find(|order| order.kind == OrderKind::Limit).map(|order| order.contract.clone())
+            let menu = |y: f64| labels(window.chart_menu_model(y).upcast_ref());
+            let limit = |contract: &str| {
+                session.book().orders.iter().any(|order| order.kind == OrderKind::Limit && order.contract == contract)
             };
+            let in_hand = || {
+                let target = window.order_target(&pane).expect("a target");
+                super::super::marks::TradeRules::default().judged_by(window.judged_by(&pane, &target)).allows(
+                    Side::Buy,
+                    OrderKind::Limit,
+                    below,
+                    pane.view.last_price(),
+                )
+            };
+            // The Buy above heard back first: one order on its way at a time.
+            let heard = || {
+                window.catch_up_log();
+                log.entries().into_iter().any(|e| e.line().contains("Filled 1 MESZ6"))
+            };
+            assert!(settle_for(&window, 30, heard), "the Buy was never heard filled");
+            let rows = menu(y);
+            assert!(rows.iter().any(|(label, on)| label.starts_with("Buy Limit") && *on), "{rows:?}");
+            assert!(rows.iter().all(|(label, _)| !label.starts_with("No price")), "{rows:?}");
+            assert!(in_hand(), "the order allowed, the drag refused");
             let actions = window.trade.chart_actions.borrow().clone().expect("the chart's orders");
             let value = order_target_value(Side::Buy, OrderKind::Limit, &key, Some(below));
             actions.activate_action("order", Some(&value.to_variant()));
+            if !settle_for(&window, 30, || limit("MESZ6")) {
+                window.catch_up_log();
+                let said: Vec<String> = log.entries().into_iter().map(|e| e.line()).collect();
+                panic!("MES's limit of ES's month was not sent: {said:#?}");
+            }
+
+            // MES of another month is a spread away: with no price of it,
+            // the chart's is no stand-in. The menu says why there is no
+            // limit, one asked for anyway is not placed, and said, and the
+            // drag in hand is refused the same.
+            session.contracts.lock().unwrap().insert("MES".into(), "MESH7".into());
+            assert_eq!(window.order_target(&pane).map(|target| target.contract), Ok("MESH7".into()));
+            let rows = menu(y);
+            assert!(rows.iter().all(|(label, _)| !label.starts_with("Buy Limit")), "a limit judged by ES's prices: {rows:?}");
+            assert!(rows.iter().any(|(label, on)| label.starts_with("No price of MESH7") && !on), "{rows:?}");
+            assert!(!in_hand(), "the order refused, the drag allowed");
+            actions.activate_action("order", Some(&value.to_variant()));
             settle_for(&window, 1, || false);
-            assert_eq!(limit(), None, "a limit placed with no price of MES to judge it by");
+            assert!(!limit("MESH7"), "a limit placed with no price of MESH7 to judge it by");
             window.catch_up_log();
             let said: Vec<String> = log.entries().into_iter().map(|e| e.line()).collect();
-            assert!(said.iter().any(|line| line.contains("Not placed · no price of MESZ6")), "not said: {said:#?}");
+            assert!(said.iter().any(|line| line.contains("Not placed · no price of MESH7")), "not said: {said:#?}");
 
-            // MES's own last trade, from the trading service: judged by it.
+            // Its own last trade, from the trading service: judged by it.
             *session.market.lock().unwrap() = Some(now);
+            assert!(in_hand());
             actions.activate_action("order", Some(&value.to_variant()));
-            assert!(settle_for(&window, 30, || limit().is_some()), "the chart menu's limit was not sent");
-            assert_eq!(limit().as_deref(), Some("MESZ6"));
+            assert!(settle_for(&window, 30, || limit("MESH7")), "the chart menu's limit was not sent");
 
             window.set_trading_symbol(pane.id, None);
             assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));

@@ -262,6 +262,23 @@ pub struct TradeRules {
     /// The day's lowest and highest prices the exchange takes an order at,
     /// as far as they are known.
     limits: (Option<f64>, Option<f64>),
+    /// The market a drag is judged against, as an order from the chart is.
+    market: Market,
+}
+
+/// What the market is, to judge an order by: the chart's own last price,
+/// a price the chart does not draw, or nothing known. The same answer
+/// judges the order placed and the drag in hand, so they never disagree.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Market {
+    /// The chart's own last trade, as it moves: what it charts is what is
+    /// traded, or the other size of it in the same month.
+    #[default]
+    Chart,
+    /// The last trade of the contract traded, which the chart does not draw.
+    At(f64),
+    /// No price of the contract traded is known: nothing can be judged.
+    Unknown,
 }
 
 /// What of the position a drag needs to say what an exit would realise.
@@ -291,6 +308,32 @@ impl TradeRules {
                 .map(|order| (format!("{ORDER}{}", order.basket), order.side, order.kind, order.qty))
                 .collect(),
             limits,
+            market: Market::Chart,
+        }
+    }
+
+    /// Judged against `market` rather than the chart's own last price.
+    pub fn judged_by(mut self, market: Market) -> TradeRules {
+        self.market = market;
+        self
+    }
+
+    /// Whether a working order of `side` and `kind` may be dragged to `at`
+    /// with the chart's last price at `chart`: what a drag's preview says.
+    #[cfg(test)]
+    pub(super) fn allows(&self, side: Side, kind: OrderKind, at: f64, chart: Option<f64>) -> bool {
+        let mut rules = self.clone();
+        let mark = format!("{ORDER}probe");
+        rules.orders = vec![(mark.clone(), side, kind, 1)];
+        rules.allowed(&MarkDrag { mark: &mark, tab: None, from: at, at, last: chart, tick: None, places: 2 })
+    }
+
+    /// The last price a drag is judged against, if any is known.
+    fn last(&self, drag: &MarkDrag) -> Option<f64> {
+        match self.market {
+            Market::Chart => drag.last,
+            Market::At(price) => Some(price),
+            Market::Unknown => None,
         }
     }
 
@@ -327,7 +370,7 @@ impl TradeRules {
 
 impl MarkRules for TradeRules {
     fn allowed(&self, drag: &MarkDrag) -> bool {
-        let Some(last) = drag.last else { return false };
+        let Some(last) = self.last(drag) else { return false };
         if trading::past_limit(drag.at, self.limits).is_some() {
             return false;
         }
@@ -347,7 +390,7 @@ impl MarkRules for TradeRules {
                 Some(limit) => trading::past_limit_preview(&grouped_decimals(limit, drag.places)),
                 None => {
                     let kind = self.dragged(drag).map_or(OrderKind::Limit, |(kind, _)| kind);
-                    trading::refused_text(kind, drag.at, drag.last.unwrap_or(drag.at))
+                    trading::refused_text(kind, drag.at, self.last(drag).unwrap_or(drag.at))
                 }
             };
             return MarkPreview { text, colour: None };
@@ -544,6 +587,13 @@ mod tests {
         assert!(!rules.allowed(&stray), "no such order");
         let blind = MarkDrag { last: None, ..drag(Some("limit"), 5010.0) };
         assert!(!rules.allowed(&blind), "no market");
+        // Judged as the order would be: by the price of what is traded when
+        // the chart does not draw it, and by nothing when none is known.
+        let elsewhere = rules.clone().judged_by(Market::At(5020.0));
+        assert!(!allowed(&elsewhere, Some("limit"), 5010.0), "a target below the market traded");
+        assert!(allowed(&elsewhere, Some("stop"), 5010.0));
+        let unknown = rules.clone().judged_by(Market::Unknown);
+        assert!(!allowed(&unknown, Some("limit"), 5010.0) && !allowed(&unknown, Some("stop"), 5000.0));
 
         let rules = TradeRules::new(Some(&position), &orders, (Some(4995.0), Some(5015.0)));
         assert!(allowed(&rules, Some("limit"), 5010.0), "a target inside the limits");
