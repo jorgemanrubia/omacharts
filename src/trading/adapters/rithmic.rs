@@ -45,6 +45,10 @@ impl Broker for Rithmic {
         omacharts_engine::providers::rithmic::LISTED.label
     }
 
+    fn has_feed(&self) -> bool {
+        true
+    }
+
     /// Its system: "Rithmic Test", "LucidTrading".
     fn signs_in_to(&self, login: &Login) -> Option<String> {
         Some(system_of(login).to_string())

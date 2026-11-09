@@ -16,6 +16,12 @@ pub trait Broker: Send + Sync {
     fn id(&self) -> &'static str;
     /// What it is called in "Add a trading account…".
     fn label(&self) -> &'static str;
+    /// Does its service chart too, as the data feed of the same id? Adding
+    /// a login then adds that feed, which charts and trades apart from it
+    /// all the same.
+    fn has_feed(&self) -> bool {
+        false
+    }
     /// Where `login` signs in to, in a few words for its row, when there is
     /// more than one place it could.
     fn signs_in_to(&self, _login: &Login) -> Option<String> {

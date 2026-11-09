@@ -48,6 +48,10 @@ impl Broker for Sierra {
         feed::LISTED.label
     }
 
+    fn has_feed(&self) -> bool {
+        true
+    }
+
     /// Where its server is, when it is not this machine's default.
     fn signs_in_to(&self, login: &Login) -> Option<String> {
         let endpoint = endpoint_of(login);

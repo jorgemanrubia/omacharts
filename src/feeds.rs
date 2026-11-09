@@ -300,6 +300,31 @@ pub fn add_feed(store: &Store, id: &str) {
     save_order(store, &order);
 }
 
+/// A broker login was added: its broker's own data feed goes on the order
+/// with it, once, so that nobody adds the two apart. A feed whose setup the
+/// app keeps, and that has none yet, is set up from the login and what is
+/// found on this machine: Sierra Chart's folder, and the login's port.
+pub fn follow_broker(store: &Store, login: &crate::trading::Login) {
+    if !crate::trading::broker_for(&login.broker).is_some_and(|broker| broker.has_feed()) {
+        return;
+    }
+    let Some(feed) = providers::listed(&login.broker) else { return };
+    add_feed(store, feed.id);
+    let Some(setup) = feed.setup.filter(|_| kept_here(feed)) else { return };
+    if !setup_of(store, feed.id).values.is_empty() {
+        return;
+    }
+    let mut saved = setup.found().unwrap_or_default();
+    for field in setup.fields() {
+        if let Some(value) = login.value(field.key) {
+            saved = saved.with(field.key, value);
+        }
+    }
+    if !saved.values.is_empty() {
+        set_up(store, feed, saved);
+    }
+}
+
 /// May `id` be taken off the order? Not when it is the only feed this
 /// build knows on it: with none at all no chart could draw.
 pub fn removable(store: &Store, id: &str) -> bool {
@@ -552,6 +577,73 @@ pub(crate) mod tests {
         forget_login(&store, feed.id);
         assert_eq!(store.setting(SETUPS), None);
         assert_eq!(setup_of(&store, feed.id), Saved::default());
+    }
+
+    /// Adding Sierra Chart as a broker adds its data feed, once, set up
+    /// with the login's port and the folder found here; a feed set up
+    /// already is left as it was.
+    #[test]
+    fn a_sierra_broker_brings_its_feed_set_up_from_the_login() {
+        use crate::trading::{self, fake::Kept, Typed};
+        use omacharts_engine::providers::sierra::setup;
+        crate::features::force(crate::features::Feature::Sierra, true);
+        let store = store();
+        let kept = Kept::default();
+        let typed = |port: &str| Typed {
+            broker: "sierra".into(),
+            name: "Sierra Chart".into(),
+            user: String::new(),
+            password: String::new(),
+            values: vec![(setup::HOST.into(), setup::DEFAULT_HOST.into()), (setup::PORT.into(), port.into())],
+        };
+        trading::add_login(&store, &kept, &typed("11100")).unwrap();
+        assert_eq!(stored_order(&store), vec!["sierra", "yahoo"]);
+        let saved = setup_of(&store, "sierra");
+        assert_eq!(saved.value(setup::PORT), Some("11100"), "the login's port");
+        assert_eq!(saved.value(setup::HOST), None, "only what the feed asks for");
+        let found = setup::candidates().first().map(|folder| setup::shown(folder));
+        assert_eq!(saved.value(setup::FOLDER).map(str::to_string), found);
+
+        set_up(&store, providers::listed("sierra").unwrap(), saved.clone().with(setup::FOLDER, "/elsewhere"));
+        trading::add_login(&store, &kept, &typed("11200")).unwrap();
+        assert_eq!(stored_order(&store), vec!["sierra", "yahoo"], "not added twice");
+        assert_eq!(setup_of(&store, "sierra").value(setup::FOLDER), Some("/elsewhere"), "its setup kept");
+        assert_eq!(setup_of(&store, "sierra").value(setup::PORT), Some("11100"));
+        forget_login(&store, "sierra");
+    }
+
+    /// The feed-only path is as it was: Sierra Chart added on the Data page
+    /// adds no broker login.
+    #[test]
+    fn a_sierra_feed_added_alone_adds_no_login() {
+        crate::features::force(crate::features::Feature::Sierra, true);
+        let store = store();
+        add_feed(&store, "sierra");
+        assert_eq!(stored_order(&store), vec!["sierra", "yahoo"]);
+        assert!(crate::trading::logins(&store).is_empty());
+    }
+
+    /// A Rithmic login brings the Rithmic feed, on top for the first, and
+    /// never a second copy of it.
+    #[test]
+    fn a_rithmic_broker_brings_its_feed_once() {
+        use crate::trading::{self, fake::Kept, Typed};
+        if omacharts_engine::providers::rithmic::session::development() {
+            return;
+        }
+        let store = store();
+        add_feed(&store, "tos");
+        let kept = Kept::default();
+        let typed = |user: &str| Typed {
+            broker: "rithmic".into(),
+            name: String::new(),
+            user: user.into(),
+            password: "pw".into(),
+            values: vec![("system".into(), "Rithmic Test".into())],
+        };
+        trading::add_login(&store, &kept, &typed("a")).unwrap();
+        trading::add_login(&store, &kept, &typed("b")).unwrap();
+        assert_eq!(stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
     }
 
     /// A feed added goes after the others, above Yahoo, and only once.

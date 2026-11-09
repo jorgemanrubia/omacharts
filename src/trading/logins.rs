@@ -220,8 +220,8 @@ fn hand_over(login: &Login) {
 }
 
 /// Add a login, its password into `secrets`. The first with a data feed is
-/// the data login, and puts its feed on top of the data feeds. Returns
-/// its id.
+/// the data login, and puts its feed on top of the data feeds; any other
+/// adds its broker's feed if it is not there. Returns its id.
 pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<String, String> {
     let mut logins = kept(store);
     let mut login = Login {
@@ -238,12 +238,13 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
     let feed = data_feed_of(&login);
     let id = login.id.clone();
     let kept = keep_password(secrets, &login, &typed.password);
-    logins.push(login);
+    logins.push(login.clone());
     save_logins(store, &logins);
     if first && let Some(feed) = feed {
         store.set_setting(DATA_LOGIN, &id);
         crate::feeds::put_on_top(store, feed);
     }
+    crate::feeds::follow_broker(store, &login);
     crate::feeds::remember_logins(store);
     kept.map(|_| id)
 }
