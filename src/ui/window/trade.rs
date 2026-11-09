@@ -3713,6 +3713,54 @@ pub(super) mod tests {
         });
     }
 
+    /// A fallback is one chart's: with Sierra Chart over Yahoo stored and
+    /// the window opened as a restart opens it, one chart falling back to
+    /// Yahoo on MES leaves the window on Sierra Chart, and every chart of ES,
+    /// in this chartbook and the next, charts from it.
+    #[test]
+    fn a_fallback_never_moves_the_window_off_sierra() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Sierra, true);
+            let _folder = SierraFolder::set_up(&store, "window-wide");
+            crate::feeds::add_feed(&store, "sierra");
+            crate::feeds::save_order(&store, &["sierra".into(), "yahoo".into()]);
+            crate::features::reset();
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build(&app, store.clone());
+            let in_use = |window: &Rc<Window>| window.provider().id();
+            let es = window.index.find("ES", None).expect("ES");
+            let mes = window.index.find("MES", None).expect("MES");
+            assert_eq!(in_use(&window), "sierra");
+
+            let first = window.focused_pane();
+            first.timeframe.set(omacharts_engine::Timeframe::minutes(2));
+            window.show_in(&first, mes);
+            assert_eq!(feed_on(&window, &first).as_deref(), Some("yahoo"), "MES falls back");
+            window.split_focused(true);
+            let second = window.focused_pane();
+            assert_ne!(first.id, second.id);
+            second.timeframe.set(omacharts_engine::Timeframe::hours(1));
+            window.show_in(&second, es.clone());
+            assert_eq!(in_use(&window), "sierra", "the fallback is the chart's alone");
+            assert_eq!(feed_on(&window, &second).as_deref(), Some("sierra"));
+
+            window.duplicate_chartbook();
+            let third = window.focused_pane();
+            window.show_in(&third, es);
+            assert_eq!(in_use(&window), "sierra");
+            assert_eq!(feed_on(&window, &third).as_deref(), Some("sierra"));
+            let ids: Vec<&str> = window.feeds().iter().map(|feed| feed.provider.id()).collect();
+            assert_eq!(ids, ["sierra", "yahoo"]);
+            assert!(
+                settle(&window, || window.streaming().iter().any(|report| report.symbol == "ES" && report.charts > 0)),
+                "ES streams from Sierra Chart: {:?}",
+                window.streaming()
+            );
+        });
+    }
+
     /// A chart streaming ES from Sierra Chart, moved to MES and on Yahoo
     /// for it, streams ES from Sierra Chart again once it is back: after the
     /// stream it left was torn down, and after a bounce quicker than that.
