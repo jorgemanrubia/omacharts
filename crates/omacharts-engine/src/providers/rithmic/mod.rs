@@ -640,6 +640,17 @@ impl Provider for Rithmic {
         rithmic_symbol(instrument)
     }
 
+    /// A root as its front month, which is what [`front_month_bars`]
+    /// draws: the one Rithmic said, which reaches [`crate::contracts`]
+    /// before the chart's bars do.
+    fn charted_contract(&self, instrument: &Instrument) -> Option<String> {
+        let symbol = self.symbol_for(instrument)?;
+        match is_dated(&symbol) {
+            true => Some(symbol),
+            false => crate::contracts::front(&symbol, crate::contracts::today()).map(|front| front.symbol),
+        }
+    }
+
     fn capabilities(&self) -> &'static [Capability] {
         CAPABILITIES
     }
@@ -745,6 +756,18 @@ mod tests {
         assert_eq!(exchange_of("CL"), "NYMEX");
         assert_eq!(exchange_of("GC"), "COMEX");
         assert_eq!(exchange_of("ZN"), "CBOT");
+    }
+
+    /// A root is charted as its front month, a dated contract as itself, so
+    /// a position held in that month on any service is marked to the chart.
+    #[test]
+    fn a_root_is_charted_as_its_front_month() {
+        let rithmic = Rithmic::new();
+        let front = crate::contracts::front("ES", crate::contracts::today()).map(|front| front.symbol);
+        assert!(front.is_some());
+        assert_eq!(rithmic.charted_contract(&instrument(InstrumentKind::FutureRoot, "ES")), front);
+        let dated = instrument(InstrumentKind::FutureRoot, "MESZ6");
+        assert_eq!(rithmic.charted_contract(&dated).as_deref(), Some("MESZ6"));
     }
 
     #[test]

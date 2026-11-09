@@ -264,14 +264,24 @@ impl Window {
 
     /// Every live session's book, its positions marked to the broker's
     /// market data, else, until that has heard a trade, to a chart on
-    /// screen showing that very contract.
+    /// screen showing that very contract, from whichever feed: a dated
+    /// contract's chart, or a root's on a feed that charts it as that month,
+    /// whoever the account's broker is.
     pub(super) fn marked_book(&self, logins: &[trading::Login]) -> trading::Book {
         let charts: Vec<(omacharts_engine::Instrument, Option<f64>)> = self
             .panes
             .borrow()
             .iter()
             .filter_map(|pane| {
-                let instrument = pane.instrument.borrow().clone().filter(|instrument| instrument.is_contract())?;
+                let instrument = pane.instrument.borrow().clone()?;
+                let charted = match self.route_chosen(pane, &instrument) {
+                    Some(Ok(routed)) => routed.feed.provider.charted_contract(&instrument),
+                    _ => None,
+                };
+                let instrument = match charted {
+                    Some(contract) => omacharts_engine::Instrument { symbol: contract, ..instrument },
+                    None => instrument.is_contract().then_some(instrument)?,
+                };
                 Some((instrument, pane.view.last_price()))
             })
             .collect();
@@ -3310,6 +3320,15 @@ pub(super) mod tests {
         ) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
             self.bars.bars(symbol, timeframe, since)
         }
+        /// A futures feed draws a root as its front month, as Sierra Chart
+        /// and Rithmic do.
+        fn charted_contract(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
+            if !self.futures_only || instrument.is_contract() {
+                return instrument.is_contract().then(|| instrument.symbol.clone());
+            }
+            omacharts_engine::contracts::front(&instrument.symbol, omacharts_engine::contracts::today())
+                .map(|front| front.symbol)
+        }
     }
 
     /// A window charting from Yahoo then Rithmic, both usable whatever
@@ -3327,6 +3346,81 @@ pub(super) mod tests {
             feed.usable.set(true);
         }
         window
+    }
+
+    /// A chart of ES on `feed`, a futures feed posing as the service named
+    /// so, beside Yahoo, and a login of `typed`'s service signed in with
+    /// account 951 holding one of ES's front month, bought 10 points under
+    /// the chart's last price, its broker's market data silent. The window,
+    /// the chart, the session, the account's key and the contract.
+    fn held_across(
+        feed: &'static str,
+        typed: &trading::Typed,
+    ) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String, String) {
+        let store = Rc::new(Store::memory().expect("a store"));
+        crate::features::set(&store, crate::features::Feature::Trading, true);
+        crate::features::set(&store, crate::features::Feature::Sierra, true);
+        let _ = adw::init();
+        let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        let feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false), Posing::feed(feed, "Posing", true)];
+        let window = Window::build_with(&app, store.clone(), feeds);
+        for listed in window.feeds() {
+            listed.usable.set(true);
+        }
+        let pane = window.focused_pane();
+        pane.feed.replace(Some(feed.into()));
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        window.show_in(&pane, es);
+        assert!(settle(&window, || pane.view.last_price().is_some()), "the chart never drew");
+        let last = pane.view.last_price().expect("a last price");
+        let front = omacharts_engine::contracts::front("ES", omacharts_engine::contracts::today()).expect("a front month");
+        let (id, session) = sign_in_as(&window, &store, typed, &["951"]);
+        session.contracts.lock().unwrap().insert("ES".into(), front.symbol.clone());
+        *session.last.lock().unwrap() = last - 10.0;
+        *session.market.lock().unwrap() = None;
+        let order = trading::OrderRequest { contract: front.symbol.clone(), ..resting(Side::Buy, OrderKind::Market, None) };
+        session.place(&order).unwrap();
+        window.desk.tell();
+        (window, pane, session, format!("{id}/951"), front.symbol)
+    }
+
+    /// Charting on one service and trading through another is one desk: a
+    /// root charted on Sierra Chart's feed, ES as its front month, shows the
+    /// position and orders an account at Rithmic holds in that month, and
+    /// marks its open P&L to the chart's prices while the broker's own say
+    /// nothing; so does a root charted on Rithmic's feed for an account at
+    /// Sierra Chart.
+    #[test]
+    fn a_chart_on_one_service_shows_and_marks_what_an_account_on_another_holds() {
+        crate::ui::on_gtk(|| {
+            let sierra = trading::Typed {
+                broker: "sierra".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: Vec::new(),
+            };
+            for (feed, typed) in [("sierra", typed()), ("rithmic", sierra)] {
+                let (window, pane, session, key, contract) = held_across(feed, &typed);
+                window.mark_to_market();
+                assert!(pane.view.mark_states().0.is_some(), "no position line on the {feed} chart");
+                let held = window.trading.borrow().book.position(&key, &contract).and_then(|held| held.open_pnl);
+                assert_eq!(held, Some(500.0), "not marked to the {feed} chart");
+                let pill = pane.view.mark_states().0.map(|(words, _)| words).unwrap_or_default();
+                assert!(pill.ends_with("+$500.00"), "{pill}");
+
+                let last = pane.view.last_price().expect("a last price");
+                let above = (last / 0.25).round() * 0.25 + 40.0 * 0.25;
+                let limit = trading::OrderRequest {
+                    contract: contract.clone(),
+                    ..resting(Side::Sell, OrderKind::Limit, Some(above))
+                };
+                session.place(&limit).unwrap();
+                window.desk.tell();
+                let orders = pane.view.mark_states().1;
+                assert_eq!(orders.iter().map(|(_, price, _)| *price).collect::<Vec<_>>(), vec![above], "{feed}");
+            }
+        });
     }
 
     /// Sign in a login with `numbers` as its accounts, through a fake
@@ -3547,10 +3641,10 @@ pub(super) mod tests {
 
     /// Two accounts and two feeds: the Account part names the chart's,
     /// and opens the accounts with a mark on it and a line under one only
-    /// for its trouble. Choosing another account forgets the chart's feed,
+    /// for its trouble. Choosing another account keeps the chart's feed,
     /// and a chart on the default follows the default.
     #[test]
-    fn choosing_an_account_forgets_the_feed() {
+    fn choosing_an_account_keeps_the_feed() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window_on(&store, true);
@@ -3568,10 +3662,10 @@ pub(super) mod tests {
             let other = format!("{id}/952");
             pane.menu_actions.activate_action("account", Some(&other.to_variant()));
             assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
-            assert!(pane.feed.borrow().is_none(), "the feed went with the account");
+            assert_eq!(pane.feed.borrow().as_deref(), Some("yahoo"), "the feed stays with the chart");
             assert_eq!(pane.account_text().as_deref(), Some("952"));
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951", "952 ✓"]);
-            assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some("Yahoo Finance · Connecting…".into()));
 
             // Back on the default, and the default moves: the chart follows.
             window.choose_account(pane.id, None);

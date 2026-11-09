@@ -4408,8 +4408,8 @@ impl Window {
     }
 
     /// The chart `id` on the account with the key `key`. Choosing the
-    /// default stores nothing, so the chart keeps following it; choosing
-    /// another account forgets the chart's feed.
+    /// default stores nothing, so the chart keeps following it; the chart's
+    /// feed is left as it was.
     fn pick_account(self: &Rc<Self>, id: u32, key: &str) {
         let Some(pane) = self.pane(id) else { return };
         let (current, default_account) = {
@@ -8342,8 +8342,10 @@ impl Window {
     }
 
     /// Put one chart on an account, or back on the default with `None`,
-    /// and say so in its header. The chart's feed is forgotten with the
-    /// account it was chosen on: it goes back to the new account's default.
+    /// and say so in its header. A feed chosen for the chart stays: what a
+    /// chart is drawn from and where its orders go are chosen apart, a
+    /// Sierra Chart feed under a Rithmic account as well as either alone. A
+    /// chart on no chosen feed follows the new account's default.
     fn choose_account(self: &Rc<Self>, id: u32, account: Option<String>) {
         let Some(pane) = self.pane(id) else { return };
         if *pane.account.borrow() == account {
@@ -8351,7 +8353,6 @@ impl Window {
         }
         let before = self.routes_on_screen();
         pane.account.replace(account);
-        pane.feed.replace(None);
         self.apply_marks_to(&pane);
         self.reroute(&before);
         self.save_workspace();

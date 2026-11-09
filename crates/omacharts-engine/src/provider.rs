@@ -437,6 +437,15 @@ pub trait Provider: Send + Sync {
     /// This instrument in the provider's own symbology, if it serves it.
     fn symbol_for(&self, instrument: &Instrument) -> Option<String>;
 
+    /// The dated contract a chart of `instrument` from here draws, in the
+    /// exchange's spelling, `MESZ6`, whatever this provider calls it: a
+    /// dated contract is itself, and a root is `None` unless the provider
+    /// charts it as the one month it says, since a continuous series may be
+    /// another month's or back-adjusted. Never waits.
+    fn charted_contract(&self, instrument: &Instrument) -> Option<String> {
+        instrument.is_contract().then(|| instrument.symbol.clone())
+    }
+
     /// Natively served timeframes. Derived ones are folded by the caller.
     fn capabilities(&self) -> &'static [Capability];
 

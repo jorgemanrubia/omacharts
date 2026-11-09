@@ -337,7 +337,8 @@ pub fn feed_of<'a>(
 /// it to while the broker's market data has heard nothing: only a chart of
 /// that very contract, MNQZ6 for MNQZ6, on the exchange it is held on.
 /// Never a continuous series, MNQ, whose price may be another month's or
-/// back-adjusted. `charts` is every chart's instrument and last price.
+/// back-adjusted. `charts` is every chart's instrument and last price, a
+/// root's as the contract its feed draws it as, when the feed says.
 pub fn charted_price<'a>(
     held: &Position,
     charts: impl IntoIterator<Item = (&'a omacharts_engine::Instrument, Option<f64>)>,
