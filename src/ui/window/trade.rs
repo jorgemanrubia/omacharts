@@ -266,23 +266,39 @@ impl Window {
     /// market data, else, until that has heard a trade, to a chart on
     /// screen showing that very contract, from whichever feed: a dated
     /// contract's chart, or a root's on a feed that charts it as that month,
-    /// whoever the account's broker is.
+    /// whoever the account's broker is. A chart with a trading symbol is
+    /// taken for a chart of its trading contract, as each broker signed in
+    /// names it: what it trades is seldom charted anywhere, and moves with
+    /// what it charts, MES with ES.
     pub(super) fn marked_book(&self, logins: &[trading::Login]) -> trading::Book {
         let charts: Vec<(omacharts_engine::Instrument, Option<f64>)> = self
             .panes
             .borrow()
             .iter()
-            .filter_map(|pane| {
-                let instrument = pane.instrument.borrow().clone()?;
+            .flat_map(|pane| {
+                let last = pane.view.last_price();
+                if let Some(traded) = pane.trading_instead() {
+                    return logins
+                        .iter()
+                        .filter_map(|login| self.desk.session(&login.id))
+                        .filter_map(|session| session.contract_for(&traded).ok())
+                        .map(|contract| {
+                            let exchange = Some(contract.exchange).filter(|exchange| !exchange.trim().is_empty());
+                            (omacharts_engine::Instrument { symbol: contract.symbol, exchange, ..traded.clone() }, last)
+                        })
+                        .collect();
+                }
+                let Some(instrument) = pane.instrument.borrow().clone() else { return Vec::new() };
                 let charted = match self.route_chosen(pane, &instrument) {
                     Some(Ok(routed)) => routed.feed.provider.charted_contract(&instrument),
                     _ => None,
                 };
                 let instrument = match charted {
                     Some(contract) => omacharts_engine::Instrument { symbol: contract, ..instrument },
-                    None => instrument.is_contract().then_some(instrument)?,
+                    None if instrument.is_contract() => instrument,
+                    None => return Vec::new(),
                 };
-                Some((instrument, pane.view.last_price()))
+                vec![(instrument, last)]
             })
             .collect();
         self.desk.marked(logins, |held| {
@@ -297,7 +313,7 @@ impl Window {
         if !self.trade.shown.get() {
             return;
         }
-        let Some(root) = pane.instrument.borrow().as_ref().map(|instrument| instrument.root().to_string()) else {
+        let Some(root) = pane.traded().map(|instrument| instrument.root().to_string()) else {
             return;
         };
         let holds = self.trading.borrow().book.positions.iter().any(|held| {
@@ -801,7 +817,7 @@ impl Window {
     pub(super) fn order_target(&self, pane: &ChartPane) -> Result<trading::Target, String> {
         let view = self.trading.borrow();
         let chosen = pane.account.borrow().clone();
-        let instrument = pane.instrument.borrow().clone();
+        let instrument = pane.traded();
         trading::order_target(
             &view,
             |login| self.desk.session(login).filter(|_| self.desk.live(login)),
@@ -816,6 +832,11 @@ impl Window {
     /// can be a long way off; the chart's while the session has none.
     pub(super) fn market_price(&self, pane: &ChartPane, target: &trading::Target) -> Option<f64> {
         let chart = pane.view.last_price();
+        // What it trades is not what it charts, so no feed charting it
+        // settles it: the broker's last trade of it, else the chart's.
+        if let Some(traded) = pane.trading_instead() {
+            return self.desk.session(&target.login.id).and_then(|session| session.last_price(&traded)).or(chart);
+        }
         let Some(instrument) = pane.instrument.borrow().clone() else { return chart };
         let own = trading::data_feed_of(&target.login).map(|feed| feed.id);
         let charted = match self.route_chosen(pane, &instrument) {
@@ -831,7 +852,7 @@ impl Window {
     /// The day's lowest and highest prices the exchange takes an order on
     /// `pane`'s instrument at, as far as the account's broker has said.
     fn limits_of(&self, pane: &ChartPane, target: &trading::Target) -> (Option<f64>, Option<f64>) {
-        let Some(instrument) = pane.instrument.borrow().clone() else { return (None, None) };
+        let Some(instrument) = pane.traded() else { return (None, None) };
         self.desk.session(&target.login.id).map_or((None, None), |session| session.price_limits(&instrument))
     }
 
@@ -1396,7 +1417,7 @@ impl Window {
     /// The size an order from `pane` is for: the one picked for it, else
     /// the first of its template; one when no template applies.
     pub(super) fn size_of(&self, pane: &ChartPane) -> trading::Quantity {
-        let instrument = pane.instrument.borrow();
+        let instrument = pane.traded();
         let templates = self.trade.sizes.borrow();
         instrument
             .as_ref()
@@ -1409,7 +1430,7 @@ impl Window {
     pub(super) fn pick_size(self: &Rc<Self>, id: u32, n: usize) {
         let Some(pane) = self.pane(id) else { return };
         let picked = {
-            let instrument = pane.instrument.borrow();
+            let instrument = pane.traded();
             let templates = self.trade.sizes.borrow();
             instrument.as_ref().and_then(|instrument| trading::sizes::pick(&templates, instrument, n))
         };
@@ -1434,7 +1455,7 @@ impl Window {
         let text = match has_account {
             false => None,
             true => {
-                let instrument = pane.instrument.borrow();
+                let instrument = pane.traded();
                 let templates = self.trade.sizes.borrow();
                 instrument.as_ref().and_then(|instrument| {
                     let size = trading::sizes::size_for(&templates, instrument, pane.trading_size.borrow().as_ref())?;
@@ -1501,7 +1522,7 @@ impl Window {
         let menu = gio::Menu::new();
         let Some(pane) = self.pane(id) else { return menu };
         let sizes = {
-            let instrument = pane.instrument.borrow();
+            let instrument = pane.traded();
             let templates = self.trade.sizes.borrow();
             instrument
                 .as_ref()
@@ -1558,7 +1579,7 @@ impl Window {
         let currency = target.account.currency.clone();
         // An exit says what it would realise where it rests: closing the
         // position held here, at what a point of it is worth.
-        let spec_point = pane.instrument.borrow().as_ref().and_then(|i| i.spec()).and_then(|spec| spec.point);
+        let spec_point = pane.traded().and_then(|i| i.spec()).and_then(|spec| spec.point);
         let holding = view.book.position(&key, &target.contract).filter(|held| held.net != 0);
         let net = holding.map_or(0, |held| held.net);
         let exit_pnl = |side: Side, kind: OrderKind, qty: u32, at: f64| {
@@ -1680,7 +1701,7 @@ impl Window {
         // Positions in other months of the root, held past a roll or in
         // a month this chart is not of: drawn with their contract's name,
         // so that what is held is never out of sight.
-        let root = pane.instrument.borrow().as_ref().map(|i| i.root().to_string()).unwrap_or_default();
+        let root = pane.traded().map(|i| i.root().to_string()).unwrap_or_default();
         let held_elsewhere: Vec<super::marks::PositionMark> = view
             .book
             .positions
@@ -3420,6 +3441,120 @@ pub(super) mod tests {
                 let orders = pane.view.mark_states().1;
                 assert_eq!(orders.iter().map(|(_, price, _)| *price).collect::<Vec<_>>(), vec![above], "{feed}");
             }
+        });
+    }
+
+    /// A chart of ES set to trade MES charts ES and trades MES: its header
+    /// says "ES/MES", Buy and the chart menu's orders go to MES's contract,
+    /// the position drawn is MES's, marked to the chart's prices at MES's
+    /// point value while the broker's market says nothing; set back to
+    /// none, it trades ES again.
+    #[test]
+    fn a_chart_with_a_trading_symbol_trades_it_and_charts_its_own() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            session.contracts.lock().unwrap().insert("MES".into(), "MESZ6".into());
+            settle(&window, || pane.view.last_price().is_some());
+            let mes = window.index.find("MES", None).expect("MES in the curated half");
+            window.set_trading_symbol(pane.id, Some(mes));
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES/MES"));
+            assert!(pane.label().starts_with("ES/MES"), "{}", pane.label());
+            assert_eq!(window.order_target(&pane).map(|target| target.contract), Ok("MESZ6".into()));
+            assert_eq!(pane.view.mark_states().0, None, "ES's position drawn on a chart trading MES");
+
+            let last = pane.view.last_price().expect("a last price");
+            *session.last.lock().unwrap() = last - 10.0;
+            *session.market.lock().unwrap() = None;
+            pane.buy_button.emit_clicked();
+            let held = |contract: &str| session.book().position("951", contract).map(|held| held.net);
+            assert!(settle(&window, || held("MESZ6") == Some(1)), "Buy did not buy MES");
+            assert_eq!(held("ESZ6"), Some(1), "Buy bought ES");
+            window.mark_to_market();
+            let marked = window.trading.borrow().book.position(&key, "MESZ6").and_then(|held| held.open_pnl);
+            assert_eq!(marked, Some(50.0), "not marked to the chart at MES's point value");
+            assert!(pane.view.mark_states().0.is_some_and(|(words, _)| words.ends_with("+$50.00")));
+
+            let below = (last / 0.25).round() * 0.25 - 40.0 * 0.25;
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's orders");
+            let value = order_target_value(Side::Buy, OrderKind::Limit, &key, Some(below));
+            actions.activate_action("order", Some(&value.to_variant()));
+            let limit = || {
+                let book = session.book();
+                book.orders.iter().find(|order| order.kind == OrderKind::Limit).map(|order| order.contract.clone())
+            };
+            assert!(settle(&window, || limit().is_some()), "the chart menu's limit was not sent");
+            assert_eq!(limit().as_deref(), Some("MESZ6"));
+
+            window.set_trading_symbol(pane.id, None);
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
+            assert_eq!(window.order_target(&pane).map(|target| target.contract), Ok("ESZ6".into()));
+        });
+    }
+
+    /// Every widget under `root`, itself among them.
+    fn widgets_under(root: gtk::Widget) -> Vec<gtk::Widget> {
+        let (mut found, mut stack) = (Vec::new(), vec![root]);
+        while let Some(widget) = stack.pop() {
+            let mut child = widget.first_child();
+            while let Some(next) = child {
+                child = next.next_sibling();
+                stack.push(next);
+            }
+            found.push(widget);
+        }
+        found
+    }
+
+    /// The titles of the chart settings' pages, and whether a Trading
+    /// symbol row is among their rows, the dialog closed after.
+    fn chart_settings_offer(window: &Rc<Window>) -> (Vec<String>, bool) {
+        crate::ui::chart_settings::ChartSettings::present(window);
+        let dialog = window.window.visible_dialog().expect("the chart's settings");
+        let widgets = widgets_under(dialog.clone().upcast());
+        let pages: Vec<String> = widgets
+            .iter()
+            .filter_map(|widget| widget.downcast_ref::<adw::PreferencesPage>().map(|page| page.title().to_string()))
+            .collect();
+        let row = widgets.iter().any(|widget| {
+            widget
+                .downcast_ref::<adw::ActionRow>()
+                .is_some_and(|row| row.title() == crate::ui::chart_settings::TRADING_SYMBOL_LABEL)
+        });
+        dialog.force_close();
+        (pages, row)
+    }
+
+    /// The trading symbol is the chart's, kept with it across a restart.
+    /// With trading off there is no Trading page, the header says ES alone
+    /// and orders would be of ES: the one kept is ignored, not lost, and
+    /// back when trading is.
+    #[test]
+    fn a_trading_symbol_is_kept_with_its_chart_and_ignored_with_trading_off() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es);
+            let (pages, row) = chart_settings_offer(&window);
+            assert!(pages.contains(&"Trading".to_string()) && row, "{pages:?}");
+            let mes = window.index.find("MES", None).expect("MES in the curated half");
+            window.set_trading_symbol(pane.id, Some(mes));
+            window.save_workspace();
+
+            crate::features::set(&store, crate::features::Feature::Trading, false);
+            let off = bare_window(&store);
+            let pane = off.focused_pane();
+            assert_eq!(pane.instrument.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("ES"));
+            assert_eq!(pane.trading_symbol.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("MES"));
+            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
+            assert_eq!(pane.traded().map(|i| i.symbol), Some("ES".into()));
+            let (pages, row) = chart_settings_offer(&off);
+            assert!(!pages.contains(&"Trading".to_string()) && !row, "{pages:?}");
+            off.save_workspace();
+
+            let on = self::window(&store);
+            assert_eq!(on.focused_pane().symbol_button.label().as_deref(), Some("ES/MES"), "not kept");
         });
     }
 

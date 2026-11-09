@@ -76,12 +76,18 @@ impl ChartSettings {
         indicators_page.set_icon_name(Some("view-list-symbolic"));
         dialog.add(&indicators_page);
 
+        let mut pages = vec![chart_page.clone(), indicators_page.clone()];
+        if crate::features::trading() {
+            let trading_page = trading_page(window);
+            dialog.add(&trading_page);
+            pages.push(trading_page);
+        }
+
         {
             // Alt and an arrow between the pages, and the keyboard goes with
             // it. The pages are named here rather than asked of the dialog: a
             // preferences dialog keeps them in a view stack of its own, and
             // the ones it was given are the ones it has.
-            let pages = [chart_page.clone(), indicators_page.clone()];
             let dialog_for_tabs = dialog.clone();
             crate::ui::dialogs::step_tabs_with_alt(&dialog, move |forward| {
                 let shown = dialog_for_tabs.visible_page();
@@ -289,6 +295,57 @@ fn template_rows(
 
 /// The row a chart's title is typed into.
 pub const TITLE_LABEL: &str = "Title";
+
+pub const TRADING_SYMBOL_LABEL: &str = "Trading symbol";
+
+/// What the chart trades, when trading is on: none, its own symbol, until
+/// one is picked, MES for a chart of ES. Its data stays what it charts.
+fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
+    page.set_title("Trading");
+    page.set_icon_name(Some("view-list-bullet-symbolic"));
+    let group = adw::PreferencesGroup::new();
+    let row = adw::ActionRow::new();
+    row.set_title(TRADING_SYMBOL_LABEL);
+    row.set_activatable(true);
+    let value = gtk::Label::new(None);
+    value.add_css_class("dim-label");
+    let clear = gtk::Button::from_icon_name("edit-clear-symbolic");
+    clear.add_css_class("flat");
+    clear.set_valign(gtk::Align::Center);
+    clear.set_tooltip_text(Some("Trade the chart's own symbol"));
+    row.add_suffix(&value);
+    row.add_suffix(&clear);
+    group.add(&row);
+    page.add(&group);
+
+    let id = window.focused_pane().id;
+    let show = {
+        let window = Rc::downgrade(window);
+        let value = value.downgrade();
+        let clear = clear.downgrade();
+        move || {
+            let (Some(window), Some(value), Some(clear)) = (window.upgrade(), value.upgrade(), clear.upgrade()) else {
+                return false;
+            };
+            let traded = window.trading_symbol_of(id);
+            value.set_text(&traded.as_ref().map_or_else(|| "None".to_string(), |traded| traded.display_symbol()));
+            clear.set_visible(traded.is_some());
+            value.root().is_some()
+        }
+    };
+    show();
+    window.watch_chart(show);
+    {
+        let window = window.clone();
+        row.connect_activated(move |_| window.find_trading_symbol(id));
+    }
+    {
+        let window = window.clone();
+        clear.connect_clicked(move |_| window.set_trading_symbol(id, None));
+    }
+    page
+}
 
 /// The chart title, first, since it is what the chart is called. Kept
 /// as it is typed, and blank for none.

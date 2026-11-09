@@ -1535,6 +1535,17 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "exploratory: a chart's quantity is picked from its header or with Ctrl and a digit for now, \
          and the command comes with trading shipping",
     ),
+    (
+        "trading_symbol",
+        "",
+        "exploratory: what a chart trades instead of what it charts is set in its settings for now, \
+         and the command comes with trading shipping",
+    ),
+    (
+        "trading_suffix",
+        "",
+        "exploratory: the suffix of what a chart trades instead, set with its trading symbol",
+    ),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

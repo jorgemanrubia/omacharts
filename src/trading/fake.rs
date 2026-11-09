@@ -350,7 +350,7 @@ impl FakeSession {
                 avg: Some(at),
                 open_pnl: None,
                 tick: Some(0.25),
-                point: Some(50.0),
+                point: omacharts_engine::specs::point(omacharts_engine::specs::root_of(contract)).or(Some(50.0)),
             }),
         }
         book.positions.retain(|held| held.net != 0);

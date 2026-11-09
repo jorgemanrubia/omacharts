@@ -686,6 +686,8 @@ mod tests {
                 source: None,
                 account: None,
                 trading_size: None,
+                trading_symbol: None,
+                trading_suffix: None,
                 auto_scale: false,
                 log_scale: true,
                 indicators_shown: true,
@@ -770,6 +772,8 @@ mod tests {
             source: None,
             account: None,
             trading_size: None,
+            trading_symbol: None,
+            trading_suffix: None,
             auto_scale: true,
             log_scale: false,
             indicators_shown: true,
@@ -2453,6 +2457,14 @@ struct StoredPane {
     /// of its template, which is every chart until somebody picks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trading_size: Option<crate::trading::sizes::Picked>,
+    /// What this chart's orders go to when it is not what it charts, by
+    /// symbol and suffix, as `symbol` and `suffix` name what it charts.
+    /// Missing for a chart that trades what it charts, which is every chart
+    /// until somebody sets one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trading_symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trading_suffix: Option<String>,
 }
 
 fn yes() -> bool {
@@ -4604,6 +4616,8 @@ impl Window {
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
+                    trading_symbol: pane.trading_symbol.borrow().as_ref().map(|traded| traded.symbol.clone()),
+                    trading_suffix: pane.trading_symbol.borrow().as_ref().and_then(|traded| traded.suffix.clone()),
                     auto_scale: pane.view.price_auto(),
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
@@ -4842,6 +4856,10 @@ impl Window {
             *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
+            *pane.trading_symbol.borrow_mut() = stored
+                .trading_symbol
+                .as_deref()
+                .and_then(|symbol| self.index.find(symbol, stored.trading_suffix.as_deref()));
             pane.view.set_price_auto(stored.auto_scale);
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
@@ -6858,6 +6876,14 @@ impl Window {
         self.open_search_with("");
     }
 
+    /// The symbol picker, for what chart `id` trades instead of what it
+    /// charts.
+    pub fn find_trading_symbol(self: &Rc<Self>, id: u32) {
+        let this = self.clone();
+        let over = Over::window(&self.window, crate::ui::chart_settings::TRADING_SYMBOL_LABEL);
+        self.search.present(over, move |instrument| this.set_trading_symbol(id, Some(instrument)));
+    }
+
     /// Over the focused chart, which is the one a pick changes.
     fn open_search_with(self: &Rc<Self>, query: &str) {
         let this = self.clone();
@@ -8356,6 +8382,33 @@ impl Window {
         self.apply_marks_to(&pane);
         self.reroute(&before);
         self.save_workspace();
+    }
+
+    /// What chart `id` trades instead of what it charts, if anything.
+    pub fn trading_symbol_of(&self, id: u32) -> Option<Instrument> {
+        self.pane(id).and_then(|pane| pane.trading_symbol.borrow().clone())
+    }
+
+    /// Have chart `id` trade `traded` rather than what it charts, or what
+    /// it charts again for `None`: its header names both at once, and its
+    /// orders, position, marks and P&L follow the trading contract.
+    pub fn set_trading_symbol(self: &Rc<Self>, id: u32, traded: Option<Instrument>) {
+        let Some(pane) = self.pane(id) else { return };
+        let same = |a: &Instrument, b: &Instrument| a.symbol == b.symbol && a.suffix == b.suffix;
+        let unchanged = match (pane.trading_symbol.borrow().as_ref(), traded.as_ref()) {
+            (None, None) => true,
+            (Some(was), Some(now)) => same(was, now),
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        pane.trading_symbol.replace(traded);
+        pane.write_readout();
+        self.apply_marks_to(&pane);
+        self.mark_to_market();
+        self.save_workspace();
+        self.chart_changed_elsewhere();
     }
 
     /// Drop a chart's account if it is no longer listed, say because its

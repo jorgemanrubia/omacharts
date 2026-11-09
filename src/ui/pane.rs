@@ -262,6 +262,10 @@ pub struct ChartPane {
     /// The size somebody picked for this chart, and from which template;
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
+    /// What this chart's orders go to when it is not what it charts, MES
+    /// for a chart of ES; `None` trades what it charts. Ignored, and never
+    /// shown, while trading is off. See [`ChartPane::traded`].
+    pub trading_symbol: RefCell<Option<Instrument>>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -717,6 +721,7 @@ impl ChartPane {
             day_part,
             day_amount,
             trading_size: RefCell::new(None),
+            trading_symbol: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
@@ -950,13 +955,9 @@ impl ChartPane {
     }
 
     pub fn label(&self) -> String {
-        match self.instrument.borrow().as_ref() {
-            Some(instrument) => format!(
-                "{}  ·  {}",
-                instrument.display_symbol(),
-                self.timeframe.get().label()
-            ),
-            None => String::new(),
+        match self.instrument.borrow().is_some() {
+            true => format!("{}  ·  {}", self.shown_symbol(), self.timeframe.get().label()),
+            false => String::new(),
         }
     }
 
@@ -1268,14 +1269,32 @@ impl ChartPane {
     }
 
     pub fn write_readout(&self) {
-        let symbol = self
-            .instrument
-            .borrow()
-            .as_ref()
-            .map(|i| i.display_symbol())
-            .unwrap_or_default();
-        self.symbol_button.set_label(&symbol);
+        self.symbol_button.set_label(&self.shown_symbol());
         self.write_timeframe();
+    }
+
+    /// The trading symbol in force: the one set for this chart while
+    /// trading is on, `None` while the chart trades what it charts.
+    pub fn trading_instead(&self) -> Option<Instrument> {
+        crate::features::trading().then(|| self.trading_symbol.borrow().clone()).flatten()
+    }
+
+    /// What this chart's orders, positions and P&L are of: its trading
+    /// symbol, else what it charts.
+    pub fn traded(&self) -> Option<Instrument> {
+        self.trading_instead().or_else(|| self.instrument.borrow().clone())
+    }
+
+    /// The chart's symbol as its header names it: "ES", or "ES/MES" while
+    /// it trades MES.
+    pub fn shown_symbol(&self) -> String {
+        let Some(charted) = self.instrument.borrow().as_ref().map(|i| i.display_symbol()) else {
+            return String::new();
+        };
+        match self.trading_instead() {
+            Some(traded) => format!("{charted}/{}", traded.display_symbol()),
+            None => charted,
+        }
     }
 
     /// The resolution, beside the symbol.
