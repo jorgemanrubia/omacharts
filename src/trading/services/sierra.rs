@@ -616,6 +616,144 @@ mod tests {
         session.sign_out();
     }
 
+    /// A session on `fake` that waits only a moment for an answer, so that
+    /// a server that never answers is found out quickly.
+    fn impatient(fake: &dtc::fake::Fake) -> Arc<dyn Session> {
+        let timing = dtc::Timing { request: std::time::Duration::from_millis(700), ..dtc::Timing::default() };
+        let trading = dtc::Trading::sign_in_with(&fake.endpoint(), CLIENT_NAME, timing, |_| {}).expect("signed in");
+        let session: Arc<dyn Session> = Arc::new(SierraSession { login: "sierra-1".into(), trading });
+        session.refresh().expect("refreshed");
+        session
+    }
+
+    /// A sell exit of ES on Sim1, for `qty`, at `price`.
+    fn sell(kind: OrderKind, qty: u32, price: f64) -> OrderRequest {
+        OrderRequest {
+            account: "Sim1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Sell,
+            qty,
+            kind,
+            price: Some(price),
+            tag: new_tag(),
+        }
+    }
+
+    /// What the server has working, stops and targets apart, as
+    /// `(quantity, price)`.
+    fn on_the_server(fake: &dtc::fake::Fake) -> (Vec<(u32, f64)>, Vec<(u32, f64)>) {
+        let working = fake.working();
+        let of = |kind| working.iter().filter(|order| order.kind == kind).map(|order| (order.qty, order.price1)).collect();
+        (of(dtc::OrderKind::Stop), of(dtc::OrderKind::Limit))
+    }
+
+    /// Long 2 with a stop for 1, from before the position was added to: a
+    /// target pulled out for the whole of it goes with the stop again as
+    /// one pair, both for the 2 held, and the stop's new size is said.
+    #[test]
+    fn a_target_beside_a_smaller_stop_sends_both_for_what_is_held() {
+        let fake = fake_long(2);
+        let session = impatient(&fake);
+        let basket = session.place(&sell(OrderKind::Stop, 1, 7_580.0)).expect("the stop");
+        let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+        let ran = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_650.0), Some(&stop)).run(session.as_ref(), "Sim1");
+        assert!(ran.link.clone().is_some_and(|link| link.is_ok()), "{ran:?}");
+        let pair = &fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER)[0];
+        assert_eq!((pair.int("Quantity_1"), pair.int("Quantity_2")), (Some(2), Some(2)), "half the position left without a target");
+        assert_eq!(ran.again, Some((OrderKind::Stop, 1, 2)), "the stop's new size not said");
+        assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![(2, 7_650.0)]));
+        session.sign_out();
+    }
+
+    /// The stop is one of a pair already, with a target for 1 of the 2
+    /// held. Cancelling it takes that target with it, as Sierra Chart does
+    /// for an OCO pair, and the new pair covers the whole position: one
+    /// stop and one target working, never two targets, and the target that
+    /// went is said. The same whether or not the app knew of the pair.
+    #[test]
+    fn a_stop_already_paired_takes_its_target_along_and_the_new_pair_covers_everything() {
+        for known in [true, false] {
+            let fake = fake_long(2);
+            let session = impatient(&fake);
+            let [stop, old] = session
+                .place_pair(&[sell(OrderKind::Stop, 1, 7_580.0), sell(OrderKind::Limit, 1, 7_640.0)])
+                .expect("the first pair");
+            let book = session.book();
+            let stop = book.order(&stop).cloned().expect("the stop");
+            let old = book.order(&old).cloned().expect("the target");
+            let partners = if known { vec![old.clone()] } else { Vec::new() };
+            let plan = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_660.0), Some(&stop)).paired_with(partners);
+            let ran = plan.run(session.as_ref(), "Sim1");
+            assert!(ran.link.clone().is_some_and(|link| link.is_ok()), "known {known}: {ran:?}");
+            assert!(
+                until(session.as_ref(), |book| book.order(&old.basket_id).is_some_and(|order| !order.status.working())),
+                "known {known}: the old target still working"
+            );
+            assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![(2, 7_660.0)]), "known {known}");
+            if known {
+                assert_eq!(ran.went_with.iter().map(|order| order.basket_id.clone()).collect::<Vec<_>>(), [old.basket_id.clone()]);
+            }
+            session.sign_out();
+        }
+    }
+
+    /// The pair is lost on its way, after the stop was cancelled: no
+    /// answer, and nothing of it on the server. The stop goes back in
+    /// alone, at its price, and is the one stop working.
+    #[test]
+    fn a_pair_never_answered_puts_the_stop_back_alone() {
+        let fake = fake_long(2);
+        let session = impatient(&fake);
+        let basket = session.place(&sell(OrderKind::Stop, 2, 7_580.0)).expect("the stop");
+        let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+        fake.set_pairs(dtc::fake::Pairs::Lost);
+        let ran = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_650.0), Some(&stop)).run(session.as_ref(), "Sim1");
+        assert!(ran.placed.iter().all(|(_, placed)| matches!(placed, Err(Failure::Unanswered(_)))), "{:?}", ran.placed);
+        let (again, placed) = ran.restored.clone().expect("the stop placed again");
+        assert!(placed.is_ok(), "{placed:?}");
+        assert_eq!((again.kind, again.price, again.qty), (OrderKind::Stop, Some(7_580.0), 2));
+        assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![]), "{ran:?}");
+        assert_eq!(ran.unsure, None);
+        session.sign_out();
+    }
+
+    /// The pair reached the server and its answer was lost: both working
+    /// there, unheard of here. What the book holds of it is cancelled
+    /// before the stop goes back, so one stop is working, never two.
+    #[test]
+    fn a_pair_taken_unheard_is_cancelled_before_the_stop_goes_back() {
+        let fake = fake_long(2);
+        let session = impatient(&fake);
+        let basket = session.place(&sell(OrderKind::Stop, 2, 7_580.0)).expect("the stop");
+        let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+        fake.set_pairs(dtc::fake::Pairs::TakenSilently);
+        let ran = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_650.0), Some(&stop)).run(session.as_ref(), "Sim1");
+        assert!(ran.restored.as_ref().is_some_and(|(_, placed)| placed.is_ok()), "{ran:?}");
+        assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![]), "two stops, or none: {ran:?}");
+        session.sign_out();
+    }
+
+    /// Only the target of the pair is taken: the stop goes back in alone at
+    /// once, and the app links it with the target, while it runs.
+    #[test]
+    fn a_pair_with_only_its_target_taken_puts_the_stop_back_and_links_the_two() {
+        let fake = fake_long(2);
+        let session = impatient(&fake);
+        let basket = session.place(&sell(OrderKind::Stop, 2, 7_580.0)).expect("the stop");
+        let stop = session.book().order(&basket).cloned().expect("the stop in the book");
+        fake.set_pairs(dtc::fake::Pairs::OneRejected(0, "Stop price too close".into()));
+        let ran = Plan::exit(Linking::AtSubmission, sell(OrderKind::Limit, 2, 7_650.0), Some(&stop)).run(session.as_ref(), "Sim1");
+        let (again, placed) = ran.restored.clone().expect("the stop placed again");
+        let back = placed.expect("taken back");
+        assert_eq!((again.kind, again.price, again.qty), (OrderKind::Stop, Some(7_580.0), 2));
+        let link = ran.link.clone().expect("linked").expect("linked");
+        assert_eq!(link.holder, Holder::App);
+        assert!(link.baskets.contains(&back), "{link:?}");
+        assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![(2, 7_650.0)]));
+        session.sign_out();
+    }
+
     /// Closed while its flag is off: offered nowhere, and a saved login of
     /// it shown nowhere, though it is kept.
     #[test]

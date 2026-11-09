@@ -99,6 +99,22 @@ struct FakeFill {
     server_id: String,
 }
 
+/// What becomes of an OCO pair submitted, besides being taken or rejected
+/// whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pairs {
+    /// Taken or rejected whole, and said at once.
+    Answered,
+    /// Lost on the way: never taken, never answered.
+    Lost,
+    /// Taken, both working and each knowing the other, with no word said
+    /// of either: the answer lost on the way back.
+    TakenSilently,
+    /// One of the two, `_1` (0) or `_2` (1), rejected with the words, the
+    /// other taken alone, linked to nothing.
+    OneRejected(usize, String),
+}
+
 /// The fake's world, which the builder sets up and the connections change.
 #[derive(Clone, Debug)]
 struct World {
@@ -118,6 +134,8 @@ struct World {
     reject: Option<String>,
     /// Reject every OCO pair with this, single orders still taken.
     reject_pairs: Option<String>,
+    /// What becomes of the next OCO pairs: see [`Pairs`].
+    pairs: Pairs,
     filling: Fills,
     market_price: f64,
     silent: bool,
@@ -143,6 +161,7 @@ impl Default for World {
             oco: true,
             reject: None,
             reject_pairs: None,
+            pairs: Pairs::Answered,
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
@@ -418,6 +437,11 @@ impl Fake {
         lock(&self.shared.world).reject_pairs = text.map(str::to_string);
     }
 
+    /// What becomes of the OCO pairs submitted from now on.
+    pub fn set_pairs(&self, pairs: Pairs) {
+        lock(&self.shared.world).pairs = pairs;
+    }
+
     /// How orders placed from now on fill.
     pub fn set_fills(&self, fills: Fills) {
         lock(&self.shared.world).filling = fills;
@@ -435,6 +459,11 @@ impl Fake {
     /// session was away.
     pub fn forget_order(&self, id: &str) {
         lock(&self.shared.world).orders.retain(|order| order.server_id != id && order.client_id != id);
+    }
+
+    /// Every order the server holds still working, as the server sees it.
+    pub fn working(&self) -> Vec<FakeOrder> {
+        lock(&self.shared.world).orders.iter().filter(|order| order.working()).cloned().collect()
     }
 
     /// The order `id` names, by server or client id.
@@ -875,6 +904,38 @@ fn submitted(world: &mut World, message: &Message, leg: &str) -> FakeOrder {
 /// or both rejected, each with its own update, as DTC asks. They rest
 /// until [`Fake::fill`], however orders are set to fill.
 fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
+    match world.pairs.clone() {
+        Pairs::Answered => {}
+        Pairs::Lost => return Vec::new(),
+        Pairs::TakenSilently => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+            for (at, order) in pair.iter_mut().enumerate() {
+                order.status = wire::ORDER_STATUS_OPEN;
+                order.oco = Some(ids[1 - at].clone());
+            }
+            world.orders.extend(pair);
+            return Vec::new();
+        }
+        Pairs::OneRejected(leg, text) => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
+            for (at, order) in pair.iter_mut().enumerate() {
+                match at == leg {
+                    true => {
+                        order.status = wire::ORDER_STATUS_REJECTED;
+                        pushes.push(order_message(order, wire::NEW_ORDER_REJECTED, &text));
+                    }
+                    false => {
+                        order.status = wire::ORDER_STATUS_OPEN;
+                        pushes.push(order_message(order, wire::NEW_ORDER_ACCEPTED, ""));
+                    }
+                }
+            }
+            world.orders.extend(pair);
+            return pushes;
+        }
+    }
     let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
     let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
     let refused = match (world.reject.as_ref().or(world.reject_pairs.as_ref()), world.oco) {

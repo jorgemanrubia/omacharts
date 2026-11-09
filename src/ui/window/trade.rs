@@ -1114,7 +1114,21 @@ impl Window {
             let view = self.trading.borrow();
             trading::sibling_exit(view.book.working(&key, &target.contract), &target.contract, side, kind).cloned()
         };
-        let plan = trading::Plan::exit(target.capabilities.link, order, sibling.as_ref());
+        // What the working one is already paired with, which cancelling it
+        // takes along: see the linking module's notes.
+        let partners: Vec<trading::Order> = sibling.as_ref().map_or_else(Vec::new, |sibling| {
+            let view = self.trading.borrow();
+            self.desk
+                .links()
+                .into_iter()
+                .filter(|link| link.account == key && link.holder == trading::Holder::TradingService)
+                .filter(|link| link.baskets.contains(&sibling.basket_id))
+                .flat_map(|link| link.baskets)
+                .filter(|basket| *basket != sibling.basket_id)
+                .filter_map(|basket| view.book.order(&basket).filter(|order| order.status.working()).cloned())
+                .collect()
+        });
+        let plan = trading::Plan::exit(target.capabilities.link, order, sibling.as_ref()).paired_with(partners);
         self.run_plan(target, plan);
     }
 
@@ -1195,6 +1209,17 @@ impl Window {
             }
             if let Some((planned, sent)) = ran.resized {
                 this.say(log_words::note(&name, format!("Placed for {sent} · {} filled meanwhile", planned - sent)));
+            }
+            if let Some((kind, had, sent)) = ran.again {
+                this.say(log_words::note(&name, trading::again_text(kind, had, sent)));
+            }
+            for gone in &ran.went_with {
+                let decimals = crate::ui::trading_panel::decimals_of(gone.tick);
+                let price = gone.price.map(|price| omacharts_engine::grouped_decimals(price, decimals)).unwrap_or_default();
+                this.say(log_words::note(&name, trading::went_with_text(gone.kind, &price)));
+            }
+            if let Some(why) = &ran.unsure {
+                this.refuse_as(&name, &format!("Not placed again · {why}"));
             }
             match ran.link {
                 Some(Ok(link)) => {

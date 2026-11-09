@@ -66,6 +66,23 @@ pub fn linked_text(holder: Holder) -> &'static str {
     }
 }
 
+/// The exit cancelled to form a pair, sent again for what is held rather
+/// than what it had left: "Stop placed again for 2, what is held, not 1".
+pub fn again_text(kind: OrderKind, had: u32, sent: u32) -> String {
+    let what = if kind == OrderKind::Stop { "Stop" } else { "Target" };
+    format!("{what} placed again for {sent}, what is held, not {had}")
+}
+
+/// An exit that went with the one cancelled to form a pair, being its
+/// pair: "Target at 7,650.00 cancelled with the stop it was paired with".
+pub fn went_with_text(kind: OrderKind, price: &str) -> String {
+    let (what, with) = if kind == OrderKind::Stop { ("Stop", "target") } else { ("Target", "stop") };
+    match price.is_empty() {
+        true => format!("{what} cancelled with the {with} it was paired with"),
+        false => format!("{what} at {price} cancelled with the {with} it was paired with"),
+    }
+}
+
 /// A row of the chart menu, for `size` of the contract: "Buy 2 ESZ6 at
 /// market", "Sell Limit 2 ESZ6 at 7,620.00".
 pub fn menu_text(side: Side, kind: OrderKind, size: Quantity, price: &str, contract: &str) -> String {

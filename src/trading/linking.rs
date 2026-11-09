@@ -41,14 +41,36 @@
 //! [`Plan::Reform`]: cancel it, and once the trading service says it is
 //! cancelled, submit it again, at its price, with the new one as one pair,
 //! the stop first. Never two of a kind: the second is submitted only once
-//! the first is gone. The pair is sized to what is still held then — the
-//! one cancelled may have filled in part meanwhile, which is said — and a
-//! part of either filled later comes off the other (DTC's
-//! `PartialFillHandling`), so the two never close more than is held. If it
-//! filled whole, nothing is placed and that is said. If the pair is
-//! refused, the one cancelled goes back in alone at once, as it was, and
-//! the refusal is said. If the cancel is not answered, nothing is placed:
-//! the one cancelled may still be working.
+//! the first is gone.
+//!
+//! **Both of the pair are for what is held then**, whatever the one
+//! cancelled was for. An OCO pair is two ways out of one position: the
+//! stop and the target each close all of it, and a part of either filled
+//! comes off the other (DTC's `PartialFillHandling`), so the two never
+//! close more than is held. A stop for 1 on a position since added to is
+//! sent again for 2 beside a target for 2, rather than the target cut to
+//! 1 and half the position left with no target; a stop for more than is
+//! held comes down to it. Either is said, and so is a part of the one
+//! cancelled that filled meanwhile. If it filled whole, nothing is placed
+//! and that is said.
+//!
+//! **The one cancelled may be one of a pair already.** On Sierra Chart,
+//! as on DTC generally, cancelling one of an OCO pair cancels the other:
+//! a stop paired with a target for part of the position takes that target
+//! with it. The new pair covers what is held, so nothing is left without a
+//! stop or a target; the one that went with it is said, and if the trading
+//! service left it working it is cancelled before the pair goes, since two
+//! targets for the whole of a position would overfill.
+//!
+//! **Whenever the one cancelled is not confirmed working again, it goes
+//! back in alone at once**, as it was: the pair refused, only the other of
+//! it taken (then the app links the two, while it runs), or no answer at
+//! all. With no answer the pair may yet arrive, so what the book holds of
+//! it is cancelled first and the one cancelled placed back only once that
+//! is answered: never two stops. If even that goes unanswered nothing more
+//! is sent, and the position is said to need looking at. If the first
+//! cancel is not answered, nothing is placed — the one cancelled may still
+//! be working — unless the book says it is cancelled, when it goes back in.
 //!
 //! - **A target working, a stop added**: between the two steps the
 //!   position has no target, and it had no stop before: it is exposed to
@@ -147,8 +169,9 @@ pub enum Plan {
     Pair([OrderRequest; 2]),
     /// The working exit `cancel` cancelled, then the pair placed: the stop
     /// first and the target second, one of them `cancel` again at its
-    /// price, both sized to what is held then.
-    Reform { cancel: Box<Order>, pair: [OrderRequest; 2] },
+    /// price, both sized to what is held then. `partners` are the orders
+    /// `cancel` is already paired with, which its cancel takes with it.
+    Reform { cancel: Box<Order>, pair: [OrderRequest; 2], partners: Vec<Order> },
     /// Placed, and the app holds the link with `with`, when there is one.
     PlaceThenWatch { place: Vec<OrderRequest>, with: Option<String> },
 }
@@ -163,12 +186,9 @@ impl Plan {
             Linking::AfterTheFact => Plan::PlaceThenLink { place: vec![exit], with },
             // Cancel the working one, then the pair, the stop first.
             Linking::AtSubmission if reformable(sibling.kind, exit.kind) => {
-                // A working target goes again for the new stop's quantity;
-                // a working stop for what it had left, exactly.
-                let qty = match sibling.kind {
-                    OrderKind::Stop => sibling.qty.saturating_sub(sibling.filled),
-                    _ => exit.qty,
-                };
+                // Both for what is held, which is what the new exit is for:
+                // see the module's notes.
+                let qty = exit.qty;
                 let again = OrderRequest {
                     account: exit.account.clone(),
                     contract: sibling.contract.clone(),
@@ -183,9 +203,18 @@ impl Plan {
                     OrderKind::Stop => [exit, again],
                     _ => [again, exit],
                 };
-                Plan::Reform { cancel: Box::new(sibling.clone()), pair }
+                Plan::Reform { cancel: Box::new(sibling.clone()), pair, partners: Vec::new() }
             }
             Linking::AtSubmission | Linking::None => Plan::PlaceThenWatch { place: vec![exit], with },
+        }
+    }
+
+    /// The same plan, knowing that the working exit it cancels is one of a
+    /// pair with `partners`, which its cancel takes with it.
+    pub fn paired_with(self, partners: Vec<Order>) -> Plan {
+        match self {
+            Plan::Reform { cancel, pair, .. } => Plan::Reform { cancel, pair, partners },
+            plan => plan,
         }
     }
 
@@ -255,7 +284,7 @@ impl Plan {
             Plan::PlaceThenLink { place, with } => place_then(session, account, place, with.as_deref(), Holder::TradingService),
             Plan::PlaceThenWatch { place, with } => place_then(session, account, place, with.as_deref(), Holder::App),
             Plan::Pair(pair) => pair_placed(session, account, pair.clone()),
-            Plan::Reform { cancel, pair } => reform(session, account, cancel, pair),
+            Plan::Reform { cancel, pair, partners } => reform(session, account, cancel, pair, partners),
         }
     }
 }
@@ -270,12 +299,21 @@ pub struct Ran {
     /// The link made, or why there is none; `None` when there was nothing
     /// to link, or nothing was placed to link.
     pub link: Option<Result<Link, Failure>>,
-    /// An exit cancelled to form a pair the trading service then refused,
+    /// An exit cancelled to form a pair that did not come to be working,
     /// placed back alone as it was.
     pub restored: Option<(OrderRequest, Result<String, Failure>)>,
     /// A reformed pair sized down from what was planned, as `(planned,
     /// sent)`: the exit cancelled filled in part meanwhile.
     pub resized: Option<(u32, u32)>,
+    /// The exit cancelled, sent again for another quantity than it had
+    /// left, as `(kind, had, sent)`: for what is held.
+    pub again: Option<(OrderKind, u32, u32)>,
+    /// Orders the exit cancelled was paired with, which went with it.
+    pub went_with: Vec<Order>,
+    /// Why the position may be left without the exit cancelled, when
+    /// nothing more could be done about it: the trading service stopped
+    /// answering.
+    pub unsure: Option<String>,
 }
 
 /// Can a working exit of `working` and a new one of `added` be made one
@@ -376,11 +414,24 @@ fn left_to_close(session: &dyn Session, account: &str, cancelled: &Order, planne
     }
 }
 
+/// Is the order `basket` working as the trading service has confirmed,
+/// not merely sent and waiting to be heard of?
+fn confirmed(book: &Book, basket: &str) -> bool {
+    book.order(basket).is_some_and(|order| matches!(order.status.stage, Stage::Working | Stage::PartiallyFilled))
+}
+
+/// The order the book knows by `tag`, at whatever stage.
+fn tagged<'a>(book: &'a Book, tag: &str) -> Option<&'a Order> {
+    book.orders.iter().find(|order| order.tag.as_deref() == Some(tag))
+}
+
 /// Cancel the working exit, then place the pair, it among them: see the
 /// module's notes for why in this order.
-fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderRequest; 2]) -> Ran {
+fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderRequest; 2], partners: &[Order]) -> Ran {
     let mut ran = Ran::default();
     let what = if cancel.kind == OrderKind::Stop { "stop" } else { "target" };
+    // The one placed again, which is the one cancelled.
+    let again = usize::from(pair[1].kind == cancel.kind);
     let cancelled = session.cancel(account, &cancel.basket_id);
     let failed = cancelled.clone().err();
     ran.cancelled = Some(cancelled);
@@ -388,20 +439,27 @@ fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderReq
         // Not cancelled, or no answer: it may still be working, and a
         // second one would overfill. Nothing is placed. Refused because it
         // filled meanwhile, that is what is said.
-        let filled = session
-            .book()
-            .order(&cancel.basket_id)
-            .is_some_and(|now| !now.status.working() && now.filled > cancel.filled);
+        let book = session.book();
+        let now = book.order(&cancel.basket_id);
+        let filled = now.is_some_and(|now| !now.status.working() && now.filled > cancel.filled);
+        // Unanswered, and yet the book has it cancelled: the position has
+        // lost it, so it goes back in.
+        let gone = matches!(why, Failure::Unanswered(_)) && now.is_some_and(|now| now.status.stage == Stage::Cancelled);
         let why = match why {
             Failure::Refused(_) if filled => Failure::Refused(format!("nothing left to close: the {what} filled meanwhile")),
             Failure::Refused(said) => Failure::Refused(format!("the {what} could not be replaced: {said}")),
             unanswered => unanswered,
         };
         ran.placed = pair.iter().map(|order| (order.clone(), Err(why.clone()))).collect();
+        if gone {
+            let left = cancel.qty.saturating_sub(now.map_or(cancel.filled, |now| now.filled));
+            if left > 0 {
+                let back = OrderRequest { qty: left, ..pair[again].clone() };
+                put_back(session, &mut ran, back);
+            }
+        }
         return ran;
     }
-    // The one placed again, which is the one cancelled.
-    let again = usize::from(pair[1].kind == cancel.kind);
     let planned = pair[again].qty;
     let left = left_to_close(session, account, cancel, planned);
     if left == 0 {
@@ -410,16 +468,84 @@ fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderReq
         return ran;
     }
     let sized = pair.clone().map(|order| OrderRequest { qty: order.qty.min(left), ..order });
-    let restore = sized[again].clone();
-    ran = Ran { cancelled: ran.cancelled, ..pair_placed(session, account, sized) };
+    let restore = OrderRequest { qty: cancel.qty.saturating_sub(cancel.filled).min(left), ..sized[again].clone() };
+
+    // What it was paired with went with it, or is cancelled now: a target
+    // left working beside the new pair's would close the position twice.
+    for partner in partners {
+        if !session.book().order(&partner.basket_id).is_some_and(|order| order.status.working()) {
+            ran.went_with.push(partner.clone());
+            continue;
+        }
+        match session.cancel(account, &partner.basket_id) {
+            Ok(()) => ran.went_with.push(partner.clone()),
+            // Done meanwhile: not working, which is all that matters.
+            Err(Failure::Refused(_)) if !working(session, &partner.basket_id) => ran.went_with.push(partner.clone()),
+            Err(why) => {
+                let why = Failure::Refused(format!("the {what}'s pair could not be cancelled: {}", why.words()));
+                ran.placed = pair.iter().map(|order| (order.clone(), Err(why.clone()))).collect();
+                put_back(session, &mut ran, restore);
+                return ran;
+            }
+        }
+    }
+
+    ran = Ran { cancelled: ran.cancelled, went_with: ran.went_with, ..pair_placed(session, account, sized.clone()) };
     ran.resized = (left < planned).then_some((planned, left));
-    // Refused whole: the one cancelled back in alone, as it was, at once.
-    if ran.placed.iter().all(|(_, placed)| matches!(placed, Err(Failure::Refused(_)))) {
-        let again = OrderRequest { tag: new_tag(), ..restore };
-        let placed = session.place(&again);
-        ran.restored = Some((again, placed));
+    let had = cancel.qty.saturating_sub(session.book().order(&cancel.basket_id).map_or(cancel.filled, |order| order.filled));
+    if had != sized[again].qty && ran.placed.get(again).is_some_and(|(_, placed)| placed.is_ok()) {
+        ran.again = Some((cancel.kind, had, sized[again].qty));
+    }
+
+    let unanswered = ran.placed.iter().any(|(_, placed)| matches!(placed, Err(Failure::Unanswered(_))));
+    if unanswered {
+        // The pair may be on its way: whatever the book holds of it is
+        // cancelled first, so that the one put back is never a second.
+        let book = session.book();
+        let on_its_way: Vec<String> = sized
+            .iter()
+            .filter_map(|order| tagged(&book, &order.tag))
+            .filter(|order| order.status.working())
+            .map(|order| order.basket_id.clone())
+            .collect();
+        drop(book);
+        if on_its_way.iter().all(|basket| confirmed(&session.book(), basket)) && on_its_way.len() == 2 {
+            // Both taken after all: the pair is working and linked.
+            ran.placed = sized.iter().cloned().zip(on_its_way.iter().cloned().map(Ok)).collect();
+            ran.link = Some(Ok(Link { account: account.to_string(), baskets: on_its_way, holder: Holder::TradingService }));
+            return ran;
+        }
+        for basket in &on_its_way {
+            if let Err(Failure::Unanswered(_)) = session.cancel(account, basket) {
+                ran.unsure = Some(format!("no answer from the trading service: the {what} may not be working, check the account"));
+                return ran;
+            }
+        }
+        put_back(session, &mut ran, restore);
+        return ran;
+    }
+
+    // Confirmed working again as one of the pair: nothing more to do.
+    let back = ran.placed.get(again).and_then(|(_, placed)| placed.as_ref().ok()).is_some();
+    if back {
+        return ran;
+    }
+    // Refused, whole or but for the other of it: the one cancelled back in
+    // alone, as it was, at once; linked by the app with the other, if that
+    // was taken.
+    let other = ran.placed.get(1 - again).and_then(|(_, placed)| placed.as_ref().ok()).cloned();
+    put_back(session, &mut ran, restore);
+    if let (Some(other), Some((_, Ok(basket)))) = (other, ran.restored.as_ref()) {
+        ran.link = Some(Ok(Link { account: account.to_string(), baskets: vec![basket.clone(), other], holder: Holder::App }));
     }
     ran
+}
+
+/// `order`, the exit cancelled, placed back alone under a new tag.
+fn put_back(session: &dyn Session, ran: &mut Ran, order: OrderRequest) {
+    let again = OrderRequest { tag: new_tag(), ..order };
+    let placed = session.place(&again);
+    ran.restored = Some((again, placed));
 }
 
 /// What the app does about a link it holds, as the book now stands.
