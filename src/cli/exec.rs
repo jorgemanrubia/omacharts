@@ -3432,6 +3432,7 @@ struct Edits {
     profile_width: Option<f64>,
     profile_method: Option<omacharts_engine::indicators::profile::Method>,
     outline: Option<bool>,
+    poc: Option<bool>,
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
     poc_width: Option<f64>,
@@ -3527,6 +3528,12 @@ impl Edits {
                 Some("on") => Some(true),
                 Some("off") => Some(false),
                 Some(other) => return Err(Fault::usage(format!("--outline is on or off, not {other:?}"))),
+            },
+            poc: match arg(m, "poc").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--poc is on or off, not {other:?}"))),
             },
             outline_color: colour(m, "outline-color")?,
             outline_width: bounded(m, "outline-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
@@ -3656,6 +3663,7 @@ impl Edits {
             && self.outline_color.is_none()
             && self.outline_width.is_none()
             && self.poc_width.is_none()
+            && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
             && self.colouring.is_none()
@@ -3807,6 +3815,12 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["outline"] = json!(on),
                 false => return Err(refuse("outline")),
+            }
+        }
+        if let Some(on) = self.poc {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["poc"] = json!(on),
+                false => return Err(refuse("point of control")),
             }
         }
         if let Some(colour) = &self.outline_color {
@@ -7346,6 +7360,36 @@ mod tests {
         assert_eq!(method(&store).as_deref(), Some("delta"), "a refused method leaves the one there");
         let out = run("chart indicator set rsi --book Macro --profile-method delta", &store);
         assert_ne!(out.code, 0, "an RSI has no rows to measure");
+    }
+
+    /// A volume profile draws its point of control until a command turns it
+    /// off, on either method, and something else has none to turn off.
+    #[test]
+    fn a_volume_profile_s_point_of_control_can_be_turned_off_and_on() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let poc = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["poc"].as_bool()
+        };
+        assert_eq!(poc(&store), Some(true), "drawn to begin with");
+        for (word, method) in [("off", "total"), ("on", "delta"), ("off", "delta")] {
+            let out = run(&format!("chart indicator set volume_profile --book Macro --profile-method {method} --poc {word}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(poc(&store), Some(word == "on"), "{word} on {method}");
+        }
+        let out = run("chart indicator set volume_profile --book Macro --poc on", &store);
+        assert_eq!(out.code, 0, "alone, too: {}", out.err);
+        assert_eq!(poc(&store), Some(true));
+        run("chart indicator set volume_profile --book Macro --poc off", &store);
+        let out = run("chart indicator set volume_profile --book Macro --poc maybe", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(poc(&store), Some(false), "a refusal leaves it as it was");
+        let out = run("chart indicator set rsi --book Macro --poc off", &store);
+        assert_ne!(out.code, 0, "an RSI has no point of control");
     }
 
     /// A volume profile's delta follows the colouring chosen in Preferences

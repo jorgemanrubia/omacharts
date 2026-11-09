@@ -343,6 +343,7 @@ impl Kind {
                 outline_color: None,
                 outline_width: 1.0,
                 poc_width: 1.0,
+                poc: true,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
@@ -443,6 +444,10 @@ pub enum Params {
         /// The point of control's thickness, in pixels.
         #[serde(default = "profile::hairline")]
         poc_width: f64,
+        /// Whether the point of control is drawn. Missing, it is, as every
+        /// profile drew it before it could be turned off.
+        #[serde(default = "profile::shown")]
+        poc: bool,
         /// The edge of the period the rows grow from.
         #[serde(default)]
         align: profile::Align,
@@ -1735,6 +1740,24 @@ mod tests {
         let Params::VolumeProfile { method, .. } = indicator.params else { unreachable!() };
         assert_eq!(method, profile::Method::Total);
         assert_eq!(indicator.describe(None), "VP · Session");
+    }
+
+    /// A profile written before its point of control could be turned off
+    /// draws it, and one turned off stays off.
+    #[test]
+    fn a_profile_draws_its_point_of_control_until_it_is_turned_off() {
+        let json = r#"{"id": 1, "kind": "volume_profile", "visible": true,
+            "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7}}"#;
+        let older: Indicator = serde_json::from_str(json).expect("an older profile");
+        assert!(matches!(older.params, Params::VolumeProfile { poc: true, .. }));
+        assert!(matches!(Indicator::new(1, Kind::VolumeProfile).params, Params::VolumeProfile { poc: true, .. }));
+
+        let mut off = older.clone();
+        if let Params::VolumeProfile { poc, .. } = &mut off.params {
+            *poc = false;
+        }
+        let back: Indicator = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert_eq!(back, off);
     }
 
     /// A delta's colouring is written down only once one is picked, by the

@@ -9049,11 +9049,11 @@ fn draw_profiles(
     to_y: &impl Fn(f64) -> f64,
 ) {
     use omacharts_engine::indicators::profile::Method;
-    let (chosen, edged, outline, outline_width, poc_width, method) = match &drawn.indicator.params {
+    let (chosen, edged, outline, outline_width, poc_width, method, poc_shown) = match &drawn.indicator.params {
         omacharts_engine::Params::VolumeProfile {
-            poc_color, outline: edged, outline_color, outline_width, poc_width, method, ..
-        } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method),
-        _ => (None, false, None, 1.0, 1.0, Method::Total),
+            poc_color, outline: edged, outline_color, outline_width, poc_width, method, poc, ..
+        } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
+        _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
@@ -9112,13 +9112,16 @@ fn draw_profiles(
         // The point of control, across the period it belongs to, in a colour
         // set against the profile rather than the same one brighter — it is a
         // different fact about the period, drawn on top of it.
-        let y = to_y(profile.poc_price()).round() + 0.5;
-        let (from, to) = area.row(1.0);
-        colors::set_source_alpha(cr, &poc, 0.9);
-        cr.set_line_width(poc_width.max(0.5));
-        cr.move_to(from, y);
-        cr.line_to(to, y);
-        let _ = cr.stroke();
+        // Unless it is turned off, which leaves the rows to say it.
+        if poc_shown {
+            let y = to_y(profile.poc_price()).round() + 0.5;
+            let (from, to) = area.row(1.0);
+            colors::set_source_alpha(cr, &poc, 0.9);
+            cr.set_line_width(poc_width.max(0.5));
+            cr.move_to(from, y);
+            cr.line_to(to, y);
+            let _ = cr.stroke();
+        }
 
         if state.picked == Some(drawn.indicator.id) {
             for ink in &inks {

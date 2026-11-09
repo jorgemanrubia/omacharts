@@ -51,6 +51,12 @@ pub fn hairline() -> f64 {
     1.0
 }
 
+/// A point of control is drawn unless somebody turns it off, as it was
+/// before it could be.
+pub fn shown() -> bool {
+    true
+}
+
 /// How much of the room a profile has its longest row may reach: of its
 /// period's width, or of the empty space past the last bar when it is drawn
 /// there. What every profile was drawn at before it could be chosen, so one

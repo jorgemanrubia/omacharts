@@ -69,6 +69,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline thickness** | 1 px | 0.5 to 6 px |
 | **Background** colour | The next free colour | A palette name, or a custom colour |
+| **Show point of control** | On | Off leaves the profile without its point of control line. Off, its colour and thickness are greyed |
 | **Point of control** colour | A contrasting colour from the theme | A palette name, or a custom colour |
 | **Point of control thickness** | 1 px | 0.5 to 6 px |
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |

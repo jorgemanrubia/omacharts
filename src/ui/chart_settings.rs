@@ -1998,6 +1998,10 @@ fn has_value_area(method: Method) -> bool {
     method == Method::Total
 }
 
+/// The volume profile switch that draws its point of control or leaves it
+/// out.
+pub const PROFILE_POC_LABEL: &str = "Show point of control";
+
 /// The volume profile row that says how a delta's two sides are painted.
 const PROFILE_COLOURING_LABEL: &str = "Colouring";
 
@@ -2023,7 +2027,7 @@ fn profile_style(
     let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Style");
-    let Params::VolumeProfile { style, align, width, poc_color, outline, outline_color, outline_width, poc_width, .. } =
+    let Params::VolumeProfile { style, align, width, poc_color, outline, outline_color, outline_width, poc_width, poc, .. } =
         &indicator.params
     else {
         return group;
@@ -2096,10 +2100,16 @@ fn profile_style(
         id,
     ));
 
+    // Drawn unless turned off, on either method; its colour and thickness
+    // are greyed while it is, as the outline's are.
+    let poc_switch = adw::SwitchRow::new();
+    poc_switch.set_title(PROFILE_POC_LABEL);
+    poc_switch.set_active(*poc);
+    group.add(&poc_switch);
     // Unset is not "the same as the profile": it is the next colour along the
     // theme's sequence, which is the pair that sequence keeps far apart in hue.
     let shown = owner.theme().companion_or(poc_color.as_ref(), colour);
-    group.add(&colour_row(
+    let poc_colour_row = colour_row(
         owner,
         refresh,
         &unused,
@@ -2112,12 +2122,31 @@ fn profile_style(
             }
         },
         id,
-    ));
-    group.add(&thickness_row(owner, refresh, id, "Point of control thickness", *poc_width, |indicator, width| {
+    );
+    poc_colour_row.set_sensitive(*poc);
+    group.add(&poc_colour_row);
+    let poc_width_row = thickness_row(owner, refresh, id, "Point of control thickness", *poc_width, |indicator, width| {
         if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
             *poc_width = width;
         }
-    }));
+    });
+    poc_width_row.set_sensitive(*poc);
+    group.add(&poc_width_row);
+    {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        poc_switch.connect_active_notify(move |row| {
+            let on = row.is_active();
+            poc_colour_row.set_sensitive(on);
+            poc_width_row.set_sensitive(on);
+            update(&owner, id, |indicator| {
+                if let Params::VolumeProfile { poc, .. } = &mut indicator.params {
+                    *poc = on;
+                }
+            });
+            refresh.run();
+        });
+    }
 
     group.add(&choice_row(owner, refresh, id, "Style", &Style::ALL.map(Style::label), Style::ALL.iter().position(|s| s == style), |indicator, at| {
         if let Params::VolumeProfile { style, .. } = &mut indicator.params {

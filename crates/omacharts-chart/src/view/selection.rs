@@ -123,13 +123,19 @@ fn on_overlay_line(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl 
                         || near_series(&band.lower, columns, Indexing::Series, to_y, x, y)
                 })
         }
-        Output::Profiles(profiles) => profiles.iter().any(|profile| {
+        // The point of control is its line, while it is drawn.
+        Output::Profiles(profiles) => poc_shown(drawn) && profiles.iter().any(|profile| {
             let area = profile_box(profile, columns, &placed_look(state, drawn));
             let poc = to_y(profile.poc_price());
             area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
         }),
         Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => false,
     }
+}
+
+/// Whether a volume profile draws its point of control.
+fn poc_shown(drawn: &Drawn) -> bool {
+    !matches!(drawn.indicator.params, omacharts_engine::Params::VolumeProfile { poc: false, .. })
 }
 
 /// Inside one of the shapes an indicator draws over the price: a volume
@@ -1137,6 +1143,27 @@ mod tests {
         assert_eq!([Side::Up.length(3.0), Side::Up.length(-3.0)], [3.0, 0.0]);
         assert_eq!([Side::Down.length(3.0), Side::Down.length(-3.0)], [0.0, 3.0]);
         assert_eq!([Side::All.length(3.0), Side::All.length(0.0)], [3.0, 0.0]);
+    }
+
+    /// A point of control turned off is not a line to pick the profile by;
+    /// turned back on, it is again.
+    #[test]
+    fn a_hidden_point_of_control_is_no_line_to_pick() {
+        let mut state = profiled(profile::Align::Left, 0.6);
+        let on_its_line = |state: &State| {
+            let frame = frame(state, W, H).expect("a frame");
+            let to_y = |price: f64| frame.scale.to_y(price, frame.plan.price_y, frame.plan.price_h);
+            let (profile, area, _, _) = boxes(state).pop().expect("a period");
+            let (from, to) = area.row(1.0);
+            super::on_overlay_line(state, &state.indicators[0], &frame.columns, &to_y, (from + to) / 2.0, to_y(profile.poc_price()))
+        };
+        assert!(on_its_line(&state), "drawn, it is a line");
+        for shown in [false, true] {
+            if let omacharts_engine::Params::VolumeProfile { poc, .. } = &mut state.indicators[0].indicator.params {
+                *poc = shown;
+            }
+            assert_eq!(on_its_line(&state), shown, "shown {shown}");
+        }
     }
 
     /// What is drawn in the margin is what a click there picks.

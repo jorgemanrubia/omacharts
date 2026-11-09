@@ -2064,6 +2064,47 @@ mod outside_change_tests {
         });
     }
 
+    /// A volume profile's settings draw its point of control behind a switch
+    /// that is on to begin with; off greys its colour and thickness and
+    /// stops it being drawn, whatever the method.
+    #[test]
+    fn a_profile_s_point_of_control_is_switched_from_its_settings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            let label = crate::ui::chart_settings::PROFILE_POC_LABEL;
+            let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
+            let colour = || titled::<adw::ActionRow>(&window, "Point of control").pop().expect("its colour");
+            let width = || titled::<adw::SpinRow>(&window, "Point of control thickness").pop().expect("its thickness");
+            let drawn = || {
+                let stored = window.indicators();
+                let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { poc: true, .. })
+            };
+            assert!(switch().is_active() && drawn(), "on to begin with");
+            assert!(colour().is_sensitive() && width().is_sensitive());
+            assert_eq!(switch().next_sibling().as_ref(), Some(colour().upcast_ref()), "above its colour");
+
+            for method in ["total", "delta"] {
+                command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
+                switch().set_active(false);
+                assert!(!drawn(), "off on {method}");
+                assert!(!colour().is_sensitive() && !width().is_sensitive(), "greyed on {method}");
+                switch().set_active(true);
+                assert!(drawn(), "on again on {method}");
+                assert!(colour().is_sensitive() && width().is_sensitive());
+            }
+        });
+    }
+
     /// A chart's settings, open while a command changes its colouring, its
     /// switches and its volume pane's palette, show what the command did —
     /// and showing it changes nothing more.
