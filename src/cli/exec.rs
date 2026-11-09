@@ -3433,6 +3433,7 @@ struct Edits {
     profile_method: Option<omacharts_engine::indicators::profile::Method>,
     outline: Option<bool>,
     poc: Option<bool>,
+    last_only: Option<bool>,
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
     poc_width: Option<f64>,
@@ -3534,6 +3535,12 @@ impl Edits {
                 Some("on") => Some(true),
                 Some("off") => Some(false),
                 Some(other) => return Err(Fault::usage(format!("--poc is on or off, not {other:?}"))),
+            },
+            last_only: match arg(m, "last-only").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--last-only is on or off, not {other:?}"))),
             },
             outline_color: colour(m, "outline-color")?,
             outline_width: bounded(m, "outline-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
@@ -3660,6 +3667,7 @@ impl Edits {
             && self.profile_width.is_none()
             && self.profile_method.is_none()
             && self.outline.is_none()
+            && self.last_only.is_none()
             && self.outline_color.is_none()
             && self.outline_width.is_none()
             && self.poc_width.is_none()
@@ -3787,6 +3795,12 @@ impl Edits {
                 false => return Err(refuse("point of control")),
             }
         }
+        if let Some(on) = self.last_only {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["last_only"] = json!(on),
+                false => return Err(refuse("last period")),
+            }
+        }
         if let Some(style) = self.profile_style {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["style"] = json!(style.key()),
@@ -3821,6 +3835,12 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["poc"] = json!(on),
                 false => return Err(refuse("point of control")),
+            }
+        }
+        if let Some(on) = self.last_only {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["last_only"] = json!(on),
+                false => return Err(refuse("last period")),
             }
         }
         if let Some(colour) = &self.outline_color {
@@ -7390,6 +7410,32 @@ mod tests {
         assert_eq!(poc(&store), Some(false), "a refusal leaves it as it was");
         let out = run("chart indicator set rsi --book Macro --poc off", &store);
         assert_ne!(out.code, 0, "an RSI has no point of control");
+    }
+
+    /// A volume profile draws every period until a command shows it in the
+    /// last only, and something else has no periods to leave out.
+    #[test]
+    fn a_volume_profile_can_be_shown_in_its_last_period_only() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let last_only = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["last_only"].as_bool()
+        };
+        assert_eq!(last_only(&store), Some(false), "every period to begin with");
+        for word in ["on", "off", "on"] {
+            let out = run(&format!("chart indicator set volume_profile --book Macro --last-only {word}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(last_only(&store), Some(word == "on"), "{word}");
+        }
+        let out = run("chart indicator set volume_profile --book Macro --last-only maybe", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(last_only(&store), Some(true), "a refusal leaves it as it was");
+        let out = run("chart indicator set rsi --book Macro --last-only on", &store);
+        assert_ne!(out.code, 0, "an RSI has no periods");
     }
 
     /// A volume profile's delta follows the colouring chosen in Preferences

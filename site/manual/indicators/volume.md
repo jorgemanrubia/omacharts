@@ -61,6 +61,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | Setting | Default | Allowed |
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
+| **Only show in last period** | Off | On draws the newest period's profile alone: the same profile, with the same rows, as among the others, and past the last bar when aligned right |
 | **Calculation method** | Total volume | Total volume, or Ask volume - bid volume |
 | **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**. Only for Ask volume - bid volume |
 | **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 800 |
@@ -82,7 +83,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 
 ### Composite profiles
 
-Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. **Split composite profile**, on a composite, puts its periods back as they were.
+Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. With **Only show in last period** on there is no profile before it drawn to merge into, so it is not offered. **Split composite profile**, on a composite, puts its periods back as they were.
 
 A composite belongs to the chart it was made on, to the symbol it is showing and to the period it was made under, even when the profile is a template's, and it is kept with the chart. Changing **Reset every**, or a resolution that changes the period in use, draws the new periods without it; going back brings it back. For a profile over any span you choose, use the [volume profile drawing](/manual/drawings/#volume-profiles).
 

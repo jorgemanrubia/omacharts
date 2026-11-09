@@ -389,6 +389,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("profile-method", "WHAT", "what a volume profile's rows measure: all the volume at each price, or the ask volume less the bid volume, which needs a feed with volume at price").of(PROFILE_METHODS),
     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),
     Flag::valued("poc", "BOOL", "whether a volume profile draws its point of control").of(SWITCHES),
+    Flag::valued("last-only", "BOOL", "whether a volume profile draws only its newest period").of(SWITCHES),
     Flag::valued("outline-color", "COLOUR", "a volume profile's outline"),
     Flag::valued("outline-width", "F", "a volume profile's outline thickness in pixels"),
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),

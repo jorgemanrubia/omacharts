@@ -344,6 +344,7 @@ impl Kind {
                 outline_width: 1.0,
                 poc_width: 1.0,
                 poc: true,
+                last_only: false,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
@@ -448,6 +449,11 @@ pub enum Params {
         /// profile drew it before it could be turned off.
         #[serde(default = "profile::shown")]
         poc: bool,
+        /// Whether only the newest period's profile is drawn, the ones
+        /// before it left out. Missing, every period is, as before it could
+        /// be chosen.
+        #[serde(default)]
+        last_only: bool,
         /// The edge of the period the rows grow from.
         #[serde(default)]
         align: profile::Align,
@@ -1148,7 +1154,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
-        (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, method, .. }) => {
+        (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, method, last_only, .. }) => {
             // Which side each trade took is in no bar: a delta is drawn from
             // volume at price or not at all.
             if let Some(unmet) = unmet(Needs::VolumeAtPrice, context).filter(|_| *method == profile::Method::Delta) {
@@ -1175,6 +1181,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 merged,
                 at_price.as_ref(),
                 *method,
+                *last_only,
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
@@ -1758,6 +1765,24 @@ mod tests {
         }
         let back: Indicator = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
         assert_eq!(back, off);
+    }
+
+    /// A profile written before it could be shown in its last period only
+    /// draws every period, and one shown in the last only stays so.
+    #[test]
+    fn a_profile_draws_every_period_until_it_is_shown_in_the_last_only() {
+        let json = r#"{"id": 1, "kind": "volume_profile", "visible": true,
+            "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7}}"#;
+        let older: Indicator = serde_json::from_str(json).expect("an older profile");
+        assert!(matches!(older.params, Params::VolumeProfile { last_only: false, .. }));
+        assert!(matches!(Indicator::new(1, Kind::VolumeProfile).params, Params::VolumeProfile { last_only: false, .. }));
+
+        let mut last = older.clone();
+        if let Params::VolumeProfile { last_only, .. } = &mut last.params {
+            *last_only = true;
+        }
+        let back: Indicator = serde_json::from_str(&serde_json::to_string(&last).unwrap()).unwrap();
+        assert_eq!(back, last);
     }
 
     /// A delta's colouring is written down only once one is picked, by the

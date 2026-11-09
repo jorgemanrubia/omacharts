@@ -2064,6 +2064,42 @@ mod outside_change_tests {
         });
     }
 
+    /// A volume profile's settings show it in its last period only behind a
+    /// switch under its reset period, off to begin with, on either method.
+    #[test]
+    fn a_profile_is_shown_in_its_last_period_only_from_its_settings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            let label = crate::ui::chart_settings::PROFILE_LAST_ONLY_LABEL;
+            let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
+            let reset = || titled::<adw::ComboRow>(&window, "Reset every").pop().expect("the reset");
+            let last_only = || {
+                let stored = window.indicators();
+                let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { last_only: true, .. })
+            };
+            assert!(!switch().is_active() && !last_only(), "off to begin with");
+            assert_eq!(reset().next_sibling().as_ref(), Some(switch().upcast_ref()), "under the reset");
+
+            for method in ["total", "delta"] {
+                command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
+                switch().set_active(true);
+                assert!(last_only(), "on on {method}");
+                switch().set_active(false);
+                assert!(!last_only(), "off again on {method}");
+            }
+        });
+    }
+
     /// A volume profile's settings draw its point of control behind a switch
     /// that is on to begin with; off greys its colour and thickness and
     /// stops it being drawn, whatever the method.

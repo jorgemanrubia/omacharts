@@ -1783,8 +1783,26 @@ fn parameters_group(
             ));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::VolumeProfile { reset, rows, value_area, method, colouring, .. } => {
+        Params::VolumeProfile { reset, rows, value_area, method, colouring, last_only, .. } => {
             group.add(&reset_row(owner, refresh, id, *reset));
+            // The newest period alone, on either method and either edge.
+            let last_row = adw::SwitchRow::new();
+            last_row.set_title(PROFILE_LAST_ONLY_LABEL);
+            last_row.set_active(*last_only);
+            {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                last_row.connect_active_notify(move |row| {
+                    let on = row.is_active();
+                    update(&owner, id, |indicator| {
+                        if let Params::VolumeProfile { last_only, .. } = &mut indicator.params {
+                            *last_only = on;
+                        }
+                    });
+                    refresh.run();
+                });
+            }
+            group.add(&last_row);
             let method_row = choice_row(
                 owner,
                 refresh,
@@ -1997,6 +2015,9 @@ const PROFILE_METHOD_LABEL: &str = "Calculation method";
 fn has_value_area(method: Method) -> bool {
     method == Method::Total
 }
+
+/// The volume profile switch that draws the newest period's profile alone.
+pub const PROFILE_LAST_ONLY_LABEL: &str = "Only show in last period";
 
 /// The volume profile switch that draws its point of control or leaves it
 /// out.

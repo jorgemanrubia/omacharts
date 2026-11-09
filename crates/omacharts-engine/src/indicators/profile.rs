@@ -297,7 +297,7 @@ pub fn compute(
     kind: Option<InstrumentKind>,
     merged: &[i64],
 ) -> Vec<Profile> {
-    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None, Method::Total)
+    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None, Method::Total, false)
 }
 
 /// What traded at each price, for a chart whose source says: the ladder of
@@ -316,6 +316,10 @@ pub struct AtPrice<'a> {
 ///
 /// A [`Method::Delta`] profile has nothing to spread: which side a trade took
 /// is not in a bar. A period `at_price` does not know has no profile.
+///
+/// `last_only` profiles the newest period alone, exactly as it is profiled
+/// beside the others: its rows are still of the height every period's
+/// would be, and the periods before it are not read at all.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_with(
     bars: &[Bar],
@@ -327,6 +331,7 @@ pub fn compute_with(
     merged: &[i64],
     at_price: Option<&AtPrice>,
     method: Method,
+    last_only: bool,
 ) -> Vec<Profile> {
     let mut out = Vec::new();
     if bars.is_empty() {
@@ -351,7 +356,8 @@ pub fn compute_with(
         None => Grid::Rows(rows.unwrap_or(MIN_ROWS).clamp(MIN_ROWS, MAX_ROWS)),
     };
 
-    for (start, end) in periods {
+    let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
+    for (start, end) in periods.into_iter().skip(skipped) {
         let slice = &bars[start..end];
         let bucket = reset.bucket(bars[start].ts, session_origin);
         let exact = at_price.and_then(|at| {
@@ -916,6 +922,36 @@ mod tests {
         let profiles = compute(&bars, Reset::Session, 0, Some(10), 0.7, None, &[DAY]);
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0].parts, vec![DAY]);
+    }
+
+    /// The newest period alone is the newest period as it is profiled beside
+    /// the others, row height, composite and all, and the periods before it
+    /// are not asked for their volume at price.
+    #[test]
+    fn the_last_period_alone_is_profiled_as_it_is_among_the_others() {
+        let mut bars = session(0, 100.0, 4.0);
+        bars.extend(session(1, 120.0, 12.0));
+        bars.extend(session(2, 110.0, 1.0));
+        bars.extend(session(3, 112.0, 2.0));
+        for merged in [&[][..], &[3 * DAY][..]] {
+            for rows in [None, Some(60)] {
+                let asked = std::cell::RefCell::new(Vec::new());
+                let of = |run: &[Bar]| {
+                    asked.borrow_mut().push(run[0].ts / DAY);
+                    None
+                };
+                let at = AtPrice { tick_size: 0.01, of: &of };
+                let kind = Some(InstrumentKind::Equity);
+                let all = compute_with(&bars, Reset::Session, 0, rows, 0.7, kind, merged, Some(&at), Method::Total, false);
+                asked.borrow_mut().clear();
+                let last = compute_with(&bars, Reset::Session, 0, rows, 0.7, kind, merged, Some(&at), Method::Total, true);
+                assert_eq!(last.len(), 1, "{merged:?} {rows:?}");
+                assert_eq!(last.last(), all.last(), "{merged:?} {rows:?}");
+                let newest = if merged.is_empty() { 3 } else { 2 };
+                assert_eq!(*asked.borrow(), vec![newest], "only the newest is read: {merged:?} {rows:?}");
+            }
+        }
+        assert!(compute_with(&[], Reset::Session, 0, None, 0.7, None, &[], None, Method::Total, true).is_empty());
     }
 
     /// A session of one-minute bars wandering over `span` around `price`.

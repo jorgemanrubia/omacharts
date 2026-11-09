@@ -827,6 +827,29 @@ mod tests {
         assert!(to <= frame.columns.end + 1e-9);
     }
 
+    /// Shown in the last period only, a profile is the newest period alone,
+    /// drawn where it is drawn beside the others: past the last bar aligned
+    /// right, with the margin sized for it as it was, and at its own start
+    /// aligned left.
+    #[test]
+    fn a_profile_in_the_last_period_only_is_drawn_where_the_newest_is() {
+        for align in [profile::Align::Left, profile::Align::Right] {
+            let mut state = profiled(align, 0.5);
+            let every = boxes(&state);
+            let margin = super::margin_share(&state);
+            assert!(every.len() > 1, "{align:?}");
+            let drawn = &mut state.indicators[0];
+            if let omacharts_engine::Params::VolumeProfile { last_only, .. } = &mut drawn.indicator.params {
+                *last_only = true;
+            }
+            drawn.output = omacharts_engine::indicators::compute(&drawn.indicator, &state.bars, 0, state.timeframe, None);
+            let only = boxes(&state);
+            assert_eq!(only.len(), 1, "{align:?}");
+            assert_eq!(only.last(), every.last(), "{align:?}");
+            assert_eq!(super::margin_share(&state), margin, "{align:?}");
+        }
+    }
+
     #[test]
     fn a_right_aligned_session_that_is_over_ends_where_it_does() {
         let state = profiled(profile::Align::Right, 0.4);

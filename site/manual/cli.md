@@ -552,6 +552,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
 | `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control |
+| `--last-only B` | `on`, `off` | Volume profile: whether it draws only its newest period |
 | `--poc-color C` | A colour | Volume profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
 | `--align A` | `left`, `right` | Volume profile |
