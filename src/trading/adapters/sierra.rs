@@ -397,6 +397,20 @@ mod tests {
         session.sign_out();
     }
 
+    /// A dated contract's chart trades that contract, as itself; what is
+    /// not a future does not trade at all.
+    #[test]
+    fn a_dated_contract_trades_as_itself() {
+        use crate::trading::fake::tests::instrument;
+        use omacharts_engine::InstrumentKind;
+        let fake = dtc::fake::Fake::builder().account("Sim1").start();
+        let session = Sierra.sign_in(&login(fake.port()), Box::new(|_| {})).expect("signed in");
+        let contract = session.contract_for(&instrument("MESZ6", InstrumentKind::FutureRoot)).expect("MESZ6 trades");
+        assert_eq!((contract.symbol.as_str(), contract.exchange.as_str(), contract.tick), ("MESZ6", "CME", Some(0.25)));
+        assert_eq!(session.contract_for(&instrument("AAPL", InstrumentKind::Equity)).err(), Some(Refusal::NotTradable));
+        session.sign_out();
+    }
+
     /// An order goes to the server as Sierra Chart names the contract, and
     /// a refusal comes back in its words.
     #[test]

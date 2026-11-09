@@ -412,6 +412,10 @@ fn real(price: f64, multiplier: f64) -> f64 {
     ((price * multiplier) * 1e10).round() / 1e10
 }
 
+/// An order's multiplier, `None` for one with no price, and its Price1 and
+/// Price2 on the wire.
+type Priced = (Option<f64>, Option<f64>, Option<f64>);
+
 fn wire_price(price: f64, multiplier: f64) -> f64 {
     ((price / multiplier) * 1e8).round() / 1e8
 }
@@ -1186,8 +1190,10 @@ impl Trading {
     }
 
     /// `order`'s prices checked against its kind and put in the server's
-    /// units: the contract's multiplier, Price1 and Price2 on the wire.
-    fn priced(&self, order: &NewOrder) -> Result<(f64, Option<f64>, Option<f64>), Error> {
+    /// units: the contract's multiplier, Price1 and Price2 on the wire. An
+    /// order with no price, a market order, has no multiplier, rather than
+    /// a made-up one the book would keep and so never ask the definition for.
+    fn priced(&self, order: &NewOrder) -> Result<Priced, Error> {
         if order.qty == 0 {
             return Err(Error::Rejected("an order needs a quantity".into()));
         }
@@ -1201,22 +1207,22 @@ impl Trading {
                 Some(order.price2.ok_or_else(|| Error::Rejected("a stop-limit needs its limit price".into()))?),
             ),
         };
-        let multiplier = match price1 {
-            None => 1.0,
-            Some(_) => self.shared.multiplier(&order.symbol).ok_or_else(|| {
-                Error::Rejected(format!("Sierra Chart did not say how {} is priced, so the order was not sent", order.symbol))
-            })?,
-        };
-        Ok((multiplier, price1.map(|price| wire_price(price, multiplier)), price2.map(|price| wire_price(price, multiplier))))
+        let Some(price1) = price1 else { return Ok((None, None, None)) };
+        let multiplier = self.shared.multiplier(&order.symbol).ok_or_else(|| {
+            Error::Rejected(format!("Sierra Chart did not say how {} is priced, so the order was not sent", order.symbol))
+        })?;
+        Ok((Some(multiplier), Some(wire_price(price1, multiplier)), price2.map(|price| wire_price(price, multiplier))))
     }
 
     /// Put each order about to be sent in the book as pending, under its
     /// ClientOrderID, so that what the server says of it lands on it.
     #[allow(clippy::type_complexity)]
-    fn expect(&self, orders: &[(&NewOrder, &String, (f64, Option<f64>, Option<f64>), Option<String>)]) {
+    fn expect(&self, orders: &[(&NewOrder, &String, Priced, Option<String>)]) {
         let mut state = lock(&self.shared.state);
         for (order, id, (multiplier, wire1, wire2), tag) in orders {
-            state.multipliers.entry(order.symbol.clone()).or_insert(*multiplier);
+            if let Some(multiplier) = multiplier {
+                state.multipliers.entry(order.symbol.clone()).or_insert(*multiplier);
+            }
             state.orders.push(Order {
                 account: order.account.clone(),
                 server_id: None,

@@ -203,7 +203,12 @@ fn an_order_placed_is_acknowledged_then_filled_in_parts_and_the_book_follows() {
     assert_eq!((sent.int("OrderType"), sent.int("BuySell"), sent.int("Quantity"), sent.int("TimeInForce")), (Some(1), Some(1), Some(3), Some(1)));
     assert_eq!(sent.text("FreeFormText").as_deref(), Some("from the chart"));
     assert!(id.len() < 32);
-    eventually(Duration::from_secs(2), "it fills", || trading.book().orders.iter().any(|order| order.is(&id) && order.status == Status::Filled));
+    // The position update comes after the fill's order update.
+    eventually(Duration::from_secs(2), "it fills", || {
+        let book = trading.book();
+        book.orders.iter().any(|order| order.is(&id) && order.status == Status::Filled)
+            && book.positions.first().is_some_and(|position| position.qty == 3)
+    });
     let book = trading.book();
     let placed = book.orders.iter().find(|order| order.is(&id)).unwrap();
     assert_eq!((placed.filled, placed.avg_fill_price, placed.tag.as_deref()), (3, Some(7651.0), Some("from the chart")));
@@ -525,6 +530,43 @@ fn prices_travel_in_the_contract_s_units_and_are_real_in_the_book() {
     assert_eq!(trading.book().orders.iter().find(|order| order.is(&id)).unwrap().price1, Some(7651.25));
     trading.modify(&id, Some(7652.0), None).unwrap();
     assert_eq!(fake.received_of(wire::CANCEL_REPLACE_ORDER)[0].number("Price1"), Some(765200.0));
+    trading.sign_out();
+}
+
+#[test]
+fn a_market_order_placed_before_the_definition_is_known_leaves_the_position_real() {
+    // Nothing on ES is held or working at sign-in, so its definition is not
+    // known when the market order goes out.
+    let fake = Fake::builder()
+        .account("Sim1")
+        .definition(ES, "ES", 0.25, 12.5, 1797206400, 0.009999999776482582)
+        .fills(Fills::Immediately)
+        .market_price(765025.0)
+        .start();
+    let (trading, _) = sign_in(&fake);
+    let id = trading.place(&order("Sim1", ES, Side::Buy, 1, OrderKind::Market, None)).unwrap();
+    eventually(Duration::from_secs(2), "the position is held at its real price", || {
+        trading.book().positions.first().is_some_and(|position| position.avg_price == Some(7650.25))
+    });
+    let book = trading.book();
+    assert_eq!(book.orders.iter().find(|order| order.is(&id)).unwrap().avg_fill_price, Some(7650.25));
+    assert!(book.fills.iter().all(|fill| fill.price == 7650.25));
+    trading.sign_out();
+}
+
+#[test]
+fn an_order_update_that_comes_before_the_definition_is_made_real_once_it_lands() {
+    let fake = Fake::builder().account("Sim1").definition(ES, "ES", 0.25, 12.5, 1797206400, 0.009999999776482582).start();
+    let (trading, heard) = sign_in(&fake);
+    let id = trading.place(&order("Sim1", ES, Side::Buy, 2, OrderKind::Market, None)).unwrap();
+    heard.lock().unwrap().clear();
+    fake.fill(&id, 2, 765025.0);
+    eventually(Duration::from_secs(2), "the fill price is real", || {
+        trading.book().orders.iter().any(|order| order.is(&id) && order.avg_fill_price == Some(7650.25))
+    });
+    assert_eq!(trading.book().positions[0].avg_price, Some(7650.25));
+    assert!(fake.received_of(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).iter().any(|asked| asked.text("Symbol").as_deref() == Some(ES)));
+    assert!(heard.lock().unwrap().contains(&Pulse::Moved));
     trading.sign_out();
 }
 
