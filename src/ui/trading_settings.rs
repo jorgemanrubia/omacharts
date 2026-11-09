@@ -60,9 +60,10 @@ pub(crate) fn keyring(service: &str) -> impl Secrets {
 
 /// Ask for a login of the trading service `service` over `anchor` — a new one, or
 /// `known` again — in the trading service's own dialog.
-fn ask(anchor: &gtk::Widget, service: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
+fn ask(anchor: &gtk::Widget, panel: &Panel, service: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
     if let Some(dialog) = sign_in_dialogs::login_dialog(service) {
-        dialog(anchor, known, Box::new(signed));
+        let taken = trading::names_taken(&panel.store, known.map(|login| login.id.as_str()));
+        dialog(anchor, known, &taken, Box::new(signed));
     }
 }
 
@@ -183,8 +184,9 @@ impl Panel {
 /// the Data page's "Add a data feed…" does for a trading service connection's feed
 /// too.
 pub fn add_service(panel: &Rc<Panel>, service: &str, anchor: &gtk::Widget) {
+    let asked = panel;
     let panel = panel.clone();
-    ask(anchor, service, None, move |typed| {
+    ask(anchor, asked, service, None, move |typed| {
         match trading::add_login(&panel.store, panel.secrets(&typed.service).as_ref(), &typed) {
             Ok(id) => {
                 panel.changed();
@@ -424,10 +426,11 @@ fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
 /// with or one the trading service refused.
 fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    let asked = panel;
     let panel = panel.clone();
     let id = id.to_string();
     let secrets = panel.secrets(&login.service);
-    ask(anchor, &login.service, Some(&login), move |typed| {
+    ask(anchor, asked, &login.service, Some(&login), move |typed| {
         if let Err(error) = trading::retype_login(&panel.store, secrets.as_ref(), &id, &typed) {
             panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
         }

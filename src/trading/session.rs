@@ -22,6 +22,11 @@ pub trait TradingService: Send + Sync {
     fn has_feed(&self) -> bool {
         false
     }
+    /// What a login of it is called when nobody named it, before a number
+    /// sets it apart from another of the same name: the service's own name.
+    fn named_after(&self, _login: &Login) -> String {
+        self.label().to_string()
+    }
     /// Where `login` signs in to, in a few words for its row, when there is
     /// more than one place it could.
     fn signs_in_to(&self, _login: &Login) -> Option<String> {

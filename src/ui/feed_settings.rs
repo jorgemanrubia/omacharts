@@ -474,6 +474,7 @@ fn ask_login(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Wi
     dialog(
         anchor.upcast_ref(),
         known.as_ref(),
+        &crate::trading::names_taken(&panel.store, id.as_deref()),
         Box::new(move |typed| {
             let secrets = crate::ui::trading_settings::keyring(&typed.service);
             let kept = match &id {

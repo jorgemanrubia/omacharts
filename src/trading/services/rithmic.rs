@@ -49,6 +49,11 @@ impl TradingService for Rithmic {
         true
     }
 
+    /// Its system, as the dialog names it: "Rithmic Test".
+    fn named_after(&self, login: &Login) -> String {
+        system_of(login).to_string()
+    }
+
     /// Its system: "Rithmic Test", "LucidTrading".
     fn signs_in_to(&self, login: &Login) -> Option<String> {
         Some(system_of(login).to_string())

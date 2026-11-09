@@ -6,11 +6,12 @@
 //! which is never read back out of the keyring to be shown. Left empty, the
 //! password already kept is the one used.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::trading::{Login, Typed};
+use crate::trading::{self, Login, Typed};
 use omacharts_engine::providers::rithmic::session::{self, GATEWAY, SYSTEM};
 use omacharts_engine::providers::rithmic;
 
@@ -25,7 +26,7 @@ const CANCEL: &str = "cancel";
 /// Ask for a login over `parent` — a new one, or `known` again — and hand
 /// what was typed to `signed` when somebody presses Sign in. Cancelling
 /// hands over nothing.
-pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl Fn(Typed) + 'static) {
+pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, taken: &[String], signed: impl Fn(Typed) + 'static) {
     let dialog = adw::AlertDialog::new(Some("Sign in to Rithmic"), None);
     dialog.set_body(match session::development() {
         true => "A development login is in use, so its file signs in and nothing typed here goes \
@@ -38,10 +39,17 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl F
     list.set_selection_mode(gtk::SelectionMode::None);
 
     // What the trader calls it, since there can be several: "Lucid",
-    // "Tradeify". Left empty, it is named after its system.
+    // "Tradeify". A new one starts named after its system, numbered apart
+    // from the names taken, and left empty it is named so again.
+    let taken: Rc<[String]> = taken.into();
+    let named_after = {
+        let taken = taken.clone();
+        move |system: &str| trading::numbered(system, &taken)
+    };
     let name = adw::EntryRow::new();
     name.set_title("Name");
-    name.set_text(known.map_or("", |login| login.name.as_str()));
+    let saved_system = known.and_then(|login| login.value(SYSTEM)).unwrap_or(TEST_SYSTEM);
+    name.set_text(&known.map_or_else(|| named_after(saved_system), |login| login.name.clone()));
     list.append(&name);
 
     let user = adw::EntryRow::new();
@@ -56,7 +64,6 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl F
     // Rithmic's systems and their gateways, picked rather than typed: the
     // ones omacharts cannot sign in to yet are listed, and Sign in is off
     // while one of them is chosen.
-    let saved_system = known.and_then(|login| login.value(SYSTEM)).unwrap_or(TEST_SYSTEM);
     let saved_gateway = known.and_then(|login| login.value(GATEWAY)).unwrap_or(TEST_GATEWAY);
     let systems = Rc::new(choices(saved_system, saved_gateway));
     let system = adw::ComboRow::new();
@@ -115,8 +122,23 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl F
     let again = ready.clone();
     user.connect_changed(move |_| again());
     let again = ready.clone();
-    system.connect_selected_notify(move |_| {
+    // A name nobody typed follows the system it is named after.
+    let was = RefCell::new(systems.get(at).map(|choice| choice.name.clone()).unwrap_or_default());
+    let follows = {
+        let systems = systems.clone();
+        let name = name.clone();
+        let named_after = named_after.clone();
+        move |system: &adw::ComboRow| {
+            let Some(choice) = systems.get(system.selected() as usize) else { return };
+            let before = was.replace(choice.name.clone());
+            if name.text().trim().is_empty() || name.text() == named_after(&before) {
+                name.set_text(&named_after(&choice.name));
+            }
+        }
+    };
+    system.connect_selected_notify(move |system| {
         show_gateways(None);
+        follows(system);
         again();
     });
 
@@ -127,7 +149,11 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl F
         }
         let Some(choice) = systems.get(system.selected() as usize) else { return };
         let url = choice.gateways.get(gateway.selected() as usize).map_or("", |(_, url)| url.as_str());
-        signed(typed(&name.text(), &user.text(), &password.text(), &choice.name, url));
+        let typed_name = match name.text().trim() {
+            "" => named_after(&choice.name),
+            typed_name => typed_name.to_string(),
+        };
+        signed(typed(&typed_name, &user.text(), &password.text(), &choice.name, url));
         // Nothing of the password is kept in the widget once it is handed
         // over.
         password.set_text("");
@@ -280,6 +306,35 @@ mod tests {
         );
         let named = typed("Lucid", "trader", "secret", "LucidTrading", "wss://x");
         assert_eq!((named.name.as_str(), named.values[0].1.as_str()), ("Lucid", "LucidTrading"));
+    }
+
+    /// A new login's name starts as its system's, numbered past the names
+    /// taken, and follows the system until somebody types one; cleared, it
+    /// is the system's again.
+    #[test]
+    fn a_new_login_is_named_after_its_system_numbered_past_the_names_taken() {
+        crate::ui::on_gtk(|| {
+            let ask: super::super::LoginDialog = |parent, known, taken, signed| ask(parent, known, taken, signed);
+            let (dialog, signed) = super::super::opened(ask, None, &["Rithmic Test"]);
+            let under: &gtk::Widget = dialog.upcast_ref();
+            let name = super::super::row_titled::<adw::EntryRow>(under, "Name").expect("its name");
+            let system = super::super::row_titled::<adw::ComboRow>(under, "System").expect("its system");
+            assert_eq!(name.text(), "Rithmic Test 2");
+            system.set_selected(1);
+            assert_eq!(name.text(), "Rithmic 01");
+            system.set_selected(0);
+            assert_eq!(name.text(), "Rithmic Test 2");
+
+            name.set_text("Lucid");
+            system.set_selected(1);
+            assert_eq!(name.text(), "Lucid", "a name somebody typed stays");
+
+            system.set_selected(0);
+            name.set_text("");
+            dialog.emit_by_name::<()>("response", &[&SIGN_IN]);
+            assert_eq!(signed.borrow().as_ref().map(|typed| typed.name.clone()).as_deref(), Some("Rithmic Test 2"));
+            dialog.force_close();
+        });
     }
 
     /// Rithmic Test is open and first; Rithmic 01, Rithmic 04 Colo and

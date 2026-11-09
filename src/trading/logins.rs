@@ -43,11 +43,50 @@ pub struct Typed {
 /// The logins, in the order they were added, less those of a trading service that
 /// is closed now — behind a flag that is off — which are kept as they are
 /// and are nobody's business until it is on.
+///
+/// One stored with no name shows the name it would be given now, though
+/// what is stored is left as it is.
 pub fn logins(store: &Store) -> Vec<Login> {
     let mut logins = kept(store);
     let services = super::registry();
     logins.retain(|login| !services.closed(&login.service));
+    for at in 0..logins.len() {
+        if logins[at].name.trim().is_empty() {
+            let taken = names_but(&logins, &logins[at].id);
+            logins[at].name = numbered(&named_after(&logins[at]), &taken);
+        }
+    }
     logins
+}
+
+/// The names of the logins shown, but the one called `except`: the ones a
+/// login typed in now must not repeat.
+pub fn names_taken(store: &Store, except: Option<&str>) -> Vec<String> {
+    names_but(&logins(store), except.unwrap_or_default())
+}
+
+fn names_but(logins: &[Login], except: &str) -> Vec<String> {
+    logins
+        .iter()
+        .filter(|login| login.id != except && !login.name.trim().is_empty())
+        .map(|login| login.name.trim().to_string())
+        .collect()
+}
+
+/// `base`, or, when another login is called that, the first of "`base` 2",
+/// "`base` 3"… none is.
+pub fn numbered(base: &str, taken: &[String]) -> String {
+    let free = |name: &str| !taken.iter().any(|other| other.eq_ignore_ascii_case(name));
+    if free(base) {
+        return base.to_string();
+    }
+    (2..).map(|n| format!("{base} {n}")).find(|name| free(name)).unwrap_or_default()
+}
+
+/// What `login` is called before it is numbered, when nobody named it:
+/// what its trading service names it after.
+fn named_after(login: &Login) -> String {
+    service_for(&login.service).map_or_else(|| login.service.clone(), |service| service.named_after(login))
 }
 
 /// Every login kept, open or closed: what a change is made to and written
@@ -180,12 +219,12 @@ fn new_id(logins: &[Login]) -> String {
 }
 
 /// What was typed, onto `login`. A login typed with no name is called what
-/// its trading service is.
-fn typed_into(login: &mut Login, typed: &Typed) {
+/// its trading service names it after, numbered apart from the `others`.
+fn typed_into(login: &mut Login, typed: &Typed, others: &[Login]) {
     login.user = typed.user.trim().to_string();
     login.values = typed.values.iter().map(|(key, value)| (key.clone(), value.trim().to_string())).collect();
     login.name = match typed.name.trim() {
-        "" => service_for(&login.service).map_or_else(|| login.service.clone(), |service| service.label().to_string()),
+        "" => numbered(&named_after(login), &names_but(others, &login.id)),
         name => name.to_string(),
     };
     login.signed_out = false;
@@ -232,7 +271,7 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
         values: Vec::new(),
         signed_out: false,
     };
-    typed_into(&mut login, typed);
+    typed_into(&mut login, typed, &self::logins(store));
     crate::log_words::conceal_logins(std::slice::from_ref(&login));
     let first = data_login_id(store, &logins).is_none();
     let feed = data_feed_of(&login);
@@ -253,10 +292,11 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
 /// empty password keeps the one the keyring holds.
 pub fn retype_login(store: &Store, secrets: &dyn Secrets, id: &str, typed: &Typed) -> Result<(), String> {
     let mut logins = kept(store);
+    let others = self::logins(store);
     let Some(login) = logins.iter_mut().find(|login| login.id == id) else {
         return Err("that login has been removed".into());
     };
-    typed_into(login, typed);
+    typed_into(login, typed, &others);
     let kept = keep_password(secrets, login, &typed.password);
     save_logins(store, &logins);
     crate::feeds::remember_logins(store);
@@ -412,7 +452,7 @@ mod tests {
         assert_ne!(tradeify, lucid);
         assert_eq!(data_login(&store).map(|l| l.id), Some(lucid));
         assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "rithmic"]);
-        assert_eq!(logins(&store)[1].name, "Rithmic", "no name is the trading service's");
+        assert_eq!(logins(&store)[1].name, "Rithmic Test", "no name is what its system is called");
     }
 
     /// Exactly one login is the data login, whichever was picked, and the
@@ -530,5 +570,33 @@ mod tests {
         retype_login(&store, &kept, &lucid, &typed("Lucid", "a")).unwrap();
         assert!(!logins(&store)[0].signed_out);
         assert_eq!(kept.0.borrow().len(), 1);
+    }
+
+    /// A login typed with no name is called what its system is, numbered
+    /// past the names the others have; signed in again with none, it keeps
+    /// its own rather than numbering itself. One stored with no name shows
+    /// it too, and is left stored as it was.
+    #[test]
+    fn a_login_with_no_name_is_numbered_past_the_others() {
+        if skip() {
+            return;
+        }
+        assert_eq!(numbered("Sierra Chart", &[]), "Sierra Chart");
+        assert_eq!(numbered("Sierra Chart", &["sierra chart".into(), "Sierra Chart 2".into()]), "Sierra Chart 3");
+        assert_eq!(numbered("Sierra Chart", &["Sierra Chart 2".into()]), "Sierra Chart");
+
+        let store = store();
+        let secrets = Kept::default();
+        let first = add_login(&store, &secrets, &typed("", "a")).unwrap();
+        add_login(&store, &secrets, &typed(" ", "b")).unwrap();
+        retype_login(&store, &secrets, &first, &typed("", "a")).unwrap();
+        let names: Vec<String> = logins(&store).into_iter().map(|login| login.name).collect();
+        assert_eq!(names, ["Rithmic Test", "Rithmic Test 2"]);
+
+        let mut stored = kept(&store);
+        stored[1].name = String::new();
+        save_logins(&store, &stored);
+        assert_eq!(logins(&store)[1].name, "Rithmic Test 2", "shown with the name it would be given");
+        assert_eq!(kept(&store)[1].name, "", "and stored as it was");
     }
 }
