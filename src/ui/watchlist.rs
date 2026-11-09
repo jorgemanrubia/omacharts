@@ -489,6 +489,12 @@ pub struct Watchlist {
     lists: gtk::ListBox,
     /// The watchlist on each of those rows, parallel to them.
     list_ids: RefCell<Vec<i64>>,
+    /// The box naming a new watchlist, while one is open. There is only ever
+    /// one: the + asks for it again rather than adding a second.
+    new_list: glib::WeakRef<gtk::Entry>,
+    /// Takes the red off that box. Restarted by every press, so presses in
+    /// a row keep it red rather than an earlier one's timer clearing it.
+    nudge: RefCell<Option<glib::SourceId>>,
     /// The empty state's first offer, when that is all the rail holds.
     /// Somewhere for the keyboard to land on a list with no rows in it.
     empty_focus: RefCell<Option<gtk::Button>>,
@@ -516,6 +522,9 @@ const LISTS_TITLE: &str = "Watchlists";
 /// What the band's + makes on a list's symbols, and on the page of lists.
 const ADD_TIP: &str = "Add a symbol or a section";
 const NEW_LIST_TIP: &str = "New watchlist";
+/// How long the open name box stays red when the + is pressed again: long
+/// enough to catch the eye, short enough to be gone before typing starts.
+const NUDGE: std::time::Duration = std::time::Duration::from_millis(400);
 
 impl Watchlist {
     pub fn new(
@@ -613,6 +622,10 @@ impl Watchlist {
         add.set_valign(gtk::Align::Start);
         add.set_margin_top(crate::theming::CORNER_BUTTON_TOP);
         add.set_margin_end(crate::ui::window::RAIL_ADD_END);
+        // What the + opens takes the keyboard itself. Taken by the button
+        // instead, after its click, it would pull the focus straight back out
+        // of the box naming a new watchlist, and the box goes when it does.
+        add.set_focus_on_click(false);
 
         let band = gtk::Overlay::new();
         band.set_child(Some(&header));
@@ -730,6 +743,8 @@ impl Watchlist {
             pages,
             lists,
             list_ids: RefCell::new(Vec::new()),
+            new_list: glib::WeakRef::new(),
+            nudge: RefCell::new(None),
             empty_focus: RefCell::new(None),
             on_switch: RefCell::new(None),
             using: RefCell::new(None),
@@ -2713,11 +2728,39 @@ impl Watchlist {
 
     /// Naming it is making it: a row at the foot of the lists becomes the
     /// box to type the name in, and Enter makes the list and opens it.
-    /// Leaving the box, or Escape, leaves no list behind.
+    /// Leaving the box, or Escape, leaves no list behind. Asked again while
+    /// the box is open, it flashes that box red and puts the keyboard back in
+    /// it: the name it is waiting for is the answer, not a second box.
     fn prompt_new_watchlist(self: &Rc<Self>) {
+        if let Some(entry) = self.new_list.upgrade().filter(|entry| entry.is_ancestor(&self.lists)) {
+            entry.grab_focus();
+            entry.add_css_class("error");
+            if let Some(pending) = self.nudge.take() {
+                pending.remove();
+            }
+            let this = Rc::downgrade(self);
+            let entry = entry.downgrade();
+            let calm = glib::timeout_add_local_once(NUDGE, move || {
+                if let Some(this) = this.upgrade() {
+                    this.nudge.take();
+                }
+                if let Some(entry) = entry.upgrade() {
+                    entry.remove_css_class("error");
+                }
+            });
+            self.nudge.replace(Some(calm));
+            return;
+        }
+        // The box goes when the window's focus leaves it, so no window, no box.
+        let Some(window) = self.lists.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some("Watchlist name"));
+        self.new_list.set(Some(&entry));
         let row = gtk::ListBoxRow::new();
+        row.add_css_class("list-row");
+        row.add_css_class("new-list");
         row.set_child(Some(&entry));
         row.set_selectable(false);
         row.set_activatable(false);
@@ -2749,23 +2792,46 @@ impl Watchlist {
                 }
             }
         };
-        // Escape hands the keyboard back; leaving the box takes the row away.
+        // Escape takes the row away and hands the keyboard back.
         let keys = gtk::EventControllerKey::new();
         let this = self.clone();
+        let dismiss = gone.clone();
         keys.connect_key_pressed(move |_, key, _, _| {
             if key != gtk::gdk::Key::Escape {
                 return glib::Propagation::Proceed;
             }
+            dismiss();
             this.focus_lists();
             glib::Propagation::Stop
         });
         entry.add_controller(keys);
-        let focus = gtk::EventControllerFocus::new();
-        focus.connect_leave(move |_| {
-            let gone = gone.clone();
-            glib::idle_add_local_once(gone);
+
+        // Focus anywhere but the box takes the row away too. Asked of the
+        // window, which says where the focus went on every move: a focus
+        // controller on the box missed some, and the row stayed behind. It is
+        // read from an idle, because between two widgets the focus is briefly
+        // on none.
+        let watch: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+        let held = watch.clone();
+        let entry = entry.downgrade();
+        let handler = window.connect_focus_widget_notify(move |window| {
+            let (window, entry, gone, held) = (window.downgrade(), entry.clone(), gone.clone(), held.clone());
+            glib::idle_add_local_once(move || {
+                let Some(window) = window.upgrade() else { return };
+                let inside = entry
+                    .upgrade()
+                    .zip(GtkWindowExt::focus(&window))
+                    .is_some_and(|(entry, focus)| focus.is_ancestor(&entry));
+                if inside {
+                    return;
+                }
+                gone();
+                if let Some(handler) = held.take() {
+                    window.disconnect(handler);
+                }
+            });
         });
-        entry.add_controller(focus);
+        watch.replace(Some(handler));
     }
 
     /// Make a section into a watchlist of its own, and show it.
