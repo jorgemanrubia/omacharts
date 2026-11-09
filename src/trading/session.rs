@@ -674,6 +674,11 @@ impl View {
         account_name(account, &self.logins, &self.accounts)
     }
 
+    /// What the header calls `account`: see [`account_label`].
+    pub fn account_label(&self, account: &Account) -> String {
+        account_label(account, &self.logins, &self.accounts)
+    }
+
     /// What the account with the key `key` is called here: "Lucid", or
     /// "Lucid 1234" when the login holds several; its number alone when it
     /// is no longer listed.

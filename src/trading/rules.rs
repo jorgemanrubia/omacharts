@@ -255,6 +255,17 @@ pub fn answered(request: &Request, pending: &Pending, book: &Book) -> bool {
     }
 }
 
+/// What the header's Account part calls `account`: its number, "E7029",
+/// with its login's name after it, "E7029 · Sierra Chart", only when
+/// another account listed has the same number.
+pub fn account_label(account: &Account, logins: &[Login], accounts: &[Account]) -> String {
+    let twin = accounts.iter().any(|other| other.login != account.login && other.id == account.id);
+    match (twin, login_in(logins, &account.login)) {
+        (true, Some(login)) => format!("{} · {}", account.id, login.name),
+        _ => account.id.clone(),
+    }
+}
+
 /// How an account is named: its login's name, "Lucid", with the account
 /// number after it only when the name alone would not say which, because
 /// the login holds several accounts or another login has the same name.
@@ -442,6 +453,26 @@ mod tests {
         assert_eq!(account_name(&a951, &[rithmic, twin], &[a951.clone(), c7.clone()]), "Rithmic 951");
         // A login that is gone: the number is all there is.
         assert_eq!(account_name(&c7, &[lucid], std::slice::from_ref(&c7)), "7");
+    }
+
+    /// The header calls an account by its number, and by its login too
+    /// only when another login has an account of the same number.
+    #[test]
+    fn the_header_calls_an_account_by_its_number() {
+        let sierra = test_login("s", "Sierra Chart", TEST_SYSTEM);
+        let rithmic = test_login("r", "Rithmic", TEST_SYSTEM);
+        let logins = [sierra, rithmic];
+        let e7029 = account("s", "E7029");
+        let acc1 = account("r", "ACC1");
+        let acc2 = account("r", "ACC2");
+        let accounts = [e7029.clone(), acc1.clone(), acc2.clone()];
+        assert_eq!(account_label(&e7029, &logins, &accounts), "E7029");
+        assert_eq!(account_label(&acc2, &logins, &accounts), "ACC2");
+        let sim_s = account("s", "Sim1");
+        let sim_r = account("r", "Sim1");
+        let accounts = [sim_s.clone(), sim_r.clone(), acc1];
+        assert_eq!(account_label(&sim_s, &logins, &accounts), "Sim1 · Sierra Chart");
+        assert_eq!(account_label(&sim_r, &logins, &accounts), "Sim1 · Rithmic");
     }
 
     /// A chart's feed: the one chosen for it; else its account's own,

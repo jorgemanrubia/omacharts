@@ -3332,7 +3332,17 @@ pub(super) mod tests {
     /// Sign in a login with `numbers` as its accounts, through a fake
     /// session, and tell the window. Its id and the session.
     fn sign_in(window: &Rc<Window>, store: &Rc<Store>, numbers: &[&str]) -> (String, Arc<trading::fake::FakeSession>) {
-        let id = trading::add_login(store, &Kept::default(), &typed()).expect("a login");
+        sign_in_as(window, store, &typed(), numbers)
+    }
+
+    /// [`sign_in`], as the login `typed`.
+    fn sign_in_as(
+        window: &Rc<Window>,
+        store: &Rc<Store>,
+        typed: &trading::Typed,
+        numbers: &[&str],
+    ) -> (String, Arc<trading::fake::FakeSession>) {
+        let id = trading::add_login(store, &Kept::default(), typed).expect("a login");
         let accounts = numbers
             .iter()
             .map(|number| trading::Account {
@@ -3548,33 +3558,68 @@ pub(super) mod tests {
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
             let (id, session) = sign_in(&window, &store, &["951", "952"]);
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
+            assert_eq!(pane.account_text().as_deref(), Some("951"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
             assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance", "[credits-rithmic]"]);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"), "the feed is the dot's, not the account's");
+            assert_eq!(pane.account_text().as_deref(), Some("951"), "the feed is the dot's, not the account's");
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Yahoo Finance · Connecting…".into()));
             let other = format!("{id}/952");
             pane.menu_actions.activate_action("account", Some(&other.to_variant()));
             assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
             assert!(pane.feed.borrow().is_none(), "the feed went with the account");
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951", "Rithmic Test 952 ✓"]);
+            assert_eq!(pane.account_text().as_deref(), Some("952"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951", "952 ✓"]);
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
 
             // Back on the default, and the default moves: the chart follows.
             window.choose_account(pane.id, None);
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
+            assert_eq!(pane.account_text().as_deref(), Some("951"));
             trading::set_default_account(&store, &other);
             window.desk.tell();
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952"));
+            assert_eq!(pane.account_text().as_deref(), Some("952"));
 
             // The login in trouble: after the account, and under its row.
             session.sign_out();
             window.desk.tell();
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952 signed out"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 · signed out", "Rithmic Test 952 · signed out ✓"]);
+            assert_eq!(pane.account_text().as_deref(), Some("952 signed out"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test · signed out", "951", "952 ✓"]);
+        });
+    }
+
+    /// Two trading services with one account each: the Account part shows,
+    /// its menu each service under its own heading, and picking the other
+    /// service's account puts the chart on it. One account in all: none.
+    #[test]
+    fn two_services_with_an_account_each_offer_the_accounts_under_their_services() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window_on(&store, true);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es);
+            let sierra = trading::Typed {
+                broker: "fake".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: Vec::new(),
+            };
+            sign_in_as(&window, &store, &sierra, &["E7029"]);
+            assert_eq!(pane.account_text(), None, "one account: nothing to choose");
+            let (rithmic, _) = sign_in(&window, &store, &["ACC1", "ACC2"]);
+            assert_eq!(pane.account_text().as_deref(), Some("E7029"));
+            assert_eq!(accounts(&window, &pane), vec!["Sierra Chart", "E7029 ✓", "Rithmic Test", "ACC1", "ACC2"]);
+
+            let acc2 = format!("{rithmic}/ACC2");
+            pane.menu_actions.activate_action("account", Some(&acc2.to_variant()));
+            assert_eq!(pane.account.borrow().as_deref(), Some(acc2.as_str()));
+            assert_eq!(pane.account_text().as_deref(), Some("ACC2"), "at once");
+            assert_eq!(accounts(&window, &pane), vec!["Sierra Chart", "E7029", "Rithmic Test", "ACC1", "ACC2 ✓"]);
+            let view = window.trading.borrow();
+            let chosen = view.account_of(pane.account.borrow().as_deref()).expect("an account");
+            assert_eq!((chosen.login.as_str(), chosen.id.as_str()), (rithmic.as_str(), "ACC2"), "its service with it");
         });
     }
 
@@ -3609,8 +3654,8 @@ pub(super) mod tests {
             assert_eq!(pane.account_text(), None, "one feed and no account: nothing");
             assert_eq!(dot(&pane), None);
             sign_in(&window, &store, &["951", "952"]);
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
-            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
+            assert_eq!(pane.account_text().as_deref(), Some("951"));
             assert_eq!(dot(&pane), None);
         });
     }

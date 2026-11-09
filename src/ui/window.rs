@@ -4378,24 +4378,31 @@ impl Window {
         }
     }
 
-    /// The Account part's menu, for the chart `id` as it is now: the
-    /// accounts, a mark on the chart's own, and an account's trouble after
-    /// its name, only when it has some.
+    /// The Account part's menu, for the chart `id` as it is now: each
+    /// trading service, its login, a heading with its trouble after its
+    /// name, only when it has some, and its accounts by number under it,
+    /// a mark on the chart's own. Picking an account picks its service.
     fn account_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
         let menu = gio::Menu::new();
         let Some(pane) = self.pane(id) else { return menu };
         let view = self.trading.borrow().clone();
         let account = view.account_of(pane.account.borrow().as_deref()).cloned();
         Self::mark_choice(&pane, "account", account.map(|account| account.key()).unwrap_or_default().to_variant());
-        for listed in &view.accounts {
-            let name = view.account_name(listed);
-            let label = match view.trouble(&self.desk, listed) {
-                Some(trouble) => format!("{name} · {trouble}"),
-                None => name,
+        for login in &view.logins {
+            let theirs: Vec<&crate::trading::Account> =
+                view.accounts.iter().filter(|listed| listed.login == login.id).collect();
+            let Some(first) = theirs.first() else { continue };
+            let heading = match view.trouble(&self.desk, first) {
+                Some(trouble) => format!("{} · {trouble}", login.name),
+                None => login.name.clone(),
             };
-            let item = gio::MenuItem::new(Some(&label), None);
-            item.set_action_and_target_value(Some("pane.account"), Some(&listed.key().to_variant()));
-            menu.append_item(&item);
+            let section = gio::Menu::new();
+            for listed in theirs {
+                let item = gio::MenuItem::new(Some(&listed.id), None);
+                item.set_action_and_target_value(Some("pane.account"), Some(&listed.key().to_variant()));
+                section.append_item(&item);
+            }
+            menu.append_section(Some(&heading), &section);
         }
         menu
     }
@@ -9277,15 +9284,15 @@ impl Window {
         pane.write_feed(part);
     }
 
-    /// The Account part's words for `pane`: the account's name with its
-    /// trouble after it, "Lucid 1234 signed out", while there is more than
-    /// one account; nothing otherwise.
+    /// The Account part's words for `pane`: the account with its trouble
+    /// after it, "1234 signed out", while there is more than one account
+    /// across the trading services; nothing otherwise.
     fn write_account_of(&self, pane: &ChartPane) {
         let view = self.trading.borrow();
         let text = match view.accounts.len() > 1 {
             true => view.account_of(pane.account.borrow().as_deref()).map(|account| {
                 let trouble = view.trouble(&self.desk, account);
-                crate::trading::account_text(&view.account_name(account), trouble.as_deref())
+                crate::trading::account_text(&view.account_label(account), trouble.as_deref())
             }),
             false => None,
         };
