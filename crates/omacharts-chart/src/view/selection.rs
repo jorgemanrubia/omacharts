@@ -9,7 +9,7 @@ use omacharts_engine::theme::Mode;
 use omacharts_engine::Theme;
 
 use crate::colors;
-use omacharts_engine::indicators::profile::{Align, Style};
+use omacharts_engine::indicators::profile::{self, Align, Style};
 use omacharts_engine::indicators::{Output, Pane, Profile};
 
 use super::{frame, layout, on_screen, pane_plot, pane_range, Columns, Drawn, Frame, Row, State};
@@ -124,7 +124,7 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
                 })
         }
         Output::Profiles(profiles) => profiles.iter().any(|profile| {
-            let area = profile_box(profile, columns, profile_look(drawn).1);
+            let area = profile_box(profile, columns, &profile_look(drawn));
             let poc = to_y(profile.poc_price());
             area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
         }),
@@ -137,9 +137,9 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
 /// a press anywhere in it would pick the band rather than pan.
 fn on_overlay_shape(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
     let Output::Profiles(profiles) = &drawn.output else { return false };
-    let align = profile_look(drawn).1;
+    let look = profile_look(drawn);
     profiles.iter().any(|profile| {
-        let area = profile_box(profile, columns, align);
+        let area = profile_box(profile, columns, &look);
         if area.span <= 0.0 || profile.max_volume <= 0.0 {
             return false;
         }
@@ -160,18 +160,28 @@ pub struct ProfileSpot {
     pub has_previous: bool,
 }
 
-/// How a volume profile indicator is drawn: filled or outlined, and from
-/// which edge of its period.
-pub(super) fn profile_look(drawn: &Drawn) -> (Style, Align) {
+/// How a volume profile indicator is drawn: filled or outlined, from which
+/// edge of its period, and how much of its room it may take.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ProfileLook {
+    pub style: Style,
+    pub align: Align,
+    /// A share of the room, already inside the range a profile is drawn at.
+    pub width: f64,
+}
+
+pub(super) fn profile_look(drawn: &Drawn) -> ProfileLook {
     match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { style, align, .. } => (*style, *align),
-        _ => (Style::Filled, Align::Left),
+        omacharts_engine::Params::VolumeProfile { style, align, width, .. } => {
+            ProfileLook { style: *style, align: *align, width: profile::drawn_width(*width) }
+        }
+        _ => ProfileLook { style: Style::Filled, align: Align::Left, width: profile::DEFAULT_WIDTH },
     }
 }
 
 /// Where a profile is drawn across: the edge its rows grow from, the width
 /// its longest row reaches, and which way they grow.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ProfileBox {
     pub edge: f64,
     pub span: f64,
@@ -195,9 +205,22 @@ impl ProfileBox {
     }
 }
 
+/// The least empty space past the last bar that a right-aligned profile is
+/// moved into. Narrower, the profile at any width would be a sliver beside
+/// the price axis, and over its own bars it is at least readable.
+pub(super) const PROFILE_ROOM_MIN: f64 = 48.0;
+
 /// Where a profile is drawn across, the arithmetic the profile is drawn
 /// with. Nothing for one off screen.
-pub(super) fn profile_box(profile: &Profile, columns: &Columns, align: Align) -> ProfileBox {
+///
+/// A share of its period's width, from the edge it is aligned to — except
+/// the period still forming at the live edge, aligned right: that one is
+/// drawn back from the plot's right edge across the empty space past the
+/// last bar, a share of that space, so it describes the session without
+/// sitting on the bars it is about. Past periods keep the end of their own,
+/// which is where the next one starts: the profiles read as a row of them,
+/// each beside the session it describes.
+pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLook) -> ProfileBox {
     let (first, last) = (columns.first, columns.first + columns.visible);
     if profile.last_bar < first || profile.first_bar >= last {
         return ProfileBox { edge: 0.0, span: 0.0, towards: 1.0 };
@@ -205,12 +228,16 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, align: Align) ->
     let from = profile.first_bar.max(first);
     let to = profile.last_bar.min(last - 1) + 1;
     let width = columns.width_of(from, to).max(columns.bar_w);
-    // A profile may use at most this much of its own period's width, so it
-    // describes the bars rather than burying them.
-    let span = width * 0.4;
-    match align {
+    let span = width * look.width;
+    match look.align {
         Align::Left => ProfileBox { edge: columns.left_of(from), span, towards: 1.0 },
-        Align::Right => ProfileBox { edge: columns.left_of(from) + width, span, towards: -1.0 },
+        Align::Right => {
+            let room = columns.room_after();
+            match profile.last_bar + 1 == last && room >= PROFILE_ROOM_MIN {
+                true => ProfileBox { edge: columns.end, span: room * look.width, towards: -1.0 },
+                false => ProfileBox { edge: columns.left_of(from) + width, span, towards: -1.0 },
+            }
+        }
     }
 }
 
@@ -487,6 +514,7 @@ mod tests {
     use omacharts_engine::{Bar, Indicator};
 
     use super::super::{frame, Drawn, State};
+    use super::{profile, profile_box, profile_look, Profile, ProfileBox, PROFILE_ROOM_MIN};
 
     const W: f64 = 800.0;
     const H: f64 = 600.0;
@@ -558,5 +586,142 @@ mod tests {
 
         let frame = frame(&state, W, H).expect("a frame");
         assert_eq!(state.indicator_at(W, H, frame.columns.x(5), y), Some(1));
+    }
+
+    const DAY: i64 = 86_400;
+
+    /// Two whole sessions of hourly bars and half of a third, still forming,
+    /// with a session volume profile on them, shown at rest: the last bar
+    /// on screen, and the resting margin open past it.
+    fn profiled(align: profile::Align, width: f64) -> State {
+        use omacharts_engine::Timeframe;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let start = 19_675 * DAY;
+        state.bars = (0..60)
+            .map(|i| {
+                let mid = 100.0 + (i % 7) as f64;
+                Bar { ts: start + i * 3600, open: mid, high: mid + 2.0, low: mid - 2.0, close: mid + 1.0, volume: 10.0 + (i % 5) as f64 }
+            })
+            .collect();
+        state.timeframe = Timeframe::hours(1);
+        state.visible = 50;
+        let mut indicator = Indicator::new(1, Kind::VolumeProfile);
+        if let omacharts_engine::Params::VolumeProfile { align: a, width: w, .. } = &mut indicator.params {
+            *a = align;
+            *w = width;
+        }
+        let output = omacharts_engine::indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+        state.indicators = vec![Drawn { indicator, output, color: "#5588ff".to_string() }];
+        state
+    }
+
+    /// Each profile on screen and the box it is drawn in.
+    fn boxes(state: &State) -> Vec<(Profile, ProfileBox, f64, f64)> {
+        let frame = frame(state, W, H).expect("a frame");
+        let Output::Profiles(profiles) = &state.indicators[0].output else { panic!("profiles") };
+        let look = profile_look(&state.indicators[0]);
+        profiles
+            .iter()
+            .map(|p| {
+                let area = profile_box(p, &frame.columns, &look);
+                let period = (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1));
+                (p.clone(), area, period.0, period.1)
+            })
+            .collect()
+    }
+
+    fn last_bar_end(state: &State) -> f64 {
+        let frame = frame(state, W, H).expect("a frame");
+        frame.columns.left_of(frame.columns.first + frame.columns.visible)
+    }
+
+    #[test]
+    fn a_right_aligned_session_still_forming_is_drawn_past_the_last_bar() {
+        let state = profiled(profile::Align::Right, 0.5);
+        let frame = frame(&state, W, H).expect("a frame");
+        let room = frame.columns.room_after();
+        assert!(room >= PROFILE_ROOM_MIN, "the resting margin is room enough: {room}");
+        let all = boxes(&state);
+        let (current, area, _, _) = all.last().expect("the live session");
+        assert_eq!(current.last_bar, state.bars.len() - 1);
+        assert_eq!(area.edge, frame.columns.end, "against the plot's right edge");
+        assert!((area.span - room * 0.5).abs() < 1e-9, "half the room at half: {}", area.span);
+        let (from, to) = area.row(1.0);
+        assert!(from >= last_bar_end(&state) - 1e-9, "clear of the bars: {from}");
+        assert!(to <= frame.columns.end + 1e-9);
+    }
+
+    #[test]
+    fn a_right_aligned_session_that_is_over_ends_where_it_does() {
+        let state = profiled(profile::Align::Right, 0.4);
+        let all = boxes(&state);
+        for (_, area, start, end) in &all[..all.len() - 1] {
+            assert_eq!(area.edge, *end, "at the end of its own period");
+            assert!((area.span - (end - start) * 0.4).abs() < 1e-9, "{} of {}", area.span, end - start);
+        }
+    }
+
+    #[test]
+    fn with_no_room_past_the_last_bar_the_live_session_keeps_its_own_end() {
+        let mut state = profiled(profile::Align::Right, 0.4);
+        state.overhang = 0;
+        let all = boxes(&state);
+        let (_, area, start, end) = all.last().expect("the live session");
+        assert_eq!(area.edge, *end);
+        assert!((area.span - (end - start) * 0.4).abs() < 1e-9);
+
+        // Room for only a sliver is no room either.
+        state.overhang = 1;
+        let (_, area, _, end) = boxes(&state).pop().expect("the live session");
+        assert!(frame(&state, W, H).unwrap().columns.room_after() < PROFILE_ROOM_MIN);
+        assert_eq!(area.edge, end);
+    }
+
+    #[test]
+    fn scrolled_back_the_last_session_on_screen_is_not_moved_into_the_margin() {
+        let mut state = profiled(profile::Align::Right, 0.4);
+        state.anchored = false;
+        state.first = 0;
+        state.lead = 0;
+        let frame = frame(&state, W, H).expect("a frame");
+        assert!(frame.columns.room_after() < 1e-9, "bars to the edge");
+        for (_, area, _, end) in boxes(&state) {
+            assert!(area.edge <= end + 1e-9);
+        }
+    }
+
+    #[test]
+    fn the_width_is_a_share_of_the_room_at_either_edge() {
+        for align in profile::Align::ALL {
+            let narrow = boxes(&profiled(align, 0.2));
+            let wide = boxes(&profiled(align, 0.8));
+            for ((_, a, ..), (_, b, ..)) in narrow.iter().zip(&wide) {
+                assert!((b.span - a.span * 4.0).abs() < 1e-6, "{align:?}: {} vs {}", a.span, b.span);
+            }
+        }
+        // Left-aligned, the live session stays on its own bars.
+        let state = profiled(profile::Align::Left, 0.4);
+        let (_, area, start, _) = boxes(&state).pop().expect("the live session");
+        assert_eq!(area.edge, start);
+    }
+
+    #[test]
+    fn a_stored_width_out_of_range_is_drawn_inside_it() {
+        let state = profiled(profile::Align::Left, 7.0);
+        assert_eq!(profile_look(&state.indicators[0]).width, profile::MAX_WIDTH);
+    }
+
+    /// What is drawn in the margin is what a click there picks.
+    #[test]
+    fn the_profile_in_the_margin_is_picked_where_it_is_drawn() {
+        let state = profiled(profile::Align::Right, 0.6);
+        let frame = frame(&state, W, H).expect("a frame");
+        let (current, area, _, _) = boxes(&state).pop().expect("the live session");
+        let y = frame.scale.to_y(current.poc_price(), frame.plan.price_y, frame.plan.price_h);
+        let (from, to) = area.row(1.0);
+        assert_eq!(state.indicator_at(W, H, (from + to) / 2.0, y), Some(1));
+        assert_eq!(state.indicator_at(W, H, from - 30.0, y), None, "left of it, over the last bars");
     }
 }

@@ -344,6 +344,7 @@ impl Kind {
                 outline_width: 1.0,
                 poc_width: 1.0,
                 align: profile::Align::Left,
+                width: profile::DEFAULT_WIDTH,
                 merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
@@ -443,6 +444,12 @@ pub enum Params {
         /// The edge of the period the rows grow from.
         #[serde(default)]
         align: profile::Align,
+        /// How much of its room the longest row reaches, as a share: of the
+        /// period's width, or of the empty space past the last bar for the
+        /// period drawn there. Missing, it is the 40% every profile was drawn
+        /// at before it could be chosen.
+        #[serde(default = "profile::default_width")]
+        width: f64,
         /// Where each period starts that was merged into the one before it,
         /// as the start of its reset period. Several in a row make one
         /// composite of them all.
@@ -1679,6 +1686,19 @@ mod tests {
         let back: Indicator =
             serde_json::from_str(&serde_json::to_string(&indicator).unwrap()).unwrap();
         assert!(!back.above_price, "and it round trips as it is");
+    }
+
+    /// A volume profile stored before its width could be chosen is drawn at
+    /// the share of its period every profile was drawn at then.
+    #[test]
+    fn a_profile_written_before_its_width_could_be_chosen_keeps_its_width() {
+        let json = r#"{"id": 1, "kind": "volume_profile", "visible": true,
+            "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7,
+                       "align": "right"}}"#;
+        let indicator: Indicator = serde_json::from_str(json).expect("an older profile");
+        let Params::VolumeProfile { width, .. } = indicator.params else { unreachable!() };
+        assert_eq!(width, profile::DEFAULT_WIDTH);
+        assert_eq!(width, 0.4);
     }
 
     /// A strip stored above the price, from when it could be put there, comes

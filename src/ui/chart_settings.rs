@@ -1948,8 +1948,11 @@ pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
 /// paints its candles, whatever that is.
 const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
 
+/// The volume profile row that says how much of its room it takes.
+const PROFILE_WIDTH_LABEL: &str = "Width";
+
 /// How a volume profile is drawn: its outline, its rows, its point of
-/// control, and its shape and side.
+/// control, and its shape, side and width.
 fn profile_style(
     owner: &Rc<Owner>,
     refresh: &Refresh,
@@ -1959,7 +1962,7 @@ fn profile_style(
     let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Style");
-    let Params::VolumeProfile { style, align, poc_color, outline, outline_color, outline_width, poc_width, .. } =
+    let Params::VolumeProfile { style, align, width, poc_color, outline, outline_color, outline_width, poc_width, .. } =
         &indicator.params
     else {
         return group;
@@ -2065,6 +2068,22 @@ fn profile_style(
             *align = Align::ALL[at];
         }
     }));
+    // A share of the room the profile has: its period, or the empty space
+    // past the last bar for the session drawn there.
+    group.add(&percent_row(
+        owner,
+        refresh,
+        id,
+        PROFILE_WIDTH_LABEL,
+        omacharts_engine::indicators::profile::drawn_width(*width),
+        omacharts_engine::indicators::profile::MIN_WIDTH,
+        omacharts_engine::indicators::profile::MAX_WIDTH,
+        move |indicator, share| {
+            if let Params::VolumeProfile { width, .. } = &mut indicator.params {
+                *width = share;
+            }
+        },
+    ));
 
     group
 }

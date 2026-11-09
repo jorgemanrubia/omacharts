@@ -3423,6 +3423,7 @@ struct Edits {
     poc_color: Option<ColorChoice>,
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
+    profile_width: Option<f64>,
     outline: Option<bool>,
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
@@ -3531,6 +3532,12 @@ impl Edits {
                     Fault::usage(format!("{text:?} is not an alignment; use left or right"))
                 })?),
             },
+            profile_width: bounded(
+                m,
+                "profile-width",
+                omacharts_engine::indicators::profile::MIN_WIDTH,
+                omacharts_engine::indicators::profile::MAX_WIDTH,
+            )?,
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
             colouring: match arg(m, "colouring").map(String::as_str) {
@@ -3625,6 +3632,7 @@ impl Edits {
             && self.poc_color.is_none()
             && self.profile_style.is_none()
             && self.align.is_none()
+            && self.profile_width.is_none()
             && self.outline.is_none()
             && self.outline_color.is_none()
             && self.outline_width.is_none()
@@ -3762,6 +3770,12 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["align"] = json!(align.key()),
                 false => return Err(refuse("alignment")),
+            }
+        }
+        if let Some(share) = self.profile_width {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["width"] = json!(share),
+                false => return Err(refuse("profile width")),
             }
         }
         if let Some(on) = self.outline {
@@ -7200,6 +7214,35 @@ mod tests {
         assert_ne!(out.code, 0, "an RSI has no bars to make solid");
     }
 
+
+    #[test]
+    fn a_volume_profile_takes_a_width_within_its_range_and_nothing_else_does() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let width = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["width"].as_f64()
+        };
+        assert_eq!(width(&store), Some(omacharts_engine::indicators::profile::DEFAULT_WIDTH));
+
+        let out = run("chart indicator set volume_profile --book Macro --align right --profile-width 0.6", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(width(&store), Some(0.6));
+
+        for refused in [
+            "chart indicator set volume_profile --book Macro --profile-width 0.05",
+            "chart indicator set volume_profile --book Macro --profile-width 1.5",
+        ] {
+            let out = run(refused, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(width(&store), Some(0.6), "a refused width leaves the one there");
+        let out = run("chart indicator set rsi --book Macro --profile-width 0.5", &store);
+        assert_ne!(out.code, 0, "an RSI has no profile to widen");
+    }
 
     #[test]
     fn a_bollinger_takes_a_period_and_a_multiple() {

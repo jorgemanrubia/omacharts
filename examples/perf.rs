@@ -283,6 +283,28 @@ fn drawing(rows: &mut Vec<Row>) {
         }));
     }
 
+    // A volume profile over the price, at each edge: aligned right with room
+    // open past the last bar, the session still forming is drawn there.
+    for (align, room) in [("left", 0usize), ("right", 150)] {
+        if let Some(mut scene) = Scene::of(3_000, 1_500, &["volume_profile"]) {
+            scene.restyle(|indicator| {
+                let Ok(mut params) = serde_json::to_value(&indicator.params) else { return };
+                params["align"] = serde_json::json!(align);
+                params["width"] = serde_json::json!(0.6);
+                if let Ok(params) = serde_json::from_value(params) {
+                    indicator.params = params;
+                }
+            });
+            scene.open_room(room);
+            scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+            let (surface, cr) = canvas();
+            rows.push(row("draw", &format!("pan/zoom frame, volume profile {align}, 1500 bars"), || {
+                scene.view_frame(&cr, WIDTH, HEIGHT);
+                surface.flush();
+            }));
+        }
+    }
+
     // What one indicator's arithmetic costs over a long series, which is what
     // every tick pays and what the first frame of a chart pays. A row each
     // rather than one pass over all of them, because the question a regression

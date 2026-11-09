@@ -119,7 +119,7 @@ Every indicator the app has, with every parameter it exposes:
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
 | `volume` | `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
 
 Anything that draws a line also takes `--color`, `--width` and `--style`, and
 everything takes `--visible`.

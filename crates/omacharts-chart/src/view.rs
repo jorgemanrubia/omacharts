@@ -641,6 +641,9 @@ struct Columns<'a> {
     /// Where the first visible bar begins, which a span of bars is placed
     /// from.
     start: f64,
+    /// Where the plot ends on the right: past the last bar by whatever room
+    /// is open after it, or at its end when there is none.
+    end: f64,
     /// The visible bars the columns were made from.
     slice: &'a [Bar],
     /// Bars to a group: the fewest that make half a pixel.
@@ -673,6 +676,7 @@ impl<'a> Columns<'a> {
             bar_w: bar_px,
             bar_px,
             start: plot_x,
+            end: plot_x + plot_w.max(1.0),
             slice: bars,
             per,
             groups: 0..=0,
@@ -857,6 +861,13 @@ impl<'a> Columns<'a> {
     /// How wide the bars from `from` up to but not including `to` are.
     fn width_of(&self, from: usize, to: usize) -> f64 {
         self.left_of(to) - self.left_of(from)
+    }
+
+    /// The empty space past the last bar on screen, in pixels: where the
+    /// series ends short of the plot's right edge. Nothing with the bars
+    /// running to the edge, or off it.
+    fn room_after(&self) -> f64 {
+        (self.end - self.left_of(self.first + self.visible)).max(0.0)
     }
 }
 
@@ -5581,7 +5592,8 @@ fn frame(state: &State, width: f64, height: f64) -> Option<Frame<'_>> {
     // the first bar and leaving empty what was opened past the last.
     let column_w = plan.plot_w / state.columns().max(1) as f64;
     let bars_x = plan.plot_x + lead as f64 * column_w;
-    let columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
+    let mut columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
+    columns.end = plan.plot_x + plan.plot_w;
 
     let max_volume = columns.bars.iter().fold(0.0_f64, |most, b| most.max(b.volume));
     // Off the real bars rather than the columns. The two agree, because a
@@ -8736,11 +8748,12 @@ fn draw_profiles(
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let outline = outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| drawn.color.clone());
-    let (style, align) = selection::profile_look(drawn);
+    let look = selection::profile_look(drawn);
+    let style = look.style;
 
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
-        let area = selection::profile_box(profile, columns, align);
+        let area = selection::profile_box(profile, columns, &look);
         if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }

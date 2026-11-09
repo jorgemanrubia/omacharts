@@ -51,6 +51,29 @@ pub fn hairline() -> f64 {
     1.0
 }
 
+/// How much of the room a profile has its longest row may reach: of its
+/// period's width, or of the empty space past the last bar when it is drawn
+/// there. What every profile was drawn at before it could be chosen, so one
+/// stored without it looks as it always did.
+pub const DEFAULT_WIDTH: f64 = 0.4;
+/// The narrowest a profile can be asked to be: still a shape, not a hairline.
+pub const MIN_WIDTH: f64 = 0.1;
+/// The whole of its room, edge to edge.
+pub const MAX_WIDTH: f64 = 1.0;
+
+pub fn default_width() -> f64 {
+    DEFAULT_WIDTH
+}
+
+/// A stored width as one a profile can be drawn at: inside the range, and
+/// the default for anything that is not a number.
+pub fn drawn_width(width: f64) -> f64 {
+    match width.is_finite() {
+        true => width.clamp(MIN_WIDTH, MAX_WIDTH),
+        false => DEFAULT_WIDTH,
+    }
+}
+
 /// How a profile's rows are painted: as solid bars, or as only the shape
 /// they make together, which leaves the candles under it in plain sight.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -85,7 +108,8 @@ impl Style {
 
 /// Which edge of its period a profile grows from: the left, into the period,
 /// or the right, back towards its start, so the rows end where the period
-/// does.
+/// does. On the right, the period still forming at the live edge is drawn in
+/// the empty space past its last bar instead, where it covers nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Align {
@@ -676,6 +700,14 @@ mod tests {
 
     fn bar(ts: i64, low: f64, high: f64, volume: f64) -> Bar {
         Bar { ts, open: low, high, low, close: high, volume }
+    }
+
+    #[test]
+    fn a_stored_width_is_drawn_inside_its_range() {
+        assert_eq!(drawn_width(0.25), 0.25);
+        assert_eq!(drawn_width(0.0), MIN_WIDTH);
+        assert_eq!(drawn_width(3.0), MAX_WIDTH);
+        assert_eq!(drawn_width(f64::NAN), DEFAULT_WIDTH);
     }
 
     #[test]

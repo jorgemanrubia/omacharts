@@ -56,7 +56,7 @@ crop: 762,640,1036,518 (the Colours group)
 
 ## Volume Profile
 
-Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, at most 40% of its width. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
+Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
 
 | Setting | Default | Allowed |
 |---|---|---|
@@ -71,6 +71,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Point of control thickness** | 1 px | 0.5 to 6 px |
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
+| **Width** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
 **Automatic** gives every period rows of the same height, a round multiple of the instrument's price step, about 400 to a typical period. A period too quiet for 40 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too. With **Automatic** off, **Rows** is the number of rows each period is divided into.
 

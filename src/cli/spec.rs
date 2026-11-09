@@ -382,6 +382,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
     Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
     Flag::valued("align", "EDGE", "the edge of its period a volume profile grows from").of(PROFILE_ALIGNS),
+    Flag::valued("profile-width", "F", "how much of its period a volume profile's longest row reaches, 0.1-1; of the space past the last bar for the live session aligned right"),
     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),
     Flag::valued("outline-color", "COLOUR", "a volume profile's outline"),
     Flag::valued("outline-width", "F", "a volume profile's outline thickness in pixels"),
