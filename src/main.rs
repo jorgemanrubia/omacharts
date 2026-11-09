@@ -405,17 +405,27 @@ fn run() -> glib::ExitCode {
 /// Could GDK open a display? What its backends try, asked without starting
 /// GTK: an X display named in `DISPLAY`, or a Wayland socket —
 /// `WAYLAND_DISPLAY`, or `wayland-0` when unset, in `XDG_RUNTIME_DIR` unless
-/// it is a path. An environment variable and a `stat`. Wrong the other way,
-/// it only means a launch that is not counted.
+/// it is a path. An environment variable and a `stat` or two. Wrong the
+/// other way, it only means a launch that is not counted.
 fn display_reachable() -> bool {
-    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    reachable_with(|name| std::env::var_os(name), std::path::Path::new("/tmp/.X11-unix"))
+}
+
+/// [`display_reachable`], given the environment and where X keeps its
+/// sockets.
+fn reachable_with(var: impl Fn(&str) -> Option<std::ffi::OsString>, x11: &std::path::Path) -> bool {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
     if let Some(display) = set("DISPLAY") {
         // A local display, `:0` or `:0.0`, has its socket in /tmp/.X11-unix;
-        // one on another host, as ssh forwards it, is taken at its word.
+        // one on another host, as ssh forwards it, is taken at its word. A
+        // local one whose socket is gone — a `DISPLAY` left over with
+        // Xwayland off — leaves Wayland to be asked, as GDK asks it.
         let display = display.to_string_lossy();
         let Some(number) = display.strip_prefix(':').or_else(|| display.strip_prefix("unix:")) else { return true };
         let number = number.split('.').next().unwrap_or_default();
-        return std::path::Path::new(&format!("/tmp/.X11-unix/X{number}")).exists();
+        if x11.join(format!("X{number}")).exists() {
+            return true;
+        }
     }
     let socket = set("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
     let socket = std::path::PathBuf::from(socket);
@@ -546,5 +556,48 @@ fn peel_off(args: &[String]) -> Option<glib::ExitCode> {
             Some(glib::ExitCode::FAILURE)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reachable_with;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omacharts-display-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("x11")).unwrap();
+        fs::create_dir_all(dir.join("run")).unwrap();
+        dir
+    }
+
+    fn reachable(dir: &std::path::Path, vars: &[(&str, &str)]) -> bool {
+        let vars: HashMap<String, OsString> = vars
+            .iter()
+            .map(|(name, value)| (name.to_string(), OsString::from(value.replace("{run}", &dir.join("run").to_string_lossy()))))
+            .collect();
+        reachable_with(|name| vars.get(name).cloned(), &dir.join("x11"))
+    }
+
+    #[test]
+    fn a_display_is_reachable_by_its_socket_and_a_stale_x_one_leaves_wayland_to_be_asked() {
+        let dir = scratch("reach");
+        fs::write(dir.join("run/wayland-1"), b"").unwrap();
+        // A stale `DISPLAY` beside a live Wayland socket: Wayland is reached.
+        assert!(reachable(&dir, &[("DISPLAY", ":0"), ("WAYLAND_DISPLAY", "wayland-1"), ("XDG_RUNTIME_DIR", "{run}")]));
+        // Stale, and nothing else: none.
+        assert!(!reachable(&dir, &[("DISPLAY", ":0"), ("XDG_RUNTIME_DIR", "{run}")]));
+        assert!(!reachable(&dir, &[("DISPLAY", ":0.0")]));
+        // A live X socket, a remote display, and a Wayland one alone.
+        fs::write(dir.join("x11/X0"), b"").unwrap();
+        assert!(reachable(&dir, &[("DISPLAY", ":0.0")]));
+        assert!(reachable(&dir, &[("DISPLAY", "localhost:10.0")]));
+        assert!(reachable(&dir, &[("WAYLAND_DISPLAY", "wayland-1"), ("XDG_RUNTIME_DIR", "{run}")]));
+        assert!(!reachable(&dir, &[("XDG_RUNTIME_DIR", "{run}")]), "no wayland-0 there");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
