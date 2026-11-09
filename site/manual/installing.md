@@ -47,9 +47,9 @@ The menu entry, the icon, the manual page and the agent skill are the package's,
 
 ### When an update misbehaves
 
-A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds set it aside too. A version that has run properly once is never set aside, because it may be the only one that can open your settings.
+A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds set it aside too. A version that has run properly once is never set aside, because it may be the only one that can open your settings. A download that doesn't match its checksum is tried again at the next check, and set aside if it doesn't match twice.
 
-If a version that was set aside had already updated your settings, and nothing newer can open them, they are put back from the backup taken just before it first ran. A notice says so once. What changed since is kept beside them in `~/.local/share/omacharts/`, as `omacharts.db.from-<version>-<time>`.
+If a version that was set aside had already updated your settings to a form the running version can't read, and nothing newer can open them, they are put back from the newest backup the running version can read, taken just before a set-aside version first ran. The window says so once, even when a command did it. What changed since is kept beside them in `~/.local/share/omacharts/`, as `omacharts.db.from-<version>-<time>`.
 
 To run the package's version once, without removing anything:
 
@@ -63,7 +63,7 @@ To go back to the package's version for good, until the next release:
 omacharts update reset
 ```
 
-That keeps a newer version that has already run, because it may have updated your settings to a form the package's version can't read. `omacharts update reset --all` removes that one too.
+That keeps a newer version that has already run, because it may have updated your settings to a form the package's version can't read. `omacharts update reset --all` removes that one too, and forgets which backup came before which version, so nothing is put back for you after it.
 
 If the package's version then says the settings were written by a newer Omacharts, either:
 

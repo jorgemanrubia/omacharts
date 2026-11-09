@@ -149,15 +149,9 @@ pub fn at_launch() {
         unsafe { std::env::remove_var(LAUNCHER_ENV) };
         if let Some(told) = Told::decode(&from.to_string_lossy()) {
             let folder = told.folder.filter(|folder| exe.as_deref().is_some_and(|exe| runs_from(exe, folder)));
-            // `main` is reached, so the binary starts. Whether this launch
-            // counts toward giving the version up depends on what it turns
-            // out to be: only a window does, and it says so again in
-            // [`window_starting`]. A `--version`, a command, a launch handed
-            // to a window already open, or one stopped with Ctrl-C proves
-            // nothing either way and leaves no marker behind.
-            if let Some(folder) = &folder {
-                let _ = fs::remove_file(folder.join(trying(std::process::id())));
-            }
+            // The launcher's marker stays: until `main` knows this launch is
+            // not a window — see [`not_a_window`] — a crash anywhere on the
+            // way to one, GTK's start included, counts against the version.
             let _ = ORIGIN.set(Origin { installed: told.installed, installed_version: told.installed_version, folder });
         }
         return;
@@ -192,10 +186,20 @@ fn under(path: &Path, dir: &Path) -> bool {
     resolved(path).starts_with(resolved(dir))
 }
 
+/// This launch is not a window: a command, a `--version`, or arguments
+/// handed to a window another process keeps. It proves nothing about the
+/// version either way, so its marker goes now, and stopping it with Ctrl-C
+/// or a timeout does not count as a launch that did not run.
+pub fn not_a_window() {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
+    let _ = fs::remove_file(folder.join(trying(std::process::id())));
+}
+
 /// This process is about to become the window: from here until the window
 /// has been up for a few seconds, a launch that ends counts as one that did
-/// not run. Called before the database is opened, so a migration that
-/// crashes counts too.
+/// not run. The launcher's marker says so already; this is for a process
+/// started some other way, such as in place of an older version that found
+/// its database too new.
 pub fn window_starting() {
     let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
     if !folder.join(HEALTHY).exists() {
@@ -224,9 +228,14 @@ fn mark_healthy(folder: &Path) {
             let _ = fs::remove_file(entry.path());
         }
     }
-    // Healthy, so never rolled back: what it wrote is somebody's work.
-    if let Some(record) = before_record(folder) {
-        let _ = fs::remove_file(record);
+    // Healthy, so never rolled back, and neither is anything older: what
+    // they wrote is somebody's work, and this version reads it.
+    if let Some(version) = folder.file_name().and_then(|name| name.to_str()).and_then(Version::parse)
+        && let Some(root) = folder.parent()
+    {
+        for before in records(root).into_iter().filter(|before| before.version <= version) {
+            let _ = fs::remove_file(before.path);
+        }
     }
 }
 
@@ -242,14 +251,78 @@ pub fn settle() {
 /// Where the shelf remembers which backup was taken before `folder`'s
 /// version first opened the settings: `.before-<version>` beside the version
 /// folders rather than in one, so tidying a version given up on does not
-/// lose it. Holds the backup's path, or nothing when there were no settings.
+/// lose it. Two lines: the settings' schema version then, and the backup's
+/// path — `none` and nothing when there were no settings.
 fn before_record(folder: &Path) -> Option<PathBuf> {
     let version = folder.file_name()?.to_str()?;
     Some(folder.parent()?.join(format!("{BEFORE}{version}")))
 }
 
 const BEFORE: &str = ".before-";
-const ROLLED_BACK: &str = ".rolled-back-";
+/// A shelf-wide lock, for the one change that must never run twice at once.
+const LOCK: &str = ".lock";
+/// What a rollback a command did has to say, for the next window to show.
+const NOTICE: &str = ".notice";
+/// A release whose download did not match its checksum once already.
+const MISMATCHED: &str = ".mismatched-";
+
+/// One `.before-` record, read.
+#[derive(Debug)]
+struct Before {
+    version: Version,
+    path: PathBuf,
+    /// `None` when there were no settings yet.
+    schema: Option<i32>,
+    backup: Option<PathBuf>,
+}
+
+fn records(root: &Path) -> Vec<Before> {
+    let mut found: Vec<Before> = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let version = Version::parse(entry.file_name().to_str()?.strip_prefix(BEFORE)?)?;
+            let text = fs::read_to_string(entry.path()).ok()?;
+            let mut lines = text.lines();
+            let schema = match lines.next()?.trim() {
+                "none" => None,
+                number => Some(number.parse().ok()?),
+            };
+            let backup = lines.next().map(str::trim).filter(|path| !path.is_empty()).map(PathBuf::from);
+            if schema.is_some() && backup.is_none() {
+                return None;
+            }
+            Some(Before { version, path: entry.path(), schema, backup })
+        })
+        .collect();
+    found.sort_unstable_by_key(|before| std::cmp::Reverse(before.version));
+    found
+}
+
+/// The settings' schema version as SQLite has it, journal included; `None`
+/// when there is no settings file or it cannot be read.
+fn schema_of(settings: &Path) -> Option<i32> {
+    if !settings.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open_with_flags(settings, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    crate::migrations::version(&conn).ok()
+}
+
+/// Hold the shelf's lock until the result is dropped.
+fn lock(root: &Path) -> Option<fs::File> {
+    fs::create_dir_all(root).ok()?;
+    let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(LOCK)).ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
+/// A name no other process, nor this one a moment ago, has used.
+fn unique() -> String {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    format!("{}-{}-{}", now.as_secs(), std::process::id(), now.subsec_nanos())
+}
 
 /// Before the database is opened by a downloaded version that has never
 /// run here: back the settings up, so that if it migrates them and then
@@ -269,8 +342,8 @@ fn backup_before_first_open(folder: &Path, settings: &Path) {
         // Nothing new taken when nothing changed since the newest backup,
         // which is then the copy from before.
         match crate::backup::take_if_changed(settings) {
-            Ok(Some(backup)) => Some(backup.path),
-            Ok(None) => crate::backup::list(settings).into_iter().next().map(|backup| backup.path),
+            Ok(Some(backup)) => Some(backup),
+            Ok(None) => crate::backup::list(settings).into_iter().next(),
             Err(error) => {
                 eprintln!("omacharts: settings not backed up before this version first opened them: {error}");
                 return;
@@ -279,59 +352,115 @@ fn backup_before_first_open(folder: &Path, settings: &Path) {
     } else {
         None
     };
-    let _ = fs::write(&record, taken.map(|path| path.display().to_string()).unwrap_or_default());
+    let text = match taken {
+        Some(backup) => match backup.schema {
+            Some(schema) => format!("{schema}\n{}\n", backup.path.display()),
+            // A backup whose schema cannot be read cannot be trusted to open.
+            None => return,
+        },
+        None if settings.exists() => return,
+        None => "none\n\n".to_string(),
+    };
+    let _ = fs::write(&record, text);
+}
+
+/// The settings are open, in a downloaded version that has not shown it
+/// runs yet. If they are at the schema they were at before it first opened
+/// them, it migrated nothing, and there is nothing of its to roll back: the
+/// record goes, so a rollback for a later version is never sent back to it.
+/// A `stat` once the record is gone.
+pub fn opened(settings: &Path) {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
+    forget_if_unmigrated(folder, settings);
+}
+
+fn forget_if_unmigrated(folder: &Path, settings: &Path) {
+    let Some(record) = before_record(folder) else { return };
+    if !record.exists() {
+        return;
+    }
+    let Some(root) = folder.parent() else { return };
+    let Some(before) = records(root).into_iter().find(|before| before.path == record) else { return };
+    if before.schema.is_some() && before.schema == schema_of(settings) {
+        let _ = fs::remove_file(record);
+    }
 }
 
 /// The database was written by a newer Omacharts that never ran properly
 /// here and has been given up on, and nothing newer is left to open it:
 /// put the settings back as they were before that version first opened
 /// them, so this one can. The newer file is kept beside them, never
-/// deleted. Once per version. Says what was done, for the person to hear
-/// once; `None` when there was nothing to do.
+/// deleted. Once per version. Says what was done, and leaves it for the
+/// next window to say too; `None` when there was nothing to do.
+///
+/// Only for an installed omacharts: a build in `target/` is somebody
+/// working on it, and the settings are not its to roll back.
 pub fn roll_back_for_a_newer_database(settings: &Path) -> Option<String> {
-    if updates_off() || as_root() || newer_for_a_newer_database().is_some() {
+    if origin().is_none() || updates_off() || as_root() || newer_for_a_newer_database().is_some() {
         return None;
     }
-    roll_back(&Shelf::new(shelf_dir()), settings, Version::running())
+    let shelf = Shelf::new(shelf_dir());
+    let said = roll_back(&shelf, settings, Version::running(), crate::migrations::LATEST)?;
+    let _ = fs::write(shelf.root.join(NOTICE), &said);
+    Some(said)
 }
 
-fn roll_back(shelf: &Shelf, settings: &Path, running: Version) -> Option<String> {
-    // The oldest such version newer than this one: its backup is from
-    // before any of them touched the settings.
-    let (version, record) = fs::read_dir(&shelf.root)
-        .ok()?
-        .flatten()
-        .filter_map(|entry| {
-            let version = Version::parse(entry.file_name().to_str()?.strip_prefix(BEFORE)?)?;
-            Some((version, entry.path()))
-        })
-        .filter(|(version, _)| *version > running)
-        .min_by_key(|(version, _)| *version)?;
-    let folder = shelf.root.join(version.to_string());
-    let runnable = folder.join(BINARY).is_file() && !folder.join(BAD).exists();
-    if runnable || folder.join(HEALTHY).exists() {
+/// What a rollback left to be said, said once: the window shows it, since a
+/// command's terminal may be nobody's — the bar's, say.
+pub fn take_notice() -> Option<String> {
+    let notice = shelf_dir().join(NOTICE);
+    let said = fs::read_to_string(&notice).ok()?;
+    let _ = fs::remove_file(&notice);
+    Some(said).filter(|said| !said.trim().is_empty())
+}
+
+fn roll_back(shelf: &Shelf, settings: &Path, running: Version, known: i32) -> Option<String> {
+    // One at a time: the bar's command and the window can both find the
+    // database too new at the same moment.
+    let _held = lock(&shelf.root)?;
+    // And perhaps the other did it first.
+    if schema_of(settings).is_none_or(|schema| schema <= known) {
         return None;
     }
-    let backup = fs::read_to_string(&record).ok()?;
-    let backup = backup.trim();
+    // The newest version given up on whose backup this one can open: the
+    // least that is lost. One that ran is not given up on, and one that can
+    // still run is started instead of rolling anything back.
+    let chosen = records(&shelf.root).into_iter().find(|before| {
+        let folder = shelf.root.join(before.version.to_string());
+        let runnable = folder.join(BINARY).is_file() && !folder.join(BAD).exists();
+        before.version > running
+            && !runnable
+            && !folder.join(HEALTHY).exists()
+            && before.schema.is_none_or(|schema| schema <= known)
+            && before.backup.as_deref().is_none_or(Path::exists)
+    })?;
+    let version = chosen.version;
 
-    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let aside = settings.with_file_name(format!("omacharts.db.from-{version}-{stamp}"));
+    let unique = unique();
+    let aside = settings.with_file_name(format!("omacharts.db.from-{version}-{unique}"));
     let with = |path: &Path, suffix: &str| PathBuf::from(format!("{}{suffix}", path.display()));
-    if !backup.is_empty() {
+    if let Some(backup) = &chosen.backup {
         // Copied in under another name first, so the settings file is never
         // half written.
-        let incoming = with(settings, ".restoring");
-        if let Err(error) = fs::copy(backup, &incoming) {
+        let incoming = with(settings, &format!(".restoring-{unique}"));
+        if let Err(error) = fs::copy(backup, &incoming).and_then(|_| fs::File::open(&incoming)?.sync_all()) {
             eprintln!("omacharts: could not put back the settings from before {version}: {error}");
+            let _ = fs::remove_file(&incoming);
             return None;
         }
-        put_aside(settings, &aside, &with)?;
+        if put_aside(settings, &aside, &with).is_none() {
+            let _ = fs::remove_file(&incoming);
+            return None;
+        }
         fs::rename(&incoming, settings).ok()?;
     } else {
         put_aside(settings, &aside, &with)?;
     }
-    let _ = fs::rename(&record, shelf.root.join(format!("{ROLLED_BACK}{version}")));
+    // Used, and every older one with it: the settings are now from before
+    // them all.
+    for before in records(&shelf.root).into_iter().filter(|before| before.version <= version) {
+        let _ = fs::remove_file(before.path);
+    }
     Some(format!(
         "Omacharts {version} did not run here and had updated your settings, so they are back as they \
          were before it first ran; what changed since is kept in {}",
@@ -502,7 +631,9 @@ impl Shelf {
     ///   not run, that one does, and it can open what it last wrote;
     /// - every bad marker but the newest, and that one too unless it is newer
     ///   than the newest ready version, which is the only thing it guards;
-    /// - every download in progress whose process is gone.
+    /// - every download in progress whose process is gone;
+    /// - every record of a backup or a mismatch for a version as old as
+    ///   `installed`: the package has it now, so nothing rolls back to before it.
     pub fn tidy(&self, installed: Version, alive: impl Fn(u32) -> bool) -> usize {
         let mut gone = 0;
         let newest_ready = self.newest_ready();
@@ -526,6 +657,16 @@ impl Shelf {
             let Some(rest) = name.to_str().and_then(|name| name.strip_prefix(INCOMING)) else { continue };
             let pid = rest.rsplit_once('-').and_then(|(_, pid)| pid.parse::<u32>().ok());
             if pid.is_none_or(|pid| !alive(pid)) && fs::remove_dir_all(entry.path()).is_ok() {
+                gone += 1;
+            }
+        }
+        for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(version) = name.strip_prefix(BEFORE).or_else(|| name.strip_prefix(MISMATCHED)) else { continue };
+            if Version::parse(version).is_some_and(|version| version <= installed)
+                && fs::remove_file(entry.path()).is_ok()
+            {
                 gone += 1;
             }
         }
@@ -567,8 +708,10 @@ impl Shelf {
                 continue;
             }
             // Which backup came before which version: what lets a database a
-            // removed version migrated be put back, so it outlives a reset.
-            if name.to_str().is_some_and(|name| name.starts_with(BEFORE) || name.starts_with(ROLLED_BACK)) {
+            // removed version migrated be put back, so it outlives a plain
+            // reset. `--all` is starting over, and takes them too. The lock
+            // and an unsaid notice stay either way.
+            if name.to_str().is_some_and(|name| (!all && name.starts_with(BEFORE)) || name == LOCK || name == NOTICE) {
                 continue;
             }
             let path = entry.path();
@@ -710,6 +853,7 @@ enum Unstarted {
 /// window, and without waiting on it for longer than `patience`.
 fn probe(binary: &Path, patience: Duration) -> Result<Version, Unstarted> {
     use crate::launch::{refused, Refused};
+    use std::os::unix::process::ExitStatusExt;
     let spawn = || {
         std::process::Command::new(binary)
             .arg("--version")
@@ -732,6 +876,11 @@ fn probe(binary: &Path, patience: Duration) -> Result<Version, Unstarted> {
             Err(error) if error.raw_os_error() == Some(26) && attempts < 10 => {
                 std::thread::sleep(Duration::from_millis(50))
             }
+            // A file just made executable and still refused is a folder
+            // mounted noexec, which no later download changes.
+            Err(error) if error.raw_os_error() == Some(13) => {
+                return Err(Unstarted::Definitely(format!("not allowed to run in this folder ({error})")));
+            }
             Err(error) => {
                 return Err(match refused(&error, binary) {
                     Refused::Definitely(why) => Unstarted::Definitely(why),
@@ -748,6 +897,11 @@ fn probe(binary: &Path, patience: Duration) -> Result<Version, Unstarted> {
             // cannot be run: not executable, or a library it needs is
             // missing or too old. Every launch would end the same way.
             Ok(Some(status)) if matches!(status.code(), Some(126 | 127)) => {
+                return Err(Unstarted::Definitely(format!("--version ended with {status}")));
+            }
+            // A crash answering `--version` is the binary, every time. A
+            // kill or a hang-up is something else's doing.
+            Ok(Some(status)) if matches!(status.signal(), Some(4 | 5 | 6 | 7 | 8 | 11 | 31)) => {
                 return Err(Unstarted::Definitely(format!("--version ended with {status}")));
             }
             Ok(Some(status)) => return Err(Unstarted::ForNow(format!("--version ended with {status}"))),
@@ -959,8 +1113,18 @@ pub fn check(
         return Ok(Checked::Available { latest });
     }
 
+    let mismatched = shelf.root.join(format!("{MISMATCHED}{latest}"));
     match shelf.install(source, latest, &asset) {
-        Ok(()) => {}
+        Ok(()) => {
+            let _ = fs::remove_file(&mismatched);
+        }
+        // A transfer can be corrupted on the way, so a first mismatch is
+        // tried again at the next check; a second is what was published.
+        Err(failure @ Failure::Mismatch { .. }) if !mismatched.exists() => {
+            let _ = fs::write(&mismatched, b"");
+            shelf.note_checked();
+            return Err(failure);
+        }
         // Not what was published, or cannot run here: never again, until a
         // newer release or `update reset`.
         Err(failure) if failure.definite() => {
@@ -1179,11 +1343,18 @@ mod tests {
     }
 
     #[test]
-    fn a_download_that_does_not_match_its_checksum_is_discarded_and_not_fetched_again_until_a_reset() {
+    fn a_download_that_does_not_match_its_checksum_twice_is_discarded_and_not_fetched_again_until_a_reset() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         let mut fake = Fake::releasing("0.2.15");
         fake.assets.insert(asset(), gzip(b"#!/bin/sh\necho tampered\n"));
+        // Once could be the transfer: tried again at the next check.
+        let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
+        assert!(matches!(failed, Failure::Mismatch { .. }), "{failed}");
+        assert!(!shelf.root.join("0.2.15").exists(), "nothing kept: {:?}", on_shelf(&shelf));
+        assert!(shelf.root.join(".mismatched-0.2.15").exists());
+        assert!(!shelf.check_due(SystemTime::now()), "the next try waits for the next check");
+        // Twice is what was published.
         let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
         assert!(matches!(failed, Failure::Mismatch { .. }), "{failed}");
         assert!(!shelf.root.join("0.2.15").join(BINARY).exists(), "nothing kept: {:?}", on_shelf(&shelf));
@@ -1267,6 +1438,30 @@ mod tests {
             let again = Fake::releasing("0.2.15");
             check(&again, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
             assert!(again.opened.borrow().is_empty(), "never downloaded again");
+        }
+    }
+
+    #[test]
+    fn a_mismatch_once_then_a_good_download_is_ready() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let mut fake = Fake::releasing("0.2.15");
+        fake.assets.insert(asset(), gzip(b"#!/bin/sh\necho tampered\n"));
+        check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
+        let good = Fake::releasing("0.2.15");
+        let checked = check(&good, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
+        assert_eq!(checked, Checked::Ready { version: v("0.2.15"), latest: v("0.2.15") });
+        assert_eq!(on_shelf(&shelf), ["0.2.15"]);
+    }
+
+    #[test]
+    fn a_probe_that_crashes_is_definite_and_one_killed_is_for_now() {
+        let scratch = Scratch::new();
+        for (signal, definite) in [("SEGV", true), ("ABRT", true), ("TERM", false), ("KILL", false)] {
+            let binary = scratch.0.join(format!("dies-{signal}"));
+            place_executable(&binary, format!("#!/bin/sh\nkill -{signal} $$\n").as_bytes());
+            let probed = probe(&binary, Duration::from_secs(5));
+            assert_eq!(matches!(probed, Err(Unstarted::Definitely(_))), definite, "{signal}: {probed:?}");
         }
     }
 
@@ -1521,7 +1716,10 @@ mod tests {
         let record = shelf.root.join(".before-0.2.16");
         let taken = crate::backup::list(&settings);
         assert_eq!(taken.len(), 1);
-        assert_eq!(fs::read_to_string(&record).unwrap(), taken[0].path.display().to_string());
+        assert_eq!(
+            fs::read_to_string(&record).unwrap(),
+            format!("{}\n{}\n", crate::migrations::LATEST, taken[0].path.display())
+        );
 
         // Once is enough, and a version that has run needs none — and is
         // never rolled back, so the record goes.
@@ -1539,78 +1737,217 @@ mod tests {
         let folder = fresh.0.join("0.2.16");
         fs::create_dir_all(&folder).unwrap();
         backup_before_first_open(&folder, &fresh.0.join("omacharts.db"));
-        assert_eq!(fs::read_to_string(fresh.0.join(".before-0.2.16")).unwrap(), "");
+        assert_eq!(fs::read_to_string(fresh.0.join(".before-0.2.16")).unwrap(), "none\n\n");
     }
 
     /// A settings file with `a` set to `value`, read back.
     fn setting_a(settings: &Path) -> Option<String> {
-        crate::store::Store::open_at(settings).ok()?.setting("a")
+        let conn = rusqlite::Connection::open(settings).ok()?;
+        conn.query_row("SELECT value FROM settings WHERE key = 'a'", [], |r| r.get(0)).ok()
+    }
+
+    /// What a version newer than this build does to the settings: change
+    /// one, and migrate them past what this build can open.
+    fn migrate_past(settings: &Path, value: &str, schema: i32) {
+        let conn = rusqlite::Connection::open(settings).unwrap();
+        conn.execute("UPDATE settings SET value = ?1 WHERE key = 'a'", [value]).unwrap();
+        conn.pragma_update(None, "user_version", schema).unwrap();
+    }
+
+    const KNOWN: i32 = crate::migrations::LATEST;
+
+    /// A shelf in `data/versions` and settings in `data`, `a` set to `before`.
+    fn settings_and_shelf(scratch: &Scratch) -> (PathBuf, PathBuf, Shelf) {
+        let data = scratch.0.join("data");
+        fs::create_dir_all(&data).unwrap();
+        let settings = data.join("omacharts.db");
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "before");
+        (data.clone(), settings, Shelf::new(data.join("versions")))
+    }
+
+    fn set_aside(data: &Path, version: &str) -> Vec<PathBuf> {
+        let prefix = format!("omacharts.db.from-{version}-");
+        fs::read_dir(data)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with(&prefix))
+            .filter(|path| !path.to_string_lossy().ends_with("-wal") && !path.to_string_lossy().ends_with("-shm"))
+            .collect()
     }
 
     #[test]
     fn settings_a_version_given_up_on_migrated_are_put_back_and_the_newer_ones_kept() {
         let scratch = Scratch::new();
-        let data = scratch.0.join("data");
-        fs::create_dir_all(&data).unwrap();
-        let settings = data.join("omacharts.db");
-        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "before");
-        let shelf = Shelf::new(data.join("versions"));
+        let (data, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.16");
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        // It ran, migrated the settings, and was given up on.
+        migrate_past(&settings, "after", KNOWN + 1);
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14"), KNOWN), None, "still runnable: it is started instead");
+        shelf.mark_bad(v("0.2.16"), "3 launches in a row ended before it ran properly");
+
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.16"), KNOWN), None, "not newer than this one");
+        let said = roll_back(&shelf, &settings, v("0.2.14"), KNOWN).expect("rolled back");
+        assert!(said.contains("0.2.16") && said.contains("omacharts.db.from-0.2.16-"), "{said}");
+        assert_eq!(setting_a(&settings).as_deref(), Some("before"));
+        assert_eq!(schema_of(&settings), Some(KNOWN));
+        let aside = set_aside(&data, "0.2.16");
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(setting_a(&aside[0]).as_deref(), Some("after"), "the newer settings kept, never deleted");
+        assert!(!data.read_dir().unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("restoring")));
+
+        // Once.
+        assert!(!shelf.root.join(".before-0.2.16").exists());
+        migrate_past(&settings, "again", KNOWN + 1);
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14"), KNOWN), None);
+        assert_eq!(setting_a(&settings).as_deref(), Some("again"));
+    }
+
+    #[test]
+    fn settings_this_version_can_open_are_left_alone() {
+        let scratch = Scratch::new();
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.16");
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        shelf.mark_bad(v("0.2.16"), "no");
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "after");
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14"), KNOWN), None);
+        assert_eq!(setting_a(&settings).as_deref(), Some("after"));
+    }
+
+    #[test]
+    fn the_newest_backup_this_version_can_open_is_the_one_put_back() {
+        let scratch = Scratch::new();
+        let (data, settings, shelf) = settings_and_shelf(&scratch);
+        // 0.2.15 opened them as they were; 0.2.16 after 0.2.15 had changed
+        // them; 0.2.17 after 0.2.16 had migrated them past this build.
+        shelve(&shelf, "0.2.15");
+        backup_before_first_open(&shelf.root.join("0.2.15"), &settings);
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "by 0.2.15");
+        shelve(&shelf, "0.2.16");
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        migrate_past(&settings, "by 0.2.16", KNOWN + 1);
+        shelve(&shelf, "0.2.17");
+        backup_before_first_open(&shelf.root.join("0.2.17"), &settings);
+        migrate_past(&settings, "by 0.2.17", KNOWN + 2);
+        for version in ["0.2.15", "0.2.16", "0.2.17"] {
+            shelf.mark_bad(v(version), "no");
+        }
+
+        // 0.2.17's backup is from 0.2.16's schema, which this build cannot
+        // open; 0.2.16's is the newest it can, and keeps 0.2.15's change.
+        roll_back(&shelf, &settings, v("0.2.14"), KNOWN).expect("rolled back");
+        assert_eq!(setting_a(&settings).as_deref(), Some("by 0.2.15"));
+        assert_eq!(set_aside(&data, "0.2.16").len(), 1);
+        assert_eq!(on_shelf(&shelf).iter().filter(|name| name.starts_with(BEFORE)).count(), 1, "{:?}", on_shelf(&shelf));
+        assert!(shelf.root.join(".before-0.2.17").exists(), "for a build that can open its backup");
+    }
+
+    #[test]
+    fn a_version_that_opened_the_settings_without_migrating_them_is_never_rolled_back_to() {
+        let scratch = Scratch::new();
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.15");
+        let folder = shelf.root.join("0.2.15");
+        backup_before_first_open(&folder, &settings);
+        // It opened them at the same schema and changed a setting: not a
+        // migration, and nothing to roll back to.
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "by 0.2.15");
+        forget_if_unmigrated(&folder, &settings);
+        assert!(!shelf.root.join(".before-0.2.15").exists());
+
+        // One that did migrate keeps it.
         shelve(&shelf, "0.2.16");
         let folder = shelf.root.join("0.2.16");
         backup_before_first_open(&folder, &settings);
-        // It ran, changed the settings, and was given up on.
-        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "after");
-        assert_eq!(roll_back(&shelf, &settings, v("0.2.14")), None, "still runnable: it is started instead");
-        shelf.mark_bad(v("0.2.16"), "3 launches in a row ended before it ran properly");
+        migrate_past(&settings, "by 0.2.16", KNOWN + 1);
+        forget_if_unmigrated(&folder, &settings);
+        assert!(shelf.root.join(".before-0.2.16").exists());
+        shelf.mark_bad(v("0.2.15"), "no");
+        shelf.mark_bad(v("0.2.16"), "no");
+        roll_back(&shelf, &settings, v("0.2.14"), KNOWN).expect("rolled back");
+        assert_eq!(setting_a(&settings).as_deref(), Some("by 0.2.15"), "the change 0.2.15 made is kept");
+    }
 
-        assert_eq!(roll_back(&shelf, &settings, v("0.2.16")), None, "not newer than this one");
-        let said = roll_back(&shelf, &settings, v("0.2.14")).expect("rolled back");
-        assert!(said.contains("0.2.16") && said.contains("omacharts.db.from-0.2.16-"), "{said}");
+    #[test]
+    fn two_rollbacks_at_once_put_the_settings_back_once() {
+        let scratch = Scratch::new();
+        let (data, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.16");
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        migrate_past(&settings, "after", KNOWN + 1);
+        shelf.mark_bad(v("0.2.16"), "no");
+
+        let barrier = std::sync::Barrier::new(4);
+        let done: Vec<Option<String>> = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        roll_back(&shelf, &settings, v("0.2.14"), KNOWN)
+                    })
+                })
+                .collect();
+            runs.into_iter().map(|run| run.join().unwrap()).collect()
+        });
+        assert_eq!(done.iter().flatten().count(), 1, "{done:?}");
         assert_eq!(setting_a(&settings).as_deref(), Some("before"));
-        let aside: Vec<PathBuf> = fs::read_dir(&data)
-            .unwrap()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("omacharts.db.from-0.2.16-"))
-            .filter(|path| !path.to_string_lossy().ends_with("-wal") && !path.to_string_lossy().ends_with("-shm"))
-            .collect();
+        let aside = set_aside(&data, "0.2.16");
         assert_eq!(aside.len(), 1, "{aside:?}");
-        assert_eq!(setting_a(&aside[0]).as_deref(), Some("after"), "the newer settings kept, never deleted");
-
-        // Once.
-        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "again");
-        assert_eq!(roll_back(&shelf, &settings, v("0.2.14")), None);
-        assert_eq!(setting_a(&settings).as_deref(), Some("again"));
-        assert!(shelf.root.join(".rolled-back-0.2.16").exists());
+        assert_eq!(setting_a(&aside[0]).as_deref(), Some("after"));
     }
 
     #[test]
     fn a_version_that_has_run_or_was_tidied_after_running_is_never_rolled_back() {
         let scratch = Scratch::new();
-        let data = scratch.0.join("data");
-        fs::create_dir_all(&data).unwrap();
-        let settings = data.join("omacharts.db");
-        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "before");
-        let shelf = Shelf::new(data.join("versions"));
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.15");
         shelve(&shelf, "0.2.16");
-        let folder = shelf.root.join("0.2.16");
-        backup_before_first_open(&folder, &settings);
-        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "after");
-        mark_healthy(&folder);
-        fs::remove_dir_all(&folder).unwrap();
-        assert_eq!(roll_back(&shelf, &settings, v("0.2.14")), None);
+        backup_before_first_open(&shelf.root.join("0.2.15"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        migrate_past(&settings, "after", KNOWN + 1);
+        // A newer one ran: what every older one did is behind it.
+        mark_healthy(&shelf.root.join("0.2.16"));
+        assert!(!on_shelf(&shelf).iter().any(|name| name.starts_with(BEFORE)), "{:?}", on_shelf(&shelf));
+        fs::remove_dir_all(shelf.root.join("0.2.16")).unwrap();
+        shelf.mark_bad(v("0.2.15"), "no");
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14"), KNOWN), None);
         assert_eq!(setting_a(&settings).as_deref(), Some("after"));
     }
 
     #[test]
-    fn a_reset_keeps_which_backup_came_before_which_version() {
+    fn a_rollback_from_a_command_is_left_for_the_next_window_to_say() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        fs::create_dir_all(&shelf.root).unwrap();
+        fs::write(shelf.root.join(NOTICE), "said").unwrap();
+        shelf.reset(v("0.2.14"), true).unwrap();
+        assert!(shelf.root.join(NOTICE).exists(), "a reset does not swallow it");
+    }
+
+    #[test]
+    fn a_plain_reset_keeps_which_backup_came_before_which_version_and_all_does_not() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         shelve(&shelf, "0.2.16");
-        fs::write(shelf.root.join(".before-0.2.16"), b"").unwrap();
-        fs::write(shelf.root.join(".rolled-back-0.2.15"), b"").unwrap();
+        fs::write(shelf.root.join(".before-0.2.16"), b"none\n\n").unwrap();
+        shelf.reset(v("0.2.14"), false).unwrap();
+        assert_eq!(on_shelf(&shelf), [".before-0.2.16"]);
         shelf.reset(v("0.2.14"), true).unwrap();
-        assert_eq!(on_shelf(&shelf), [".before-0.2.16", ".rolled-back-0.2.15"]);
+        assert!(on_shelf(&shelf).is_empty(), "{:?}", on_shelf(&shelf));
+    }
+
+    #[test]
+    fn tidying_forgets_the_records_of_versions_the_package_has_caught_up_with() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        fs::create_dir_all(&shelf.root).unwrap();
+        for name in [".before-0.2.15", ".before-0.2.17", ".mismatched-0.2.15", ".mismatched-0.2.17"] {
+            fs::write(shelf.root.join(name), b"none\n\n").unwrap();
+        }
+        shelf.tidy(v("0.2.16"), |_| true);
+        assert_eq!(on_shelf(&shelf), [".before-0.2.17", ".mismatched-0.2.17"]);
     }
 
     #[test]
@@ -1686,6 +2023,8 @@ mod tests {
             assert_eq!(origin.installed_version, v("0.2.14"));
             assert_eq!(origin.installed, Path::new("/usr/bin/omacharts"));
             assert!(origin.handed_over());
+            assert!(marker.exists(), "it may yet be a window, and crash on the way to one");
+            not_a_window();
             assert!(!marker.exists(), "not a window, so not counted");
             settle();
             assert!(!folder.join(HEALTHY).exists(), "an exit proves nothing");

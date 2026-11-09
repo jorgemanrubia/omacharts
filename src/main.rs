@@ -50,10 +50,17 @@ fn run() -> glib::ExitCode {
             peeled.args
         }
         Err(fault) => {
+            omacharts::update::not_a_window();
             eprintln!("omacharts: {}\n\n{}", fault.message, cli::usage());
             return glib::ExitCode::from(fault.code);
         }
     };
+    // A command, `--version`, `--help` or a mistyped option: never a window,
+    // so this launch says nothing about whether the version runs. A symbol
+    // or nothing at all might be, and is decided below.
+    if cli::is_command(&args) || args.get(1).is_some_and(|arg| arg.starts_with('-')) {
+        omacharts::update::not_a_window();
+    }
 
     // A few commands answer for the process they were typed in, and the bus is
     // never asked about them: handing `skill` to the window would report on
@@ -156,7 +163,6 @@ fn run() -> glib::ExitCode {
                 {
                     if let Some(said) = omacharts::update::roll_back_for_a_newer_database(&settings_file()) {
                         eprintln!("omacharts: {said}");
-                        log_words::say(log_words::note("Settings", said));
                     }
                     Store::open()
                 }
@@ -164,7 +170,15 @@ fn run() -> glib::ExitCode {
                 opened => opened,
             };
             let store = match opened {
-                Ok(store) => store,
+                Ok(store) => {
+                    omacharts::update::opened(&settings_file());
+                    // A rollback this window did, or a command did with no
+                    // window to say it in: said once, here.
+                    if let Some(said) = omacharts::update::take_notice() {
+                        log_words::say(log_words::note("Settings", said));
+                    }
+                    store
+                }
                 // Written by a newer Omacharts than this one. The file is
                 // intact and it is theirs, so this is the one failure that
                 // must not be worked around: carrying on with an empty
@@ -355,6 +369,13 @@ fn run() -> glib::ExitCode {
         code
     });
 
+    // Handed to a window another process keeps, this launch is not one, and
+    // being killed while it waits for the answer says nothing about it.
+    // Registering is the first thing running does anyway.
+    if app.register(gio::Cancellable::NONE).is_ok() && app.is_remote() {
+        omacharts::update::not_a_window();
+    }
+
     // The arguments as typed, launch options included: these travel to
     // whichever process holds the window, and the flag is answered there.
     app.run_with_args(&launch)
@@ -430,7 +451,10 @@ fn open_store() -> Store {
         opened => opened,
     };
     match opened {
-        Ok(store) => store,
+        Ok(store) => {
+            omacharts::update::opened(&settings_file());
+            store
+        }
         Err(error) => {
             if matches!(error, omacharts::migrations::Error::FromTheFuture { .. }) {
                 eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
