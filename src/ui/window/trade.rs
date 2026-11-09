@@ -3353,6 +3353,40 @@ pub(super) mod tests {
         });
     }
 
+    /// A size picked for one contract is never another's: 5 picked while a
+    /// chart of ES trades MES is not 5 ES once the trading symbol is
+    /// cleared, nor 5 NQ once the chart moves to NQ; each starts at the
+    /// first of its template, which the header says, and MES is 5 again
+    /// once it is traded again. A size stored before sizes named their
+    /// contract stays with the one the chart traded too.
+    #[test]
+    fn a_size_picked_for_one_contract_does_not_carry_to_another() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
+            session.contracts.lock().unwrap().insert("MES".into(), "MESZ6".into());
+            let find = |symbol: &str| window.index.find(symbol, None).expect(symbol);
+            window.set_trading_symbol(pane.id, Some(find("MES")));
+            window.pick_size(pane.id, 5);
+            assert_eq!((pane.size_label_text(), window.size_of(&pane).get()), ("5".to_string(), 5));
+
+            window.set_trading_symbol(pane.id, None);
+            assert_eq!((pane.size_label_text(), window.size_of(&pane).get()), ("1".to_string(), 1), "5 MES became 5 ES");
+            window.set_trading_symbol(pane.id, Some(find("MES")));
+            assert_eq!(pane.size_label_text(), "5", "MES's own size forgotten");
+            window.show_in(&pane, find("NQ"));
+            assert_eq!((pane.size_label_text(), window.size_of(&pane).get()), ("1".to_string(), 1), "5 MES became 5 NQ");
+
+            // Stored before sizes named their contract: NQ's, as it was traded.
+            let three = trading::Quantity::new(3).unwrap();
+            pane.trading_size.replace(Some(trading::sizes::Picked { template: "Futures".into(), size: three, contract: None }));
+            assert_eq!(window.size_of(&pane), three);
+            window.show_in(&pane, find("ES"));
+            assert_eq!(window.size_of(&pane).get(), 1, "3 NQ became 3 ES");
+            window.show_in(&pane, find("NQ"));
+            assert_eq!(window.size_of(&pane), three);
+        });
+    }
+
     /// The size part's popover lists the template's sizes with the chart's
     /// marked; a right click on it offers to edit the templates, and the
     /// dialog's changes reach the header at once.

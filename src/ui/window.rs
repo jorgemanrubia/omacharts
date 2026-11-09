@@ -432,7 +432,7 @@ mod tests {
         pinned.source = Some("rithmic".into());
         pinned.account = Some("1/951".into());
         let two = crate::trading::Quantity::new(2).unwrap();
-        pinned.trading_size = Some(crate::trading::sizes::Picked { template: "Futures".into(), size: two });
+        pinned.trading_size = Some(crate::trading::sizes::Picked { template: "Futures".into(), size: two, contract: Some("ES".into()) });
         let book = book_of("Futures", vec![pinned, stored_pane(2, "NQ", LinkMode::Focus)]);
         let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
         assert_eq!(json.matches("\"source\"").count(), 1, "only the chosen one is written: {json}");
@@ -7726,6 +7726,7 @@ impl Window {
     /// in the background.
     fn show_in(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
         let timeframe = pane.timeframe.get();
+        Self::own_size(pane);
         // What it trades instead goes with what it charted, unless it
         // tracks the new one too: NQ charted where ES was must not go on
         // trading MES at NQ's prices.
@@ -8928,6 +8929,16 @@ impl Window {
         set.or_else(|| pane.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone()))
     }
 
+    /// A size picked before picks named their contract is the one `pane`
+    /// trades now, about to change: it is named so, and stays that
+    /// contract's rather than going on to the next, 10 MES never 10 ES.
+    fn own_size(pane: &ChartPane) {
+        let Some(traded) = pane.traded() else { return };
+        if let Some(picked) = pane.trading_size.borrow_mut().as_mut().filter(|picked| picked.contract.is_none()) {
+            picked.contract = Some(traded.root().to_string());
+        }
+    }
+
     /// Forget what `pane` trades instead when it does not track
     /// `instrument`, which it is about to chart. True when it did.
     fn drop_trading_symbol_unless(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
@@ -8972,6 +8983,7 @@ impl Window {
         if unchanged && !waited {
             return;
         }
+        Self::own_size(&pane);
         pane.trading_symbol.replace(traded);
         pane.write_readout();
         self.apply_marks_to(&pane);
