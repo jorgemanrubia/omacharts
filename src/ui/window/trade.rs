@@ -3820,6 +3820,46 @@ pub(super) mod tests {
         });
     }
 
+    /// Sierra Chart chosen for a chart stays chosen for a future it has no
+    /// files of, and is offered for it: MES is empty and says plainly why,
+    /// rather than drawn from Yahoo, which nobody chose. Back on ES it is
+    /// drawn from Sierra Chart; a stock, which it could never chart, goes
+    /// back to the order.
+    #[test]
+    fn sierra_chosen_for_a_future_it_has_no_files_of_says_so() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _folder, _store) = sierra_over_yahoo("no-files-of");
+            let es = window.index.find("ES", None).expect("ES");
+            let mes = window.index.find("MES", None).expect("MES");
+            window.show_in(&pane, es.clone());
+            window.choose_feed(pane.id, Some("yahoo".into()));
+            window.choose_feed(pane.id, Some("sierra".into()));
+            assert_eq!(feeds(&window, &pane), ["Sierra Chart ✓", "Yahoo Finance"]);
+
+            window.show_in(&pane, mes);
+            assert_eq!(pane.feed.borrow().as_deref(), Some("sierra"), "the choice stays");
+            assert_eq!(feed_on(&window, &pane), None, "nothing draws it");
+            assert_eq!(pane.view.trouble_said().as_deref(), Some("MES isn't in Sierra Chart's data"));
+            assert_eq!(dot(&pane).map(|dot| (dot.0, dot.1)), Some(("Sierra Chart · No MES in its data".into(), "down")));
+            // Under how it stands, Yahoo first as the order's own for MES.
+            assert_eq!(
+                feeds(&window, &pane),
+                ["Sierra Chart · No MES in its data", "Yahoo Finance", "Sierra Chart ✓"],
+                "still offered, and still the one"
+            );
+            assert!(streamed(&window).is_empty());
+
+            window.show_in(&pane, es);
+            assert_eq!(pane.view.trouble_said(), None);
+            on_sierra_now(&window, &pane);
+
+            let spy = window.index.find("SPY", None).expect("SPY");
+            window.show_in(&pane, spy);
+            assert_eq!(pane.feed.borrow().as_deref(), None, "a stock is no future");
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+        });
+    }
+
     /// Charting on one service and trading through another is one desk: a
     /// root charted on Sierra Chart's feed, ES as its front month, shows the
     /// position and orders an account at Rithmic holds in that month, and

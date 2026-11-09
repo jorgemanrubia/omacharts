@@ -314,6 +314,11 @@ impl Provider for Sierra {
         has_root(&opened, instrument.root()).then(|| instrument.symbol.clone())
     }
 
+    /// Any futures root, files of it here or not.
+    fn could_serve(&self, instrument: &Instrument) -> bool {
+        instrument.override_for(LISTED.id).is_some() || instrument.kind == InstrumentKind::FutureRoot
+    }
+
     /// A root as the contract its file here is, `MESZ26_FUT_CME` as
     /// `MESZ6`: the one [`stem_for`] draws it from.
     fn charted_contract(&self, instrument: &Instrument) -> Option<String> {

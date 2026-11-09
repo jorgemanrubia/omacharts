@@ -252,6 +252,10 @@ struct State {
     /// the marker could ever be reached, because a chart with no bars returns
     /// before it is drawn.
     trouble: Option<FetchFailure>,
+    /// What to say about `trouble` instead of its own message, when the
+    /// embedder knows more than the failure does: "MES isn't in Sierra
+    /// Chart's data". Cleared with it.
+    trouble_words: Option<String>,
     /// The price marks laid over the chart by whoever embeds it, and the
     /// rules a drag on them keeps to; empty, which costs nothing, unless
     /// somebody marks it.
@@ -1268,6 +1272,7 @@ impl State {
             clock: Clock::default(),
             drag: None,
             trouble: None,
+            trouble_words: None,
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
             hover_mark: None,
@@ -3990,6 +3995,7 @@ impl ChartView {
                 omacharts_engine::stream::upsert(&mut state.bars, *bar);
             }
             state.trouble = None;
+            state.trouble_words = None;
             state.loading = false;
             // A new day can start a new month, and the month to date with it.
             state.fit_range();
@@ -4205,8 +4211,29 @@ impl ChartView {
     /// for it. A first-time user on a machine with no network read that line
     /// as the app not having the S&P 500.
     pub fn set_trouble(&self, trouble: Option<FetchFailure>) {
-        self.state.borrow_mut().trouble = trouble;
+        {
+            let mut state = self.state.borrow_mut();
+            state.trouble = trouble;
+            state.trouble_words = None;
+        }
         self.redraw();
+    }
+
+    /// [`ChartView::set_trouble`], said in the embedder's own words.
+    pub fn set_trouble_saying(&self, trouble: FetchFailure, words: String) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.trouble = Some(trouble);
+            state.trouble_words = Some(words);
+        }
+        self.redraw();
+    }
+
+    /// What the chart says about its trouble, if it has any.
+    pub fn trouble_said(&self) -> Option<String> {
+        let state = self.state.borrow();
+        let trouble = state.trouble?;
+        Some(state.trouble_words.clone().unwrap_or_else(|| trouble.message().to_string()))
     }
 
     /// Lay `marks` over the chart, in the order they are drawn, with the
@@ -4557,7 +4584,7 @@ impl ChartView {
             if !over_trouble_dot(&s, area.width() as f64, x as f64, y as f64) {
                 return false;
             }
-            tooltip.set_text(s.trouble.map(FetchFailure::message));
+            tooltip.set_text(s.trouble_words.as_deref().or(s.trouble.map(FetchFailure::message)));
             true
         });
     }
@@ -5849,7 +5876,10 @@ fn placeholder_text(
 }
 
 fn draw_placeholder(cr: &cairo::Context, width: f64, height: f64, state: &State) {
-    let text = placeholder_text(state.instrument.is_some(), state.loading, state.trouble);
+    let text = match &state.trouble_words {
+        Some(words) if state.instrument.is_some() && !state.loading && state.trouble.is_some() => words.as_str(),
+        _ => placeholder_text(state.instrument.is_some(), state.loading, state.trouble),
+    };
     colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(13.0);

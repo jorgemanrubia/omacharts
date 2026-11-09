@@ -4466,7 +4466,7 @@ impl Window {
         serving.sort_by_key(|feed| Some(feed.provider.id()) != default);
         let in_force = match self.route_chosen(pane, instrument) {
             Some(Ok(routed) | Err(routed)) => Some(routed.feed.provider.id()),
-            None => None,
+            None => self.missing_from(pane, instrument).map(|feed| feed.provider.id()),
         };
         (serving, default, in_force)
     }
@@ -7325,7 +7325,10 @@ impl Window {
                 return;
             }
             None => {
-                self.show_unserved(pane, instrument);
+                match self.missing_from(pane, &instrument) {
+                    Some(feed) => self.show_missing(pane, instrument, &feed),
+                    None => self.show_unserved(pane, instrument),
+                }
                 return;
             }
         };
@@ -7496,6 +7499,40 @@ impl Window {
         pane.view.set_series(instrument, timeframe, Vec::new());
         pane.view.set_loading(false);
         pane.view.set_trouble(Some(FetchFailure::Unserved));
+        pane.set_feed_phase(pane::FeedPhase::Lost(FetchFailure::Unserved));
+    }
+
+    /// Chart an instrument on the feed somebody chose for it, which could
+    /// chart it and has nothing of it: Sierra Chart chosen for MES, with no
+    /// files of MES. The choice stays, and the chart says plainly why it is
+    /// empty, rather than moving to another feed nobody chose.
+    fn show_missing(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument, feed: &Rc<Feed>) {
+        let timeframe = pane.timeframe.get();
+        *pane.instrument.borrow_mut() = Some(instrument.clone());
+        self.apply_marks_to(pane);
+        *pane.pending.borrow_mut() = None;
+        pane.write_readout();
+        self.write_header_of(pane);
+        self.write_account_of(pane);
+        let part = self.feed_part_of(pane, |part| {
+            part.label = Some(feed.provider.label().to_string());
+            part.refused = Some(format!("no {} in its data", instrument.symbol));
+        });
+        pane.write_feed(part);
+        pane.served.replace(None);
+        self.release_pane(pane.id);
+        if pane.id == self.focused.get() {
+            self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
+            self.store
+                .set_setting(LAST_SUFFIX, instrument.suffix.as_deref().unwrap_or(""));
+            if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+                watchlist.highlight(&instrument);
+            }
+        }
+        let words = format!("{} isn't in {}'s data", instrument.symbol, feed.provider.label());
+        pane.view.set_series(instrument, timeframe, Vec::new());
+        pane.view.set_loading(false);
+        pane.view.set_trouble_saying(FetchFailure::Unserved, words);
         pane.set_feed_phase(pane::FeedPhase::Lost(FetchFailure::Unserved));
     }
 
@@ -8319,27 +8356,47 @@ impl Window {
     ///
     /// The feed is the one [`crate::trading::feed_of`] points the chart at
     /// — chosen for it, or its account's own — else the order's.
+    ///
+    /// `None` too when the chosen feed has nothing of the instrument, which
+    /// [`Window::missing_from`] names.
     fn route_chosen(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
+        let Some(chosen) = self.chosen_route(pane, instrument) else {
+            return self.route(instrument).map(Ok);
+        };
+        let feeds = self.feeds.borrow();
+        match chosen? {
+            providers::Chosen::Route(route) => {
+                let feed = feeds.get(route.at)?.clone();
+                let passed = route.passed.iter().filter_map(|at| feeds.get(*at).cloned()).collect();
+                Some(Ok(Routed { feed, symbol: route.symbol, passed }))
+            }
+            providers::Chosen::Refused { at, symbol } => {
+                Some(Err(Routed { feed: feeds.get(at)?.clone(), symbol, passed: Vec::new() }))
+            }
+            providers::Chosen::Missing { .. } => None,
+        }
+    }
+
+    /// The feed chosen for `pane` that could chart `instrument` and has
+    /// nothing of it: Sierra Chart chosen for MES with no files of MES.
+    fn missing_from(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Rc<Feed>> {
+        match self.chosen_route(pane, instrument)?? {
+            providers::Chosen::Missing { at } => self.feeds.borrow().get(at).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The engine's answer for `pane`'s chart of `instrument` on the feed
+    /// [`crate::trading::feed_of`] points it at; `None` when it points it
+    /// at none and the order decides.
+    fn chosen_route(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Option<providers::Chosen>> {
         let chosen_feed = pane.feed.borrow();
         let feeds = self.feeds.borrow();
         let usable = || feeds.iter().map(|feed| (feed.provider.as_ref() as &dyn Provider, feed.usable.get()));
         let view = self.trading.borrow();
         let account = view.account_of(pane.account.borrow().as_deref());
-        let chosen = crate::trading::feed_of(&view, account, chosen_feed.as_deref(), usable(), instrument);
-        if chosen.is_none() {
-            return self.route(instrument).map(Ok);
-        }
-        let route = providers::route_chosen(usable(), chosen, instrument)?;
-        Some(match route {
-            providers::Chosen::Route(route) => {
-                let feed = feeds.get(route.at)?.clone();
-                let passed = route.passed.iter().filter_map(|at| feeds.get(*at).cloned()).collect();
-                Ok(Routed { feed, symbol: route.symbol, passed })
-            }
-            providers::Chosen::Refused { at, symbol } => {
-                Err(Routed { feed: feeds.get(at)?.clone(), symbol, passed: Vec::new() })
-            }
-        })
+        let chosen = crate::trading::feed_of(&view, account, chosen_feed.as_deref(), usable(), instrument)?;
+        Some(providers::route_chosen(usable(), Some(chosen), instrument))
     }
 
     /// Drop a chart's chosen feed if it can no longer be chosen for

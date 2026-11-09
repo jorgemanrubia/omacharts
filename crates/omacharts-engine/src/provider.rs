@@ -437,6 +437,14 @@ pub trait Provider: Send + Sync {
     /// This instrument in the provider's own symbology, if it serves it.
     fn symbol_for(&self, instrument: &Instrument) -> Option<String>;
 
+    /// Could this feed chart `instrument` at all, whatever it holds of it
+    /// right now? What a chart may be pointed at: a feed of files on this
+    /// machine is a feed of every future, and says so of a future whose
+    /// files are not there rather than dropping out of the choice.
+    fn could_serve(&self, instrument: &Instrument) -> bool {
+        self.symbol_for(instrument).is_some()
+    }
+
     /// The dated contract a chart of `instrument` from here draws, in the
     /// exchange's spelling, `MESZ6`, whatever this provider calls it: a
     /// dated contract is itself, and a root is `None` unless the provider
