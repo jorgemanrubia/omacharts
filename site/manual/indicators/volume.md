@@ -56,7 +56,7 @@ crop: 762,640,1036,518 (the Colours group)
 
 ## Volume Profile
 
-Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
+Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. At rest that space is widened to fit it, and narrowed again when no profile is aligned right; once you drag the edge yourself it stays where you left it until the view is reset. Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width** says, and squeezed alike when they would not fit; past the last bar they take at most 60% of the chart between them. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
 
 | Setting | Default | Allowed |
 |---|---|---|

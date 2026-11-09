@@ -61,6 +61,8 @@ const OVERHANG_PX: f64 = 500.0;
 /// live bar is not pressed against the price axis. About what other
 /// charting software leaves.
 const RIGHT_MARGIN: usize = 10;
+/// Kept short of the whole view, so dividing by what is left is safe.
+const MARGIN_MAX_SHARE_OF_VIEW: f64 = 0.9;
 /// Room above the highest price on screen when the price is the top row, so
 /// it clears the header and the legend laid over the plot.
 const PRICE_TOP_AIR: f64 = 70.0;
@@ -200,6 +202,10 @@ struct State {
     /// the room a hand dragged open. Kept as new bars arrive, so the margin
     /// stays what it was set to. `RIGHT_MARGIN` at rest.
     overhang: usize,
+    /// Whether a hand set `overhang`, panning. At rest it is widened to
+    /// fit the live sessions of the right-aligned volume profiles, and
+    /// narrowed back as they go; set by hand, it is what the hand left.
+    overhang_by_hand: bool,
     /// Empty columns before the first bar, at the left edge, when the hand
     /// has dragged past the start of the series. Zero at rest.
     lead: usize,
@@ -1269,6 +1275,7 @@ impl State {
             closed_by_press: false,
             anchored: true,
             overhang: RIGHT_MARGIN,
+            overhang_by_hand: false,
             lead: 0,
             range: None,
             indicators: Vec::new(),
@@ -1904,7 +1911,7 @@ impl State {
             return;
         }
         let len = self.bars.len() as i64;
-        let room = self.max_overhang(plot_w) as i64;
+        let room = self.max_overhang(plot_w).max(self.margin_floor()) as i64;
         // The left edge as a column index: negative is room before the
         // first bar.
         let was = self.left_edge();
@@ -1919,6 +1926,7 @@ impl State {
         // holding to, this is it now.
         if left != was {
             self.range = None;
+            self.overhang_by_hand = true;
         }
     }
 
@@ -1933,7 +1941,28 @@ impl State {
     fn trim_room(&mut self, plot_w: f64) {
         let room = self.max_overhang(plot_w);
         self.lead = self.lead.min(room);
-        self.overhang = self.overhang.min(room);
+        self.overhang = self.overhang.min(room.max(self.margin_floor()));
+    }
+
+    /// The fewest empty columns past the last bar at rest: room for the
+    /// live sessions of the right-aligned volume profiles on screen, side by
+    /// side, and none when there are none. A share of the columns, so it is
+    /// the same share of the plot at any zoom.
+    fn margin_floor(&self) -> usize {
+        let share = selection::margin_share(self);
+        if share <= 0.0 {
+            return 0;
+        }
+        (self.columns() as f64 * share).ceil() as usize
+    }
+
+    /// The empty columns past the last bar, while anchored: what a hand
+    /// left, or at rest the resting margin widened to the floor.
+    fn overhang_now(&self) -> usize {
+        match self.overhang_by_hand {
+            true => self.overhang,
+            false => self.overhang.max(self.margin_floor()),
+        }
     }
 
     /// How many empty columns `OVERHANG_PX` is at this zoom — short of the
@@ -2034,6 +2063,7 @@ impl State {
         self.visible = 160;
         self.anchored = true;
         self.overhang = RIGHT_MARGIN;
+        self.overhang_by_hand = false;
         self.lead = 0;
     }
 
@@ -2057,6 +2087,7 @@ impl State {
             self.ruler_armed = false;
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
+            self.overhang_by_hand = false;
             self.lead = 0;
             self.visible = 160;
             // A held range is in this series' prices, which another
@@ -2113,6 +2144,7 @@ impl State {
             self.visible = columns.clamp(MIN_VISIBLE, MAX_VISIBLE);
             self.anchored = room > 0;
             self.overhang = room;
+            self.overhang_by_hand = true;
             self.first = first.min(len.saturating_sub(1));
             return;
         }
@@ -2127,9 +2159,14 @@ impl State {
         };
         self.lead = 0;
         if end >= len {
-            self.visible = (len - first + RIGHT_MARGIN).clamp(MIN_VISIBLE, MAX_VISIBLE);
+            // Wide enough that the margin, widened for the profiles beside
+            // the live session, still leaves the range's first bar on screen.
+            let share = selection::margin_share(self).min(MARGIN_MAX_SHARE_OF_VIEW);
+            let wanted = ((len - first + RIGHT_MARGIN) as f64 / (1.0 - share)).ceil() as usize;
+            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
+            self.overhang_by_hand = false;
             return;
         }
         // Over before the last bar: its own bars edge to edge, from the
@@ -2137,6 +2174,7 @@ impl State {
         self.visible = end.saturating_sub(first).clamp(MIN_VISIBLE, MAX_VISIBLE);
         self.anchored = false;
         self.overhang = 0;
+        self.overhang_by_hand = true;
         self.first = first.min(len.saturating_sub(self.visible));
     }
 
@@ -2157,7 +2195,7 @@ impl State {
         }
         let len = self.bars.len() as i64;
         let left = if self.anchored {
-            len + self.overhang.min(columns - 1) as i64 - columns as i64
+            len + self.overhang_now().min(columns - 1) as i64 - columns as i64
         } else {
             self.first as i64 - self.lead.min(columns - 1) as i64
         };
@@ -4375,6 +4413,7 @@ impl ChartView {
         let mut state = self.state.borrow_mut();
         state.anchored = true;
         state.overhang = RIGHT_MARGIN;
+        state.overhang_by_hand = false;
         state.lead = 0;
         drop(state);
         self.redraw();
@@ -5412,6 +5451,7 @@ impl ChartView {
                     s.visible = 160;
                     s.anchored = true;
                     s.overhang = RIGHT_MARGIN;
+                    s.overhang_by_hand = false;
                     s.lead = 0;
                 }
                 // Double-clicking bare chart does nothing, the same as
@@ -8797,7 +8837,7 @@ fn draw_profiles(
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
-    let look = selection::profile_look(drawn);
+    let look = selection::placed_look(state, drawn);
     let style = look.style;
 
     for profile in profiles {

@@ -55,8 +55,8 @@ impl State {
             None => {
                 let to_y = |price: f64| frame.scale.to_y(price, frame.plan.price_y, frame.plan.price_h);
                 pickable()
-                    .find(|d| on_overlay_line(d, &frame.columns, &to_y, x, y))
-                    .or_else(|| pickable().find(|d| on_overlay_shape(d, &frame.columns, &to_y, x, y)))
+                    .find(|d| on_overlay_line(self, d, &frame.columns, &to_y, x, y))
+                    .or_else(|| pickable().find(|d| on_overlay_shape(self, d, &frame.columns, &to_y, x, y)))
                     .map(|d| d.indicator.id)
             }
             Some(id) => {
@@ -109,7 +109,7 @@ impl State {
 }
 
 /// On one of the lines an indicator draws over the price.
-fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
+fn on_overlay_line(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
     match &drawn.output {
         Output::Line(values) => {
             !drawn.indicator.stroke.is_hidden() && near_series(values, columns, Indexing::Series, to_y, x, y)
@@ -124,7 +124,7 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
                 })
         }
         Output::Profiles(profiles) => profiles.iter().any(|profile| {
-            let area = profile_box(profile, columns, &profile_look(drawn));
+            let area = profile_box(profile, columns, &placed_look(state, drawn));
             let poc = to_y(profile.poc_price());
             area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
         }),
@@ -135,9 +135,9 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
 /// Inside one of the shapes an indicator draws over the price: a volume
 /// profile's rows. Not a band's fill, which covers so much of the chart that
 /// a press anywhere in it would pick the band rather than pan.
-fn on_overlay_shape(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
+fn on_overlay_shape(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
     let Output::Profiles(profiles) = &drawn.output else { return false };
-    let look = profile_look(drawn);
+    let look = placed_look(state, drawn);
     profiles.iter().any(|profile| {
         let area = profile_box(profile, columns, &look);
         if area.span <= 0.0 || profile.max_volume <= 0.0 {
@@ -161,21 +161,103 @@ pub struct ProfileSpot {
 }
 
 /// How a volume profile indicator is drawn: filled or outlined, from which
-/// edge of its period, and how much of its room it may take.
+/// edge of its period, how much of its room it may take, and where among
+/// the others aligned to the same edge it sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ProfileLook {
     pub style: Style,
     pub align: Align,
     /// A share of the room, already inside the range a profile is drawn at.
     pub width: f64,
+    /// The widths of the profiles on screen aligned to the same edge before
+    /// this one in the legend, and after it, and of them all with it.
+    pub before: f64,
+    pub after: f64,
+    pub total: f64,
+    /// How many of them come after it, and how many there are.
+    pub later: usize,
+    pub count: usize,
 }
 
+/// A profile's look on its own, as if no other were beside it.
 pub(super) fn profile_look(drawn: &Drawn) -> ProfileLook {
-    match &drawn.indicator.params {
+    let (style, align, width) = match &drawn.indicator.params {
         omacharts_engine::Params::VolumeProfile { style, align, width, .. } => {
-            ProfileLook { style: *style, align: *align, width: profile::drawn_width(*width) }
+            (*style, *align, profile::drawn_width(*width))
         }
-        _ => ProfileLook { style: Style::Filled, align: Align::Left, width: profile::DEFAULT_WIDTH },
+        _ => (Style::Filled, Align::Left, profile::DEFAULT_WIDTH),
+    };
+    ProfileLook { style, align, width, before: 0.0, after: 0.0, total: width, later: 0, count: 1 }
+}
+
+/// A volume profile on screen with profiles to draw, aligned to `align`.
+fn stacks(drawn: &Drawn, align: Align) -> Option<f64> {
+    match (&drawn.indicator.params, &drawn.output) {
+        (omacharts_engine::Params::VolumeProfile { align: a, width, .. }, Output::Profiles(profiles))
+            if *a == align && !profiles.is_empty() =>
+        {
+            Some(profile::drawn_width(*width))
+        }
+        _ => None,
+    }
+}
+
+/// A profile's look among the others on screen aligned to the same edge:
+/// side by side in the order the legend lists them, so none is drawn over
+/// another.
+pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
+    let mut look = profile_look(drawn);
+    let (mut before, mut after, mut later, mut count, mut seen) = (0.0, 0.0, 0, 0, false);
+    for other in state.shown_indicators() {
+        if other.indicator.id == drawn.indicator.id {
+            seen = true;
+            count += 1;
+            continue;
+        }
+        let Some(width) = stacks(other, look.align) else { continue };
+        count += 1;
+        match seen {
+            false => before += width,
+            true => {
+                after += width;
+                later += 1;
+            }
+        }
+    }
+    look.before = before;
+    look.after = after;
+    look.total = before + look.width + after;
+    look.later = later;
+    look.count = count.max(1);
+    look
+}
+
+/// Of the plot, how much a profile at 100% takes past the last bar.
+pub(super) const SLOT_SHARE: f64 = 0.25;
+/// Of the plot, the space before each profile past the last bar: off the
+/// last bar, and off the one before it.
+pub(super) const SLOT_GAP_SHARE: f64 = 0.01;
+/// The most of the plot the profiles past the last bar may take between
+/// them, so a stack of wide ones still leaves the bars most of it.
+pub(super) const MARGIN_MAX_SHARE: f64 = 0.6;
+
+/// How much of the plot the empty space past the last bar has to be for
+/// the live session of every right-aligned profile on screen to sit in it
+/// side by side, each as wide as its width says: none when there is none.
+pub(super) fn margin_share(state: &State) -> f64 {
+    let len = state.bars.len();
+    let (mut total, mut count) = (0.0, 0usize);
+    for drawn in state.shown_indicators() {
+        let Some(width) = stacks(drawn, Align::Right) else { continue };
+        let Output::Profiles(profiles) = &drawn.output else { continue };
+        if profiles.last().is_some_and(|p| p.last_bar + 1 == len) {
+            total += width;
+            count += 1;
+        }
+    }
+    match count {
+        0 => 0.0,
+        _ => (total * SLOT_SHARE + count as f64 * SLOT_GAP_SHARE).min(MARGIN_MAX_SHARE),
     }
 }
 
@@ -216,10 +298,14 @@ pub(super) const PROFILE_ROOM_MIN: f64 = 48.0;
 /// A share of its period's width, from the edge it is aligned to — except
 /// the period still forming at the live edge, aligned right: that one is
 /// drawn back from the plot's right edge across the empty space past the
-/// last bar, a share of that space, so it describes the session without
-/// sitting on the bars it is about. Past periods keep the end of their own,
-/// which is where the next one starts: the profiles read as a row of them,
-/// each beside the session it describes.
+/// last bar, so it describes the session without sitting on the bars it is
+/// about. Past periods keep the end of their own, which is where the next
+/// one starts: the profiles read as a row of them, each beside the session
+/// it describes.
+///
+/// Several aligned to the same edge sit side by side in it, in the order
+/// the legend lists them, each in a slot as wide as its width says, all of
+/// them squeezed alike when their widths come to more than the room.
 pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLook) -> ProfileBox {
     let (first, last) = (columns.first, columns.first + columns.visible);
     if profile.last_bar < first || profile.first_bar >= last {
@@ -228,17 +314,41 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
     let from = profile.first_bar.max(first);
     let to = profile.last_bar.min(last - 1) + 1;
     let width = columns.width_of(from, to).max(columns.bar_w);
-    let span = width * look.width;
+    // Of the period, what a share of one is once they all fit in it.
+    let share = width / look.total.max(1.0);
+    let span = share * look.width;
     match look.align {
-        Align::Left => ProfileBox { edge: columns.left_of(from), span, towards: 1.0 },
+        Align::Left => ProfileBox { edge: columns.left_of(from) + share * look.before, span, towards: 1.0 },
         Align::Right => {
             let room = columns.room_after();
             match profile.last_bar + 1 == last && room >= PROFILE_ROOM_MIN {
-                true => ProfileBox { edge: columns.end, span: room * look.width, towards: -1.0 },
-                false => ProfileBox { edge: columns.left_of(from) + width, span, towards: -1.0 },
+                true => {
+                    let (edge, span) = in_margin(columns, room, look);
+                    ProfileBox { edge, span, towards: -1.0 }
+                }
+                false => ProfileBox { edge: columns.left_of(from) + width - share * look.after, span, towards: -1.0 },
             }
         }
     }
+}
+
+/// Where in the empty space past the last bar a right-aligned profile's
+/// live session is drawn back from, and how far it reaches.
+///
+/// Each is given a gap and then its slot, the last in the legend against
+/// the price axis. A slot is its width's share of a profile's room at
+/// 100%, [`SLOT_SHARE`] of the plot, or of the whole space when a hand has
+/// opened more than that, so one profile takes the share of the space its
+/// width says, as on its own; slots that come to more than the space are
+/// squeezed alike until they fit.
+fn in_margin(columns: &Columns, room: f64, look: &ProfileLook) -> (f64, f64) {
+    let plot_w = (columns.end - columns.plot_x).max(1.0);
+    let gap = plot_w * SLOT_GAP_SHARE;
+    let usable = (room - gap * look.count as f64).max(room * 0.5);
+    let total = look.total.max(f64::EPSILON);
+    let unit = (usable / total).min((plot_w * SLOT_SHARE).max(usable / total.max(1.0)));
+    let edge = columns.end - unit * look.after - gap * look.later as f64;
+    (edge, unit * look.width)
 }
 
 /// Which of a profile's rows a shape is made of: all of them, for a total,
@@ -703,7 +813,9 @@ mod tests {
         let (current, area, _, _) = all.last().expect("the live session");
         assert_eq!(current.last_bar, state.bars.len() - 1);
         assert_eq!(area.edge, frame.columns.end, "against the plot's right edge");
-        assert!((area.span - room * 0.5).abs() < 1e-9, "half the room at half: {}", area.span);
+        let plot_w = frame.columns.end - frame.columns.plot_x;
+        let slot = plot_w * super::SLOT_SHARE * 0.5;
+        assert!((area.span - slot).abs() < 1e-9, "half a profile's room at half: {} vs {slot}", area.span);
         let (from, to) = area.row(1.0);
         assert!(from >= last_bar_end(&state) - 1e-9, "clear of the bars: {from}");
         assert!(to <= frame.columns.end + 1e-9);
@@ -723,6 +835,7 @@ mod tests {
     fn with_no_room_past_the_last_bar_the_live_session_keeps_its_own_end() {
         let mut state = profiled(profile::Align::Right, 0.4);
         state.overhang = 0;
+        state.overhang_by_hand = true;
         let all = boxes(&state);
         let (_, area, start, end) = all.last().expect("the live session");
         assert_eq!(area.edge, *end);
@@ -750,9 +863,16 @@ mod tests {
 
     #[test]
     fn the_width_is_a_share_of_the_room_at_either_edge() {
+        // With room opened by hand, past what a profile takes at rest.
+        let opened = |align, width| {
+            let mut state = profiled(align, width);
+            state.overhang = 30;
+            state.overhang_by_hand = true;
+            state
+        };
         for align in profile::Align::ALL {
-            let narrow = boxes(&profiled(align, 0.2));
-            let wide = boxes(&profiled(align, 0.8));
+            let narrow = boxes(&opened(align, 0.2));
+            let wide = boxes(&opened(align, 0.8));
             for ((_, a, ..), (_, b, ..)) in narrow.iter().zip(&wide) {
                 assert!((b.span - a.span * 4.0).abs() < 1e-6, "{align:?}: {} vs {}", a.span, b.span);
             }
@@ -761,6 +881,156 @@ mod tests {
         let state = profiled(profile::Align::Left, 0.4);
         let (_, area, start, _) = boxes(&state).pop().expect("the live session");
         assert_eq!(area.edge, start);
+    }
+
+    /// [`profiled`] with a volume profile for each of `looks`, in legend
+    /// order.
+    fn stacked(looks: &[(profile::Align, f64)]) -> State {
+        let mut state = profiled(profile::Align::Left, 0.4);
+        state.indicators = looks
+            .iter()
+            .enumerate()
+            .map(|(i, &(align, width))| {
+                let mut indicator = Indicator::new(i as u32 + 1, Kind::VolumeProfile);
+                if let omacharts_engine::Params::VolumeProfile { align: a, width: w, .. } = &mut indicator.params {
+                    *a = align;
+                    *w = width;
+                }
+                let output = omacharts_engine::indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+                Drawn { indicator, output, color: "#5588ff".to_string() }
+            })
+            .collect();
+        state
+    }
+
+    /// Each profile's box for one period, in legend order, as drawn.
+    fn period_boxes(state: &State, period: usize) -> Vec<(f64, f64)> {
+        let frame = frame(state, W, H).expect("a frame");
+        state
+            .indicators
+            .iter()
+            .map(|drawn| {
+                let Output::Profiles(profiles) = &drawn.output else { panic!("profiles") };
+                let profile = &profiles[period.min(profiles.len() - 1)];
+                profile_box(profile, &frame.columns, &super::placed_look(state, drawn)).row(1.0)
+            })
+            .collect()
+    }
+
+    fn apart(boxes: &[(f64, f64)]) -> bool {
+        boxes.windows(2).all(|pair| pair[0].1 <= pair[1].0 + 1e-9)
+    }
+
+    /// The empty space past the last bar at rest: the resting margin with
+    /// no profile aligned right, widened by what each one's live session
+    /// takes, and narrowed again as they go. One aligned left adds nothing.
+    #[test]
+    fn the_margin_is_widened_for_each_profile_aligned_right_and_only_for_them() {
+        use profile::Align::{Left, Right};
+        let margin = |looks: &[(profile::Align, f64)]| {
+            let state = stacked(looks);
+            (state.overhang_now(), state.columns())
+        };
+        let (none, columns) = margin(&[(Left, 0.4)]);
+        assert_eq!(none, super::super::RIGHT_MARGIN, "no profile aligned right, no room added");
+        assert_eq!(margin(&[]).0, super::super::RIGHT_MARGIN);
+
+        let needed = |widths: f64, count: f64| {
+            (columns as f64 * (widths * super::SLOT_SHARE + count * super::SLOT_GAP_SHARE)).ceil() as usize
+        };
+        let (one, _) = margin(&[(Right, 1.0), (Left, 0.4)]);
+        assert_eq!(one, needed(1.0, 1.0));
+        let (two, _) = margin(&[(Right, 1.0), (Right, 0.8), (Left, 0.4)]);
+        assert_eq!(two, needed(1.8, 2.0));
+        // Narrower than the resting margin needs, the resting margin it is.
+        assert_eq!(margin(&[(Right, 0.2)]).0, super::super::RIGHT_MARGIN);
+        assert!(two > one && one > none, "{none} < {one} < {two}");
+
+        // Taken off, the room goes with it.
+        let mut state = stacked(&[(Right, 1.0), (Right, 0.8)]);
+        state.indicators.pop();
+        assert_eq!(state.overhang_now(), one);
+        state.indicators.clear();
+        assert_eq!(state.overhang_now(), super::super::RIGHT_MARGIN);
+        // However many there are, the bars keep most of the plot.
+        let crowd = stacked(&[(Right, 1.0); 5]);
+        assert!(crowd.overhang_now() as f64 <= crowd.columns() as f64 * super::MARGIN_MAX_SHARE + 1.0);
+    }
+
+    /// Their live sessions sit side by side past the last bar, in legend
+    /// order, the last against the price axis, none over another or over
+    /// the bars, each as wide as its width says.
+    #[test]
+    fn right_aligned_live_sessions_stack_past_the_last_bar() {
+        use profile::Align::Right;
+        let state = stacked(&[(Right, 0.4), (Right, 0.8)]);
+        let live = state.bars.len();
+        let boxes = period_boxes(&state, live);
+        let frame = frame(&state, W, H).expect("a frame");
+        assert!(apart(&boxes), "{boxes:?}");
+        assert!(boxes[0].0 >= last_bar_end(&state) - 1e-9, "clear of the bars: {boxes:?}");
+        assert!((boxes[1].1 - frame.columns.end).abs() < 1e-9, "the last against the axis");
+        let (a, b) = (boxes[0].1 - boxes[0].0, boxes[1].1 - boxes[1].0);
+        assert!((b - a * 2.0).abs() < 1e-6, "sized by their widths: {a} and {b}");
+        // Picked where each is drawn.
+        let y = frame.scale.to_y(
+            match &state.indicators[0].output {
+                Output::Profiles(p) => p.last().unwrap().poc_price(),
+                _ => unreachable!(),
+            },
+            frame.plan.price_y,
+            frame.plan.price_h,
+        );
+        assert_eq!(state.indicator_at(W, H, (boxes[0].0 + boxes[0].1) / 2.0, y), Some(1));
+    }
+
+    /// A hand that drags the room open, or shut, is not argued with: the
+    /// margin is what it left until the view is reset.
+    #[test]
+    fn a_hand_on_the_margin_is_left_where_it_put_it() {
+        use profile::Align::Right;
+        let mut state = stacked(&[(Right, 0.4), (Right, 0.8)]);
+        let floor = state.overhang_now();
+        let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
+        state.pan_by(5.0, plot_w);
+        assert_eq!(state.overhang_now(), floor + 5, "dragged further open");
+        state.pan_by(-(floor as f64), plot_w);
+        assert_eq!(state.overhang_now(), 5, "dragged nearly shut");
+        state.reset_view();
+        assert_eq!(state.overhang_now(), state.margin_floor().max(super::super::RIGHT_MARGIN));
+    }
+
+    /// Profiles aligned to the same edge of a period sit side by side from
+    /// that edge, in legend order, and are squeezed alike when their widths
+    /// come to more than the period.
+    #[test]
+    fn profiles_aligned_to_the_same_edge_of_a_period_sit_side_by_side() {
+        use profile::Align::{Left, Right};
+        let period = 1;
+        for looks in [[(Left, 0.4), (Left, 0.5)], [(Left, 0.8), (Left, 0.7)], [(Right, 0.4), (Right, 0.5)], [(Right, 0.9), (Right, 0.9)]] {
+            let state = stacked(&looks);
+            let boxes = period_boxes(&state, period);
+            assert!(apart(&boxes), "{looks:?}: {boxes:?}");
+            let (_, _, start, end) = super::tests::boxes_of(&state, period);
+            match looks[0].0 {
+                Left => assert!((boxes[0].0 - start).abs() < 1e-9, "from the period's start"),
+                Right => assert!((boxes[1].1 - end).abs() < 1e-9, "to the period's end"),
+            }
+            assert!(boxes[0].0 >= start - 1e-9 && boxes[1].1 <= end + 1e-9, "inside the period: {looks:?}");
+        }
+        // One of each edge is no stack: each has its period's edge.
+        let state = stacked(&[(Left, 0.4), (Right, 0.4)]);
+        let boxes = period_boxes(&state, period);
+        let (_, _, start, end) = super::tests::boxes_of(&state, period);
+        assert!((boxes[0].0 - start).abs() < 1e-9 && (boxes[1].1 - end).abs() < 1e-9);
+    }
+
+    fn boxes_of(state: &State, period: usize) -> (Profile, ProfileBox, f64, f64) {
+        let frame = frame(state, W, H).expect("a frame");
+        let Output::Profiles(profiles) = &state.indicators[0].output else { panic!("profiles") };
+        let p = &profiles[period];
+        let area = profile_box(p, &frame.columns, &super::placed_look(state, &state.indicators[0]));
+        (p.clone(), area, frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
     }
 
     #[test]
