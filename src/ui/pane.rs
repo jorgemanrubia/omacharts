@@ -633,7 +633,7 @@ impl ChartPane {
         // against the line as it will be drawn.
         let (legend_box, legend_row, strip_row, corner_box, strip_part) =
             (legend.clone(), bar.clone(), top.clone(), corner.clone(), strip.clone());
-        let (lone_title, untitled) = (title_part.clone(), title_button.clone());
+        let (lone_title, untitled, typed) = (title_part.clone(), title_button.clone(), title_entry.clone());
         overlay.connect_get_child_position(move |overlay, child| {
             let natural = |w: &gtk::Widget| w.preferred_size().1.width();
             if child == legend_box.upcast_ref::<gtk::Widget>()
@@ -669,7 +669,15 @@ impl ChartPane {
                     && lone_title.visible_child_name().as_deref() != Some("editing")
                     && strip_row.first_child().is_some_and(|child| child == lone_title)
                     && lone_title.next_sibling().is_none();
-                let place = center_place(overlay.width(), left, size.width(), right, spans);
+                // A title the line shows has room to be typed into too, or
+                // it is not shown: F2 then asks for it in a dialog rather
+                // than open an entry with nowhere to go.
+                let typing = lone_title.parent().is_some_and(|row| row == strip_row)
+                    && lone_title.visible_child_name().as_deref() != Some("editing");
+                let entry_room =
+                    if typing { (natural(typed.upcast_ref()) - natural(untitled.upcast_ref())).max(0) } else { 0 };
+                let place = center_start(overlay.width(), left, size.width() + entry_room, right)
+                    .and_then(|_| center_place(overlay.width(), left, size.width(), right, spans));
                 if strip_row.is_child_visible() != place.is_some() {
                     strip_row.set_child_visible(place.is_some());
                 }
@@ -2474,6 +2482,16 @@ mod tests {
 
             pane.write_title("Plan");
             settle();
+            // A compositor that tiles windows, as a desktop session's does,
+            // sizes this one as it likes, and may leave the centre no room
+            // for a title: F2 then asks for it in a dialog instead (see
+            // `title_in_view`), and where it is typed cannot be measured.
+            // The headless window keeps the size asked for.
+            if !window.is_mapped() || !pane.title_in_view() {
+                eprintln!("skipped: the window is {} wide, with no room for a title in the centre", window.width());
+                window.close();
+                return;
+            }
             let drawn = middle(pane.title_label.upcast_ref());
             pane.write_title("");
             settle();
@@ -2499,6 +2517,67 @@ mod tests {
             assert!(entry.x() > symbol.x() + symbol.width(), "typed off the line it is in");
             assert!(entry.x() < drawn - 100.0, "typed in the centre, not on the left");
             pane.finish_title_edit(false);
+            window.close();
+        });
+    }
+
+    /// However narrow the chart, a title the header shows has room to be
+    /// typed where it stands: one F2 could not open an entry for is not
+    /// shown, so F2 asks for it in a dialog instead of showing nothing. An
+    /// untitled chart's slot beside a wide corner once fit where its entry
+    /// did not.
+    #[test]
+    fn a_title_shown_always_has_room_to_be_typed() {
+        use gtk::gdk;
+        crate::ui::on_gtk(|| {
+            let Some(display) = gdk::Display::default() else { return };
+            if adw::init().is_err() {
+                return;
+            }
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&crate::theming::stylesheet(&theme, &scheme));
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            pane.corner.prepend(&gtk::Label::new(Some("Buy  Sell  1 contract  +$1,250.00")));
+            // The chart narrowed by what stands beside it, whatever size the
+            // compositor gives the window.
+            let (holder, beside) =
+                (gtk::Box::new(gtk::Orientation::Horizontal, 0), gtk::Box::new(gtk::Orientation::Horizontal, 0));
+            holder.append(&pane.root);
+            holder.append(&beside);
+            let window = gtk::Window::new();
+            window.set_child(Some(&holder));
+            window.present();
+            let settle = || {
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..20 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            };
+            settle();
+            let mut shown = 0;
+            for title in ["", "Plan"] {
+                pane.write_title(title);
+                for width in (360..=900).rev().step_by(12) {
+                    beside.set_size_request((window.width() - width).max(0), 1);
+                    settle();
+                    if !pane.title_in_view() {
+                        continue;
+                    }
+                    shown += 1;
+                    pane.begin_title_edit();
+                    settle();
+                    let mapped = pane.title_entry.is_mapped();
+                    pane.finish_title_edit(false);
+                    assert!(mapped, "{title:?} shown {} wide with no room to type it", pane.root.width());
+                }
+            }
+            assert!(shown > 0 || window.width() < 900, "never shown in a {} wide window", window.width());
             window.close();
         });
     }
