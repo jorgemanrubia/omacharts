@@ -1,11 +1,11 @@
-//! Sierra Chart's DTC server, as a [`Broker`] and its [`Session`].
+//! Sierra Chart's DTC server, as a [`TradingService`] and its [`Session`].
 //!
-//! Sierra Chart is signed in to its own broker or simulator; its DTC server,
+//! Sierra Chart is signed in to its own trading service or simulator; its DTC server,
 //! with "Allow Trading" on, relays orders to whichever it is. So a login is
 //! where the server is — on this machine, port 11099 — and its accounts are
 //! whatever Sierra Chart trades: its simulated `Sim1`, `Sim2`, and the
-//! broker's own. Behind both the `sierra` and the `trading` flags: closed
-//! while `sierra` is off, and nothing signs in to a broker while `trading`
+//! trading service's own. Behind both the `sierra` and the `trading` flags: closed
+//! while `sierra` is off, and nothing signs in to a trading service while `trading`
 //! is.
 //!
 //! The server sends no CME market data, so a session prices nothing: its
@@ -39,7 +39,7 @@ fn endpoint_of(login: &Login) -> dtc::Endpoint {
 /// Sierra Chart's DTC server.
 pub struct Sierra;
 
-impl Broker for Sierra {
+impl TradingService for Sierra {
     fn id(&self) -> &'static str {
         feed::LISTED.id
     }
@@ -367,7 +367,7 @@ mod tests {
         Login {
             id: "sierra-1".into(),
             name: "Sierra Chart".into(),
-            broker: "sierra".into(),
+            service: "sierra".into(),
             user: String::new(),
             values: vec![(setup::PORT.into(), port.to_string())],
             signed_out: false,
@@ -463,7 +463,7 @@ mod tests {
         let plan = Plan::exit(session.capabilities().link, exit(OrderKind::Stop, 7_580.0), working.as_ref());
         let ran = plan.run(session.as_ref(), "Sim1");
         let link = ran.link.expect("linked").expect("linked");
-        assert_eq!(link.holder, Holder::Broker);
+        assert_eq!(link.holder, Holder::TradingService);
         assert_eq!(fake.received_of(dtc::wire::CANCEL_ORDER).len(), 1, "the target cancelled first");
         let pairs = fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER);
         assert_eq!(pairs.len(), 1, "one OCO submission");
@@ -484,11 +484,11 @@ mod tests {
     /// Closed while its flag is off: offered nowhere, and a saved login of
     /// it shown nowhere, though it is kept.
     #[test]
-    fn the_broker_is_closed_while_its_flag_is_off() {
+    fn the_service_is_closed_while_its_flag_is_off() {
         let store = crate::store::Store::memory().unwrap();
         let kept = crate::trading::fake::Kept::default();
         let typed = Typed {
-            broker: "sierra".into(),
+            service: "sierra".into(),
             name: "Sierra Chart".into(),
             user: String::new(),
             password: String::new(),

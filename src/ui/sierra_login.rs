@@ -2,7 +2,7 @@
 //! its DTC server is, asked as it is typed whether it is there and allows
 //! trading.
 //!
-//! There is no password. Sierra Chart is signed in to its broker itself,
+//! There is no password. Sierra Chart is signed in to its trading service itself,
 //! and its server, set to "Local Computer Only", answers this machine
 //! alone. The steps that turn trading on in Sierra Chart are shown while
 //! the server does not allow it.
@@ -141,7 +141,7 @@ fn typed(name: &str, host: &str, port: &str) -> Typed {
         text => text.to_string(),
     };
     Typed {
-        broker: feed::LISTED.id.to_string(),
+        service: feed::LISTED.id.to_string(),
         name: or(name, feed::LISTED.label),
         user: String::new(),
         password: String::new(),
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn what_is_left_empty_is_this_machines_server() {
         let empty = typed(" ", "", "");
-        assert_eq!((empty.broker.as_str(), empty.name.as_str(), empty.password.as_str()), ("sierra", "Sierra Chart", ""));
+        assert_eq!((empty.service.as_str(), empty.name.as_str(), empty.password.as_str()), ("sierra", "Sierra Chart", ""));
         assert_eq!(empty.values, vec![("host".to_string(), "127.0.0.1".to_string()), ("port".to_string(), "11099".to_string())]);
         let named = typed("Sim", "10.0.0.2", "11100");
         assert_eq!((named.name.as_str(), named.values[1].1.as_str()), ("Sim", "11100"));

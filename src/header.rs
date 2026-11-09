@@ -66,7 +66,7 @@ pub enum Part {
     Feed,
     /// The account's P&L for the day, closed and open: "P&L +$1,250.00".
     /// Nothing at all unless the chart has an account to trade on, or
-    /// while its broker has not said.
+    /// while its trading service has not said.
     DayPnl,
     /// Buy and Sell, at the market, for the chart's quantity: what Ctrl+B
     /// and Ctrl+S do. Nothing at all unless the chart has an account to

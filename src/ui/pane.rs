@@ -1173,7 +1173,7 @@ impl ChartPane {
 
     /// The account's P&L for the day, already written as money, and whether
     /// it is up or down; nothing at all, and no room taken, without an
-    /// account or while its broker has not said.
+    /// account or while its trading service has not said.
     pub fn write_day_pnl(&self, day: Option<(&str, std::cmp::Ordering)>) {
         if self.day_part.get_visible() != day.is_some() {
             self.day_part.set_visible(day.is_some());

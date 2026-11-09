@@ -1,5 +1,5 @@
 //! What follows from the book, the accounts and the feeds, with no store
-//! and no broker: which account and feed a chart is on, where an order
+//! and no trading service: which account and feed a chart is on, where an order
 //! goes, which side of the market it may go on, and what answers a request.
 
 use std::sync::Arc;
@@ -31,7 +31,7 @@ pub struct Target {
     pub login: Login,
     pub contract: String,
     pub exchange: String,
-    /// The step the contract's price moves in, when the broker knows it.
+    /// The step the contract's price moves in, when the trading service knows it.
     pub tick: Option<f64>,
     pub capabilities: Capabilities,
 }
@@ -78,7 +78,7 @@ pub fn order_target(
     instrument: Option<&omacharts_engine::Instrument>,
 ) -> Result<Target, String> {
     // A login whose accounts were never listed has not signed in yet, or
-    // signed in and was listed none: the broker gives it nothing to trade.
+    // signed in and was listed none: the trading service gives it nothing to trade.
     let account = view.account_of(chosen).ok_or_else(|| match view.logins.first() {
         Some(login) if session(&login.id).is_some() => format!("{} has no accounts", login.name),
         Some(login) => format!("{} not signed in", login.name),
@@ -103,7 +103,7 @@ pub fn order_target(
 }
 
 /// The orders the chart menu offers, in its order: buy and sell at the
-/// market, then a limit and a stop each way, and only the kinds the broker
+/// market, then a limit and a stop each way, and only the kinds the trading service
 /// takes.
 pub fn menu_orders(capabilities: &Capabilities) -> Vec<(Side, OrderKind)> {
     [OrderKind::Market, OrderKind::Limit, OrderKind::Stop]
@@ -310,10 +310,10 @@ fn own_feed<'a>(
     if view.data_login.as_deref() != Some(account.login.as_str()) {
         return None;
     }
-    let broker = &view.login(&account.login)?.broker;
+    let service = &view.login(&account.login)?.service;
     feeds
         .into_iter()
-        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(broker))
+        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(service))
         .filter(|(provider, usable)| *usable && provider.symbol_for(instrument).is_some())
         .map(|(provider, _)| provider.id())
 }
@@ -334,7 +334,7 @@ pub fn feed_of<'a>(
 }
 
 /// The last price a chart on screen shows for `held`'s contract, to mark
-/// it to while the broker's market data has heard nothing: only a chart of
+/// it to while the trading service's market data has heard nothing: only a chart of
 /// that very contract, MNQZ6 for MNQZ6, on the exchange it is held on.
 /// Never a continuous series, MNQ, whose price may be another month's or
 /// back-adjusted. `charts` is every chart's instrument and last price, a
@@ -644,7 +644,7 @@ mod tests {
         }
         assert!(side_allowed(OrderKind::Market, Side::Sell, 0.0, last));
 
-        // Only what the broker takes is offered.
+        // Only what the trading service takes is offered.
         let all = Capabilities {
             kinds: vec![OrderKind::Stop, OrderKind::Market, OrderKind::Limit],
             flatten: true,
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(
             order_target(&unlisted, |_| Some(session.clone()), None, Some(&es)).unwrap_err(),
             "Rithmic Test has no accounts",
-            "signed in, and the broker listed none"
+            "signed in, and the trading service listed none"
         );
         assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading service");
     }

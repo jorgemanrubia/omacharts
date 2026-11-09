@@ -255,7 +255,7 @@ fn typed(name: &str, user: &str, password: &str, system: &str, gateway: &str) ->
     };
     let system = or(system, TEST_SYSTEM);
     Typed {
-        broker: rithmic::LISTED.id.to_string(),
+        service: rithmic::LISTED.id.to_string(),
         name: or(name, &system),
         user: user.to_string(),
         password: password.to_string(),
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn what_is_left_empty_is_rithmic_tests() {
         let empty = typed(" ", "trader", "secret", "", "");
-        assert_eq!(empty.broker, "rithmic");
+        assert_eq!(empty.service, "rithmic");
         assert_eq!(empty.name, "Rithmic Test");
         assert_eq!(
             empty.values,

@@ -1,8 +1,8 @@
 //! How many an order from a chart is for: its quantity, the lists of
 //! sizes a trader picks it from, and which list a chart picks from.
 //!
-//! Broker-neutral and pure, beside the accounts, orders and positions in
-//! [`crate::trading`]: no widget, no broker and no store reads in here
+//! The same for every trading service, and pure, beside the accounts, orders and positions in
+//! [`crate::trading`]: no widget, no trading service and no store reads in here
 //! beyond loading and saving the lists. The header's Trading size part,
 //! the keys that set it and the orders that spend it only ask.
 //!

@@ -3,7 +3,7 @@
 //! the toasts orders report in, the chart menu's orders and the marks on
 //! the charts.
 //!
-//! None of it exists without a broker login. The window of somebody who
+//! None of it exists without a trading service login. The window of somebody who
 //! only charts from Yahoo is the window it always was: no divider under the
 //! charts, no toast overlay, no button and no action. The first login
 //! added puts it all in, and removing the last takes it all out again,
@@ -73,14 +73,14 @@ pub(super) struct Trade {
     pub chart_actions: RefCell<Option<gio::SimpleActionGroup>>,
     /// The accounts with an order on its way: a place, a move or a cancel.
     pub placing: trading::Placing,
-    /// Everything asked of a broker from here that its book has not
+    /// Everything asked of a trading service from here that its book has not
     /// answered yet: a new order, a move, a cancel, a flatten. Each is
     /// drawn as pending, faint, from the moment it is asked until the book
-    /// says what became of it, or the broker refuses it. One that is never
+    /// says what became of it, or the trading service refuses it. One that is never
     /// answered stays pending: nothing here assumes it was done.
     pub pending: RefCell<HashMap<Request, Pending>>,
     /// The links asked for and not yet made: drawn as pending, joining
-    /// their exits, until the broker has answered.
+    /// their exits, until the trading service has answered.
     pub linking: RefCell<Vec<trading::Asked>>,
     /// How many of each login's refreshes the pending requests have been
     /// reconciled against, so each refresh is once.
@@ -262,12 +262,12 @@ impl Window {
         self.apply_marks();
     }
 
-    /// Every live session's book, its positions marked to the broker's
+    /// Every live session's book, its positions marked to the trading service's
     /// market data, else, until that has heard a trade, to a chart on
     /// screen showing that very contract, from whichever feed: a dated
     /// contract's chart, or a root's on a feed that charts it as that month,
-    /// whoever the account's broker is. A chart with a trading symbol is
-    /// taken for a chart of its trading contract, as each broker signed in
+    /// whoever the account's trading service is. A chart with a trading symbol is
+    /// taken for a chart of its trading contract, as each trading service signed in
     /// names it: what it trades is seldom charted anywhere, and moves with
     /// what it charts, MES with ES.
     pub(super) fn marked_book(&self, logins: &[trading::Login]) -> trading::Book {
@@ -307,7 +307,7 @@ impl Window {
     }
 
     /// `pane`'s chart moved: a position held in what it charts is marked
-    /// again, to the chart itself while the broker's market data has heard
+    /// again, to the chart itself while the trading service's market data has heard
     /// nothing, as often as [`Window::mark_to_market`] allows.
     pub(super) fn chart_moved(self: &Rc<Self>, pane: &ChartPane) {
         if !self.trade.shown.get() {
@@ -324,7 +324,7 @@ impl Window {
         }
     }
 
-    /// Forget what was asked of a broker once its book has answered, and
+    /// Forget what was asked of a trading service once its book has answered, and
     /// after a login's session was refreshed, what it never will.
     fn settle_pending(&self) {
         self.reconcile();
@@ -333,7 +333,7 @@ impl Window {
     }
 
     /// Once a login's session has been refreshed — signed in, or back after
-    /// a drop — its book is everything the broker has. An order asked for
+    /// a drop — its book is everything the trading service has. An order asked for
     /// on one of its accounts that the book has never heard of did not get
     /// there, and is no longer drawn as on its way; a move, a cancel or a
     /// flatten is answered by the book as ever. Nothing is on its way to
@@ -377,7 +377,7 @@ impl Window {
         self.apply_marks();
     }
 
-    /// What the broker said to `request` when it was sent: a refusal takes
+    /// What the trading service said to `request` when it was sent: a refusal takes
     /// what was drawn for it away and says why; no answer leaves it
     /// pending, since it may well have arrived, and says so.
     fn heard<T>(
@@ -833,7 +833,7 @@ impl Window {
     pub(super) fn market_price(&self, pane: &ChartPane, target: &trading::Target) -> Option<f64> {
         let chart = pane.view.last_price();
         // What it trades is not what it charts, so no feed charting it
-        // settles it: the broker's last trade of it, else the chart's.
+        // settles it: the trading service's last trade of it, else the chart's.
         if let Some(traded) = pane.trading_instead() {
             return self.desk.session(&target.login.id).and_then(|session| session.last_price(&traded)).or(chart);
         }
@@ -850,7 +850,7 @@ impl Window {
     }
 
     /// The day's lowest and highest prices the exchange takes an order on
-    /// `pane`'s instrument at, as far as the account's broker has said.
+    /// `pane`'s instrument at, as far as the account's trading service has said.
     fn limits_of(&self, pane: &ChartPane, target: &trading::Target) -> (Option<f64>, Option<f64>) {
         let Some(instrument) = pane.traded() else { return (None, None) };
         self.desk.session(&target.login.id).map_or((None, None), |session| session.price_limits(&instrument))
@@ -979,7 +979,7 @@ impl Window {
         self.place_then(target, order, |_, _| {});
     }
 
-    /// [`Self::place`], and `then` with its basket once the broker has
+    /// [`Self::place`], and `then` with its basket once the trading service has
     /// taken it.
     fn place_then(
         self: &Rc<Self>,
@@ -1051,7 +1051,7 @@ impl Window {
     }
 
     /// An order's ×: cancel it. Faint at once, gone when the book says so,
-    /// back if the broker refuses.
+    /// back if the trading service refuses.
     fn cancel_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
@@ -1079,7 +1079,7 @@ impl Window {
     }
 
     /// A tab pulled out to `price`: an exit of `kind` for the whole of the
-    /// position, linked to the other exit when there is one and the broker
+    /// position, linked to the other exit when there is one and the trading service
     /// links orders.
     fn exit_mark(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) {
         let target = match self.order_target(pane) {
@@ -1109,7 +1109,7 @@ impl Window {
             Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
         };
         // Linked to the other exit working on the position, however the
-        // broker can: the plan knows how.
+        // trading service can: the plan knows how.
         let sibling = {
             let view = self.trading.borrow();
             trading::sibling_exit(view.book.working(&key, &target.contract), &target.contract, side, kind).cloned()
@@ -1120,8 +1120,8 @@ impl Window {
 
     /// Carry out `plan` on `target`'s account: every order it places drawn
     /// faint at once, the one it cancels first faint too, the link it makes
-    /// drawn pending; each solid, or gone with the broker's reason, as the
-    /// broker answers.
+    /// drawn pending; each solid, or gone with the trading service's reason, as the
+    /// trading service answers.
     fn run_plan(self: &Rc<Self>, target: trading::Target, plan: trading::Plan) {
         let key = target.account.key();
         if let Err(why) = self.trade.placing.begin(&key) {
@@ -1209,7 +1209,7 @@ impl Window {
 
     /// An order's line let go at `price`: move it there. Drawn faint at its
     /// new price until the book has it there; back where it was, and said,
-    /// if the broker refuses.
+    /// if the trading service refuses.
     fn move_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str, price: f64) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
@@ -1295,7 +1295,7 @@ impl Window {
                 if this.heard(&request, outcome, "Not flattened", &name).is_none() {
                     return;
                 }
-                // One the broker cancelled itself, or a link took with
+                // One the trading service cancelled itself, or a link took with
                 // its sibling, is not working any more: nothing to say.
                 if exits.is_empty() {
                     return;
@@ -1447,7 +1447,7 @@ impl Window {
     /// chart has an account to trade on (and, for the quantity, a template
     /// applies); nothing at all, and no room taken, otherwise. Buy and Sell
     /// that could not place an order say why instead. The day's P&L too,
-    /// once the account's broker has said it: read from the book each time
+    /// once the account's trading service has said it: read from the book each time
     /// the book is, which marks it to every trade.
     pub(super) fn write_size_of(&self, pane: &ChartPane) {
         let has_account = self.trade.shown.get()
@@ -1605,7 +1605,7 @@ impl Window {
             Some(pnl) => (Some(trading::pnl_text(pnl, currency.as_deref())), money_colour(pnl)),
             None => (None, side_colour(side)),
         };
-        // Linked with the other exit: solid once the broker has made it,
+        // Linked with the other exit: solid once the trading service has made it,
         // pending until then.
         let links = self.desk.links();
         let asked = self.trade.linking.borrow();
@@ -1730,7 +1730,7 @@ impl Window {
             .collect();
         let position = view.book.position(&key, &target.contract).and_then(|held| {
             let at = held.avg?;
-            // A tab for each exit the broker takes and the position still
+            // A tab for each exit the trading service takes and the position still
             // has room for, in the look of the order it would make: a
             // target in the profit colour, a stop in the loss colour.
             let exits = [(OrderKind::Limit, look.limit, &look.profit), (OrderKind::Stop, look.stop, &look.loss)]
@@ -1763,7 +1763,7 @@ impl Window {
     }
 
     /// Say each step of an order placed or cancelled here, once, when the
-    /// broker has said so: working, filled and cancelled in a toast too,
+    /// trading service has said so: working, filled and cancelled in a toast too,
     /// rejected in the corner notice.
     fn report_orders(&self) {
         let mut said = Vec::new();
@@ -1815,7 +1815,7 @@ pub(super) mod tests {
 
     pub(crate) fn typed() -> trading::Typed {
         trading::Typed {
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             name: "Rithmic Test".into(),
             user: "someone".into(),
             password: String::new(),
@@ -2473,12 +2473,12 @@ pub(super) mod tests {
         });
     }
 
-    /// After a drop the refreshed book is the broker's word. An order sent
+    /// After a drop the refreshed book is the trading service's word. An order sent
     /// before it that the book has never heard of did not get there: it is
     /// no longer drawn as on its way, and the account takes orders again.
     /// One the book has is left to be answered as ever.
     #[test]
-    fn an_order_the_refreshed_book_never_heard_of_never_reached_the_broker() {
+    fn an_order_the_refreshed_book_never_heard_of_never_reached_the_service() {
         crate::ui::on_gtk(|| {
             use std::sync::atomic::Ordering;
             let store = Rc::new(Store::memory().expect("a store"));
@@ -2498,7 +2498,7 @@ pub(super) mod tests {
             window.desk.tell();
             let key = format!("{id}/951");
 
-            // One the broker has, still pending at the exchange; one it never got.
+            // One the trading service has, still pending at the exchange; one it never got.
             session.holds.store(true, Ordering::Release);
             let reached = resting(Side::Sell, OrderKind::Limit, Some(7_700.0));
             session.place(&reached).unwrap();
@@ -2518,7 +2518,7 @@ pub(super) mod tests {
             settle(&window, || window.trade.pending.borrow().len() == 1);
             let pending = window.trade.pending.borrow();
             assert!(!pending.contains_key(&Request::Place(lost.tag.clone())), "never reached, still drawn");
-            assert!(pending.contains_key(&Request::Place(reached.tag.clone())), "the broker has it");
+            assert!(pending.contains_key(&Request::Place(reached.tag.clone())), "the trading service has it");
             assert!(!window.trade.placing.busy(&key), "the account still waiting on an answer");
             assert_eq!(trading::never_placed_text(&lost), "Not placed · Buy Limit 1 ESZ6 never reached the trading service");
         });
@@ -2531,7 +2531,7 @@ pub(super) mod tests {
     fn a_saved_login_signs_in_after_the_first_frame() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            let saved = trading::Typed { broker: "fake".into(), values: Vec::new(), ..typed() };
+            let saved = trading::Typed { service: "fake".into(), values: Vec::new(), ..typed() };
             let id = trading::add_login(&store, &Kept::default(), &saved).expect("a login");
             let window = window(&store);
             assert!(!window.desk.opening(&id), "signing in before the window is even shown");
@@ -2577,7 +2577,7 @@ pub(super) mod tests {
     }
 
     /// An order's × cancels it: faint at once, gone when the book says so;
-    /// back as it was when the broker refuses, and not sent at all while
+    /// back as it was when the trading service refuses, and not sent at all while
     /// another request to the account is on its way. The position's ×
     /// flattens it.
     #[test]
@@ -2665,7 +2665,7 @@ pub(super) mod tests {
 
     /// A position is marked to the account's own market as it trades: the
     /// chart's pill, the Positions tab and the account's open P&L move with
-    /// each new price, whatever the broker last said, and a busy market is
+    /// each new price, whatever the trading service last said, and a busy market is
     /// marked a few times a second with its last price never left out.
     #[test]
     fn open_p_and_l_moves_with_the_market() {
@@ -2742,7 +2742,7 @@ pub(super) mod tests {
 
     /// L and STP pulled out of the position place a target and a stop for
     /// all of it, each tab going once its exit is working; the second is
-    /// linked to the first, however the broker can: after the fact, as one
+    /// linked to the first, however the trading service can: after the fact, as one
     /// pair once the target is cancelled, or by the app. One on the wrong
     /// side of the market is not placed. Flattening cancels the exits left
     /// behind.
@@ -2771,7 +2771,7 @@ pub(super) mod tests {
                 assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Stop], "the L tab stayed");
 
                 pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
-                // The link is drawn pending at once, before the broker answers.
+                // The link is drawn pending at once, before the trading service answers.
                 let pending = pane.view.mark_links().iter().flatten().any(|link| link.pending);
                 assert!(pending, "{linking:?}: the link not drawn pending at once");
                 settle(&window, || pane.view.exit_tabs().is_empty() && !window.trade.placing.busy(&key));
@@ -2786,16 +2786,16 @@ pub(super) mod tests {
                 let held = match linking {
                     Linking::AfterTheFact => {
                         assert_eq!(*session.links.lock().unwrap(), vec![vec![stop.basket_id.clone(), target.basket_id.clone()]]);
-                        Holder::Broker
+                        Holder::TradingService
                     }
                     Linking::AtSubmission => {
                         // The target cancelled first, then the two as one pair.
                         assert_eq!(session.pairs.load(std::sync::atomic::Ordering::Acquire), 1);
                         assert_ne!(now_target.basket_id, target.basket_id, "the target placed again with the stop");
-                        Holder::Broker
+                        Holder::TradingService
                     }
                     Linking::None => {
-                        assert!(session.links.lock().unwrap().is_empty(), "linked by a broker that cannot");
+                        assert!(session.links.lock().unwrap().is_empty(), "linked by a trading service that cannot");
                         Holder::App
                     }
                 };
@@ -2814,7 +2814,7 @@ pub(super) mod tests {
     }
 
     /// Either exit may come first, on a long and on a short alike, on
-    /// every broker: the first one pulled out leaves the other's tab to be
+    /// every trading service: the first one pulled out leaves the other's tab to be
     /// pulled out after it, and placing that one links the two.
     #[test]
     fn either_exit_may_come_first_on_a_long_or_a_short() {
@@ -2864,8 +2864,8 @@ pub(super) mod tests {
                     let linked = links.iter().any(|link| both.iter().all(|order| link.baskets.contains(&order.basket_id)));
                     assert!(linked, "{round}: {links:?}");
                     if linking == Linking::AfterTheFact {
-                        let broker = session.links.lock().unwrap().clone();
-                        assert!(broker.contains(&vec![other.basket_id.clone(), one[0].basket_id.clone()]), "{round}: {broker:?}");
+                        let service = session.links.lock().unwrap().clone();
+                        assert!(service.contains(&vec![other.basket_id.clone(), one[0].basket_id.clone()]), "{round}: {service:?}");
                     }
                     // Flat for the next round.
                     pane.view.drop_mark(TradeEvent::Flatten);
@@ -2875,7 +2875,7 @@ pub(super) mod tests {
         });
     }
 
-    /// The app's own link, on a broker that cannot link: once one exit
+    /// The app's own link, on a trading service that cannot link: once one exit
     /// fills, the app cancels the other.
     #[test]
     fn the_app_cancels_the_other_exit_once_one_fills() {
@@ -2939,7 +2939,7 @@ pub(super) mod tests {
             use super::super::marks::TradeEvent;
             let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
             assert!(pane.view.held_elsewhere().is_empty());
-            // The root rolls to March: the broker now trades ES as ESH7.
+            // The root rolls to March: the trading service now trades ES as ESH7.
             session.contracts.lock().unwrap().insert("ES".into(), "ESH7".into());
             session.moved();
             settle(&window, || pane.view.mark_states().0.is_none());
@@ -2993,7 +2993,7 @@ pub(super) mod tests {
     /// request that is never answered stays pending. Part of an order
     /// filled says how much of how much.
     #[test]
-    fn what_is_asked_is_pending_until_the_broker_confirms_it() {
+    fn what_is_asked_is_pending_until_the_service_confirms_it() {
         crate::ui::on_gtk(|| {
             use super::super::marks::TradeEvent;
             use std::sync::atomic::Ordering;
@@ -3090,7 +3090,7 @@ pub(super) mod tests {
     }
 
     /// The header's Buy places the chart's quantity at the market, drawn
-    /// pending until the broker fills it, as Ctrl+B does; Sell sells it.
+    /// pending until the trading service fills it, as Ctrl+B does; Sell sells it.
     /// Without an account they are not there at all, which the test before
     /// this one shows.
     #[test]
@@ -3131,7 +3131,7 @@ pub(super) mod tests {
 
     /// The header's P&L is the account's P&L for the day, the same
     /// figure the Accounts tab shows, in the profit colour up and the loss
-    /// colour down, plain at nothing; nothing at all until the broker has
+    /// colour down, plain at nothing; nothing at all until the trading service has
     /// said, and nothing without an account.
     #[test]
     fn the_headers_day_pnl_is_the_accounts_day() {
@@ -3143,7 +3143,7 @@ pub(super) mod tests {
             let day = |window: &Rc<Window>| window.trading.borrow().book.money(&key).and_then(|money| money.day_pnl);
             settle(&window, || pane.view.last_price().is_some());
             assert_eq!(day(&window), None);
-            assert_eq!(pane.day_pnl_text(), None, "a P&L before the broker said one");
+            assert_eq!(pane.day_pnl_text(), None, "a P&L before the trading service said one");
 
             for (said, class) in [(250.0, Some("pnl-gain")), (-340.5, Some("pnl-loss")), (0.0, None)] {
                 session.book.lock().unwrap().accounts = vec![trading::Money {
@@ -3188,7 +3188,7 @@ pub(super) mod tests {
             assert!(window.on_trading_key(gtk::gdk::Key::_2, 11));
             assert_eq!(pane.size_label_text(), "2");
             assert_eq!(window.size_of(&pane).get(), 2);
-            // Pending until the broker fills it: "Buying 2…" by the last price.
+            // Pending until the trading service fills it: "Buying 2…" by the last price.
             session.holds.store(true, std::sync::atomic::Ordering::Release);
             assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
             settle(&window, || session.book().orders.iter().filter(|order| order.qty == 2).count() == 1);
@@ -3372,7 +3372,7 @@ pub(super) mod tests {
     /// A chart of ES on `feed`, a futures feed posing as the service named
     /// so, beside Yahoo, and a login of `typed`'s service signed in with
     /// account 951 holding one of ES's front month, bought 10 points under
-    /// the chart's last price, its broker's market data silent. The window,
+    /// the chart's last price, its trading service's market data silent. The window,
     /// the chart, the session, the account's key and the contract.
     fn held_across(
         feed: &'static str,
@@ -3408,14 +3408,14 @@ pub(super) mod tests {
     /// Charting on one service and trading through another is one desk: a
     /// root charted on Sierra Chart's feed, ES as its front month, shows the
     /// position and orders an account at Rithmic holds in that month, and
-    /// marks its open P&L to the chart's prices while the broker's own say
+    /// marks its open P&L to the chart's prices while the trading service's own say
     /// nothing; so does a root charted on Rithmic's feed for an account at
     /// Sierra Chart.
     #[test]
     fn a_chart_on_one_service_shows_and_marks_what_an_account_on_another_holds() {
         crate::ui::on_gtk(|| {
             let sierra = trading::Typed {
-                broker: "sierra".into(),
+                service: "sierra".into(),
                 name: "Sierra Chart".into(),
                 user: String::new(),
                 password: String::new(),
@@ -3447,7 +3447,7 @@ pub(super) mod tests {
     /// A chart of ES set to trade MES charts ES and trades MES: its header
     /// says "ES/MES", Buy and the chart menu's orders go to MES's contract,
     /// the position drawn is MES's, marked to the chart's prices at MES's
-    /// point value while the broker's market says nothing; set back to
+    /// point value while the trading service's market says nothing; set back to
     /// none, it trades ES again.
     #[test]
     fn a_chart_with_a_trading_symbol_trades_it_and_charts_its_own() {
@@ -3829,7 +3829,7 @@ pub(super) mod tests {
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
             let sierra = trading::Typed {
-                broker: "fake".into(),
+                service: "fake".into(),
                 name: "Sierra Chart".into(),
                 user: String::new(),
                 password: String::new(),
@@ -3853,7 +3853,7 @@ pub(super) mod tests {
     }
 
     /// Closing the window signs the trading sessions out with the feeds,
-    /// so nothing is left signed in at the broker.
+    /// so nothing is left signed in at the trading service.
     #[test]
     fn closing_the_window_signs_trading_out() {
         crate::ui::on_gtk(|| {
@@ -3889,7 +3889,7 @@ pub(super) mod tests {
         });
     }
 
-    /// What is asked of a broker from the chart, what became of it, what
+    /// What is asked of a trading service from the chart, what became of it, what
     /// was refused, and a session ending by itself: each one entry, under
     /// the account's or the login's name.
     #[test]

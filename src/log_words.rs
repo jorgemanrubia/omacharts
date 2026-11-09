@@ -1,7 +1,7 @@
 //! What the Log says, and the one place anything is put in it from the app.
 //!
 //! A raw error is a feed's or a system's words: an HTTP status, an SQLite
-//! code, a broker's refusal. Each is turned here into a sentence a trader
+//! code, a trading service's refusal. Each is turned here into a sentence a trader
 //! reads, with the raw words kept behind the entry's "Details". Nothing else
 //! writes words into the log, so the voice is one and the rules hold in one
 //! place:
@@ -23,7 +23,7 @@ pub fn say(entry: Entry) {
 }
 
 /// Keep every login's user ID out of the log from now on, whatever a feed or
-/// a broker repeats back.
+/// a trading service repeats back.
 pub fn conceal_logins(logins: &[Login]) {
     for login in logins {
         log::global().conceal(&login.user);
@@ -94,13 +94,13 @@ pub fn serving_changed() -> Entry {
     Entry::info("Data feeds", "Data feeds changed what they serve · charts moved")
 }
 
-/// How a broker sign-in ended: "Signed in · 2 accounts", or the broker's
+/// How a trading service sign-in ended: "Signed in · 2 accounts", or the trading service's
 /// refusal. Signed in with none listed is a warning: nothing can be traded.
 pub fn signed_in(login: &str, outcome: Result<usize, &str>) -> Entry {
     signed_in_heard(login, outcome, None)
 }
 
-/// [`signed_in`], with what the sign-in heard from the broker as the
+/// [`signed_in`], with what the sign-in heard from the trading service as the
 /// entry's detail: for Rithmic, who signed in where and every account list
 /// reply. A refusal one of those replies carried, though accounts were
 /// listed, is a warning that says it.
@@ -162,13 +162,13 @@ pub fn confirmed(account: &str, text: impl Into<String>) -> Entry {
     Entry::info(account, text).confirming()
 }
 
-/// What became of an order placed or cancelled here, once the broker says
+/// What became of an order placed or cancelled here, once the trading service says
 /// so: a fill or a cancel in a toast and here, a rejection as an error.
 pub fn order_moved_on(order: &Order, before: Stage, decimals: usize, account: &str) -> Option<Entry> {
     let text = trading::outcome_text(order, before, decimals)?;
     let source = if account.is_empty() { "Trading" } else { account };
     Some(match (order.status.stage, order.status.bound, &order.status.said) {
-        // The broker's own words, which the line has put plainly.
+        // The trading service's own words, which the line has put plainly.
         (Stage::Rejected, Some(_), Some(said)) => Entry::error(source, text).detail(said.clone()),
         (Stage::Rejected, ..) => Entry::error(source, text),
         _ => Entry::info(source, text).confirming(),
@@ -203,7 +203,7 @@ pub fn trouble(source: &str, what: &str, error: impl std::fmt::Display) -> Entry
     Entry::error(source, what).detail(error.to_string())
 }
 
-/// Something worth knowing that is not trouble: anything asked of a broker
+/// Something worth knowing that is not trouble: anything asked of a trading service
 /// besides an order ("Flatten ESZ6"), the cache trimmed, ladders asked for.
 pub fn note(source: &str, what: impl Into<String>) -> Entry {
     Entry::info(source, what)
@@ -245,10 +245,10 @@ mod tests {
         assert_eq!(feed_step("Rithmic Test", "connecting to the gateway").text, "Connecting to the gateway");
     }
 
-    /// A sign-in's entry carries what the broker said as its detail, and
+    /// A sign-in's entry carries what the trading service said as its detail, and
     /// warns of a refusal on the account list though accounts were listed.
     #[test]
-    fn a_sign_in_says_what_the_broker_heard_in_its_detail() {
+    fn a_sign_in_says_what_the_service_heard_in_its_detail() {
         let heard = trading::Heard { warning: None, detail: "User: ••• (the login's own)\nAccount list replies: 1".into() };
         let none = signed_in_heard("Rithmic Test", Ok(0), Some(&heard));
         assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the trading service lists no accounts"));
@@ -304,7 +304,7 @@ mod tests {
         banded.status.bound = Some(trading::Bound { price: 7_521.25, kind: trading::BoundKind::Band });
         let rejected = order_moved_on(&banded, Stage::Pending, 2, "951").expect("said");
         assert_eq!(rejected.text, "Rejected · Sell Limit 1 ESZ6 at 7,480.00 · too far below the market (exchange band 7,521.25)");
-        assert_eq!(rejected.detail.as_deref(), Some(raw), "the broker's words kept behind Details");
+        assert_eq!(rejected.detail.as_deref(), Some(raw), "the trading service's words kept behind Details");
     }
 
     #[test]

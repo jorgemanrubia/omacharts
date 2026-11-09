@@ -2,7 +2,7 @@
 //! that maps a provider to the dialog of its own.
 //!
 //! A dialog is the provider's, in a module of its own — what a Rithmic
-//! login asks for is nothing like what the next broker's does, and one form
+//! login asks for is nothing like what the next trading service's does, and one form
 //! made to fit both would fit neither. Everything else reaches them through
 //! here, by what the feed declares, so adding a provider is its dialog and
 //! one line below. The dialogs are this module's children, so the registry
@@ -23,7 +23,7 @@ use omacharts_engine::providers::{Listed, Saved};
 
 use crate::trading::{Login, Typed};
 
-/// A broker connection's login dialog: what Trading opens to add a login
+/// A trading service connection's login dialog: what Trading opens to add a login
 /// over the widget given, or to sign `known` in again, handing over what
 /// was typed when somebody presses Sign in.
 pub type LoginDialog = fn(&gtk::Widget, Option<&Login>, Box<dyn Fn(Typed)>);
@@ -34,9 +34,9 @@ pub type LoginDialog = fn(&gtk::Widget, Option<&Login>, Box<dyn Fn(Typed)>);
 /// with; a secret it asks for goes to the feed's keyring, never into that.
 pub type FeedDialog = fn(Saved, Box<dyn Fn(Saved)>) -> adw::AlertDialog;
 
-/// The login dialog of the broker logins call `broker`.
-pub fn login_dialog(broker: &str) -> Option<LoginDialog> {
-    match broker {
+/// The login dialog of the trading service logins call `service`.
+pub fn login_dialog(service: &str) -> Option<LoginDialog> {
+    match service {
         id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_login::ask),
         id if id == omacharts_engine::providers::sierra::LISTED.id => Some(sierra_login::ask),
         #[cfg(any(test, feature = "fakes"))]
@@ -115,7 +115,7 @@ fn leaves_room(model: &gtk::gio::MenuModel, id: &str) -> bool {
 
 /// The fake rich feed's dialog, as a provider's own dialog would be: a
 /// member number and a token, the token into the feed's keyring; and the
-/// fake broker's, a name, a user and a password.
+/// fake trading service's, a name, a user and a password.
 #[cfg(any(test, feature = "fakes"))]
 pub(crate) mod fake {
     use adw::prelude::*;
@@ -126,7 +126,7 @@ pub(crate) mod fake {
 
     pub const SIGN_IN: &str = "sign-in";
 
-    /// The fake broker's login dialog.
+    /// The fake trading service's login dialog.
     pub fn login(parent: &gtk::Widget, known: Option<&Login>, signed: Box<dyn Fn(Typed)>) {
         let dialog = adw::AlertDialog::new(Some("Sign in to the fake trading service"), None);
         let list = gtk::ListBox::new();
@@ -148,7 +148,7 @@ pub(crate) mod fake {
                 return;
             }
             signed(Typed {
-                broker: "fake".into(),
+                service: "fake".into(),
                 name: name.text().to_string(),
                 user: user.text().to_string(),
                 password: password.text().to_string(),

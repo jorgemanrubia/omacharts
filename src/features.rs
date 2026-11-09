@@ -20,15 +20,15 @@ use crate::store::Store;
 /// A flag the app knows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Feature {
-    /// Trading on a broker: the trading panel and its toggle, the header's
+    /// Trading on a trading service: the trading panel and its toggle, the header's
     /// P&L, Buy Sell and Quantity, orders and positions on charts, the
     /// chart menu's orders, the trading keys, Preferences → Trading and the
     /// Theme page's Trading colours, and every sign-in to an order plant.
-    /// A broker's data feed is not trading and stays without it.
+    /// A trading service's data feed is not trading and stays without it.
     Trading,
     /// Sierra Chart: its data feed, read from its files, on the Data page
     /// and in `provider` commands, with `provider setup`; and, with trading
-    /// on too, its broker. Off, nothing looks for its folder, watches a
+    /// on too, its trading service. Off, nothing looks for its folder, watches a
     /// file or connects to its DTC server.
     Sierra,
 }

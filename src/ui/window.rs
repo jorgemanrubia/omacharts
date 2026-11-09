@@ -2961,7 +2961,7 @@ pub struct Window {
     /// replaces it, in order. Which of them serves a chart is
     /// [`Window::route`]'s to say.
     feeds: RefCell<Vec<Rc<Feed>>>,
-    /// Every broker login's trading session, at most one each, kept for the
+    /// Every trading service login's trading session, at most one each, kept for the
     /// life of the window.
     desk: Rc<crate::trading::Desk>,
     /// The logins and accounts, as Trading last stored them, for the
@@ -8246,7 +8246,7 @@ impl Window {
     /// of ticks are in memory and nowhere else, and a feed's threads are
     /// still running. The same retirement a feed switch does, with nothing
     /// installed after it. Every trading session is signed out too, so a
-    /// closed app leaves nothing signed in at the broker, waiting no longer
+    /// closed app leaves nothing signed in at the trading service, waiting no longer
     /// than the data session does.
     fn wire_close(self: &Rc<Self>) {
         let this = self.clone();

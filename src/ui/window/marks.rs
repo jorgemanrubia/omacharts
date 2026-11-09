@@ -19,7 +19,7 @@ use crate::trading::{self, Holder, OrderKind, Side};
 /// speak of.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderMark {
-    /// The broker's id for it, which a drag or its × hands back.
+    /// The trading service's id for it, which a drag or its × hands back.
     pub basket: String,
     pub side: Side,
     pub kind: OrderKind,
@@ -46,8 +46,8 @@ pub struct OrderMark {
 }
 
 /// How an exit is linked with the other, which the line joining them says:
-/// solid where the broker holds it, dashed where the app does, which lasts
-/// only while it runs, and faint until the broker has confirmed either.
+/// solid where the trading service holds it, dashed where the app does, which lasts
+/// only while it runs, and faint until the trading service has confirmed either.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkMark {
     pub holder: Holder,
@@ -55,7 +55,7 @@ pub struct LinkMark {
 }
 
 /// The position held, at its average price: a heavier line, in the profit
-/// or loss colour once the broker's P&L has come and in the long or short
+/// or loss colour once the trading service's P&L has come and in the long or short
 /// colour until then, its chip filled once there is money to say.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMark {
@@ -390,7 +390,7 @@ impl MarksSeen for omacharts_chart::ChartView {
 
     fn mark_links(&self) -> Vec<Option<LinkMark>> {
         let link = |link: MarkLink| LinkMark {
-            holder: if link.dashed { Holder::App } else { Holder::Broker },
+            holder: if link.dashed { Holder::App } else { Holder::TradingService },
             pending: link.pending,
         };
         self.price_marks().iter().filter(|mark| mark.id.starts_with(ORDER)).map(|mark| mark.link.map(link)).collect()

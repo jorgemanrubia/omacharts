@@ -144,7 +144,7 @@ pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
 
 /// The setting what feeds are set up with lives in: a JSON object of what
 /// each feed's dialog, or `provider setup`, handed over, by feed id. Only
-/// for a feed that declares [`providers::Field`]s and is not a broker
+/// for a feed that declares [`providers::Field`]s and is not a trading service
 /// connection, whose login is Trading's. Secrets are never here.
 pub const SETUPS: &str = "feed_setups";
 
@@ -187,7 +187,7 @@ pub fn worth_a_dot<'a>(order: impl Iterator<Item = &'a str>) -> bool {
     false
 }
 
-/// Is `feed`'s login a broker connection, kept in Preferences → Trading?
+/// Is `feed`'s login a trading service connection, kept in Preferences → Trading?
 fn trades(feed: &Listed) -> bool {
     feed.setup.is_some_and(|setup| setup.trades())
 }
@@ -199,7 +199,7 @@ pub fn identify() {
     providers::identify(env!("CARGO_PKG_VERSION"));
 }
 
-/// Hand every feed whose login is a broker connection the data login: the
+/// Hand every feed whose login is a trading service connection the data login: the
 /// login its data signs in through, out of the logins in Preferences →
 /// Trading, which are settings, `Local` in `setting_keys`. The password is
 /// never here; it is in the keyring under the login's id. The engine keeps
@@ -235,9 +235,9 @@ pub fn saved_of(store: &Store) -> providers::Saved {
 }
 
 /// What `feed` is told of the data login: the login, when it is one of
-/// the feed's own broker's, and nothing when it is another's.
+/// the feed's own trading service's, and nothing when it is another's.
 fn saved_for(login: Option<&crate::trading::Login>, feed: &Listed) -> providers::Saved {
-    let Some(login) = login.filter(|login| login.broker.eq_ignore_ascii_case(feed.id)) else {
+    let Some(login) = login.filter(|login| login.service.eq_ignore_ascii_case(feed.id)) else {
         return providers::Saved::default();
     };
     providers::Saved {
@@ -254,7 +254,7 @@ pub fn signs_in_from(key: &str) -> bool {
 }
 
 /// What a feed keeps in the settings beyond its session, forgotten when it
-/// is signed out of. For a broker connection's feed, the data login is
+/// is signed out of. For a trading service connection's feed, the data login is
 /// marked signed out: its password went with the session, and it stays in
 /// Trading, with its accounts, for the next sign-in.
 ///
@@ -300,15 +300,15 @@ pub fn add_feed(store: &Store, id: &str) {
     save_order(store, &order);
 }
 
-/// A broker login was added: its broker's own data feed goes on the order
+/// A trading service login was added: its trading service's own data feed goes on the order
 /// with it, once, so that nobody adds the two apart. A feed whose setup the
 /// app keeps, and that has none yet, is set up from the login and what is
 /// found on this machine: Sierra Chart's folder, and the login's port.
-pub fn follow_broker(store: &Store, login: &crate::trading::Login) {
-    if !crate::trading::broker_for(&login.broker).is_some_and(|broker| broker.has_feed()) {
+pub fn follow_service(store: &Store, login: &crate::trading::Login) {
+    if !crate::trading::service_for(&login.service).is_some_and(|service| service.has_feed()) {
         return;
     }
-    let Some(feed) = providers::listed(&login.broker) else { return };
+    let Some(feed) = providers::listed(&login.service) else { return };
     add_feed(store, feed.id);
     let Some(setup) = feed.setup.filter(|_| kept_here(feed)) else { return };
     if !setup_of(store, feed.id).values.is_empty() {
@@ -333,7 +333,7 @@ pub fn removable(store: &Store, id: &str) -> bool {
         .any(|known| !known.eq_ignore_ascii_case(id) && providers::listed(known).is_some())
 }
 
-/// Take `id` off the stored order. For a broker connection's feed the data
+/// Take `id` off the stored order. For a trading service connection's feed the data
 /// session ends; the logins it signed in through are Trading's, and stay. A
 /// feed's own session is signed out of from its row rather than by removing
 /// it.
@@ -538,7 +538,7 @@ pub(crate) mod tests {
         assert_eq!(saved_of(&store), Default::default());
         let kept = Kept::default();
         let typed = Typed {
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             name: "Lucid".into(),
             user: " trader ".into(),
             password: "PLANTED-PASSWORD".into(),
@@ -568,7 +568,7 @@ pub(crate) mod tests {
         let store = store();
         let feed = providers::listed(fake::LISTED.id).expect("in a test build");
         assert!(kept_here(feed));
-        assert!(!kept_here(providers::listed("rithmic").unwrap()), "a broker's login is Trading's");
+        assert!(!kept_here(providers::listed("rithmic").unwrap()), "a trading service's login is Trading's");
         assert!(!kept_here(providers::listed("yahoo").unwrap()));
         set_up(&store, feed, Saved { user: Some("member".into()), ..Saved::default() }.with("desk", "North"));
         assert_eq!(setup_of(&store, feed.id).value("desk"), Some("North"));
@@ -579,18 +579,18 @@ pub(crate) mod tests {
         assert_eq!(setup_of(&store, feed.id), Saved::default());
     }
 
-    /// Adding Sierra Chart as a broker adds its data feed, once, set up
+    /// Adding Sierra Chart as a trading service adds its data feed, once, set up
     /// with the login's port and the folder found here; a feed set up
     /// already is left as it was.
     #[test]
-    fn a_sierra_broker_brings_its_feed_set_up_from_the_login() {
+    fn a_sierra_service_brings_its_feed_set_up_from_the_login() {
         use crate::trading::{self, fake::Kept, Typed};
         use omacharts_engine::providers::sierra::setup;
         crate::features::force(crate::features::Feature::Sierra, true);
         let store = store();
         let kept = Kept::default();
         let typed = |port: &str| Typed {
-            broker: "sierra".into(),
+            service: "sierra".into(),
             name: "Sierra Chart".into(),
             user: String::new(),
             password: String::new(),
@@ -613,7 +613,7 @@ pub(crate) mod tests {
     }
 
     /// The feed-only path is as it was: Sierra Chart added on the Data page
-    /// adds no broker login.
+    /// adds no trading service login.
     #[test]
     fn a_sierra_feed_added_alone_adds_no_login() {
         crate::features::force(crate::features::Feature::Sierra, true);
@@ -626,7 +626,7 @@ pub(crate) mod tests {
     /// A Rithmic login brings the Rithmic feed, on top for the first, and
     /// never a second copy of it.
     #[test]
-    fn a_rithmic_broker_brings_its_feed_once() {
+    fn a_rithmic_service_brings_its_feed_once() {
         use crate::trading::{self, fake::Kept, Typed};
         if omacharts_engine::providers::rithmic::session::development() {
             return;
@@ -635,7 +635,7 @@ pub(crate) mod tests {
         add_feed(&store, "tos");
         let kept = Kept::default();
         let typed = |user: &str| Typed {
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             name: String::new(),
             user: user.into(),
             password: "pw".into(),
@@ -718,8 +718,8 @@ pub(crate) mod tests {
         // Below the boundary: the feeds themselves. Their clients,
         // `crates/rithmic` and `crates/tos-market`, are not read at all.
         let below = ["crates/omacharts-engine/src/providers/"];
-        // The brokers, which are named in their adapters and nowhere else.
-        let adapters = ["src/trading/adapters/"];
+        // The trading services, which are named in their modules and nowhere else.
+        let services = ["src/trading/services/"];
         // Above it, for good, and why.
         let allowed = [
             // For good: a provider's own sign-in dialog is the provider's,
@@ -741,7 +741,7 @@ pub(crate) mod tests {
         for dir in ["src", "crates/omacharts-engine/src"] {
             for path in sources(&root.join(dir)) {
                 let name = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-                if below.iter().chain(&adapters).any(|prefix| name.starts_with(prefix))
+                if below.iter().chain(&services).any(|prefix| name.starts_with(prefix))
                     || allowed.iter().any(|(file, _)| name == *file)
                 {
                     continue;

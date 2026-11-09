@@ -1,14 +1,14 @@
 //! Preferences → Trading: three sections. "Trading services" lists the
-//! broker logins, each a row with its accounts under it, edited the way the
+//! trading service logins, each a row with its accounts under it, edited the way the
 //! Data page edits its data feeds; "Order entry" holds what every chart's
 //! orders follow; "Chart" how the orders are drawn on a chart. The last two
 //! are there with no login too, to be set before the first one.
 //!
 //! With no login, the accounts' section is its heading and a button. "Add a
-//! trading account…" offers every broker in the registry, and opens that broker's own login
-//! dialog, with a Name field; the first login added whose broker has a data
+//! trading account…" offers every trading service in the registry, and opens that trading service's own login
+//! dialog, with a Name field; the first login added whose trading service has a data
 //! feed also adds that feed as the first data feed, through it.
-//! Each login says how it stands — live, not signed in, or the broker's own
+//! Each login says how it stands — live, not signed in, or the trading service's own
 //! words for a refusal — and which one is the data login; its accounts are
 //! the ones its last sign-in listed, cached, so the page draws without
 //! connecting.
@@ -36,7 +36,7 @@ fn feed_label(login: &Login) -> &'static str {
     trading::data_feed_of(login).map_or("broker", |feed| feed.label)
 }
 
-/// The keyring a broker keeps its passwords in.
+/// The keyring a trading service keeps its passwords in.
 struct Keyring(Option<&'static dyn Secrets>);
 
 impl Secrets for Keyring {
@@ -52,16 +52,16 @@ impl Secrets for Keyring {
     }
 }
 
-/// The keyring `broker`'s passwords go in: what the Data page keeps a
-/// broker's data login in while trading is switched off.
-pub(crate) fn keyring(broker: &str) -> impl Secrets {
-    Keyring(trading::broker_for(broker).and_then(|broker| broker.keyring()))
+/// The keyring `service`'s passwords go in: what the Data page keeps a
+/// trading service's data login in while trading is switched off.
+pub(crate) fn keyring(service: &str) -> impl Secrets {
+    Keyring(trading::service_for(service).and_then(|service| service.keyring()))
 }
 
-/// Ask for a login of the broker `broker` over `anchor` — a new one, or
-/// `known` again — in the broker's own dialog.
-fn ask(anchor: &gtk::Widget, broker: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
-    if let Some(dialog) = sign_in_dialogs::login_dialog(broker) {
+/// Ask for a login of the trading service `service` over `anchor` — a new one, or
+/// `known` again — in the trading service's own dialog.
+fn ask(anchor: &gtk::Widget, service: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
+    if let Some(dialog) = sign_in_dialogs::login_dialog(service) {
         dialog(anchor, known, Box::new(signed));
     }
 }
@@ -80,7 +80,7 @@ pub fn order_labels(store: &Store) -> LabelSide {
 pub struct Panel {
     store: Rc<Store>,
     desk: Rc<Desk>,
-    /// Where passwords go instead of each broker's own keyring: a list in
+    /// Where passwords go instead of each trading service's own keyring: a list in
     /// memory, under test.
     secrets: Option<Rc<dyn Secrets>>,
     /// Has the window chart from the data feeds now stored and redraw its
@@ -161,11 +161,11 @@ impl Panel {
         *self.data_page.borrow_mut() = Some(redraw);
     }
 
-    /// Where the passwords of `broker`'s logins go.
-    fn secrets(&self, broker: &str) -> Rc<dyn Secrets> {
+    /// Where the passwords of `service`'s logins go.
+    fn secrets(&self, service: &str) -> Rc<dyn Secrets> {
         match &self.secrets {
             Some(secrets) => secrets.clone(),
-            None => Rc::new(Keyring(trading::broker_for(broker).and_then(|broker| broker.keyring()))),
+            None => Rc::new(Keyring(trading::service_for(service).and_then(|service| service.keyring()))),
         }
     }
 
@@ -179,13 +179,13 @@ impl Panel {
     }
 }
 
-/// Open the login dialog for a new login of `broker` over `anchor`; what
-/// the Data page's "Add a data feed…" does for a broker connection's feed
+/// Open the login dialog for a new login of `service` over `anchor`; what
+/// the Data page's "Add a data feed…" does for a trading service connection's feed
 /// too.
-pub fn add_broker(panel: &Rc<Panel>, broker: &str, anchor: &gtk::Widget) {
+pub fn add_service(panel: &Rc<Panel>, service: &str, anchor: &gtk::Widget) {
     let panel = panel.clone();
-    ask(anchor, broker, None, move |typed| {
-        match trading::add_login(&panel.store, panel.secrets(&typed.broker).as_ref(), &typed) {
+    ask(anchor, service, None, move |typed| {
+        match trading::add_login(&panel.store, panel.secrets(&typed.service).as_ref(), &typed) {
             Ok(id) => {
                 panel.changed();
                 sign_in(&panel, &id);
@@ -238,7 +238,7 @@ fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
         },
     };
     let mut words: Vec<String> =
-        panel.desk.broker_for(login).and_then(|broker| broker.signs_in_to(login)).into_iter().collect();
+        panel.desk.service_for(login).and_then(|service| service.signs_in_to(login)).into_iter().collect();
     words.push(standing);
     if data {
         words.push("data".into());
@@ -403,15 +403,15 @@ fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
     add.set_margin_top(12);
     let items = panel
         .desk
-        .brokers()
+        .services()
         .iter()
-        .map(|broker| {
+        .map(|service| {
             let anchor = add.downgrade();
             let panel = panel.clone();
-            let id = broker.id();
-            crate::ui::menus::Item::new(broker.label(), move || {
+            let id = service.id();
+            crate::ui::menus::Item::new(service.label(), move || {
                 if let Some(anchor) = anchor.upgrade() {
-                    add_broker(&panel, id, anchor.upcast_ref());
+                    add_service(&panel, id, anchor.upcast_ref());
                 }
             })
         })
@@ -421,13 +421,13 @@ fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
 }
 
 /// The dialog again, prefilled, for a login with no password to sign in
-/// with or one the broker refused.
+/// with or one the trading service refused.
 fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     let panel = panel.clone();
     let id = id.to_string();
-    let secrets = panel.secrets(&login.broker);
-    ask(anchor, &login.broker, Some(&login), move |typed| {
+    let secrets = panel.secrets(&login.service);
+    ask(anchor, &login.service, Some(&login), move |typed| {
         if let Err(error) = trading::retype_login(&panel.store, secrets.as_ref(), &id, &typed) {
             panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
         }
@@ -440,7 +440,7 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    match trading::sign_out_login(&panel.store, panel.secrets(&login.broker).as_ref(), id) {
+    match trading::sign_out_login(&panel.store, panel.secrets(&login.service).as_ref(), id) {
         Ok(_) => log_words::say(log_words::signed_out(&login.name)),
         Err(error) => {
             eprintln!("omacharts: {error}");
@@ -505,7 +505,7 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.broker).as_ref(), id, feed_too) {
+    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.service).as_ref(), id, feed_too) {
         eprintln!("omacharts: {error}");
         log_words::say(log_words::trouble(&login.name, "Trading service not removed completely", &error));
     }
@@ -518,8 +518,8 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
 fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
     let Some(login) = logins.iter().find(|login| login.id == id) else { return };
-    if panel.desk.broker_for(login).is_none() {
-        panel.notes.borrow_mut().insert(id.to_string(), format!("no trading service called {} in this build", login.broker));
+    if panel.desk.service_for(login).is_none() {
+        panel.notes.borrow_mut().insert(id.to_string(), format!("no trading service called {} in this build", login.service));
         return rebuild(panel);
     }
     panel.notes.borrow_mut().remove(id);
@@ -532,7 +532,7 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::fake::{FakeBroker, Kept};
+    use crate::trading::fake::{FakeService, Kept};
     use crate::trading::Registry;
     use crate::trading::Typed;
 
@@ -612,7 +612,7 @@ mod tests {
 
     fn typed(name: &str) -> Typed {
         Typed {
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             name: name.into(),
             user: format!("{name}-user"),
             password: "PLANTED-PASSWORD".into(),
@@ -626,7 +626,7 @@ mod tests {
     fn nothing_configured_is_a_heading_a_button_and_the_settings() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
-            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
             rebuild(&panel);
             let words = page_words(&panel);
             assert!(words.iter().any(|w| w == "Trading services"), "{words:?}");
@@ -644,7 +644,7 @@ mod tests {
     fn the_order_labels_are_left_until_moved_and_moving_them_is_kept() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
-            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
             let told = Rc::new(std::cell::Cell::new(0));
             let counted = told.clone();
             panel.set_labels_moved(Rc::new(move || counted.set(counted.get() + 1)));
@@ -736,24 +736,24 @@ mod tests {
         });
     }
 
-    /// A broker with no data feed, which nothing above the seam names, is
+    /// A trading service with no data feed, which nothing above the seam names, is
     /// offered by "Add a trading service…" because the registry lists it,
     /// signs in from this page, lists its accounts here, and trades: a market order
     /// fills, with its fill, and is held on the desk's book. Its login is
     /// never the data login, and the data feeds are left as they were.
     #[test]
-    fn a_second_broker_signs_in_and_trades_without_being_named() {
+    fn a_second_service_signs_in_and_trades_without_being_named() {
         crate::ui::on_gtk(|| {
             crate::features::force(crate::features::Feature::Trading, true);
             let store = Rc::new(Store::memory().unwrap());
             let desk = Rc::new(Desk::new(trading::registry()));
-            let fake = desk.brokers().get("fake").expect("the fake broker is in the registry");
+            let fake = desk.services().get("fake").expect("the fake trading service is in the registry");
             let panel = panel(&store, desk.clone());
             rebuild(&panel);
             assert!(page_words(&panel).iter().any(|w| w == fake.label()), "not offered: {:?}", page_words(&panel));
 
             let typed = Typed {
-                broker: fake.id().into(),
+                service: fake.id().into(),
                 name: "Practice".into(),
                 user: "me".into(),
                 password: "PLANTED-PASSWORD".into(),
@@ -798,7 +798,7 @@ mod tests {
     }
 
     /// Signing in is in the Log under the login's name, and a user ID never
-    /// is: not from the login, and not from a broker repeating it back.
+    /// is: not from the login, and not from a trading service repeating it back.
     #[test]
     fn the_log_names_a_login_and_never_its_user_id() {
         crate::ui::on_gtk(|| {
@@ -808,7 +808,7 @@ mod tests {
             let desk = Rc::new(Desk::new(trading::registry()));
             let panel = panel(&store, desk.clone());
             let typed = Typed {
-                broker: "fake".into(),
+                service: "fake".into(),
                 name: "Practice".into(),
                 user: USER.into(),
                 password: "PLANTED-PASSWORD".into(),
@@ -820,7 +820,7 @@ mod tests {
             sign_in(&panel, &id);
             signed_in(&store, &desk, &id);
             assert!(desk.live(&id));
-            // A broker that says the user ID back in its refusal.
+            // A trading service that says the user ID back in its refusal.
             log_words::say(log_words::signed_in("Practice", Err(&format!("user {USER} is locked"))));
             sign_out(&panel, &id);
 

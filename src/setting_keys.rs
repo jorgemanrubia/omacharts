@@ -31,7 +31,7 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
-    // The broker logins — names, user IDs, systems, gateways — and which
+    // The trading service logins — names, user IDs, systems, gateways — and which
     // one market data comes through belong to the machine they were typed
     // on. Their passwords are in the keyring, never a setting.
     (crate::trading::LOGINS, Kind::Local),

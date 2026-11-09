@@ -1511,7 +1511,7 @@ fn build_data_page(context: &Rc<Context>) {
     group.add(&limit);
 
     // Trading switched off has no Trading page, and the Data page adds a
-    // broker's data feed through the broker's own dialog itself.
+    // trading service's data feed through the trading service's own dialog itself.
     if !crate::features::trading() {
         crate::ui::feed_settings::build(
             &context.data_page,
@@ -1538,7 +1538,7 @@ fn build_data_page(context: &Rc<Context>) {
         context.store.clone(),
         context.on_change.clone(),
         vec![group, backups_group(context)],
-        Rc::new(move |broker: &str, anchor: &gtk::Widget| crate::ui::trading_settings::add_broker(&adding, broker, anchor)),
+        Rc::new(move |service: &str, anchor: &gtk::Widget| crate::ui::trading_settings::add_service(&adding, service, anchor)),
     );
     trading.redraw_data_page(redraw);
 }

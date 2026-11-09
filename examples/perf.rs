@@ -392,7 +392,7 @@ fn interactivity(home: &Path, rows: &mut Vec<Row>) {
 /// which the window does on every push, and starting a sign-in, which a
 /// launch does after its first frame.
 ///
-/// Behind the `fakes` feature, because the broker here is the fake one, and
+/// Behind the `fakes` feature, because the trading service here is the fake one, and
 /// because a revision from before trading has nothing to read: built
 /// without the feature, as that revision is, these rows are simply missing
 /// from its side. `bin/perf-compare` turns it on where the tree has it.
@@ -403,13 +403,13 @@ fn interactivity(home: &Path, rows: &mut Vec<Row>) {
 /// theirs land at no fixed point in a run.
 #[cfg(feature = "fakes")]
 fn trading(home: &Path, rows: &mut Vec<Row>) {
-    use omacharts::trading::fake::{FakeBroker, Kept};
-    use omacharts::trading::{self, Broker, Desk, Registry, Typed, View};
+    use omacharts::trading::fake::{FakeService, Kept};
+    use omacharts::trading::{self, TradingService, Desk, Registry, Typed, View};
     use std::sync::Arc;
 
     let store = Store::open_at(&home.join("trading.db")).expect("a database");
     let typed = |name: &str| Typed {
-        broker: "fake".into(),
+        service: "fake".into(),
         name: name.into(),
         user: "someone".into(),
         password: "not a password".into(),
@@ -421,7 +421,7 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
 
     // Both signed in and refreshed, each holding a position and a day of
     // orders, as a desk is once the sign-ins have landed.
-    let fake = Arc::new(FakeBroker::listed());
+    let fake = Arc::new(FakeService::listed());
     let desk = Desk::new(Registry::of(vec![fake.clone()]));
     let logins = trading::logins(&store);
     for login in &logins {
@@ -437,7 +437,7 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
         black_box(view);
     }));
 
-    let slow = Arc::new(FakeBroker { takes: Duration::from_millis(10), ..FakeBroker::listed() });
+    let slow = Arc::new(FakeService { takes: Duration::from_millis(10), ..FakeService::listed() });
     let desk = Desk::new(Registry::of(vec![slow]));
     let saved = &logins[..1];
     rows.push(row_on_this_thread("trading", "dispatch sign-in for a saved login", || {

@@ -1,8 +1,8 @@
 //! Linking: a position's stop and target that never both outlive it.
 //!
-//! Every broker gets the same feature, asked for the same way — "link this
+//! Every trading service gets the same feature, asked for the same way — "link this
 //! exit with the other" — and the foundation does it with whatever the
-//! broker has, which [`Linking`] says:
+//! trading service has, which [`Linking`] says:
 //!
 //! - **After the fact** (Rithmic): orders already working are linked where
 //!   they stand. A new exit is placed, then linked with the other.
@@ -18,7 +18,7 @@
 //! [`Plan::run`] to the session's thread. They never learn which of these
 //! it was, beyond who holds the link ([`Holder`]), which they show.
 //!
-//! # A second exit, on a broker that links only at submission
+//! # A second exit, on a trading service that links only at submission
 //!
 //! The position holds one exit, working alone, and the trader adds the
 //! other. The pair can only be formed by submitting both anew, so the one
@@ -43,7 +43,7 @@
 //! So it depends on which exit is working:
 //!
 //! - **A target working, a stop added** — [`Plan::Reform`]: cancel the
-//!   target, and once the broker says it is cancelled, submit the new stop
+//!   target, and once the trading service says it is cancelled, submit the new stop
 //!   and the target again as one pair. Between the two the position has no
 //!   target, and it had no stop before: it is exposed to nothing it was not
 //!   already exposed to, and at most misses a fill at the target for one
@@ -59,13 +59,13 @@
 //!   is worse if the pair is then refused; submitting the pair first has
 //!   two stops working at one price until the old one is cancelled. So the
 //!   foundation does neither: it places the target alone and holds the
-//!   link itself ([`Plan::PlaceThenWatch`]), as for a broker that cannot
+//!   link itself ([`Plan::PlaceThenWatch`]), as for a trading service that cannot
 //!   link at all, and says so. Placing the target first, or both at once,
-//!   gets a link the broker holds.
+//!   gets a link the trading service holds.
 //!
 //! # The app's own link
 //!
-//! For a broker that cannot link, and for the case above, the app watches
+//! For a trading service that cannot link, and for the case above, the app watches
 //! the two: when one fills or is cancelled, it cancels the other
 //! ([`due`], run by the desk on every change of the book). It belongs here
 //! rather than nowhere because two exits left unlinked are worse — the one
@@ -74,22 +74,22 @@
 //! drawing such a link differently and saying "while Omacharts runs":
 //!
 //! - It holds only while the app runs and the session is signed in. Quit,
-//!   and the two are unlinked at the broker.
-//! - It acts a round trip after the broker says one filled, so a market
+//!   and the two are unlinked at the trading service.
+//! - It acts a round trip after the trading service says one filled, so a market
 //!   that runs from one exit to the other within that time fills both.
 //! - A part of one filled is not taken off the other: the other is
 //!   cancelled only when the first is done.
 
 use super::*;
 
-/// How a broker can make a stop and a target one-cancels-other.
+/// How a trading service can make a stop and a target one-cancels-other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Linking {
     /// Orders already working are linked where they stand, held by the
-    /// broker: Rithmic.
+    /// trading service: Rithmic.
     AfterTheFact,
     /// Only two orders submitted together, as one OCO pair, held by the
-    /// broker: Sierra Chart over DTC.
+    /// trading service: Sierra Chart over DTC.
     AtSubmission,
     /// Not at all: the app holds the link, while it runs.
     None,
@@ -98,8 +98,8 @@ pub enum Linking {
 /// Who holds a link, which decides whether it outlives the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Holder {
-    /// The broker: it holds whether or not the app runs.
-    Broker,
+    /// The trading service: it holds whether or not the app runs.
+    TradingService,
     /// The app: only while it runs and the session is signed in.
     App,
 }
@@ -139,10 +139,10 @@ impl Asked {
 pub enum Plan {
     /// Nothing to link with: placed alone.
     Alone(OrderRequest),
-    /// Placed, then the broker links them with the working order `with`,
+    /// Placed, then the trading service links them with the working order `with`,
     /// when there is one.
     PlaceThenLink { place: Vec<OrderRequest>, with: Option<String> },
-    /// Placed together, as one pair the broker links.
+    /// Placed together, as one pair the trading service links.
     Pair([OrderRequest; 2]),
     /// The working target `cancel` cancelled, then the new stop and the
     /// target again placed as one pair, sized to what is held then.
@@ -152,7 +152,7 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// A new exit, `exit`, on a broker that links as `linking`, with
+    /// A new exit, `exit`, on a trading service that links as `linking`, with
     /// `sibling` the other exit working on the position, if any.
     pub fn exit(linking: Linking, exit: OrderRequest, sibling: Option<&Order>) -> Plan {
         let Some(sibling) = sibling else { return Plan::Alone(exit) };
@@ -217,9 +217,9 @@ impl Plan {
     pub fn holder(&self) -> Option<Holder> {
         match self {
             Plan::Alone(_) => None,
-            Plan::PlaceThenLink { place, with } if place.len() + usize::from(with.is_some()) >= 2 => Some(Holder::Broker),
+            Plan::PlaceThenLink { place, with } if place.len() + usize::from(with.is_some()) >= 2 => Some(Holder::TradingService),
             Plan::PlaceThenWatch { place, with } if place.len() + usize::from(with.is_some()) >= 2 => Some(Holder::App),
-            Plan::Pair(_) | Plan::Reform { .. } => Some(Holder::Broker),
+            Plan::Pair(_) | Plan::Reform { .. } => Some(Holder::TradingService),
             _ => None,
         }
     }
@@ -237,11 +237,11 @@ impl Plan {
     }
 
     /// Do it, on the session's thread, for the account numbered `account`:
-    /// every call blocks until the broker has answered.
+    /// every call blocks until the trading service has answered.
     pub fn run(&self, session: &dyn Session, account: &str) -> Ran {
         match self {
             Plan::Alone(order) => Ran { placed: vec![(order.clone(), session.place(order))], ..Ran::default() },
-            Plan::PlaceThenLink { place, with } => place_then(session, account, place, with.as_deref(), Holder::Broker),
+            Plan::PlaceThenLink { place, with } => place_then(session, account, place, with.as_deref(), Holder::TradingService),
             Plan::PlaceThenWatch { place, with } => place_then(session, account, place, with.as_deref(), Holder::App),
             Plan::Pair(pair) => pair_placed(session, account, pair.clone()),
             Plan::Reform { cancel, pair } => reform(session, account, cancel, pair),
@@ -259,7 +259,7 @@ pub struct Ran {
     /// The link made, or why there is none; `None` when there was nothing
     /// to link, or nothing was placed to link.
     pub link: Option<Result<Link, Failure>>,
-    /// A target cancelled to form a pair the broker then refused, placed
+    /// A target cancelled to form a pair the trading service then refused, placed
     /// back alone as it was.
     pub restored: Option<(OrderRequest, Result<String, Failure>)>,
 }
@@ -277,7 +277,7 @@ fn working(session: &dyn Session, basket: &str) -> bool {
 }
 
 /// Each of `place` placed in turn, then linked with `with` by `holder`:
-/// the broker's link, or the app's.
+/// the trading service's link, or the app's.
 fn place_then(session: &dyn Session, account: &str, place: &[OrderRequest], with: Option<&str>, holder: Holder) -> Ran {
     let mut ran = Ran::default();
     for order in place {
@@ -300,22 +300,22 @@ fn place_then(session: &dyn Session, account: &str, place: &[OrderRequest], with
     }
     let link = Link { account: account.to_string(), baskets, holder };
     ran.link = Some(match holder {
-        Holder::Broker => session.link(account, &link.baskets).map(|()| link),
+        Holder::TradingService => session.link(account, &link.baskets).map(|()| link),
         Holder::App => Ok(link),
     });
     ran
 }
 
-/// `pair` placed as one, the broker holding the link.
+/// `pair` placed as one, the trading service holding the link.
 fn pair_placed(session: &dyn Session, account: &str, pair: [OrderRequest; 2]) -> Ran {
     let mut ran = Ran::default();
     match session.place_pair(&pair) {
         Ok(baskets) => {
-            ran.link = Some(Ok(Link { account: account.to_string(), baskets: baskets.to_vec(), holder: Holder::Broker }));
+            ran.link = Some(Ok(Link { account: account.to_string(), baskets: baskets.to_vec(), holder: Holder::TradingService }));
             ran.placed = pair.into_iter().zip(baskets).map(|(order, basket)| (order, Ok(basket))).collect();
         }
         // Refused, though one of the two may be working all the same, if
-        // the broker took only one: the book says which.
+        // the trading service took only one: the book says which.
         Err(Failure::Refused(why)) => {
             let book = session.book();
             ran.placed = pair
@@ -426,8 +426,8 @@ pub fn due(link: &Link, book: &Book) -> Due {
     }
 }
 
-/// Is a link the broker holds still standing in `book`? Only while every
-/// order of it is working; once one is done the broker has dealt with the
+/// Is a link the trading service holds still standing in `book`? Only while every
+/// order of it is working; once one is done the trading service has dealt with the
 /// rest.
 pub fn standing(link: &Link, book: &Book) -> bool {
     link.baskets.iter().all(|basket| book.order(basket).is_none_or(|order| order.status.working()))
@@ -481,7 +481,7 @@ mod tests {
         session.book().orders.into_iter().filter(|order| order.status.working()).collect()
     }
 
-    /// Each broker links the way it can, and the plan says who holds it
+    /// Each trading service links the way it can, and the plan says who holds it
     /// before anything is sent.
     #[test]
     fn every_way_of_linking_has_its_plan() {
@@ -508,13 +508,13 @@ mod tests {
         }
         let plan = Plan::exit(Linking::AfterTheFact, target(1), Some(&stop_working));
         assert!(matches!(plan, Plan::PlaceThenLink { .. }));
-        assert_eq!((plan.holder(), plan.with(), plan.cancelling()), (Some(Holder::Broker), Some("S"), None));
+        assert_eq!((plan.holder(), plan.with(), plan.cancelling()), (Some(Holder::TradingService), Some("S"), None));
 
         let plan = Plan::exit(Linking::AtSubmission, stop(1), Some(&target_working));
         let Plan::Reform { pair, .. } = &plan else { panic!("{plan:?}") };
         assert_eq!((pair[0].kind, pair[1].kind, pair[1].price), (OrderKind::Stop, OrderKind::Limit, Some(7_600.0)));
         assert_ne!(pair[0].tag, pair[1].tag, "each of the pair is known by its own tag");
-        assert_eq!((plan.holder(), plan.cancelling(), plan.placing().len()), (Some(Holder::Broker), Some("S"), 2));
+        assert_eq!((plan.holder(), plan.cancelling(), plan.placing().len()), (Some(Holder::TradingService), Some("S"), 2));
 
         // A stop working and a target added: no safe order of steps, so the
         // app holds the link.
@@ -525,15 +525,15 @@ mod tests {
         assert_eq!(plan.holder(), Some(Holder::App));
 
         assert!(matches!(Plan::bracket(Linking::AtSubmission, stop(1), target(1)), Plan::Pair(_)));
-        assert_eq!(Plan::bracket(Linking::AfterTheFact, stop(1), target(1)).holder(), Some(Holder::Broker));
+        assert_eq!(Plan::bracket(Linking::AfterTheFact, stop(1), target(1)).holder(), Some(Holder::TradingService));
         assert_eq!(Plan::bracket(Linking::None, stop(1), target(1)).holder(), Some(Holder::App));
     }
 
-    /// Both exits at once: one pair where the broker links only so, placed
+    /// Both exits at once: one pair where the trading service links only so, placed
     /// and linked after where it links working orders, placed and watched
     /// where it cannot link.
     #[test]
-    fn a_bracket_is_linked_however_the_broker_can() {
+    fn a_bracket_is_linked_however_the_service_can() {
         for linking in [Linking::AfterTheFact, Linking::AtSubmission, Linking::None] {
             let session = session(linking);
             long(&session, 2);
@@ -544,31 +544,31 @@ mod tests {
             assert_eq!(link.baskets.len(), 2, "{linking:?}");
             match linking {
                 Linking::AfterTheFact => {
-                    assert_eq!(link.holder, Holder::Broker);
+                    assert_eq!(link.holder, Holder::TradingService);
                     assert_eq!(*session.links.lock().unwrap(), vec![baskets.clone()]);
                     assert_eq!(session.pairs.load(Ordering::Acquire), 0);
                 }
                 Linking::AtSubmission => {
-                    assert_eq!(link.holder, Holder::Broker);
+                    assert_eq!(link.holder, Holder::TradingService);
                     assert_eq!(session.pairs.load(Ordering::Acquire), 1, "one submission");
                 }
                 Linking::None => {
                     assert_eq!(link.holder, Holder::App);
-                    assert!(session.links.lock().unwrap().is_empty(), "nothing asked of a broker that cannot");
+                    assert!(session.links.lock().unwrap().is_empty(), "nothing asked of a trading service that cannot");
                 }
             }
-            // The target fills: the stop goes with it, by the broker's hand
+            // The target fills: the stop goes with it, by the trading service's hand
             // or the app's.
             session.fill(&baskets[1]);
             let book = session.book();
             match link.holder {
-                Holder::Broker => assert!(!book.order(&baskets[0]).unwrap().status.working(), "{linking:?}"),
+                Holder::TradingService => assert!(!book.order(&baskets[0]).unwrap().status.working(), "{linking:?}"),
                 Holder::App => assert_eq!(due(&link, &book), Due::Cancel(vec![baskets[0].clone()])),
             }
         }
     }
 
-    /// On a broker that links only at submission, a stop added to a working
+    /// On a trading service that links only at submission, a stop added to a working
     /// target cancels the target first and then places both as one pair:
     /// never two targets working, never fewer stops than before.
     #[test]
@@ -579,16 +579,16 @@ mod tests {
         let plan = Plan::exit(Linking::AtSubmission, stop(1), Some(&working_target));
         let ran = plan.run(&session, "951");
         assert_eq!(ran.cancelled, Some(Ok(())));
-        // The order the broker heard them in: the cancel, then the pair.
+        // The order the trading service heard them in: the cancel, then the pair.
         let heard = session.heard.lock().unwrap().clone();
         assert_eq!(heard[heard.len() - 2..], ["cancel", "pair"], "{heard:?}");
         let now = working(&session);
         assert_eq!(now.len(), 2, "{now:?}");
         assert_eq!(now.iter().filter(|order| order.kind == OrderKind::Limit).count(), 1, "one target, never two");
         let link = ran.link.unwrap().unwrap();
-        assert_eq!(link.holder, Holder::Broker);
+        assert_eq!(link.holder, Holder::TradingService);
         assert!(!session.book().order(&working_target.basket_id).unwrap().status.working());
-        // Linked at the broker: the stop filling takes the target with it.
+        // Linked at the trading service: the stop filling takes the target with it.
         let stop = now.iter().find(|order| order.kind == OrderKind::Stop).unwrap();
         session.fill(&stop.basket_id);
         assert!(working(&session).is_empty());
@@ -651,7 +651,7 @@ mod tests {
         assert!(ran.restored.is_none());
     }
 
-    /// A target added to a working stop, where the broker links only at
+    /// A target added to a working stop, where the trading service links only at
     /// submission: placed alone, the stop never touched, and the app holds
     /// the link.
     #[test]
@@ -671,10 +671,10 @@ mod tests {
         assert_eq!(due(&link, &session.book()), Due::Cancel(vec![working_stop.basket_id.clone()]));
     }
 
-    /// Either exit may go first, on every broker: the second is placed and
+    /// Either exit may go first, on every trading service: the second is placed and
     /// linked, by whoever can hold the link.
     #[test]
-    fn either_exit_may_go_first_however_the_broker_links() {
+    fn either_exit_may_go_first_however_the_service_links() {
         for linking in [Linking::AfterTheFact, Linking::AtSubmission, Linking::None] {
             for first_kind in [OrderKind::Stop, OrderKind::Limit] {
                 let session = session(linking);
@@ -693,7 +693,7 @@ mod tests {
                 assert_eq!(now.len(), 2, "{round}: {now:?}");
                 assert!(link.baskets.iter().all(|basket| now.iter().any(|order| order.basket_id == *basket)), "{round}");
                 let expected = match (linking, first_kind) {
-                    (Linking::AfterTheFact, _) | (Linking::AtSubmission, OrderKind::Limit) => Holder::Broker,
+                    (Linking::AfterTheFact, _) | (Linking::AtSubmission, OrderKind::Limit) => Holder::TradingService,
                     _ => Holder::App,
                 };
                 assert_eq!(link.holder, expected, "{round}");
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(ran.link, None, "nothing left to link with");
         assert!(session.links.lock().unwrap().is_empty());
 
-        // The broker refuses the link: said, and the exit stays placed.
+        // The trading service refuses the link: said, and the exit stays placed.
         let session = self::session(Linking::AfterTheFact);
         long(&session, 1);
         let working_stop = first(&session, &stop(1));

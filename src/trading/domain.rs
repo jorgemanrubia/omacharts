@@ -1,5 +1,5 @@
-//! The neutral types: a login, an account, an order and what a broker says
-//! of it. Every broker's session maps its own into these.
+//! The neutral types: a login, an account, an order and what a trading service says
+//! of it. Every trading service's session maps its own into these.
 
 use std::collections::HashMap;
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub use super::sizes::{Quantity, SizeTemplate};
 
-/// One broker login, without its password.
+/// One trading service login, without its password.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Login {
     /// The app's own name for it, which never changes. Its password is kept
@@ -15,11 +15,13 @@ pub struct Login {
     pub id: String,
     /// What the trader calls it: "Lucid", "Tradeify", "Rithmic Test".
     pub name: String,
-    /// The broker it signs in to, by the id the broker is listed under.
-    pub broker: String,
+    /// The trading service it signs in to, by the id it is listed under.
+    /// Stored as `broker`, the name it was first written under.
+    #[serde(rename = "broker")]
+    pub service: String,
     pub user: String,
-    /// The rest of what its broker's dialog asks that is not secret, by
-    /// name: which of the broker's systems, through which gateway.
+    /// The rest of what its trading service's dialog asks that is not secret, by
+    /// name: which of the trading service's systems, through which gateway.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<(String, String)>,
     /// Signed out: the password was forgotten, and nothing signs in with it
@@ -41,7 +43,7 @@ impl std::fmt::Debug for Login {
         f.debug_struct("Login")
             .field("id", &self.id)
             .field("name", &self.name)
-            .field("broker", &self.broker)
+            .field("service", &self.service)
             .field("values", &self.values)
             .field("signed_out", &self.signed_out)
             .finish_non_exhaustive()
@@ -94,8 +96,8 @@ pub(crate) fn grouped(value: u64) -> String {
     out
 }
 
-/// What a broker's sessions can do, so that the menu offers only that: a
-/// broker without stop orders has no Stop rows.
+/// What a trading service's sessions can do, so that the menu offers only that: a
+/// trading service without stop orders has no Stop rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub kinds: Vec<OrderKind>,
@@ -104,7 +106,7 @@ pub struct Capabilities {
     /// A working order's price can be changed where it stands.
     pub modify: bool,
     /// How a stop and a target are linked, so that they do not both
-    /// outlive the position: by the broker after the fact, by the broker
+    /// outlive the position: by the trading service after the fact, by the trading service
     /// only as they are submitted together, or by the app. Asked of
     /// [`super::Plan`], never of the window: it links with the best there
     /// is.
@@ -128,20 +130,20 @@ pub struct Contract {
 /// Why an instrument cannot be traded through a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The broker does not trade it at all.
+    /// The trading service does not trade it at all.
     NotTradable,
     /// It does, and which contract is not known yet: the session is asking,
     /// without stopping for the answer, and says so with a change.
     NotKnownYet,
 }
 
-/// Why a request to a broker did not go through, which decides what the
+/// Why a request to a trading service did not go through, which decides what the
 /// window shows for it: a refusal undoes what was drawn for it, and a
 /// request nobody answered stays drawn as pending until the book says what
 /// became of it, since it may well have arrived.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
-    /// The broker answered no, or nothing was sent: in its words.
+    /// The trading service answered no, or nothing was sent: in its words.
     Refused(String),
     /// Sent, and no answer came: a drop, a timeout, a session ending.
     Unanswered(String),
@@ -170,12 +172,12 @@ pub enum Standing {
     Ready,
     /// Signed out, or never signed in: there is no password to sign in with.
     SignedOut,
-    /// The broker turned it down, or ended its session, in these words.
+    /// The trading service turned it down, or ended its session, in these words.
     Refused(String),
 }
 
 impl Standing {
-    /// The words for its row: "live", "not signed in", the broker's own.
+    /// The words for its row: "live", "not signed in", the trading service's own.
     pub fn words(&self) -> String {
         match self {
             Standing::Live => "live".into(),
@@ -261,7 +263,7 @@ impl OrderKind {
     }
 }
 
-/// How far an order has got, whichever broker it is with: each session
+/// How far an order has got, whichever trading service it is with: each session
 /// maps its own words into these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -281,7 +283,7 @@ impl Stage {
     }
 }
 
-/// Where an order stands: its [`Stage`], and what the broker last said of
+/// Where an order stands: its [`Stage`], and what the trading service last said of
 /// it in its own words, whatever the stage: why it was rejected, who
 /// cancelled it.
 #[derive(Clone, Debug, PartialEq)]
@@ -352,7 +354,7 @@ impl PartialEq<Stage> for Status {
     }
 }
 
-/// An account's money, as its broker pushed it.
+/// An account's money, as its trading service pushed it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Money {
     /// [`Account::key`] on the desk; the number inside a session.
@@ -360,14 +362,14 @@ pub struct Money {
     pub balance: Option<f64>,
     /// Open now.
     pub unrealized: Option<f64>,
-    /// Today's, closed and open, as the broker counts it: what a daily loss
+    /// Today's, closed and open, as the trading service counts it: what a daily loss
     /// limit is held to.
     pub day_pnl: Option<f64>,
-    /// What the broker's risk system holds the account to, once it has said.
+    /// What the trading service's risk system holds the account to, once it has said.
     pub limits: Option<Limits>,
 }
 
-/// What a broker's risk system holds an account to, each `None` where it
+/// What a trading service's risk system holds an account to, each `None` where it
 /// sets no limit or does not say.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Limits {
@@ -393,9 +395,9 @@ pub struct Position {
     pub net: i32,
     pub avg: Option<f64>,
     /// Open now: marked to the last trade by [`Book::mark`] while one is
-    /// heard, else as the broker worked it out.
+    /// heard, else as the trading service worked it out.
     pub open_pnl: Option<f64>,
-    /// The step its price moves in, when the broker knows it.
+    /// The step its price moves in, when the trading service knows it.
     pub tick: Option<f64>,
     /// What one whole point of its price is worth on one contract, in the
     /// account's currency, when it is known: 50 for ES.
@@ -411,7 +413,7 @@ impl Position {
     }
 }
 
-/// An order the broker has told of, at any stage.
+/// An order the trading service has told of, at any stage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Order {
     /// The account's key on the desk; its number inside a session.
@@ -421,24 +423,24 @@ pub struct Order {
     pub exchange: String,
     pub side: Side,
     pub qty: u32,
-    /// How much of it has filled so far, as the broker counts it.
+    /// How much of it has filled so far, as the trading service counts it.
     pub filled: u32,
     pub kind: OrderKind,
     pub price: Option<f64>,
     pub status: Status,
-    /// The average price it filled at, as the broker works it out.
+    /// The average price it filled at, as the trading service works it out.
     pub fill_price: Option<f64>,
-    /// Each fill, oldest first, when the broker tells them one by one.
+    /// Each fill, oldest first, when the trading service tells them one by one.
     pub fills: Vec<Fill>,
     /// Unix seconds.
     pub at: i64,
     pub tag: Option<String>,
-    /// The step its price moves in, when the broker knows it.
+    /// The step its price moves in, when the trading service knows it.
     pub tick: Option<f64>,
 }
 
 impl Order {
-    /// The average price it filled at so far: the broker's own figure, or
+    /// The average price it filled at so far: the trading service's own figure, or
     /// worked out from the fills when it tells only those. `None` before
     /// anything has filled.
     pub fn average_fill(&self) -> Option<f64> {
@@ -453,7 +455,7 @@ impl Order {
 /// Part or all of an order, filled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fill {
-    /// The order it is part of, by the broker's id.
+    /// The order it is part of, by the trading service's id.
     pub basket: String,
     /// Unix seconds.
     pub at: i64,
@@ -506,9 +508,9 @@ impl Book {
     /// Mark every position held to the last trade `price` gives for it,
     /// and each account's open and day P&L with them, so that the panel,
     /// the chart's pill and the day's total move with the market rather
-    /// than when the broker next says. A position with no price heard, or
-    /// no point value, keeps the broker's figure, and so does an account
-    /// with such a position; what the broker counts as closed today is
+    /// than when the trading service next says. A position with no price heard, or
+    /// no point value, keeps the trading service's figure, and so does an account
+    /// with such a position; what the trading service counts as closed today is
     /// always its own.
     pub fn mark(&mut self, price: impl Fn(&Position) -> Option<f64>) {
         let mut marked: HashMap<String, (f64, bool)> = HashMap::new();
@@ -527,7 +529,7 @@ impl Book {
             }
             match self.accounts.iter_mut().find(|money| money.key == key) {
                 Some(money) => {
-                    // The broker's day less its open part is what it closed.
+                    // The trading service's day less its open part is what it closed.
                     money.day_pnl = money.day_pnl.map(|day| day - money.unrealized.unwrap_or(0.0) + open);
                     money.unrealized = Some(open);
                 }
@@ -554,7 +556,7 @@ pub struct OrderRequest {
 }
 
 impl OrderRequest {
-    /// The order a trader asks for, before it goes to a broker: `quantity`
+    /// The order a trader asks for, before it goes to a trading service: `quantity`
     /// of `contract` on the account numbered `account`, `side` and `kind`,
     /// at `price` for a limit or a stop and at the market for a market
     /// order. Refused in words when the price and the kind disagree: a
@@ -615,7 +617,7 @@ mod tests {
     /// menu or a drag: the account, the contract and its exchange, the side,
     /// the kind and the size, with a price only where the kind takes one.
     /// A part-filled order says what its filled part cost, whether the
-    /// broker works the average out or tells only the fills.
+    /// trading service works the average out or tells only the fills.
     #[test]
     fn an_order_filled_in_part_has_an_average_fill() {
         let book = crate::trading::fake::day_of_orders();
@@ -629,7 +631,7 @@ mod tests {
         ];
         assert_eq!(told.average_fill(), Some(7_637.25));
         told.fill_price = Some(7_640.0);
-        assert_eq!(told.average_fill(), Some(7_640.0), "the broker's own figure stands");
+        assert_eq!(told.average_fill(), Some(7_640.0), "the trading service's own figure stands");
         told.fills.clear();
         told.fill_price = None;
         assert_eq!(told.average_fill(), None);
@@ -655,14 +657,14 @@ mod tests {
         assert!(OrderRequest::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(f64::NAN)).is_err());
     }
 
-    fn held(account: &str, contract: &str, net: i32, avg: f64, broker: Option<f64>) -> Position {
+    fn held(account: &str, contract: &str, net: i32, avg: f64, reported: Option<f64>) -> Position {
         Position {
             account: account.into(),
             contract: contract.into(),
             exchange: "CME".into(),
             net,
             avg: Some(avg),
-            open_pnl: broker,
+            open_pnl: reported,
             tick: Some(0.25),
             point: Some(50.0),
         }
@@ -679,7 +681,7 @@ mod tests {
     }
 
     /// Marking moves the position, the account's open P&L and its day with
-    /// the market, the broker's closed part kept: Rithmic Test says open is
+    /// the market, the trading service's closed part kept: Rithmic Test says open is
     /// zero however the market moves, and the day is what was closed.
     #[test]
     fn the_book_is_marked_to_the_last_trade() {
@@ -696,11 +698,11 @@ mod tests {
         let money = book.money("a").unwrap();
         assert_eq!(money.unrealized, Some(1_000.0));
         assert!((money.day_pnl.unwrap() - 247.42).abs() < 1e-9, "closed -752.58 and open +1,000");
-        // No price heard for NQ: the broker's figure stands, and its account's.
+        // No price heard for NQ: the trading service's figure stands, and its account's.
         assert_eq!(book.position("b", "NQZ6").and_then(|held| held.open_pnl), Some(40.0));
         assert_eq!((book.money("b").unwrap().unrealized, book.money("b").unwrap().day_pnl), (Some(40.0), Some(100.0)));
 
-        // An account whose money the broker has not told yet still has
+        // An account whose money the trading service has not told yet still has
         // what is open.
         let mut untold = Book { positions: vec![held("c", "ESZ6", 1, 6_950.0, None)], ..Book::default() };
         untold.mark(|_| Some(6_951.0));
