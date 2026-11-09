@@ -19,7 +19,9 @@
 //!
 //! **Which contract.** A root served as its front month is kept under the
 //! month it is read from, so the ladders of the month before a roll are
-//! never drawn under the month after's bars.
+//! never drawn under the month after's bars. Each time a chart asks, the
+//! month is looked up again: a roll while it is charted reads the new month
+//! afresh, and the month before is let go, from memory and from the store.
 //!
 //! **What is asked.** On the first chart of a contract the store is asked
 //! which minutes from the chart's first bar to now it knows nothing about —
@@ -36,7 +38,11 @@
 //! Its updates land in a mailbox on the provider's thread, keeping only the
 //! newest forming minute, and wake the main loop at most once per drain, as
 //! a stream's ticks do. A minute that seals goes into memory and to the
-//! store, as one small row, on this registry's own thread.
+//! store, as one small row, on this registry's own thread. It goes into
+//! the pieces of its day it falls in, and into any piece or flow of that
+//! day on its way back from the store, which was read before the minute was
+//! written: a period running on past the newest minute keeps one piece of
+//! today for the whole session rather than reading the day every minute.
 //!
 //! Nothing here runs on a timer.
 
@@ -82,13 +88,13 @@ enum Job {
 
 /// What the thread hands back.
 pub enum Done {
-    Loaded { key: String, from: i64, held: Box<Held>, asked: Vec<(i64, i64)> },
+    Loaded { key: String, stored: String, from: i64, held: Box<Held>, asked: Vec<(i64, i64)> },
     /// Pieces of one day, summed; none for a day the store does not have.
-    Pieces { key: String, pieces: Vec<(Piece, Ladder)> },
+    Pieces { key: String, stored: String, pieces: Vec<(Piece, Ladder)> },
     /// A fill after the feed came back: the days it changed, whole.
-    Filled { key: String, days: Vec<Day>, asked: Vec<(i64, i64)> },
+    Filled { key: String, stored: String, days: Vec<Day>, asked: Vec<(i64, i64)> },
     /// Days' flows; none for a day the store does not have.
-    Flows { key: String, flows: Vec<(i64, Vec<(i64, i64)>)> },
+    Flows { key: String, stored: String, flows: Vec<(i64, Vec<(i64, i64)>)> },
 }
 
 /// What the provider's thread leaves for the next drain: updates in order,
@@ -115,10 +121,13 @@ struct Entry {
     _live: Option<Box<dyn Subscription>>,
     /// Minutes that sealed before the load came back, put in after it.
     early: Vec<Minute>,
-    /// Pieces asked for and not back yet.
-    asked: HashSet<Piece>,
-    /// Days whose flows were asked for and are not back yet.
-    asked_flows: HashSet<i64>,
+    /// Pieces asked for and not back yet, each with what traded in the
+    /// minutes sealed into it since: the thread reads the store before it
+    /// writes those, so they go on top of the piece when it comes back.
+    asked: HashMap<Piece, Vec<Ladder>>,
+    /// Days whose flows were asked for and are not back yet, each with the
+    /// minutes sealed into it since, as the flow holds them.
+    asked_flows: HashMap<i64, Vec<(i64, i64)>>,
     /// The pieces held, in the order they came.
     pieces: VecDeque<Piece>,
     /// Fills on their way.
@@ -222,7 +231,17 @@ impl AtPrice {
             self.unwatch(pane);
             self.by_pane.borrow_mut().insert(pane, key.to_string());
         }
+        // A root rolls while it is charted: the month it is read from now is
+        // kept apart, read afresh, and the month before let go.
+        let stored = stored_key(key, symbol, self.provider.ladders().and_then(|ladders| ladders.contract(symbol)));
         let mut entries = self.entries.borrow_mut();
+        let (mut watchers, mut from) = (HashSet::from([pane]), from);
+        if entries.get(key).is_some_and(|entry| entry.stored != stored)
+            && let Some(rolled) = entries.remove(key)
+        {
+            watchers.extend(rolled.watchers);
+            from = from.min(rolled.from);
+        }
         if let Some(entry) = entries.get_mut(key) {
             entry.watchers.insert(pane);
             if from < entry.from {
@@ -243,7 +262,6 @@ impl AtPrice {
         }
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let live = self.open(symbol, tick_size, &mailbox);
-        let stored = stored_key(key, symbol, self.provider.ladders().and_then(|ladders| ladders.contract(symbol)));
         entries.insert(
             key.to_string(),
             Entry {
@@ -255,12 +273,12 @@ impl AtPrice {
                 held: Held::new(tick_size),
                 loaded: false,
                 from,
-                watchers: HashSet::from([pane]),
+                watchers,
                 mailbox,
                 _live: live,
                 early: Vec::new(),
-                asked: HashSet::new(),
-                asked_flows: HashSet::new(),
+                asked: HashMap::new(),
+                asked_flows: HashMap::new(),
                 pieces: VecDeque::new(),
                 filling: 0,
                 sealed_meanwhile: Vec::new(),
@@ -357,9 +375,10 @@ impl AtPrice {
             }
             for piece in wanted {
                 // Wanted by a computation before it came back.
-                if entry.held.pieces.contains_key(&piece) || !entry.asked.insert(piece) {
+                if entry.held.pieces.contains_key(&piece) || entry.asked.contains_key(&piece) {
                     continue;
                 }
+                entry.asked.insert(piece, Vec::new());
                 match asks.last_mut() {
                     Some((day, pieces)) if *day == piece.day => pieces.push(piece),
                     _ => asks.push((piece.day, vec![piece])),
@@ -382,8 +401,11 @@ impl AtPrice {
             let wanted = entry.held.take_wanted_flows();
             let days: Vec<i64> = wanted
                 .into_iter()
-                .filter(|day| !entry.held.flows.contains_key(day) && entry.asked_flows.insert(*day))
+                .filter(|day| !entry.held.flows.contains_key(day) && !entry.asked_flows.contains_key(day))
                 .collect();
+            for day in &days {
+                entry.asked_flows.insert(*day, Vec::new());
+            }
             if days.is_empty() {
                 return;
             }
@@ -396,8 +418,9 @@ impl AtPrice {
     pub fn finished(&self, done: Done) -> Vec<u32> {
         let mut entries = self.entries.borrow_mut();
         match done {
-            Done::Loaded { key, from, mut held, asked } => {
-                let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
+            Done::Loaded { key, stored, from, mut held, asked } => {
+                // Of the month before a roll.
+                let Some(entry) = entries.get_mut(&key).filter(|entry| entry.stored == stored) else { return Vec::new() };
                 if from > entry.from && entry.loaded {
                     // A later load from further back is on its way.
                     return Vec::new();
@@ -430,14 +453,14 @@ impl AtPrice {
                         entry.pieces.push_back(piece);
                     }
                 }
-                entry.asked.retain(|piece| !changed(piece.day));
+                entry.asked.retain(|piece, _| !changed(piece.day));
                 // Flows likewise, but for days that came whole.
                 for (day, flow) in std::mem::take(&mut entry.held.flows) {
                     if !changed(day) {
                         held.put_flow(day, flow);
                     }
                 }
-                entry.asked_flows.retain(|day| !changed(*day));
+                entry.asked_flows.retain(|day, _| !changed(*day));
                 if held.tick_size <= 0.0 {
                     held.tick_size = entry.tick_size;
                 }
@@ -445,13 +468,14 @@ impl AtPrice {
                 entry.loaded = true;
                 entry.watchers.iter().copied().collect()
             }
-            Done::Pieces { key, pieces } => {
-                let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
+            Done::Pieces { key, stored, pieces } => {
+                let Some(entry) = entries.get_mut(&key).filter(|entry| entry.stored == stored) else { return Vec::new() };
                 let mut any = false;
-                for (piece, ladder) in pieces {
+                for (piece, mut ladder) in pieces {
                     // Not asked for any more: a load since may have changed it.
-                    if !entry.asked.remove(&piece) {
-                        continue;
+                    let Some(since) = entry.asked.remove(&piece) else { continue };
+                    for minute in &since {
+                        ladder.add_ladder(minute);
                     }
                     if entry.held.put_piece(piece, ladder) {
                         entry.pieces.push_back(piece);
@@ -468,22 +492,27 @@ impl AtPrice {
                 }
                 entry.watchers.iter().copied().collect()
             }
-            Done::Flows { key, flows } => {
-                let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
+            Done::Flows { key, stored, flows } => {
+                let Some(entry) = entries.get_mut(&key).filter(|entry| entry.stored == stored) else { return Vec::new() };
                 let mut any = false;
-                for (day, flow) in flows {
+                for (day, mut flow) in flows {
                     // Not asked for any more: a load since may have changed it.
-                    if entry.asked_flows.remove(&day) {
-                        any |= entry.held.put_flow(day, flow);
+                    let Some(since) = entry.asked_flows.remove(&day) else { continue };
+                    for (ts, delta) in since {
+                        match flow.binary_search_by_key(&ts, |(at, _)| *at) {
+                            Ok(at) => flow[at] = (ts, delta),
+                            Err(at) => flow.insert(at, (ts, delta)),
+                        }
                     }
+                    any |= entry.held.put_flow(day, flow);
                 }
                 if !any {
                     return Vec::new();
                 }
                 entry.watchers.iter().copied().collect()
             }
-            Done::Filled { key, days, asked } => {
-                let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
+            Done::Filled { key, stored, days, asked } => {
+                let Some(entry) = entries.get_mut(&key).filter(|entry| entry.stored == stored) else { return Vec::new() };
                 entry.filling = entry.filling.saturating_sub(1);
                 let meanwhile = if entry.filling == 0 {
                     std::mem::take(&mut entry.sealed_meanwhile)
@@ -561,7 +590,7 @@ impl AtPrice {
                         entry.sealed_meanwhile.push(minute.clone());
                     }
                     if entry.loaded {
-                        entry.held.seal(day, minute);
+                        entry.seal(day, minute);
                     } else {
                         entry.early.push(minute);
                     }
@@ -607,6 +636,22 @@ fn stored_key(key: &str, symbol: &str, contract: Option<String>) -> String {
 }
 
 impl Entry {
+    /// A minute sealed live into trading day `day`, kept too for whatever
+    /// of that day is on its way back from the store without it.
+    fn seal(&mut self, day: i64, minute: Minute) {
+        if !self.held.days.binary_search_by_key(&day, |d| d.day.day).is_ok_and(|at| self.held.days[at].whole) {
+            for (piece, since) in self.asked.iter_mut() {
+                if piece.day == day && piece.holds(minute.ts) {
+                    since.push(minute.ladder.clone());
+                }
+            }
+            if let Some(since) = self.asked_flows.get_mut(&day) {
+                since.push((minute.ts, minute.ladder.sides.delta()));
+            }
+        }
+        self.held.seal(day, minute);
+    }
+
     /// Let go of the oldest pieces not in `used` until what is held is under
     /// [`PIECE_BYTES`], or nothing unused is left to let go.
     fn make_room(&mut self, used: &HashSet<Piece>) {
@@ -675,9 +720,12 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
                 let days = Days::new(&instrument);
                 let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
                 let _ = store.compact_ladders(&stored, days.of(now));
+                if stored != key {
+                    let _ = store.forget_other_months(&key, &stored);
+                }
                 let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
                 let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
-                Done::Loaded { key, from, held: Box::new(held), asked }
+                Done::Loaded { key, stored, from, held: Box::new(held), asked }
             }
             Job::Fill { key, stored, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
@@ -687,13 +735,13 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
                 numbers.sort_unstable();
                 numbers.dedup();
                 let changed = numbers.into_iter().filter_map(|day| store.load_ladder_day(&stored, day)).collect();
-                Done::Filled { key, days: changed, asked }
+                Done::Filled { key, stored, days: changed, asked }
             }
             // The day is read and dropped here; only its pieces cross.
             Job::Pieces { key, stored, day, pieces } => match store.load_ladder_day(&stored, day) {
                 Some(day) => {
                     let pieces = pieces.into_iter().map(|piece| (piece, day.piece(piece.from, piece.to))).collect();
-                    Done::Pieces { key, pieces }
+                    Done::Pieces { key, stored, pieces }
                 }
                 None => continue,
             },
@@ -701,7 +749,7 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
             Job::Flows { key, stored, days } => {
                 let flows: Vec<(i64, Vec<(i64, i64)>)> =
                     days.into_iter().filter_map(|day| Some((day, store.load_ladder_day(&stored, day)?.flow()))).collect();
-                Done::Flows { key, flows }
+                Done::Flows { key, stored, flows }
             }
             Job::Append { stored, tick_size, day, minute, covered } => {
                 let _ = store.append_ladder_minute(&stored, tick_size, day, &minute, covered);
@@ -1056,9 +1104,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// Today held by its total, a cumulative delta and a profile running on
+    /// past the newest minute each ask for what they need of it; a minute
+    /// seals before the answers are back, read from the store before that
+    /// minute was written to it. Each answer has the minute all the same,
+    /// and the profile's piece keeps taking the minutes that seal after.
+    #[test]
+    fn a_minute_sealed_while_today_is_being_read_is_not_lost() {
+        let path = scratch("meanwhile");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
+        settle(&at_price);
+        let from = NOW - 30 * 60;
+        let flow = || {
+            at_price.with_held(KEY, |held| {
+                let mut flow = Vec::new();
+                held.unwrap().minute_deltas(from, NOW + HOUR, |ts, delta| flow.push((ts, delta))).then_some(flow)
+            })
+        };
+        let volume = || at_price.with_held(KEY, |held| held.unwrap().between(from, NOW + HOUR).map(|l| l.sides.volume()));
+        assert_eq!((flow(), volume()), (None, None), "today is held by its total");
+        at_price.load_wanted(KEY);
+
+        let big = |ts: i64| {
+            let mut minute = Minute::opening(ts, 7_625.0);
+            minute.add_trade(30_500, 7_625.0, 40, Side::Buy, 1);
+            minute
+        };
+        let say = |update: LadderUpdate| (asked.lock().unwrap().sinks[0])(update);
+        say(LadderUpdate::Sealed { minute: big(NOW), covered: Some((NOW, NOW + 60)) });
+        at_price.drain();
+        settle_all(&at_price, || flow().is_some() && volume().is_some());
+        let flow = flow().unwrap();
+        assert_eq!(flow.len(), 31, "the half hour read and the minute sealed meanwhile");
+        assert_eq!(flow.last(), Some(&(NOW, 40)));
+        assert_eq!(volume(), Some(30 * 5 + 40));
+
+        say(LadderUpdate::Sealed { minute: big(NOW + 60), covered: Some((NOW + 60, NOW + 120)) });
+        at_price.drain();
+        assert_eq!(volume(), Some(30 * 5 + 80), "the piece takes the next minute too, with no read");
+        at_price.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// A feed that reads a root from its front month: the month is part of
     /// what is kept, so the month after a roll never draws the one before.
-    struct Monthly(Fake, &'static str);
+    struct Monthly(Fake, Mutex<&'static str>);
 
     impl Ladders for Monthly {
         fn serves(&self, symbol: &str) -> bool {
@@ -1068,7 +1161,7 @@ mod tests {
             self.0.history_days()
         }
         fn contract(&self, _: &str) -> Option<String> {
-            Some(self.1.to_string())
+            Some(self.1.lock().unwrap().to_string())
         }
         fn minutes(&self, symbol: &str, tick: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
             self.0.minutes(symbol, tick, from, to)
@@ -1102,22 +1195,53 @@ mod tests {
         }
     }
 
+    /// A root rolls between one start and the next, and while it is
+    /// charted: each time the new month is read afresh and kept apart, and
+    /// the month before is let go, in memory and in the store.
     #[test]
     fn a_root_is_kept_by_the_month_it_is_read_from_and_a_roll_reads_afresh() {
         let path = scratch("roll");
         let asked = Arc::new(Mutex::new(Asked::default()));
         for month in ["ESZ26_FUT_CME", "ESH27_FUT_CME"] {
-            let at_price = AtPrice::new(Arc::new(Monthly(Fake(asked.clone()), month)), Some(path.clone())).unwrap();
+            let at_price =
+                AtPrice::new(Arc::new(Monthly(Fake(asked.clone()), Mutex::new(month))), Some(path.clone())).unwrap();
             at_price.set_clock(now);
             at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
             settle(&at_price);
             at_price.shutdown();
         }
         assert_eq!(asked.lock().unwrap().spans, vec![(NOW - HOUR, NOW); 2], "the new month asked for afresh");
+        {
+            let store = Store::open_at(&path).unwrap();
+            assert!(store.ladder_days("fake:ES@ESZ26_FUT_CME").is_empty(), "the month rolled from goes");
+            assert!(!store.ladder_days("fake:ES@ESH27_FUT_CME").is_empty());
+            assert!(store.ladder_days(KEY).is_empty());
+        }
+
+        // Rolled while two charts hold it: both go on to the new month, from
+        // as far back as either reached.
+        let monthly = Arc::new(Monthly(Fake(asked.clone()), Mutex::new("ESH27_FUT_CME")));
+        let at_price = AtPrice::new(monthly.clone(), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
+        at_price.want(2, KEY, "ES", &es(), NOW - 2 * HOUR);
+        let loaded_from = |from: i64| at_price.entries.borrow().get(KEY).is_some_and(|e| e.loaded && e.from == from);
+        settle_all(&at_price, || loaded_from(NOW - 2 * HOUR));
+        asked.lock().unwrap().spans.clear();
+        *monthly.1.lock().unwrap() = "ESM27_FUT_CME";
+        at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
+        {
+            let entries = at_price.entries.borrow();
+            let entry = entries.get(KEY).unwrap();
+            assert_eq!(entry.stored, "fake:ES@ESM27_FUT_CME");
+            assert_eq!((entry.from, entry.loaded), (NOW - 2 * HOUR, false), "read afresh from the furthest back");
+            assert_eq!(entry.watchers, HashSet::from([1, 2]));
+        }
+        settle_all(&at_price, || loaded_from(NOW - 2 * HOUR));
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW - 2 * HOUR, NOW)]);
+        at_price.shutdown();
         let store = Store::open_at(&path).unwrap();
-        assert!(!store.ladder_days("fake:ES@ESZ26_FUT_CME").is_empty());
-        assert!(!store.ladder_days("fake:ES@ESH27_FUT_CME").is_empty());
-        assert!(store.ladder_days(KEY).is_empty());
+        assert!(store.ladder_days("fake:ES@ESH27_FUT_CME").is_empty());
         assert_eq!(stored_key(KEY, "ESZ26", Some("ESZ26".into())), KEY, "a dated contract is its own");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

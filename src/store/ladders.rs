@@ -275,6 +275,26 @@ impl Store {
         read_day(&self.conn, key, day).ok().flatten()
     }
 
+    /// Let go of what is stored for root `key` other than under `keep`, the
+    /// month it is read from now: the months it rolled from, never read
+    /// again, and what was kept under the root alone before a root was
+    /// kept by its month. Whether anything went.
+    pub fn forget_other_months(&self, key: &str, keep: &str) -> rusqlite::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        // `key@…` is every key from `key@` up to, not including, `keyA`,
+        // 'A' following '@': a range the primary keys answer.
+        let (low, high) = (format!("{key}@"), format!("{key}A"));
+        let mut gone = 0;
+        for table in ["ladder_days", "ladder_tail", "ladder_coverage"] {
+            gone += tx.execute(
+                &format!("DELETE FROM {table} WHERE (key = ?1 OR (key >= ?2 AND key < ?3)) AND key != ?4"),
+                params![key, low, high, keep],
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone > 0)
+    }
+
     /// Every day stored for `key`, as `(day, minutes)`, oldest first.
     pub fn ladder_days(&self, key: &str) -> Vec<(i64, i64)> {
         let Ok(mut statement) =
@@ -613,6 +633,26 @@ mod tests {
         assert_eq!(compacted, live);
         assert_eq!(compacted.days[0].minutes.len(), 1440);
         assert_totals_exact(&compacted);
+    }
+
+    /// A root kept by the month it is read from lets the months it rolled
+    /// from go, and what was kept under the root alone, and nothing else.
+    #[test]
+    fn a_root_lets_the_months_it_rolled_from_go() {
+        let store = Store::memory().unwrap();
+        let days = Days::fixed(0);
+        let mut series = Series::new(TICK);
+        series.insert(&days, minute(60, 30_000, 9, 9));
+        let keys = ["sierra:ES", "sierra:ES@ESZ26", "sierra:ES@ESH27", "sierra:ESM27", "sierra:ESX"];
+        for key in keys {
+            store.save_ladder_days(key, TICK, &series.days).unwrap();
+            store.cover_ladders(key, 0, 120).unwrap();
+        }
+        assert!(store.forget_other_months("sierra:ES", "sierra:ES@ESH27").unwrap());
+        let kept: Vec<&str> = keys.into_iter().filter(|key| !store.ladder_days(key).is_empty()).collect();
+        assert_eq!(kept, ["sierra:ES@ESH27", "sierra:ESM27", "sierra:ESX"], "another symbol's keys are its own");
+        assert!(store.ladder_coverage("sierra:ES@ESZ26").is_empty());
+        assert!(!store.forget_other_months("sierra:ES", "sierra:ES@ESH27").unwrap(), "once");
     }
 
     #[test]

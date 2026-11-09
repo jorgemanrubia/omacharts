@@ -640,9 +640,11 @@ mod tests {
         }
     }
 
-    /// What the server has working, stops and targets apart, as
-    /// `(quantity, price)`.
-    fn on_the_server(fake: &dtc::fake::Fake) -> (Vec<(u32, f64)>, Vec<(u32, f64)>) {
+    /// Orders working on the server, as `(quantity, price)`.
+    type Working = Vec<(u32, f64)>;
+
+    /// What the server has working, stops and targets apart.
+    fn on_the_server(fake: &dtc::fake::Fake) -> (Working, Working) {
         let working = fake.working();
         let of = |kind| working.iter().filter(|order| order.kind == kind).map(|order| (order.qty, order.price1)).collect();
         (of(dtc::OrderKind::Stop), of(dtc::OrderKind::Limit))
@@ -692,7 +694,7 @@ mod tests {
             );
             assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![(2, 7_660.0)]), "known {known}");
             if known {
-                assert_eq!(ran.went_with.iter().map(|order| order.basket_id.clone()).collect::<Vec<_>>(), [old.basket_id.clone()]);
+                assert_eq!(ran.went_with.iter().map(|order| order.basket_id.clone()).collect::<Vec<_>>(), std::slice::from_ref(&old.basket_id));
             }
             session.sign_out();
         }
