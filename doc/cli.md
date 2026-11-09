@@ -1340,8 +1340,9 @@ removed 2 · the next launch runs 0.2.14
 `update reset` removes every download and everything the updater remembers,
 so the next launch runs the package's version and a version that was set aside
 can be downloaded again. A newer version that has already run is kept, since it
-may have migrated the settings, and so is which backup came before which
-version, for the settings to be put back from; `--all` removes both.
+may have migrated the settings, and so is which copy of the settings came
+before which version, for them to be put back from; `--all` removes both,
+but keeps the copies in `versions/.saved-<version>` to put back by hand.
 `--json` gives `removed`, `kept` and `installed`.
 
 A build that is not `/usr/bin/omacharts` refuses all three with exit 5, and

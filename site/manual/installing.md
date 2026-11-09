@@ -49,7 +49,7 @@ The menu entry, the icon, the manual page and the agent skill are the package's,
 
 A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds set it aside too. A version that has run properly once is never set aside, because it may be the only one that can open your settings. A download that doesn't match its checksum is tried again at the next check, and set aside if it doesn't match twice.
 
-If a version that was set aside had already updated your settings to a form the running version can't read, and nothing newer can open them, they are put back from the newest backup the running version can read, taken just before a set-aside version first ran. The window says so once, even when a command did it. What changed since is kept beside them in `~/.local/share/omacharts/`, as `omacharts.db.from-<version>-<time>`.
+Before a downloaded version first opens your settings, a copy of them is kept as `~/.local/share/omacharts/versions/.saved-<version>`, apart from the regular backups so it isn't pruned. If a version that was set aside had already updated your settings to a form the running version can't read, and nothing newer can open them, they are put back from the newest such copy the running version can read. The window says so once, even when a command did it. What changed since is kept beside them in `~/.local/share/omacharts/`, as `omacharts.db.from-<version>-<time>`.
 
 To run the package's version once, without removing anything:
 
@@ -68,7 +68,7 @@ That keeps a newer version that has already run, because it may have updated you
 If the package's version then says the settings were written by a newer Omacharts, either:
 
 - run `omacharts update download` to fetch the newest release again, which can read them; or
-- put back the backup taken just before the download first opened them. Each downloaded version takes one the first time it runs, in `~/.local/share/omacharts/backups/` ([Backups](/manual/your-data/#backups)). With Omacharts closed, copy it over `~/.local/share/omacharts/omacharts.db` and delete `omacharts.db-wal` and `omacharts.db-shm` beside it if they are there.
+- put back the copy taken just before the download first opened them, `~/.local/share/omacharts/versions/.saved-<version>`, which a reset keeps until the package catches up with that version, or an older backup from `~/.local/share/omacharts/backups/` ([Backups](/manual/your-data/#backups)). With Omacharts closed, copy it over `~/.local/share/omacharts/omacharts.db` and delete `omacharts.db-wal` and `omacharts.db-shm` beside it if they are there.
 
 `update reset` also forgets a version that was set aside, so it can be downloaded again.
 

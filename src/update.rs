@@ -233,8 +233,12 @@ fn mark_healthy(folder: &Path) {
     if let Some(version) = folder.file_name().and_then(|name| name.to_str()).and_then(Version::parse)
         && let Some(root) = folder.parent()
     {
-        for before in records(root).into_iter().filter(|before| before.version <= version) {
-            let _ = fs::remove_file(before.path);
+        for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+            if let Some(name) = entry.file_name().to_str()
+                && about(name, &[BEFORE, SAVED]).is_some_and(|before| before <= version)
+            {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
 }
@@ -248,10 +252,10 @@ pub fn settle() {
     let _ = fs::remove_file(folder.join(trying(std::process::id())));
 }
 
-/// Where the shelf remembers which backup was taken before `folder`'s
-/// version first opened the settings: `.before-<version>` beside the version
+/// Where the shelf remembers what the settings were before `folder`'s
+/// version first opened them: `.before-<version>` beside the version
 /// folders rather than in one, so tidying a version given up on does not
-/// lose it. Two lines: the settings' schema version then, and the backup's
+/// lose it. Two lines: the settings' schema version then, and the copy's
 /// path — `none` and nothing when there were no settings.
 fn before_record(folder: &Path) -> Option<PathBuf> {
     let version = folder.file_name()?.to_str()?;
@@ -259,6 +263,22 @@ fn before_record(folder: &Path) -> Option<PathBuf> {
 }
 
 const BEFORE: &str = ".before-";
+/// The copy of the settings a `.before-` record points at: `.saved-<version>`,
+/// on the shelf and not among the backups, whose pruning keeps one an hour
+/// and would delete it the moment the window takes the next.
+const SAVED: &str = ".saved-";
+
+/// Forget `version`'s record and the copy it points at.
+fn forget(root: &Path, version: Version) {
+    let _ = fs::remove_file(root.join(format!("{BEFORE}{version}")));
+    let _ = fs::remove_file(root.join(format!("{SAVED}{version}")));
+}
+
+/// The version a shelf entry named `<prefix><version>` is about, for the
+/// prefixes of what the shelf keeps beside the version folders.
+fn about(name: &str, prefixes: &[&str]) -> Option<Version> {
+    prefixes.iter().find_map(|prefix| Version::parse(name.strip_prefix(prefix)?))
+}
 /// A shelf-wide lock, for the one change that must never run twice at once.
 const LOCK: &str = ".lock";
 /// What a rollback a command did has to say, for the next window to show.
@@ -270,7 +290,6 @@ const MISMATCHED: &str = ".mismatched-";
 #[derive(Debug)]
 struct Before {
     version: Version,
-    path: PathBuf,
     /// `None` when there were no settings yet.
     schema: Option<i32>,
     backup: Option<PathBuf>,
@@ -293,7 +312,7 @@ fn records(root: &Path) -> Vec<Before> {
             if schema.is_some() && backup.is_none() {
                 return None;
             }
-            Some(Before { version, path: entry.path(), schema, backup })
+            Some(Before { version, schema, backup })
         })
         .collect();
     found.sort_unstable_by_key(|before| std::cmp::Reverse(before.version));
@@ -338,37 +357,65 @@ fn backup_before_first_open(folder: &Path, settings: &Path) {
     if folder.join(HEALTHY).exists() || record.exists() {
         return;
     }
-    let taken = if settings.exists() {
-        // Nothing new taken when nothing changed since the newest backup,
-        // which is then the copy from before.
-        match crate::backup::take_if_changed(settings) {
-            Ok(Some(backup)) => Some(backup),
-            Ok(None) => crate::backup::list(settings).into_iter().next(),
+    let Some(root) = folder.parent() else { return };
+    let Some(version) = folder.file_name().and_then(|name| name.to_str()).and_then(Version::parse) else { return };
+    // Under the shelf's lock, and asked again under it: a command and the
+    // window starting this version together would otherwise both copy, and
+    // the second copy could be of what the first one's migration wrote.
+    // Whoever comes second finds the record, so no process of this version
+    // migrates until the copy from before any of them did is written.
+    let Some(_held) = lock(root) else { return };
+    if record.exists() {
+        return;
+    }
+    let text = if settings.exists() {
+        let saved = root.join(format!("{SAVED}{version}"));
+        match save(settings, &saved) {
+            Ok(schema) => format!("{schema}\n{}\n", saved.display()),
             Err(error) => {
                 eprintln!("omacharts: settings not backed up before this version first opened them: {error}");
                 return;
             }
         }
     } else {
-        None
+        "none\n\n".to_string()
     };
-    let text = match taken {
-        Some(backup) => match backup.schema {
-            Some(schema) => format!("{schema}\n{}\n", backup.path.display()),
-            // A backup whose schema cannot be read cannot be trusted to open.
-            None => return,
-        },
-        None if settings.exists() => return,
-        None => "none\n\n".to_string(),
-    };
-    let _ = fs::write(&record, text);
+    // Written whole under another name and renamed, so a record is never
+    // read half written.
+    let incoming = root.join(format!("{BEFORE}{version}.{}", unique()));
+    if fs::write(&incoming, text).is_err() || fs::rename(&incoming, &record).is_err() {
+        let _ = fs::remove_file(&incoming);
+    }
+}
+
+/// A consistent copy of the settings at `to`, synced, and the schema it is
+/// at. The settings' own connection is not this one, so a window writing
+/// them meanwhile is fine: SQLite copies a single moment.
+fn save(settings: &Path, to: &Path) -> Result<i32, String> {
+    let partial = PathBuf::from(format!("{}.{}", to.display(), unique()));
+    let copied = (|| {
+        let conn = rusqlite::Connection::open_with_flags(settings, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?;
+        conn.execute("VACUUM main INTO ?1", [partial.to_string_lossy()]).map_err(|error| error.to_string())?;
+        drop(conn);
+        fs::File::open(&partial).and_then(|file| file.sync_all()).map_err(|error| error.to_string())?;
+        let schema = schema_of(&partial).ok_or("the copy cannot be read")?;
+        fs::rename(&partial, to).map_err(|error| error.to_string())?;
+        Ok(schema)
+    })();
+    if copied.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    copied
 }
 
 /// The settings are open, in a downloaded version that has not shown it
 /// runs yet. If they are at the schema they were at before it first opened
 /// them, it migrated nothing, and there is nothing of its to roll back: the
-/// record goes, so a rollback for a later version is never sent back to it.
-/// A `stat` once the record is gone.
+/// copy goes, and the record says so, so a rollback for a later version is
+/// never sent back to before it — and the settings are not copied again at
+/// every launch of a version only ever run from the bar. A small read once
+/// it says so.
 pub fn opened(settings: &Path) {
     let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
     forget_if_unmigrated(folder, settings);
@@ -376,15 +423,20 @@ pub fn opened(settings: &Path) {
 
 fn forget_if_unmigrated(folder: &Path, settings: &Path) {
     let Some(record) = before_record(folder) else { return };
-    if !record.exists() {
+    let Ok(text) = fs::read_to_string(&record) else { return };
+    let Some(schema) = text.lines().next().and_then(|line| line.trim().parse::<i32>().ok()) else { return };
+    if Some(schema) != schema_of(settings) {
         return;
     }
     let Some(root) = folder.parent() else { return };
-    let Some(before) = records(root).into_iter().find(|before| before.path == record) else { return };
-    if before.schema.is_some() && before.schema == schema_of(settings) {
-        let _ = fs::remove_file(record);
-    }
+    let Some(version) = folder.file_name().and_then(|name| name.to_str()).and_then(Version::parse) else { return };
+    let _ = fs::remove_file(root.join(format!("{SAVED}{version}")));
+    let _ = fs::write(&record, UNMIGRATED);
 }
+
+/// What a record says once its version has opened the settings without
+/// migrating them: nothing to put back, and nothing to copy again.
+const UNMIGRATED: &str = "unmigrated\n";
 
 /// The database was written by a newer Omacharts that never ran properly
 /// here and has been given up on, and nothing newer is left to open it:
@@ -459,7 +511,7 @@ fn roll_back(shelf: &Shelf, settings: &Path, running: Version, known: i32) -> Op
     // Used, and every older one with it: the settings are now from before
     // them all.
     for before in records(&shelf.root).into_iter().filter(|before| before.version <= version) {
-        let _ = fs::remove_file(before.path);
+        forget(&shelf.root, before.version);
     }
     Some(format!(
         "Omacharts {version} did not run here and had updated your settings, so they are back as they \
@@ -638,11 +690,18 @@ impl Shelf {
         let mut gone = 0;
         let newest_ready = self.newest_ready();
         let newest_healthy = self.found().into_iter().find(|found| found.healthy).map(|found| found.version);
+        // A version that opened the settings and migrated them, and that no
+        // version since has been healthy after: perhaps only ever run from
+        // the bar, never a window, so never healthy itself, and perhaps the
+        // only one that can open them now.
+        let migrated: Vec<Version> = records(&self.root).into_iter().map(|before| before.version).collect();
         let mut kept_bad = false;
         for found in self.found() {
             let keep = found.version > installed
                 && if found.ready {
-                    Some(found.version) == newest_ready || Some(found.version) == newest_healthy
+                    Some(found.version) == newest_ready
+                        || Some(found.version) == newest_healthy
+                        || migrated.contains(&found.version)
                 } else {
                     let guards = newest_ready.is_none_or(|ready| found.version > ready) && !kept_bad;
                     kept_bad |= guards;
@@ -663,10 +722,8 @@ impl Shelf {
         for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            let Some(version) = name.strip_prefix(BEFORE).or_else(|| name.strip_prefix(MISMATCHED)) else { continue };
-            if Version::parse(version).is_some_and(|version| version <= installed)
-                && fs::remove_file(entry.path()).is_ok()
-            {
+            let Some(version) = about(name, &[BEFORE, SAVED, MISMATCHED]) else { continue };
+            if version <= installed && fs::remove_file(entry.path()).is_ok() {
                 gone += 1;
             }
         }
@@ -711,7 +768,11 @@ impl Shelf {
             // removed version migrated be put back, so it outlives a plain
             // reset. `--all` is starting over, and takes them too. The lock
             // and an unsaid notice stay either way.
-            if name.to_str().is_some_and(|name| (!all && name.starts_with(BEFORE)) || name == LOCK || name == NOTICE) {
+            // The copies themselves stay even then, to be put back by hand,
+            // until the package catches up with their version.
+            if name.to_str().is_some_and(|name| {
+                (!all && name.starts_with(BEFORE)) || name.starts_with(SAVED) || name == LOCK || name == NOTICE
+            }) {
                 continue;
             }
             let path = entry.path();
@@ -1131,13 +1192,13 @@ pub fn check(
             shelf.mark_bad(latest, &failure.to_string());
             return Err(failure);
         }
-        // A binary that would not answer this time: tried again at the
-        // next check, six hours on, not at every launch.
-        Err(failure @ Failure::NotNow(_)) => {
+        // A binary that would not answer this time, a full disk, a link
+        // that dropped: tried again at the next check, six hours on, not at
+        // every launch — each try is the whole download again.
+        Err(failure) => {
             shelf.note_checked();
             return Err(failure);
         }
-        Err(failure) => return Err(failure),
     }
     shelf.note_checked();
 
@@ -1442,6 +1503,18 @@ mod tests {
     }
 
     #[test]
+    fn a_download_that_fails_on_the_way_waits_for_the_next_check() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let mut fake = Fake::releasing("0.2.15");
+        fake.assets.remove(&asset());
+        let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
+        assert!(matches!(failed, Failure::Network(_)), "{failed}");
+        assert!(!shelf.check_due(SystemTime::now()), "not the whole download again at the next launch");
+        assert!(!shelf.root.join("0.2.15").join(BAD).exists(), "a failed download is not a bad version");
+    }
+
+    #[test]
     fn a_mismatch_once_then_a_good_download_is_ready() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
@@ -1714,23 +1787,20 @@ mod tests {
 
         backup_before_first_open(&folder, &settings);
         let record = shelf.root.join(".before-0.2.16");
-        let taken = crate::backup::list(&settings);
-        assert_eq!(taken.len(), 1);
-        assert_eq!(
-            fs::read_to_string(&record).unwrap(),
-            format!("{}\n{}\n", crate::migrations::LATEST, taken[0].path.display())
-        );
+        let saved = shelf.root.join(".saved-0.2.16");
+        assert_eq!(fs::read_to_string(&record).unwrap(), format!("{}\n{}\n", crate::migrations::LATEST, saved.display()));
+        assert_eq!(setting_a(&saved).as_deref(), Some("b"));
+        assert!(crate::backup::list(&settings).is_empty(), "not among the backups, which are pruned");
 
         // Once is enough, and a version that has run needs none — and is
-        // never rolled back, so the record goes.
+        // never rolled back, so the record and the copy go.
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "c");
         backup_before_first_open(&folder, &settings);
-        assert_eq!(crate::backup::list(&settings).len(), 1);
+        assert_eq!(setting_a(&saved).as_deref(), Some("b"));
         mark_healthy(&folder);
-        assert!(!record.exists());
+        assert!(!record.exists() && !saved.exists());
         backup_before_first_open(&folder, &settings);
-        assert_eq!(crate::backup::list(&settings).len(), 1);
-        assert!(!record.exists());
+        assert!(!record.exists() && !saved.exists());
 
         // Nothing to back up on a first launch.
         let fresh = Scratch::new();
@@ -1855,7 +1925,11 @@ mod tests {
         // migration, and nothing to roll back to.
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "by 0.2.15");
         forget_if_unmigrated(&folder, &settings);
-        assert!(!shelf.root.join(".before-0.2.15").exists());
+        assert!(!shelf.root.join(".saved-0.2.15").exists());
+        assert_eq!(fs::read_to_string(shelf.root.join(".before-0.2.15")).unwrap(), UNMIGRATED);
+        // And its next launch copies nothing again.
+        backup_before_first_open(&folder, &settings);
+        assert!(!shelf.root.join(".saved-0.2.15").exists());
 
         // One that did migrate keeps it.
         shelve(&shelf, "0.2.16");
@@ -1868,6 +1942,73 @@ mod tests {
         shelf.mark_bad(v("0.2.16"), "no");
         roll_back(&shelf, &settings, v("0.2.14"), KNOWN).expect("rolled back");
         assert_eq!(setting_a(&settings).as_deref(), Some("by 0.2.15"), "the change 0.2.15 made is kept");
+    }
+
+    #[test]
+    fn the_copy_from_before_a_version_outlives_the_backups_taken_and_pruned_after_it() {
+        let scratch = Scratch::new();
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.16");
+        // A backup from before, as the window's hourly one leaves.
+        crate::backup::take_if_changed(&settings).unwrap();
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        // It migrates, and the window's backup runs before it has been up
+        // three seconds: a newer backup in the same slot, and a prune.
+        migrate_past(&settings, "after", KNOWN + 1);
+        std::thread::sleep(Duration::from_millis(1100));
+        crate::backup::take_if_changed(&settings).unwrap();
+        assert_eq!(crate::backup::list(&settings).len(), 1, "the backup from before is pruned");
+        shelf.mark_bad(v("0.2.16"), "no");
+        roll_back(&shelf, &settings, v("0.2.14"), KNOWN).expect("rolled back");
+        assert_eq!(setting_a(&settings).as_deref(), Some("before"));
+        assert!(!shelf.root.join(".saved-0.2.16").exists(), "used, and gone with its record");
+    }
+
+    #[test]
+    fn a_command_and_a_window_starting_a_version_together_copy_the_settings_once() {
+        let scratch = Scratch::new();
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.16");
+        let folder = shelf.root.join("0.2.16");
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    backup_before_first_open(&folder, &settings);
+                    // What each process does next: migrate.
+                    migrate_past(&settings, "after", KNOWN + 1);
+                });
+            }
+        });
+        let saved = shelf.root.join(".saved-0.2.16");
+        assert_eq!(setting_a(&saved).as_deref(), Some("before"), "copied before any of them migrated");
+        assert_eq!(schema_of(&saved), Some(KNOWN));
+        assert!(on_shelf(&shelf).iter().all(|name| !name.contains(".before-0.2.16.")), "{:?}", on_shelf(&shelf));
+    }
+
+    #[test]
+    fn a_version_that_migrated_the_settings_is_kept_until_a_newer_one_has_run() {
+        let scratch = Scratch::new();
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        // 0.2.15 is only ever run from the bar: it migrates, and is never
+        // a window, so never healthy. Then 0.2.16 is downloaded.
+        shelve(&shelf, "0.2.15");
+        backup_before_first_open(&shelf.root.join("0.2.15"), &settings);
+        migrate_past(&settings, "by 0.2.15", KNOWN + 1);
+        forget_if_unmigrated(&shelf.root.join("0.2.15"), &settings);
+        shelve(&shelf, "0.2.16");
+        shelf.tidy(v("0.2.14"), |_| true);
+        assert!(shelf.root.join("0.2.15").join(BINARY).exists(), "{:?}", on_shelf(&shelf));
+        // If 0.2.16 is given up on, 0.2.15 runs and opens them.
+        shelf.mark_bad(v("0.2.16"), "no");
+        assert_eq!(version_of(shelf.choose(v("0.2.14"), |_| true)), Some(v("0.2.15")));
+
+        // Once a newer one has run, it reads them, and 0.2.15 can go.
+        shelve(&shelf, "0.2.17");
+        mark_healthy(&shelf.root.join("0.2.17"));
+        shelf.tidy(v("0.2.14"), |_| true);
+        assert!(!shelf.root.join("0.2.15").exists(), "{:?}", on_shelf(&shelf));
     }
 
     #[test]
@@ -1932,9 +2073,12 @@ mod tests {
         let shelf = scratch.shelf();
         shelve(&shelf, "0.2.16");
         fs::write(shelf.root.join(".before-0.2.16"), b"none\n\n").unwrap();
+        fs::write(shelf.root.join(".saved-0.2.16"), b"").unwrap();
         shelf.reset(v("0.2.14"), false).unwrap();
-        assert_eq!(on_shelf(&shelf), [".before-0.2.16"]);
+        assert_eq!(on_shelf(&shelf), [".before-0.2.16", ".saved-0.2.16"]);
         shelf.reset(v("0.2.14"), true).unwrap();
+        assert_eq!(on_shelf(&shelf), [".saved-0.2.16"], "kept to put back by hand");
+        shelf.tidy(v("0.2.16"), |_| true);
         assert!(on_shelf(&shelf).is_empty(), "{:?}", on_shelf(&shelf));
     }
 
