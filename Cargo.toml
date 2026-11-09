@@ -1,6 +1,6 @@
 [package]
 name = "omacharts"
-version = "0.2.14"
+version = "0.2.15"
 edition = "2024"
 # `src/bin/omacharts-launch.rs` is the second binary, the one the package
 # installs as /usr/bin/omacharts; `cargo run` means the app.
