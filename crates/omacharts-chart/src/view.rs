@@ -9391,17 +9391,15 @@ fn format_axis_time(ts: i64, tick_seconds: i64, intraday: bool, utc: bool, clock
     };
     const DAY: i64 = 86_400;
     let time = clock.format.pattern();
-    if intraday {
-        return match tick_seconds {
-            t if t >= DAY => dt.format(&format!("%d %b {time}")).to_string(),
-            t if t >= 4 * 3_600 => dt.format(&format!("%a {time}")).to_string(),
-            _ => dt.format(time).to_string(),
-        };
-    }
+    // Ticks a month or more apart get no clock, intraday or not: it would only
+    // be the hour each month's first bar opened, and it pushes out the year.
     match tick_seconds {
         t if t >= 300 * DAY => dt.format("%Y").to_string(),
         t if t >= 25 * DAY => dt.format("%b %Y").to_string(),
-        _ => dt.format("%d %b").to_string(),
+        _ if !intraday => dt.format("%d %b").to_string(),
+        t if t >= DAY => dt.format(&format!("%d %b {time}")).to_string(),
+        t if t >= 4 * 3_600 => dt.format(&format!("%a {time}")).to_string(),
+        _ => dt.format(time).to_string(),
     }
 }
 
@@ -11538,9 +11536,13 @@ mod tests {
         assert!(format_axis_time(ts, 30 * DAY, false, false, Clock::default()).contains("20"), "months get a year");
         // A few days apart: day and month, no year.
         assert!(!format_axis_time(ts, 5 * DAY, false, false, Clock::default()).contains("20"));
-        // Intraday always carries a clock, however far apart the ticks.
+        // Intraday carries a clock until the ticks are months apart.
         assert!(format_axis_time(ts, 3600, true, false, Clock::default()).contains(':'));
-        assert!(format_axis_time(ts, 30 * DAY, true, false, Clock::default()).contains(':'));
+        assert!(format_axis_time(ts, 5 * DAY, true, false, Clock::default()).contains(':'));
+        assert_eq!(
+            format_axis_time(ts, 30 * DAY, true, false, Clock::default()),
+            format_axis_time(ts, 30 * DAY, false, false, Clock::default())
+        );
     }
 
     #[test]
