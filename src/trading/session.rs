@@ -14,7 +14,7 @@ pub trait Broker: Send + Sync {
     /// The id its logins name it by, which is its data feed's too when it
     /// has one. Stored, so never changed.
     fn id(&self) -> &'static str;
-    /// What it is called in "Add a trading account…".
+    /// What it is called in "Add a trading service…".
     fn label(&self) -> &'static str;
     /// Does its service chart too, as the data feed of the same id? Adding
     /// a login then adds that feed, which charts and trades apart from it

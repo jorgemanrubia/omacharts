@@ -12,7 +12,7 @@ mod sierra;
 
 pub use rithmic::SIGN_OUT_WAIT;
 
-/// Every broker this build has, in the order "Add a trading account…" offers
+/// Every broker this build has, in the order "Add a trading service…" offers
 /// them.
 /// A build with the `fakes` feature has the fake one too, which is offered
 /// like any other.

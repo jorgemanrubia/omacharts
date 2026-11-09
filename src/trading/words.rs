@@ -124,7 +124,7 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize) -> Option<Str
 /// heard of, sent before a drop: "Not placed · Buy Limit 1 ESZ6 never
 /// reached the broker".
 pub fn never_placed_text(order: &OrderRequest) -> String {
-    format!("Not placed · {} {} {} never reached the broker", order_words(order.side, order.kind), order.qty, order.contract)
+    format!("Not placed · {} {} {} never reached the trading service", order_words(order.side, order.kind), order.qty, order.contract)
 }
 
 /// Money as a P&L reads: "+$125.00", "-$3.94", "+12.50 EUR".

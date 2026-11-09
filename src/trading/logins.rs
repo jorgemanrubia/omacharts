@@ -192,7 +192,7 @@ fn typed_into(login: &mut Login, typed: &Typed) {
 }
 
 fn no_broker(login: &Login) -> String {
-    format!("there is no broker called {}", login.broker)
+    format!("there is no trading service called {}", login.broker)
 }
 
 fn keep_password(secrets: &dyn Secrets, login: &Login, password: &str) -> Result<(), String> {

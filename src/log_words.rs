@@ -116,7 +116,7 @@ pub fn signed_in_heard(login: &str, outcome: Result<usize, &str>, heard: Option<
             let detail = [why, detail].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join("\n\n");
             Entry::error(login, format!("Not signed in · {}", gist(why))).detail(detail)
         }
-        (Ok(0), None) => Entry::warning(login, "Signed in · the broker lists no accounts").detail(detail),
+        (Ok(0), None) => Entry::warning(login, "Signed in · the trading service lists no accounts").detail(detail),
         (Ok(0), Some(refused)) => {
             Entry::warning(login, format!("Signed in · no accounts · the account list was refused: {}", gist(refused)))
                 .detail(detail)
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(signed_in("Rithmic Test", Ok(2)).text, "Signed in · 2 accounts");
         assert_eq!(signed_in("Rithmic Test", Ok(1)).text, "Signed in · 1 account");
         let none = signed_in("Rithmic Test", Ok(0));
-        assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the broker lists no accounts"));
+        assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the trading service lists no accounts"));
         assert_eq!(feed_step("Rithmic Test", "connecting to the gateway").text, "Connecting to the gateway");
     }
 
@@ -251,7 +251,7 @@ mod tests {
     fn a_sign_in_says_what_the_broker_heard_in_its_detail() {
         let heard = trading::Heard { warning: None, detail: "User: ••• (the login's own)\nAccount list replies: 1".into() };
         let none = signed_in_heard("Rithmic Test", Ok(0), Some(&heard));
-        assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the broker lists no accounts"));
+        assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the trading service lists no accounts"));
         assert_eq!(none.detail.as_deref(), Some(heard.detail.as_str()));
         let one = signed_in_heard("Rithmic Test", Ok(1), Some(&heard));
         assert_eq!((one.level, one.detail.as_deref()), (Level::Info, Some(heard.detail.as_str())));

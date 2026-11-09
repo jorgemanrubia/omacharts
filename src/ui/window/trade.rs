@@ -2053,7 +2053,7 @@ pub(super) mod tests {
             assert!(window.order_section(10.0).is_none(), "orders in the chart menu");
             let (sections, groups, rows) = preferences_words(&window);
             assert_eq!(sections, ["General", "Charts", "Theme", "Data"]);
-            for group in ["Trading", "Trading accounts", "Order entry"] {
+            for group in ["Trading", "Trading services", "Order entry"] {
                 assert!(!groups.iter().any(|title| title == group), "a {group} group in {groups:?}");
             }
             for row in ["Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Account", "Order labels"] {
@@ -2520,7 +2520,7 @@ pub(super) mod tests {
             assert!(!pending.contains_key(&Request::Place(lost.tag.clone())), "never reached, still drawn");
             assert!(pending.contains_key(&Request::Place(reached.tag.clone())), "the broker has it");
             assert!(!window.trade.placing.busy(&key), "the account still waiting on an answer");
-            assert_eq!(trading::never_placed_text(&lost), "Not placed · Buy Limit 1 ESZ6 never reached the broker");
+            assert_eq!(trading::never_placed_text(&lost), "Not placed · Buy Limit 1 ESZ6 never reached the trading service");
         });
     }
 

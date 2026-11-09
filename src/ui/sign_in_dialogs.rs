@@ -128,7 +128,7 @@ pub(crate) mod fake {
 
     /// The fake broker's login dialog.
     pub fn login(parent: &gtk::Widget, known: Option<&Login>, signed: Box<dyn Fn(Typed)>) {
-        let dialog = adw::AlertDialog::new(Some("Sign in to the fake broker"), None);
+        let dialog = adw::AlertDialog::new(Some("Sign in to the fake trading service"), None);
         let list = gtk::ListBox::new();
         let name = adw::EntryRow::new();
         name.set_title("Name");

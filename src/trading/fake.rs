@@ -578,7 +578,7 @@ impl Broker for FakeBroker {
     }
 
     fn label(&self) -> &'static str {
-        "Fake Broker"
+        "Fake Trading Service"
     }
 
     /// Who signed in, as Rithmic's does: what the Log is shown to keep

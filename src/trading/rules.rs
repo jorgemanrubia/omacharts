@@ -82,7 +82,7 @@ pub fn order_target(
     let account = view.account_of(chosen).ok_or_else(|| match view.logins.first() {
         Some(login) if session(&login.id).is_some() => format!("{} has no accounts", login.name),
         Some(login) => format!("{} not signed in", login.name),
-        None => "No trading account".to_string(),
+        None => "No trading service".to_string(),
     })?;
     let name = view.account_name(account);
     let login = view.login(&account.login).ok_or_else(|| format!("{name} has no login"))?;
@@ -714,7 +714,7 @@ mod tests {
             "Rithmic Test has no accounts",
             "signed in, and the broker listed none"
         );
-        assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading account");
+        assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading service");
     }
 
     /// Going flat in a contract cancels every order working in it, entries

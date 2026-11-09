@@ -1,4 +1,4 @@
-//! Preferences → Trading: three sections. "Trading accounts" lists the
+//! Preferences → Trading: three sections. "Trading services" lists the
 //! broker logins, each a row with its accounts under it, edited the way the
 //! Data page edits its data feeds; "Order entry" holds what every chart's
 //! orders follow; "Chart" how the orders are drawn on a chart. The last two
@@ -208,7 +208,7 @@ fn rebuild(panel: &Rc<Panel>) {
     let default = trading::default_account(&accounts, panel.store.setting(trading::DEFAULT_ACCOUNT).as_deref())
         .map(Account::key);
     let accounts_group = adw::PreferencesGroup::new();
-    accounts_group.set_title("Trading accounts");
+    accounts_group.set_title("Trading services");
     for login in &logins {
         let theirs: Vec<&Account> = accounts.iter().filter(|account| account.login == login.id).collect();
         let is_data = data.as_deref() == Some(login.id.as_str());
@@ -394,10 +394,10 @@ fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     group
 }
 
-/// "Add a trading account…", last in the accounts' section.
+/// "Add a trading service…", last in the accounts' section.
 fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
     let add = gtk::MenuButton::new();
-    add.set_label("Add a trading account…");
+    add.set_label("Add a trading service…");
     add.set_halign(gtk::Align::Start);
     // Under the logins' list, apart from it, as under the Data page's.
     add.set_margin_top(12);
@@ -507,7 +507,7 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.broker).as_ref(), id, feed_too) {
         eprintln!("omacharts: {error}");
-        log_words::say(log_words::trouble(&login.name, "Login not removed completely", &error));
+        log_words::say(log_words::trouble(&login.name, "Trading service not removed completely", &error));
     }
     panel.changed();
 }
@@ -519,7 +519,7 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
     let Some(login) = logins.iter().find(|login| login.id == id) else { return };
     if panel.desk.broker_for(login).is_none() {
-        panel.notes.borrow_mut().insert(id.to_string(), format!("no broker called {} in this build", login.broker));
+        panel.notes.borrow_mut().insert(id.to_string(), format!("no trading service called {} in this build", login.broker));
         return rebuild(panel);
     }
     panel.notes.borrow_mut().remove(id);
@@ -629,11 +629,11 @@ mod tests {
             let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
             rebuild(&panel);
             let words = page_words(&panel);
-            assert!(words.iter().any(|w| w == "Trading accounts"), "{words:?}");
-            assert!(words.iter().any(|w| w == "Add a trading account…"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Trading services"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Add a trading service…"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
             let titles: Vec<String> = panel.groups.borrow().iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading accounts", "Order entry", "Chart"]);
+            assert_eq!(titles, ["Trading services", "Order entry", "Chart"]);
             assert!(words.iter().any(|w| w == "Edit quantities…"), "{words:?}");
         });
     }
@@ -710,8 +710,8 @@ mod tests {
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading accounts", "Order entry", "Chart"]);
-            assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading account…"));
+            assert_eq!(titles, ["Trading services", "Order entry", "Chart"]);
+            assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading service…"));
             assert!(words_under(groups[1].upcast_ref()).iter().any(|w| w == "Edit quantities…"));
             let rows = login_rows(&panel);
             assert_eq!(rows.len(), 2, "two logins");
@@ -737,7 +737,7 @@ mod tests {
     }
 
     /// A broker with no data feed, which nothing above the seam names, is
-    /// offered by "Add a trading account…" because the registry lists it,
+    /// offered by "Add a trading service…" because the registry lists it,
     /// signs in from this page, lists its accounts here, and trades: a market order
     /// fills, with its fill, and is held on the desk's book. Its login is
     /// never the data login, and the data feeds are left as they were.
