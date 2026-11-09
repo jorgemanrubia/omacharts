@@ -153,8 +153,10 @@ fn run() -> glib::ExitCode {
             // This process is the window: a downloaded version that ends
             // from here until it has been up a few seconds did not run.
             omacharts::update::window_starting();
-            omacharts::update::before_first_open(&settings_file());
-            let opened = match Store::open() {
+            // Not copied first, a version that never ran here leaves the
+            // settings alone this time, and tries again next launch.
+            let uncopied = omacharts::update::before_first_open(&settings_file()).err();
+            let opened = match uncopied.as_ref().map_or_else(Store::open, |_| Ok(Store::memory().expect("open database"))) {
                 // Written by a newer download that is gone or given up on,
                 // and nothing newer to start instead: put back the settings
                 // from before it, and say so once.
@@ -170,6 +172,16 @@ fn run() -> glib::ExitCode {
                 opened => opened,
             };
             let store = match opened {
+                Ok(store) if let Some(why) = &uncopied => {
+                    omacharts::update::settings_unopened(None);
+                    eprintln!("omacharts: settings not copied before this version first opened them: {why}; carrying on without saving anything");
+                    log_words::say(log_words::trouble(
+                        "Settings",
+                        "Settings could not be copied before this version first opened them · nothing is saved this time",
+                        why,
+                    ));
+                    store
+                }
                 Ok(store) => {
                     omacharts::update::opened(&settings_file());
                     // A rollback this window did, or a command did with no
@@ -194,8 +206,9 @@ fn run() -> glib::ExitCode {
                 // in-memory database at least puts a usable window on screen
                 // rather than nothing at all.
                 Err(error) => {
-                    // Not a version that runs here, however long it is up.
-                    omacharts::update::settings_unopened();
+                    // Not shown to run here, however long it is up; and
+                    // counted against it when its own migration failed.
+                    omacharts::update::settings_unopened(Some(&error));
                     eprintln!("omacharts: {error}; carrying on without saving anything");
                     log_words::say(log_words::trouble(
                         "Settings",
@@ -390,13 +403,19 @@ fn run() -> glib::ExitCode {
 }
 
 /// Could GDK open a display? What its backends try, asked without starting
-/// GTK: a Wayland socket — `WAYLAND_DISPLAY`, or `wayland-0` when unset, in
-/// `XDG_RUNTIME_DIR` unless it is a path — or an X display named in
-/// `DISPLAY`. An environment variable and a `stat`.
+/// GTK: an X display named in `DISPLAY`, or a Wayland socket —
+/// `WAYLAND_DISPLAY`, or `wayland-0` when unset, in `XDG_RUNTIME_DIR` unless
+/// it is a path. An environment variable and a `stat`. Wrong the other way,
+/// it only means a launch that is not counted.
 fn display_reachable() -> bool {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    if set("DISPLAY").is_some() {
-        return true;
+    if let Some(display) = set("DISPLAY") {
+        // A local display, `:0` or `:0.0`, has its socket in /tmp/.X11-unix;
+        // one on another host, as ssh forwards it, is taken at its word.
+        let display = display.to_string_lossy();
+        let Some(number) = display.strip_prefix(':').or_else(|| display.strip_prefix("unix:")) else { return true };
+        let number = number.split('.').next().unwrap_or_default();
+        return std::path::Path::new(&format!("/tmp/.X11-unix/X{number}")).exists();
     }
     let socket = set("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
     let socket = std::path::PathBuf::from(socket);
@@ -462,7 +481,13 @@ impl cli::Caller for Typed<'_> {
 }
 
 fn open_store() -> Store {
-    omacharts::update::before_first_open(&settings_file());
+    if let Err(why) = omacharts::update::before_first_open(&settings_file()) {
+        // Never migrated without the copy to go back to; a command has no
+        // empty window to carry on in, so it stops, and nothing is changed.
+        eprintln!("omacharts: settings not copied before this version first opened them, so left alone: {why}");
+        omacharts::update::settle();
+        std::process::exit(cli::EXIT_ERROR as i32);
+    }
     let opened = match Store::open() {
         Err(omacharts::migrations::Error::FromTheFuture { .. }) => {
             // A newer download most likely wrote it: become that, or if it

@@ -104,9 +104,18 @@ fn a_window_launch_with_no_display_does_not_count_against_a_download() {
     let runtime = root.join("runtime");
     fs::create_dir_all(&runtime).unwrap();
 
-    // Three, which would give it up if they counted.
-    for _ in 0..3 {
-        let output = Command::new("/usr/bin/dbus-run-session")
+    // Three, which would give it up if they counted; with nothing set, and
+    // with an X display named that no server holds, as a stale `DISPLAY`
+    // in a script is.
+    let stale = !Path::new("/tmp/.X11-unix/X99").exists();
+    for display in [None, None, None, Some(":99"), Some(":99.0"), Some(":99")].into_iter().filter(|d| d.is_none() || stale) {
+        let mut command = Command::new("/usr/bin/dbus-run-session");
+        if let Some(display) = display {
+            command.env("DISPLAY", display);
+        } else {
+            command.env_remove("DISPLAY");
+        }
+        let output = command
             .arg("--")
             .arg(&launcher)
             .env("HOME", root.join("home"))
@@ -120,12 +129,11 @@ fn a_window_launch_with_no_display_does_not_count_against_a_download() {
             .env_remove("OMACHARTS_PROBE")
             .env_remove("OMACHARTS_NO_UPDATE")
             .env_remove("WAYLAND_DISPLAY")
-            .env_remove("DISPLAY")
             .output()
             .unwrap();
         let said = String::from_utf8_lossy(&output.stdout);
-        assert!(!said.contains("packaged"), "the download was given up on: {said}");
-        assert!(!output.status.success(), "a window came up with no display?");
+        assert!(!said.contains("packaged"), "{display:?}: the download was given up on: {said}");
+        assert!(!output.status.success(), "{display:?}: a window came up with no display?");
     }
     assert!(markers(&folder).is_empty(), "{:?}", markers(&folder));
     let _ = fs::remove_dir_all(&root);

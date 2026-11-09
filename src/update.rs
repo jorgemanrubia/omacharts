@@ -214,7 +214,7 @@ pub fn window_starting() {
 /// download that would let it be are let go. Its folder says so for good,
 /// and every launch still marked as trying it is cleared.
 pub fn healthy() {
-    if SETTINGS_UNOPENED.load(std::sync::atomic::Ordering::Relaxed) {
+    if UNOPENED.load(std::sync::atomic::Ordering::Relaxed) != 0 {
         return;
     }
     if let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) {
@@ -222,17 +222,52 @@ pub fn healthy() {
     }
 }
 
-/// The window could not open the settings and carries on with nothing
-/// saved. Up for hours, that is still not a version that runs here: one
-/// whose migration failed halfway would be called healthy, kept for good,
-/// and the copy that lets the settings be put back let go. So it is never
-/// called healthy, and its launch counts as one that did not run however it
-/// ends — three, and it is given up on.
-pub fn settings_unopened() {
-    SETTINGS_UNOPENED.store(true, std::sync::atomic::Ordering::Relaxed);
+/// The window carries on with nothing saved: the settings could not be
+/// opened, or not copied before this version first opened them. Up for
+/// hours, that is still not a version shown to run here, so it is never
+/// called healthy, and the copy that lets the settings be put back is kept.
+///
+/// `error` is why they could not be opened, when they were tried. Only a
+/// failure this version's own code made — a migration step that went wrong
+/// — also counts the launch as one that did not run, however it ends: three,
+/// and it is given up on and the settings put back. A full disk, a file
+/// another process holds, permissions or a damaged file are not the
+/// version's doing; a good release given up on over one is never
+/// downloaded again, so those clear the launch as an ordinary close does.
+pub fn settings_unopened(error: Option<&crate::migrations::Error>) {
+    let state = if error.is_some_and(its_own_doing) { COUNTED } else { NOT_HEALTHY };
+    UNOPENED.store(state, std::sync::atomic::Ordering::Relaxed);
 }
 
-static SETTINGS_UNOPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const NOT_HEALTHY: u8 = 1;
+const COUNTED: u8 = 2;
+static UNOPENED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Whether opening the settings failed in a way only this version's code
+/// explains: SQL its migrations got wrong, a step of theirs that failed in
+/// Rust. Anything the machine or another process could cause is not, and
+/// when in doubt it is not.
+fn its_own_doing(error: &crate::migrations::Error) -> bool {
+    use rusqlite::ErrorCode::*;
+    match error {
+        crate::migrations::Error::FromTheFuture { .. } => false,
+        crate::migrations::Error::Sqlite(
+            rusqlite::Error::SqliteFailure(failure, _) | rusqlite::Error::SqlInputError { error: failure, .. },
+        ) => matches!(failure.code, Unknown | ConstraintViolation | TypeMismatch | ApiMisuse | ParameterOutOfRange),
+        crate::migrations::Error::Sqlite(
+            rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::InvalidColumnIndex(_)
+            | rusqlite::Error::InvalidColumnName(_)
+            | rusqlite::Error::QueryReturnedNoRows
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::InvalidParameterCount(..)
+            | rusqlite::Error::MultipleStatement
+            | rusqlite::Error::ExecuteReturnedResults,
+        ) => true,
+        crate::migrations::Error::Sqlite(_) => false,
+    }
+}
 
 fn mark_healthy(folder: &Path) {
     if !folder.join(HEALTHY).exists() {
@@ -263,7 +298,7 @@ fn mark_healthy(folder: &Path) {
 /// that crashes never gets here, and its marker stays to count. Never marks
 /// the version healthy.
 pub fn settle() {
-    if SETTINGS_UNOPENED.load(std::sync::atomic::Ordering::Relaxed) {
+    if UNOPENED.load(std::sync::atomic::Ordering::Relaxed) == COUNTED {
         return;
     }
     let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
@@ -365,45 +400,52 @@ fn unique() -> String {
 /// run here: back the settings up, so that if it migrates them and then
 /// turns out not to run, the copy from before it is there to go back to.
 /// Two `stat`s for any version that has.
-pub fn before_first_open(settings: &Path) {
-    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
-    backup_before_first_open(folder, settings);
+///
+/// `Err` says why the copy could not be taken — a full disk, most likely —
+/// and then the settings must not be opened by this version, whose
+/// migration would change them with nothing to go back to: half migrated
+/// and then given up on, they would open in no version at all. Settings
+/// already at this version's schema have nothing to migrate, and are fine.
+pub fn before_first_open(settings: &Path) -> Result<(), String> {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return Ok(()) };
+    backup_before_first_open(folder, settings).or_else(|why| {
+        if schema_of(settings).is_some_and(|schema| schema >= crate::migrations::LATEST) { Ok(()) } else { Err(why) }
+    })
 }
 
-fn backup_before_first_open(folder: &Path, settings: &Path) {
-    let Some(record) = before_record(folder) else { return };
+fn backup_before_first_open(folder: &Path, settings: &Path) -> Result<(), String> {
+    let Some(record) = before_record(folder) else { return Ok(()) };
     if folder.join(HEALTHY).exists() || record.exists() {
-        return;
+        return Ok(());
     }
-    let Some(root) = folder.parent() else { return };
-    let Some(version) = folder.file_name().and_then(|name| name.to_str()).and_then(Version::parse) else { return };
+    let Some(root) = folder.parent() else { return Ok(()) };
+    let Some(version) = folder.file_name().and_then(|name| name.to_str()).and_then(Version::parse) else {
+        return Ok(());
+    };
     // Under the shelf's lock, and asked again under it: a command and the
     // window starting this version together would otherwise both copy, and
     // the second copy could be of what the first one's migration wrote.
     // Whoever comes second finds the record, so no process of this version
     // migrates until the copy from before any of them did is written.
-    let Some(_held) = lock(root) else { return };
+    let _held = lock(root).ok_or("the downloads folder cannot be locked")?;
     if record.exists() {
-        return;
+        return Ok(());
     }
     let text = if settings.exists() {
         let saved = root.join(format!("{SAVED}{version}"));
-        match save(settings, &saved) {
-            Ok(schema) => format!("{schema}\n{}\n", saved.display()),
-            Err(error) => {
-                eprintln!("omacharts: settings not backed up before this version first opened them: {error}");
-                return;
-            }
-        }
+        let schema = save(settings, &saved)?;
+        format!("{schema}\n{}\n", saved.display())
     } else {
         "none\n\n".to_string()
     };
     // Written whole under another name and renamed, so a record is never
     // read half written.
     let incoming = root.join(format!("{BEFORE}{version}.{}", unique()));
-    if fs::write(&incoming, text).is_err() || fs::rename(&incoming, &record).is_err() {
+    if let Err(error) = fs::write(&incoming, text).and_then(|()| fs::rename(&incoming, &record)) {
         let _ = fs::remove_file(&incoming);
+        return Err(error.to_string());
     }
+    Ok(())
 }
 
 /// A consistent copy of the settings at `to`, synced, and the schema it is
@@ -611,9 +653,9 @@ pub fn restart_as_newer_for_a_newer_database() -> bool {
 
 /// What to say when the database is newer than this binary and nothing
 /// newer is here to open it.
-pub const NEWER_DATABASE_HELP: &str = "`omacharts update download` fetches the newest release, which can \
-     open it, or the manual's Updating section says how to put back the backup taken before it was \
-     migrated";
+pub const NEWER_DATABASE_HELP: &str = "`omacharts update reset` and then `omacharts update download` \
+     fetch the newest release again, which can open it, or the manual's Updates section says how to put \
+     back the copy of the settings from before it";
 
 /// The second thing `main` does: if this process was started by "Restart to
 /// update", wait for the one it replaces to be gone and to have given up the
@@ -1808,7 +1850,7 @@ mod tests {
         shelve(&shelf, "0.2.16");
         let folder = shelf.root.join("0.2.16");
 
-        backup_before_first_open(&folder, &settings);
+        backup_before_first_open(&folder, &settings).unwrap();
         let record = shelf.root.join(".before-0.2.16");
         let saved = shelf.root.join(".saved-0.2.16");
         assert_eq!(fs::read_to_string(&record).unwrap(), format!("{}\n{}\n", crate::migrations::LATEST, saved.display()));
@@ -1818,18 +1860,18 @@ mod tests {
         // Once is enough, and a version that has run needs none — and is
         // never rolled back, so the record and the copy go.
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "c");
-        backup_before_first_open(&folder, &settings);
+        backup_before_first_open(&folder, &settings).unwrap();
         assert_eq!(setting_a(&saved).as_deref(), Some("b"));
         mark_healthy(&folder);
         assert!(!record.exists() && !saved.exists());
-        backup_before_first_open(&folder, &settings);
+        backup_before_first_open(&folder, &settings).unwrap();
         assert!(!record.exists() && !saved.exists());
 
         // Nothing to back up on a first launch.
         let fresh = Scratch::new();
         let folder = fresh.0.join("0.2.16");
         fs::create_dir_all(&folder).unwrap();
-        backup_before_first_open(&folder, &fresh.0.join("omacharts.db"));
+        backup_before_first_open(&folder, &fresh.0.join("omacharts.db")).unwrap();
         assert_eq!(fs::read_to_string(fresh.0.join(".before-0.2.16")).unwrap(), "none\n\n");
     }
 
@@ -1874,7 +1916,7 @@ mod tests {
         let scratch = Scratch::new();
         let (data, settings, shelf) = settings_and_shelf(&scratch);
         shelve(&shelf, "0.2.16");
-        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
         // It ran, migrated the settings, and was given up on.
         migrate_past(&settings, "after", KNOWN + 1);
         assert_eq!(roll_back(&shelf, &settings, v("0.2.14"), KNOWN), None, "still runnable: it is started instead");
@@ -1902,7 +1944,7 @@ mod tests {
         let scratch = Scratch::new();
         let (_, settings, shelf) = settings_and_shelf(&scratch);
         shelve(&shelf, "0.2.16");
-        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
         shelf.mark_bad(v("0.2.16"), "no");
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "after");
         assert_eq!(roll_back(&shelf, &settings, v("0.2.14"), KNOWN), None);
@@ -1916,13 +1958,13 @@ mod tests {
         // 0.2.15 opened them as they were; 0.2.16 after 0.2.15 had changed
         // them; 0.2.17 after 0.2.16 had migrated them past this build.
         shelve(&shelf, "0.2.15");
-        backup_before_first_open(&shelf.root.join("0.2.15"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.15"), &settings).unwrap();
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "by 0.2.15");
         shelve(&shelf, "0.2.16");
-        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
         migrate_past(&settings, "by 0.2.16", KNOWN + 1);
         shelve(&shelf, "0.2.17");
-        backup_before_first_open(&shelf.root.join("0.2.17"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.17"), &settings).unwrap();
         migrate_past(&settings, "by 0.2.17", KNOWN + 2);
         for version in ["0.2.15", "0.2.16", "0.2.17"] {
             shelf.mark_bad(v(version), "no");
@@ -1943,7 +1985,7 @@ mod tests {
         let (_, settings, shelf) = settings_and_shelf(&scratch);
         shelve(&shelf, "0.2.15");
         let folder = shelf.root.join("0.2.15");
-        backup_before_first_open(&folder, &settings);
+        backup_before_first_open(&folder, &settings).unwrap();
         // It opened them at the same schema and changed a setting: not a
         // migration, and nothing to roll back to.
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "by 0.2.15");
@@ -1951,13 +1993,13 @@ mod tests {
         assert!(!shelf.root.join(".saved-0.2.15").exists());
         assert_eq!(fs::read_to_string(shelf.root.join(".before-0.2.15")).unwrap(), UNMIGRATED);
         // And its next launch copies nothing again.
-        backup_before_first_open(&folder, &settings);
+        backup_before_first_open(&folder, &settings).unwrap();
         assert!(!shelf.root.join(".saved-0.2.15").exists());
 
         // One that did migrate keeps it.
         shelve(&shelf, "0.2.16");
         let folder = shelf.root.join("0.2.16");
-        backup_before_first_open(&folder, &settings);
+        backup_before_first_open(&folder, &settings).unwrap();
         migrate_past(&settings, "by 0.2.16", KNOWN + 1);
         forget_if_unmigrated(&folder, &settings);
         assert!(shelf.root.join(".before-0.2.16").exists());
@@ -1974,7 +2016,7 @@ mod tests {
         shelve(&shelf, "0.2.16");
         // A backup from before, as the window's hourly one leaves.
         crate::backup::take_if_changed(&settings).unwrap();
-        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
         // It migrates, and the window's backup runs before it has been up
         // three seconds: a newer backup in the same slot, and a prune.
         migrate_past(&settings, "after", KNOWN + 1);
@@ -1998,7 +2040,7 @@ mod tests {
             for _ in 0..4 {
                 scope.spawn(|| {
                     barrier.wait();
-                    backup_before_first_open(&folder, &settings);
+                    backup_before_first_open(&folder, &settings).unwrap();
                     // What each process does next: migrate.
                     migrate_past(&settings, "after", KNOWN + 1);
                 });
@@ -2017,7 +2059,7 @@ mod tests {
         // 0.2.15 is only ever run from the bar: it migrates, and is never
         // a window, so never healthy. Then 0.2.16 is downloaded.
         shelve(&shelf, "0.2.15");
-        backup_before_first_open(&shelf.root.join("0.2.15"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.15"), &settings).unwrap();
         migrate_past(&settings, "by 0.2.15", KNOWN + 1);
         forget_if_unmigrated(&shelf.root.join("0.2.15"), &settings);
         shelve(&shelf, "0.2.16");
@@ -2039,7 +2081,7 @@ mod tests {
         let scratch = Scratch::new();
         let (data, settings, shelf) = settings_and_shelf(&scratch);
         shelve(&shelf, "0.2.16");
-        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
         migrate_past(&settings, "after", KNOWN + 1);
         shelf.mark_bad(v("0.2.16"), "no");
 
@@ -2068,8 +2110,8 @@ mod tests {
         let (_, settings, shelf) = settings_and_shelf(&scratch);
         shelve(&shelf, "0.2.15");
         shelve(&shelf, "0.2.16");
-        backup_before_first_open(&shelf.root.join("0.2.15"), &settings);
-        backup_before_first_open(&shelf.root.join("0.2.16"), &settings);
+        backup_before_first_open(&shelf.root.join("0.2.15"), &settings).unwrap();
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
         migrate_past(&settings, "after", KNOWN + 1);
         // A newer one ran: what every older one did is behind it.
         mark_healthy(&shelf.root.join("0.2.16"));
@@ -2236,47 +2278,122 @@ mod tests {
         assert!(output.status.success() && said.contains("carried on as itself"), "{said}");
     }
 
+    /// What a migration this version got wrong fails with.
+    fn its_own_failure() -> crate::migrations::Error {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migrations::Error::Sqlite(conn.execute_batch("CREATE TABL watchlists (id)").unwrap_err())
+    }
+
+    /// What the machine fails with, for `code`.
+    fn the_machines_failure(code: std::ffi::c_int) -> crate::migrations::Error {
+        crate::migrations::Error::Sqlite(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None))
+    }
+
     #[test]
-    fn a_window_that_could_not_open_the_settings_is_never_healthy_and_counts_as_not_running() {
+    fn only_a_failure_of_the_versions_own_making_counts_against_it() {
+        use rusqlite::ffi::*;
+        assert!(its_own_doing(&its_own_failure()));
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (x NOT NULL)").unwrap();
+        let constraint = conn.execute("INSERT INTO t VALUES (NULL)", []).unwrap_err();
+        assert!(its_own_doing(&crate::migrations::Error::Sqlite(constraint)));
+        for code in [SQLITE_FULL, SQLITE_BUSY, SQLITE_LOCKED, SQLITE_READONLY, SQLITE_CANTOPEN, SQLITE_PERM, SQLITE_IOERR, SQLITE_NOMEM, SQLITE_CORRUPT, SQLITE_NOTADB, SQLITE_AUTH] {
+            assert!(!its_own_doing(&the_machines_failure(code)), "{code}");
+        }
+        assert!(!its_own_doing(&crate::migrations::Error::FromTheFuture { found: 11, known: 10 }));
+    }
+
+    #[test]
+    fn a_window_that_could_not_open_the_settings_is_never_healthy_and_counts_only_its_own_failure() {
+        // In a process of its own for each: what it records is the
+        // process's, as the window's is.
         const CHILD: &str = "OMACHARTS_TEST_UNOPENED";
-        if std::env::var_os(CHILD).is_some() {
+        if let Some(how) = std::env::var_os(CHILD) {
             let folder = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
             let marker = folder.join(trying(std::process::id()));
             fs::write(&marker, b"").unwrap();
             at_launch();
             window_starting();
-            settings_unopened();
+            match how.to_str().unwrap() {
+                "its own" => settings_unopened(Some(&its_own_failure())),
+                "disk full" => settings_unopened(Some(&the_machines_failure(rusqlite::ffi::SQLITE_FULL))),
+                _ => settings_unopened(None),
+            }
             healthy();
             assert!(!folder.join(HEALTHY).exists(), "up, but with nothing of theirs");
             settle();
-            assert!(marker.exists(), "closed normally, and still a launch that did not run");
-            println!("not healthy");
+            println!("counted: {}", marker.exists());
             return;
         }
+        for (how, counted) in [("its own", true), ("disk full", false), ("not copied", false)] {
+            let scratch = Scratch::new();
+            let versions = scratch.0.join("omacharts/versions");
+            let running = Version::running();
+            let here = versions.join(running.to_string());
+            fs::create_dir_all(&here).unwrap();
+            place_copy(&std::env::current_exe().unwrap(), &here.join(BINARY));
+            let told = Told {
+                installed_version: v("0.2.14"),
+                installed: PathBuf::from("/usr/bin/omacharts"),
+                folder: Some(here.clone()),
+            };
+            let output = std::process::Command::new(here.join(BINARY))
+                .args([
+                    "--exact",
+                    "update::tests::a_window_that_could_not_open_the_settings_is_never_healthy_and_counts_only_its_own_failure",
+                    "--nocapture",
+                ])
+                .env(CHILD, how)
+                .env("XDG_DATA_HOME", &scratch.0)
+                .env(SOURCE_ENV, "http://127.0.0.1:9")
+                .env(LAUNCHER_ENV, told.encode())
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success() && said.contains(&format!("counted: {counted}")), "{how}: {said}{}", String::from_utf8_lossy(&output.stderr));
+            assert!(!here.join(HEALTHY).exists(), "{how}");
+        }
+    }
+
+    #[test]
+    fn a_version_whose_own_migration_failed_three_times_is_given_up_on_and_the_settings_put_back() {
         let scratch = Scratch::new();
-        let versions = scratch.0.join("omacharts/versions");
-        let running = Version::running();
-        let here = versions.join(running.to_string());
-        fs::create_dir_all(&here).unwrap();
-        place_copy(&std::env::current_exe().unwrap(), &here.join(BINARY));
-        let told = Told {
-            installed_version: v("0.2.14"),
-            installed: PathBuf::from("/usr/bin/omacharts"),
-            folder: Some(here.clone()),
-        };
-        let output = std::process::Command::new(here.join(BINARY))
-            .args(["--exact", "update::tests::a_window_that_could_not_open_the_settings_is_never_healthy_and_counts_as_not_running", "--nocapture"])
-            .env(CHILD, "1")
-            .env("XDG_DATA_HOME", &scratch.0)
-            .env(SOURCE_ENV, "http://127.0.0.1:9")
-            .env(LAUNCHER_ENV, told.encode())
-            .output()
-            .unwrap();
-        let said = String::from_utf8_lossy(&output.stdout);
-        assert!(output.status.success() && said.contains("not healthy"), "{said}{}", String::from_utf8_lossy(&output.stderr));
-        assert!(!here.join(HEALTHY).exists());
-        let ended: Vec<_> = fs::read_dir(&here).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(".trying-")).collect();
-        assert_eq!(ended.len(), 1, "the launch counts toward giving it up");
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        shelve(&shelf, "0.2.16");
+        backup_before_first_open(&shelf.root.join("0.2.16"), &settings).unwrap();
+        // Its migration got one step in, then failed: at a schema newer
+        // than the package's, never opened, three launches counted.
+        migrate_past(&settings, "half", KNOWN + 1);
+        for pid in [4_000_000_001u32, 4_000_000_002, 4_000_000_003] {
+            fs::write(shelf.root.join("0.2.16").join(trying(pid)), b"").unwrap();
+        }
+        assert_eq!(shelf.choose(v("0.2.14"), |_| false), None, "given up on");
+        assert!(shelf.root.join("0.2.16").join(BAD).exists());
+        roll_back(&shelf, &settings, v("0.2.14"), KNOWN).expect("rolled back");
+        assert_eq!(setting_a(&settings).as_deref(), Some("before"));
+    }
+
+    #[test]
+    fn settings_that_cannot_be_copied_first_are_not_opened_by_a_version_that_never_ran() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let (_, settings, shelf) = settings_and_shelf(&scratch);
+        // Older than this build, so opening them would migrate them.
+        rusqlite::Connection::open(&settings).unwrap().pragma_update(None, "user_version", KNOWN - 1).unwrap();
+        shelve(&shelf, "0.2.16");
+        let folder = shelf.root.join("0.2.16");
+        // Room for the lock, none for the copy: a full disk, as near as a
+        // test gets without filling one.
+        fs::write(shelf.root.join(LOCK), b"").unwrap();
+        fs::set_permissions(&shelf.root, fs::Permissions::from_mode(0o555)).unwrap();
+        let copied = backup_before_first_open(&folder, &settings);
+        fs::set_permissions(&shelf.root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(copied.is_err(), "{copied:?}");
+        assert!(!shelf.root.join(".before-0.2.16").exists());
+        assert_eq!(schema_of(&settings), Some(KNOWN - 1), "left as they were");
+        // Next launch, with room, it is copied.
+        backup_before_first_open(&folder, &settings).unwrap();
+        assert!(shelf.root.join(".before-0.2.16").exists());
     }
 
     #[test]
