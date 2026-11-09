@@ -413,6 +413,13 @@ pub fn load(store: &Store) -> Header {
     if store.setting(SETTING).is_some() && store.setting(RIGHT_SETTING).is_none() {
         header.right.retain(|part| *part != Part::Account);
     }
+    // And the other way: a right written with the left never stored is
+    // beside the standard left, which held the account when the right did
+    // not. Every header written since writes the left too, so the account
+    // was shown, and stays: where the standard has it now, leading the right.
+    if store.setting(SETTING).is_none() && store.setting(RIGHT_SETTING).is_some() && !placed.contains(&Part::Account) {
+        header.right.insert(0, Part::Account);
+    }
     header
 }
 
@@ -515,6 +522,26 @@ mod tests {
         store.set_setting(SETTING, "feed,symbol,resolution,account");
         store.set_setting(RIGHT_SETTING, "trade,day_pnl,size,settings,maximize,link");
         assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account], "a right of its own");
+    }
+
+    /// A right of somebody's own stored with no left, from when the
+    /// standard left held the account: the account is still in the header,
+    /// leading the right as the standard has it now, and never twice.
+    #[test]
+    fn a_right_stored_alone_keeps_the_account() {
+        let store = Store::memory().unwrap();
+        store.set_setting(RIGHT_SETTING, "trade,size,settings,link");
+        let header = load(&store);
+        assert_eq!(header.left, standard(Section::Left));
+        assert_eq!(header.right, vec![Part::Account, Part::Trade, Part::Size, Part::Settings, Part::Link]);
+        store.set_setting(RIGHT_SETTING, "trade,account,link");
+        assert_eq!(load(&store).right, vec![Part::Trade, Part::Account, Part::Link], "where it was put");
+        store.set_setting(CENTER_SETTING, "title,account");
+        store.set_setting(RIGHT_SETTING, "trade,link");
+        assert_eq!(load(&store).right, vec![Part::Trade, Part::Link], "in the center already");
+        // Written whole, as every header is now, it is as it was written.
+        save(&store, &Header { left: vec![Part::Symbol], center: Vec::new(), right: vec![Part::Link] });
+        assert_eq!(load(&store).right, vec![Part::Link]);
     }
 
     /// A header saved as the one that shipped before the day's move was in
