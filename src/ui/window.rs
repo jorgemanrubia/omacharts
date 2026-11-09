@@ -3013,6 +3013,10 @@ impl Window {
         // a login may have only one of; any other passes such a feed over
         // rather than open a second. A flag: no feed is built by setting it.
         omacharts_engine::providers::serve_from_here();
+        // The flags first: a feed behind one, Sierra Chart's, is no feed at
+        // all to the order until they are read, and the window would open on
+        // the feeds under it.
+        crate::features::adopt(&store);
         let feeds = crate::feeds::ordered(&store).into_iter().map(Arc::from).collect();
         Window::build_with(app, store, feeds)
     }

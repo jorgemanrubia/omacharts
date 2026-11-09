@@ -3511,6 +3511,7 @@ pub(super) mod tests {
                 2026/09/10, 6590.00, 6600.00, 6580.00, 6595.00, 1500000, 0\r\n\
                 2026/09/11, 6595.00, 6610.00, 6590.00, 6605.00, 1400000, 0\r\n";
             std::fs::write(root.join("Data").join("ESZ26_FUT_CME.dly"), days).unwrap();
+            std::fs::write(root.join("Data").join("ESZ26_FUT_CME.scid"), scid_of_es()).unwrap();
             let sierra = omacharts_engine::providers::listed("sierra").unwrap();
             let saved = omacharts_engine::providers::Saved::default()
                 .with(setup::FOLDER, &root.display().to_string())
@@ -3524,6 +3525,44 @@ pub(super) mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// A `.scid` file as Sierra Chart writes it: its header, then a few
+    /// trades of ES on the second of the two days the `.dly` holds.
+    fn scid_of_es() -> Vec<u8> {
+        const HEADER: usize = 56;
+        const RECORD: u32 = 40;
+        let mut bytes = vec![0u8; HEADER];
+        bytes[0..4].copy_from_slice(b"SCID");
+        bytes[4..8].copy_from_slice(&(HEADER as u32).to_le_bytes());
+        bytes[8..12].copy_from_slice(&RECORD.to_le_bytes());
+        bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+        // Sierra Chart counts microseconds from 1899-12-30.
+        let from_1899 = 25_569i64 * 86_400;
+        let start = 1_789_131_600i64; // 2026-09-11 13:00 UTC
+        for (i, price) in [6600.0f32, 6601.0, 6602.0].into_iter().enumerate() {
+            let at = (start + i as i64 * 60 + from_1899) * 1_000_000;
+            bytes.extend_from_slice(&at.to_le_bytes());
+            for field in [0.0, price + 0.25, price - 0.25, price] {
+                bytes.extend_from_slice(&f32::to_le_bytes(field));
+            }
+            for count in [1u32, 2, 1, 1] {
+                bytes.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    /// What `window` streams now, as symbol and feed pairs.
+    fn streamed(window: &Rc<Window>) -> Vec<(String, String)> {
+        window
+            .feeds()
+            .iter()
+            .filter_map(|feed| Some((feed.provider.id().to_string(), feed.live.clone()?)))
+            .flat_map(|(id, live)| {
+                live.report().into_iter().filter(|report| report.charts > 0).map(move |report| (report.symbol, id.clone()))
+            })
+            .collect()
     }
 
     /// Which feed `pane`'s chart is on now, by its id.
@@ -3567,6 +3606,80 @@ pub(super) mod tests {
             assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"), "ES is Sierra Chart's again");
             settle(&window, || pane.view.last_price().is_some());
             assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"), "and stays there once asked");
+        });
+    }
+
+    /// The window of [`a_chart_that_fell_back_to_yahoo_goes_back_to_sierra_with_a_symbol_sierra_has`]:
+    /// Sierra Chart over Yahoo, with ES on file and no MES, on one daily chart.
+    fn sierra_over_yahoo(name: &str) -> (Rc<Window>, Rc<ChartPane>, SierraFolder, Rc<Store>) {
+        let store = Rc::new(Store::memory().expect("a store"));
+        crate::features::set(&store, crate::features::Feature::Sierra, true);
+        crate::features::adopt(&store);
+        let folder = SierraFolder::set_up(&store, name);
+        crate::feeds::add_feed(&store, "sierra");
+        crate::feeds::save_order(&store, &["sierra".into(), "yahoo".into()]);
+        crate::feeds::remember_logins(&store);
+        let _ = adw::init();
+        let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        let sierra: Arc<dyn omacharts_engine::Provider> =
+            Arc::from(omacharts_engine::providers::ordered(&["sierra".to_string()]).remove(0));
+        let window = Window::build_with(&app, store.clone(), vec![sierra, Posing::feed("yahoo", "Yahoo Finance", false)]);
+        let pane = window.focused_pane();
+        pane.timeframe.set(omacharts_engine::Timeframe::minutes(5));
+        (window, pane, folder, store)
+    }
+
+    /// A window opened on a machine with Sierra Chart switched on, set up
+    /// and on top of the order charts from it: the flag is read before the
+    /// feeds are, rather than the window opening on Yahoo alone and the
+    /// chart of ES streaming nothing.
+    #[test]
+    fn a_window_opened_with_sierra_on_charts_from_it() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Sierra, true);
+            let _folder = SierraFolder::set_up(&store, "opened-on");
+            crate::feeds::add_feed(&store, "sierra");
+            crate::feeds::save_order(&store, &["sierra".into(), "yahoo".into()]);
+            // A fresh process: nothing has read the flags yet.
+            crate::features::reset();
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build(&app, store.clone());
+            let ids: Vec<&str> = window.feeds().iter().map(|feed| feed.provider.id()).collect();
+            assert_eq!(ids, ["sierra", "yahoo"]);
+        });
+    }
+
+    /// A chart streaming ES from Sierra Chart, moved to MES and on Yahoo
+    /// for it, streams ES from Sierra Chart again once it is back: after the
+    /// stream it left was torn down, and after a bounce quicker than that.
+    #[test]
+    fn a_chart_back_on_es_streams_it_from_sierra_again() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _folder, _store) = sierra_over_yahoo("streams-again");
+            let es = window.index.find("ES", None).expect("ES");
+            let mes = window.index.find("MES", None).expect("MES");
+            let es_from_sierra = || streamed(&window) == vec![("ES".to_string(), "sierra".to_string())];
+
+            window.show_in(&pane, es.clone());
+            assert!(settle(&window, es_from_sierra), "ES streams from Sierra Chart: {:?}", streamed(&window));
+            assert!(settle(&window, || pane.view.last_price().is_some()), "ES is drawn from Sierra Chart");
+
+            // Long enough on MES for the stream it left to be reaped.
+            window.show_in(&pane, mes.clone());
+            let reaped = || window.lives().iter().all(|live| live.report().is_empty());
+            assert!(settle(&window, || reaped() && pane.view.last_price().is_some()), "the stream of ES is torn down");
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            window.show_in(&pane, es.clone());
+            assert!(settle(&window, es_from_sierra), "ES streams from Sierra Chart again: {:?}", streamed(&window));
+            assert!(settle(&window, || pane.view.last_price().is_some()), "and drawn");
+
+            // On MES and back before anything is reaped.
+            window.show_in(&pane, mes);
+            window.show_in(&pane, es);
+            assert!(settle(&window, es_from_sierra), "and after a quick bounce: {:?}", streamed(&window));
+            assert!(settle(&window, || pane.view.last_price().is_some()));
         });
     }
 
