@@ -222,6 +222,10 @@ struct State {
     /// fit the live sessions of the right-aligned volume profiles, and
     /// narrowed back as they go; set by hand, it is what the hand left.
     overhang_by_hand: bool,
+    /// The share of the columns a hand left `overhang` at, short of the
+    /// profiles' margin: what zooming keeps it at, so it stays as wide on
+    /// screen without a column's rounding piling up zoom after zoom.
+    overhang_share: f64,
     /// Empty columns before the first bar, at the left edge, when the hand
     /// has dragged past the start of the series. Zero at rest.
     lead: usize,
@@ -1305,6 +1309,7 @@ impl State {
             anchored: true,
             overhang: RIGHT_MARGIN,
             overhang_by_hand: false,
+            overhang_share: 0.0,
             lead: 0,
             range: None,
             indicators: Vec::new(),
@@ -1979,12 +1984,17 @@ impl State {
             return;
         }
         let len = self.bars.len() as i64;
-        let room = self.max_overhang(plot_w).max(self.margin_floor()) as i64;
+        let room = self.max_overhang(plot_w) as i64;
+        // With room kept for the profiles past the last bar, the view stops
+        // at that room rather than running on into more: coming back to
+        // the live edge lands with the margin as wide as it was, not
+        // stretched or squeezed by how far the hand went.
+        let ahead = self.profile_stop().map_or(room.max(self.margin_floor() as i64), |stop| stop as i64);
         // The left edge as a column index: negative is room before the
         // first bar.
         let was = self.left_edge();
         let left = was + bars.round() as i64;
-        let left = left.clamp(-room, (len - columns as i64 + room).max(-room));
+        let left = left.clamp(-room, (len - columns as i64 + ahead).max(-room));
         let right = left + columns as i64;
         self.lead = (-left).max(0) as usize;
         self.overhang = (right - len).max(0) as usize;
@@ -1995,6 +2005,41 @@ impl State {
         if left != was {
             self.range = None;
             self.overhang_by_hand = true;
+            self.overhang_share = self.overhang as f64 / columns as f64;
+        }
+        self.settle_at_stop();
+    }
+
+    /// The room past the last bar the view stops at while right-aligned
+    /// profiles keep a margin there: the resting margin, widened for them.
+    /// None without such profiles, when the view may run on as far as
+    /// `OVERHANG_PX`.
+    fn profile_stop(&self) -> Option<usize> {
+        let floor = self.margin_floor();
+        (floor > 0).then(|| floor.max(RIGHT_MARGIN))
+    }
+
+    /// Back at rest once the view reaches the profiles' margin, so it is
+    /// widened and narrowed with them, and stays the same share of the plot
+    /// whatever the zoom.
+    fn settle_at_stop(&mut self) {
+        if let Some(stop) = self.profile_stop() {
+            if self.anchored && self.overhang_by_hand && self.overhang >= stop {
+                self.overhang = RIGHT_MARGIN;
+                self.overhang_by_hand = false;
+            }
+        }
+    }
+
+    /// After the columns across the plot changed: room a hand left past the
+    /// last bar, short of the profiles' margin, is kept as
+    /// wide on screen, as the margin itself is, so zooming moves the bars
+    /// and not the edge of that room.
+    fn keep_room_on_screen(&mut self) {
+        let now = self.columns();
+        if self.anchored && self.overhang_by_hand && self.profile_stop().is_some() {
+            self.overhang = (self.overhang_share * now as f64).round() as usize;
+            self.settle_at_stop();
         }
     }
 
@@ -2079,6 +2124,7 @@ impl State {
         }
         self.visible = next;
         self.range = None;
+        self.keep_room_on_screen();
         // The room is so many pixels, which is fewer columns zoomed in.
         self.trim_room(plot_w);
     }
@@ -2238,6 +2284,7 @@ impl State {
             self.anchored = room > 0;
             self.overhang = room;
             self.overhang_by_hand = true;
+            self.overhang_share = room as f64 / self.visible.max(1) as f64;
             self.first = first.min(len.saturating_sub(1));
             return;
         }
@@ -5421,6 +5468,7 @@ impl ChartView {
                         .clamp(MIN_VISIBLE, MAX_VISIBLE);
                     s.visible = next;
                     s.range = None;
+                    s.keep_room_on_screen();
                     s.trim_room(plot_w);
                 }
                 Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } | Drag::Mark { .. } => {

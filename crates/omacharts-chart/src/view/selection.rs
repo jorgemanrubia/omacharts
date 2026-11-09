@@ -1013,8 +1013,82 @@ mod tests {
         assert_eq!(state.indicator_at(W, H, (boxes[0].0 + boxes[0].1) / 2.0, y), Some(1));
     }
 
-    /// A hand that drags the room open, or shut, is not argued with: the
-    /// margin is what it left until the view is reset.
+    /// A chart of 2000 hourly bars with two profiles aligned right, 300
+    /// columns across, at rest at the live edge.
+    fn long_stacked() -> State {
+        use profile::Align::Right;
+        let mut state = stacked(&[(Right, 1.0), (Right, 0.8)]);
+        state.bars = (0..2000)
+            .map(|i| {
+                let mid = 100.0 + (i % 7) as f64;
+                Bar { ts: 19_675 * DAY + i * 3600, open: mid, high: mid + 2.0, low: mid - 2.0, close: mid + 1.0, volume: 10.0 }
+            })
+            .collect();
+        for drawn in &mut state.indicators {
+            drawn.output = omacharts_engine::indicators::compute(&drawn.indicator, &state.bars, 0, state.timeframe, None);
+        }
+        state.visible = 300;
+        state
+    }
+
+    /// The empty room past the last bar on screen, and a bar's width there.
+    fn room_px(state: &State) -> (f64, f64) {
+        let frame = frame(state, W, H).expect("a frame");
+        let bar = (frame.columns.end - frame.columns.plot_x) / state.columns() as f64;
+        (frame.columns.room_after(), bar)
+    }
+
+    /// Zooming the bars in and out leaves the room past the last bar as wide
+    /// on screen as it was, at rest and as a hand left it alike: the bars
+    /// zoom around it, the last bar stays where it was, and the profiles in
+    /// it keep their size.
+    #[test]
+    fn zooming_keeps_the_margin_as_wide_on_screen() {
+        for by_hand in [false, true] {
+            let mut state = long_stacked();
+            let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
+            if by_hand {
+                state.pan_by(-3.0, plot_w);
+                assert!(state.overhang_by_hand && state.anchored);
+            }
+            let (wide, _) = room_px(&state);
+            assert!(wide > 0.0);
+            for factor in [0.5, 0.5, 4.0, 1.5, 0.25] {
+                state.zoom_time(factor, 0.5, plot_w);
+                let (now, bar) = room_px(&state);
+                assert!((now - wide).abs() <= bar + 1e-6, "by hand {by_hand}, {} columns: {now} vs {wide}", state.columns());
+                assert!(state.anchored, "the last bar stays on screen");
+            }
+        }
+    }
+
+    /// Zoomed, then scrolled forward, then back into history and forward to
+    /// the live edge again, the room past the last bar comes back as wide
+    /// as it was: the view stops at it, rather than running on into more.
+    #[test]
+    fn scrolling_back_to_the_live_edge_finds_the_margin_as_it_was() {
+        let mut state = long_stacked();
+        let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
+        let (wide, _) = room_px(&state);
+        for factor in [0.5, 2.5] {
+            state.zoom_time(factor, 0.5, plot_w);
+            let columns = state.columns() as f64;
+            state.pan_by(columns, plot_w);
+            let (now, bar) = room_px(&state);
+            assert!((now - wide).abs() <= bar + 1e-6, "forward at the edge, x{factor}: {now} vs {wide}");
+            state.pan_by(-2.0 * columns, plot_w);
+            assert!(!state.anchored, "into history");
+            state.pan_by(3.0 * columns, plot_w);
+            let (now, bar) = room_px(&state);
+            assert!(state.anchored);
+            assert!((now - wide).abs() <= bar + 1e-6, "back at the edge, x{factor}: {now} vs {wide}");
+            assert!(!state.overhang_by_hand, "at rest there, so it follows the profiles");
+        }
+    }
+
+    /// A hand that drags the room shut is not argued with: the margin is
+    /// what it left until the view is reset or the hand brings it back to
+    /// the profiles' margin, which it does not drag past.
     #[test]
     fn a_hand_on_the_margin_is_left_where_it_put_it() {
         use profile::Align::Right;
@@ -1022,9 +1096,13 @@ mod tests {
         let floor = state.overhang_now();
         let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
         state.pan_by(5.0, plot_w);
-        assert_eq!(state.overhang_now(), floor + 5, "dragged further open");
-        state.pan_by(-(floor as f64), plot_w);
+        assert_eq!(state.overhang_now(), floor, "not dragged further open");
+        assert!(!state.overhang_by_hand);
+        state.pan_by(-((floor - 5) as f64), plot_w);
         assert_eq!(state.overhang_now(), 5, "dragged nearly shut");
+        assert!(state.overhang_by_hand);
+        state.pan_by(2.0, plot_w);
+        assert_eq!(state.overhang_now(), 7, "and part way open again");
         state.reset_view();
         assert_eq!(state.overhang_now(), state.margin_floor().max(super::super::RIGHT_MARGIN));
     }
