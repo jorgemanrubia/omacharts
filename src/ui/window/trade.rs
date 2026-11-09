@@ -3442,12 +3442,6 @@ pub(super) mod tests {
         (window, pane, session, format!("{id}/951"), front.symbol)
     }
 
-    /// Charting on one service and trading through another is one desk: a
-    /// root charted on Sierra Chart's feed, ES as its front month, shows the
-    /// position and orders an account at Rithmic holds in that month, and
-    /// marks its open P&L to the chart's prices while the trading service's own say
-    /// nothing; so does a root charted on Rithmic's feed for an account at
-    /// Sierra Chart.
     /// Sierra Chart set up as a feed and added as a trading service, with
     /// three accounts listed: a chart of ES is drawn from its files on the
     /// default account and on one of its own, and Sierra Chart chosen for
@@ -3502,6 +3496,86 @@ pub(super) mod tests {
         });
     }
 
+    /// A Sierra Chart folder with daily bars of ES and nothing of MES, set
+    /// up as the Sierra Chart feed of `store`. Removed when dropped.
+    struct SierraFolder(std::path::PathBuf);
+
+    impl SierraFolder {
+        fn set_up(store: &Store, name: &str) -> SierraFolder {
+            use omacharts_engine::providers::sierra::setup;
+            let root = std::env::temp_dir().join(format!("omacharts-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("Data")).unwrap();
+            std::fs::write(root.join("Sierra4.config"), b"").unwrap();
+            let days = "Date,  Open,  High,  Low,  Close,  Volume,  OpenInterest\r\n\
+                2026/09/10, 6590.00, 6600.00, 6580.00, 6595.00, 1500000, 0\r\n\
+                2026/09/11, 6595.00, 6610.00, 6590.00, 6605.00, 1400000, 0\r\n";
+            std::fs::write(root.join("Data").join("ESZ26_FUT_CME.dly"), days).unwrap();
+            let sierra = omacharts_engine::providers::listed("sierra").unwrap();
+            let saved = omacharts_engine::providers::Saved::default()
+                .with(setup::FOLDER, &root.display().to_string())
+                .with(setup::PORT, "11099");
+            crate::feeds::set_up(store, sierra, saved);
+            SierraFolder(root)
+        }
+    }
+
+    impl Drop for SierraFolder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Which feed `pane`'s chart is on now, by its id.
+    fn feed_on(window: &Rc<Window>, pane: &ChartPane) -> Option<String> {
+        let instrument = pane.instrument.borrow().clone()?;
+        window.route_pane(pane, &instrument).map(|routed| routed.feed.provider.id().to_string())
+    }
+
+    /// A chart on ES from Sierra Chart moved to MES, which Sierra Chart has
+    /// nothing of, falls back to Yahoo for as long as it is on MES; moved
+    /// back to ES it is on Sierra Chart again, and nothing chose Yahoo for
+    /// it on the way.
+    #[test]
+    fn a_chart_that_fell_back_to_yahoo_goes_back_to_sierra_with_a_symbol_sierra_has() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Sierra, true);
+            crate::features::adopt(&store);
+            let _folder = SierraFolder::set_up(&store, "fell-back");
+            crate::feeds::add_feed(&store, "sierra");
+            crate::feeds::save_order(&store, &["sierra".into(), "yahoo".into()]);
+            crate::feeds::remember_logins(&store);
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let sierra: Arc<dyn omacharts_engine::Provider> =
+                Arc::from(omacharts_engine::providers::ordered(&["sierra".to_string()]).remove(0));
+            let window = Window::build_with(&app, store.clone(), vec![sierra, Posing::feed("yahoo", "Yahoo Finance", false)]);
+            let pane = window.focused_pane();
+            pane.timeframe.set(omacharts_engine::Timeframe::days(1));
+            let es = window.index.find("ES", None).expect("ES");
+            let mes = window.index.find("MES", None).expect("MES");
+
+            window.show_in(&pane, es.clone());
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"));
+            settle(&window, || pane.view.last_price().is_some());
+            window.show_in(&pane, mes);
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"), "MES falls back");
+            settle(&window, || pane.view.last_price().is_some());
+            assert_eq!(pane.feed.borrow().as_deref(), None, "a fallback is never the chart's choice");
+            window.show_in(&pane, es);
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"), "ES is Sierra Chart's again");
+            settle(&window, || pane.view.last_price().is_some());
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"), "and stays there once asked");
+        });
+    }
+
+    /// Charting on one service and trading through another is one desk: a
+    /// root charted on Sierra Chart's feed, ES as its front month, shows the
+    /// position and orders an account at Rithmic holds in that month, and
+    /// marks its open P&L to the chart's prices while the trading service's own say
+    /// nothing; so does a root charted on Rithmic's feed for an account at
+    /// Sierra Chart.
     #[test]
     fn a_chart_on_one_service_shows_and_marks_what_an_account_on_another_holds() {
         crate::ui::on_gtk(|| {
@@ -3613,6 +3687,28 @@ pub(super) mod tests {
         });
         dialog.force_close();
         (pages, row)
+    }
+
+    /// The trading symbol is picked over the chart settings it is asked
+    /// from, which keep the keyboard: the search hangs from the dialog rather
+    /// than the window behind it, and what is typed into it is searched.
+    #[test]
+    fn the_trading_symbol_is_searched_over_the_chart_settings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let dialog = window.window.visible_dialog().expect("the chart's settings");
+            window.find_trading_symbol(pane.id);
+            let frame = window.search.frame();
+            let parent = frame.popover.parent().expect("hung from something");
+            assert!(parent.is_ancestor(&dialog) || parent == dialog.clone().upcast::<gtk::Widget>(), "hung behind the dialog");
+            frame.entry.set_text("MES");
+            assert!(settle(&window, || window.search.listed().first().map(String::as_str) == Some("MES")), "{:?}", window.search.listed());
+            frame.popover.popdown();
+            dialog.force_close();
+        });
     }
 
     /// The trading symbol is the chart's, kept with it across a restart.
