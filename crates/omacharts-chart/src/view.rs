@@ -8731,6 +8731,30 @@ pub fn volume_opacity(indicator: &Indicator) -> f64 {
     }
 }
 
+/// The colour a volume profile's outline is stroked in, in either style:
+/// the outline's own when chosen, the profile's colour when not.
+fn profile_outline_colour(
+    chosen: Option<&omacharts_engine::theme::ColorChoice>,
+    drawn: &Drawn,
+    theme: &omacharts_engine::Theme,
+) -> String {
+    chosen.map(|c| c.resolve(theme)).unwrap_or_else(|| drawn.color.clone())
+}
+
+/// The colour a volume profile is seen in, which is what its selection is
+/// drawn in: its rows' for the filled style, its outline's for the outline
+/// style, where the rows' colour is drawn nowhere.
+fn profile_shown_colour<'a>(
+    style: omacharts_engine::indicators::profile::Style,
+    outline: &'a str,
+    drawn: &'a Drawn,
+) -> &'a str {
+    match style {
+        omacharts_engine::indicators::profile::Style::Filled => &drawn.color,
+        omacharts_engine::indicators::profile::Style::Outline => outline,
+    }
+}
+
 /// One histogram per period, anchored where its period begins.
 fn draw_profiles(
     cr: &cairo::Context,
@@ -8747,7 +8771,7 @@ fn draw_profiles(
         _ => (None, false, None, 1.0, 1.0),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
-    let outline = outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| drawn.color.clone());
+    let outline = profile_outline_colour(outline, drawn, &state.theme);
     let look = selection::profile_look(drawn);
     let style = look.style;
 
@@ -8804,7 +8828,8 @@ fn draw_profiles(
         let _ = cr.stroke();
 
         if state.picked == Some(drawn.indicator.id) {
-            selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y);
+            let shown = profile_shown_colour(style, &outline, drawn);
+            selection::outline_profile(cr, &state.theme, shown, profile, &area, to_y);
         }
     }
 }

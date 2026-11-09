@@ -713,6 +713,23 @@ mod tests {
         assert_eq!(profile_look(&state.indicators[0]).width, profile::MAX_WIDTH);
     }
 
+    /// A selected profile is outlined in the colour it is seen in: its rows'
+    /// when filled, its outline's in the outline style, where the rows'
+    /// colour is drawn nowhere.
+    #[test]
+    fn a_selected_profile_is_outlined_in_the_colour_it_is_drawn_in() {
+        use omacharts_engine::theme::ColorChoice;
+        let state = profiled(profile::Align::Left, 0.4);
+        let drawn = &state.indicators[0];
+        let amber = ColorChoice::Fixed { hex: "#ffaa00".to_string() };
+        let outline = super::super::profile_outline_colour(Some(&amber), drawn, &state.theme);
+        assert_eq!(super::super::profile_shown_colour(profile::Style::Outline, &outline, drawn), "#ffaa00");
+        assert_eq!(super::super::profile_shown_colour(profile::Style::Filled, &outline, drawn), drawn.color);
+        // With no outline colour chosen, the outline is the profile's own.
+        let unset = super::super::profile_outline_colour(None, drawn, &state.theme);
+        assert_eq!(super::super::profile_shown_colour(profile::Style::Outline, &unset, drawn), drawn.color);
+    }
+
     /// What is drawn in the margin is what a click there picks.
     #[test]
     fn the_profile_in_the_margin_is_picked_where_it_is_drawn() {
