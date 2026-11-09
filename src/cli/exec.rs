@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, SWATCH_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
+    ColorChoice, PALETTE_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -4165,14 +4165,14 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
             false => Err(Fault::usage(format!("{text:?} is not a colour; try #rrggbb"))),
         };
     }
-    SWATCH_NAMES
+    PALETTE_NAMES
         .iter()
         .find(|name| name.eq_ignore_ascii_case(text))
         .map(|name| Some(ColorChoice::swatch(name)))
         .ok_or_else(|| {
             Fault::usage(format!(
                 "{text:?} is not a palette colour; try {} — or #rrggbb for one the theme will not change",
-                SWATCH_NAMES.join(", ")
+                PALETTE_NAMES.join(", ")
             ))
         })
 }
@@ -7181,6 +7181,22 @@ mod tests {
         let bad = run("chart indicator add rsi --book Macro --color Chartreuse", &store);
         assert_eq!(bad.code, super::super::EXIT_USAGE);
         assert!(bad.err.contains("Blue"), "the error has to name the palette: {}", bad.err);
+        assert!(bad.err.contains("Neutral"), "the error has to name the neutral too: {}", bad.err);
+    }
+
+    /// The neutral is a palette name like the rest: stored as the name, so
+    /// it is worked out again from whichever theme is showing.
+    #[test]
+    fn the_neutral_is_set_by_name_and_stored_as_one() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let added = run("chart indicator add ema --book Macro --color neutral", &store);
+        assert_eq!(added.code, 0, "{}", added.err);
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["indicators"][0]["color"]["kind"], "swatch");
+        assert_eq!(parsed["indicators"][0]["color"]["name"], "Neutral");
     }
 
     #[test]

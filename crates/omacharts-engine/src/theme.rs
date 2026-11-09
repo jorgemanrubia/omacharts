@@ -115,6 +115,47 @@ pub const SWATCH_NAMES: [&str; 8] = [
 pub const SWATCH_SEQUENCE: [&str; 6] =
     ["Blue", "Amber", "Violet", "Teal", "Orange", "Cyan"];
 
+/// The palette's one colour without a hue of its own: a tone just off the
+/// chart's background, for an outline, a profile or a line meant to stay
+/// quiet. It is not one of a theme's [`Swatch`]es, because nobody sets it:
+/// it is worked out from the theme each time it is asked for, so it follows
+/// the theme as the others do. See [`Theme::neutral`].
+pub const NEUTRAL: &str = "Neutral";
+
+/// Every name a colour can be picked by, in the order the palette shows
+/// them: the theme's swatches, then [`NEUTRAL`].
+pub const PALETTE_NAMES: [&str; 9] = [
+    "Blue", "Amber", "Violet", "Teal", "Rose", "Green", "Orange", "Cyan", NEUTRAL,
+];
+
+/// How far [`Theme::neutral`] stands from the background, in OKLCh
+/// lightness, when it steps away from the text: far enough to be seen as a
+/// line on the chart, near enough to read as the background's own colour
+/// rather than a grey laid over it.
+const NEUTRAL_STEP: f64 = 0.085;
+
+/// How far it stands when it steps towards the text instead. Further,
+/// because that is the side the grid is on, and a neutral line that could
+/// be taken for a grid line is no use.
+const NEUTRAL_STEP_IN: f64 = 0.10;
+
+/// How far past the grid's lightness a step towards the text has to end.
+const NEUTRAL_PAST_GRID: f64 = 0.05;
+
+/// The darkest and the lightest a step away from the text may end on.
+/// Past these the eye, and most screens, barely separate one tone from the
+/// next: a line a step darker than a near-black chart is a line nobody sees.
+const NEUTRAL_DARKEST: f64 = 0.13;
+const NEUTRAL_LIGHTEST: f64 = 0.985;
+
+/// The most of the theme's tint [`Theme::neutral`] carries, in OKLCh
+/// chroma. Past this a tinted ground's tone stops reading as neutral and
+/// starts reading as a dull blue or brown.
+const NEUTRAL_MAX_CHROMA: f64 = 0.035;
+
+/// Below this a ground's chroma is too slight to take a hue from.
+const NEUTRAL_TINT: f64 = 0.004;
+
 /// The least a companion may be from what it accompanies, as `delta_e` sees
 /// it — the floor consecutive entries of the sequence are held to, and so
 /// the one the rule that usually hands out the next entry has to meet when
@@ -141,10 +182,11 @@ impl ColorChoice {
     pub fn resolve(&self, theme: &Theme) -> String {
         match self {
             ColorChoice::Fixed { hex } => hex.clone(),
-            ColorChoice::Swatch { name } => theme
-                .swatch(name)
-                .map(|s| s.hex.clone())
-                .unwrap_or_else(|| theme.ui.accent.clone()),
+            ColorChoice::Swatch { name } => match theme.swatch(name) {
+                Some(swatch) => swatch.hex.clone(),
+                None if name == NEUTRAL => theme.neutral(),
+                None => theme.ui.accent.clone(),
+            },
         }
     }
 }
@@ -351,6 +393,54 @@ pub fn editable_trading(theme: &Theme) -> TradingLook {
 impl Theme {
     pub fn swatch(&self, name: &str) -> Option<&Swatch> {
         self.swatches.iter().find(|s| s.name == name)
+    }
+
+    /// Every colour the palette offers, as the picker shows them: the
+    /// theme's swatches and then [`NEUTRAL`], worked out from it now.
+    pub fn palette(&self) -> Vec<Swatch> {
+        let mut all = self.swatches.clone();
+        if self.swatch(NEUTRAL).is_none() {
+            all.push(Swatch { name: NEUTRAL.to_string(), hex: self.neutral() });
+        }
+        all
+    }
+
+    /// The theme's neutral: its background taken a step further from its
+    /// text, so blackish on a dark theme and whitish on a light one.
+    ///
+    /// The hue and the tint are the theme's own, from its background, or
+    /// from the first of its panels with any when the background is a pure
+    /// grey, so Tokyo Night's is a navy grey and Gruvbox's a warm brown
+    /// one rather than a black that belongs to no theme. The step is taken
+    /// away from the text when there is room for it, which makes a line
+    /// darker than a dark chart. A ground already near the end of the scale
+    /// has none, a near-black chart or a white one, and there the step goes
+    /// towards the text instead, a little further so as to clear the grid:
+    /// a line whiter than a white chart cannot be had, and an off-white one
+    /// can.
+    pub fn neutral(&self) -> String {
+        let (Some(ground), Some(text)) = (Oklch::of(&self.ui.background), Oklch::of(&self.ui.text)) else {
+            return self.ui.background.clone();
+        };
+        let tint = [&self.ui.background, &self.ui.surface, &self.ui.surface_variant, &self.ui.border]
+            .into_iter()
+            .filter_map(|hex| Oklch::of(hex))
+            .find(|colour| colour.c >= NEUTRAL_TINT)
+            .map(|colour| (colour.c.min(NEUTRAL_MAX_CHROMA), colour.h))
+            .unwrap_or((0.0, 0.0));
+        let grid = Oklch::of(&self.ui.grid).map_or(ground.l, |grid| grid.l);
+        let darker = text.l > ground.l;
+        let away = if darker { ground.l - NEUTRAL_STEP } else { ground.l + NEUTRAL_STEP };
+        let l = if (NEUTRAL_DARKEST..=NEUTRAL_LIGHTEST).contains(&away) {
+            away
+        } else if darker {
+            // Measured from where a step could have ended, not from the
+            // ground: a step up from pure black is still a black.
+            (ground.l.max(NEUTRAL_DARKEST) + NEUTRAL_STEP_IN).max(grid + NEUTRAL_PAST_GRID)
+        } else {
+            (ground.l.min(NEUTRAL_LIGHTEST) - NEUTRAL_STEP_IN).min(grid - NEUTRAL_PAST_GRID)
+        };
+        Oklch { l, c: tint.0, h: tint.1 }.hex()
     }
 
     /// The nth colour to hand an overlay that has not been given one.
@@ -1676,6 +1766,78 @@ pub fn rgb(hex: &str) -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A theme of the given ground and text, with nothing else that matters
+    /// to its neutral: the panels and the grid sit on the ground itself.
+    fn grounded(mode: Mode, background: &str, text: &str, grid: &str) -> Theme {
+        let mut theme = midnight();
+        theme.mode = mode;
+        theme.ui.background = background.into();
+        theme.ui.text = text.into();
+        theme.ui.grid = grid.into();
+        theme.ui.surface = background.into();
+        theme.ui.surface_variant = background.into();
+        theme.ui.border = background.into();
+        theme
+    }
+
+    /// The neutral is a name like the others, stored as a name and
+    /// resolved against whichever theme is showing: a step darker than a
+    /// navy chart, in its navy, and on a light one a soft off-white just
+    /// darker than the background, since nothing is lighter than white.
+    #[test]
+    fn the_neutral_is_worked_out_from_a_dark_theme_and_from_a_light_one() {
+        let neutral = ColorChoice::swatch(NEUTRAL);
+
+        // Tokyo Night's ground, with room to go darker.
+        let dark = grounded(Mode::Dark, "#1a1b26", "#a9b1d6", "#24283b");
+        let hex = neutral.resolve(&dark);
+        assert_eq!(hex, dark.neutral());
+        let (ground, tone) = (Oklch::of("#1a1b26").unwrap(), Oklch::of(&hex).unwrap());
+        assert!(tone.l < ground.l, "{hex} is not darker than the chart");
+        assert!(delta_e(&hex, "#1a1b26") >= 0.08, "{hex} cannot be told from the chart");
+        assert!(hue_gap(tone.h, ground.h) < 15.0 && tone.c > 0.01, "{hex} lost the theme's navy");
+
+        // Paper: a warm white, so its neutral is a warm off-white.
+        let light = paper();
+        let hex = neutral.resolve(&light);
+        assert_eq!(hex, light.neutral());
+        let (ground, tone) = (Oklch::of(&light.ui.background).unwrap(), Oklch::of(&hex).unwrap());
+        assert!(tone.l < ground.l && tone.l > 0.8, "{hex} is not an off-white on {}", light.ui.background);
+        assert!(delta_e(&hex, &light.ui.background) >= 0.08, "{hex} cannot be told from the chart");
+        assert!(delta_e(&hex, &light.ui.grid) >= 0.04, "{hex} reads as a grid line");
+        assert!(hue_gap(tone.h, ground.h) < 30.0, "{hex} lost Paper's warmth");
+
+        // The same stored name is a different colour on each.
+        assert_ne!(neutral.resolve(&dark), neutral.resolve(&light));
+    }
+
+    /// A chart already near black has no darker to go to, so its neutral
+    /// steps the other way and clears the grid doing it, rather than being
+    /// a black line on a black chart.
+    #[test]
+    fn a_black_chart_takes_its_neutral_from_the_lighter_side_past_the_grid() {
+        let black = grounded(Mode::Dark, "#000000", "#ffffff", "#191919");
+        let hex = black.neutral();
+        assert!(Oklch::of(&hex).unwrap().l > Oklch::of("#191919").unwrap().l, "{hex}");
+        assert!(delta_e(&hex, "#191919") >= 0.04, "{hex} reads as a grid line");
+
+        let white = grounded(Mode::Light, "#ffffff", "#000000", "#ececec");
+        let hex = white.neutral();
+        assert!(Oklch::of(&hex).unwrap().l < Oklch::of("#ececec").unwrap().l, "{hex}");
+        assert!(delta_e(&hex, "#ececec") >= 0.04, "{hex} reads as a grid line");
+    }
+
+    /// The picker shows the palette in the order the names list it, the
+    /// neutral last, on every built-in theme.
+    #[test]
+    fn the_palette_is_the_swatches_and_then_the_neutral() {
+        for theme in builtin_themes() {
+            let names: Vec<String> = theme.palette().into_iter().map(|s| s.name).collect();
+            assert_eq!(names, PALETTE_NAMES, "{}", theme.name);
+            assert_eq!(theme.palette().last().unwrap().hex, theme.neutral());
+        }
+    }
 
     /// A side is the theme's Blue and Amber, money its up and down, so
     /// the two are never told in the same colours; and the trading colours

@@ -572,7 +572,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--legend B` | `on`, `off`; `on` for a new indicator, `off` for Session Times | Any. Whether the chart's legend names it. It is drawn either way |
 
 A colour is a palette name (`Blue`, `Amber`, `Violet`, `Teal`, `Rose`,
-`Green`, `Orange`, `Cyan`, capitals ignored) or `#rrggbb`. A palette name follows
+`Green`, `Orange`, `Cyan`, `Neutral`, capitals ignored) or `#rrggbb`. A palette name follows
 the theme; a hex does not.
 
 Volume and a volume profile are bars, not lines, so `--width` and `--style`

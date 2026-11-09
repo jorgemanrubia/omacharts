@@ -694,3 +694,27 @@ fn the_charts_text_is_reported() {
         );
     }
 }
+
+/// Every shipped theme's neutral can be seen on its chart, is not mistaken
+/// for its grid, and carries the theme's tint when the theme has one: a
+/// navy for Tokyo Night, a warm brown for Gruvbox, not a black that
+/// belongs to no theme.
+#[test]
+fn every_shipped_theme_has_a_neutral_of_its_own() {
+    for (name, theme) in fixtures() {
+        let neutral = theme.neutral();
+        assert!(delta_e(&neutral, &theme.ui.background) >= 0.08, "{name}: {neutral} on {}", theme.ui.background);
+        assert!(delta_e(&neutral, &theme.ui.grid) >= 0.04, "{name}: {neutral} reads as the grid {}", theme.ui.grid);
+        let ground = Oklch::of(&theme.ui.background).unwrap();
+        if ground.c >= 0.015 {
+            let tone = Oklch::of(&neutral).unwrap();
+            assert!(hue_gap(tone.h, ground.h) < 20.0, "{name}: {neutral} lost the hue of {}", theme.ui.background);
+        }
+    }
+    let by_name = |wanted: &str| fixtures().into_iter().find(|(name, _)| name == wanted).unwrap().1;
+    let tokyo = by_name("tokyo-night");
+    let (ground, tone) = (Oklch::of(&tokyo.ui.background).unwrap(), Oklch::of(&tokyo.neutral()).unwrap());
+    assert!(tone.l < ground.l, "tokyo-night's neutral is not darker than its chart");
+    let gruvbox = Oklch::of(&by_name("gruvbox").neutral()).unwrap();
+    assert!(gruvbox.c > 0.005 && (20.0..90.0).contains(&gruvbox.h), "gruvbox's neutral is not warm: {gruvbox:?}");
+}

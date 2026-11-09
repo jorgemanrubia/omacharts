@@ -357,7 +357,7 @@ const AGENT_FLAGS: &[Flag] = &[
 ];
 
 pub const COLOUR: &str =
-    "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan — \
+    "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral — \
      which follows the theme, or #rrggbb, which does not";
 
 /// Everything `chart indicator` takes, and `template indicator` after the
@@ -1690,7 +1690,7 @@ mod tests {
     /// ignored rather than wrong.
     #[test]
     fn the_colours_the_help_names_are_the_ones_every_theme_carries() {
-        for name in omacharts_engine::theme::SWATCH_NAMES {
+        for name in omacharts_engine::theme::PALETTE_NAMES {
             assert!(COLOUR.contains(name), "the help does not mention {name}");
         }
     }
