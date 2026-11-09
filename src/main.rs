@@ -18,9 +18,8 @@ const APP_ID: &str = "com.jorgemanrubia.Omacharts";
 
 fn main() -> glib::ExitCode {
     let code = run();
-    // A downloaded version that got here with a success runs; see
-    // `omacharts::update::settle`.
-    omacharts::update::settle(code == glib::ExitCode::SUCCESS);
+    // On the way out, however it went: see `omacharts::update::settle`.
+    omacharts::update::settle();
     code
 }
 
@@ -144,8 +143,27 @@ fn run() -> glib::ExitCode {
 
         let starting = window.borrow().is_none();
         if starting {
+            // This process is the window: a downloaded version that ends
+            // from here until it has been up a few seconds did not run.
+            omacharts::update::window_starting();
             omacharts::update::before_first_open(&settings_file());
-            let store = match Store::open() {
+            let opened = match Store::open() {
+                // Written by a newer download that is gone or given up on,
+                // and nothing newer to start instead: put back the settings
+                // from before it, and say so once.
+                Err(omacharts::migrations::Error::FromTheFuture { .. })
+                    if !omacharts::update::restart_as_newer_for_a_newer_database() =>
+                {
+                    if let Some(said) = omacharts::update::roll_back_for_a_newer_database(&settings_file()) {
+                        eprintln!("omacharts: {said}");
+                        log_words::say(log_words::note("Settings", said));
+                    }
+                    Store::open()
+                }
+                Err(omacharts::migrations::Error::FromTheFuture { .. }) => return glib::ExitCode::SUCCESS,
+                opened => opened,
+            };
+            let store = match opened {
                 Ok(store) => store,
                 // Written by a newer Omacharts than this one. The file is
                 // intact and it is theirs, so this is the one failure that
@@ -153,11 +171,8 @@ fn run() -> glib::ExitCode {
                 // database would put a pristine watchlist on screen over the
                 // top of years of their own, and look exactly like having
                 // lost it. A newer download on the shelf most likely wrote
-                // it, and is started in this one's place.
+                // it, and was started in this one's place above.
                 Err(error @ omacharts::migrations::Error::FromTheFuture { .. }) => {
-                    if omacharts::update::restart_as_newer_for_a_newer_database() {
-                        return glib::ExitCode::SUCCESS;
-                    }
                     eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
                     return glib::ExitCode::FAILURE;
                 }
@@ -402,17 +417,27 @@ impl cli::Caller for Typed<'_> {
 
 fn open_store() -> Store {
     omacharts::update::before_first_open(&settings_file());
-    match Store::open() {
+    let opened = match Store::open() {
+        Err(omacharts::migrations::Error::FromTheFuture { .. }) => {
+            // A newer download most likely wrote it: become that, or if it
+            // is gone or given up on, put back the settings from before it.
+            omacharts::update::become_newer_for_a_newer_database();
+            if let Some(said) = omacharts::update::roll_back_for_a_newer_database(&settings_file()) {
+                eprintln!("omacharts: {said}");
+            }
+            Store::open()
+        }
+        opened => opened,
+    };
+    match opened {
         Ok(store) => store,
         Err(error) => {
             if matches!(error, omacharts::migrations::Error::FromTheFuture { .. }) {
-                // A newer download most likely wrote it: become that.
-                omacharts::update::become_newer_for_a_newer_database();
                 eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
             } else {
                 eprintln!("omacharts: {error}");
             }
-            omacharts::update::settle(false);
+            omacharts::update::settle();
             std::process::exit(cli::EXIT_ERROR as i32);
         }
     }

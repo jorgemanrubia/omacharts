@@ -14,10 +14,10 @@
 //!   0.2.15/omacharts           complete and verified; renamed into place whole
 //!   0.2.15/.trying-4242        a launch that has not yet shown it healthy
 //!   0.2.15/.healthy            it has run properly here: never marked bad
-//!   0.2.15/.backed-up          the settings were backed up before it opened them
 //!   0.2.16/.bad                never run or downloaded again, and why
 //!   .incoming-0.2.16-4300/     a download in progress, or one that died
 //!   .checked                   its modification time is the last check
+//!   .before-0.2.16             the backup taken before 0.2.16 first opened the settings
 //! ```
 //!
 //! Five rules hold it together:
@@ -39,9 +39,12 @@
 //!   bounce a launch between each other.
 //! - **A version that does not run is given up on, and one that has run
 //!   never is.** The launcher leaves a marker named after its process id
-//!   before the `exec`. The version clears its markers once it has shown
-//!   itself healthy — a window up for a few seconds, or a command finished —
-//!   and says so in `.healthy`. Three launches in a row that ended first mark
+//!   before the `exec`, and the version takes it away as soon as `main` is
+//!   reached, putting it back only when it is about to be the window. It
+//!   clears its markers once that window has been up for a few seconds, and
+//!   says so in `.healthy`; nothing else — a command, a `--version`, a launch
+//!   handed to a window already open — counts either way. Three window
+//!   launches in a row that ended first mark
 //!   it bad, as does a definite reason it cannot run here: a checksum that
 //!   does not match, a binary that does not unpack, says another version or
 //!   is not something this machine can execute. Anything that may pass — a
@@ -49,7 +52,8 @@
 //!   only, and the next one tries again. A version that has been healthy
 //!   stays runnable whatever happens after, since it may be the only one that
 //!   can open a database it migrated; and the settings are backed up before
-//!   a version that has never run here first opens them.
+//!   a version that has never run here first opens them, and put back from
+//!   that backup if it is given up on with nothing newer left to open them.
 //!
 //! The launch path is the part with a budget, and it all runs in the
 //! launcher: one directory read when there is nothing newer, which is
@@ -66,10 +70,6 @@ use std::time::{Duration, SystemTime};
 
 pub use crate::launch::{alive, as_root, shelf_dir, updates_off, Shelf, Version, NO_UPDATE_ENV, SOURCE_ENV};
 use crate::launch::{trying, Told, BAD, BINARY, HEALTHY, LAUNCHER_ENV, PROBE_ENV};
-
-/// In a version's folder: the settings were backed up before it first
-/// opened them.
-const BACKED_UP: &str = ".backed-up";
 
 /// Where releases are published.
 pub const REPOSITORY: &str = "https://github.com/jorgemanrubia/omacharts";
@@ -149,6 +149,15 @@ pub fn at_launch() {
         unsafe { std::env::remove_var(LAUNCHER_ENV) };
         if let Some(told) = Told::decode(&from.to_string_lossy()) {
             let folder = told.folder.filter(|folder| exe.as_deref().is_some_and(|exe| runs_from(exe, folder)));
+            // `main` is reached, so the binary starts. Whether this launch
+            // counts toward giving the version up depends on what it turns
+            // out to be: only a window does, and it says so again in
+            // [`window_starting`]. A `--version`, a command, a launch handed
+            // to a window already open, or one stopped with Ctrl-C proves
+            // nothing either way and leaves no marker behind.
+            if let Some(folder) = &folder {
+                let _ = fs::remove_file(folder.join(trying(std::process::id())));
+            }
             let _ = ORIGIN.set(Origin { installed: told.installed, installed_version: told.installed_version, folder });
         }
         return;
@@ -183,10 +192,23 @@ fn under(path: &Path, dir: &Path) -> bool {
     resolved(path).starts_with(resolved(dir))
 }
 
-/// This version has shown it runs: a window up for a few seconds, or a
-/// command run to the end. Its folder says so for good, and every launch
-/// still marked as trying it is cleared, this one's and any that ended
-/// before it — they are not a version that does not start.
+/// This process is about to become the window: from here until the window
+/// has been up for a few seconds, a launch that ends counts as one that did
+/// not run. Called before the database is opened, so a migration that
+/// crashes counts too.
+pub fn window_starting() {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
+    if !folder.join(HEALTHY).exists() {
+        let _ = fs::write(folder.join(trying(std::process::id())), b"");
+    }
+}
+
+/// This version has shown it runs: its window has been up for a few
+/// seconds. Nothing else counts — not a `--version`, not a command, not a
+/// launch handed to a window an older version keeps — because a version
+/// called healthy is never given up on, and the backup and the older
+/// download that would let it be are let go. Its folder says so for good,
+/// and every launch still marked as trying it is cleared.
 pub fn healthy() {
     if let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) {
         mark_healthy(folder);
@@ -202,20 +224,32 @@ fn mark_healthy(folder: &Path) {
             let _ = fs::remove_file(entry.path());
         }
     }
-}
-
-/// The last thing `main` does on its way out. A success is a healthy run;
-/// anything else is a run that ended on its own terms, which says nothing
-/// about the version either way, so only this launch's marker goes. A
-/// version that crashes never gets here, and its marker stays to count.
-pub fn settle(success: bool) {
-    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
-    if success {
-        mark_healthy(folder);
-    } else {
-        let _ = fs::remove_file(folder.join(trying(std::process::id())));
+    // Healthy, so never rolled back: what it wrote is somebody's work.
+    if let Some(record) = before_record(folder) {
+        let _ = fs::remove_file(record);
     }
 }
+
+/// The last thing `main` does on its way out: this launch's marker goes. A
+/// window closed before it was healthy ended on its own terms; a version
+/// that crashes never gets here, and its marker stays to count. Never marks
+/// the version healthy.
+pub fn settle() {
+    let Some(folder) = origin().and_then(|origin| origin.folder.as_deref()) else { return };
+    let _ = fs::remove_file(folder.join(trying(std::process::id())));
+}
+
+/// Where the shelf remembers which backup was taken before `folder`'s
+/// version first opened the settings: `.before-<version>` beside the version
+/// folders rather than in one, so tidying a version given up on does not
+/// lose it. Holds the backup's path, or nothing when there were no settings.
+fn before_record(folder: &Path) -> Option<PathBuf> {
+    let version = folder.file_name()?.to_str()?;
+    Some(folder.parent()?.join(format!("{BEFORE}{version}")))
+}
+
+const BEFORE: &str = ".before-";
+const ROLLED_BACK: &str = ".rolled-back-";
 
 /// Before the database is opened by a downloaded version that has never
 /// run here: back the settings up, so that if it migrates them and then
@@ -227,16 +261,96 @@ pub fn before_first_open(settings: &Path) {
 }
 
 fn backup_before_first_open(folder: &Path, settings: &Path) {
-    if folder.join(HEALTHY).exists() || folder.join(BACKED_UP).exists() {
+    let Some(record) = before_record(folder) else { return };
+    if folder.join(HEALTHY).exists() || record.exists() {
         return;
     }
+    let taken = if settings.exists() {
+        // Nothing new taken when nothing changed since the newest backup,
+        // which is then the copy from before.
+        match crate::backup::take_if_changed(settings) {
+            Ok(Some(backup)) => Some(backup.path),
+            Ok(None) => crate::backup::list(settings).into_iter().next().map(|backup| backup.path),
+            Err(error) => {
+                eprintln!("omacharts: settings not backed up before this version first opened them: {error}");
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let _ = fs::write(&record, taken.map(|path| path.display().to_string()).unwrap_or_default());
+}
+
+/// The database was written by a newer Omacharts that never ran properly
+/// here and has been given up on, and nothing newer is left to open it:
+/// put the settings back as they were before that version first opened
+/// them, so this one can. The newer file is kept beside them, never
+/// deleted. Once per version. Says what was done, for the person to hear
+/// once; `None` when there was nothing to do.
+pub fn roll_back_for_a_newer_database(settings: &Path) -> Option<String> {
+    if updates_off() || as_root() || newer_for_a_newer_database().is_some() {
+        return None;
+    }
+    roll_back(&Shelf::new(shelf_dir()), settings, Version::running())
+}
+
+fn roll_back(shelf: &Shelf, settings: &Path, running: Version) -> Option<String> {
+    // The oldest such version newer than this one: its backup is from
+    // before any of them touched the settings.
+    let (version, record) = fs::read_dir(&shelf.root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let version = Version::parse(entry.file_name().to_str()?.strip_prefix(BEFORE)?)?;
+            Some((version, entry.path()))
+        })
+        .filter(|(version, _)| *version > running)
+        .min_by_key(|(version, _)| *version)?;
+    let folder = shelf.root.join(version.to_string());
+    let runnable = folder.join(BINARY).is_file() && !folder.join(BAD).exists();
+    if runnable || folder.join(HEALTHY).exists() {
+        return None;
+    }
+    let backup = fs::read_to_string(&record).ok()?;
+    let backup = backup.trim();
+
+    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let aside = settings.with_file_name(format!("omacharts.db.from-{version}-{stamp}"));
+    let with = |path: &Path, suffix: &str| PathBuf::from(format!("{}{suffix}", path.display()));
+    if !backup.is_empty() {
+        // Copied in under another name first, so the settings file is never
+        // half written.
+        let incoming = with(settings, ".restoring");
+        if let Err(error) = fs::copy(backup, &incoming) {
+            eprintln!("omacharts: could not put back the settings from before {version}: {error}");
+            return None;
+        }
+        put_aside(settings, &aside, &with)?;
+        fs::rename(&incoming, settings).ok()?;
+    } else {
+        put_aside(settings, &aside, &with)?;
+    }
+    let _ = fs::rename(&record, shelf.root.join(format!("{ROLLED_BACK}{version}")));
+    Some(format!(
+        "Omacharts {version} did not run here and had updated your settings, so they are back as they \
+         were before it first ran; what changed since is kept in {}",
+        aside.display()
+    ))
+}
+
+/// The settings file and its journal, renamed out of the way together.
+fn put_aside(settings: &Path, aside: &Path, with: &dyn Fn(&Path, &str) -> PathBuf) -> Option<()> {
     if settings.exists()
-        && let Err(error) = crate::backup::take_if_changed(settings)
+        && let Err(error) = fs::rename(settings, aside)
     {
-        eprintln!("omacharts: settings not backed up before this version first opened them: {error}");
-        return;
+        eprintln!("omacharts: could not set the newer settings aside: {error}");
+        return None;
     }
-    let _ = fs::write(folder.join(BACKED_UP), b"");
+    for suffix in ["-wal", "-shm"] {
+        let _ = fs::rename(with(settings, suffix), with(aside, suffix));
+    }
+    Some(())
 }
 
 /// The database was written by a newer Omacharts than this one. When this
@@ -279,7 +393,6 @@ pub fn become_newer_for_a_newer_database() {
 pub fn restart_as_newer_for_a_newer_database() -> bool {
     use std::os::unix::process::CommandExt;
     let Some((told, binary)) = newer_for_a_newer_database() else { return false };
-    let folder = told.folder.clone().unwrap_or_default();
     let started = std::process::Command::new(&binary)
         .args(std::env::args_os().skip(1))
         .env(LAUNCHER_ENV, told.encode())
@@ -287,11 +400,9 @@ pub fn restart_as_newer_for_a_newer_database() -> bool {
         .stdin(std::process::Stdio::null())
         .process_group(0)
         .spawn();
+    // No marker for it: it says for itself whether it is a window.
     match started {
-        Ok(child) => {
-            let _ = fs::write(folder.join(trying(child.id())), b"");
-            true
-        }
+        Ok(_) => true,
         Err(error) => {
             eprintln!("omacharts: {} could not be started: {error}", binary.display());
             false
@@ -453,6 +564,11 @@ impl Shelf {
         for entry in entries.flatten() {
             let name = entry.file_name();
             if name.to_str().and_then(Version::parse).is_some_and(|version| keep.contains(&version)) {
+                continue;
+            }
+            // Which backup came before which version: what lets a database a
+            // removed version migrated be put back, so it outlives a reset.
+            if name.to_str().is_some_and(|name| name.starts_with(BEFORE) || name.starts_with(ROLLED_BACK)) {
                 continue;
             }
             let path = entry.path();
@@ -628,6 +744,12 @@ fn probe(binary: &Path, patience: Duration) -> Result<Version, Unstarted> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
+            // The shell's and the dynamic loader's codes for a binary that
+            // cannot be run: not executable, or a library it needs is
+            // missing or too old. Every launch would end the same way.
+            Ok(Some(status)) if matches!(status.code(), Some(126 | 127)) => {
+                return Err(Unstarted::Definitely(format!("--version ended with {status}")));
+            }
             Ok(Some(status)) => return Err(Unstarted::ForNow(format!("--version ended with {status}"))),
             Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
@@ -843,6 +965,12 @@ pub fn check(
         // newer release or `update reset`.
         Err(failure) if failure.definite() => {
             shelf.mark_bad(latest, &failure.to_string());
+            return Err(failure);
+        }
+        // A binary that would not answer this time: tried again at the
+        // next check, six hours on, not at every launch.
+        Err(failure @ Failure::NotNow(_)) => {
+            shelf.note_checked();
             return Err(failure);
         }
         Err(failure) => return Err(failure),
@@ -1117,12 +1245,29 @@ mod tests {
         let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
         assert!(matches!(failed, Failure::NotNow(_)), "{failed}");
         assert!(on_shelf(&shelf).is_empty(), "nothing kept, nothing marked: {:?}", on_shelf(&shelf));
-        assert!(shelf.check_due(SystemTime::now()), "and the next launch asks again");
+        assert!(!shelf.check_due(SystemTime::now()), "tried again at the next check, not at every launch");
 
         let fine = Fake::releasing("0.2.15");
         let checked = check(&fine, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
         assert_eq!(checked, Checked::Ready { version: v("0.2.15"), latest: v("0.2.15") });
         assert!(!shelf.check_due(SystemTime::now()));
+    }
+
+    #[test]
+    fn a_binary_whose_libraries_are_missing_cannot_run_here() {
+        // The dynamic loader's exit when a library is missing or too old,
+        // and the shell's for a file it cannot execute.
+        for code in [127, 126] {
+            let scratch = Scratch::new();
+            let shelf = scratch.shelf();
+            let fake = Fake::with_binary("0.2.15", format!("#!/bin/sh\nexit {code}\n").as_bytes());
+            let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
+            assert!(matches!(failed, Failure::Broken(_)), "{code}: {failed}");
+            assert!(why_bad(&shelf, "0.2.15").contains("cannot run here"), "{}", why_bad(&shelf, "0.2.15"));
+            let again = Fake::releasing("0.2.15");
+            check(&again, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
+            assert!(again.opened.borrow().is_empty(), "never downloaded again");
+        }
     }
 
     #[test]
@@ -1373,23 +1518,99 @@ mod tests {
         let folder = shelf.root.join("0.2.16");
 
         backup_before_first_open(&folder, &settings);
-        assert!(folder.join(BACKED_UP).exists());
-        assert_eq!(crate::backup::list(&settings).len(), 1);
+        let record = shelf.root.join(".before-0.2.16");
+        let taken = crate::backup::list(&settings);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(fs::read_to_string(&record).unwrap(), taken[0].path.display().to_string());
 
-        // Once is enough, and a version that has run needs none.
+        // Once is enough, and a version that has run needs none — and is
+        // never rolled back, so the record goes.
         crate::store::Store::open_at(&settings).unwrap().set_setting("a", "c");
         backup_before_first_open(&folder, &settings);
-        let _ = fs::remove_file(folder.join(BACKED_UP));
+        assert_eq!(crate::backup::list(&settings).len(), 1);
         mark_healthy(&folder);
+        assert!(!record.exists());
         backup_before_first_open(&folder, &settings);
         assert_eq!(crate::backup::list(&settings).len(), 1);
+        assert!(!record.exists());
 
         // Nothing to back up on a first launch.
         let fresh = Scratch::new();
         let folder = fresh.0.join("0.2.16");
         fs::create_dir_all(&folder).unwrap();
         backup_before_first_open(&folder, &fresh.0.join("omacharts.db"));
-        assert!(folder.join(BACKED_UP).exists());
+        assert_eq!(fs::read_to_string(fresh.0.join(".before-0.2.16")).unwrap(), "");
+    }
+
+    /// A settings file with `a` set to `value`, read back.
+    fn setting_a(settings: &Path) -> Option<String> {
+        crate::store::Store::open_at(settings).ok()?.setting("a")
+    }
+
+    #[test]
+    fn settings_a_version_given_up_on_migrated_are_put_back_and_the_newer_ones_kept() {
+        let scratch = Scratch::new();
+        let data = scratch.0.join("data");
+        fs::create_dir_all(&data).unwrap();
+        let settings = data.join("omacharts.db");
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "before");
+        let shelf = Shelf::new(data.join("versions"));
+        shelve(&shelf, "0.2.16");
+        let folder = shelf.root.join("0.2.16");
+        backup_before_first_open(&folder, &settings);
+        // It ran, changed the settings, and was given up on.
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "after");
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14")), None, "still runnable: it is started instead");
+        shelf.mark_bad(v("0.2.16"), "3 launches in a row ended before it ran properly");
+
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.16")), None, "not newer than this one");
+        let said = roll_back(&shelf, &settings, v("0.2.14")).expect("rolled back");
+        assert!(said.contains("0.2.16") && said.contains("omacharts.db.from-0.2.16-"), "{said}");
+        assert_eq!(setting_a(&settings).as_deref(), Some("before"));
+        let aside: Vec<PathBuf> = fs::read_dir(&data)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("omacharts.db.from-0.2.16-"))
+            .filter(|path| !path.to_string_lossy().ends_with("-wal") && !path.to_string_lossy().ends_with("-shm"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(setting_a(&aside[0]).as_deref(), Some("after"), "the newer settings kept, never deleted");
+
+        // Once.
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "again");
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14")), None);
+        assert_eq!(setting_a(&settings).as_deref(), Some("again"));
+        assert!(shelf.root.join(".rolled-back-0.2.16").exists());
+    }
+
+    #[test]
+    fn a_version_that_has_run_or_was_tidied_after_running_is_never_rolled_back() {
+        let scratch = Scratch::new();
+        let data = scratch.0.join("data");
+        fs::create_dir_all(&data).unwrap();
+        let settings = data.join("omacharts.db");
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "before");
+        let shelf = Shelf::new(data.join("versions"));
+        shelve(&shelf, "0.2.16");
+        let folder = shelf.root.join("0.2.16");
+        backup_before_first_open(&folder, &settings);
+        crate::store::Store::open_at(&settings).unwrap().set_setting("a", "after");
+        mark_healthy(&folder);
+        fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(roll_back(&shelf, &settings, v("0.2.14")), None);
+        assert_eq!(setting_a(&settings).as_deref(), Some("after"));
+    }
+
+    #[test]
+    fn a_reset_keeps_which_backup_came_before_which_version() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        shelve(&shelf, "0.2.16");
+        fs::write(shelf.root.join(".before-0.2.16"), b"").unwrap();
+        fs::write(shelf.root.join(".rolled-back-0.2.15"), b"").unwrap();
+        shelf.reset(v("0.2.14"), true).unwrap();
+        assert_eq!(on_shelf(&shelf), [".before-0.2.16", ".rolled-back-0.2.15"]);
     }
 
     #[test]
@@ -1450,11 +1671,14 @@ mod tests {
         // copy must carry on as itself, know what is installed and which
         // folder it runs from — named through a symbolic link, as a data
         // folder moved to another disk would be — and clear the variable.
-        // The marker the launcher left stays until the version is healthy.
+        // The marker the launcher left goes once `main` is reached, comes
+        // back only for a window, and leaves with the window on the way
+        // out; only a window up long enough marks the version healthy.
         const CHILD: &str = "OMACHARTS_TEST_AT_LAUNCH";
         if std::env::var_os(CHILD).is_some() {
             let exe = std::env::current_exe().unwrap();
-            let marker = exe.parent().unwrap().join(trying(std::process::id()));
+            let folder = exe.parent().unwrap().to_path_buf();
+            let marker = folder.join(trying(std::process::id()));
             fs::write(&marker, b"").unwrap();
             at_launch();
             assert!(std::env::var_os(LAUNCHER_ENV).is_none());
@@ -1462,10 +1686,20 @@ mod tests {
             assert_eq!(origin.installed_version, v("0.2.14"));
             assert_eq!(origin.installed, Path::new("/usr/bin/omacharts"));
             assert!(origin.handed_over());
-            assert!(marker.exists(), "not healthy yet");
+            assert!(!marker.exists(), "not a window, so not counted");
+            settle();
+            assert!(!folder.join(HEALTHY).exists(), "an exit proves nothing");
+            window_starting();
+            assert!(marker.exists(), "a window counts until it is healthy");
+            settle();
+            assert!(!marker.exists(), "closed before it was healthy: not a crash");
+            assert!(!folder.join(HEALTHY).exists());
+            window_starting();
             healthy();
             assert!(!marker.exists());
-            assert!(exe.parent().unwrap().join(HEALTHY).exists());
+            assert!(folder.join(HEALTHY).exists());
+            window_starting();
+            assert!(!marker.exists(), "a healthy version is not counted");
             println!("carried on as itself");
             return;
         }
@@ -1502,7 +1736,7 @@ mod tests {
             at_launch();
             let origin = origin().unwrap();
             assert!(!origin.handed_over());
-            settle(true);
+            settle();
             println!("not a download");
             return;
         }

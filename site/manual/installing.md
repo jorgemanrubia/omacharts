@@ -49,6 +49,8 @@ The menu entry, the icon, the manual page and the agent skill are the package's,
 
 A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds set it aside too. A version that has run properly once is never set aside, because it may be the only one that can open your settings.
 
+If a version that was set aside had already updated your settings, and nothing newer can open them, they are put back from the backup taken just before it first ran. A notice says so once. What changed since is kept beside them in `~/.local/share/omacharts/`, as `omacharts.db.from-<version>-<time>`.
+
 To run the package's version once, without removing anything:
 
 ```sh
