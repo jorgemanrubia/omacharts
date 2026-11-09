@@ -384,6 +384,40 @@ thread_local! {
 mod tests {
     use super::*;
 
+    /// A chart of the regular session out of hours: the newest trade is one
+    /// it does not draw, and the last price follows it all the same; in
+    /// hours, on extended hours or on a daily chart, the last bar has it.
+    #[test]
+    fn the_last_price_is_the_feed_s_whatever_the_session_draws() {
+        use chrono::TimeZone;
+        let at = |h: u32| chrono_tz::America::New_York.with_ymd_and_hms(2024, 3, 13, h, 0, 0).single().unwrap().timestamp();
+        let bar = |ts: i64, close: f64| omacharts_engine::Bar { ts, open: close, high: close, low: close, close, volume: 1.0 };
+        let stock = Instrument {
+            symbol: "X".into(),
+            name: "X".into(),
+            kind: omacharts_engine::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        let (regular, extended) = (omacharts_engine::Session::Regular, omacharts_engine::Session::Extended);
+        let hour = Timeframe::hours(1);
+        let evening = vec![bar(at(15), 100.0), bar(at(18), 96.5)];
+        assert_eq!(hidden_latest(&evening, regular, &stock, hour), Some(96.5), "out of hours");
+        assert_eq!(hidden_latest(&evening, extended, &stock, hour), None, "drawn already");
+        assert_eq!(hidden_latest(&evening, regular, &stock, Timeframe::days(1)), None, "a day is a session");
+        let mut ticked = evening.clone();
+        ticked.push(bar(at(19), 95.25));
+        assert_eq!(hidden_latest(&ticked, regular, &stock, hour), Some(95.25), "and follows the next trade");
+        assert_eq!(hidden_latest(&evening[..1], regular, &stock, hour), None, "in hours");
+        assert_eq!(hidden_latest(&[], regular, &stock, hour), None);
+    }
+
     /// The timer is GTK's and cannot be watched from here, so the decision
     /// that installs it is a function of its own and this holds that. A
     /// provider that streams gets no timer at all — nothing to poll, nothing
@@ -2558,6 +2592,23 @@ fn hundredths(change_pct: f64) -> i64 {
 
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
+/// The feed's latest trade when the chart's session leaves it out of the
+/// bars drawn, a chart of the regular session out of hours: the price is
+/// the price whatever candles are shown, so the last price follows it.
+/// `None` when the last bar is one the chart draws. One bar through the
+/// session's filter, so nothing here grows with the series.
+fn hidden_latest(
+    bars: &[omacharts_engine::Bar],
+    session: omacharts_engine::Session,
+    instrument: &Instrument,
+    timeframe: Timeframe,
+) -> Option<f64> {
+    let newest = bars.last()?;
+    omacharts_engine::session::filter(std::slice::from_ref(newest), session, instrument, timeframe.is_intraday())
+        .is_empty()
+        .then_some(newest.close)
+}
+
 fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
     pane.colouring.get().scheme(theme).worn(pane.swapped.get(), pane.hollow_up.get())
 }
@@ -8031,6 +8082,7 @@ impl Window {
         // Then what nobody could have traded, left out or cut back: here,
         // on the way to the screen, and never where the bars are kept.
         omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
+        let latest = hidden_latest(&bars, pane.session.get(), instrument, timeframe);
         let bars = omacharts_engine::session::filter(
             &bars,
             pane.session.get(),
@@ -8054,6 +8106,7 @@ impl Window {
             series.insert((key.to_string(), timeframe), bars.clone());
         }
         pane.view.set_series(instrument.clone(), timeframe, (*bars).clone());
+        pane.view.set_latest(latest);
         // Bars from a feed are when it has found the contract they are
         // from, which is what an order on the chart goes to: the marks can
         // be drawn from here, without waiting for the book to move.
@@ -8944,7 +8997,7 @@ impl Window {
                     let instrument = pane.instrument.borrow().clone();
                     let Some(instrument) = instrument else { continue };
                     let timeframe = pane.timeframe.get();
-                    let tail = live
+                    let (tail, latest) = live
                         .with_bars(&series, |native| {
                             let grid = Grid::new(&instrument, pane.session.get());
                             let start = omacharts_engine::stream::tail_start(native, from, timeframe, &grid);
@@ -8959,18 +9012,28 @@ impl Window {
                                 &instrument,
                                 timeframe.is_intraday(),
                             );
-                            if timeframe.is_derived() {
-                                resample(&tail, timeframe, &grid)
-                            } else {
-                                tail
-                            }
+                            // The trade the session leaves out of the bars,
+                            // which the last price still follows.
+                            let latest = native.last().filter(|newest| {
+                                hidden_latest(std::slice::from_ref(*newest), pane.session.get(), &instrument, timeframe)
+                                    .is_some()
+                            });
+                            let tail = if timeframe.is_derived() { resample(&tail, timeframe, &grid) } else { tail };
+                            (tail, latest.copied())
                         })
                         .unwrap_or_default();
+                    pane.view.set_latest(latest.map(|newest| newest.close));
+                    if let Some(newest) = latest
+                        && pane.shows(crate::header::Part::Change)
+                    {
+                        self.write_live_change_of(&pane, &newest);
+                    }
                     if tail.is_empty() {
                         continue;
                     }
                     pane.view.apply_tail(&tail);
                     if let Some(newest) = tail.last()
+                        && latest.is_none()
                         && pane.shows(crate::header::Part::Change)
                     {
                         self.write_live_change_of(&pane, newest);

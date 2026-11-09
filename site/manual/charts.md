@@ -105,6 +105,8 @@ A chart's session is which hours of bars it shows.
 
 Regular hours are the instrument's exchange's own, in its own clock: 09:30 to 16:00 New York time for US stocks and ETFs and for equity index futures such as ES, 09:00 to 14:30 New York time for crude oil, 09:00 to 17:30 Madrid time for a Madrid listing, and Tokyo's session without its lunch break. The [trading day](/manual/indicators/session-times/#the-trading-day) has more examples. FX and crypto trade round the clock and have no regular hours, so they show every bar either way. Daily and coarser bars always show every bar.
 
+The price is the price whatever bars are shown: out of regular hours, a chart showing only them still puts its [last price](#the-crosshair-and-the-last-price) at the latest trade and follows it as it streams, up or down against the session's last close, and its price scale reaches it while the chart shows its latest bars.
+
 Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart settings](/manual/chart-settings/). [Session Times](/manual/indicators/session-times/) shades the extended hours on a chart that shows them.
 
 ## Bars

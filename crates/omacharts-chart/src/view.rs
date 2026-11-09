@@ -177,6 +177,10 @@ struct State {
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
+    /// The feed's latest trade when the bars drawn leave it out, a chart
+    /// of the regular session out of hours: the price is the price,
+    /// whatever candles are shown. `None` when the last bar has it.
+    latest: Option<f64>,
     instrument: Option<Instrument>,
     /// The profiles the volume profile drawings show, as last worked out:
     /// a drawing is projected on every motion of the pointer, and its
@@ -1121,6 +1125,15 @@ fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale>
         low = low.min(b.low);
         high = high.max(b.high);
     }
+    // The latest trade the bars leave out, while the chart shows its end:
+    // its line would otherwise run off the plot, out of hours, the moment
+    // the price left the session's range.
+    if let Some(latest) = state.latest
+        && bars.last().map(|bar| bar.ts) == state.bars.last().map(|bar| bar.ts)
+    {
+        low = low.min(latest);
+        high = high.max(latest);
+    }
     if !low.is_finite() || !high.is_finite() {
         return None;
     }
@@ -1263,6 +1276,7 @@ impl State {
             theme,
             price_tags: price_tags(&scheme),
             scheme,
+            latest: None,
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
             vwap_cache: RefCell::new(Vec::new()),
@@ -3969,12 +3983,35 @@ impl ChartView {
 
     /// Replace the series. Resets the view only when the instrument changed,
     /// so a background refresh of the same chart does not throw away a pan.
+    /// The latest trade the bars leave out goes with the bars it was of:
+    /// whoever has one says so again, with [`ChartView::set_latest`].
     pub fn set_series(&self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
-        let changed = self.state.borrow_mut().replace_series(instrument, timeframe, bars);
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            state.latest = None;
+            state.replace_series(instrument, timeframe, bars)
+        };
         if changed {
             self.tool_changed();
         }
         self.redraw();
+    }
+
+    /// Say what the feed last traded at when the bars drawn leave it out,
+    /// a chart of the regular session out of hours, or `None` when the
+    /// last bar has it. The last price's line and tag stand there, and
+    /// the price scale reaches it while the chart shows its end.
+    pub fn set_latest(&self, price: Option<f64>) {
+        let price = price.filter(|price| price.is_finite());
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = state.latest != price;
+            state.latest = price;
+            changed
+        };
+        if changed {
+            self.redraw();
+        }
     }
 
     /// Say how far down the top of the price axis the window's corner
@@ -7453,7 +7490,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
         }
     }
-    let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price(state).map(|(price, _)| to_y(price).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -7604,12 +7641,11 @@ fn draw_last_price(
     // Where the tag goes when marks' chips on the axis moved it.
     tag_at: Option<f64>,
 ) {
-    let Some(last) = state.bars.last() else { return };
-    let y = to_y(last.close).round() + 0.5;
+    let Some((price, rising)) = last_price(state) else { return };
+    let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    let rising = last.close >= last.open;
     let tag = &state.price_tags[if rising { 0 } else { 1 }];
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
@@ -7620,12 +7656,24 @@ fn draw_last_price(
     // it; the line stays at the price.
     draw_tag(
         cr,
-        &grouped_decimals(last.close, decimals),
+        &grouped_decimals(price, decimals),
         plot_x + plot_w,
         tag_at.unwrap_or_else(|| below_cover(state, y)),
         width,
         tag,
     );
+}
+
+/// The last price, and whether it is up: the last bar's close against its
+/// open, or, when the feed has traded since where the bars drawn leave out,
+/// that trade against the last close drawn, the move since the session the
+/// chart shows.
+fn last_price(state: &State) -> Option<(f64, bool)> {
+    let last = state.bars.last()?;
+    Some(match state.latest {
+        Some(price) => (price, price >= last.close),
+        None => (last.close, last.close >= last.open),
+    })
 }
 
 /// The last price's dashed line across the plot.
@@ -7637,12 +7685,12 @@ fn draw_last_price_line(
     price_y: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let Some(last) = state.bars.last() else { return };
-    let y = to_y(last.close).round() + 0.5;
+    let Some((price, rising)) = last_price(state) else { return };
+    let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    let colour = if last.close >= last.open { &state.scheme.up } else { &state.scheme.down };
+    let colour = if rising { &state.scheme.up } else { &state.scheme.down };
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
@@ -10432,6 +10480,38 @@ mod tests {
         state.bars = series;
         state.visible = bars;
         state
+    }
+
+    /// A chart of the regular session out of hours: the last price is the
+    /// feed's newest trade, not the last close drawn, up or down against
+    /// that close, and following each trade; the scale reaches it while
+    /// the chart shows its end, and not once it is panned back.
+    #[test]
+    fn the_last_price_is_the_feed_s_newest_trade_whatever_the_bars_drawn() {
+        let mut state = charted(100);
+        let last = *state.bars.last().unwrap();
+        assert_eq!(last_price(&state), Some((last.close, last.close >= last.open)));
+
+        let plan = layout(&state, 600.0, 400.0);
+        let (first, visible, _) = state.view();
+        let (low, high) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
+        let away = high + (high - low);
+        state.latest = Some(away);
+        assert_eq!(last_price(&state), Some((away, true)), "above the close drawn");
+        let (_, reach) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
+        assert!(reach >= away, "the scale reaches it: {reach} for {away}");
+        let (_, back) = price_range(&state, &state.bars[..50], &plan).unwrap().prices();
+        assert!(back < away, "panned back, the bars alone");
+
+        state.latest = Some(last.close - 1.0);
+        assert_eq!(last_price(&state), Some((last.close - 1.0, false)), "the next trade, below it");
+
+        // The line and the tag stand at it.
+        let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
+        let lined = frame(600.0, 400.0, |cr| draw_last_price_line(cr, &state, 0.0, 500.0, 0.0, &to_y));
+        let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
+        let stride = 600 * 4;
+        assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
