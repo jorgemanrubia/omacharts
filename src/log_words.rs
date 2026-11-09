@@ -157,6 +157,18 @@ pub fn refused(account: &str, text: impl Into<String>) -> Entry {
     Entry::error(account, text)
 }
 
+/// A flatten done though orders on the position would not cancel:
+/// "Flattened · 2 orders could not be cancelled: check them". What happened
+/// is that it is flat, so it is said as done, in a toast too, but as a
+/// warning: those orders are still working.
+pub fn flattened_uncancelled(account: &str, uncancelled: usize) -> Entry {
+    let text = match uncancelled {
+        1 => "Flattened · 1 order could not be cancelled: check it".to_string(),
+        many => format!("Flattened · {many} orders could not be cancelled: check them"),
+    };
+    Entry::warning(account, text).confirming()
+}
+
 /// Something asked for and done, said in a toast too.
 pub fn confirmed(account: &str, text: impl Into<String>) -> Entry {
     Entry::info(account, text).confirming()
@@ -230,6 +242,16 @@ mod tests {
         assert_eq!(entry.source, "Yahoo Finance");
         assert_eq!(entry.text, "AAPL 1D · The data feed is not answering. Prices fill in when it does.");
         assert_eq!(fetch_failed("Yahoo Finance", "AAPL", Timeframe::days(1), FetchFailure::Garbled).level, Level::Error);
+    }
+
+    /// Flat, with orders on it that would not cancel: said as done, in a
+    /// toast, but a warning, and never as "Not flattened".
+    #[test]
+    fn a_flatten_that_left_orders_working_says_it_is_flat_and_to_check_them() {
+        let one = flattened_uncancelled("Lucid", 1);
+        assert_eq!((one.level, one.text.as_str(), one.confirms), (Level::Warning, "Flattened · 1 order could not be cancelled: check it", true));
+        let two = flattened_uncancelled("Lucid", 2);
+        assert_eq!((two.level, two.text.as_str(), two.confirms), (Level::Warning, "Flattened · 2 orders could not be cancelled: check them", true));
     }
 
     #[test]

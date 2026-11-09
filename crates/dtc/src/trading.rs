@@ -1405,10 +1405,13 @@ impl Trading {
     /// Cancel every order working on `account`, each with its own
     /// CANCEL_ORDER, and wait for them all: the first refusal, if any.
     pub fn cancel_all(&self, account: &str) -> Result<(), Error> {
-        self.cancel_where(|order| order.account == account)
+        let (_, first) = self.cancel_where(|order| order.account == account);
+        first.map_or(Ok(()), Err)
     }
 
-    fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> Result<(), Error> {
+    /// Cancel every working order `which` takes, each tried whatever became
+    /// of the one before: how many would not cancel, and the first reason.
+    fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> (usize, Option<Error>) {
         let working: Vec<(Order, u64)> = {
             let state = lock(&self.shared.state);
             state
@@ -1419,13 +1422,14 @@ impl Trading {
                 .map(|(order, told)| (order.clone(), told.0))
                 .collect()
         };
-        // Every one tried, whatever became of the one before.
         let mut first = None;
+        let mut failed = 0;
         let mut sent = Vec::new();
         for (order, since) in &working {
             match self.send_cancel(order) {
                 Ok(()) => sent.push((order, *since)),
                 Err(error) => {
+                    failed += 1;
                     first.get_or_insert(error);
                 }
             }
@@ -1435,10 +1439,16 @@ impl Trading {
                 self.answered(order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
             self.forget_unknown(order, since, &outcome);
             if let Err(error) = outcome {
+                // One the server never had is gone from the book now, not
+                // left working.
+                let state = lock(&self.shared.state);
+                if state.order_at(order.id()).is_some_and(|at| state.orders[at].status.working()) {
+                    failed += 1;
+                }
                 first.get_or_insert(error);
             }
         }
-        first.map_or(Ok(()), Err)
+        (failed, first)
     }
 
     /// Close `account`'s position in `symbol`: its working orders there are
@@ -1448,16 +1458,12 @@ impl Trading {
     ///
     /// The flatten goes whatever became of the cancels: an order that would
     /// not cancel, or was never there to, must not keep the position open.
-    /// A cancel that failed is said once the flatten is answered.
-    pub fn flatten(&self, account: &str, symbol: &str) -> Result<(), Error> {
-        let cancelled = self.cancel_where(|order| order.account == account && order.symbol == symbol);
-        let uncancelled = |error: Error| {
-            let why = match error {
-                Error::Rejected(why) | Error::Refused(why) => why,
-                error => error.to_string(),
-            };
-            Error::Rejected(format!("the position was flattened, but an order on it was not cancelled: {why}"))
-        };
+    /// Taken, it answers how many orders on it are still working because
+    /// they would not cancel: the position is flat, and those need a look.
+    /// With nothing held there is nothing to flatten, and a cancel that
+    /// failed is the answer.
+    pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
+        let (uncancelled, why) = self.cancel_where(|order| order.account == account && order.symbol == symbol);
         let held = lock(&self.shared.state)
             .positions
             .iter()
@@ -1465,7 +1471,7 @@ impl Trading {
             .map(|position| position.qty)
             .unwrap_or(0);
         if held == 0 {
-            return cancelled;
+            return why.map_or(Ok(0), Err);
         }
         let id = self.shared.next_client_id();
         self.shared.send(&Message::new(
@@ -1479,7 +1485,7 @@ impl Trading {
         })?;
         match status {
             Status::Rejected(why) => Err(Error::Rejected(why)),
-            _ => cancelled.map_err(uncancelled),
+            _ => Ok(uncancelled),
         }
     }
 

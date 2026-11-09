@@ -465,7 +465,7 @@ fn an_order_never_heard_of_goes_once_a_listing_past_its_grace_leaves_it_out() {
 
 /// Flattening with an order the server never had in the book, and one it
 /// will not cancel: every cancel is tried, the flatten goes all the same
-/// and closes what is held, and what would not cancel is said after.
+/// and closes what is held, and it answers the one order left working.
 #[test]
 fn flattening_goes_out_whatever_becomes_of_the_cancels() {
     let fake = Fake::builder()
@@ -478,10 +478,7 @@ fn flattening_goes_out_whatever_becomes_of_the_cancels() {
     let ghosts = lost_pair(&fake, &trading);
     fake.set_cancels(Cancels::Refused("Cancel refused".into()));
     let flattened = trading.flatten("Sim1", ES);
-    assert!(
-        matches!(&flattened, Err(Error::Rejected(why)) if why.starts_with("the position was flattened")),
-        "{flattened:?}"
-    );
+    assert!(matches!(flattened, Ok(1)), "the ghosts are gone, the limit would not cancel: {flattened:?}");
     let cancels = fake.received_of(wire::CANCEL_ORDER);
     assert_eq!(cancels.len(), 3, "every one tried: {cancels:?}");
     assert_eq!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).len(), 1, "the flatten never sent");

@@ -319,7 +319,7 @@ impl Session for SierraSession {
         self.trading.cancel_all(account).map_err(failed)
     }
 
-    fn flatten(&self, account: &str, contract: &str, _exchange: &str) -> Result<(), Failure> {
+    fn flatten(&self, account: &str, contract: &str, _exchange: &str) -> Result<usize, Failure> {
         let symbol = feed::sierra_contract(contract)
             .ok_or_else(|| Failure::Refused(format!("Sierra Chart has no name for {contract}")))?;
         self.trading.flatten(account, &symbol).map_err(failed)
@@ -772,6 +772,26 @@ mod tests {
         assert!(ran.unsure.as_deref().is_some_and(|why| why.contains("target filled")), "{ran:?}");
         assert_eq!(on_the_server(&fake), (vec![], vec![]));
         assert!(session.book().position("Sim1", "ESZ6").is_none_or(|held| held.net == 0));
+        session.sign_out();
+    }
+
+    /// Flattening where the server will not cancel the stop on the
+    /// position: it is flat all the same, and the flatten answers the one
+    /// order still working, for the window to say so.
+    #[test]
+    fn a_flatten_whose_cancel_is_refused_is_flat_and_counts_the_order_left() {
+        let fake = fake_long(2);
+        let session = impatient(&fake);
+        session.place(&sell(OrderKind::Stop, 2, 7_580.0)).expect("the stop");
+        fake.set_cancels(dtc::fake::Cancels::Refused("Cancel refused".into()));
+        assert_eq!(session.flatten("Sim1", "ESZ6", "CME"), Ok(1));
+        let flat = || session.book().position("Sim1", "ESZ6").is_none_or(|held| held.net == 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !flat() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(flat(), "not flat: {:?}", session.book().positions);
+        assert_eq!(session.book().working("Sim1", "ESZ6").count(), 1, "the stop left working");
         session.sign_out();
     }
 

@@ -567,8 +567,9 @@ impl Session for RithmicSession {
         self.trading.cancel_all(account).map_err(failed)
     }
 
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
-        self.trading.flatten(account, contract, exchange).map_err(failed)
+    /// Rithmic leaves the orders on it alone: none to say.
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure> {
+        self.trading.flatten(account, contract, exchange).map(|()| 0).map_err(failed)
     }
 
     fn trouble(&self) -> Option<String> {

@@ -179,6 +179,9 @@ pub struct FakeSession {
     pub refuse_links: Mutex<Option<String>>,
     /// Refuse whatever is asked next, in these words.
     pub refuse: Mutex<Option<String>>,
+    /// The next flatten closes the position but says this many orders on
+    /// it would not cancel, as a DTC server's refusals can leave them.
+    pub uncancelled: AtomicUsize,
     /// Answer nothing at all from now on: every request is lost on the
     /// way, and nothing in the book moves.
     pub silent: std::sync::atomic::AtomicBool,
@@ -218,6 +221,7 @@ impl FakeSession {
             refuse_pairs: Mutex::default(),
             refuse_links: Mutex::default(),
             refuse: Mutex::default(),
+            uncancelled: AtomicUsize::new(0),
             silent: Default::default(),
             holds: Default::default(),
         }
@@ -553,7 +557,7 @@ impl Session for FakeSession {
         self.moved();
         Ok(())
     }
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure> {
         self.refused()?;
         let last = *self.last.lock().unwrap();
         let mut book = self.book.lock().unwrap();
@@ -561,7 +565,7 @@ impl Session for FakeSession {
         FakeSession::hold(&mut book, account, contract, exchange, -net, last);
         drop(book);
         self.moved();
-        Ok(())
+        Ok(self.uncancelled.swap(0, Ordering::AcqRel))
     }
     fn trouble(&self) -> Option<String> {
         self.gone.load(Ordering::Acquire).then(|| "signed out".into())

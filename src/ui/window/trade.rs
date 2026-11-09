@@ -674,7 +674,7 @@ impl Window {
                 move |account: &str, basket: &str| {
                     let Some(this) = this.upgrade() else { return };
                     let basket = basket.to_string();
-                    this.on_session(account, move |session, number| session.cancel(number, &basket));
+                    this.on_session(account, move |session, number| session.cancel(number, &basket), |_, _, ()| {});
                 }
             }),
             flatten: Box::new({
@@ -682,14 +682,22 @@ impl Window {
                 move |account: &str, contract: &str, exchange: &str| {
                     let Some(this) = this.upgrade() else { return };
                     let (contract, exchange) = (contract.to_string(), exchange.to_string());
-                    this.on_session(account, move |session, number| session.flatten(number, &contract, &exchange));
+                    this.on_session(
+                        account,
+                        move |session, number| session.flatten(number, &contract, &exchange),
+                        |this, name, uncancelled| {
+                            if uncancelled > 0 {
+                                this.say(log_words::flattened_uncancelled(name, uncancelled));
+                            }
+                        },
+                    );
                 }
             }),
             cancel_all: Box::new({
                 let this = Rc::downgrade(self);
                 move |account: &str| {
                     let Some(this) = this.upgrade() else { return };
-                    this.on_session(account, |session, number| session.cancel_all(number));
+                    this.on_session(account, |session, number| session.cancel_all(number), |_, _, ()| {});
                 }
             }),
         };
@@ -785,12 +793,13 @@ impl Window {
     }
 
     /// Do `job` on the session of the account with the key `account`, off
-    /// the main loop, and toast what went wrong. What it changes arrives
-    /// on the book.
-    pub(super) fn on_session(
+    /// the main loop, and toast what went wrong; what it answers goes to
+    /// `done`. What it changes arrives on the book.
+    pub(super) fn on_session<T: Send + 'static>(
         self: &Rc<Self>,
         account: &str,
-        job: impl FnOnce(&dyn trading::Session, &str) -> Result<(), Failure> + Send + 'static,
+        job: impl FnOnce(&dyn trading::Session, &str) -> Result<T, Failure> + Send + 'static,
+        done: impl FnOnce(&Rc<Self>, &str, T) + 'static,
     ) {
         let Some((login, number)) = account.split_once('/') else { return };
         let name = self.account_label(account);
@@ -806,8 +815,10 @@ impl Window {
         let this = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let Ok(outcome) = receiver.recv().await else { return };
-            if let (Some(this), Err(why)) = (this.upgrade(), outcome) {
-                this.refuse_as(&name, why.words());
+            let Some(this) = this.upgrade() else { return };
+            match outcome {
+                Ok(value) => done(&this, &name, value),
+                Err(why) => this.refuse_as(&name, why.words()),
             }
         });
     }
@@ -1392,8 +1403,9 @@ impl Window {
             &target,
             move |session, number| session.flatten(number, &contract, &exchange),
             move |this, outcome| {
-                if this.heard(&request, outcome, "Not flattened", &name).is_none() {
-                    return;
+                let Some(uncancelled) = this.heard(&request, outcome, "Not flattened", &name) else { return };
+                if uncancelled > 0 {
+                    this.say(log_words::flattened_uncancelled(&name, uncancelled));
                 }
                 // One the trading service cancelled itself, or a link took with
                 // its sibling, is not working any more: nothing to say.
@@ -1471,30 +1483,35 @@ impl Window {
         // being closed; then the position.
         self.send(
             &target,
+            // A cancel that failed does not stop the flatten: the position
+            // closes all the same, and what would not cancel is counted.
             move |session, number| {
                 let mut failed = None;
+                let mut uncancelled = 0;
                 for basket in &flat.cancel {
                     if let Err(why) = session.cancel(number, basket) {
+                        uncancelled += 1;
                         failed.get_or_insert(why);
                     }
                 }
-                if flat.flatten
-                    && let Err(why) = session.flatten(number, &contract, &exchange)
-                {
-                    failed.get_or_insert(why);
+                if !flat.flatten {
+                    return failed.map_or(Ok(0), Err);
                 }
-                failed.map_or(Ok(()), Err)
+                session.flatten(number, &contract, &exchange).map(|left| left + uncancelled)
             },
             move |this, outcome| {
-                if let Err(Failure::Refused(_)) = &outcome {
-                    // Refused: drawn as it stands again. What the book has
-                    // already answered is settled either way.
+                if matches!(&outcome, Err(Failure::Refused(_)) | Ok(1..)) {
+                    // Refused, or flat with orders that would not cancel:
+                    // drawn as they stand again. What the book has already
+                    // answered is settled either way.
                     let mut pending = this.trade.pending.borrow_mut();
                     for basket in &cancels {
                         pending.remove(&Request::Cancel(basket.clone()));
                     }
                 }
-                this.heard(&flatten, outcome, "Not flattened", &name);
+                if let Some(uncancelled @ 1..) = this.heard(&flatten, outcome, "Not flattened", &name) {
+                    this.say(log_words::flattened_uncancelled(&name, uncancelled));
+                }
             },
         );
     }
@@ -4813,6 +4830,55 @@ pub(super) mod tests {
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
             assert_eq!(pane.account_text().as_deref(), Some("951"));
             assert_eq!(dot(&pane), None);
+        });
+    }
+
+    /// A flatten that closed the position though orders on it would not
+    /// cancel, from Ctrl+F and from the position's ×: said as flat, a
+    /// warning in a toast, and never "Not flattened". A flatten refused is
+    /// still "Not flattened".
+    #[test]
+    fn a_flatten_that_left_orders_working_is_said_as_flat_with_a_warning() {
+        crate::ui::on_gtk(|| {
+            use super::super::marks::TradeEvent;
+            use omacharts_engine::log::Level;
+            use std::sync::atomic::Ordering;
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let log = super::super::log::tests::private(&window);
+            let account = window.account_label(&key);
+            let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            let said = || -> Vec<(Level, String, bool)> { log.entries().into_iter().map(|e| (e.level, e.line(), e.confirms)).collect() };
+
+            session.uncancelled.store(2, Ordering::Release);
+            assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+            assert!(settle(&window, || held().is_none() && free(&window)), "not flat");
+            window.catch_up_log();
+            let lines = said();
+            let warned = (Level::Warning, format!("{account} · Flattened · 2 orders could not be cancelled: check them"), true);
+            assert_eq!(lines.iter().filter(|line| **line == warned).count(), 1, "{lines:#?}");
+            assert!(!lines.iter().any(|(_, line, _)| line.contains("Not flattened")), "{lines:#?}");
+
+            assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+            assert!(settle(&window, || held() == Some(1) && free(&window)), "bought");
+            session.uncancelled.store(1, Ordering::Release);
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert!(settle(&window, || held().is_none() && free(&window)), "not flat from the ×");
+            window.catch_up_log();
+            let lines = said();
+            let warned = (Level::Warning, format!("{account} · Flattened · 1 order could not be cancelled: check it"), true);
+            assert_eq!(lines.iter().filter(|line| **line == warned).count(), 1, "{lines:#?}");
+            assert!(!lines.iter().any(|(_, line, _)| line.contains("Not flattened")), "{lines:#?}");
+
+            assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+            assert!(settle(&window, || held() == Some(1) && free(&window)), "bought again");
+            *session.refuse.lock().unwrap() = Some("market closed".into());
+            assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+            settle(&window, || false);
+            window.catch_up_log();
+            let lines = said();
+            assert!(lines.iter().any(|(level, line, _)| *level == Level::Error && line.ends_with("Not flattened · market closed")), "{lines:#?}");
+            assert_eq!(held(), Some(1));
         });
     }
 

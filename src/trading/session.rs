@@ -222,7 +222,11 @@ pub trait Session: Send + Sync {
         Err(Failure::Refused("this trading service does not place orders as a pair".into()))
     }
     fn cancel_all(&self, account: &str) -> Result<(), Failure>;
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure>;
+    /// Close what `account` holds of `contract`, cancelling the orders
+    /// working on it where the trading service does that itself. Done, it
+    /// answers how many of those are still working because they would not
+    /// cancel: the position is flat, but they need a look.
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure>;
     /// Why it is no longer signed in, if it ended by itself.
     fn trouble(&self) -> Option<String>;
     fn sign_out(&self);
