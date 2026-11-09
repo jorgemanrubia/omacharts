@@ -1292,7 +1292,16 @@ pub fn data_dir() -> PathBuf {
     home().join(".local/share/omacharts")
 }
 
+/// `$HOME`, or a scratch directory in a test build.
+///
+/// A test that reaches a path under home, such as the default store or the
+/// bar widget's files, would otherwise write into the real home of whoever
+/// runs the suite: an older build migrates their store, and their window
+/// then finds a file from another version and sets it aside.
 pub fn home() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("omacharts-test-{}", std::process::id()));
+    }
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
