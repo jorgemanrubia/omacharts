@@ -7330,6 +7330,7 @@ impl Window {
             }
         };
         let key = routed.key();
+        pane.served.replace(Some(key.clone()));
         let Routed { feed, symbol, passed } = routed;
         let native = timeframe.native();
         // Whatever this chart streamed from another feed, it is this one's now.
@@ -7477,6 +7478,7 @@ impl Window {
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
         self.write_feed_of(pane, None, &[]);
+        pane.served.replace(None);
         // Whatever this chart was streaming, it is not showing it now.
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
@@ -7513,6 +7515,7 @@ impl Window {
         pane.write_readout();
         self.write_header_of(pane);
         self.write_refused_feed(pane, &refused.feed);
+        pane.served.replace(None);
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
             self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
@@ -8164,10 +8167,9 @@ impl Window {
         glib::spawn_future_local(async move {
             while heard.recv().await.is_ok() {
                 let Some(this) = this.upgrade() else { return };
-                let before = this.routes_on_screen();
                 if providers::adopt_serving() {
                     this.say(crate::log_words::serving_changed());
-                    this.reroute(&before);
+                    this.reroute();
                 }
             }
         });
@@ -8383,10 +8385,9 @@ impl Window {
         if *pane.account.borrow() == account {
             return;
         }
-        let before = self.routes_on_screen();
         pane.account.replace(account);
         self.apply_marks_to(&pane);
-        self.reroute(&before);
+        self.reroute();
         self.save_workspace();
     }
 
@@ -8443,13 +8444,12 @@ impl Window {
     /// Read Trading again — the logins, their accounts, the default — and
     /// redraw every chart's account part from it.
     pub fn adopt_trading(self: &Rc<Self>) {
-        // Where every chart is served from before, so that a chart whose
-        // account's feed changed with the default is shown again.
-        let before = self.routes_on_screen();
         let mut view = crate::trading::View::load(&self.store);
         view.book = self.marked_book(&view.logins);
         *self.trading.borrow_mut() = view;
-        self.reroute(&before);
+        // A chart whose account's feed changed with the default is shown
+        // again.
+        self.reroute();
         self.sync_trading();
     }
 
@@ -8593,35 +8593,17 @@ impl Window {
             feeds.len() == wanted.len()
                 && feeds.iter().zip(&wanted).all(|(feed, want)| feed.provider.id() == want.id())
         };
-        // Where every chart is served from now, before anything changes, so
-        // that only the charts whose feed changes are shown again.
-        let before = self.routes_on_screen();
         if !same {
             self.regroup_feeds(wanted.into_iter().map(Arc::from).collect());
-            self.reroute(&before);
-            return;
         }
-        // The same feeds. Only a change in which can be used moves a chart,
-        // and then only the charts that change routes.
-        let mut changed = false;
         for feed in self.feeds() {
-            changed |= feed.read_access();
+            feed.read_access();
         }
-        if changed {
-            self.reroute(&before);
-        }
-    }
-
-    /// Each chart on screen with the cache key of the feed serving it.
-    fn routes_on_screen(&self) -> Vec<(u32, Option<String>)> {
-        let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
-        panes
-            .iter()
-            .filter_map(|pane| {
-                let instrument = pane.instrument.borrow().clone()?;
-                Some((pane.id, self.route_pane(pane, &instrument).map(|routed| routed.key())))
-            })
-            .collect()
+        // Whatever changed — the feeds, which of them can be used, or what
+        // one of them has, a folder set up that has ES now — every chart is
+        // held against the feed it was shown from, and the ones it moves
+        // are shown again, at once.
+        self.reroute();
     }
 
     /// Chart from `providers`, top first, keeping the feeds that stay on
@@ -8669,16 +8651,16 @@ impl Window {
         self.wire_refresh();
     }
 
-    /// Show again the charts whose feed is no longer the one in `before`,
-    /// and only rewrite the header of the rest: a chart still on the feed
-    /// it was on keeps its series and its stream as they are.
-    fn reroute(self: &Rc<Self>, before: &[(u32, Option<String>)]) {
+    /// Show again the charts whose feed is no longer the one they were
+    /// shown from, and only rewrite the header of the rest: a chart still
+    /// on the feed it was on keeps its series and its stream as they are.
+    fn reroute(self: &Rc<Self>) {
         let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
         let mut settled = false;
         for pane in panes {
             let instrument = pane.instrument.borrow().clone();
             let Some(instrument) = instrument else { continue };
-            let was = before.iter().find(|(id, _)| *id == pane.id).and_then(|(_, key)| key.clone());
+            let was = pane.served.borrow().clone();
             // A chart whose chosen feed has left the order follows it again,
             // and one whose account has gone is on the default.
             settled |= self.settle_feed(&pane, &instrument);

@@ -243,6 +243,10 @@ pub struct ChartPane {
     /// The feed somebody chose for this chart, by id; `None` follows the
     /// order, which is every chart until somebody chooses.
     pub feed: RefCell<Option<String>>,
+    /// The cache key of the feed this chart was last shown from, `None`
+    /// while no feed serves it: what a change to the feeds is held against,
+    /// to show again only the charts it moves.
+    pub served: RefCell<Option<String>>,
     /// The trading account somebody chose for this chart, as `<login
     /// id>/<account number>`; `None` is the default account.
     pub account: RefCell<Option<String>>,
@@ -712,6 +716,7 @@ impl ChartPane {
             feed_menu_model: RefCell::new(None),
             menu_actions,
             feed: RefCell::new(None),
+            served: RefCell::new(None),
             account: RefCell::new(None),
             trade_part,
             buy_button,

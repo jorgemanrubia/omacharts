@@ -3502,22 +3502,38 @@ pub(super) mod tests {
 
     impl SierraFolder {
         fn set_up(store: &Store, name: &str) -> SierraFolder {
-            use omacharts_engine::providers::sierra::setup;
+            let folder = SierraFolder::written(name, true);
+            folder.adopt(store);
+            folder
+        }
+
+        /// The folder alone, with ES's files or with nothing in its data
+        /// folder at all, not yet set up as anything.
+        fn written(name: &str, with_es: bool) -> SierraFolder {
             let root = std::env::temp_dir().join(format!("omacharts-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("Data")).unwrap();
             std::fs::write(root.join("Sierra4.config"), b"").unwrap();
-            let days = "Date,  Open,  High,  Low,  Close,  Volume,  OpenInterest\r\n\
-                2026/09/10, 6590.00, 6600.00, 6580.00, 6595.00, 1500000, 0\r\n\
-                2026/09/11, 6595.00, 6610.00, 6590.00, 6605.00, 1400000, 0\r\n";
-            std::fs::write(root.join("Data").join("ESZ26_FUT_CME.dly"), days).unwrap();
-            std::fs::write(root.join("Data").join("ESZ26_FUT_CME.scid"), scid_of_es()).unwrap();
+            if with_es {
+                let days = "Date,  Open,  High,  Low,  Close,  Volume,  OpenInterest\r\n\
+                    2026/09/10, 6590.00, 6600.00, 6580.00, 6595.00, 1500000, 0\r\n\
+                    2026/09/11, 6595.00, 6610.00, 6590.00, 6605.00, 1400000, 0\r\n";
+                std::fs::write(root.join("Data").join("ESZ26_FUT_CME.dly"), days).unwrap();
+                std::fs::write(root.join("Data").join("ESZ26_FUT_CME.scid"), scid_of_es()).unwrap();
+            }
+            SierraFolder(root)
+        }
+
+        /// Set this folder up as the Sierra Chart feed of `store`, as its
+        /// dialog does.
+        fn adopt(&self, store: &Store) {
+            use omacharts_engine::providers::sierra::setup;
+            let root = &self.0;
             let sierra = omacharts_engine::providers::listed("sierra").unwrap();
             let saved = omacharts_engine::providers::Saved::default()
                 .with(setup::FOLDER, &root.display().to_string())
                 .with(setup::PORT, "11099");
             crate::feeds::set_up(store, sierra, saved);
-            SierraFolder(root)
         }
     }
 
@@ -3680,6 +3696,127 @@ pub(super) mod tests {
             window.show_in(&pane, es);
             assert!(settle(&window, es_from_sierra), "and after a quick bounce: {:?}", streamed(&window));
             assert!(settle(&window, || pane.view.last_price().is_some()));
+        });
+    }
+
+    /// A window on Yahoo alone with Sierra Chart switched on, showing ES
+    /// on a daily chart.
+    fn on_yahoo_alone(store: &Rc<Store>) -> (Rc<Window>, Rc<ChartPane>) {
+        crate::features::set(store, crate::features::Feature::Sierra, true);
+        let _ = adw::init();
+        let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        let window = Window::build_with(&app, store.clone(), vec![Posing::feed("yahoo", "Yahoo Finance", false)]);
+        let pane = window.focused_pane();
+        pane.timeframe.set(omacharts_engine::Timeframe::days(1));
+        let es = window.index.find("ES", None).expect("ES");
+        window.show_in(&pane, es);
+        assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+        (window, pane)
+    }
+
+    /// ES streamed from Sierra Chart and drawn, on `pane`.
+    fn on_sierra_now(window: &Rc<Window>, pane: &ChartPane) {
+        assert_eq!(feed_on(window, pane).as_deref(), Some("sierra"), "the chart is on Sierra Chart at once");
+        assert_eq!(pane.served.borrow().as_deref().and_then(|key| key.split_once(':')).map(|(feed, _)| feed), Some("sierra"));
+        assert!(
+            settle(window, || streamed(window) == vec![("ES".to_string(), "sierra".to_string())]),
+            "ES streams from Sierra Chart: {:?}",
+            streamed(window)
+        );
+    }
+
+    /// Sierra Chart added as a trading service, its folder already set up:
+    /// the chart of ES on Yahoo is on Sierra Chart as soon as the panel says
+    /// it changed, with nothing restarted.
+    #[test]
+    fn sierra_added_as_a_trading_service_takes_the_chart_at_once() {
+        use omacharts_engine::providers::sierra::setup;
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Trading, true);
+            let (window, pane) = on_yahoo_alone(&store);
+            let _folder = SierraFolder::set_up(&store, "as-a-service");
+            let typed = trading::Typed {
+                service: "sierra".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: vec![(setup::HOST.into(), setup::DEFAULT_HOST.into()), (setup::PORT.into(), "11099".into())],
+            };
+            trading::add_login(&store, &Kept::default(), &typed).expect("a login");
+            window.adopt_feed();
+            on_sierra_now(&window, &pane);
+        });
+    }
+
+    /// Sierra Chart added on the Data page and set up there: the chart of
+    /// ES is on it at once.
+    #[test]
+    fn sierra_added_on_the_data_page_takes_the_chart_at_once() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let (window, pane) = on_yahoo_alone(&store);
+            crate::feeds::add_feed(&store, "sierra");
+            window.adopt_feed();
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"), "not set up yet");
+            let _folder = SierraFolder::set_up(&store, "on-the-data-page");
+            window.adopt_feed();
+            on_sierra_now(&window, &pane);
+        });
+    }
+
+    /// Sierra Chart on the order and set up with a folder that has nothing
+    /// of ES, then set up again with one that has: the feeds are the same and
+    /// so is whether each can be used, and the chart still moves at once.
+    #[test]
+    fn a_sierra_folder_that_has_es_now_takes_the_chart_at_once() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let (window, pane) = on_yahoo_alone(&store);
+            let empty = SierraFolder::written("has-nothing", false);
+            empty.adopt(&store);
+            crate::feeds::add_feed(&store, "sierra");
+            crate::feeds::save_order(&store, &["sierra".into(), "yahoo".into()]);
+            window.adopt_feed();
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"), "nothing of ES there");
+            let _folder = SierraFolder::set_up(&store, "has-es");
+            window.adopt_feed();
+            on_sierra_now(&window, &pane);
+        });
+    }
+
+    /// A feed picked from the chart's feed menu takes the chart at once,
+    /// and the order's own again with it.
+    #[test]
+    fn a_feed_picked_from_the_menu_takes_the_chart_at_once() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _folder, _store) = sierra_over_yahoo("picked");
+            let es = window.index.find("ES", None).expect("ES");
+            window.show_in(&pane, es);
+            on_sierra_now(&window, &pane);
+            pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            assert!(settle(&window, || streamed(&window).is_empty()), "nothing streamed from Sierra Chart: {:?}", streamed(&window));
+            pane.menu_actions.activate_action("feed", Some(&"sierra".to_variant()));
+            on_sierra_now(&window, &pane);
+        });
+    }
+
+    /// Yahoo taken off the order while Sierra Chart is set up: a chart of
+    /// ES that was pointed at Yahoo is on Sierra Chart at once.
+    #[test]
+    fn yahoo_removed_puts_the_chart_on_sierra_at_once() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _folder, store) = sierra_over_yahoo("yahoo-removed");
+            let es = window.index.find("ES", None).expect("ES");
+            window.show_in(&pane, es);
+            window.choose_feed(pane.id, Some("yahoo".into()));
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            assert!(crate::feeds::remove_feed(&store, "yahoo"));
+            window.adopt_feed();
+            let ids: Vec<&str> = window.feeds().iter().map(|feed| feed.provider.id()).collect();
+            assert_eq!(ids, ["sierra"]);
+            on_sierra_now(&window, &pane);
         });
     }
 
@@ -4006,9 +4143,8 @@ pub(super) mod tests {
             assert!(pane.feed.borrow().is_none());
 
             // Passed over, it says so under the feed it fell back to.
-            let before = window.routes_on_screen();
             window.feeds()[0].usable.set(false);
-            window.reroute(&before);
+            window.reroute();
             assert_eq!(
                 dot(&pane).map(|dot| dot.0),
                 Some("Rithmic · Connecting…\nYahoo Finance not signed in".into())
@@ -4053,9 +4189,8 @@ pub(super) mod tests {
 
             // A chosen feed that cannot be used: red, no warning, and why.
             window.choose_feed(pane.id, Some("yahoo".into()));
-            let before = window.routes_on_screen();
             window.feeds()[0].usable.set(false);
-            window.reroute(&before);
+            window.reroute();
             assert_eq!(dot(&pane), Some(("Yahoo Finance · Not signed in".into(), "down", false, true)));
             window.feeds()[0].usable.set(true);
             window.choose_feed(pane.id, None);
