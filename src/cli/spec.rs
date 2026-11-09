@@ -1515,6 +1515,12 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "identity rather than state: what the chart is called among the drawings it made,          minted once so that turning sending off takes back its own and nobody else's",
     ),
     ("auto_scale", "chart set", "--auto-scale"),
+    (
+        "price_window",
+        "",
+        "presentational: where a held price axis was zoomed and dragged to, remembered so a restart finds it, \
+         and let go of with --auto-scale on",
+    ),
     ("log_scale", "chart set", "--log-scale"),
     ("template", "chart set", "--template"),
     ("indicators_shown", "chart set", "--indicators"),

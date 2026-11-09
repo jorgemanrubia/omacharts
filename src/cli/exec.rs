@@ -1712,6 +1712,12 @@ fn chart_set(
     }
     if let Some(auto) = arg(m, "auto-scale") {
         chart["auto_scale"] = json!(auto == "on");
+        // A scale that fits itself holds no prices.
+        if auto == "on"
+            && let Some(chart) = chart.as_object_mut()
+        {
+            chart.remove("price_window");
+        }
         changed.push(format!("auto-scale {auto}"));
     }
     if let Some(log) = arg(m, "log-scale") {
@@ -7015,6 +7021,27 @@ mod tests {
 
         run("chart set --book Macro --auto-scale on", &store);
         assert_eq!(charts(&store)["charts"][0]["auto_scale"], true);
+    }
+
+    /// The prices a held scale was left at go with letting go of it, so a
+    /// later hold starts from a fit rather than from a window long gone.
+    #[test]
+    fn letting_go_of_a_price_scale_from_a_command_forgets_its_prices() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let stored = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&store.setting("workspace").unwrap()).unwrap()
+        };
+        let mut workspace = stored(&store);
+        workspace["books"][0]["panes"][0]["auto_scale"] = serde_json::json!(false);
+        workspace["books"][0]["panes"][0]["price_window"] = serde_json::json!([410.0, 450.0]);
+        store.set_setting("workspace", &workspace.to_string());
+
+        run("chart set --book Macro --log-scale on", &store);
+        assert_eq!(stored(&store)["books"][0]["panes"][0]["price_window"][1], 450.0, "kept while held");
+
+        run("chart set --book Macro --auto-scale on", &store);
+        assert!(stored(&store)["books"][0]["panes"][0].get("price_window").is_none());
     }
 
     /// A log axis is stored with the chart and reported back, and a chart

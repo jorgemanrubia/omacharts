@@ -723,6 +723,7 @@ mod tests {
                 trading_symbol: None,
                 trading_suffix: None,
                 auto_scale: false,
+                price_window: None,
                 log_scale: true,
                 indicators_shown: true,
                 drawings_shown: true,
@@ -779,6 +780,28 @@ mod tests {
         assert_eq!(scales, vec![false, true], "each chart keeps its own answer");
     }
 
+    /// The prices a held scale shows are written down with it and read back
+    /// through the store; a chart that fits itself writes none, and one
+    /// written before they were remembered has none.
+    #[test]
+    fn a_held_price_window_survives_a_restart() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut held = stored_pane(1, "SPY", LinkMode::Focus);
+        held.auto_scale = false;
+        held.price_window = Some([412.5, 431.25]);
+        let book = book_of("Macro", vec![held, stored_pane(2, "QQQ", LinkMode::Focus)]);
+        let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
+        assert_eq!(json.matches("price_window").count(), 1, "only the held chart writes one");
+        store.set_setting(SETTING_WORKSPACE, &json);
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        let windows: Vec<_> = back.books[0].panes.iter().map(|p| p.price_window).collect();
+        assert_eq!(windows, vec![Some([412.5, 431.25]), None]);
+
+        let old = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(old.books[0].panes.iter().all(|pane| pane.price_window.is_none()));
+    }
+
     /// A chart, as a book that is not on screen holds one.
     fn stored_pane(id: u32, symbol: &str, link: LinkMode) -> StoredPane {
         StoredPane {
@@ -809,6 +832,7 @@ mod tests {
             trading_symbol: None,
             trading_suffix: None,
             auto_scale: true,
+            price_window: None,
             log_scale: false,
             indicators_shown: true,
             drawings_shown: true,
@@ -2445,6 +2469,15 @@ struct StoredPane {
     /// this was remembered, and every one of those was fitting itself.
     #[serde(default = "fits_itself")]
     auto_scale: bool,
+    /// The prices a held price axis shows, bottom and top, so a restart
+    /// brings back the zoom and the shift it was left at rather than a fresh
+    /// fit of the live edge. Prices, not a zoom on the bars, because the
+    /// bars on screen after a restart are not the ones that were: the prices
+    /// somebody zoomed to are what they were looking at. Missing on a chart
+    /// that fits itself, and on one written before this was remembered,
+    /// which holds the fit it is first drawn with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_window: Option<[f64; 2]>,
     /// Whether the price axis is logarithmic. Missing from a chart written
     /// before it could be, and every one of those was linear.
     #[serde(default)]
@@ -3655,9 +3688,10 @@ impl Window {
             }
         });
 
-        // A drag or a wheel on the price axis takes the scale off automatic
-        // inside the chart, where nothing is written down. It is a setting
-        // like the gridlines, so it is stored the way they are.
+        // A drag or a wheel on the price axis takes the scale off automatic,
+        // or moves a held one, inside the chart, where nothing is written
+        // down. It is a setting like the gridlines, so it is stored the way
+        // they are, once the wheel or the drag stops.
         let scaler = self.clone();
         pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
 
@@ -4678,6 +4712,7 @@ impl Window {
                     trading_symbol: pane.trading_symbol.borrow().as_ref().map(|traded| traded.symbol.clone()),
                     trading_suffix: pane.trading_symbol.borrow().as_ref().and_then(|traded| traded.suffix.clone()),
                     auto_scale: pane.view.price_auto(),
+                    price_window: pane.view.held_price_window().map(|(low, high)| [low, high]),
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
                     drawings_shown: pane.view.show_drawings(),
@@ -4920,6 +4955,9 @@ impl Window {
                 .as_deref()
                 .and_then(|symbol| self.index.find(symbol, stored.trading_suffix.as_deref()));
             pane.view.set_price_auto(stored.auto_scale);
+            if let (false, Some([low, high])) = (stored.auto_scale, stored.price_window) {
+                pane.view.hold_price_window(low, high);
+            }
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
             pane.view.set_bars_hidden(stored.bars_hidden);

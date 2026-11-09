@@ -1920,6 +1920,45 @@ impl State {
         (low, high)
     }
 
+    /// The prices a held scale shows, bottom and top, which is what is
+    /// written down to bring it back after a restart. Prices rather than a
+    /// zoom on what is on screen, because what is on screen after a restart
+    /// is the live edge, with whatever has traded since: the prices somebody
+    /// zoomed to are the ones they wanted to look at, wherever the bars went.
+    ///
+    /// `None` while automatic, and for a held scale nothing has been drawn
+    /// on yet, which has nothing to hold but the fit it will be drawn with.
+    fn held_window(&self) -> Option<(f64, f64)> {
+        if self.price_auto {
+            return None;
+        }
+        let (low, high) = self.price_base.get()?;
+        let log = self.price_log && low > 0.0;
+        let (on_axis, to_price): (fn(f64) -> f64, fn(f64) -> f64) = match log {
+            true => (f64::ln, f64::exp),
+            false => (|v| v, |v| v),
+        };
+        let (low, high) = (on_axis(low), on_axis(high));
+        let range = (high - low).max(f64::EPSILON);
+        let middle = (low + high) / 2.0 + range * self.price_offset;
+        let half = range / 2.0 / self.price_zoom.clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
+        let (low, high) = (to_price(middle - half), to_price(middle + half));
+        (low.is_finite() && high.is_finite() && low < high).then_some((low, high))
+    }
+
+    /// Hold the scale at these prices, bottom and top, as
+    /// [`held_window`](Self::held_window) wrote them down. Anything that is
+    /// not a range of prices leaves the scale as it was.
+    fn hold_window(&mut self, low: f64, high: f64) {
+        if !(low.is_finite() && high.is_finite() && low < high) {
+            return;
+        }
+        self.price_auto = false;
+        self.price_zoom = 1.0;
+        self.price_offset = 0.0;
+        self.price_base.set(Some((low, high)));
+    }
+
     /// Shift the view by a number of bars. Positive moves forward in time.
     /// Past either end of the series the view runs into empty room, as far
     /// as `OVERHANG_PX` allows at this zoom — which needs the plot's width.
@@ -2065,6 +2104,13 @@ impl State {
         let _ = price_range(self, &self.bars[first..first + visible], &plan);
     }
 
+    /// Whether the price scale is automatic, and the zoom and shift of a
+    /// held one: what a gesture is compared against to tell whether it
+    /// changed anything worth writing down.
+    fn price_hold(&self) -> (bool, f64, f64) {
+        (self.price_auto, self.price_zoom, self.price_offset)
+    }
+
     /// Put the price scale back to fitting the bars on screen.
     fn free_price(&mut self) {
         self.price_auto = true;
@@ -2096,6 +2142,7 @@ impl State {
             .map(|i| i.symbol != instrument.symbol || i.suffix != instrument.suffix)
             .unwrap_or(true)
             || self.timeframe != timeframe;
+        let first = self.instrument.is_none();
         self.bars = bars;
         self.instrument = Some(instrument);
         self.timeframe = timeframe;
@@ -2110,8 +2157,12 @@ impl State {
             self.visible = 160;
             // A held range is in this series' prices, which another
             // symbol's need not be anywhere near: it holds its own fit,
-            // zoomed and shifted as this one was.
-            self.price_base.set(None);
+            // zoomed and shifted as this one was. The first series a chart
+            // gets is not another symbol's: a range it holds already was
+            // brought back for it, from before a restart.
+            if !first {
+                self.price_base.set(None);
+            }
         }
         self.fit_range();
         changed
@@ -4215,6 +4266,19 @@ impl ChartView {
         self.redraw();
     }
 
+    /// The prices a held price scale shows, bottom and top; `None` while it
+    /// fits itself. What the window writes down with the chart.
+    pub fn held_price_window(&self) -> Option<(f64, f64)> {
+        self.state.borrow().held_window()
+    }
+
+    /// Take the price scale off automatic, showing these prices, bottom and
+    /// top: a held scale brought back from where it was written down.
+    pub fn hold_price_window(&self, low: f64, high: f64) {
+        self.state.borrow_mut().hold_window(low, high);
+        self.redraw();
+    }
+
     /// Is the price axis logarithmic? What was asked for, which is what the
     /// chart remembers: a stretch of bars at or below zero draws linear
     /// without changing the answer.
@@ -4232,8 +4296,10 @@ impl ChartView {
     }
 
     /// Be told when a gesture on the chart changes whether the price scale
-    /// is automatic. Not called for [`set_price_auto`](Self::set_price_auto)
-    /// or the resets: whoever called those already knows.
+    /// is automatic, or moves a held one: a wheel notch over the axis at
+    /// once, a drag once it is let go of. Handed whether it is automatic
+    /// now. Not called for [`set_price_auto`](Self::set_price_auto) or the
+    /// resets: whoever called those already knows.
     pub fn set_price_auto_handler(&self, handler: impl Fn(bool) + 'static) {
         *self.on_price_auto.borrow_mut() = Some(Box::new(handler));
     }
@@ -4712,7 +4778,7 @@ impl ChartView {
             if matches!(s.drag, Some(Drag::Mark { .. })) {
                 return glib::Propagation::Stop;
             }
-            let was_auto = s.price_auto;
+            let was_price = s.price_hold();
             let region = s
                 .pointer
                 .map(|(x, y)| region_at(x, y, width, height))
@@ -4757,7 +4823,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
-            notify_price_auto(&state, &on_price_auto, was_auto);
+            notify_price_auto(&state, &on_price_auto, was_price);
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
@@ -4924,7 +4990,7 @@ impl ChartView {
             Press::Elsewhere => {}
         }
         let mut s = state.borrow_mut();
-        let was_auto = s.price_auto;
+        let was_price = s.price_hold();
         // The edge wins over whatever region it crosses, because that is
         // what the cursor was already promising.
         let plan = layout(&s, width, height);
@@ -5109,7 +5175,7 @@ impl ChartView {
             },
         );
         drop(s);
-        notify_price_auto(&state, &on_price_auto, was_auto);
+        notify_price_auto(&state, &on_price_auto, was_price);
         if let (Some(hit), Some(view)) = (pick, view.upgrade()) {
             view.pick(hit);
         }
@@ -5328,6 +5394,7 @@ impl ChartView {
 
         let state = self.state.clone();
         let on_resize = self.on_pane_resize.clone();
+        let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         drag.connect_drag_end(move |_, offset_x, offset_y| {
             let finished = state.borrow_mut().drag.take();
@@ -5400,6 +5467,18 @@ impl ChartView {
                             view.tell(DrawingEvent::Changed(drawing));
                         }
                     }
+                    return;
+                }
+                // A held scale dragged up or down, or stretched: told once,
+                // as it is let go of, against where the drag picked it up.
+                Some(Drag::Pan { offset, .. }) => {
+                    let (auto, zoom, _) = state.borrow().price_hold();
+                    notify_price_auto(&state, &on_price_auto, (auto, zoom, offset));
+                    return;
+                }
+                Some(Drag::PriceScale { zoom }) => {
+                    let (auto, _, offset) = state.borrow().price_hold();
+                    notify_price_auto(&state, &on_price_auto, (auto, zoom, offset));
                     return;
                 }
                 _ => {}
@@ -5486,7 +5565,7 @@ impl ChartView {
                 }
             }
             let mut s = state.borrow_mut();
-            let was_auto = s.price_auto;
+            let was_price = s.price_hold();
             match region {
                 Region::PriceAxis => s.free_price(),
                 Region::TimeAxis => {
@@ -5503,7 +5582,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
-            notify_price_auto(&state, &on_price_auto, was_auto);
+            notify_price_auto(&state, &on_price_auto, was_price);
         });
         self.area.add_controller(click);
     }
@@ -5589,20 +5668,20 @@ fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
 }
 
 /// Tell the window if a gesture just changed whether the price scale is
-/// automatic.
+/// automatic, or moved a held one.
 ///
-/// Compared against what it `was` rather than reported outright, because
-/// every notch of the wheel over the axis passes through here and only the
-/// first one changes anything. Called with the state no longer borrowed: the
+/// Compared against what it `was` (see [`State::price_hold`]) rather than
+/// reported outright, because a pan or a time zoom passes through here too
+/// and changes neither. Called with the state no longer borrowed: the
 /// handler is the window's, and the window reads the chart back.
 fn notify_price_auto(
     state: &Rc<RefCell<State>>,
     on_price_auto: &Handler<dyn Fn(bool)>,
-    was: bool,
+    was: (bool, f64, f64),
 ) {
-    let now = state.borrow().price_auto;
+    let now = state.borrow().price_hold();
     if now != was && let Some(handler) = on_price_auto.borrow().as_ref() {
-        handler(now);
+        handler(now.0);
     }
 }
 
@@ -10273,6 +10352,69 @@ mod tests {
         // Held again, it holds this fit, not the one it let go of.
         state.hold_price(w, h);
         assert!(same_scale(drawn_scale(&state, w, h), refitted));
+    }
+
+    /// What a restart reads back: the prices a held scale was left
+    /// showing, zoomed and shifted, brought back on a chart that has no
+    /// bars yet and kept through the first series it is given — at another
+    /// size, at the live edge, with bars that have traded since — on a
+    /// linear axis and a log one.
+    #[test]
+    fn a_held_price_scale_comes_back_after_a_restart() {
+        for log in [false, true] {
+            let mut state = charted(400);
+            state.instrument = Some(named("ES"));
+            state.price_log = log;
+            state.visible = 160;
+            state.overhang = 0;
+            let (w, h) = (1200.0, 600.0);
+            let plot_h = layout(&state, w, h).price_h;
+            state.scale_price(3.0, w, h);
+            state.price_offset = 40.0 / plot_h / state.price_zoom;
+            let left = drawn_scale(&state, w, h);
+            let (low, high) = state.held_window().expect("a held scale has prices");
+            assert!(low < high);
+
+            let mut restored = charted(0);
+            restored.price_log = log;
+            restored.hold_window(low, high);
+            assert!(!restored.price_auto, "{log}: held from the start");
+            restored.replace_series(named("ES"), restored.timeframe, ramp(450));
+            restored.visible = 160;
+            for (w, h) in [(1200.0, 600.0), (800.0, 900.0)] {
+                assert!(same_scale(drawn_scale(&restored, w, h), left), "{log}: the same prices at {w}x{h}");
+            }
+            let (again_low, again_high) = restored.held_window().expect("still held");
+            assert!((again_low - low).abs() < 1e-9 && (again_high - high).abs() < 1e-9, "{log}: written down the same");
+
+            // Another symbol is not this one's prices, as before.
+            restored.replace_series(named("NQ"), restored.timeframe, ramp(450));
+            assert!(!same_scale(drawn_scale(&restored, w, h), left), "{log}: another symbol holds its own fit");
+        }
+    }
+
+    /// Nothing to write down while the scale fits itself, and nothing left
+    /// once a reset or auto scale has let go of a held one.
+    #[test]
+    fn a_price_scale_that_fits_itself_holds_no_prices() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = charted(400);
+        assert_eq!(state.held_window(), None, "automatic");
+        state.scale_price(2.0, w, h);
+        let _ = drawn_scale(&state, w, h);
+        assert!(state.held_window().is_some());
+        state.free_price();
+        assert_eq!(state.held_window(), None, "auto scale let go of it");
+        state.hold_window(120.0, 180.0);
+        assert_eq!(state.held_window(), Some((120.0, 180.0)));
+        state.reset_view();
+        assert!(state.price_auto);
+        assert_eq!(state.held_window(), None, "a reset let go of it");
+        // Nothing that is a range of prices is held.
+        for (low, high) in [(f64::NAN, 1.0), (5.0, 5.0), (9.0, 1.0), (0.0, f64::INFINITY)] {
+            state.hold_window(low, high);
+            assert!(state.price_auto, "{low}..{high}");
+        }
     }
 
     /// Panning past either end opens room there — as much as
