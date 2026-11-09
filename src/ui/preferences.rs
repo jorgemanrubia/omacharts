@@ -1086,6 +1086,7 @@ fn build_general_page(context: &Rc<Context>) {
     context.charts_other_page.add(&time_group(context));
     context.charts_other_page.add(&chart_group(context));
     context.general_page.add(&screenshots_group(context));
+    context.general_page.add(&updates_group(context));
     build_charts_page(context);
     rebuild_templates(context);
     build_data_page(context);
@@ -1331,6 +1332,22 @@ fn confirm_delete_template(context: &Rc<Context>, anchor: &gtk::Button, id: u32,
 /// Both rows derive their state rather than reading something written down at
 /// install time: nothing is stored until somebody changes it, so the day the
 /// default folder moves, everyone who never chose moves with it.
+/// Whether newer releases are downloaded behind the window. Off stops the
+/// asking and leaves what is already downloaded in place: it is newer than
+/// what pacman installed, and settings it has migrated would not open in an
+/// older version.
+fn updates_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Updates");
+    let row = adw::SwitchRow::new();
+    row.set_title("Update automatically");
+    row.set_active(context.store.setting_bool(crate::update::SETTING, true));
+    let store = context.store.clone();
+    row.connect_active_notify(move |row| store.set_setting_bool(crate::update::SETTING, row.is_active()));
+    group.add(&row);
+    group
+}
+
 fn screenshots_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Screenshots");

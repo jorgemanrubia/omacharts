@@ -45,6 +45,9 @@ const KEYS: &[(&str, Kind)] = &[
     // Which experiments are switched on: a machine's, switched on there
     // from its command line, never carried to another by a restore.
     (crate::features::PREFIX, Kind::Local),
+    // Whether this machine downloads releases: about its install, which
+    // another machine's settings know nothing of.
+    (crate::update::SETTING, Kind::Local),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),

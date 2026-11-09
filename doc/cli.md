@@ -1311,6 +1311,45 @@ the cache will be pruned back under 2.0 GB
 `cache clear` throws every cached series away. Settings, watchlists and
 chartbooks are not cache and are left alone.
 
+## Updates
+
+The installed app downloads new releases in the background and starts the
+newest at the next launch. These ask now, in the terminal they are typed in,
+whether a window is open or not:
+
+```
+$ omacharts update check
+0.2.15 is available · `omacharts update download` gets it
+  [exit 0]
+
+$ omacharts update download
+0.2.15 is ready · the next launch uses it
+  [exit 0]
+```
+
+`--json` gives `running`, `installed`, `latest`, `ready` and `available`. A
+release whose binary for this machine is not up yet says it is being
+published, and is downloaded at a later check.
+
+```
+$ omacharts update reset
+removed 2 · the next launch runs 0.2.14
+  [exit 0]
+```
+
+`update reset` removes every download and everything the updater remembers,
+so the next launch runs the package's version and a version that was set aside
+can be downloaded again. A newer version that has already run is kept, since it
+may have migrated the settings, and so is which copy of the settings came
+before which version, for them to be put back from; `--all` removes both,
+but keeps the copies in `versions/.saved-<version>` to put back by hand.
+`--json` gives `removed`, `kept` and `installed`.
+
+A build that is not `/usr/bin/omacharts` refuses all three with exit 5, and
+nothing is asked for; so does any of them run as root, or `check` and
+`download` with `OMACHARTS_NO_UPDATE` set. That variable, set to anything but
+`0`, runs the package's version and nothing downloaded, for that launch.
+
 ## Backups of your settings
 
 Everything you made — settings, watchlists, chartbooks, drawings, themes — is
@@ -1484,6 +1523,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `backup` | copies of your settings, and putting one back |
 | `plugin` | the widget in the Omarchy bar |
 | `skill` | the agent skill, installed only when asked |
+| `update` | newer releases, downloaded and used from the next launch |
 
 `omacharts <group> --help` and `omacharts <group> <command> --help` both work,
 as does `omacharts help <group> <command>`.

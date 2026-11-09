@@ -27,7 +27,7 @@ build() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release --bin omacharts
+  cargo build --frozen --release --bin omacharts --bin omacharts-launch
 }
 
 check() {
@@ -41,7 +41,13 @@ package() {
   cd "$pkgname-$pkgver"
   local id='com.jorgemanrubia.Omacharts'
 
-  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  # The command on PATH is the launcher, which links nothing and execs the
+  # app: this one, or a newer version the app downloaded for this user. The
+  # app itself lives beside the package's other files, never on PATH, so GTK
+  # is loaded once per launch whichever binary keeps the window — see
+  # src/launch.rs.
+  install -Dm755 "target/release/$pkgname-launch" "$pkgdir/usr/bin/$pkgname"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/lib/$pkgname/$pkgname"
   install -Dm644 "packaging/$id.desktop" "$pkgdir/usr/share/applications/$id.desktop"
 
   for size in 16 24 32 48 64 128 256 512; do

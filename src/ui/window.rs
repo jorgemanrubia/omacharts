@@ -50,6 +50,7 @@ use gtk::gio;
 mod log;
 mod marks;
 mod trade;
+mod updates;
 use trade::Trade;
 
 /// How often the rail's missing prices are looked for.
@@ -3127,6 +3128,7 @@ impl Window {
         this.watch_trading();
         this.watch_log();
         this.sign_in_after_first_frame();
+        this.update_after_first_frame();
         let watchlist = this.build_watchlist();
         // Which list the rail is showing is part of the chartbook, so every
         // way of changing it has to write the book down. One hook, because a
