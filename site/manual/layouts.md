@@ -40,7 +40,12 @@ Both are in the [chart menu](/manual/charts/#the-chart-menu) too. The copy has t
 
 ## Focusing a chart
 
-Click a chart, or press <kbd>Alt</kbd> + an arrow to focus the nearest chart in that direction. Nearest is by position on screen. With no chart in that direction, nothing happens. See [The focused chart](/manual/window/#the-focused-chart).
+Click a chart, or use <kbd>Alt</kbd> and an arrow:
+
+- <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> focus the previous or next chart in reading order: the top row left to right, then the next row down. From the end of a row they go on to the next row, and from the last chart back to the first, so they reach every chart in the chartbook.
+- <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> focus the nearest chart above or below, by position on screen. With no chart that way, nothing happens.
+
+While a chart is maximised, the chart the focus reaches takes the window. See [The focused chart](/manual/window/#the-focused-chart).
 
 ## Resizing
 

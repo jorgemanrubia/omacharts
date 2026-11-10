@@ -70,7 +70,7 @@ The blank space in the window's corner is the window's handle. Drag it to move t
 
 ## The focused chart
 
-One chart at a time is the focused one. It has a thin ring in the accent colour when the chartbook has more than one chart. Keys and the menus act on it. Clicking anywhere on a chart, with any button, focuses it and gives it the keyboard. <kbd>Alt</kbd> + an arrow moves the focus to the chart in that direction ([Splitting and arranging charts](/manual/layouts/#focusing-a-chart)). Only the focused chart shows its resolution strip and its indicator legend.
+One chart at a time is the focused one. It has a thin ring in the accent colour when the chartbook has more than one chart. Keys and the menus act on it. Clicking anywhere on a chart, with any button, focuses it and gives it the keyboard. <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves the focus to the previous or next chart, row by row, and <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> to the chart above or below ([Splitting and arranging charts](/manual/layouts/#focusing-a-chart)). Only the focused chart shows its resolution strip and its indicator legend.
 
 <kbd>Esc</kbd> puts down a drawing tool in hand, clears a selection and gives the keyboard back to the focused chart from wherever it is. In a dialog it closes the dialog ([Dialogs](#dialogs)).
 
