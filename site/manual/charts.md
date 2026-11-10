@@ -425,6 +425,7 @@ The header is the line at a chart's top-left and the row centred across its top.
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
 | **Daily change** | The day's move as a percentage, green for a rise and red for a fall in the theme's own tones, swapped on a chart set to red up, and in the header's text when it has not moved. The same figure as the sidebar's |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
+| **Local visuals** | A window pulled off another, dimmed, on a chart whose [look of its own](#a-charts-own-look) differs from every chart's. Nothing on any other |
 | **Chart title** | The chart's own title. Click it to [edit it](#chart-titles) |
 | **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
 

@@ -206,6 +206,8 @@ pub struct ChartPane {
     /// where it is writes nothing.
     pub change_shown: Cell<Option<i64>>,
     pub template_label: gtk::Label,
+    /// Says the chart's look differs from every chart's: see `Part::Look`.
+    pub look_mark: gtk::DrawingArea,
     /// The Title part: the chart title, a flat button like the symbol
     /// that turns into an entry where it stands when clicked, Enter or
     /// clicking away keeping what was typed and Escape what was there.
@@ -461,6 +463,9 @@ impl ChartPane {
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
         template_label.set_valign(gtk::Align::Center);
+        let look_mark = look_icon(16);
+        look_mark.set_tooltip_text(Some("This chart has a look of its own"));
+        look_mark.set_visible(false);
         // The title reads as the header's other words do, the symbol's
         // weight and its hover, and is a button only so the pointer can say
         // it is one. Untitled, its words are there and not drawn, so the
@@ -791,6 +796,7 @@ impl ChartPane {
             change_basis: Cell::new(None),
             change_shown: Cell::new(None),
             template_label,
+            look_mark,
             title_part,
             title_button,
             title_label,
@@ -1058,11 +1064,12 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 15] = [
+        let parts: [(Part, gtk::Widget); 16] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
+            (Part::Look, self.look_mark.clone().upcast()),
             (Part::Title, self.title_part.clone().upcast()),
             (Part::Account, self.account_menu.clone().upcast()),
             (Part::Feed, self.feed_menu.clone().upcast()),
@@ -1653,6 +1660,9 @@ pub const TITLE_PLACEHOLDER: &str = "Add title";
 /// The class an untitled chart's Title part wears; a screenshot leaves it
 /// out, since it is a control and not a title.
 pub const TITLE_UNTITLED: &str = "chart-title-untitled";
+/// The class the Look part's mark wears, in a header and on the header
+/// card; a screenshot leaves it out.
+pub const LOOK_MARK: &str = "look-mark";
 /// How long a title may be, and how much of it the header shows before it
 /// is cut short.
 pub const TITLE_MAX_LENGTH: i32 = 80;
@@ -1873,6 +1883,55 @@ fn draw_pin(cr: &gtk::cairo::Context, w: f64) {
     cr.move_to(0.0, -k);
     cr.line_to(0.0, 7.6 * k);
     let _ = cr.stroke();
+}
+
+/// The Look part: one window pulled off another, for a chart whose look
+/// is split off every chart's. Dim, as the header's other furniture is,
+/// and `size` pixels square: a chart's header draws it at 16, the header
+/// card in Settings at 13.
+///
+/// The window in front, up and to the right, is drawn whole; the one it
+/// left behind is half ink and stops short of it, so at this size the two
+/// read as a front and a back rather than two boxes crossing.
+pub(crate) fn look_icon(size: i32) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(size);
+    area.set_content_height(size);
+    area.add_css_class("dim-label");
+    area.add_css_class(LOOK_MARK);
+    area.set_valign(gtk::Align::Center);
+    area.set_draw_func(|area, cr, width, height| {
+        let colour = area.color();
+        let ink = |share: f32| cr.set_source_color(&colour.with_alpha(colour.alpha() * share));
+        // Drawn on a 16-unit grid, scaled to the area, with the strokes the
+        // header's other glyphs have whatever the size.
+        let size = width.min(height) as f64;
+        cr.translate((width as f64 - size) / 2.0, (height as f64 - size) / 2.0);
+        cr.scale(size / 16.0, size / 16.0);
+        let line = 1.3 * 16.0 / size;
+        let (back, front, radius, gap) = ((1.0, 7.0), (5.0, 1.5), 2.0, 1.5);
+        let window = |(x, y): (f64, f64)| rounded(cr, x, y, 10.0, 7.5, radius);
+        cr.push_group();
+        cr.set_line_width(line);
+        ink(0.5);
+        window(back);
+        let _ = cr.stroke();
+        // Clear the front window's ground and a gap round it, cutting the
+        // back one off where it would run behind.
+        cr.set_operator(gtk::cairo::Operator::Clear);
+        window(front);
+        let _ = cr.fill_preserve();
+        cr.set_line_width(line + 2.0 * gap);
+        let _ = cr.stroke();
+        cr.set_operator(gtk::cairo::Operator::Over);
+        cr.set_line_width(line);
+        ink(1.0);
+        window(front);
+        let _ = cr.stroke();
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint();
+    });
+    area
 }
 
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {

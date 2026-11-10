@@ -497,7 +497,7 @@ omacharts: give --follow or changes to the look, not both
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
 | `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn |
-| `--header PARTS` | `symbol`, `resolution`, `change`, `template`, joined with commas, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
+| `--header PARTS` | `symbol`, `resolution`, `change`, `template`, `look`, joined with commas, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
 | `--grid on` or `off` | | Draws the grid ([Gridlines](/manual/charts/#gridlines)) |
 | `--price-line on` or `off` | | Draws the dashed line at the last price |
 | `--follow` | | Drops the chart's own look, so it wears every chart's again |
@@ -1599,7 +1599,7 @@ same.
 | `chart_shows_drawings` | on, off | on | Charts › Settings › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Settings › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Settings › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `look`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
 | `chart_header_center` | the same | `title` | Overlays › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | General › Time › Time format | [Preferences](/manual/preferences/#time) |

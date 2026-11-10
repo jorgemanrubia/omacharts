@@ -56,6 +56,9 @@ pub enum Part {
     /// The name of the chart template the chart is on; nothing when it is on
     /// none.
     Template,
+    /// A window pulled off another, dimmed, on a chart whose look differs
+    /// from every chart's; nothing on one that looks like every other.
+    Look,
     /// Which trading account the chart is on. Nothing at all while there
     /// is at most one account to be on.
     Account,
@@ -95,11 +98,12 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ALL: [Part; 15] = [
+    pub const ALL: [Part; 16] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
         Part::Template,
+        Part::Look,
         Part::Title,
         Part::Account,
         Part::Feed,
@@ -131,6 +135,7 @@ impl Part {
             Part::Resolution => Some(Section::Left),
             Part::Change => Some(Section::Left),
             Part::Template => None,
+            Part::Look => None,
             Part::Account => Some(Section::Right),
             Part::Feed => Some(Section::Left),
             Part::DayPnl => Some(Section::Right),
@@ -167,6 +172,7 @@ impl Part {
             Part::Resolution => "resolution",
             Part::Change => "change",
             Part::Template => "template",
+            Part::Look => "look",
             Part::Account => "account",
             Part::Feed => "feed",
             Part::DayPnl => "day_pnl",
@@ -192,6 +198,7 @@ impl Part {
             Part::Resolution => "Resolution",
             Part::Change => "Daily change",
             Part::Template => "Chart template",
+            Part::Look => "Local visuals",
             Part::Account => "Account",
             Part::Feed => "Data feed",
             Part::DayPnl => "P&L",

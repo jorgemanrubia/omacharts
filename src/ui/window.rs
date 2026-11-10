@@ -4534,7 +4534,7 @@ impl Window {
         let bars = omacharts_engine::theme_bars(&theme);
         let pane = ChartPane::new(id, theme.clone(), bars, timeframe, indicators, session, mode);
         *pane.look.borrow_mut() = look;
-        self.wear(&pane, &self.look_of(&pane), &theme);
+        self.wear(&pane, &ChartLook::global(&self.store), &theme);
         pane.view.set_house_look(self.house_look());
 
         let searcher = self.clone();
@@ -11520,8 +11520,8 @@ impl Window {
         let pane = self.focused_pane();
         let mut look = self.look_of(&pane);
         look.set(edit);
-        self.wear(&pane, &look, &self.theme());
         *pane.look.borrow_mut() = Some(look);
+        self.wear(&pane, &ChartLook::global(&self.store), &self.theme());
         self.sync_chart_actions(&pane);
         self.save_workspace();
     }
@@ -11541,13 +11541,17 @@ impl Window {
         if pane.look.borrow_mut().take().is_none() {
             return;
         }
-        self.wear(&pane, &self.look_of(&pane), &self.theme());
+        self.wear(&pane, &ChartLook::global(&self.store), &self.theme());
         self.sync_chart_actions(&pane);
         self.save_workspace();
     }
 
-    /// Dress a chart in `look`, its colours resolved on `theme`.
-    fn wear(self: &Rc<Self>, pane: &Rc<ChartPane>, look: &ChartLook, theme: &omacharts_engine::Theme) {
+    /// Dress a chart in its own look, or while it has none in `global`, its
+    /// colours resolved on `theme`, with the Local mark while the two differ.
+    fn wear(self: &Rc<Self>, pane: &Rc<ChartPane>, global: &ChartLook, theme: &omacharts_engine::Theme) {
+        let own = pane.look.borrow().clone();
+        let look = own.as_ref().unwrap_or(global);
+        pane.look_mark.set_visible(own.as_ref().is_some_and(|own| own != global));
         pane.view.restyle(theme.clone(), look.bars.scheme(theme));
         pane.view.set_bar_style(look.style);
         pane.view.set_show_grid(look.grid);
@@ -11568,8 +11572,7 @@ impl Window {
         let (global, theme) = (ChartLook::global(&self.store), self.theme());
         let panes = self.panes.borrow().clone();
         for pane in &panes {
-            let own = pane.look.borrow().clone();
-            self.wear(pane, own.as_ref().unwrap_or(&global), &theme);
+            self.wear(pane, &global, &theme);
         }
     }
 

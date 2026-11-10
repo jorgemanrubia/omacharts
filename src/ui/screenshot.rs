@@ -59,7 +59,7 @@ use omacharts_engine::Theme;
 use crate::store::Store;
 use crate::ui::chart::POINTER_LAYER;
 use crate::ui::colors;
-use crate::ui::pane::{ChartPane, TITLE_UNTITLED};
+use crate::ui::pane::{ChartPane, LOOK_MARK, TITLE_UNTITLED};
 
 /// Where screenshots are written, for somebody who wants them somewhere the
 /// desktop's are not. Unset means the default, which is derived rather than
@@ -93,6 +93,8 @@ pub const FOLDER: &str = "Omacharts";
 /// - `pane-expand` — the maximize corner.
 /// - `feed-part` — the data feed's dot: how a connection stood at the
 ///   moment is not what the picture is of.
+/// - [`LOOK_MARK`] — the mark of a chart with a look of its own: a note
+///   about the chart's settings, not about what the picture shows.
 /// - [`TITLE_UNTITLED`] — an untitled chart's Title part, which is only
 ///   ever a way to give it one. A chart's title stays: it titles the chart.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
@@ -106,6 +108,7 @@ const LEFT_OUT: &[&str] = &[
     "legend-button",
     "pane-expand",
     "feed-part",
+    LOOK_MARK,
     TITLE_UNTITLED,
     POINTER_LAYER,
 ];

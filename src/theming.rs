@@ -430,6 +430,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   opacity: 0.75;
 }
 
+/* The Look part's mark, with the room the words beside it keep. */
+.look-mark { margin: 0 5px; }
+
 /* Timeframe buttons: flat strip, the active one filled. */
 .timeframe-strip { padding: 2px; }
 .timeframe-strip button { min-width: 34px; padding: 2px 6px; }

@@ -214,7 +214,7 @@ fn reset_glyph(button: &gtk::Button) -> gtk::DrawingArea {
     area.set_valign(gtk::Align::Center);
     area.set_draw_func(|area, cr, width, height| {
         let colour = area.color();
-        cr.set_source_rgba(colour.red().into(), colour.green().into(), colour.blue().into(), colour.alpha().into());
+        cr.set_source_color(&colour);
         let scale = f64::from(width.min(height)) / 16.0;
         cr.scale(scale, scale);
         cr.set_line_width(1.8);

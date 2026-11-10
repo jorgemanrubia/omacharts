@@ -40,7 +40,7 @@ crop: as described
 | Kept | Left out |
 |---|---|
 | The bars, the price and time axes, the gridlines | The resolution strip (the resolution stays, in the header) |
-| The header: symbol, resolution and whatever else it shows | The gear, the link button and the **Maximize** button |
+| The header: symbol, resolution and whatever else it shows | The gear, the link button, the **Maximize** button and the **Local visuals** mark |
 | The indicator legend and every indicator | The buttons on an indicator's legend row and strip |
 | The last-price tag | The crosshair and its tags |
 | Drawings | The focus ring, the sidebar, the drawing tools, the chartbook strip and the window's own corners |
