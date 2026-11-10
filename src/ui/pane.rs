@@ -300,6 +300,9 @@ pub struct ChartPane {
     /// made on a symbol is usually a drawing about the symbol.
     pub shows_drawings: Cell<bool>,
     pub sends_drawings: Cell<bool>,
+    /// Whether this chart draws its indicator legend at all. On, each
+    /// indicator's own `in_legend` decides whether it is named.
+    pub shows_legend: Cell<bool>,
     /// What this chart is called among the drawings it has made.
     ///
     /// Not the pane's id, which is handed out afresh every time the window
@@ -798,6 +801,7 @@ impl ChartPane {
             mode: Cell::new(mode),
             shows_drawings: Cell::new(true),
             sends_drawings: Cell::new(true),
+            shows_legend: Cell::new(true),
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             profile_merges: RefCell::new(Vec::new()),

@@ -102,6 +102,7 @@ const SHARED: &[&str] = &[
     "chart_log_scale",
     "chart_shows_drawings",
     "chart_sends_drawings",
+    "chart_shows_legend",
     "chart_template",
     "chart_templates",
     "chart_header",

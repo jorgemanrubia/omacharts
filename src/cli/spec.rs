@@ -952,6 +952,8 @@ pub const SURFACE: &[Noun] = &[
                         .of(&["on", "off"]),
                     Flag::valued("indicators", "BOOL", "draw the chart's indicators, or hide them all")
                         .of(&["on", "off"]),
+                    Flag::valued("legend", "BOOL", "show the legend naming the chart's indicators, or none of it")
+                        .of(SWITCHES),
                     Flag::valued("drawings", "BOOL", "draw the chart's drawings, its own and the shared, or hide them all")
                         .of(&["on", "off"]),
                     Flag::valued(
@@ -1516,6 +1518,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),
+    ("shows_legend", "chart set", "--legend"),
     ("drawings", "chart drawing", ""),
     (
         "drawing_uid",

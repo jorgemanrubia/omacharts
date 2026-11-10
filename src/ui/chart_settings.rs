@@ -282,6 +282,16 @@ fn template_rows(
             }
             group.add(&choice);
             rows.borrow_mut().push(choice.upcast());
+
+            let legend = adw::SwitchRow::new();
+            legend.set_title(LEGEND_LABEL);
+            legend.set_active(window.shows_legend());
+            {
+                let window = window.clone();
+                legend.connect_active_notify(move |row| window.set_shows_legend(row.is_active()));
+            }
+            group.add(&legend);
+            rows.borrow_mut().push(legend.upcast());
             // No way into a second editor for the template: the list below
             // is the template's while the chart is on one, and says so.
         }
@@ -296,6 +306,10 @@ fn template_rows(
 
 /// The row a chart's title is typed into.
 pub const TITLE_LABEL: &str = "Title";
+
+/// The switch for a chart's whole indicator legend, here and in the
+/// preferences, where it is the default for new charts.
+pub const LEGEND_LABEL: &str = "Show legend for indicators";
 
 pub const TRADING_SYMBOL_LABEL: &str = "Trading symbol";
 

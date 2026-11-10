@@ -1607,6 +1607,7 @@ fn chart_set(
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
+    let legend = switch("legend")?;
     let template = match arg(m, "template") {
         None => None,
         Some(text) if text.eq_ignore_ascii_case("none") => Some(None),
@@ -1729,6 +1730,10 @@ fn chart_set(
     if let Some(shown) = arg(m, "indicators") {
         chart["indicators_shown"] = json!(shown == "on");
         changed.push(format!("indicators {}", if shown == "on" { "shown" } else { "hidden" }));
+    }
+    if let Some(shown) = legend {
+        chart["shows_legend"] = json!(shown);
+        changed.push(format!("legend {}", if shown { "shown" } else { "hidden" }));
     }
     if let Some(shown) = arg(m, "drawings") {
         chart["drawings_shown"] = json!(shown == "on");
@@ -4313,6 +4318,8 @@ fn pane_json(pane: &Value) -> String {
         // And shown, before they could all be hidden at once.
         "indicators_shown": pane["indicators_shown"].as_bool().unwrap_or(true),
         "drawings_shown": pane["drawings_shown"].as_bool().unwrap_or(true),
+        // And with its legend, before it could be turned off.
+        "legend": pane["shows_legend"].as_bool().unwrap_or(true),
         "link": stored_mode(pane).key(),
         "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
         "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
@@ -7188,6 +7195,42 @@ mod tests {
 
         run("chart set --book Macro --indicators on", &store);
         assert_eq!(charts(&store)["charts"][0]["indicators_shown"], true);
+    }
+
+    /// The legend is on for a new chart unless the default says otherwise,
+    /// `config set` is that default, and `chart set --legend` is one chart's
+    /// own answer, which wins over it. Each indicator's own switch is left
+    /// alone either way.
+    #[test]
+    fn a_charts_legend_follows_the_default_until_a_command_sets_its_own() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        run("chart indicator add --book Macro rsi", &store);
+        let charts = |store: &Store, book: &str| -> serde_json::Value {
+            serde_json::from_str(&run(&format!("chart list --book {book} --json"), store).out).unwrap()
+        };
+        assert_eq!(charts(&store, "Macro")["charts"][0]["legend"], true, "on to begin with");
+
+        let off = run("chart set --book Macro --legend off", &store);
+        assert_eq!(off.code, 0, "{}", off.err);
+        assert!(off.out.contains("legend hidden"), "{}", off.out);
+        assert_eq!(charts(&store, "Macro")["charts"][0]["legend"], false);
+        let listed: serde_json::Value =
+            serde_json::from_str(&run("chart indicator list --book Macro --json", &store).out).unwrap();
+        assert_eq!(listed["indicators"][0]["in_legend"], true, "the indicator's own switch kept");
+
+        let set = run("config set chart_shows_legend off", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        assert!(!crate::chart_defaults::ChartDefaults::load(&store).shows_legend);
+        run("chartbook create Energy --symbol CL", &store);
+        assert_eq!(charts(&store, "Energy")["charts"][0]["legend"], false, "a new chart opens on the default");
+        let on = run("chart set --book Energy --legend on", &store);
+        assert_eq!(on.code, 0, "{}", on.err);
+        assert_eq!(charts(&store, "Energy")["charts"][0]["legend"], true, "its own answer wins");
+        assert!(!crate::chart_defaults::ChartDefaults::load(&store).shows_legend, "the default left alone");
+
+        let bad = run("chart set --book Macro --legend maybe", &store);
+        assert_ne!(bad.code, 0);
     }
 
     /// Hiding a chart's drawings is stored with it and reported back, keeps
