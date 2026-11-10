@@ -318,6 +318,25 @@ impl TradingPanel {
         self.stack.set_visible_child_name(name);
     }
 
+    /// Every word the Accounts and the Positions tabs show, for the tests.
+    #[cfg(test)]
+    pub fn accounts_and_positions(&self) -> Vec<String> {
+        fn under(widget: &gtk::Widget, found: &mut Vec<String>) {
+            let mut next = widget.first_child();
+            while let Some(child) = next {
+                if let Some(label) = child.downcast_ref::<gtk::Label>() {
+                    found.push(label.label().to_string());
+                }
+                under(&child, found);
+                next = child.next_sibling();
+            }
+        }
+        let mut found = Vec::new();
+        under(self.accounts.upcast_ref(), &mut found);
+        under(self.positions.upcast_ref(), &mut found);
+        found
+    }
+
     /// The filter the Orders tab shows by.
     pub fn filter(&self) -> OrdersFilter {
         self.filter.get()

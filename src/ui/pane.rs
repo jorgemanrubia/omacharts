@@ -263,6 +263,10 @@ pub struct ChartPane {
     /// "P&L" and the account's P&L for the day after it.
     pub day_part: gtk::Box,
     day_amount: gtk::Label,
+    /// The position held, signed, and its open P&L in brackets.
+    pub position_part: gtk::Box,
+    position_net: gtk::Label,
+    position_pnl: gtk::Label,
     /// The size somebody picked for this chart, and from which template;
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
@@ -533,6 +537,16 @@ impl ChartPane {
         day_part.append(&day_word);
         day_part.append(&day_amount);
         day_part.set_visible(false);
+        // The size signed, "+3", in full; the money in brackets after it in
+        // the profit or loss colour, as the day's P&L is.
+        let position_net = gtk::Label::new(None);
+        let position_pnl = gtk::Label::new(None);
+        let position_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        position_part.add_css_class("readout-symbol");
+        position_part.set_valign(gtk::Align::Center);
+        position_part.append(&position_net);
+        position_part.append(&position_pnl);
+        position_part.set_visible(false);
         // A part's tooltip is not drawn over its own open menu.
         for part in [&account_menu, &feed_menu, &size_menu] {
             part.connect_active_notify(|part| {
@@ -767,6 +781,9 @@ impl ChartPane {
             size_label,
             day_part,
             day_amount,
+            position_part,
+            position_net,
+            position_pnl,
             trading_size: RefCell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
@@ -1015,7 +1032,7 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 14] = [
+        let parts: [(Part, gtk::Widget); 15] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
@@ -1026,6 +1043,7 @@ impl ChartPane {
             (Part::DayPnl, self.day_part.clone().upcast()),
             (Part::Trade, self.trade_part.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
+            (Part::Position, self.position_part.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
             (Part::Settings, self.gear.clone().upcast()),
             (Part::Maximize, self.expand.clone().upcast()),
@@ -1232,20 +1250,44 @@ impl ChartPane {
         if self.day_amount.text() != text {
             self.day_amount.set_text(text);
         }
-        let on = match sign {
-            std::cmp::Ordering::Greater => Some("pnl-gain"),
-            std::cmp::Ordering::Less => Some("pnl-loss"),
-            std::cmp::Ordering::Equal => None,
-        };
-        for class in ["pnl-gain", "pnl-loss"] {
-            let wanted = on == Some(class);
-            if self.day_amount.has_css_class(class) != wanted {
-                match wanted {
-                    true => self.day_amount.add_css_class(class),
-                    false => self.day_amount.remove_css_class(class),
-                }
-            }
+        signed_colour(&self.day_amount, sign);
+    }
+
+    /// The position held, its size signed and its open P&L already written
+    /// with whether it is up or down, the P&L `None` until the trading service
+    /// has said it; nothing at all, and no room taken, with nothing held.
+    pub fn write_position(&self, held: Option<(i32, Option<(&str, std::cmp::Ordering)>)>) {
+        if self.position_part.get_visible() != held.is_some() {
+            self.position_part.set_visible(held.is_some());
         }
+        let Some((net, pnl)) = held else { return };
+        let net = crate::trading::net_text(net);
+        if self.position_net.text() != net {
+            self.position_net.set_text(&net);
+        }
+        let text = pnl.map(|(text, _)| format!("({text})")).unwrap_or_default();
+        if self.position_pnl.text() != text {
+            self.position_pnl.set_text(&text);
+        }
+        if self.position_pnl.get_visible() != pnl.is_some() {
+            self.position_pnl.set_visible(pnl.is_some());
+        }
+        signed_colour(&self.position_pnl, pnl.map_or(std::cmp::Ordering::Equal, |(_, sign)| sign));
+    }
+
+    /// What the Current position part says and the colour of its P&L, for
+    /// the tests.
+    #[cfg(test)]
+    pub fn position_text(&self) -> Option<(String, Option<&'static str>)> {
+        self.position_part.get_visible().then(|| {
+            let class = ["pnl-gain", "pnl-loss"].into_iter().find(|class| self.position_pnl.has_css_class(class));
+            let mut words = self.position_net.text().to_string();
+            if self.position_pnl.get_visible() {
+                words.push(' ');
+                words.push_str(&self.position_pnl.text());
+            }
+            (words, class)
+        })
     }
 
     /// What the P&L part says and in which colour, for the tests.
@@ -1549,6 +1591,25 @@ const LEGEND_GAP: i32 = 5;
 
 /// A row of the legend under the header: an indicator's dot and its name,
 /// the buttons that act on it appended after.
+/// Wear the profit colour for a gain, the loss colour for a loss, and
+/// neither at nothing: the header's P&L and the position's alike.
+fn signed_colour(label: &gtk::Label, sign: std::cmp::Ordering) {
+    let on = match sign {
+        std::cmp::Ordering::Greater => Some("pnl-gain"),
+        std::cmp::Ordering::Less => Some("pnl-loss"),
+        std::cmp::Ordering::Equal => None,
+    };
+    for class in ["pnl-gain", "pnl-loss"] {
+        let wanted = on == Some(class);
+        if label.has_css_class(class) != wanted {
+            match wanted {
+                true => label.add_css_class(class),
+                false => label.remove_css_class(class),
+            }
+        }
+    }
+}
+
 pub fn legend_row(dot: &impl IsA<gtk::Widget>, name: &gtk::Label) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, LEGEND_GAP);
     row.add_css_class("legend-row");
@@ -2195,6 +2256,7 @@ mod tests {
                     pane.day_part.clone().upcast(),
                     pane.trade_part.clone().upcast(),
                     pane.size_menu.clone().upcast(),
+                    pane.position_part.clone().upcast(),
                     pane.gear.clone().upcast(),
                     pane.expand.clone().upcast(),
                     pane.link.clone().upcast()
@@ -2213,7 +2275,7 @@ mod tests {
             header(Header::standard().left, Header::standard().right);
             // The account, the P&L, Buy and Sell and the quantity, then the
             // three controls.
-            assert_eq!(corner(&pane).len(), 7);
+            assert_eq!(corner(&pane).len(), 8);
         });
     }
 

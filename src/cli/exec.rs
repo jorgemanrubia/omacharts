@@ -29,6 +29,7 @@ use super::charts::{self, Workspace};
 use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
 use crate::chart_defaults::ChartDefaults;
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
+use crate::trading::chart_pnl;
 
 /// Parse and run.
 pub fn dispatch(
@@ -217,6 +218,7 @@ pub fn dispatch(
                         live.adopt_clock()
                     }
                     Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
+                    Ok(key) if key == chart_pnl::DISPLAY || key == chart_pnl::R_AMOUNT => live.adopt_pnl(),
                     _ => {}
                 }
             }
@@ -5388,6 +5390,27 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("charts zoom at {percent}% sensitivity");
         return said(as_json, json!({"key": key, "value": percent.to_string()}), text);
     }
+    // How the charts write P&L, and what 1R is worth: either read back as
+    // money or as 500 when it is nonsense, so nonsense is refused here.
+    if key == chart_pnl::DISPLAY {
+        let display = chart_pnl::parse_display(value).map_err(Fault::usage)?;
+        chart_pnl::save_display(store, display);
+        let text = match display {
+            chart_pnl::Display::Money => "charts show P&L as money".to_string(),
+            chart_pnl::Display::Risk => format!(
+                "charts show P&L in R, 1R being {}",
+                chart_pnl::amount_text(chart_pnl::r_amount(store))
+            ),
+        };
+        return said(as_json, json!({"key": key, "value": display.key()}), text);
+    }
+    if key == chart_pnl::R_AMOUNT {
+        let amount = chart_pnl::parse_amount(value).map_err(Fault::usage)?;
+        chart_pnl::save_amount(store, amount);
+        let amount = chart_pnl::amount_text(amount);
+        let text = format!("1R is {amount}");
+        return said(as_json, json!({"key": key, "value": amount}), text);
+    }
     // Read back clamped, so a figure out of range is refused rather than
     // stored as something else.
     if key == crate::chart_defaults::SETTING_OHLC_THICKNESS {
@@ -5787,6 +5810,7 @@ fn backup_restore(
         live.adopt_theming();
         live.adopt_feed();
         live.adopt_zoom();
+        live.adopt_pnl();
         live.reload_watchlists();
     }
     said(
@@ -6285,7 +6309,7 @@ mod tests {
         let store = bare();
         crate::features::set(&store, crate::features::Feature::Trading, true);
         use crate::header::{Header, Part};
-        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -7837,6 +7861,33 @@ mod tests {
         assert_eq!(run("config set time_format 12h", &store).code, 0);
         assert_eq!(run("config set time_format 13h", &store).code, super::super::EXIT_USAGE);
         assert_eq!(run("config get time_format", &store).out.trim(), "12h");
+    }
+
+    /// How the charts write P&L, and what 1R is worth, are settings checked
+    /// as they are written: money or r, and a positive number, never blank.
+    #[test]
+    fn showing_pnl_in_r_is_a_checked_setting() {
+        let store = bare();
+        let out = run("config set pnl_display r", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("in R, 1R being 500"), "{}", out.out);
+        assert_eq!(run("config get pnl_display", &store).out.trim(), "r");
+        assert_eq!(run("config set pnl_display R", &store).code, 0);
+        assert_eq!(run("config set pnl_display risk", &store).code, super::super::EXIT_USAGE);
+        let out = run("config set pnl_r_amount 262.5", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "1R is 262.5");
+        assert_eq!(crate::trading::chart_pnl::load(&store), crate::trading::chart_pnl::ChartPnl::R(262.5));
+        for refused in ["0", "-500", "abc", "nan"] {
+            let bad = run(&format!("config set pnl_r_amount -- {refused}"), &store);
+            assert_eq!(bad.code, super::super::EXIT_USAGE, "{refused}");
+            assert!(bad.err.contains("positive number"), "{}", bad.err);
+        }
+        let blank: Vec<String> = ["omacharts", "config", "set", "pnl_r_amount", ""].map(String::from).to_vec();
+        assert_eq!(dispatch(&blank, &store, None, &super::super::Here).code, super::super::EXIT_USAGE);
+        assert_eq!(run("config get pnl_r_amount", &store).out.trim(), "262.5", "kept through the refusals");
+        assert_eq!(run("config set pnl_display money", &store).code, 0);
+        assert_eq!(crate::trading::chart_pnl::load(&store), crate::trading::chart_pnl::ChartPnl::Money);
     }
 
     /// Quietly ignoring a parameter the indicator has no use for would read
@@ -9448,7 +9499,7 @@ mod tests {
         assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
         assert_eq!(
             crate::header::load(&store).right,
-            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link, Part::Settings],
             "trading's parts kept where they were"
         );
     }
