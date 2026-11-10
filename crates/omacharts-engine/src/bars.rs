@@ -400,7 +400,9 @@ pub fn tick_of(bars: &[Bar]) -> Option<f64> {
     if distinct < TICK_PRICES {
         return None;
     }
-    let on = |step: f64| prices().all(|p| ((p / step) - (p / step).round()).abs() < 1e-3);
+    // A step must fit inside every price: 1.30 is within a thousandth of
+    // zero steps of 50,000, which would put a pound in dollars on zero.
+    let on = |step: f64| prices().all(|p| p >= step && ((p / step) - (p / step).round()).abs() < 1e-3);
     // Coarsest first, so the first step that fits is the answer and the
     // coarser ones that do not are turned away by their first price or two.
     let mut decimal = (-8..=4).rev().flat_map(|power| [5.0, 2.5, 2.0, 1.0].map(|m| m * 10f64.powi(power)));
@@ -843,6 +845,9 @@ mod tests {
         assert_eq!(tick_of(&stepped(61.37, 0.01)), Some(0.01));
         assert_eq!(tick_of(&stepped(110.015625, 1.0 / 64.0)), Some(1.0 / 64.0));
         assert_eq!(tick_of(&stepped(47_113.0, 1.0)), Some(1.0));
+        // Priced under the coarsest step: a currency and a small share.
+        assert_eq!(tick_of(&stepped(1.31234, 0.00001)), Some(0.00001));
+        assert_eq!(tick_of(&stepped(30.12, 0.01)), Some(0.01));
         let floats: Vec<Bar> = stepped(123.45, 0.01)
             .into_iter()
             .map(|b| Bar {
