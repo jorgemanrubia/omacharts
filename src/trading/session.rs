@@ -1,4 +1,4 @@
-//! The seam for brokers, [`Broker`] and [`Session`], the [`Desk`] that holds
+//! The seam for trading services, [`TradingService`] and [`Session`], the [`Desk`] that holds
 //! every login's session, and what the window keeps of it.
 
 use std::cell::RefCell;
@@ -8,14 +8,25 @@ use std::sync::Arc;
 use super::*;
 use crate::store::Store;
 
-/// A broker: what signs a login in for trading, and what keeps its
-/// password. Listed once, in [`super::adapters::registry`].
-pub trait Broker: Send + Sync {
+/// A trading service: what signs a login in for trading, and what keeps its
+/// password. Listed once, in [`super::services::registry`].
+pub trait TradingService: Send + Sync {
     /// The id its logins name it by, which is its data feed's too when it
     /// has one. Stored, so never changed.
     fn id(&self) -> &'static str;
-    /// What it is called in "Add a trading account…".
+    /// What it is called in "Add a trading service…".
     fn label(&self) -> &'static str;
+    /// Does its service chart too, as the data feed of the same id? Adding
+    /// a login then adds that feed, which charts and trades apart from it
+    /// all the same.
+    fn has_feed(&self) -> bool {
+        false
+    }
+    /// What a login of it is called when nobody named it, before a number
+    /// sets it apart from another of the same name: the service's own name.
+    fn named_after(&self, _login: &Login) -> String {
+        self.label().to_string()
+    }
     /// Where `login` signs in to, in a few words for its row, when there is
     /// more than one place it could.
     fn signs_in_to(&self, _login: &Login) -> Option<String> {
@@ -34,12 +45,12 @@ pub trait Broker: Send + Sync {
     fn forget_password(&self, secrets: &dyn Secrets, login: &Login, _data: bool) -> Result<(), String> {
         secrets.forget(&login.id, &login.user, "")
     }
-    /// Sign in, blocking until the broker has answered. `changed` is called,
+    /// Sign in, blocking until the trading service has answered. `changed` is called,
     /// on any thread, whenever an order, a position or a balance moves or
     /// the session ends by itself, and when it is back after a drop.
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String>;
-    /// What `login`'s last sign-in heard from the broker, for its entry in
-    /// the Log, whether it signed in or not: `None` for a broker that says
+    /// What `login`'s last sign-in heard from the trading service, for its entry in
+    /// the Log, whether it signed in or not: `None` for a trading service that says
     /// nothing more.
     fn heard_at_sign_in(&self, _login: &Login) -> Option<Heard> {
         None
@@ -97,121 +108,125 @@ pub enum Wake {
     Opened(Login, Result<Arc<dyn Session>, String>, Option<Result<(), String>>, Option<Heard>),
 }
 
-/// The brokers a desk signs logins in through, each found by the id its
+/// The trading services a desk signs logins in through, each found by the id its
 /// logins name.
 #[derive(Clone)]
-pub struct Registry(Vec<Arc<dyn Broker>>);
+pub struct Registry(Vec<Arc<dyn TradingService>>);
 
 impl Registry {
-    pub fn of(brokers: Vec<Arc<dyn Broker>>) -> Registry {
-        Registry(brokers)
+    pub fn of(services: Vec<Arc<dyn TradingService>>) -> Registry {
+        Registry(services)
     }
 
-    /// The broker logins call `id`, while it is open.
-    pub fn get(&self, id: &str) -> Option<Arc<dyn Broker>> {
-        self.iter().find(|broker| broker.id() == id).cloned()
+    /// The trading service logins call `id`, while it is open.
+    pub fn get(&self, id: &str) -> Option<Arc<dyn TradingService>> {
+        self.iter().find(|service| service.id() == id).cloned()
     }
 
-    /// Every broker that is open, in the order they are offered.
-    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Broker>> {
-        self.0.iter().filter(|broker| broker.open())
+    /// Every trading service that is open, in the order they are offered.
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn TradingService>> {
+        self.0.iter().filter(|service| service.open())
     }
 
-    /// Is `id` a broker of this build's that is closed now: behind a flag
+    /// Is `id` a trading service of this build's that is closed now: behind a flag
     /// that is off? Its logins are kept and shown nowhere.
     pub fn closed(&self, id: &str) -> bool {
-        self.0.iter().any(|broker| broker.id() == id && !broker.open())
+        self.0.iter().any(|service| service.id() == id && !service.open())
     }
 }
 
 /// A login's signed-in trading session.
 ///
-/// **The seam for brokers.** [`Broker`] and this are everything the window,
-/// the panel, the chart menu, the marks and the theme know of a broker:
+/// **The seam for trading services.** [`TradingService`] and this are everything the window,
+/// the panel, the chart menu, the marks and the theme know of a trading service:
 /// what is above them deals only in the neutral types here ([`Book`],
 /// [`OrderRequest`], [`OrderKind`], [`Status`], [`Refusal`]), so Interactive
-/// Brokers or Tradovate is a second implementation of the two traits and
-/// nothing else. Rithmic is the first, in [`super::adapters`]; the tests'
+/// Trading services or Tradovate is a second implementation of the two traits and
+/// nothing else. Rithmic is the first, in [`super::services`]; the tests'
 /// session is another.
 ///
 /// Accounts are named by their number here: a session is one login's, and
 /// [`Desk::book`] puts the login in front.
 ///
-/// Placing, moving, linking, cancelling and flattening block until the broker has answered,
+/// Placing, moving, linking, cancelling and flattening block until the trading service has answered,
 /// so they are for a thread of their own; what becomes of an order arrives
 /// later on the book, with `changed`. So do [`Session::refresh`] and
 /// [`Session::history`]. [`Session::contract_for`] does not block: it is
 /// asked on the main thread, as a menu opens.
 pub trait Session: Send + Sync {
-    /// The accounts, as the broker listed them at sign-in.
+    /// The accounts, as the trading service listed them at sign-in.
     fn accounts(&self) -> Vec<Account>;
     /// What its orders can be.
     fn capabilities(&self) -> Capabilities;
     /// Is this a simulated account, where an order costs nothing?
     fn is_simulated(&self) -> bool;
     /// The contract an order on `instrument` goes to, whatever feed charts
-    /// it. Never waits on the broker: what it does not know yet it asks for,
+    /// it. Never waits on the trading service: what it does not know yet it asks for,
     /// and tells with a change once it does.
     fn contract_for(&self, instrument: &omacharts_engine::Instrument) -> Result<Contract, Refusal>;
-    /// The last price the broker's own market data has traded `instrument`
+    /// The last price the trading service's own market data has traded `instrument`
     /// at, for one [`Session::contract_for`] has been asked about: what an
     /// order there is judged against, whatever feed charts it. Never waits:
-    /// `None` until a trade has been heard, and for a broker with no data.
+    /// `None` until a trade has been heard, and for a trading service with no data.
     fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {
         None
     }
     /// The lowest and highest prices the exchange takes an order on
-    /// `instrument` at today, as far as the broker has said: an order past
+    /// `instrument` at today, as far as the trading service has said: an order past
     /// either is refused. Never waits: `None` for a side not known.
     fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
         (None, None)
     }
-    /// The last trade the broker's market data has heard in `contract` on
+    /// The last trade the trading service's market data has heard in `contract` on
     /// `exchange`, one of the book's positions, for marking it to the
     /// market: [`Desk::book`] asks for every position held each time it is
     /// read. Never waits: asking starts listening on a market-data session
     /// the app already has, never a new one, and a new price is told with
     /// [`Change::Priced`] while the contract is held. `None` until a trade
-    /// has been heard, while there is no such session, and for a broker
+    /// has been heard, while there is no such session, and for a trading service
     /// with no data; then a chart of that very contract is marked to
-    /// instead, else the position keeps the broker's figure.
+    /// instead, else the position keeps the trading service's figure.
     fn price_of(&self, _contract: &str, _exchange: &str) -> Option<f64> {
         None
     }
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
-    /// Ask the broker for what the accounts hold now — the money and the
+    /// Ask the trading service for what the accounts hold now — the money and the
     /// limits, the positions, the working orders and today's orders with
     /// their fills — and block until it has come back and gone quiet, with
     /// [`Book::refreshed`] set. Signing in does it once, and so does coming
-    /// back after a drop. A broker that cannot ([`Capabilities::snapshot`]
+    /// back after a drop. A trading service that cannot ([`Capabilities::snapshot`]
     /// false) has nothing to do and says it is done.
     fn refresh(&self) -> Result<(), String>;
     /// The orders on the account numbered `account` from `from` to `to`,
     /// unix seconds, with their fills, oldest first. Only when
     /// [`Capabilities::history`] says so. Part of the seam so that every
-    /// broker serves past orders the same way; nothing in the window asks
+    /// trading service serves past orders the same way; nothing in the window asks
     /// for them yet.
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure>;
-    /// Place `order` and return the broker's id for it. Never retried.
+    /// Place `order` and return the trading service's id for it. Never retried.
     fn place(&self, order: &OrderRequest) -> Result<String, Failure>;
     fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure>;
     /// Move the working order `basket` to `price`, keeping everything else
     /// about it. Only when [`Capabilities::modify`] says so.
     fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), Failure>;
     /// Link working orders so that one filling or cancelled cancels the
-    /// rest, held by the broker. Only when [`Capabilities::link`] is
+    /// rest, held by the trading service. Only when [`Capabilities::link`] is
     /// [`Linking::AfterTheFact`]; [`Plan`] is what asks.
     fn link(&self, account: &str, baskets: &[String]) -> Result<(), Failure>;
-    /// Place two orders as one one-cancels-other pair, held by the broker,
+    /// Place two orders as one one-cancels-other pair, held by the trading service,
     /// a part of one filled taken off the other, and return their ids in
     /// order. Only when [`Capabilities::link`] is [`Linking::AtSubmission`];
     /// [`Plan`] is what asks.
     fn place_pair(&self, _orders: &[OrderRequest; 2]) -> Result<[String; 2], Failure> {
-        Err(Failure::Refused("this broker does not place orders as a pair".into()))
+        Err(Failure::Refused("this trading service does not place orders as a pair".into()))
     }
     fn cancel_all(&self, account: &str) -> Result<(), Failure>;
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure>;
+    /// Close what `account` holds of `contract`, cancelling the orders
+    /// working on it where the trading service does that itself. Done, it
+    /// answers how many of those are still working because they would not
+    /// cancel: the position is flat, but they need a look.
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure>;
     /// Why it is no longer signed in, if it ended by itself.
     fn trouble(&self) -> Option<String>;
     fn sign_out(&self);
@@ -225,7 +240,7 @@ pub trait Session: Send + Sync {
 /// thread came back with. Neither half lets a second session start for a
 /// login that has one or is getting one.
 pub struct Desk {
-    brokers: Registry,
+    services: Registry,
     sessions: RefCell<HashMap<String, Arc<dyn Session>>>,
     opening: RefCell<HashSet<String>>,
     refused: RefCell<HashMap<String, String>>,
@@ -243,16 +258,16 @@ pub struct Desk {
     /// headers, and the Trading page while it is open.
     listeners: RefCell<Vec<std::rc::Weak<dyn Fn()>>>,
     /// The links made this run, each with its login and the account's name
-    /// for the Log: the broker's, to draw while they stand, and the app's
+    /// for the Log: the trading service's, to draw while they stand, and the app's
     /// own, to keep — see [`Desk::keep_links`].
     links: RefCell<Vec<(String, String, Link)>>,
 }
 
 impl Desk {
-    pub fn new(brokers: Registry) -> Desk {
+    pub fn new(services: Registry) -> Desk {
         let (wake, woken) = async_channel::unbounded();
         Desk {
-            brokers,
+            services,
             sessions: RefCell::new(HashMap::new()),
             opening: RefCell::new(HashSet::new()),
             refused: RefCell::new(HashMap::new()),
@@ -266,7 +281,7 @@ impl Desk {
     }
 
     /// Remember `link`, made on `login`'s session for the account called
-    /// `name`: one the broker holds is drawn while it stands, and one the
+    /// `name`: one the trading service holds is drawn while it stands, and one the
     /// app holds is kept by [`Desk::keep_links`].
     pub fn linked(&self, login: &str, name: &str, link: Link) {
         self.links.borrow_mut().push((login.to_string(), name.to_string(), link));
@@ -278,8 +293,8 @@ impl Desk {
     }
 
     /// Keep each link as the books now stand, on the main loop after every
-    /// change. One the broker holds is forgotten once one of it is done:
-    /// the broker has dealt with the rest. One the app holds is the app's
+    /// change. One the trading service holds is forgotten once one of it is done:
+    /// the trading service has dealt with the rest. One the app holds is the app's
     /// to keep ([`due`]): once one of it filled or went, the rest are
     /// cancelled, off the main loop, and said in the Log. A login signed
     /// out takes its links with it: nothing holds the app's any more. Not
@@ -293,7 +308,7 @@ impl Desk {
             let Some(session) = self.session(login).filter(|_| self.live(login)) else { return false };
             let book = session.book();
             match link.holder {
-                Holder::Broker => standing(link, &book),
+                Holder::TradingService => standing(link, &book),
                 Holder::App => match due(link, &book) {
                     Due::Keep => true,
                     Due::Drop => false,
@@ -381,23 +396,23 @@ impl Desk {
     /// Sign `login` in on a thread of its own and refresh it there, then,
     /// with `data`, sign its data feed in too. Nothing here waits: what it
     /// comes back with arrives through [`Desk::woken`] as [`Wake::Opened`].
-    /// False when it cannot start: no broker for it in this build, or a
+    /// False when it cannot start: no trading service for it in this build, or a
     /// session open or opening already. The Trading page's Sign in and
     /// startup both come here.
     pub fn sign_in(&self, login: &Login, data: bool) -> bool {
-        // Nothing signs in to a broker's order plant while trading is
+        // Nothing signs in to a trading service's order plant while trading is
         // switched off, whoever asks.
         if !crate::features::trading() {
             return false;
         }
-        let Some(broker) = self.broker_for(login) else { return false };
+        let Some(service) = self.service_for(login) else { return false };
         if !self.begin(&login.id) {
             return false;
         }
         let (login, changed, wake) = (login.clone(), self.waker(&login.id), self.wake.clone());
         let feed = data.then(|| data_feed_of(&login).map(|feed| feed.id)).flatten();
         std::thread::spawn(move || {
-            let session = broker.sign_in(&login, changed);
+            let session = service.sign_in(&login, changed);
             if let Ok(session) = &session {
                 let _ = session.refresh();
             }
@@ -405,7 +420,7 @@ impl Desk {
                 (Ok(_), Some(feed)) => Some(crate::feeds::sign_in_now(feed, |_| {})),
                 _ => None,
             };
-            let heard = broker.heard_at_sign_in(&login);
+            let heard = service.heard_at_sign_in(&login);
             let _ = wake.try_send(Wake::Opened(login, session, fed, heard));
         });
         true
@@ -416,7 +431,7 @@ impl Desk {
     /// the charts ask for it. What startup calls, after the first frame.
     pub fn sign_in_saved(&self, logins: &[Login]) {
         for login in logins.iter().filter(|login| !login.signed_out) {
-            if self.broker_for(login).is_some_and(|broker| broker.signs_in_saved(login)) {
+            if self.service_for(login).is_some_and(|service| service.signs_in_saved(login)) {
                 self.sign_in(login, false);
             }
         }
@@ -445,14 +460,14 @@ impl Desk {
         }
     }
 
-    /// The broker `login` signs in through, if this build has it.
-    pub fn broker_for(&self, login: &Login) -> Option<Arc<dyn Broker>> {
-        self.brokers.get(&login.broker)
+    /// The trading service `login` signs in through, if this build has it.
+    pub fn service_for(&self, login: &Login) -> Option<Arc<dyn TradingService>> {
+        self.services.get(&login.service)
     }
 
-    /// Every broker a login can be added for.
-    pub fn brokers(&self) -> &Registry {
-        &self.brokers
+    /// Every trading service a login can be added for.
+    pub fn services(&self) -> &Registry {
+        &self.services
     }
 
     /// May a session be opened for `login` now? Not while it has one, or
@@ -583,16 +598,16 @@ impl Desk {
 
     /// Every live session's book, one, its accounts named by key: the
     /// login's id before the number. Logins in the order given. Positions
-    /// are marked to the broker's market data alone: see [`Desk::marked`].
+    /// are marked to the trading service's market data alone: see [`Desk::marked`].
     pub fn book(&self, logins: &[Login]) -> Book {
         self.marked(logins, |_| None)
     }
 
-    /// [`Desk::book`], each position marked to the last trade the broker's
+    /// [`Desk::book`], each position marked to the last trade the trading service's
     /// market data has heard in its contract, else, until one is heard, to
     /// `charted`: the last price of a chart showing that very contract,
-    /// [`charted_price`]. With neither, it keeps the broker's figure, and
-    /// its account's open P&L is the broker's too.
+    /// [`charted_price`]. With neither, it keeps the trading service's figure, and
+    /// its account's open P&L is the trading service's too.
     pub fn marked(&self, logins: &[Login], charted: impl Fn(&Position) -> Option<f64>) -> Book {
         let mut book = Book { refreshed: true, ..Book::default() };
         for login in logins {
@@ -668,6 +683,11 @@ impl View {
         account_name(account, &self.logins, &self.accounts)
     }
 
+    /// What the header calls `account`: see [`account_label`].
+    pub fn account_label(&self, account: &Account) -> String {
+        account_label(account, &self.logins, &self.accounts)
+    }
+
     /// What the account with the key `key` is called here: "Lucid", or
     /// "Lucid 1234" when the login holds several; its number alone when it
     /// is no longer listed.
@@ -691,7 +711,7 @@ impl View {
     }
 }
 
-/// Something the window asked of a broker, by what it was asked about.
+/// Something the window asked of a trading service, by what it was asked about.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Request {
     /// A new order, by its tag.
@@ -704,8 +724,8 @@ pub enum Request {
     Flatten(String, String),
 }
 
-/// What was asked, as it is drawn until the broker's book says what became
-/// of it: faint, never to be taken for something the broker has confirmed.
+/// What was asked, as it is drawn until the trading service's book says what became
+/// of it: faint, never to be taken for something the trading service has confirmed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
     /// The order as sent, on the account with the key `key`.
@@ -736,7 +756,7 @@ impl Placing {
         self.0.borrow().contains(account)
     }
 
-    /// The broker answered, either way.
+    /// The trading service answered, either way.
     pub fn done(&self, account: &str) {
         self.0.borrow_mut().remove(account);
     }
@@ -750,17 +770,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// One session per login: a second sign-in while one is open or being
-    /// opened is refused before it reaches the broker, and one is opened
+    /// opened is refused before it reaches the trading service, and one is opened
     /// again only after the first has ended.
     #[test]
     fn a_login_never_has_two_sessions() {
-        let fake = Arc::new(FakeBroker::default());
+        let fake = Arc::new(FakeService::default());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let login = Login {
             id: "1".into(),
             name: "Lucid".into(),
             user: "a".into(),
-            broker: "fake".into(),
+            service: "fake".into(),
             values: Vec::new(),
             signed_out: false,
         };
@@ -800,7 +820,7 @@ mod tests {
     /// Closing signs every session out, and waits for them.
     #[test]
     fn closing_signs_every_session_out() {
-        let fake = Arc::new(FakeBroker::default());
+        let fake = Arc::new(FakeService::default());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let logins = [test_login("1", "Lucid", TEST_SYSTEM), test_login("2", "Tradeify", TEST_SYSTEM)];
         for login in &logins {
@@ -826,7 +846,7 @@ mod tests {
             return;
         }
         let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
-        let fake = Arc::new(FakeBroker::default());
+        let fake = Arc::new(FakeService::default());
         let mut funded = account("", "1234");
         funded.balance = Some(50_210.4);
         fake.accounts.lock().unwrap().insert("Lucid".into(), vec![funded, account("", "1235")]);
@@ -862,7 +882,7 @@ mod tests {
     /// flattening leaves nothing held. Each move calls `changed`.
     #[test]
     fn the_desks_book_follows_what_the_sessions_push() {
-        let desk = Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]));
+        let desk = Desk::new(Registry::of(vec![Arc::new(FakeService::default())]));
         let login = test_login("t", "Rithmic Test", TEST_SYSTEM);
         let moved = Arc::new(AtomicUsize::new(0));
         let counted = moved.clone();
@@ -910,7 +930,7 @@ mod tests {
         assert!(session.place(&limit).is_err(), "a session that is gone refuses, and nothing retries");
     }
 
-    /// What a broker holds for a login before it signs in: one ESZ6 long, a
+    /// What a trading service holds for a login before it signs in: one ESZ6 long, a
     /// limit working, and earlier today a market buy filled and a limit
     /// cancelled; the account's money and its risk limits.
     pub(crate) fn held_before() -> Book {
@@ -959,13 +979,13 @@ mod tests {
         }
     }
 
-    /// With trading switched off nothing signs in to a broker, whoever
+    /// With trading switched off nothing signs in to a trading service, whoever
     /// asks: not startup, not the Trading page.
     #[test]
     fn nothing_signs_in_while_trading_is_off() {
-        let fake = Arc::new(FakeBroker::listed());
+        let fake = Arc::new(FakeService::listed());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
-        let login = Login { broker: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
+        let login = Login { service: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
         assert!(!crate::features::trading());
         assert!(!desk.sign_in(&login, true));
         desk.sign_in_saved(std::slice::from_ref(&login));
@@ -983,10 +1003,10 @@ mod tests {
     #[test]
     fn a_saved_login_signs_in_with_what_its_accounts_hold() {
         crate::features::force(crate::features::Feature::Trading, true);
-        let fake = Arc::new(FakeBroker { takes: std::time::Duration::from_millis(50), ..FakeBroker::listed() });
+        let fake = Arc::new(FakeService { takes: std::time::Duration::from_millis(50), ..FakeService::listed() });
         fake.held.lock().unwrap().insert("Lucid".into(), held_before());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
-        let login = Login { broker: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
+        let login = Login { service: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
         let gone = Login { id: "g".into(), signed_out: true, ..login.clone() };
 
         let asked = std::time::Instant::now();
@@ -1026,14 +1046,14 @@ mod tests {
         desk.sign_out_all(SIGN_OUT_WAIT);
     }
 
-    /// A position is marked to the broker's market data; while that has
+    /// A position is marked to the trading service's market data; while that has
     /// heard nothing, to a chart of that very contract, never a continuous
-    /// series; with neither, the broker's figure stands and so does its
+    /// series; with neither, the trading service's figure stands and so does its
     /// account's.
     #[test]
     fn a_position_is_marked_to_its_contract_s_chart_until_the_market_data_has_a_trade() {
         use omacharts_engine::InstrumentKind::FutureRoot;
-        let desk = Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]));
+        let desk = Desk::new(Registry::of(vec![Arc::new(FakeService::default())]));
         let login = test_login("t", "Rithmic Test", TEST_SYSTEM);
         let session = Arc::new(FakeSession::new(vec![account("t", "951")], Box::new(|| {})));
         assert!(desk.begin("t"));
@@ -1057,8 +1077,8 @@ mod tests {
             (open, book.money("t/951").and_then(|money| money.unrealized))
         };
 
-        let broker = desk.book(&logins).position("t/951", "ESZ6").and_then(|held| held.open_pnl);
-        assert_eq!(marked(&[(&continuous, Some(7_622.25))]), (broker, None), "a continuous chart is not the contract");
+        let service = desk.book(&logins).position("t/951", "ESZ6").and_then(|held| held.open_pnl);
+        assert_eq!(marked(&[(&continuous, Some(7_622.25))]), (service, None), "a continuous chart is not the contract");
         assert_eq!(marked(&[(&continuous, Some(7_000.0)), (&december, Some(7_622.25))]), (Some(500.0), Some(500.0)));
 
         *session.market.lock().unwrap() = Some(7_602.25);

@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, SWATCH_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
+    ColorChoice, PALETTE_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -1712,6 +1712,12 @@ fn chart_set(
     }
     if let Some(auto) = arg(m, "auto-scale") {
         chart["auto_scale"] = json!(auto == "on");
+        // A scale that fits itself holds no prices.
+        if auto == "on"
+            && let Some(chart) = chart.as_object_mut()
+        {
+            chart.remove("price_window");
+        }
         changed.push(format!("auto-scale {auto}"));
     }
     if let Some(log) = arg(m, "log-scale") {
@@ -3417,20 +3423,30 @@ struct Edits {
     k_smooth: Option<u64>,
     d_period: Option<u64>,
     d_color: Option<ColorChoice>,
-    anchor: Option<Reset>,
+    /// `Some(None)` is `never`, which only a cumulative delta takes.
+    anchor: Option<Option<Reset>>,
+    cvd_style: Option<omacharts_engine::indicators::cvd::Style>,
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
     poc_color: Option<ColorChoice>,
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
+    profile_width: Option<f64>,
+    profile_method: Option<omacharts_engine::indicators::profile::Method>,
     outline: Option<bool>,
+    poc: Option<bool>,
+    last_only: Option<bool>,
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
     poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
-    /// `Some(None)` puts volume back on the chart's own colouring.
+    /// `Some(None)` puts volume back on the chart's own colouring, and a
+    /// volume profile on the one chosen in Preferences.
     colouring: Option<Option<omacharts_engine::BarColouring>>,
+    /// The word `colouring` was given as, since `chart` and `default` are
+    /// each one kind's and not the other's.
+    colouring_word: Option<String>,
     opacity: Option<f64>,
     color: Option<ColorChoice>,
     width: Option<f64>,
@@ -3495,10 +3511,17 @@ impl Edits {
             k_smooth: count(m, "k-smooth")?,
             d_period: count(m, "d-period")?,
             d_color: colour(m, "d-color")?,
-            anchor: match arg(m, "anchor") {
+            anchor: match arg(m, "anchor").map(String::as_str) {
                 None => None,
-                Some(text) => Some(Reset::from_key(text).ok_or_else(|| {
+                Some("never") => Some(None),
+                Some(text) => Some(Some(Reset::from_key(text).ok_or_else(|| {
                     Fault::usage(format!("{text:?} is not an anchor; try session or week"))
+                })?)),
+            },
+            cvd_style: match arg(m, "cvd-style") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::cvd::Style::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a cumulative delta style; use candles or line"))
                 })?),
             },
             rows: match arg(m, "rows") {
@@ -3516,6 +3539,18 @@ impl Edits {
                 Some("off") => Some(false),
                 Some(other) => return Err(Fault::usage(format!("--outline is on or off, not {other:?}"))),
             },
+            poc: match arg(m, "poc").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--poc is on or off, not {other:?}"))),
+            },
+            last_only: match arg(m, "last-only").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--last-only is on or off, not {other:?}"))),
+            },
             outline_color: colour(m, "outline-color")?,
             outline_width: bounded(m, "outline-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
             poc_width: bounded(m, "poc-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
@@ -3531,15 +3566,28 @@ impl Edits {
                     Fault::usage(format!("{text:?} is not an alignment; use left or right"))
                 })?),
             },
+            profile_width: bounded(
+                m,
+                "profile-width",
+                omacharts_engine::indicators::profile::MIN_WIDTH,
+                omacharts_engine::indicators::profile::MAX_WIDTH,
+            )?,
+            profile_method: match arg(m, "profile-method") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::profile::Method::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a calculation method; use total or delta"))
+                })?),
+            },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
             colouring: match arg(m, "colouring").map(String::as_str) {
                 None => None,
-                Some("chart") => Some(None),
+                Some("chart" | "default") => Some(None),
                 Some(text) => Some(Some(omacharts_engine::BarColouring::from_key(text).ok_or_else(
                     || Fault::usage(format!("{text:?} is not a bar colouring")),
                 )?)),
             },
+            colouring_word: arg(m, "colouring").cloned(),
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -3620,15 +3668,20 @@ impl Edits {
             && self.d_period.is_none()
             && self.d_color.is_none()
             && self.anchor.is_none()
+            && self.cvd_style.is_none()
             && self.rows.is_none()
             && self.value_area.is_none()
             && self.poc_color.is_none()
             && self.profile_style.is_none()
             && self.align.is_none()
+            && self.profile_width.is_none()
+            && self.profile_method.is_none()
             && self.outline.is_none()
+            && self.last_only.is_none()
             && self.outline_color.is_none()
             && self.outline_width.is_none()
             && self.poc_width.is_none()
+            && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
             && self.colouring.is_none()
@@ -3729,9 +3782,22 @@ impl Edits {
             }
         }
         if let Some(anchor) = self.anchor {
-            match params.get("reset").is_some() {
-                true => params["reset"] = json!(anchor.key()),
-                false => return Err(refuse("anchor")),
+            match (params.get("reset").is_some(), anchor) {
+                (false, _) => return Err(refuse("anchor")),
+                (true, Some(anchor)) => params["reset"] = json!(anchor.key()),
+                (true, None) if kind == IndicatorKind::Cvd => params["reset"] = Value::Null,
+                (true, None) => {
+                    return Err(Fault::usage(format!(
+                        "{} always resets; never is a cumulative delta's",
+                        kind.short_name()
+                    )));
+                }
+            }
+        }
+        if let Some(style) = self.cvd_style {
+            match kind == IndicatorKind::Cvd {
+                true => params["style"] = json!(style.key()),
+                false => return Err(refuse("cumulative delta style")),
             }
         }
         if let Some(rows) = self.rows {
@@ -3752,6 +3818,12 @@ impl Edits {
                 false => return Err(refuse("point of control")),
             }
         }
+        if let Some(on) = self.last_only {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["last_only"] = json!(on),
+                false => return Err(refuse("last period")),
+            }
+        }
         if let Some(style) = self.profile_style {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["style"] = json!(style.key()),
@@ -3764,10 +3836,34 @@ impl Edits {
                 false => return Err(refuse("alignment")),
             }
         }
+        if let Some(share) = self.profile_width {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["width"] = json!(share),
+                false => return Err(refuse("profile width")),
+            }
+        }
+        if let Some(method) = self.profile_method {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["method"] = json!(method.key()),
+                false => return Err(refuse("calculation method")),
+            }
+        }
         if let Some(on) = self.outline {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["outline"] = json!(on),
                 false => return Err(refuse("outline")),
+            }
+        }
+        if let Some(on) = self.poc {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["poc"] = json!(on),
+                false => return Err(refuse("point of control")),
+            }
+        }
+        if let Some(on) = self.last_only {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["last_only"] = json!(on),
+                false => return Err(refuse("last period")),
             }
         }
         if let Some(colour) = &self.outline_color {
@@ -3799,9 +3895,25 @@ impl Edits {
             }
         }
         if let Some(colouring) = &self.colouring {
-            match kind == IndicatorKind::Volume {
-                true => params["colouring"] = to_value(colouring)?,
-                false => return Err(refuse("colouring")),
+            let word = self.colouring_word.as_deref().unwrap_or_default();
+            let telling = colouring.is_none_or(|c| omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c));
+            match kind {
+                IndicatorKind::VolumeProfile | IndicatorKind::Cvd if word == "chart" => {
+                    return Err(Fault::usage(format!(
+                        "{} follows the colouring chosen in Preferences; use default",
+                        kind.short_name()
+                    )));
+                }
+                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd if !telling => {
+                    return Err(Fault::usage(format!(
+                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
+                        kind.short_name()
+                    )));
+                }
+                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd => {
+                    params["colouring"] = to_value(colouring)?;
+                }
+                _ => return Err(refuse("colouring")),
             }
         }
         if let Some(opacity) = self.opacity {
@@ -4137,14 +4249,14 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
             false => Err(Fault::usage(format!("{text:?} is not a colour; try #rrggbb"))),
         };
     }
-    SWATCH_NAMES
+    PALETTE_NAMES
         .iter()
         .find(|name| name.eq_ignore_ascii_case(text))
         .map(|name| Some(ColorChoice::swatch(name)))
         .ok_or_else(|| {
             Fault::usage(format!(
                 "{text:?} is not a palette colour; try {} — or #rrggbb for one the theme will not change",
-                SWATCH_NAMES.join(", ")
+                PALETTE_NAMES.join(", ")
             ))
         })
 }
@@ -5929,12 +6041,10 @@ mod tests {
         dispatch(&args, store, None, &super::super::Here)
     }
 
-    /// A store whose new charts open with nothing on them.
+    /// A store whose new charts open with nothing on them, said outright.
     ///
-    /// A fresh profile's charts open on the "Default" chart template, holding
-    /// volume — which the template tests below are about. Everything else
-    /// here counts indicators from an empty chart, and was written when that
-    /// is what a new chart was.
+    /// A fresh profile's charts open on none already; this names none as
+    /// the choice, which the tests below count indicators from.
     fn bare() -> Store {
         let store = Store::memory().unwrap();
         store.set_setting(
@@ -5944,14 +6054,34 @@ mod tests {
         store
     }
 
+    /// A store whose new charts open on the "Default" chart template,
+    /// holding volume, as somebody who chose it has them — which the
+    /// template tests below are about.
+    fn on_default() -> Store {
+        let store = Store::memory().unwrap();
+        let default = crate::templates::all(&store)[0].id;
+        store.set_setting(crate::chart_defaults::SETTING_TEMPLATE, &default.to_string());
+        store
+    }
+
     fn json_of(out: &Outcome) -> Value {
         assert_eq!(out.code, 0, "{}", out.err);
         serde_json::from_str(&out.out).unwrap()
     }
 
+    /// A new chart, of a new chartbook or a split's other half from
+    /// nothing, opens on no template; chosen as the default, a template is
+    /// what it opens on.
     #[test]
-    fn a_new_chart_opens_on_the_default_template() {
+    fn a_new_chart_opens_on_no_template_unless_one_was_chosen() {
         let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"], json!([]));
+        let charts = Workspace::load(&store);
+        assert_eq!(charts::panes(&charts.books()[0])[0]["template"], Value::Null);
+
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         let listed = json_of(&run("chart indicator list --book Macro --json", &store));
         assert_eq!(listed["indicators"][0]["kind"], "volume");
@@ -5962,7 +6092,7 @@ mod tests {
 
     #[test]
     fn templates_are_listed_made_renamed_and_deleted() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         assert_eq!(run("template create Swing", &store).code, 0);
         assert_eq!(run("template rename swing Swing2", &store).code, 0);
         let listed = json_of(&run("template list --json", &store));
@@ -6016,7 +6146,7 @@ mod tests {
     /// chartbook, and leaves a chart on no template alone.
     #[test]
     fn a_template_s_indicators_are_what_its_charts_show() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chartbook create Semis", &store);
@@ -6086,7 +6216,7 @@ mod tests {
     /// does: both charts on it take the indicator, and the reply says so.
     #[test]
     fn adding_to_a_chart_on_a_template_changes_the_template() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         run("chart split horizontal --book Macro", &store);
         let out = run("chart indicator add sma --book Macro --chart pos:0", &store);
@@ -6109,7 +6239,7 @@ mod tests {
     /// Nothing disappears from a chart when its template goes.
     #[test]
     fn deleting_a_template_leaves_its_charts_a_copy() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("chartbook create Macro --switch", &store);
         run("template indicator add Default ema", &store);
         let out = run("template delete Default", &store);
@@ -6155,7 +6285,7 @@ mod tests {
         let store = bare();
         crate::features::set(&store, crate::features::Feature::Trading, true);
         use crate::header::{Header, Part};
-        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -6193,7 +6323,7 @@ mod tests {
 
     #[test]
     fn the_default_template_is_read_and_chosen_by_name() {
-        let store = Store::memory().unwrap();
+        let store = on_default();
         run("template create Swing", &store);
         assert!(run("template default", &store).out.contains("\"Default\""));
         assert_eq!(run("template default swing", &store).code, 0);
@@ -6971,6 +7101,27 @@ mod tests {
         assert_eq!(charts(&store)["charts"][0]["auto_scale"], true);
     }
 
+    /// The prices a held scale was left at go with letting go of it, so a
+    /// later hold starts from a fit rather than from a window long gone.
+    #[test]
+    fn letting_go_of_a_price_scale_from_a_command_forgets_its_prices() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let stored = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&store.setting("workspace").unwrap()).unwrap()
+        };
+        let mut workspace = stored(&store);
+        workspace["books"][0]["panes"][0]["auto_scale"] = serde_json::json!(false);
+        workspace["books"][0]["panes"][0]["price_window"] = serde_json::json!([410.0, 450.0]);
+        store.set_setting("workspace", &workspace.to_string());
+
+        run("chart set --book Macro --log-scale on", &store);
+        assert_eq!(stored(&store)["books"][0]["panes"][0]["price_window"][1], 450.0, "kept while held");
+
+        run("chart set --book Macro --auto-scale on", &store);
+        assert!(stored(&store)["books"][0]["panes"][0].get("price_window").is_none());
+    }
+
     /// A log axis is stored with the chart and reported back, and a chart
     /// stored before there was one is linear.
     #[test]
@@ -7135,6 +7286,22 @@ mod tests {
         let bad = run("chart indicator add rsi --book Macro --color Chartreuse", &store);
         assert_eq!(bad.code, super::super::EXIT_USAGE);
         assert!(bad.err.contains("Blue"), "the error has to name the palette: {}", bad.err);
+        assert!(bad.err.contains("Neutral"), "the error has to name the neutral too: {}", bad.err);
+    }
+
+    /// The neutral is a palette name like the rest: stored as the name, so
+    /// it is worked out again from whichever theme is showing.
+    #[test]
+    fn the_neutral_is_set_by_name_and_stored_as_one() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let added = run("chart indicator add ema --book Macro --color neutral", &store);
+        assert_eq!(added.code, 0, "{}", added.err);
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["indicators"][0]["color"]["kind"], "swatch");
+        assert_eq!(parsed["indicators"][0]["color"]["name"], "Neutral");
     }
 
     #[test]
@@ -7182,6 +7349,227 @@ mod tests {
         assert_ne!(out.code, 0, "an RSI has no bars to make solid");
     }
 
+
+    #[test]
+    fn a_volume_profile_takes_a_width_within_its_range_and_nothing_else_does() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let width = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["width"].as_f64()
+        };
+        assert_eq!(width(&store), Some(omacharts_engine::indicators::profile::DEFAULT_WIDTH));
+
+        let out = run("chart indicator set volume_profile --book Macro --align right --profile-width 0.6", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(width(&store), Some(0.6));
+
+        for refused in [
+            "chart indicator set volume_profile --book Macro --profile-width 0.05",
+            "chart indicator set volume_profile --book Macro --profile-width 1.5",
+        ] {
+            let out = run(refused, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(width(&store), Some(0.6), "a refused width leaves the one there");
+        let out = run("chart indicator set rsi --book Macro --profile-width 0.5", &store);
+        assert_ne!(out.code, 0, "an RSI has no profile to widen");
+    }
+
+    #[test]
+    fn a_volume_profile_measures_the_total_until_told_to_measure_the_delta() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let method = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["method"].as_str().map(str::to_string)
+        };
+        assert_eq!(method(&store).as_deref(), Some("total"));
+
+        let out = run("chart indicator set volume_profile --book Macro --profile-method delta", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(method(&store).as_deref(), Some("delta"));
+
+        let out = run("chart indicator set volume_profile --book Macro --profile-method net", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(method(&store).as_deref(), Some("delta"), "a refused method leaves the one there");
+        let out = run("chart indicator set rsi --book Macro --profile-method delta", &store);
+        assert_ne!(out.code, 0, "an RSI has no rows to measure");
+    }
+
+    /// A volume profile draws its point of control until a command turns it
+    /// off, on either method, and something else has none to turn off.
+    #[test]
+    fn a_volume_profile_s_point_of_control_can_be_turned_off_and_on() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let poc = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["poc"].as_bool()
+        };
+        assert_eq!(poc(&store), Some(true), "drawn to begin with");
+        for (word, method) in [("off", "total"), ("on", "delta"), ("off", "delta")] {
+            let out = run(&format!("chart indicator set volume_profile --book Macro --profile-method {method} --poc {word}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(poc(&store), Some(word == "on"), "{word} on {method}");
+        }
+        let out = run("chart indicator set volume_profile --book Macro --poc on", &store);
+        assert_eq!(out.code, 0, "alone, too: {}", out.err);
+        assert_eq!(poc(&store), Some(true));
+        run("chart indicator set volume_profile --book Macro --poc off", &store);
+        let out = run("chart indicator set volume_profile --book Macro --poc maybe", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(poc(&store), Some(false), "a refusal leaves it as it was");
+        let out = run("chart indicator set rsi --book Macro --poc off", &store);
+        assert_ne!(out.code, 0, "an RSI has no point of control");
+    }
+
+    /// A volume profile draws every period until a command shows it in the
+    /// last only, and something else has no periods to leave out.
+    #[test]
+    fn a_volume_profile_can_be_shown_in_its_last_period_only() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let last_only = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["last_only"].as_bool()
+        };
+        assert_eq!(last_only(&store), Some(false), "every period to begin with");
+        for word in ["on", "off", "on"] {
+            let out = run(&format!("chart indicator set volume_profile --book Macro --last-only {word}"), &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert_eq!(last_only(&store), Some(word == "on"), "{word}");
+        }
+        let out = run("chart indicator set volume_profile --book Macro --last-only maybe", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(last_only(&store), Some(true), "a refusal leaves it as it was");
+        let out = run("chart indicator set rsi --book Macro --last-only on", &store);
+        assert_ne!(out.code, 0, "an RSI has no periods");
+    }
+
+    /// A volume profile's delta follows the colouring chosen in Preferences
+    /// until a command picks one of the three that tell bought from sold,
+    /// and `default` puts it back; the words that are the volume strip's
+    /// own, and Monochrome, are refused and leave it as it was.
+    #[test]
+    fn a_volume_profile_takes_a_colouring_of_its_own_and_gives_it_back() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        let colouring = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
+        };
+        assert_eq!(colouring(&store), None, "Preferences' to begin with");
+
+        let out = run("chart indicator set volume_profile --book Macro --colouring theme-quiet", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"));
+
+        for refused in ["chart", "theme-mono", "loud"] {
+            let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {refused}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"), "a refusal leaves it as it was");
+
+        let out = run("chart indicator set volume_profile --book Macro --colouring default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(colouring(&store), None);
+
+    }
+
+    /// Volume's Colouring is the delta profile's: `default`, and `chart` as
+    /// it was spelled before, keep it painted as the chart paints its
+    /// candles, and the three palettes that tell a rise from a fall are its
+    /// own; Monochrome, which tells nothing, is refused.
+    #[test]
+    fn volume_takes_the_delta_profiles_colourings() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add volume --book Macro", &store);
+        let colouring = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
+        };
+        assert_eq!(colouring(&store), None, "the chart's own to begin with");
+
+        let out = run("chart indicator set volume --book Macro --colouring theme-soft", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"));
+
+        let out = run("chart indicator set volume --book Macro --colouring theme-mono", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"), "a refusal leaves it as it was");
+
+        for back in ["default", "chart"] {
+            run("chart indicator set volume --book Macro --colouring theme-quiet", &store);
+            let out = run(&format!("chart indicator set volume --book Macro --colouring {back}"), &store);
+            assert_eq!(out.code, 0, "{back}: {}", out.err);
+            assert_eq!(colouring(&store), None, "{back}");
+        }
+    }
+
+    /// A cumulative delta starts on the session, as candles, in the
+    /// colouring chosen in Preferences, and every one of those is a flag:
+    /// `never` makes it one running sum, which nothing else takes.
+    #[test]
+    fn a_cumulative_delta_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add cvd --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let params = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"].clone()
+        };
+        let made = params(&store);
+        assert_eq!(made["kind"], "cvd");
+        assert_eq!(made["reset"], "session");
+        assert_eq!(made["style"], "candles");
+        assert!(made.get("colouring").is_none(), "Preferences' colouring");
+
+        let out = run(
+            "chart indicator set cvd --book Macro --anchor never --cvd-style line --colouring theme-quiet --height 0.3",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let set = params(&store);
+        assert!(set["reset"].is_null(), "never: {set}");
+        assert_eq!(set["style"], "line");
+        assert_eq!(set["colouring"], "theme-quiet");
+        assert_eq!(set["height"], 0.3);
+
+        let out = run("chart indicator set cvd --book Macro --anchor week", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(params(&store)["reset"], "week");
+
+        for refused in ["--colouring chart", "--colouring theme-mono", "--rows 20", "--period 9"] {
+            let out = run(&format!("chart indicator set cvd --book Macro {refused}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+        }
+        assert_eq!(params(&store)["colouring"], "theme-quiet", "a refusal leaves it as it was");
+
+        run("chart indicator add vwap --book Macro", &store);
+        let out = run("chart indicator set vwap --book Macro --anchor never", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "a VWAP always resets");
+        let out = run("chart indicator set vwap --book Macro --cvd-style line", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+    }
 
     #[test]
     fn a_bollinger_takes_a_period_and_a_multiple() {
@@ -9060,7 +9448,7 @@ mod tests {
         assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
         assert_eq!(
             crate::header::load(&store).right,
-            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
             "trading's parts kept where they were"
         );
     }

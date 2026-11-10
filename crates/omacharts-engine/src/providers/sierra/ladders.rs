@@ -172,6 +172,11 @@ impl Ladders for Sierra {
         HISTORY_DAYS
     }
 
+    /// The file a root is read from: its front month, which rolls.
+    fn contract(&self, symbol: &str) -> Option<String> {
+        opened().and_then(|opened| stem_for(&opened, symbol))
+    }
+
     fn minutes(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
         let opened = opened().ok_or_else(not_set_up)?;
         let stem = stem_for(&opened, symbol).ok_or(ProviderError::NotFound)?;
@@ -235,6 +240,52 @@ mod tests {
         assert_eq!(minutes[1].ts, 660);
     }
 
+    /// A file of a month of trades, as Sierra Chart writes one: a header and
+    /// fixed-size records, oldest first.
+    fn month_of_trades(path: &std::path::Path, start: i64) -> Vec<sierra::Record> {
+        let records: Vec<sierra::Record> = (0..30 * 24 * 120)
+            .map(|i| trade(start + i * 30, 764_700.0 + ((i * 7) % 41) as f32 * 25.0, 1 + (i % 4) as u32, i % 3 == 0))
+            .collect();
+        let mut bytes = vec![0u8; sierra::scid::HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"SCID");
+        bytes[4..8].copy_from_slice(&(sierra::scid::HEADER_SIZE as u32).to_le_bytes());
+        bytes[8..12].copy_from_slice(&(sierra::scid::RECORD_SIZE as u32).to_le_bytes());
+        bytes[12..14].copy_from_slice(&1u16.to_le_bytes());
+        for r in &records {
+            bytes.extend_from_slice(&r.datetime.to_le_bytes());
+            for price in [r.open, r.high, r.low, r.close] {
+                bytes.extend_from_slice(&price.to_le_bytes());
+            }
+            for count in [r.trades, r.volume, r.bid_volume, r.ask_volume] {
+                bytes.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+        std::fs::write(path, bytes).unwrap();
+        records
+    }
+
+    /// A day weeks back in a file is found by its time, not read through to,
+    /// and its minutes are exactly the minutes of its trades.
+    #[test]
+    fn a_day_deep_in_a_file_is_read_by_its_time_and_whole() {
+        let dir = std::env::temp_dir().join(format!("omacharts-sierra-ladders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ESZ26_FUT_CME.scid");
+        let start = 1_790_000_000 - 1_790_000_000 % 86_400;
+        let records = month_of_trades(&path, start);
+        let scid = sierra::Scid::open(&path).unwrap();
+        assert_eq!(scid.len(), records.len());
+
+        let (from, to) = (start + 4 * 86_400 + 14 * 3_600, start + 4 * 86_400 + 20 * 3_600);
+        let read = scid.between(from, to);
+        assert_eq!(read.len(), 6 * 120, "the six hours' trades and no others");
+        let expected: Vec<sierra::Record> =
+            records.iter().filter(|r| (from..to).contains(&r.unix_seconds())).copied().collect();
+        assert_eq!(minutes_in(read, 0.01, 0.25), minutes_of(&expected, 0.01, 0.25));
+        assert_eq!(minutes_in(read, 0.01, 0.25).len(), 6 * 60);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Split across threads, the minutes are the same minutes.
     #[test]
     fn minutes_folded_in_pieces_are_the_minutes_folded_whole() {
@@ -244,3 +295,4 @@ mod tests {
         assert_eq!(minutes_in(&records, 0.01, 0.25), minutes_of(&records, 0.01, 0.25));
     }
 }
+
