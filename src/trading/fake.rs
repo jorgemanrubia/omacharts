@@ -162,6 +162,9 @@ pub struct FakeSession {
     pub kinds: Vec<OrderKind>,
     /// What it says it can do beyond placing and cancelling.
     pub modifies: bool,
+    /// Its flatten cancels what works on the contract itself, as Sierra
+    /// Chart's does, and says "flatten" rather than "cancel" for it.
+    pub flatten_cancels: bool,
     /// How it links a stop and a target: every way a trading service can is one
     /// of these, so each is tested here.
     pub linking: Linking,
@@ -172,7 +175,7 @@ pub struct FakeSession {
     /// of one of a pair filled comes off the other, as DTC's do.
     pub pairs: AtomicUsize,
     /// What it was asked, in order: "place", "pair", "cancel", "modify",
-    /// "link".
+    /// "link", "flatten".
     pub heard: Mutex<Vec<&'static str>>,
     /// Refuse the next pair, or the next link, in these words.
     pub refuse_pairs: Mutex<Option<String>>,
@@ -214,6 +217,7 @@ impl FakeSession {
             simulated: true,
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             modifies: true,
+            flatten_cancels: false,
             linking: Linking::AfterTheFact,
             links: Mutex::default(),
             pairs: AtomicUsize::new(0),
@@ -369,6 +373,7 @@ impl Session for FakeSession {
         Capabilities {
             kinds: self.kinds.clone(),
             flatten: true,
+            flatten_cancels: self.flatten_cancels,
             cancel_all: true,
             modify: self.modifies,
             link: self.linking,
@@ -559,8 +564,14 @@ impl Session for FakeSession {
     }
     fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure> {
         self.refused()?;
+        self.heard.lock().unwrap().push("flatten");
         let last = *self.last.lock().unwrap();
         let mut book = self.book.lock().unwrap();
+        if self.flatten_cancels {
+            for order in book.orders.iter_mut().filter(|order| order.contract == contract && order.status.working()) {
+                order.status = Stage::Cancelled.into();
+            }
+        }
         let net = book.position(account, contract).map_or(0, |held| held.net);
         FakeSession::hold(&mut book, account, contract, exchange, -net, last);
         drop(book);

@@ -212,6 +212,7 @@ impl Session for SierraSession {
         Capabilities {
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             flatten: true,
+            flatten_cancels: true,
             cancel_all: true,
             modify: true,
             link: match self.trading.server().oco {

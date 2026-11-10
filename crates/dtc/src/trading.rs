@@ -311,6 +311,15 @@ impl Order {
     }
 }
 
+/// Cancels sent and not yet answered, with those that could not be sent:
+/// how many, and the first reason.
+#[derive(Default)]
+struct Cancels {
+    sent: Vec<(Order, u64)>,
+    failed: usize,
+    first: Option<Error>,
+}
+
 /// What an account holds of one contract, from POSITION_UPDATE.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Position {
@@ -1412,6 +1421,13 @@ impl Trading {
     /// Cancel every working order `which` takes, each tried whatever became
     /// of the one before: how many would not cancel, and the first reason.
     fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> (usize, Option<Error>) {
+        let cancels = self.send_cancels(which);
+        self.cancels_answered(cancels)
+    }
+
+    /// Send a CANCEL_ORDER for every working order `which` takes, all of
+    /// them before any answer is waited for.
+    fn send_cancels(&self, which: impl Fn(&Order) -> bool) -> Cancels {
         let working: Vec<(Order, u64)> = {
             let state = lock(&self.shared.state);
             state
@@ -1422,21 +1438,40 @@ impl Trading {
                 .map(|(order, told)| (order.clone(), told.0))
                 .collect()
         };
-        let mut first = None;
-        let mut failed = 0;
-        let mut sent = Vec::new();
-        for (order, since) in &working {
-            match self.send_cancel(order) {
-                Ok(()) => sent.push((order, *since)),
+        let mut cancels = Cancels::default();
+        for (order, since) in working {
+            match self.send_cancel(&order) {
+                Ok(()) => cancels.sent.push((order, since)),
                 Err(error) => {
-                    failed += 1;
-                    first.get_or_insert(error);
+                    cancels.failed += 1;
+                    cancels.first.get_or_insert(error);
                 }
             }
         }
-        for (order, since) in sent {
-            let outcome =
-                self.answered(order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
+        cancels
+    }
+
+    /// Wait for the answers to cancels sent, all in the same time rather
+    /// than one after another: how many would not cancel, each once, and the
+    /// first reason.
+    fn cancels_answered(&self, cancels: Cancels) -> (usize, Option<Error>) {
+        let Cancels { sent, mut failed, mut first } = cancels;
+        let outcomes: Vec<(&Order, u64, Result<(), Error>)> = std::thread::scope(|scope| {
+            let waits: Vec<_> = sent
+                .iter()
+                .map(|(order, since)| {
+                    let since = *since;
+                    scope.spawn(move || {
+                        let outcome = self.answered(order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| {
+                            !status.working()
+                        });
+                        (order, since, outcome)
+                    })
+                })
+                .collect();
+            waits.into_iter().map(|wait| wait.join().expect("a cancel's wait")).collect()
+        });
+        for (order, since, outcome) in outcomes {
             self.forget_unknown(order, since, &outcome);
             if let Err(error) = outcome {
                 // One the server never had is gone from the book now, not
@@ -1452,18 +1487,20 @@ impl Trading {
     }
 
     /// Close `account`'s position in `symbol`: its working orders there are
-    /// cancelled first, then SUBMIT_FLATTEN_POSITION_ORDER has the server
-    /// close what is held at the market. Waits until the server has taken
-    /// the flatten, or refused it.
+    /// cancelled, and SUBMIT_FLATTEN_POSITION_ORDER has the server close
+    /// what is held at the market, sent straight after the cancels rather
+    /// than once they are answered — the server takes them in order, so
+    /// none of them fills into the position being closed, and an order whose
+    /// cancel is never answered does not keep it open meanwhile. Waits
+    /// until the server has taken the flatten, or refused it, and has
+    /// answered the cancels, or not in time.
     ///
-    /// The flatten goes whatever became of the cancels: an order that would
-    /// not cancel, or was never there to, must not keep the position open.
     /// Taken, it answers how many orders on it are still working because
-    /// they would not cancel: the position is flat, and those need a look.
-    /// With nothing held there is nothing to flatten, and a cancel that
-    /// failed is the answer.
+    /// they would not cancel, each once: the position is flat, and those
+    /// need a look. With nothing held there is nothing to flatten, and a
+    /// cancel that failed is the answer.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
-        let (uncancelled, why) = self.cancel_where(|order| order.account == account && order.symbol == symbol);
+        let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
         let held = lock(&self.shared.state)
             .positions
             .iter()
@@ -1471,19 +1508,23 @@ impl Trading {
             .map(|position| position.qty)
             .unwrap_or(0);
         if held == 0 {
+            let (_, why) = self.cancels_answered(cancels);
             return why.map_or(Ok(0), Err);
         }
         let id = self.shared.next_client_id();
-        self.shared.send(&Message::new(
+        let sent = self.shared.send(&Message::new(
             wire::SUBMIT_FLATTEN_POSITION_ORDER,
             json!({ "Symbol": symbol, "Exchange": "", "TradeAccount": account, "ClientOrderID": id, "FreeFormText": "", "IsAutomatedOrder": 0 }),
-        ))?;
-        let status = self.shared.wait_for(self.shared.timing.request, |state| {
-            let at = state.order_at(&id)?;
-            let order = &state.orders[at];
-            (order.status != Status::Pending).then(|| order.status.clone())
-        })?;
-        match status {
+        ));
+        let status = sent.and_then(|()| {
+            self.shared.wait_for(self.shared.timing.request, |state| {
+                let at = state.order_at(&id)?;
+                let order = &state.orders[at];
+                (order.status != Status::Pending).then(|| order.status.clone())
+            })
+        });
+        let (uncancelled, _) = self.cancels_answered(cancels);
+        match status? {
             Status::Rejected(why) => Err(Error::Rejected(why)),
             _ => Ok(uncancelled),
         }

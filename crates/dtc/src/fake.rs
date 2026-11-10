@@ -132,6 +132,10 @@ pub enum Cancels {
     /// A cancel of either of an OCO pair it holds refused, with the
     /// words; any other order cancelled as it would be.
     RefusedInPairs(String),
+    /// A cancel of a limit it holds never answered, the order left
+    /// working: a target stuck at the exchange. Any other order cancelled
+    /// as it would be.
+    LimitsUnanswered,
 }
 
 /// The fake's world, which the builder sets up and the connections change.
@@ -1121,6 +1125,11 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
         Cancels::RefusedInPairs(text) => {
             if let Some(order) = named(world, message).filter(|order| order.oco.is_some()) {
                 return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+        Cancels::LimitsUnanswered => {
+            if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Limit) {
+                return Vec::new();
             }
         }
     }

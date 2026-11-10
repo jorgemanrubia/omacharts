@@ -421,6 +421,8 @@ impl Session for RithmicSession {
         Capabilities {
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             flatten: true,
+            // Rithmic's exit leaves the orders on it as they are.
+            flatten_cancels: false,
             cancel_all: true,
             modify: true,
             link: Linking::AfterTheFact,

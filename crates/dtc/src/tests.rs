@@ -488,6 +488,34 @@ fn flattening_goes_out_whatever_becomes_of_the_cancels() {
     trading.sign_out();
 }
 
+/// A target whose cancel is never answered: the flatten goes straight
+/// behind the cancels rather than once they are answered, so the position
+/// closes within a round trip, and the target is counted once as left.
+#[test]
+fn a_cancel_never_answered_does_not_hold_the_flatten_back() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 1, 7650.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Limit, 7700.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7600.0)
+        .market_price(7660.0)
+        .start();
+    let timing = Timing { request: Duration::from_secs(3), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    fake.set_cancels(Cancels::LimitsUnanswered);
+    let started = std::time::Instant::now();
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        eventually(Duration::from_secs(1), "the flatten sent", || !fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
+        eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+        assert!(started.elapsed() < Duration::from_secs(1), "held back {:?}", started.elapsed());
+        flattening.join().unwrap()
+    });
+    assert_eq!(flattened, Ok(1), "the target, once");
+    assert_eq!(fake.received_of(wire::CANCEL_ORDER).len(), 2, "each cancelled once");
+    trading.sign_out();
+}
+
 #[test]
 fn flattening_nothing_held_sends_nothing() {
     let fake = Fake::builder().account("Sim1").start();

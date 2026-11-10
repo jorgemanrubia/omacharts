@@ -648,6 +648,7 @@ mod tests {
         let all = Capabilities {
             kinds: vec![OrderKind::Stop, OrderKind::Market, OrderKind::Limit],
             flatten: true,
+            flatten_cancels: false,
             cancel_all: true,
             modify: true,
             link: Linking::AfterTheFact,

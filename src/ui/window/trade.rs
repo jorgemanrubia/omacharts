@@ -1479,21 +1479,29 @@ impl Window {
         self.apply_marks();
         let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
         let cancels = flat.cancel.clone();
-        // The orders first, so that none of them fills into the position
-        // being closed; then the position.
+        // A flatten that cancels for itself, Sierra Chart's, is all there
+        // is to send: cancelling the orders here first as well would cancel
+        // each twice, and wait out one that will not cancel before the
+        // position is closed.
+        let cancels_itself = flat.flatten && target.capabilities.flatten_cancels;
+        // Otherwise the orders first, so that none of them fills into the
+        // position being closed, all at once rather than each waiting on
+        // the one before; then the position.
         self.send(
             &target,
             // A cancel that failed does not stop the flatten: the position
             // closes all the same, and what would not cancel is counted.
             move |session, number| {
-                let mut failed = None;
-                let mut uncancelled = 0;
-                for basket in &flat.cancel {
-                    if let Err(why) = session.cancel(number, basket) {
-                        uncancelled += 1;
-                        failed.get_or_insert(why);
-                    }
+                if cancels_itself {
+                    return session.flatten(number, &contract, &exchange);
                 }
+                let outcomes: Vec<Result<(), Failure>> = std::thread::scope(|scope| {
+                    let sent: Vec<_> =
+                        flat.cancel.iter().map(|basket| scope.spawn(move || session.cancel(number, basket))).collect();
+                    sent.into_iter().map(|cancel| cancel.join().unwrap_or_else(|_| Err(Failure::Refused("the cancel failed".into())))).collect()
+                });
+                let uncancelled = outcomes.iter().filter(|outcome| outcome.is_err()).count();
+                let failed = outcomes.into_iter().find_map(Result::err);
                 if !flat.flatten {
                     return failed.map_or(Ok(0), Err);
                 }
@@ -2512,6 +2520,14 @@ pub(super) mod tests {
     /// the tests' session on account 951, which trades ES as ESZ6 and
     /// links orders as `linking`; long one at 7,612.25.
     fn long_es(linking: trading::Linking) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
+        long_es_with(linking, false)
+    }
+
+    /// [`long_es`] on a trading service whose flatten cancels for itself, or not.
+    fn long_es_with(
+        linking: trading::Linking,
+        flatten_cancels: bool,
+    ) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
         let store = Rc::new(Store::memory().expect("a store"));
         let window = window(&store);
         let es = window.index.find("ES", None).expect("ES in the curated half");
@@ -2527,6 +2543,7 @@ pub(super) mod tests {
         };
         let mut session = trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {}));
         session.linking = linking;
+        session.flatten_cancels = flatten_cancels;
         session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
         let session = Arc::new(session);
         assert!(window.desk.begin(&id));
@@ -4830,6 +4847,43 @@ pub(super) mod tests {
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
             assert_eq!(pane.account_text().as_deref(), Some("951"));
             assert_eq!(dot(&pane), None);
+        });
+    }
+
+    /// Ctrl+F on a trading service whose flatten cancels for itself, Sierra
+    /// Chart's, sends the flatten alone: nothing is cancelled twice, and an
+    /// order that would not cancel is counted once. On one whose flatten
+    /// does not, each order is cancelled once, then the position flattened.
+    #[test]
+    fn ctrl_f_cancels_each_order_once_whoever_cancels_it() {
+        crate::ui::on_gtk(|| {
+            use omacharts_engine::log::Level;
+            use std::sync::atomic::Ordering;
+            for cancels_itself in [true, false] {
+                let (window, _pane, session, key) = long_es_with(trading::Linking::AfterTheFact, cancels_itself);
+                let log = super::super::log::tests::private(&window);
+                let account = window.account_label(&key);
+                let target = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+                let stop = session.place(&resting(Side::Sell, OrderKind::Stop, Some(7_580.0))).unwrap();
+                window.desk.tell();
+                session.heard.lock().unwrap().clear();
+                session.uncancelled.store(1, Ordering::Release);
+                let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+                let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+                assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+                assert!(settle(&window, || held().is_none() && free(&window)), "{cancels_itself}: not flat");
+                let heard = session.heard.lock().unwrap().clone();
+                let count = |what: &str| heard.iter().filter(|heard| **heard == what).count();
+                assert_eq!(count("flatten"), 1, "{cancels_itself}: {heard:?}");
+                assert_eq!(count("cancel"), if cancels_itself { 0 } else { 2 }, "{cancels_itself}: {heard:?}");
+                for basket in [&target, &stop] {
+                    assert!(!session.book().order(basket).unwrap().status.working(), "{cancels_itself}: left working");
+                }
+                window.catch_up_log();
+                let lines: Vec<(Level, String)> = log.entries().into_iter().map(|e| (e.level, e.line())).collect();
+                let once = (Level::Warning, format!("{account} · Flattened · 1 order could not be cancelled: check it"));
+                assert!(lines.contains(&once), "{cancels_itself}: {lines:#?}");
+            }
         });
     }
 
