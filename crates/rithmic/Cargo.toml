@@ -7,12 +7,15 @@ license = "MIT"
 
 [dependencies]
 rithmic-rs = "3.3.0"
+# rithmic-rs dials over rustls (see vendor/rithmic-rs); only here to install
+# ring as the process's provider before it does.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 # The password is kept in the desktop keyring through the Secret Service.
 # oo7 rather than `keyring`: it is the linux-credentials project's own
 # pure-Rust client (zbus underneath, so no libdbus or libsecret to link), it
 # is async on tokio, which this crate already runs, and with `native_crypto`
-# it brings no second openssl beside the one rithmic-rs already links.
+# it links no openssl.
 oo7 = { version = "0.6", default-features = false, features = ["tokio", "native_crypto"] }
 
 [dev-dependencies]

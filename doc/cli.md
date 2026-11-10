@@ -117,9 +117,10 @@ Every indicator the app has, with every parameter it exposes:
 | `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
 | `atr` | `--period`, `--height` |
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
-| `volume` | `--height` |
+| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
+| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
 Anything that draws a line also takes `--color`, `--width` and `--style`, and
 everything takes `--visible`.
@@ -140,7 +141,7 @@ omacharts chart profile merge --at 2026-10-28
 
 Colours come in two kinds, and the difference matters:
 
-- **A palette name** — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan —
+- **A palette name** — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral —
   is re-resolved every time the desktop theme changes, so the indicator follows
   the theme.
 - **`#rrggbb`** is the exact colour you picked, and is never touched again.
@@ -178,7 +179,8 @@ read as the command having worked.
 A chart template is a named set of indicators that charts share. A chart on a
 template shows the template's indicators, and changing the template changes
 every chart on it at once, in every chartbook. A new profile has one called
-**Default**, holding the volume study, and new charts open with it.
+**Default**, holding the volume study. New charts open on no template until
+one is chosen with `template default`.
 
 ```
 omacharts template list
@@ -226,9 +228,10 @@ which is the same setting `template default` writes.
 
 ## The header
 
-The line at a chart's top-left shows its symbol and resolution, and can also
-show the day's move — as a percentage, in the chart's own colours for a rise
-and a fall — and the name of its chart template. It is one line for the whole
+The line at a chart's top-left shows its data feed, symbol, resolution and the
+day's move — as a percentage, in the theme's green for a rise and red for a
+fall, swapped on a chart set to red up — and can also show the name of its
+chart template. It is one line for the whole
 app: every chart in every chartbook shows the same parts, in the order given,
 and a window that is open changes them all at once:
 
@@ -911,7 +914,7 @@ two time/price anchors and says what it measured:
 
 ```sh
 omacharts chart measure --from 2026-09-01,650 --to 2026-10-15,700
-# +7.69% +50.00; 31 bars, 44d on pos:0 SPY 1D in "Chartbook 1"
+# +7.69% +50.00; 31 bars, 6w 2d on pos:0 SPY 1D in "Chartbook 1"
 omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192 --json
 omacharts chart measure --clear
 ```
@@ -1014,7 +1017,8 @@ all charts does in the preferences. One chart on its own is
 switch on for that chart. A volume pane follows the chart's colouring, swapped
 or not, unless given one of its own: `chart indicator set volume --colouring
 theme-soft`, which is painted its own way round whatever the chart's switch
-says, and `--colouring chart` to follow the chart again. A hollow rise never
+says, and `--colouring default` (or `chart`) to follow the chart again.
+Monochrome is refused for a volume pane, as for a delta. A hollow rise never
 reaches the volume: its bars are solid, with no body to leave open. They are
 the candles' own colours, drawn at `--opacity`, 0.2 to 1 and 0.85 unless set.
 

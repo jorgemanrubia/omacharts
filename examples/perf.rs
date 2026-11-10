@@ -283,6 +283,28 @@ fn drawing(rows: &mut Vec<Row>) {
         }));
     }
 
+    // A volume profile over the price, at each edge: aligned right with room
+    // open past the last bar, the session still forming is drawn there.
+    for (align, room) in [("left", 0usize), ("right", 150)] {
+        if let Some(mut scene) = Scene::of(3_000, 1_500, &["volume_profile"]) {
+            scene.restyle(|indicator| {
+                let Ok(mut params) = serde_json::to_value(&indicator.params) else { return };
+                params["align"] = serde_json::json!(align);
+                params["width"] = serde_json::json!(0.6);
+                if let Ok(params) = serde_json::from_value(params) {
+                    indicator.params = params;
+                }
+            });
+            scene.open_room(room);
+            scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+            let (surface, cr) = canvas();
+            rows.push(row("draw", &format!("pan/zoom frame, volume profile {align}, 1500 bars"), || {
+                scene.view_frame(&cr, WIDTH, HEIGHT);
+                surface.flush();
+            }));
+        }
+    }
+
     // What one indicator's arithmetic costs over a long series, which is what
     // every tick pays and what the first frame of a chart pays. A row each
     // rather than one pass over all of them, because the question a regression
@@ -392,7 +414,7 @@ fn interactivity(home: &Path, rows: &mut Vec<Row>) {
 /// which the window does on every push, and starting a sign-in, which a
 /// launch does after its first frame.
 ///
-/// Behind the `fakes` feature, because the broker here is the fake one, and
+/// Behind the `fakes` feature, because the trading service here is the fake one, and
 /// because a revision from before trading has nothing to read: built
 /// without the feature, as that revision is, these rows are simply missing
 /// from its side. `bin/perf-compare` turns it on where the tree has it.
@@ -403,13 +425,13 @@ fn interactivity(home: &Path, rows: &mut Vec<Row>) {
 /// theirs land at no fixed point in a run.
 #[cfg(feature = "fakes")]
 fn trading(home: &Path, rows: &mut Vec<Row>) {
-    use omacharts::trading::fake::{FakeBroker, Kept};
-    use omacharts::trading::{self, Broker, Desk, Registry, Typed, View};
+    use omacharts::trading::fake::{FakeService, Kept};
+    use omacharts::trading::{self, TradingService, Desk, Registry, Typed, View};
     use std::sync::Arc;
 
     let store = Store::open_at(&home.join("trading.db")).expect("a database");
     let typed = |name: &str| Typed {
-        broker: "fake".into(),
+        service: "fake".into(),
         name: name.into(),
         user: "someone".into(),
         password: "not a password".into(),
@@ -421,7 +443,7 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
 
     // Both signed in and refreshed, each holding a position and a day of
     // orders, as a desk is once the sign-ins have landed.
-    let fake = Arc::new(FakeBroker::listed());
+    let fake = Arc::new(FakeService::listed());
     let desk = Desk::new(Registry::of(vec![fake.clone()]));
     let logins = trading::logins(&store);
     for login in &logins {
@@ -437,7 +459,7 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
         black_box(view);
     }));
 
-    let slow = Arc::new(FakeBroker { takes: Duration::from_millis(10), ..FakeBroker::listed() });
+    let slow = Arc::new(FakeService { takes: Duration::from_millis(10), ..FakeService::listed() });
     let desk = Desk::new(Registry::of(vec![slow]));
     let saved = &logins[..1];
     rows.push(row_on_this_thread("trading", "dispatch sign-in for a saved login", || {

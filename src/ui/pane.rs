@@ -243,6 +243,10 @@ pub struct ChartPane {
     /// The feed somebody chose for this chart, by id; `None` follows the
     /// order, which is every chart until somebody chooses.
     pub feed: RefCell<Option<String>>,
+    /// The cache key of the feed this chart was last shown from, `None`
+    /// while no feed serves it: what a change to the feeds is held against,
+    /// to show again only the charts it moves.
+    pub served: RefCell<Option<String>>,
     /// The trading account somebody chose for this chart, as `<login
     /// id>/<account number>`; `None` is the default account.
     pub account: RefCell<Option<String>>,
@@ -262,6 +266,15 @@ pub struct ChartPane {
     /// The size somebody picked for this chart, and from which template;
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
+    /// What this chart's orders go to when it is not what it charts, MES
+    /// for a chart of ES; `None` trades what it charts. Ignored, and never
+    /// shown, while trading is off. See [`ChartPane::traded`].
+    pub trading_symbol: RefCell<Option<Instrument>>,
+    /// A trading symbol kept with the chart that the catalogue could not
+    /// name yet, as its symbol and suffix: the window opens on the curated
+    /// half. Held until the rest arrives to name it, written back as it
+    /// was, and nothing is traded meanwhile — never what the chart charts.
+    pub trading_pending: RefCell<Option<(String, Option<String>)>>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -296,6 +309,12 @@ pub struct ChartPane {
     /// The volume profile periods merged on this chart, kept with it: a
     /// composite is a study of this chart's, not of the indicator's.
     pub profile_merges: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
+    /// What each cumulative delta on this chart worked out last, so a tick
+    /// works out only its newest bars again.
+    pub cvd_memos: omacharts_engine::indicators::cvd::Memos,
+    /// The cumulative deltas on this chart any part of which is estimated
+    /// from bar direction, which the legend marks.
+    pub estimated: RefCell<Vec<u32>>,
     /// What the link icon is painted in, so a mode other than the default can
     /// be read off four charts at a glance rather than by opening four
     /// popovers. Held here because the drawing happens on every frame and the
@@ -395,6 +414,10 @@ impl ChartPane {
         let change_label = gtk::Label::new(None);
         change_label.add_css_class("readout-symbol");
         change_label.set_valign(gtk::Align::Center);
+        // Nothing, and no room, until there is a move to write: it is in
+        // every header now, and a chart opening ahead of its quote must
+        // not open with a gap after the resolution.
+        change_label.set_visible(false);
         let template_label = gtk::Label::new(None);
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
@@ -610,7 +633,7 @@ impl ChartPane {
         // against the line as it will be drawn.
         let (legend_box, legend_row, strip_row, corner_box, strip_part) =
             (legend.clone(), bar.clone(), top.clone(), corner.clone(), strip.clone());
-        let (lone_title, untitled) = (title_part.clone(), title_button.clone());
+        let (lone_title, untitled, typed) = (title_part.clone(), title_button.clone(), title_entry.clone());
         overlay.connect_get_child_position(move |overlay, child| {
             let natural = |w: &gtk::Widget| w.preferred_size().1.width();
             if child == legend_box.upcast_ref::<gtk::Widget>()
@@ -638,10 +661,37 @@ impl ChartPane {
                 // An untitled chart's title, alone in the centre, is the
                 // whole of the top between the two sides: pointed at
                 // anywhere there it offers Add title, and clicked, it edits.
+                // Being typed into, it is a title again, its own width and
+                // centred over the chart where a title is drawn: spanning,
+                // the entry sat in the middle of the room between the two
+                // sides, left of centre beside a wide corner.
                 let spans = untitled.has_css_class(TITLE_UNTITLED)
+                    && lone_title.visible_child_name().as_deref() != Some("editing")
                     && strip_row.first_child().is_some_and(|child| child == lone_title)
                     && lone_title.next_sibling().is_none();
-                let place = center_place(overlay.width(), left, size.width(), right, spans);
+                // A title the line shows has room to be typed into too, or
+                // it is not shown: F2 then asks for it in a dialog rather
+                // than open an entry with nowhere to go.
+                let typing = lone_title.parent().is_some_and(|row| row == strip_row)
+                    && lone_title.visible_child_name().as_deref() != Some("editing");
+                let entry_room =
+                    if typing { (natural(typed.upcast_ref()) - natural(untitled.upcast_ref())).max(0) } else { 0 };
+                let place = center_start(overlay.width(), left, size.width() + entry_room, right)
+                    .and_then(|_| center_place(overlay.width(), left, size.width(), right, spans));
+                // Being typed into, the title keeps its place whatever it
+                // grows to: hidden, its entry would lose the keys and keep
+                // what was typed so far. It takes the room between the two
+                // sides, and no less than it needs.
+                let editing = lone_title.parent().is_some_and(|row| row == strip_row)
+                    && lone_title.visible_child_name().as_deref() == Some("editing");
+                let place = place.or_else(|| {
+                    editing.then(|| {
+                        let (least, _) = strip_row.preferred_size();
+                        let room = overlay.width() - right - STRIP_GAP - (left + STRIP_GAP);
+                        let width = size.width().min(room).max(least.width());
+                        ((left + STRIP_GAP).min(overlay.width() - width).max(0), width)
+                    })
+                });
                 if strip_row.is_child_visible() != place.is_some() {
                     strip_row.set_child_visible(place.is_some());
                 }
@@ -708,6 +758,7 @@ impl ChartPane {
             feed_menu_model: RefCell::new(None),
             menu_actions,
             feed: RefCell::new(None),
+            served: RefCell::new(None),
             account: RefCell::new(None),
             trade_part,
             buy_button,
@@ -717,6 +768,8 @@ impl ChartPane {
             day_part,
             day_amount,
             trading_size: RefCell::new(None),
+            trading_symbol: RefCell::new(None),
+            trading_pending: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
@@ -731,6 +784,8 @@ impl ChartPane {
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             profile_merges: RefCell::new(Vec::new()),
+            cvd_memos: omacharts_engine::indicators::cvd::Memos::new(),
+            estimated: RefCell::new(Vec::new()),
             link_colour,
             glyph,
         });
@@ -950,13 +1005,9 @@ impl ChartPane {
     }
 
     pub fn label(&self) -> String {
-        match self.instrument.borrow().as_ref() {
-            Some(instrument) => format!(
-                "{}  ·  {}",
-                instrument.display_symbol(),
-                self.timeframe.get().label()
-            ),
-            None => String::new(),
+        match self.instrument.borrow().is_some() {
+            true => format!("{}  ·  {}", self.shown_symbol(), self.timeframe.get().label()),
+            false => String::new(),
         }
     }
 
@@ -1172,7 +1223,7 @@ impl ChartPane {
 
     /// The account's P&L for the day, already written as money, and whether
     /// it is up or down; nothing at all, and no room taken, without an
-    /// account or while its broker has not said.
+    /// account or while its trading service has not said.
     pub fn write_day_pnl(&self, day: Option<(&str, std::cmp::Ordering)>) {
         if self.day_part.get_visible() != day.is_some() {
             self.day_part.set_visible(day.is_some());
@@ -1251,13 +1302,19 @@ impl ChartPane {
         self.size_label.text().to_string()
     }
 
-    /// The day's move, in `colour`; nothing at all until there is one.
-    pub fn write_change(&self, change: Option<(f64, &str)>) {
+    /// The day's move, in `colour`, or the header's text when it has none;
+    /// nothing at all until there is one.
+    pub fn write_change(&self, change: Option<(f64, Option<&str>)>) {
         match change {
             Some((pct, colour)) => {
                 let text = gtk::glib::markup_escape_text(&crate::header::change_text(pct));
-                let colour = gtk::glib::markup_escape_text(colour);
-                self.change_label.set_markup(&format!("<span foreground=\"{colour}\">{text}</span>"));
+                match colour {
+                    Some(colour) => {
+                        let colour = gtk::glib::markup_escape_text(colour);
+                        self.change_label.set_markup(&format!("<span foreground=\"{colour}\">{text}</span>"));
+                    }
+                    None => self.change_label.set_markup(&text),
+                }
                 self.change_label.set_visible(true);
             }
             None => {
@@ -1268,14 +1325,45 @@ impl ChartPane {
     }
 
     pub fn write_readout(&self) {
-        let symbol = self
-            .instrument
-            .borrow()
-            .as_ref()
-            .map(|i| i.display_symbol())
-            .unwrap_or_default();
-        self.symbol_button.set_label(&symbol);
+        self.symbol_button.set_label(&self.shown_symbol());
         self.write_timeframe();
+    }
+
+    /// The trading symbol in force: the one set for this chart while
+    /// trading is on, `None` while the chart trades what it charts.
+    pub fn trading_instead(&self) -> Option<Instrument> {
+        crate::features::trading().then(|| self.trading_symbol.borrow().clone()).flatten()
+    }
+
+    /// The trading symbol kept with this chart that is not known yet,
+    /// while trading is on: nothing is traded from it until it is.
+    pub fn trading_unresolved(&self) -> Option<String> {
+        crate::features::trading().then(|| self.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())).flatten()
+    }
+
+    /// What this chart's orders, positions and P&L are of: its trading
+    /// symbol, else what it charts. Nothing while its trading symbol is
+    /// still to be found: never what it charts in its place.
+    pub fn traded(&self) -> Option<Instrument> {
+        if self.trading_unresolved().is_some() {
+            return None;
+        }
+        self.trading_instead().or_else(|| self.instrument.borrow().clone())
+    }
+
+    /// The chart's symbol as its header names it: "ES", or "ES/MES" while
+    /// it trades MES.
+    pub fn shown_symbol(&self) -> String {
+        let Some(charted) = self.instrument.borrow().as_ref().map(|i| i.display_symbol()) else {
+            return String::new();
+        };
+        if let Some(waiting) = self.trading_unresolved() {
+            return format!("{charted}/{waiting}");
+        }
+        match self.trading_instead() {
+            Some(traded) => format!("{charted}/{}", traded.display_symbol()),
+            None => charted,
+        }
     }
 
     /// The resolution, beside the symbol.
@@ -2103,7 +2191,8 @@ mod tests {
             assert_eq!(
                 corner(&pane),
                 vec![
-                    pane.day_part.clone().upcast::<gtk::Widget>(),
+                    pane.account_menu.clone().upcast::<gtk::Widget>(),
+                    pane.day_part.clone().upcast(),
                     pane.trade_part.clone().upcast(),
                     pane.size_menu.clone().upcast(),
                     pane.gear.clone().upcast(),
@@ -2122,8 +2211,9 @@ mod tests {
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
             header(Header::standard().left, Header::standard().right);
-            // The P&L, Buy and Sell and the quantity, then the three controls.
-            assert_eq!(corner(&pane).len(), 6);
+            // The account, the P&L, Buy and Sell and the quantity, then the
+            // three controls.
+            assert_eq!(corner(&pane).len(), 7);
         });
     }
 
@@ -2362,6 +2452,172 @@ mod tests {
         assert_eq!(center_place(496, 106, 95, 218, true), Some((114, 156)));
         // And no more than a title would have where there is no room.
         assert_eq!(center_place(300, 160, 90, 100, true), None);
+    }
+
+    /// F2 on an untitled chart types the title where a title is drawn:
+    /// centred over the chart, not in the middle of the room between the
+    /// two sides, which beside a wide corner is left of it. Moved to the
+    /// left of the header, it is typed there.
+    #[test]
+    fn an_untitled_title_is_typed_where_a_title_is_drawn() {
+        use crate::header::{Header, Part};
+        use gtk::gdk;
+        crate::ui::on_gtk(|| {
+            let Some(display) = gdk::Display::default() else { return };
+            if adw::init().is_err() {
+                return;
+            }
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&crate::theming::stylesheet(&theme, &scheme));
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            // A corner as wide as a trading one, so the room between the two
+            // sides is not centred on the chart.
+            pane.corner.prepend(&gtk::Label::new(Some("Buy  Sell  1 contract  +$1,250.00")));
+            let window = gtk::Window::new();
+            window.set_default_size(900, 300);
+            window.set_child(Some(&pane.root));
+            window.present();
+            let settle = || {
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..30 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            };
+            let middle = |widget: &gtk::Widget| {
+                let bounds = widget.compute_bounds(&pane.root).expect("laid out");
+                bounds.x() + bounds.width() / 2.0
+            };
+
+            pane.write_title("Plan");
+            settle();
+            // A compositor that tiles windows, as a desktop session's does,
+            // sizes this one as it likes, and may leave the centre no room
+            // for a title: F2 then asks for it in a dialog instead (see
+            // `title_in_view`), and where it is typed cannot be measured.
+            // The headless window keeps the size asked for.
+            if !window.is_mapped() || !pane.title_in_view() {
+                eprintln!("skipped: the window is {} wide, with no room for a title in the centre", window.width());
+                window.close();
+                return;
+            }
+            let drawn = middle(pane.title_label.upcast_ref());
+            pane.write_title("");
+            settle();
+            pane.begin_title_edit();
+            settle();
+            let entry = pane.title_entry.upcast_ref::<gtk::Widget>();
+            assert!(entry.is_mapped(), "F2 did not show the entry");
+            assert!((middle(entry) - drawn).abs() <= 1.0, "typed at {}, drawn at {drawn}", middle(entry));
+            assert_eq!(gtk::prelude::EntryExt::alignment(&pane.title_entry), 0.5);
+            pane.finish_title_edit(false);
+
+            let standard = Header::standard();
+            let mut left = standard.left.clone();
+            left.push(Part::Title);
+            *pane.header.borrow_mut() = Header { left, center: Vec::new(), right: standard.right.clone() };
+            pane.arrange_header();
+            settle();
+            pane.begin_title_edit();
+            settle();
+            let entry = pane.title_entry.compute_bounds(&pane.root).expect("laid out");
+            let symbol = pane.symbol_button.compute_bounds(&pane.root).expect("laid out");
+            assert!(pane.title_part.parent().is_some_and(|row| row == pane.header_row));
+            assert!(entry.x() > symbol.x() + symbol.width(), "typed off the line it is in");
+            assert!(entry.x() < drawn - 100.0, "typed in the centre, not on the left");
+            pane.finish_title_edit(false);
+            window.close();
+        });
+    }
+
+    /// However narrow the chart, a title the header shows has room to be
+    /// typed where it stands: one F2 could not open an entry for is not
+    /// shown, so F2 asks for it in a dialog instead of showing nothing. An
+    /// untitled chart's slot beside a wide corner once fit where its entry
+    /// did not.
+    #[test]
+    fn a_title_shown_always_has_room_to_be_typed() {
+        use gtk::gdk;
+        crate::ui::on_gtk(|| {
+            let Some(display) = gdk::Display::default() else { return };
+            if adw::init().is_err() {
+                return;
+            }
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&crate::theming::stylesheet(&theme, &scheme));
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            pane.corner.prepend(&gtk::Label::new(Some("Buy  Sell  1 contract  +$1,250.00")));
+            // The chart narrowed by what stands beside it, whatever size the
+            // compositor gives the window.
+            let (holder, beside) =
+                (gtk::Box::new(gtk::Orientation::Horizontal, 0), gtk::Box::new(gtk::Orientation::Horizontal, 0));
+            holder.append(&pane.root);
+            holder.append(&beside);
+            let window = gtk::Window::new();
+            window.set_child(Some(&holder));
+            window.present();
+            let settle = || {
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..20 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            };
+            settle();
+            let mut shown = 0;
+            for title in ["", "Plan"] {
+                pane.write_title(title);
+                for width in (360..=900).rev().step_by(12) {
+                    beside.set_size_request((window.width() - width).max(0), 1);
+                    settle();
+                    if !pane.title_in_view() {
+                        continue;
+                    }
+                    shown += 1;
+                    pane.begin_title_edit();
+                    settle();
+                    let mapped = pane.title_entry.is_mapped();
+                    pane.finish_title_edit(false);
+                    assert!(mapped, "{title:?} shown {} wide with no room to type it", pane.root.width());
+                }
+            }
+            assert!(shown > 0 || window.width() < 900, "never shown in a {} wide window", window.width());
+
+            // Typed into where there was just room: a title far longer than
+            // the room keeps the entry, and the keys, until it is done.
+            let narrowest = (360..=900).step_by(12).find(|width| {
+                beside.set_size_request((window.width() - width).max(0), 1);
+                settle();
+                pane.title_in_view()
+            });
+            if let Some(width) = narrowest {
+                pane.write_title("");
+                settle();
+                pane.begin_title_edit();
+                settle();
+                let mut typed = String::new();
+                for word in ["Opening", "range", "breakout", "plan", "for", "the", "whole", "week", "ahead"] {
+                    typed.push_str(word);
+                    typed.push(' ');
+                    pane.title_entry.set_text(&typed);
+                    settle();
+                    assert!(pane.title_entry.is_mapped(), "the entry hid {width} wide, typing {typed:?}");
+                    assert!(pane.editing_title(), "the edit ended {width} wide, typing {typed:?}");
+                }
+                pane.finish_title_edit(false);
+            }
+            window.close();
+        });
     }
 
     #[test]

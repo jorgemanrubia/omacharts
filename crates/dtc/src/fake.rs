@@ -99,6 +99,50 @@ struct FakeFill {
     server_id: String,
 }
 
+/// What becomes of an OCO pair submitted, besides being taken or rejected
+/// whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pairs {
+    /// Taken or rejected whole, and said at once.
+    Answered,
+    /// Lost on the way: never taken, never answered.
+    Lost,
+    /// Taken, both working and each knowing the other, with no word said
+    /// of either: the answer lost on the way back.
+    TakenSilently,
+    /// One of the two, `_1` (0) or `_2` (1), rejected with the words, the
+    /// other taken alone, linked to nothing.
+    OneRejected(usize, String),
+    /// Taken with no word said, as [`Pairs::TakenSilently`], and the one
+    /// at `_1` (0) or `_2` (1) filled whole at its price at once, the
+    /// other cancelled by it, with no word said of that either.
+    FilledSilently(usize),
+}
+
+/// How the fake answers a cancel, besides cancelling what it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cancels {
+    /// The order it names cancelled, or said not to be working or found.
+    Answered,
+    /// An order named by its ClientOrderID alone is not found, though the
+    /// server holds it: a server that knows its orders only by its own ids.
+    ClientIdUnknown,
+    /// Every cancel of an order it holds refused, with the words.
+    Refused(String),
+    /// A cancel of either of an OCO pair it holds refused, with the
+    /// words; any other order cancelled as it would be.
+    RefusedInPairs(String),
+    /// A cancel of a limit it holds never answered, the order left
+    /// working: a target stuck at the exchange. Any other order cancelled
+    /// as it would be.
+    LimitsUnanswered,
+    /// A cancel of a stop it holds not answered, the stop left working, as
+    /// one that reaches the exchange as the stop is hit: what becomes of it
+    /// is the test's to say, by [`Fake::fill`]. Any other order cancelled
+    /// as it would be.
+    StopsUnanswered,
+}
+
 /// The fake's world, which the builder sets up and the connections change.
 #[derive(Clone, Debug)]
 struct World {
@@ -116,6 +160,12 @@ struct World {
     /// Say OCO orders are supported, and take a pair.
     oco: bool,
     reject: Option<String>,
+    /// Reject every OCO pair with this, single orders still taken.
+    reject_pairs: Option<String>,
+    /// What becomes of the next OCO pairs: see [`Pairs`].
+    pairs: Pairs,
+    /// How cancels are answered: see [`Cancels`].
+    cancels: Cancels,
     filling: Fills,
     market_price: f64,
     silent: bool,
@@ -140,6 +190,9 @@ impl Default for World {
             trading: true,
             oco: true,
             reject: None,
+            reject_pairs: None,
+            pairs: Pairs::Answered,
+            cancels: Cancels::Answered,
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
@@ -409,6 +462,22 @@ impl Fake {
         lock(&self.shared.world).reject = text.map(str::to_string);
     }
 
+    /// Reject every OCO pair submitted from now on with `text`, or none,
+    /// single orders still taken.
+    pub fn set_reject_pairs(&self, text: Option<&str>) {
+        lock(&self.shared.world).reject_pairs = text.map(str::to_string);
+    }
+
+    /// What becomes of the OCO pairs submitted from now on.
+    pub fn set_pairs(&self, pairs: Pairs) {
+        lock(&self.shared.world).pairs = pairs;
+    }
+
+    /// How cancels are answered from now on.
+    pub fn set_cancels(&self, cancels: Cancels) {
+        lock(&self.shared.world).cancels = cancels;
+    }
+
     /// How orders placed from now on fill.
     pub fn set_fills(&self, fills: Fills) {
         lock(&self.shared.world).filling = fills;
@@ -426,6 +495,11 @@ impl Fake {
     /// session was away.
     pub fn forget_order(&self, id: &str) {
         lock(&self.shared.world).orders.retain(|order| order.server_id != id && order.client_id != id);
+    }
+
+    /// Every order the server holds still working, as the server sees it.
+    pub fn working(&self) -> Vec<FakeOrder> {
+        lock(&self.shared.world).orders.iter().filter(|order| order.working()).cloned().collect()
     }
 
     /// The order `id` names, by server or client id.
@@ -866,9 +940,54 @@ fn submitted(world: &mut World, message: &Message, leg: &str) -> FakeOrder {
 /// or both rejected, each with its own update, as DTC asks. They rest
 /// until [`Fake::fill`], however orders are set to fill.
 fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
+    match world.pairs.clone() {
+        Pairs::Answered => {}
+        Pairs::Lost => return Vec::new(),
+        Pairs::TakenSilently => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+            for (at, order) in pair.iter_mut().enumerate() {
+                order.status = wire::ORDER_STATUS_OPEN;
+                order.oco = Some(ids[1 - at].clone());
+            }
+            world.orders.extend(pair);
+            return Vec::new();
+        }
+        Pairs::FilledSilently(leg) => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+            for (at, order) in pair.iter_mut().enumerate() {
+                order.status = wire::ORDER_STATUS_OPEN;
+                order.oco = Some(ids[1 - at].clone());
+            }
+            let (qty, price) = (pair[leg].qty, pair[leg].price1);
+            world.orders.extend(pair);
+            let at = world.orders.len() - 2 + leg;
+            let _unsaid = fill(world, at, qty, price);
+            return Vec::new();
+        }
+        Pairs::OneRejected(leg, text) => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
+            for (at, order) in pair.iter_mut().enumerate() {
+                match at == leg {
+                    true => {
+                        order.status = wire::ORDER_STATUS_REJECTED;
+                        pushes.push(order_message(order, wire::NEW_ORDER_REJECTED, &text));
+                    }
+                    false => {
+                        order.status = wire::ORDER_STATUS_OPEN;
+                        pushes.push(order_message(order, wire::NEW_ORDER_ACCEPTED, ""));
+                    }
+                }
+            }
+            world.orders.extend(pair);
+            return pushes;
+        }
+    }
     let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
     let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
-    let refused = match (&world.reject, world.oco) {
+    let refused = match (world.reject.as_ref().or(world.reject_pairs.as_ref()), world.oco) {
         (Some(text), _) => Some(text.clone()),
         (None, false) => Some("OCO orders are not supported".to_string()),
         (None, true) if !world.accounts.contains(&pair[0].account) => Some("Trade account not found".to_string()),
@@ -999,6 +1118,31 @@ fn named<'a>(world: &'a mut World, message: &Message) -> Option<&'a mut FakeOrde
 }
 
 fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
+    match world.cancels.clone() {
+        Cancels::Answered => {}
+        Cancels::ClientIdUnknown if message.text("ServerOrderID").is_none() => return vec![not_found(message)],
+        Cancels::ClientIdUnknown => {}
+        Cancels::Refused(text) => {
+            if let Some(order) = named(world, message) {
+                return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+        Cancels::RefusedInPairs(text) => {
+            if let Some(order) = named(world, message).filter(|order| order.oco.is_some()) {
+                return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+        Cancels::LimitsUnanswered => {
+            if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Limit) {
+                return Vec::new();
+            }
+        }
+        Cancels::StopsUnanswered => {
+            if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Stop) {
+                return Vec::new();
+            }
+        }
+    }
     match named(world, message) {
         Some(order) if order.working() => {
             order.status = wire::ORDER_STATUS_CANCELED;
@@ -1013,14 +1157,19 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
             pushes
         }
         Some(order) => vec![order_message(order, wire::ORDER_CANCEL_REJECTED, "Order is not working")],
-        None => vec![Message::new(
-            wire::ORDER_UPDATE,
-            json!({
-                "ServerOrderID": message.text_or_empty("ServerOrderID"), "ClientOrderID": message.text_or_empty("ClientOrderID"),
-                "OrderUpdateReason": wire::ORDER_CANCEL_REJECTED, "InfoText": "Order not found",
-            }),
-        )],
+        None => vec![not_found(message)],
     }
+}
+
+/// A cancel's refusal for an order the server does not hold.
+fn not_found(message: &Message) -> Message {
+    Message::new(
+        wire::ORDER_UPDATE,
+        json!({
+            "ServerOrderID": message.text_or_empty("ServerOrderID"), "ClientOrderID": message.text_or_empty("ClientOrderID"),
+            "OrderUpdateReason": wire::ORDER_CANCEL_REJECTED, "InfoText": "Order not found",
+        }),
+    )
 }
 
 fn replace(world: &mut World, message: &Message) -> Vec<Message> {

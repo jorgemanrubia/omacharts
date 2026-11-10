@@ -1,4 +1,4 @@
-//! A broker in memory, for the tests: a session that fills a market order
+//! A trading service in memory, for the tests: a session that fills a market order
 //! at once and holds a limit or a stop until it is cancelled, and a keyring
 //! that is a list.
 
@@ -26,18 +26,18 @@ impl Secrets for Kept {
     }
 }
 
-/// A broker that signs anybody in with the accounts it was given, and
+/// A trading service that signs anybody in with the accounts it was given, and
 /// counts how often it was asked. Its logins name it `fake`, and it has
 /// no data feed.
 #[derive(Default)]
-pub struct FakeBroker {
+pub struct FakeService {
     /// The accounts a login has, by the login's name.
     pub accounts: Mutex<HashMap<String, Vec<Account>>>,
     /// The accounts a login named in neither has.
     pub every_login: Vec<Account>,
     /// The contract each future root trades as, by root, in every session.
     pub contracts: HashMap<String, String>,
-    /// What the broker holds for a login, by the login's name, from before
+    /// What the trading service holds for a login, by the login's name, from before
     /// it signed in: a session's refresh finds it.
     pub held: Mutex<HashMap<String, Book>>,
     /// How long signing in takes, as a network would.
@@ -48,11 +48,11 @@ pub struct FakeBroker {
     pub signed_out: Arc<AtomicUsize>,
 }
 
-impl FakeBroker {
-    /// The broker as the registry lists it: every login has one account,
+impl FakeService {
+    /// The trading service as the registry lists it: every login has one account,
     /// and ES trades as ESZ6.
-    pub fn listed() -> FakeBroker {
-        FakeBroker {
+    pub fn listed() -> FakeService {
+        FakeService {
             every_login: vec![Account {
                 login: String::new(),
                 id: "FAKE-1".into(),
@@ -61,13 +61,13 @@ impl FakeBroker {
                 balance: Some(50_000.0),
             }],
             contracts: HashMap::from([("ES".to_string(), "ESZ6".to_string())]),
-            ..FakeBroker::default()
+            ..FakeService::default()
         }
     }
 }
 
 /// A day's orders on the one account every login has, one at every
-/// stage, as the broker of a build with the `fakes` feature holds them
+/// stage, as the trading service of a build with the `fakes` feature holds them
 /// for any login: something to look at in the panel without placing any.
 pub fn day_of_orders() -> Book {
     let now = std::time::SystemTime::now()
@@ -131,18 +131,18 @@ pub fn day_of_orders() -> Book {
     }
 }
 
-/// A second broker, in memory: a session that fills a market order at
+/// A second trading service, in memory: a session that fills a market order at
 /// once, at `last`, and holds a limit or a stop until it is cancelled.
 /// Its book is the one a real session would push, with `changed` called
 /// after each move. That the window trades through it as it does
 /// through Rithmic is the proof that nothing above [`Session`] knows
-/// which broker it is.
+/// which trading service it is.
 pub struct FakeSession {
     pub accounts: Vec<Account>,
     signed_out: Arc<AtomicUsize>,
     gone: std::sync::atomic::AtomicBool,
     pub book: Mutex<Book>,
-    /// What the broker holds that the session has not been told of: what
+    /// What the trading service holds that the session has not been told of: what
     /// [`Session::refresh`] brings into the book. Its orders are added to
     /// the book's, its positions and money replace the book's.
     pub held: Mutex<Book>,
@@ -150,7 +150,7 @@ pub struct FakeSession {
     pub refreshes: AtomicUsize,
     pub last: Mutex<f64>,
     /// What [`Session::last_price`] and [`Session::price_of`] say: the
-    /// broker's own market, which need not be the chart's.
+    /// trading service's own market, which need not be the chart's.
     pub market: Mutex<Option<f64>>,
     /// What [`Session::price_limits`] says.
     pub limits: Mutex<(Option<f64>, Option<f64>)>,
@@ -162,7 +162,13 @@ pub struct FakeSession {
     pub kinds: Vec<OrderKind>,
     /// What it says it can do beyond placing and cancelling.
     pub modifies: bool,
-    /// How it links a stop and a target: every way a broker can is one
+    /// The step its contracts trade in, a quarter as ES's unless a test
+    /// says otherwise: a micro stepping coarser than the chart it is priced on.
+    pub tick: Mutex<f64>,
+    /// Its flatten cancels what works on the contract itself, as Sierra
+    /// Chart's does, and says "flatten" rather than "cancel" for it.
+    pub flatten_cancels: bool,
+    /// How it links a stop and a target: every way a trading service can is one
     /// of these, so each is tested here.
     pub linking: Linking,
     /// The groups linked, each cancelled whole when one of it ends: after
@@ -172,20 +178,26 @@ pub struct FakeSession {
     /// of one of a pair filled comes off the other, as DTC's do.
     pub pairs: AtomicUsize,
     /// What it was asked, in order: "place", "pair", "cancel", "modify",
-    /// "link".
+    /// "link", "flatten".
     pub heard: Mutex<Vec<&'static str>>,
     /// Refuse the next pair, or the next link, in these words.
     pub refuse_pairs: Mutex<Option<String>>,
     pub refuse_links: Mutex<Option<String>>,
     /// Refuse whatever is asked next, in these words.
     pub refuse: Mutex<Option<String>>,
+    /// The next flatten closes the position but says this many orders on
+    /// it would not cancel, as a DTC server's refusals can leave them.
+    pub uncancelled: AtomicUsize,
     /// Answer nothing at all from now on: every request is lost on the
     /// way, and nothing in the book moves.
     pub silent: std::sync::atomic::AtomicBool,
-    /// Hold what is placed as the broker's Pending, as an order is
+    /// Hold what is placed as the trading service's Pending, as an order is
     /// before the exchange has it, until [`FakeSession::open`] or
     /// [`FakeSession::fill`]; a market order too.
     pub holds: std::sync::atomic::AtomicBool,
+    /// The next cancel goes through, but its answer is lost on the way:
+    /// the order is cancelled and the cancel says nothing came back.
+    pub cancel_lost: std::sync::atomic::AtomicBool,
 }
 
 impl FakeSession {
@@ -211,6 +223,8 @@ impl FakeSession {
             simulated: true,
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             modifies: true,
+            flatten_cancels: false,
+            tick: Mutex::new(0.25),
             linking: Linking::AfterTheFact,
             links: Mutex::default(),
             pairs: AtomicUsize::new(0),
@@ -218,8 +232,10 @@ impl FakeSession {
             refuse_pairs: Mutex::default(),
             refuse_links: Mutex::default(),
             refuse: Mutex::default(),
+            uncancelled: AtomicUsize::new(0),
             silent: Default::default(),
             holds: Default::default(),
+            cancel_lost: Default::default(),
         }
     }
 
@@ -229,7 +245,7 @@ impl FakeSession {
 
     /// Drop and come back, as a network would: what was working is no
     /// longer in the book until a refresh says what became of it, and the
-    /// desk is told it is back. `meanwhile` is what the broker did while it
+    /// desk is told it is back. `meanwhile` is what the trading service did while it
     /// was down, to what it holds.
     pub fn drop_and_return(&self, meanwhile: impl FnOnce(&mut Book)) {
         {
@@ -302,7 +318,7 @@ impl FakeSession {
         self.moved();
     }
 
-    /// End `basket` and cancel every order linked to it, as a broker
+    /// End `basket` and cancel every order linked to it, as a trading service
     /// holding the link would.
     fn end_linked(&self, book: &mut Book, basket: &str) {
         let links = self.links.lock().unwrap();
@@ -350,7 +366,7 @@ impl FakeSession {
                 avg: Some(at),
                 open_pnl: None,
                 tick: Some(0.25),
-                point: Some(50.0),
+                point: omacharts_engine::specs::point(omacharts_engine::specs::root_of(contract)).or(Some(50.0)),
             }),
         }
         book.positions.retain(|held| held.net != 0);
@@ -365,6 +381,7 @@ impl Session for FakeSession {
         Capabilities {
             kinds: self.kinds.clone(),
             flatten: true,
+            flatten_cancels: self.flatten_cancels,
             cancel_all: true,
             modify: self.modifies,
             link: self.linking,
@@ -380,12 +397,12 @@ impl Session for FakeSession {
             return Err(Refusal::NotTradable);
         }
         // A dated contract trades as itself; a root as the contract the
-        // broker says is trading now.
+        // trading service says is trading now.
         let symbol = match instrument.is_contract() {
             true => instrument.symbol.clone(),
             false => self.contracts.lock().unwrap().get(&instrument.symbol).cloned().ok_or(Refusal::NotKnownYet)?,
         };
-        Ok(Contract { symbol, exchange: "CME".into(), tick: Some(0.25) })
+        Ok(Contract { symbol, exchange: "CME".into(), tick: Some(*self.tick.lock().unwrap()) })
     }
     fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {
         *self.market.lock().unwrap()
@@ -413,7 +430,7 @@ impl Session for FakeSession {
         }
         book.orders.sort_by_key(|order| std::cmp::Reverse(order.at));
         book.positions = held.positions;
-        // Money the broker never said is the balance the account was listed
+        // Money the trading service never said is the balance the account was listed
         // with.
         book.accounts = match held.accounts.is_empty() {
             true => self
@@ -497,7 +514,10 @@ impl Session for FakeSession {
         self.end_linked(&mut book, basket);
         drop(book);
         self.moved();
-        Ok(())
+        match self.cancel_lost.swap(false, Ordering::AcqRel) {
+            true => Err(Failure::Unanswered("no answer in time".into())),
+            false => Ok(()),
+        }
     }
     fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), Failure> {
         self.refused()?;
@@ -514,7 +534,7 @@ impl Session for FakeSession {
         self.refused()?;
         self.heard.lock().unwrap().push("link");
         if self.linking != Linking::AfterTheFact {
-            return Err(Failure::Refused("this broker does not link working orders".into()));
+            return Err(Failure::Refused("this trading service does not link working orders".into()));
         }
         if let Some(why) = self.refuse_links.lock().unwrap().take() {
             return Err(Failure::Refused(why));
@@ -526,7 +546,7 @@ impl Session for FakeSession {
         self.refused()?;
         self.heard.lock().unwrap().push("pair");
         if self.linking != Linking::AtSubmission {
-            return Err(Failure::Refused("this broker does not place orders as a pair".into()));
+            return Err(Failure::Refused("this trading service does not place orders as a pair".into()));
         }
         if let Some(why) = self.refuse_pairs.lock().unwrap().take() {
             return Err(Failure::Refused(why));
@@ -553,15 +573,21 @@ impl Session for FakeSession {
         self.moved();
         Ok(())
     }
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure> {
         self.refused()?;
+        self.heard.lock().unwrap().push("flatten");
         let last = *self.last.lock().unwrap();
         let mut book = self.book.lock().unwrap();
+        if self.flatten_cancels {
+            for order in book.orders.iter_mut().filter(|order| order.contract == contract && order.status.working()) {
+                order.status = Stage::Cancelled.into();
+            }
+        }
         let net = book.position(account, contract).map_or(0, |held| held.net);
         FakeSession::hold(&mut book, account, contract, exchange, -net, last);
         drop(book);
         self.moved();
-        Ok(())
+        Ok(self.uncancelled.swap(0, Ordering::AcqRel))
     }
     fn trouble(&self) -> Option<String> {
         self.gone.load(Ordering::Acquire).then(|| "signed out".into())
@@ -572,13 +598,13 @@ impl Session for FakeSession {
     }
 }
 
-impl Broker for FakeBroker {
+impl TradingService for FakeService {
     fn id(&self) -> &'static str {
         "fake"
     }
 
     fn label(&self) -> &'static str {
-        "Fake Broker"
+        "Fake Trading Service"
     }
 
     /// Who signed in, as Rithmic's does: what the Log is shown to keep
@@ -623,7 +649,7 @@ pub(crate) mod tests {
 
     pub(crate) fn typed(name: &str, user: &str) -> Typed {
         Typed {
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             name: name.into(),
             user: user.into(),
             password: "PLANTED-PASSWORD".into(),
@@ -668,7 +694,7 @@ pub(crate) mod tests {
             id: id.into(),
             name: name.into(),
             user: "u".into(),
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             values: vec![("system".into(), system.into()), ("gateway".into(), TEST_GATEWAY.into())],
             signed_out: false,
         }

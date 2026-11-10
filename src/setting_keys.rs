@@ -31,7 +31,7 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
-    // The broker logins — names, user IDs, systems, gateways — and which
+    // The trading service logins — names, user IDs, systems, gateways — and which
     // one market data comes through belong to the machine they were typed
     // on. Their passwords are in the keyring, never a setting.
     (crate::trading::LOGINS, Kind::Local),
@@ -60,6 +60,9 @@ const KEYS: &[(&str, Kind)] = &[
     // Whether the panel's Orders tab was left on the open orders or all.
     ("orders_filter", Kind::Bookkeeping),
     ("show_drawing_tools", Kind::Bookkeeping),
+    // That new charts were taken off the "Default" template seeding put
+    // them on: the app's note, done once.
+    (crate::templates::UNSEEDED, Kind::Bookkeeping),
 ];
 
 /// Every key the app writes that is shared, named so the test below can tell

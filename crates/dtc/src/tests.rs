@@ -6,7 +6,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::fake::{Fake, Fills};
+use crate::fake::{Cancels, Fake, Fills, Pairs};
 use crate::wire::{self, Framer};
 use crate::*;
 
@@ -17,6 +17,8 @@ fn quick() -> Timing {
         request: Duration::from_secs(2),
         backoff: Duration::from_millis(50),
         backoff_cap: Duration::from_millis(200),
+        unheard: Duration::from_secs(30),
+        flatten_cancels: Duration::from_millis(500),
     }
 }
 
@@ -203,7 +205,12 @@ fn an_order_placed_is_acknowledged_then_filled_in_parts_and_the_book_follows() {
     assert_eq!((sent.int("OrderType"), sent.int("BuySell"), sent.int("Quantity"), sent.int("TimeInForce")), (Some(1), Some(1), Some(3), Some(1)));
     assert_eq!(sent.text("FreeFormText").as_deref(), Some("from the chart"));
     assert!(id.len() < 32);
-    eventually(Duration::from_secs(2), "it fills", || trading.book().orders.iter().any(|order| order.is(&id) && order.status == Status::Filled));
+    // The position update comes after the fill's order update.
+    eventually(Duration::from_secs(2), "it fills", || {
+        let book = trading.book();
+        book.orders.iter().any(|order| order.is(&id) && order.status == Status::Filled)
+            && book.positions.first().is_some_and(|position| position.qty == 3)
+    });
     let book = trading.book();
     let placed = book.orders.iter().find(|order| order.is(&id)).unwrap();
     assert_eq!((placed.filled, placed.avg_fill_price, placed.tag.as_deref()), (3, Some(7651.0), Some("from the chart")));
@@ -403,6 +410,181 @@ fn flattening_cancels_what_works_on_the_contract_then_closes_what_is_held() {
     trading.sign_out();
 }
 
+/// Signed in to `fake` waiting only a moment for each answer, an order
+/// never heard of kept `unheard` past a listing that leaves it out.
+fn impatient(fake: &Fake, unheard: Duration) -> Trading {
+    let timing = Timing { request: Duration::from_millis(500), unheard, ..quick() };
+    Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake")
+}
+
+/// A pair lost on its way: the ClientOrderIDs of the two left in the book
+/// as sent and never heard of.
+fn lost_pair(fake: &Fake, trading: &Trading) -> Vec<String> {
+    fake.set_pairs(Pairs::Lost);
+    assert_eq!(trading.place_pair(&exits(2)), Err(Error::Timeout));
+    fake.set_pairs(Pairs::Answered);
+    let book = trading.book();
+    let ghosts: Vec<String> =
+        book.orders.iter().filter(|order| order.server_id.is_none() && order.status == Status::Pending).filter_map(|order| order.client_id.clone()).collect();
+    assert_eq!(ghosts.len(), 2, "{:?}", book.orders);
+    ghosts
+}
+
+/// An order sent and never heard of, whose cancel the server refuses as
+/// one it does not have, leaves the book; the refusal is still said.
+#[test]
+fn an_order_the_server_says_it_does_not_have_leaves_the_book() {
+    let fake = Fake::builder().account("Sim1").position("Sim1", ES, 2, 7650.0).start();
+    let trading = impatient(&fake, Duration::from_secs(30));
+    let ghosts = lost_pair(&fake, &trading);
+    assert_eq!(trading.cancel(&ghosts[0]), Err(Error::Rejected("Order not found".into())));
+    let book = trading.book();
+    assert!(!book.orders.iter().any(|order| order.is(&ghosts[0])), "a ghost stays drawn as working");
+    assert!(book.orders.iter().any(|order| order.is(&ghosts[1])), "only the one the server said it does not have");
+    trading.sign_out();
+}
+
+/// A listing of open orders that leaves out an order sent and never heard
+/// of takes it out of the book once it is past its grace, and not before:
+/// a listing may cross an order on its way.
+#[test]
+fn an_order_never_heard_of_goes_once_a_listing_past_its_grace_leaves_it_out() {
+    let fake = Fake::builder().account("Sim1").position("Sim1", ES, 2, 7650.0).start();
+    let patient = impatient(&fake, Duration::from_secs(30));
+    let ghosts = lost_pair(&fake, &patient);
+    patient.refresh().unwrap();
+    assert!(ghosts.iter().all(|ghost| patient.book().orders.iter().any(|order| order.is(ghost))), "gone within its grace");
+    patient.sign_out();
+
+    let trading = impatient(&fake, Duration::ZERO);
+    let ghosts = lost_pair(&fake, &trading);
+    trading.refresh().unwrap();
+    let book = trading.book();
+    assert!(ghosts.iter().all(|ghost| !book.orders.iter().any(|order| order.is(ghost))), "{:?}", book.orders);
+    trading.sign_out();
+}
+
+/// Flattening with an order the server never had in the book, and one it
+/// will not cancel: every cancel is tried, the flatten goes all the same
+/// and closes what is held, and it answers the one order left working.
+#[test]
+fn flattening_goes_out_whatever_becomes_of_the_cancels() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 2, 7650.0)
+        .order("Sim1", ES, Side::Sell, 2, OrderKind::Limit, 7700.0)
+        .market_price(7660.0)
+        .start();
+    let trading = impatient(&fake, Duration::from_secs(30));
+    let ghosts = lost_pair(&fake, &trading);
+    fake.set_cancels(Cancels::Refused("Cancel refused".into()));
+    let flattened = trading.flatten("Sim1", ES);
+    assert!(matches!(flattened, Ok(1)), "the ghosts are gone, the limit would not cancel: {flattened:?}");
+    let cancels = fake.received_of(wire::CANCEL_ORDER);
+    assert_eq!(cancels.len(), 3, "every one tried: {cancels:?}");
+    assert_eq!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).len(), 1, "the flatten never sent");
+    eventually(Duration::from_secs(2), "it is flat", || trading.book().positions.is_empty());
+    let book = trading.book();
+    assert!(ghosts.iter().all(|ghost| !book.orders.iter().any(|order| order.is(ghost))), "{:?}", book.orders);
+    trading.sign_out();
+}
+
+/// A target whose cancel is never answered: the flatten goes straight
+/// behind the cancels rather than once they are answered, so the position
+/// closes within a round trip, and the target is counted once as left.
+/// A cancel never answered holds the flatten back by the flatten's wait
+/// for its cancels, about a round trip, and no more: the flatten then goes
+/// out, the position is closed, and the order is counted once.
+#[test]
+fn a_cancel_never_answered_holds_the_flatten_back_only_so_long() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 1, 7650.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Limit, 7700.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7600.0)
+        .market_price(7660.0)
+        .start();
+    let timing = Timing { request: Duration::from_secs(5), flatten_cancels: Duration::from_millis(500), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    fake.set_cancels(Cancels::LimitsUnanswered);
+    let started = std::time::Instant::now();
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        eventually(Duration::from_secs(2), "the flatten sent", || !fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
+        let sent = started.elapsed();
+        assert!(sent >= Duration::from_millis(450), "sent before its cancels were waited for: {sent:?}");
+        assert!(sent < Duration::from_millis(1_500), "held back past the wait: {sent:?}");
+        eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+        flattening.join().unwrap()
+    });
+    assert!(started.elapsed() < Duration::from_secs(2), "held back {:?}", started.elapsed());
+    assert_eq!(flattened, Ok(1), "the target, once");
+    assert_eq!(fake.received_of(wire::CANCEL_ORDER).len(), 2, "each cancelled once");
+    trading.sign_out();
+}
+
+/// Long one, with a sell stop near the market hit while its cancel is on
+/// the way: the flatten waits for the cancel's answer, which is the fill,
+/// and so sells nothing more. The account is flat, never short.
+#[test]
+fn a_stop_filled_as_it_is_cancelled_leaves_the_flatten_nothing_to_sell() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 1, 7650.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7649.0)
+        .market_price(7649.0)
+        .start();
+    let timing = Timing { request: Duration::from_secs(5), flatten_cancels: Duration::from_secs(2), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    let stop = fake.working()[0].server_id.clone();
+    fake.set_cancels(Cancels::StopsUnanswered);
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        eventually(Duration::from_secs(1), "the cancel sent", || !fake.received_of(wire::CANCEL_ORDER).is_empty());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened with the stop's cancel unanswered");
+        fake.fill(&stop, 1, 7649.0);
+        flattening.join().unwrap()
+    });
+    assert_eq!(flattened, Ok(0), "the stop filled: nothing left working");
+    eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(trading.book().positions.iter().all(|held| held.qty == 0), "turned short: {:?}", trading.book().positions);
+    trading.sign_out();
+}
+
+/// Long one, with a sell stop whose cancel is refused as too late before
+/// its fill is told: the flatten waits on the stop, within its wait for
+/// the cancels, until it is no longer working, and so sells nothing more.
+/// The account is flat, never short.
+#[test]
+fn a_cancel_refused_before_the_fill_leaves_the_flatten_nothing_to_sell() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 1, 7650.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7649.0)
+        .market_price(7649.0)
+        .start();
+    let timing = Timing { request: Duration::from_secs(5), flatten_cancels: Duration::from_secs(2), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    let stop = fake.working()[0].server_id.clone();
+    fake.set_cancels(Cancels::Refused("Too late to cancel".into()));
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        eventually(Duration::from_secs(1), "the cancel sent", || !fake.received_of(wire::CANCEL_ORDER).is_empty());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened on the refusal with the stop working");
+        fake.fill(&stop, 1, 7649.0);
+        flattening.join().unwrap()
+    });
+    assert_eq!(flattened, Ok(0), "the stop filled: nothing left working");
+    assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened what the stop closed");
+    eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(trading.book().positions.iter().all(|held| held.qty == 0), "turned short: {:?}", trading.book().positions);
+    trading.sign_out();
+}
+
 #[test]
 fn flattening_nothing_held_sends_nothing() {
     let fake = Fake::builder().account("Sim1").start();
@@ -525,6 +707,43 @@ fn prices_travel_in_the_contract_s_units_and_are_real_in_the_book() {
     assert_eq!(trading.book().orders.iter().find(|order| order.is(&id)).unwrap().price1, Some(7651.25));
     trading.modify(&id, Some(7652.0), None).unwrap();
     assert_eq!(fake.received_of(wire::CANCEL_REPLACE_ORDER)[0].number("Price1"), Some(765200.0));
+    trading.sign_out();
+}
+
+#[test]
+fn a_market_order_placed_before_the_definition_is_known_leaves_the_position_real() {
+    // Nothing on ES is held or working at sign-in, so its definition is not
+    // known when the market order goes out.
+    let fake = Fake::builder()
+        .account("Sim1")
+        .definition(ES, "ES", 0.25, 12.5, 1797206400, 0.009999999776482582)
+        .fills(Fills::Immediately)
+        .market_price(765025.0)
+        .start();
+    let (trading, _) = sign_in(&fake);
+    let id = trading.place(&order("Sim1", ES, Side::Buy, 1, OrderKind::Market, None)).unwrap();
+    eventually(Duration::from_secs(2), "the position is held at its real price", || {
+        trading.book().positions.first().is_some_and(|position| position.avg_price == Some(7650.25))
+    });
+    let book = trading.book();
+    assert_eq!(book.orders.iter().find(|order| order.is(&id)).unwrap().avg_fill_price, Some(7650.25));
+    assert!(book.fills.iter().all(|fill| fill.price == 7650.25));
+    trading.sign_out();
+}
+
+#[test]
+fn an_order_update_that_comes_before_the_definition_is_made_real_once_it_lands() {
+    let fake = Fake::builder().account("Sim1").definition(ES, "ES", 0.25, 12.5, 1797206400, 0.009999999776482582).start();
+    let (trading, heard) = sign_in(&fake);
+    let id = trading.place(&order("Sim1", ES, Side::Buy, 2, OrderKind::Market, None)).unwrap();
+    heard.lock().unwrap().clear();
+    fake.fill(&id, 2, 765025.0);
+    eventually(Duration::from_secs(2), "the fill price is real", || {
+        trading.book().orders.iter().any(|order| order.is(&id) && order.avg_fill_price == Some(7650.25))
+    });
+    assert_eq!(trading.book().positions[0].avg_price, Some(7650.25));
+    assert!(fake.received_of(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).iter().any(|asked| asked.text("Symbol").as_deref() == Some(ES)));
+    assert!(heard.lock().unwrap().contains(&Pulse::Moved));
     trading.sign_out();
 }
 

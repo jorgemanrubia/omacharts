@@ -1,9 +1,9 @@
 //! What is stored: the logins, their accounts as last listed, the default
 //! account and the data login, and changing them.
 //!
-//! A login names its broker, and whatever is particular to that broker —
+//! A login names its trading service, and whatever is particular to that trading service —
 //! where its password goes, which data feed its data comes through — is
-//! asked of the broker's adapter and of that feed's [`SignIn`], never
+//! asked of the trading service's adapter and of that feed's [`SignIn`], never
 //! decided here.
 
 use omacharts_engine::providers::{self, Listed, SignIn};
@@ -26,38 +26,77 @@ pub const ACCOUNTS: &str = "trading_accounts";
 /// `<login id>/<account number>`. One that is no longer listed is ignored.
 pub const DEFAULT_ACCOUNT: &str = "default_account";
 
-/// A login as it is typed into its broker's dialog.
+/// A login as it is typed into its trading service's dialog.
 ///
 /// No `Debug`, so that it cannot be printed by accident: the password is in
 /// it.
 pub struct Typed {
-    /// The broker whose dialog it was typed into, by its id.
-    pub broker: String,
+    /// The trading service whose dialog it was typed into, by its id.
+    pub service: String,
     pub name: String,
     pub user: String,
     pub password: String,
-    /// The rest of what the dialog asks, by name, as its broker reads it.
+    /// The rest of what the dialog asks, by name, as its trading service reads it.
     pub values: Vec<(String, String)>,
 }
 
-/// The logins, in the order they were added, less those of a broker that
+/// The logins, in the order they were added, less those of a trading service that
 /// is closed now — behind a flag that is off — which are kept as they are
 /// and are nobody's business until it is on.
+///
+/// One stored with no name shows the name it would be given now, though
+/// what is stored is left as it is.
 pub fn logins(store: &Store) -> Vec<Login> {
     let mut logins = kept(store);
-    let brokers = super::registry();
-    logins.retain(|login| !brokers.closed(&login.broker));
+    let services = super::registry();
+    logins.retain(|login| !services.closed(&login.service));
+    for at in 0..logins.len() {
+        if logins[at].name.trim().is_empty() {
+            let taken = names_but(&logins, &logins[at].id);
+            logins[at].name = numbered(&named_after(&logins[at]), &taken);
+        }
+    }
     logins
 }
 
+/// The names of the logins shown, but the one called `except`: the ones a
+/// login typed in now must not repeat.
+pub fn names_taken(store: &Store, except: Option<&str>) -> Vec<String> {
+    names_but(&logins(store), except.unwrap_or_default())
+}
+
+fn names_but(logins: &[Login], except: &str) -> Vec<String> {
+    logins
+        .iter()
+        .filter(|login| login.id != except && !login.name.trim().is_empty())
+        .map(|login| login.name.trim().to_string())
+        .collect()
+}
+
+/// `base`, or, when another login is called that, the first of "`base` 2",
+/// "`base` 3"… none is.
+pub fn numbered(base: &str, taken: &[String]) -> String {
+    let free = |name: &str| !taken.iter().any(|other| other.eq_ignore_ascii_case(name));
+    if free(base) {
+        return base.to_string();
+    }
+    (2..).map(|n| format!("{base} {n}")).find(|name| free(name)).unwrap_or_default()
+}
+
+/// What `login` is called before it is numbered, when nobody named it:
+/// what its trading service names it after.
+fn named_after(login: &Login) -> String {
+    service_for(&login.service).map_or_else(|| login.service.clone(), |service| service.named_after(login))
+}
+
 /// Every login kept, open or closed: what a change is made to and written
-/// back, so that a closed broker's logins survive it.
+/// back, so that a closed trading service's logins survive it.
 fn kept(store: &Store) -> Vec<Login> {
     let logins = store
         .setting(LOGINS)
         .and_then(|json| serde_json::from_str::<Vec<Login>>(&json).ok())
         .unwrap_or_default();
-    // Whatever a broker or a feed repeats back, a user ID never reaches the
+    // Whatever a trading service or a feed repeats back, a user ID never reaches the
     // Log.
     crate::log_words::conceal_logins(&logins);
     logins
@@ -74,11 +113,11 @@ pub(crate) fn login_in<'a>(logins: &'a [Login], id: &str) -> Option<&'a Login> {
     logins.iter().find(|login| login.id == id)
 }
 
-/// The data feed `login`'s market data comes through, when its broker has
-/// one: the feed listed under the broker's id whose login is a broker
+/// The data feed `login`'s market data comes through, when its trading service has
+/// one: the feed listed under the trading service's id whose login is a trading service
 /// connection.
 pub fn data_feed_of(login: &Login) -> Option<&'static Listed> {
-    providers::listed(&login.broker).filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
+    providers::listed(&login.service).filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
 }
 
 fn sign_in_of(login: &Login) -> Option<&'static dyn SignIn> {
@@ -86,7 +125,7 @@ fn sign_in_of(login: &Login) -> Option<&'static dyn SignIn> {
 }
 
 /// The id of the data login: the one chosen if it is still there, else the
-/// first whose broker has a data feed.
+/// first whose trading service has a data feed.
 pub fn data_login_id(store: &Store, logins: &[Login]) -> Option<String> {
     let chosen = store.setting(DATA_LOGIN);
     let feeds_data = |login: &&Login| data_feed_of(login).is_some();
@@ -140,7 +179,7 @@ pub fn cache_accounts(store: &Store, login: &str, listed: Vec<Account>) {
     save_accounts(store, &accounts);
 }
 
-/// Note a balance the broker pushed. True when it changed anything.
+/// Note a balance the trading service pushed. True when it changed anything.
 pub fn note_balance(store: &Store, login: &str, account: &str, balance: f64) -> bool {
     let mut accounts = accounts(store);
     let Some(found) = accounts.iter_mut().find(|known| known.login == login && known.id == account) else {
@@ -180,33 +219,33 @@ fn new_id(logins: &[Login]) -> String {
 }
 
 /// What was typed, onto `login`. A login typed with no name is called what
-/// its broker is.
-fn typed_into(login: &mut Login, typed: &Typed) {
+/// its trading service names it after, numbered apart from the `others`.
+fn typed_into(login: &mut Login, typed: &Typed, others: &[Login]) {
     login.user = typed.user.trim().to_string();
     login.values = typed.values.iter().map(|(key, value)| (key.clone(), value.trim().to_string())).collect();
     login.name = match typed.name.trim() {
-        "" => broker_for(&login.broker).map_or_else(|| login.broker.clone(), |broker| broker.label().to_string()),
+        "" => numbered(&named_after(login), &names_but(others, &login.id)),
         name => name.to_string(),
     };
     login.signed_out = false;
 }
 
-fn no_broker(login: &Login) -> String {
-    format!("there is no broker called {}", login.broker)
+fn no_service(login: &Login) -> String {
+    format!("there is no trading service called {}", login.service)
 }
 
 fn keep_password(secrets: &dyn Secrets, login: &Login, password: &str) -> Result<(), String> {
     if password.is_empty() || login.user.is_empty() {
         return Ok(());
     }
-    broker_for(&login.broker).ok_or_else(|| no_broker(login))?.keep_password(secrets, login, password)
+    service_for(&login.service).ok_or_else(|| no_service(login))?.keep_password(secrets, login, password)
 }
 
 /// Forget `login`'s password; for the data login, end its data session
 /// too.
 fn forget_password(secrets: &dyn Secrets, login: &Login, data: bool) -> Result<(), String> {
-    match broker_for(&login.broker) {
-        Some(broker) => broker.forget_password(secrets, login, data),
+    match service_for(&login.service) {
+        Some(service) => service.forget_password(secrets, login, data),
         None => Ok(()),
     }
 }
@@ -220,30 +259,31 @@ fn hand_over(login: &Login) {
 }
 
 /// Add a login, its password into `secrets`. The first with a data feed is
-/// the data login, and puts its feed on top of the data feeds. Returns
-/// its id.
+/// the data login, and puts its feed on top of the data feeds; any other
+/// adds its trading service's feed if it is not there. Returns its id.
 pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<String, String> {
     let mut logins = kept(store);
     let mut login = Login {
         id: new_id(&logins),
         name: String::new(),
-        broker: typed.broker.clone(),
+        service: typed.service.clone(),
         user: String::new(),
         values: Vec::new(),
         signed_out: false,
     };
-    typed_into(&mut login, typed);
+    typed_into(&mut login, typed, &self::logins(store));
     crate::log_words::conceal_logins(std::slice::from_ref(&login));
     let first = data_login_id(store, &logins).is_none();
     let feed = data_feed_of(&login);
     let id = login.id.clone();
     let kept = keep_password(secrets, &login, &typed.password);
-    logins.push(login);
+    logins.push(login.clone());
     save_logins(store, &logins);
     if first && let Some(feed) = feed {
         store.set_setting(DATA_LOGIN, &id);
         crate::feeds::put_on_top(store, feed);
     }
+    crate::feeds::follow_service(store, &login);
     crate::feeds::remember_logins(store);
     kept.map(|_| id)
 }
@@ -252,10 +292,11 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
 /// empty password keeps the one the keyring holds.
 pub fn retype_login(store: &Store, secrets: &dyn Secrets, id: &str, typed: &Typed) -> Result<(), String> {
     let mut logins = kept(store);
+    let others = self::logins(store);
     let Some(login) = logins.iter_mut().find(|login| login.id == id) else {
         return Err("that login has been removed".into());
     };
-    typed_into(login, typed);
+    typed_into(login, typed, &others);
     let kept = keep_password(secrets, login, &typed.password);
     save_logins(store, &logins);
     crate::feeds::remember_logins(store);
@@ -411,7 +452,7 @@ mod tests {
         assert_ne!(tradeify, lucid);
         assert_eq!(data_login(&store).map(|l| l.id), Some(lucid));
         assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "rithmic"]);
-        assert_eq!(logins(&store)[1].name, "Rithmic", "no name is the broker's");
+        assert_eq!(logins(&store)[1].name, "Rithmic Test", "no name is what its system is called");
     }
 
     /// Exactly one login is the data login, whichever was picked, and the
@@ -523,11 +564,39 @@ mod tests {
         assert!(logins(&store)[0].signed_out);
         assert_eq!(accounts(&store).len(), 1);
         assert_eq!(crate::feeds::saved_of(&store).user, None, "the data session has no login to sign in with");
-        let desk = Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]));
+        let desk = Desk::new(Registry::of(vec![Arc::new(FakeService::default())]));
         assert_eq!(desk.standing(&logins(&store)[0], true), Standing::SignedOut);
 
         retype_login(&store, &kept, &lucid, &typed("Lucid", "a")).unwrap();
         assert!(!logins(&store)[0].signed_out);
         assert_eq!(kept.0.borrow().len(), 1);
+    }
+
+    /// A login typed with no name is called what its system is, numbered
+    /// past the names the others have; signed in again with none, it keeps
+    /// its own rather than numbering itself. One stored with no name shows
+    /// it too, and is left stored as it was.
+    #[test]
+    fn a_login_with_no_name_is_numbered_past_the_others() {
+        if skip() {
+            return;
+        }
+        assert_eq!(numbered("Sierra Chart", &[]), "Sierra Chart");
+        assert_eq!(numbered("Sierra Chart", &["sierra chart".into(), "Sierra Chart 2".into()]), "Sierra Chart 3");
+        assert_eq!(numbered("Sierra Chart", &["Sierra Chart 2".into()]), "Sierra Chart");
+
+        let store = store();
+        let secrets = Kept::default();
+        let first = add_login(&store, &secrets, &typed("", "a")).unwrap();
+        add_login(&store, &secrets, &typed(" ", "b")).unwrap();
+        retype_login(&store, &secrets, &first, &typed("", "a")).unwrap();
+        let names: Vec<String> = logins(&store).into_iter().map(|login| login.name).collect();
+        assert_eq!(names, ["Rithmic Test", "Rithmic Test 2"]);
+
+        let mut stored = kept(&store);
+        stored[1].name = String::new();
+        save_logins(&store, &stored);
+        assert_eq!(logins(&store)[1].name, "Rithmic Test 2", "shown with the name it would be given");
+        assert_eq!(kept(&store)[1].name, "", "and stored as it was");
     }
 }

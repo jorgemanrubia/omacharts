@@ -1,5 +1,5 @@
 //! The Log: a window of its own, beside the charts, listing what the feeds,
-//! the brokers and the app have said, and the corner notice and the dot on
+//! the trading services and the app have said, and the corner notice and the dot on
 //! the main menu that bring an error to somebody who is not reading it.
 //!
 //! Everything said goes into the engine's ring ([`omacharts_engine::log`])

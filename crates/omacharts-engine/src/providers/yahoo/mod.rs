@@ -256,11 +256,14 @@ impl Yahoo {
         // Always an explicit window. For a tail fetch it is how the request
         // stays small; for a first fetch it is what stops Yahoo coarsening the
         // series behind our back.
+        //
+        // Never older than Yahoo serves, either. A tail fetch from an old
+        // cache would start there, and Yahoo answers that with an empty
+        // series or a 422, which leaves the chart on its old bars.
         let now = chrono::Utc::now().timestamp();
         let to = now + timeframe.seconds();
-        let from = since.unwrap_or_else(|| {
-            now - Self::full_window_days(timeframe) * 86_400 + WINDOW_MARGIN
-        });
+        let oldest = now - Self::full_window_days(timeframe) * 86_400 + WINDOW_MARGIN;
+        let from = since.unwrap_or(oldest).max(oldest);
         Ok(format!(
             "{ENDPOINT}/{encoded}?interval={interval}&period1={from}&period2={to}"
         ))
@@ -884,9 +887,15 @@ mod tests {
         assert!(!full.contains("range="), "{full}");
         assert!(full.contains("period1=") && full.contains("period2="), "{full}");
 
-        let tail = Yahoo::url("GC=F", Timeframe::hours(1), Some(1_700_000_000)).unwrap();
+        let since = chrono::Utc::now().timestamp() - 86_400;
+        let tail = Yahoo::url("GC=F", Timeframe::hours(1), Some(since)).unwrap();
         assert!(tail.contains("GC%3DF"), "{tail}");
-        assert!(tail.contains("period1=1700000000"), "{tail}");
+        assert!(tail.contains(&format!("period1={since}")), "{tail}");
+
+        // A 1m cache from five weeks ago is older than Yahoo serves.
+        let stale = since - 35 * 86_400;
+        let tail = Yahoo::url("GC=F", Timeframe::minutes(1), Some(stale)).unwrap();
+        assert!(!tail.contains(&format!("period1={stale}")), "{tail}");
     }
 
     #[test]

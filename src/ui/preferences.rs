@@ -582,6 +582,7 @@ fn build_charts_page(context: &Rc<Context>) {
         let store = context.store.clone();
         let defaults = defaults.clone();
         let footer = footer.clone();
+        let window = context.window.clone();
         Rc::new(move |change| {
             let mut next = defaults.get();
             change(&mut next);
@@ -590,9 +591,15 @@ fn build_charts_page(context: &Rc<Context>) {
             if next == defaults.get() {
                 return;
             }
+            let look = (next.colouring, next.swapped) != (defaults.get().colouring, defaults.get().swapped);
             next.save(&store);
             defaults.set(next);
             offer(&footer, true);
+            // The colouring is the house's as well as new charts': what a
+            // delta profile that chose none of its own is painted in, now.
+            if look {
+                window.adopt_theming();
+            }
         })
     };
 
@@ -903,8 +910,39 @@ fn theme_colors_group(context: &Rc<Context>, group_name: &str) -> adw::Preferenc
         row.add_suffix(&button);
         group.add(&row);
     }
+    if group_name == LAST_PRICE_GROUP {
+        group.add(&last_price_row(context, &theme));
+    }
     group
 }
+
+/// The group the last price's colour is edited in, with the chart's other
+/// furniture.
+const LAST_PRICE_GROUP: &str = "Other";
+
+/// The last price's tag and line, as the theme draws them: its own colour
+/// once somebody sets one, otherwise the one worked out from its palette.
+fn last_price_row(context: &Rc<Context>, theme: &omacharts_engine::Theme) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(LAST_PRICE_LABEL);
+    let button = color_button(&omacharts_engine::theme::theme_last_price(theme));
+    let ctx = context.clone();
+    button.connect_rgba_notify(move |button| {
+        let hex = colors::to_hex(&button.rgba());
+        let mut theme = ctx.theming.borrow().theme();
+        if !theme.source.is_editable() {
+            return;
+        }
+        theme.last_price = Some(hex);
+        ctx.store.save_theme(&theme);
+        ctx.theming.borrow_mut().reload_custom(&ctx.store);
+        apply(&ctx);
+    });
+    row.add_suffix(&button);
+    row
+}
+
+const LAST_PRICE_LABEL: &str = "Last price";
 
 /// The theme's indicator palette. Editing these changes every overlay that
 /// chose a colour by name rather than by hex.
@@ -1511,7 +1549,7 @@ fn build_data_page(context: &Rc<Context>) {
     group.add(&limit);
 
     // Trading switched off has no Trading page, and the Data page adds a
-    // broker's data feed through the broker's own dialog itself.
+    // trading service's data feed through the trading service's own dialog itself.
     if !crate::features::trading() {
         crate::ui::feed_settings::build(
             &context.data_page,
@@ -1538,7 +1576,7 @@ fn build_data_page(context: &Rc<Context>) {
         context.store.clone(),
         context.on_change.clone(),
         vec![group, backups_group(context)],
-        Rc::new(move |broker: &str, anchor: &gtk::Widget| crate::ui::trading_settings::add_broker(&adding, broker, anchor)),
+        Rc::new(move |service: &str, anchor: &gtk::Widget| crate::ui::trading_settings::add_service(&adding, service, anchor)),
     );
     trading.redraw_data_page(redraw);
 }
@@ -2002,23 +2040,23 @@ mod tests {
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
             assert_eq!(right.group.title(), "Right");
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Template, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
 
             // Out of the center, the title is offered by all three.
             center.set(Vec::new());
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(left.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
             // The stripe into the left is offered by none.
             left.set(vec![Part::Symbol, Part::Stripe]);
             assert_eq!(
                 center.offered(),
-                vec![Part::Resolution, Part::Change, Part::Template, Part::Title, Part::Account, Part::Feed]
+                vec![Part::Resolution, Part::Change, Part::Template, Part::Title, Part::Feed]
             );
             assert!(!left.offered().contains(&Part::Stripe));
             assert!(!right.offered().contains(&Part::Stripe));
@@ -2027,7 +2065,7 @@ mod tests {
                 Some(&Header {
                     left: vec![Part::Symbol, Part::Stripe],
                     center: Vec::new(),
-                    right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
+                    right: vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
                 })
             );
             // The corner's controls move like any other part: the gear out
@@ -2061,11 +2099,11 @@ mod tests {
                 header_sections(moved, move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             restore();
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
+            assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);
             // And the lists go on from there.
             center.set(Vec::new());

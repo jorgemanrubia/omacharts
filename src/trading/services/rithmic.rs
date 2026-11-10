@@ -1,4 +1,4 @@
-//! Rithmic's order and PnL plants, as a [`Broker`] and its [`Session`].
+//! Rithmic's order and PnL plants, as a [`TradingService`] and its [`Session`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,13 +36,22 @@ fn signing_of(login: &Login) -> rithmic::Login {
 /// `rithmic::Connection`.
 pub struct Rithmic;
 
-impl Broker for Rithmic {
+impl TradingService for Rithmic {
     fn id(&self) -> &'static str {
         omacharts_engine::providers::rithmic::LISTED.id
     }
 
     fn label(&self) -> &'static str {
         omacharts_engine::providers::rithmic::LISTED.label
+    }
+
+    fn has_feed(&self) -> bool {
+        true
+    }
+
+    /// Its system, as the dialog names it: "Rithmic Test".
+    fn named_after(&self, login: &Login) -> String {
+        system_of(login).to_string()
     }
 
     /// Its system: "Rithmic Test", "LucidTrading".
@@ -367,7 +376,7 @@ impl Prices {
     }
 }
 
-/// The exchange a position's contract is priced on: the one the broker
+/// The exchange a position's contract is priced on: the one the trading service
 /// says it is held on, else its root's.
 fn exchange_or_root(contract: &str, exchange: &str) -> String {
     match exchange.trim() {
@@ -412,6 +421,8 @@ impl Session for RithmicSession {
         Capabilities {
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             flatten: true,
+            // Rithmic's exit leaves the orders on it as they are.
+            flatten_cancels: false,
             cancel_all: true,
             modify: true,
             link: Linking::AfterTheFact,
@@ -558,8 +569,9 @@ impl Session for RithmicSession {
         self.trading.cancel_all(account).map_err(failed)
     }
 
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
-        self.trading.flatten(account, contract, exchange).map_err(failed)
+    /// Rithmic leaves the orders on it alone: none to say.
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<usize, Failure> {
+        self.trading.flatten(account, contract, exchange).map(|()| 0).map_err(failed)
     }
 
     fn trouble(&self) -> Option<String> {
@@ -712,7 +724,7 @@ mod tests {
         let migrated = r#"{"id":"1","name":"Lucid","broker":"rithmic","user":"trader",
                            "values":[["system","LucidTrading"],["gateway","wss://x"]]}"#;
         let login: Login = serde_json::from_str(migrated).unwrap();
-        assert_eq!(crate::trading::broker_for(&login.broker).map(|broker| broker.id()), Some("rithmic"));
+        assert_eq!(crate::trading::service_for(&login.service).map(|service| service.id()), Some("rithmic"));
         assert_eq!(
             signing_of(&login),
             rithmic::Login::Keyring {

@@ -48,6 +48,9 @@ MYM	CBOT	cme_equity_index	1	0.5	USD	index points	HMUZ	3rd-fri-0b	3rd-fri-8d
 6J	CME	cme_rates_and_fx	0.0000005	12500000	USD	USD per JPY	HMUZ	3rd-wed-2b	expiry-2b
 6B	CME	cme_rates_and_fx	0.0001	62500	USD	USD per GBP	HMUZ	3rd-wed-2b	expiry-2b
 6A	CME	cme_rates_and_fx	0.00005	100000	USD	USD per AUD	HMUZ	3rd-wed-2b	expiry-2b
+M6E	CME	cme_rates_and_fx	0.0001	12500	USD	USD per EUR	HMUZ	3rd-wed-2b	expiry-2b
+M6A	CME	cme_rates_and_fx	0.0001	10000	USD	USD per AUD	HMUZ	3rd-wed-2b	expiry-2b
+M6B	CME	cme_rates_and_fx	0.0001	6250	USD	USD per GBP	HMUZ	3rd-wed-2b	expiry-2b
 6C	CME	cme_rates_and_fx	0.00005	100000	USD	USD per CAD	HMUZ	3rd-wed-1b	expiry-2b
 6S	CME	cme_rates_and_fx	0.00005	125000	USD	USD per CHF	HMUZ	3rd-wed-2b	expiry-2b
 ZB	CBOT	cme_rates_and_fx	1/32	1000	USD	points and 32nds	HMUZ	eom-7b	bom-3b

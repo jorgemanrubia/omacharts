@@ -29,6 +29,14 @@ use crate::client::{self, dropped, DataHalf, DataPlants, Fronts, Settled, Sink, 
 use crate::trading::{self, Pulse, PulseSink, TradingHalf, TradingPlants};
 use crate::{App, Client, Error, Live, Login, Trading};
 
+/// Makes ring the process's rustls provider, before any plant dials. rustls
+/// picks one by itself only while exactly one is compiled in, and the one it
+/// gets has to be the one the rest of the process uses: thinkorswim and ureq
+/// are built against ring too. Installing twice is harmless.
+pub(crate) fn tls() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// How long closing waits for a session to sign out before it lets go:
 /// long enough for Rithmic to hear the logout, short enough that quitting
 /// is not held up by a gateway that has gone quiet.
@@ -249,6 +257,7 @@ impl Connection {
     }
 
     pub(crate) fn start(app: App, login: &str, source: Source, dial: Dial) -> Result<Connection, Error> {
+        tls();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("rithmic")

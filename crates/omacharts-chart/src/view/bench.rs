@@ -84,6 +84,24 @@ impl Scene {
         Some(Scene { state })
     }
 
+    /// Every indicator changed by `restyle` and drawn again, which is how a
+    /// scenario sets a parameter the default does not: through the stored
+    /// form, by key, so a parameter an older revision has never heard of is
+    /// simply left out there rather than failing its build.
+    pub fn restyle(&mut self, restyle: impl Fn(&mut Indicator)) {
+        let (timeframe, series) = (self.state.timeframe, &self.state.bars);
+        for drawn in &mut self.state.indicators {
+            restyle(&mut drawn.indicator);
+            drawn.output = indicators::compute(&drawn.indicator, series, 0, timeframe, None);
+        }
+    }
+
+    /// Room opened past the last bar, `columns` of it, as a drag past the
+    /// live edge leaves it.
+    pub fn open_room(&mut self, columns: usize) {
+        self.state.overhang = columns;
+    }
+
     /// What a drained tick costs a chart: the tail put in place, and the
     /// indicators recomputed over the series — which is the whole of the
     /// per-frame work the window does for a chart whose bars moved, apart

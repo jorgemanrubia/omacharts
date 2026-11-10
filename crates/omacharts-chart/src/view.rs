@@ -25,6 +25,7 @@ pub use selection::ProfileSpot;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gtk::cairo;
@@ -36,8 +37,9 @@ use omacharts_engine::drawings::{
 use omacharts_engine::bars::Unit;
 use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
+use omacharts_engine::indicators::profile::DELTA_COLOURINGS;
 use omacharts_engine::{
-    grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
+    grouped_decimals, Bar, BarColouring, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
 };
 
@@ -61,6 +63,8 @@ const OVERHANG_PX: f64 = 500.0;
 /// live bar is not pressed against the price axis. About what other
 /// charting software leaves.
 const RIGHT_MARGIN: usize = 10;
+/// Kept short of the whole view, so dividing by what is left is safe.
+const MARGIN_MAX_SHARE_OF_VIEW: f64 = 0.9;
 /// Room above the highest price on screen when the price is the top row, so
 /// it clears the header and the legend laid over the plot.
 const PRICE_TOP_AIR: f64 = 70.0;
@@ -172,9 +176,24 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
+    /// The colouring chosen in Preferences, and whether it is worn the
+    /// other way round: what a delta profile with no colouring of its own
+    /// is painted in, rather than this chart's.
+    house: (BarColouring, bool),
+    /// A delta profile's bought and sold colours, for the house colouring
+    /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
+    /// theme or the house colouring changes rather than on every frame.
+    delta_inks: [(String, String); 1 + DELTA_COLOURINGS.len()],
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
+    /// The last price's colour and its tag, from the theme, worked out
+    /// whenever the theme changes rather than on every frame.
+    last_ink: LastInk,
+    /// The feed's latest trade when the bars drawn leave it out, a chart
+    /// of the regular session out of hours: the price is the price,
+    /// whatever candles are shown. `None` when the last bar has it.
+    latest: Option<f64>,
     instrument: Option<Instrument>,
     /// The profiles the volume profile drawings show, as last worked out:
     /// a drawing is projected on every motion of the pointer, and its
@@ -200,6 +219,14 @@ struct State {
     /// the room a hand dragged open. Kept as new bars arrive, so the margin
     /// stays what it was set to. `RIGHT_MARGIN` at rest.
     overhang: usize,
+    /// Whether a hand set `overhang`, panning. At rest it is widened to
+    /// fit the live sessions of the right-aligned volume profiles, and
+    /// narrowed back as they go; set by hand, it is what the hand left.
+    overhang_by_hand: bool,
+    /// The share of the columns a hand left `overhang` at, short of the
+    /// profiles' margin: what zooming keeps it at, so it stays as wide on
+    /// screen without a column's rounding piling up zoom after zoom.
+    overhang_share: f64,
     /// Empty columns before the first bar, at the left edge, when the hand
     /// has dragged past the start of the series. Zero at rest.
     lead: usize,
@@ -252,12 +279,20 @@ struct State {
     /// the marker could ever be reached, because a chart with no bars returns
     /// before it is drawn.
     trouble: Option<FetchFailure>,
+    /// What to say about `trouble` instead of its own message, when the
+    /// embedder knows more than the failure does: "MES isn't in Sierra
+    /// Chart's data". Cleared with it.
+    trouble_words: Option<String>,
     /// The price marks laid over the chart by whoever embeds it, and the
     /// rules a drag on them keeps to; empty, which costs nothing, unless
     /// somebody marks it.
     marks: Marks,
     /// Which end of their lines the marks' labels sit at.
     mark_labels: LabelSide,
+    /// The step a mark is dragged on, set by whoever lays the marks: the
+    /// contract it trades, which need not step as the series charted does
+    /// — a 6E chart trading M6E. The series' own step when unset.
+    mark_tick: Option<f64>,
     /// The handle at the end of a mark the pointer is over, lit.
     hover_mark: Option<MarkHit>,
     loading: bool,
@@ -282,6 +317,17 @@ struct State {
     /// restored before the chart had a size — which the first frame fills
     /// with what it fits. A cell for that reason: drawing reads the state.
     price_base: Cell<Option<(f64, f64)>>,
+    /// The strips zoomed or dragged on their own scale, by indicator, each
+    /// with the values its bottom and top show. A strip not in here fits
+    /// what is on screen, which every strip does until it is zoomed; one in
+    /// here keeps its range however the bars change, as a held price scale
+    /// does, and is let go of by a reset.
+    strip_held: BTreeMap<u32, (f64, f64)>,
+    /// The kind of indicator each held strip was held for: an id is reused
+    /// once its indicator is removed, and one of another kind under it, or
+    /// one a template brings in under an id it had of its own, fits itself
+    /// rather than take on a range that was never its.
+    strip_kinds: BTreeMap<u32, indicators::Kind>,
     /// Whether the price axis is logarithmic: equal distances on it are equal
     /// ratios rather than equal differences. Asked for, not promised — see
     /// [`PriceScale`] for when it is drawn linear anyway.
@@ -412,8 +458,16 @@ const HISTORY: usize = 200;
 /// charting tool, because muscle memory is the feature.
 #[derive(Clone, PartialEq, Debug)]
 enum Drag {
-    Pan { left: i64, offset: f64 },
+    /// The chart dragged: across in time, and up or down the price's scale
+    /// once it is held — or, `strip` pressed in, that strip's, whose range
+    /// it was taken at is there once it is held, with the height it is
+    /// drawn in, so the values follow the hand.
+    Pan { left: i64, offset: f64, strip: Option<StripPan> },
     PriceScale { zoom: f64 },
+    /// A strip's own axis pulled: its scale stretched or squeezed from
+    /// `from`, the range it showed as the hand took hold, which `held` says
+    /// whether it was holding then or fitting itself.
+    StripScale { id: u32, from: (f64, f64), held: bool },
     TimeScale { visible: usize },
     /// Pulling a line between two rows, to make the pane beside it taller or
     /// shorter.
@@ -436,6 +490,39 @@ enum Drag {
     /// the mark's rules let it go there. Only a preview until the release;
     /// nothing is said from here.
     Mark { what: Grab, at: f64, allowed: bool },
+}
+
+/// A strip a pan was pressed in: see [`Drag::Pan`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StripPan {
+    id: u32,
+    held: Option<(f64, f64)>,
+    inner_h: f64,
+}
+
+/// Which scale a gesture over the chart's right-hand column, or a strip,
+/// works on: the price's, or one strip's own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Axis {
+    Price,
+    Strip(u32),
+}
+
+/// What a pinch scales, and what it showed as the fingers met it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pinch {
+    Price { zoom: f64 },
+    Strip { id: u32, from: (f64, f64) },
+}
+
+/// Every vertical scale the chart has, as a gesture is compared against
+/// to tell whether it changed anything worth writing down: whether the
+/// price's is automatic, the zoom and shift of a held one, and the strips
+/// held on their own.
+#[derive(Clone, Debug, PartialEq)]
+struct Scales {
+    price: (bool, f64, f64),
+    strips: BTreeMap<u32, (f64, f64)>,
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -637,6 +724,9 @@ struct Columns<'a> {
     /// Where the first visible bar begins, which a span of bars is placed
     /// from.
     start: f64,
+    /// Where the plot ends on the right: past the last bar by whatever room
+    /// is open after it, or at its end when there is none.
+    end: f64,
     /// The visible bars the columns were made from.
     slice: &'a [Bar],
     /// Bars to a group: the fewest that make half a pixel.
@@ -669,6 +759,7 @@ impl<'a> Columns<'a> {
             bar_w: bar_px,
             bar_px,
             start: plot_x,
+            end: plot_x + plot_w.max(1.0),
             slice: bars,
             per,
             groups: 0..=0,
@@ -853,6 +944,13 @@ impl<'a> Columns<'a> {
     /// How wide the bars from `from` up to but not including `to` are.
     fn width_of(&self, from: usize, to: usize) -> f64 {
         self.left_of(to) - self.left_of(from)
+    }
+
+    /// The empty space past the last bar on screen, in pixels: where the
+    /// series ends short of the plot's right edge. Nothing with the bars
+    /// running to the edge, or off it.
+    fn room_after(&self) -> f64 {
+        (self.end - self.left_of(self.first + self.visible)).max(0.0)
     }
 }
 
@@ -1100,6 +1198,15 @@ fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale>
         low = low.min(b.low);
         high = high.max(b.high);
     }
+    // The latest trade the bars leave out, while the chart shows its end:
+    // its line would otherwise run off the plot, out of hours, the moment
+    // the price left the session's range.
+    if let Some(latest) = state.latest
+        && bars.last().map(|bar| bar.ts) == state.bars.last().map(|bar| bar.ts)
+    {
+        low = low.min(latest);
+        high = high.max(latest);
+    }
     if !low.is_finite() || !high.is_finite() {
         return None;
     }
@@ -1239,9 +1346,13 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
+            last_ink: LastInk::of(&theme),
+            delta_inks: delta_inks(&theme, HOUSE_LOOK),
+            house: HOUSE_LOOK,
             theme,
             price_tags: price_tags(&scheme),
             scheme,
+            latest: None,
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
             vwap_cache: RefCell::new(Vec::new()),
@@ -1254,6 +1365,8 @@ impl State {
             closed_by_press: false,
             anchored: true,
             overhang: RIGHT_MARGIN,
+            overhang_by_hand: false,
+            overhang_share: 0.0,
             lead: 0,
             range: None,
             indicators: Vec::new(),
@@ -1268,14 +1381,18 @@ impl State {
             clock: Clock::default(),
             drag: None,
             trouble: None,
+            trouble_words: None,
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
+            mark_tick: None,
             hover_mark: None,
             loading: false,
             price_zoom: 1.0,
             price_offset: 0.0,
             price_auto: true,
             price_base: Cell::new(None),
+            strip_held: BTreeMap::new(),
+            strip_kinds: BTreeMap::new(),
             price_log: false,
             drawings: Vec::new(),
             show_drawings: true,
@@ -1879,6 +1996,175 @@ impl State {
         (low, high)
     }
 
+    /// The prices a held scale shows, bottom and top, which is what is
+    /// written down to bring it back after a restart. Prices rather than a
+    /// zoom on what is on screen, because what is on screen after a restart
+    /// is the live edge, with whatever has traded since: the prices somebody
+    /// zoomed to are the ones they wanted to look at, wherever the bars went.
+    ///
+    /// `None` while automatic, and for a held scale nothing has been drawn
+    /// on yet, which has nothing to hold but the fit it will be drawn with.
+    fn held_window(&self) -> Option<(f64, f64)> {
+        if self.price_auto {
+            return None;
+        }
+        let (low, high) = self.price_base.get()?;
+        let log = self.price_log && low > 0.0;
+        let (on_axis, to_price): (fn(f64) -> f64, fn(f64) -> f64) = match log {
+            true => (f64::ln, f64::exp),
+            false => (|v| v, |v| v),
+        };
+        let (low, high) = (on_axis(low), on_axis(high));
+        let range = (high - low).max(f64::EPSILON);
+        let middle = (low + high) / 2.0 + range * self.price_offset;
+        let half = range / 2.0 / self.price_zoom.clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
+        let (low, high) = (to_price(middle - half), to_price(middle + half));
+        (low.is_finite() && high.is_finite() && low < high).then_some((low, high))
+    }
+
+    /// Hold the scale at these prices, bottom and top, as
+    /// [`held_window`](Self::held_window) wrote them down. Anything that is
+    /// not a range of prices leaves the scale as it was.
+    fn hold_window(&mut self, low: f64, high: f64) {
+        if !(low.is_finite() && high.is_finite() && low < high) {
+            return;
+        }
+        self.price_auto = false;
+        self.price_zoom = 1.0;
+        self.price_offset = 0.0;
+        self.price_base.set(Some((low, high)));
+    }
+
+    /// The values the strip `id` shows, bottom and top: the range it is
+    /// held at, or `fit`, what is on screen, while it fits itself.
+    fn strip_window(&self, id: u32, fit: Option<(f64, f64)>) -> Option<(f64, f64)> {
+        self.strip_held.get(&id).copied().or(fit)
+    }
+
+    /// What the strip `id` fits over the bars on screen in a chart this
+    /// size: where a held one starts from, so taking hold of it never makes
+    /// it jump. A volume strip stands on nought and reaches its tallest bar.
+    fn strip_fit(&self, id: u32, width: f64, height: f64) -> Option<(f64, f64)> {
+        let drawn = self.indicators.iter().find(|d| d.indicator.id == id)?;
+        match &drawn.output {
+            Output::Volume { .. } => {
+                let most = frame(self, width, height)?.max_volume;
+                (most > 0.0).then_some((0.0, most))
+            }
+            Output::Pane(pane) => {
+                let (first, visible, _) = self.view();
+                pane_range(pane, first, visible)
+            }
+            _ => None,
+        }
+    }
+
+    /// Hold the strip `id` at these values, bottom and top. Anything that
+    /// is not a range leaves it as it was.
+    fn hold_strip(&mut self, id: u32, low: f64, high: f64) {
+        if low.is_finite() && high.is_finite() && high - low > f64::EPSILON * low.abs().max(high.abs()).max(1.0) {
+            self.strip_held.insert(id, (low, high));
+            if let Some(drawn) = self.indicators.iter().find(|d| d.indicator.id == id) {
+                self.strip_kinds.insert(id, drawn.indicator.kind);
+            }
+        }
+    }
+
+    /// Let go of the strips held for an indicator the chart no longer
+    /// draws, or for one of another kind than now has its id.
+    fn prune_strips(&mut self) {
+        let now: BTreeMap<u32, indicators::Kind> = self.indicators.iter().map(|d| (d.indicator.id, d.indicator.kind)).collect();
+        let kinds = &mut self.strip_kinds;
+        self.strip_held.retain(|id, _| match (now.get(id), kinds.get(id)) {
+            (None, _) => false,
+            (Some(kind), Some(held)) => kind == held,
+            // Brought back before its kind was known: it is this one's.
+            (Some(kind), None) => {
+                kinds.insert(*id, *kind);
+                true
+            }
+        });
+        let held = &self.strip_held;
+        self.strip_kinds.retain(|id, _| held.contains_key(id));
+    }
+
+    /// Stretch or squeeze the strip `id`'s scale about its middle, taking
+    /// it off fitting itself: above one shows less of it, larger.
+    fn scale_strip(&mut self, id: u32, factor: f64, width: f64, height: f64) {
+        let Some(from) = self.strip_window(id, self.strip_fit(id, width, height)) else { return };
+        let (low, high) = scaled_window(from, factor);
+        self.hold_strip(id, low, high);
+    }
+
+    /// Every strip back to fitting what is on screen.
+    fn free_strips(&mut self) {
+        self.strip_held.clear();
+        self.strip_kinds.clear();
+    }
+
+    /// Which scale a gesture at `x`, `y` works on: a strip's when it is
+    /// over that strip's row, on its axis or, with `in_plot`, anywhere in
+    /// it; otherwise the price's, over the axis. `None` over the price's
+    /// plot when `in_plot` is not asked for, and the time axis.
+    fn axis_at(&self, x: f64, y: f64, width: f64, height: f64, in_plot: bool) -> Option<Axis> {
+        let region = region_at(x, y, width, height);
+        if region == Region::TimeAxis || (region == Region::Plot && !in_plot) {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        match plan.rows.iter().find(|row| row.covers(y)).and_then(|row| row.pane) {
+            Some(id) if self.indicators.iter().any(|d| d.indicator.id == id) => Some(Axis::Strip(id)),
+            _ => (region == Region::PriceAxis).then_some(Axis::Price),
+        }
+    }
+
+    /// Where a pan pressed at `y` would move a strip's scale: the strip's
+    /// row it is in, with its held range if it holds one. `None` in the
+    /// price's row.
+    fn strip_pan_at(&self, y: f64, width: f64, height: f64) -> Option<StripPan> {
+        let plan = layout(self, width, height);
+        let row = plan.rows.iter().find(|row| row.covers(y))?;
+        let id = row.pane?;
+        let (_, inner_h) = pane_plot(row.top, row.height);
+        Some(StripPan { id, held: self.strip_held.get(&id).copied(), inner_h })
+    }
+
+    /// What a pinch begun at `x`, `y` scales: the strip it is over, from
+    /// what it shows, or the price's held scale over the price's axis. Nothing
+    /// over the price's plot or the time axis.
+    fn pinch_at(&mut self, x: f64, y: f64, width: f64, height: f64) -> Option<Pinch> {
+        match self.axis_at(x, y, width, height, true)? {
+            Axis::Strip(id) => {
+                let from = self.strip_window(id, self.strip_fit(id, width, height))?;
+                Some(Pinch::Strip { id, from })
+            }
+            Axis::Price => {
+                self.hold_price(width, height);
+                Some(Pinch::Price { zoom: self.price_zoom })
+            }
+        }
+    }
+
+    /// The fingers `scale` times as far apart as they started: that much
+    /// larger, on whichever scale the pinch took.
+    fn pinch(&mut self, pinch: Pinch, scale: f64) {
+        if !(scale.is_finite() && scale > 0.0) {
+            return;
+        }
+        match pinch {
+            Pinch::Strip { id, from } => {
+                let (low, high) = scaled_window(from, scale);
+                self.hold_strip(id, low, high);
+            }
+            Pinch::Price { zoom } => self.price_zoom = (zoom * scale).clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM),
+        }
+    }
+
+    /// Every vertical scale as it stands: see [`Scales`].
+    fn scales(&self) -> Scales {
+        Scales { price: self.price_hold(), strips: self.strip_held.clone() }
+    }
+
     /// Shift the view by a number of bars. Positive moves forward in time.
     /// Past either end of the series the view runs into empty room, as far
     /// as `OVERHANG_PX` allows at this zoom — which needs the plot's width.
@@ -1889,11 +2175,16 @@ impl State {
         }
         let len = self.bars.len() as i64;
         let room = self.max_overhang(plot_w) as i64;
+        // With room kept for the profiles past the last bar, the view stops
+        // at that room rather than running on into more: coming back to
+        // the live edge lands with the margin as wide as it was, not
+        // stretched or squeezed by how far the hand went.
+        let ahead = self.profile_stop().map_or(room.max(self.margin_floor() as i64), |stop| stop as i64);
         // The left edge as a column index: negative is room before the
         // first bar.
         let was = self.left_edge();
         let left = was + bars.round() as i64;
-        let left = left.clamp(-room, (len - columns as i64 + room).max(-room));
+        let left = left.clamp(-room, (len - columns as i64 + ahead).max(-room));
         let right = left + columns as i64;
         self.lead = (-left).max(0) as usize;
         self.overhang = (right - len).max(0) as usize;
@@ -1903,6 +2194,42 @@ impl State {
         // holding to, this is it now.
         if left != was {
             self.range = None;
+            self.overhang_by_hand = true;
+            self.overhang_share = self.overhang as f64 / columns as f64;
+        }
+        self.settle_at_stop();
+    }
+
+    /// The room past the last bar the view stops at while right-aligned
+    /// profiles keep a margin there: the resting margin, widened for them.
+    /// None without such profiles, when the view may run on as far as
+    /// `OVERHANG_PX`.
+    fn profile_stop(&self) -> Option<usize> {
+        let floor = self.margin_floor();
+        (floor > 0).then(|| floor.max(RIGHT_MARGIN))
+    }
+
+    /// Back at rest once the view reaches the profiles' margin, so it is
+    /// widened and narrowed with them, and stays the same share of the plot
+    /// whatever the zoom.
+    fn settle_at_stop(&mut self) {
+        if let Some(stop) = self.profile_stop() {
+            if self.anchored && self.overhang_by_hand && self.overhang >= stop {
+                self.overhang = RIGHT_MARGIN;
+                self.overhang_by_hand = false;
+            }
+        }
+    }
+
+    /// After the columns across the plot changed: room a hand left past the
+    /// last bar, short of the profiles' margin, is kept as
+    /// wide on screen, as the margin itself is, so zooming moves the bars
+    /// and not the edge of that room.
+    fn keep_room_on_screen(&mut self) {
+        let now = self.columns();
+        if self.anchored && self.overhang_by_hand && self.profile_stop().is_some() {
+            self.overhang = (self.overhang_share * now as f64).round() as usize;
+            self.settle_at_stop();
         }
     }
 
@@ -1917,7 +2244,28 @@ impl State {
     fn trim_room(&mut self, plot_w: f64) {
         let room = self.max_overhang(plot_w);
         self.lead = self.lead.min(room);
-        self.overhang = self.overhang.min(room);
+        self.overhang = self.overhang.min(room.max(self.margin_floor()));
+    }
+
+    /// The fewest empty columns past the last bar at rest: room for the
+    /// live sessions of the right-aligned volume profiles on screen, side by
+    /// side, and none when there are none. A share of the columns, so it is
+    /// the same share of the plot at any zoom.
+    fn margin_floor(&self) -> usize {
+        let share = selection::margin_share(self);
+        if share <= 0.0 {
+            return 0;
+        }
+        (self.columns() as f64 * share).ceil() as usize
+    }
+
+    /// The empty columns past the last bar, while anchored: what a hand
+    /// left, or at rest the resting margin widened to the floor.
+    fn overhang_now(&self) -> usize {
+        match self.overhang_by_hand {
+            true => self.overhang,
+            false => self.overhang.max(self.margin_floor()),
+        }
     }
 
     /// How many empty columns `OVERHANG_PX` is at this zoom — short of the
@@ -1966,6 +2314,7 @@ impl State {
         }
         self.visible = next;
         self.range = None;
+        self.keep_room_on_screen();
         // The room is so many pixels, which is fewer columns zoomed in.
         self.trim_room(plot_w);
     }
@@ -2002,6 +2351,27 @@ impl State {
         let _ = price_range(self, &self.bars[first..first + visible], &plan);
     }
 
+    /// The bought and sold colours a delta profile or a cumulative delta is
+    /// painted in: its own colouring's, or the house colouring's when it has
+    /// none, or one that is not offered to a delta.
+    fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
+        let chosen = match &drawn.indicator.params {
+            omacharts_engine::Params::VolumeProfile { colouring, .. }
+            | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
+            _ => None,
+        };
+        let at = chosen.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
+        let (up, down) = &self.delta_inks[at];
+        (up, down)
+    }
+
+    /// Whether the price scale is automatic, and the zoom and shift of a
+    /// held one: what a gesture is compared against to tell whether it
+    /// changed anything worth writing down.
+    fn price_hold(&self) -> (bool, f64, f64) {
+        (self.price_auto, self.price_zoom, self.price_offset)
+    }
+
     /// Put the price scale back to fitting the bars on screen.
     fn free_price(&mut self) {
         self.price_auto = true;
@@ -2011,13 +2381,15 @@ impl State {
     }
 
     /// Back to fitting the data, at the live edge, with the resting margin
-    /// past it.
+    /// past it: the price and every strip.
     fn reset_view(&mut self) {
         self.range = None;
         self.free_price();
+        self.free_strips();
         self.visible = 160;
         self.anchored = true;
         self.overhang = RIGHT_MARGIN;
+        self.overhang_by_hand = false;
         self.lead = 0;
     }
 
@@ -2032,6 +2404,7 @@ impl State {
             .map(|i| i.symbol != instrument.symbol || i.suffix != instrument.suffix)
             .unwrap_or(true)
             || self.timeframe != timeframe;
+        let first = self.instrument.is_none();
         self.bars = bars;
         self.instrument = Some(instrument);
         self.timeframe = timeframe;
@@ -2041,12 +2414,21 @@ impl State {
             self.ruler_armed = false;
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
+            self.overhang_by_hand = false;
             self.lead = 0;
             self.visible = 160;
             // A held range is in this series' prices, which another
             // symbol's need not be anywhere near: it holds its own fit,
-            // zoomed and shifted as this one was.
-            self.price_base.set(None);
+            // zoomed and shifted as this one was. The first series a chart
+            // gets is not another symbol's: a range it holds already was
+            // brought back for it, from before a restart.
+            if !first {
+                self.price_base.set(None);
+                // A strip's range is in values of this series, which
+                // another symbol's or timeframe's are nowhere near: each
+                // fits itself again.
+                self.free_strips();
+            }
         }
         self.fit_range();
         changed
@@ -2097,6 +2479,8 @@ impl State {
             self.visible = columns.clamp(MIN_VISIBLE, MAX_VISIBLE);
             self.anchored = room > 0;
             self.overhang = room;
+            self.overhang_by_hand = true;
+            self.overhang_share = room as f64 / self.visible.max(1) as f64;
             self.first = first.min(len.saturating_sub(1));
             return;
         }
@@ -2111,9 +2495,14 @@ impl State {
         };
         self.lead = 0;
         if end >= len {
-            self.visible = (len - first + RIGHT_MARGIN).clamp(MIN_VISIBLE, MAX_VISIBLE);
+            // Wide enough that the margin, widened for the profiles beside
+            // the live session, still leaves the range's first bar on screen.
+            let share = selection::margin_share(self).min(MARGIN_MAX_SHARE_OF_VIEW);
+            let wanted = ((len - first + RIGHT_MARGIN) as f64 / (1.0 - share)).ceil() as usize;
+            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
+            self.overhang_by_hand = false;
             return;
         }
         // Over before the last bar: its own bars edge to edge, from the
@@ -2121,6 +2510,7 @@ impl State {
         self.visible = end.saturating_sub(first).clamp(MIN_VISIBLE, MAX_VISIBLE);
         self.anchored = false;
         self.overhang = 0;
+        self.overhang_by_hand = true;
         self.first = first.min(len.saturating_sub(self.visible));
     }
 
@@ -2141,7 +2531,7 @@ impl State {
         }
         let len = self.bars.len() as i64;
         let left = if self.anchored {
-            len + self.overhang.min(columns - 1) as i64 - columns as i64
+            len + self.overhang_now().min(columns - 1) as i64 - columns as i64
         } else {
             self.first as i64 - self.lead.min(columns - 1) as i64
         };
@@ -3915,12 +4305,35 @@ impl ChartView {
 
     /// Replace the series. Resets the view only when the instrument changed,
     /// so a background refresh of the same chart does not throw away a pan.
+    /// The latest trade the bars leave out goes with the bars it was of:
+    /// whoever has one says so again, with [`ChartView::set_latest`].
     pub fn set_series(&self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
-        let changed = self.state.borrow_mut().replace_series(instrument, timeframe, bars);
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            state.latest = None;
+            state.replace_series(instrument, timeframe, bars)
+        };
         if changed {
             self.tool_changed();
         }
         self.redraw();
+    }
+
+    /// Say what the feed last traded at when the bars drawn leave it out,
+    /// a chart of the regular session out of hours, or `None` when the
+    /// last bar has it. The last price's line and tag stand there, and
+    /// the price scale reaches it while the chart shows its end.
+    pub fn set_latest(&self, price: Option<f64>) {
+        let price = price.filter(|price| price.is_finite());
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = state.latest != price;
+            state.latest = price;
+            changed
+        };
+        if changed {
+            self.redraw();
+        }
     }
 
     /// Say how far down the top of the price axis the window's corner
@@ -3990,6 +4403,7 @@ impl ChartView {
                 omacharts_engine::stream::upsert(&mut state.bars, *bar);
             }
             state.trouble = None;
+            state.trouble_words = None;
             state.loading = false;
             // A new day can start a new month, and the month to date with it.
             state.fit_range();
@@ -4119,6 +4533,56 @@ impl ChartView {
         self.redraw();
     }
 
+    /// The prices a held price scale shows, bottom and top; `None` while it
+    /// fits itself. What the window writes down with the chart.
+    pub fn held_price_window(&self) -> Option<(f64, f64)> {
+        self.state.borrow().held_window()
+    }
+
+    /// Take the price scale off automatic, showing these prices, bottom and
+    /// top: a held scale brought back from where it was written down.
+    pub fn hold_price_window(&self, low: f64, high: f64) {
+        self.state.borrow_mut().hold_window(low, high);
+        self.redraw();
+    }
+
+    /// The strips zoomed or dragged on their own scale, by indicator, each
+    /// with the values its bottom and top show; a strip that fits itself is
+    /// not among them. What the window writes down with the chart.
+    pub fn held_strip_windows(&self) -> BTreeMap<u32, (f64, f64)> {
+        self.state.borrow().strip_held.clone()
+    }
+
+    /// The kind of indicator each held strip was held for, where known.
+    pub fn held_strip_kinds(&self) -> BTreeMap<u32, indicators::Kind> {
+        self.state.borrow().strip_kinds.clone()
+    }
+
+    /// Hold the strip of the indicator `id` at these values, bottom and top:
+    /// one brought back from where it was written down, before or after the
+    /// indicator is drawn. Held for `kind` when it is known, so that only
+    /// an indicator of that kind under `id` takes it.
+    pub fn hold_strip_window(&self, id: u32, kind: Option<indicators::Kind>, low: f64, high: f64) {
+        let mut state = self.state.borrow_mut();
+        state.hold_strip(id, low, high);
+        if let (Some(kind), true) = (kind, state.strip_held.contains_key(&id)) {
+            state.strip_kinds.insert(id, kind);
+        }
+        // Drawn already: held only if it is that kind.
+        if state.indicators.iter().any(|d| d.indicator.id == id) {
+            state.prune_strips();
+        }
+        drop(state);
+        self.redraw();
+    }
+
+    /// Every strip back to fitting itself: when what the series is drawn
+    /// from changes in a way the chart cannot see, its trading hours.
+    pub fn free_strip_windows(&self) {
+        self.state.borrow_mut().free_strips();
+        self.redraw();
+    }
+
     /// Is the price axis logarithmic? What was asked for, which is what the
     /// chart remembers: a stretch of bars at or below zero draws linear
     /// without changing the answer.
@@ -4136,8 +4600,10 @@ impl ChartView {
     }
 
     /// Be told when a gesture on the chart changes whether the price scale
-    /// is automatic. Not called for [`set_price_auto`](Self::set_price_auto)
-    /// or the resets: whoever called those already knows.
+    /// is automatic, or moves a held one, or zooms or drags a strip on its
+    /// own scale: a wheel notch over the axis at once, a drag or a pinch
+    /// once it is let go of. Handed whether the price's is automatic now. Not called for [`set_price_auto`](Self::set_price_auto) or the
+    /// resets: whoever called those already knows.
     pub fn set_price_auto_handler(&self, handler: impl Fn(bool) + 'static) {
         *self.on_price_auto.borrow_mut() = Some(Box::new(handler));
     }
@@ -4176,6 +4642,7 @@ impl ChartView {
         let wanted = {
             let mut s = self.state.borrow_mut();
             s.indicators = indicators;
+            s.prune_strips();
             let arrived = s.pending_pick.filter(|id| s.indicators.iter().any(|d| d.indicator.id == *id));
             if arrived.is_some() {
                 s.pending_pick = None;
@@ -4205,8 +4672,29 @@ impl ChartView {
     /// for it. A first-time user on a machine with no network read that line
     /// as the app not having the S&P 500.
     pub fn set_trouble(&self, trouble: Option<FetchFailure>) {
-        self.state.borrow_mut().trouble = trouble;
+        {
+            let mut state = self.state.borrow_mut();
+            state.trouble = trouble;
+            state.trouble_words = None;
+        }
         self.redraw();
+    }
+
+    /// [`ChartView::set_trouble`], said in the embedder's own words.
+    pub fn set_trouble_saying(&self, trouble: FetchFailure, words: String) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.trouble = Some(trouble);
+            state.trouble_words = Some(words);
+        }
+        self.redraw();
+    }
+
+    /// What the chart says about its trouble, if it has any.
+    pub fn trouble_said(&self) -> Option<String> {
+        let state = self.state.borrow();
+        let trouble = state.trouble?;
+        Some(state.trouble_words.clone().unwrap_or_else(|| trouble.message().to_string()))
     }
 
     /// Lay `marks` over the chart, in the order they are drawn, with the
@@ -4282,6 +4770,13 @@ impl ChartView {
         self.state.borrow().tick()
     }
 
+    /// The step a mark is dragged on: the contract the marks trade, which
+    /// need not step as the series charted does. `None` goes back to the
+    /// series' own.
+    pub fn set_mark_tick(&self, tick: Option<f64>) {
+        self.state.borrow_mut().mark_tick = tick;
+    }
+
     /// Whether a fetch is outstanding for what is on screen.
     ///
     /// An empty chart that is still loading and an empty chart that came back
@@ -4295,9 +4790,25 @@ impl ChartView {
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
+            state.last_ink = LastInk::of(&theme);
+            state.delta_inks = delta_inks(&theme, state.house);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
+        }
+        self.redraw();
+    }
+
+    /// The colouring chosen in Preferences and whether it is worn swapped,
+    /// which a delta profile with no colouring of its own is painted in.
+    pub fn set_house_look(&self, colouring: BarColouring, swapped: bool) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.house == (colouring, swapped) {
+                return;
+            }
+            state.house = (colouring, swapped);
+            state.delta_inks = delta_inks(&state.theme, state.house);
         }
         self.redraw();
     }
@@ -4337,6 +4848,7 @@ impl ChartView {
         let mut state = self.state.borrow_mut();
         state.anchored = true;
         state.overhang = RIGHT_MARGIN;
+        state.overhang_by_hand = false;
         state.lead = 0;
         drop(state);
         self.redraw();
@@ -4557,7 +5069,7 @@ impl ChartView {
             if !over_trouble_dot(&s, area.width() as f64, x as f64, y as f64) {
                 return false;
             }
-            tooltip.set_text(s.trouble.map(FetchFailure::message));
+            tooltip.set_text(s.trouble_words.as_deref().or(s.trouble.map(FetchFailure::message)));
             true
         });
     }
@@ -4593,11 +5105,17 @@ impl ChartView {
             if matches!(s.drag, Some(Drag::Mark { .. })) {
                 return glib::Propagation::Stop;
             }
-            let was_auto = s.price_auto;
+            let was_price = s.scales();
             let region = s
                 .pointer
                 .map(|(x, y)| region_at(x, y, width, height))
                 .unwrap_or(Region::Plot);
+            // Over a strip's axis, or Ctrl over the strip, the wheel scales
+            // that strip as it does the price over the price's.
+            let strip = match s.pointer.and_then(|(x, y)| s.axis_at(x, y, width, height, ctrl && !shift)) {
+                Some(Axis::Strip(id)) => Some(id),
+                _ => None,
+            };
 
             // A trackpad's horizontal axis always pans, whatever is held.
             if dx != 0.0 && dy == 0.0 {
@@ -4613,7 +5131,11 @@ impl ChartView {
             };
             let notches = crate::zoom::notches(dy, unit, crate::zoom::current());
 
+            let scales = matches!((region, shift, ctrl), (Region::PriceAxis, _, _) | (Region::Plot, false, true));
             match (region, shift, ctrl) {
+                _ if scales && let Some(id) = strip => {
+                    s.scale_strip(id, 2f64.powf(notches / 4.0), width, height);
+                }
                 (Region::PriceAxis, _, _) | (Region::Plot, false, true) => {
                     // Same sense as dragging the axis.
                     s.scale_price(2f64.powf(notches / 4.0), width, height);
@@ -4638,10 +5160,42 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
-            notify_price_auto(&state, &on_price_auto, was_auto);
+            notify_price_auto(&state, &on_price_auto, was_price);
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
+
+        // Two fingers spread or pinched on a strip scale that strip on its
+        // own, and on the price's axis the price's, as a drag on the axis
+        // does. Anywhere else it is not the chart's to take.
+        let zoom = gtk::GestureZoom::new();
+        let pinched: Rc<RefCell<Option<(Pinch, Scales)>>> = Rc::default();
+        let (state, area, taken) = (self.state.clone(), self.area.clone(), pinched.clone());
+        zoom.connect_begin(move |gesture, _| {
+            let (width, height) = (area.width() as f64, area.height() as f64);
+            let Some((x, y)) = gesture.bounding_box_center() else { return };
+            let mut s = state.borrow_mut();
+            let was = s.scales();
+            match s.pinch_at(x, y, width, height) {
+                Some(pinch) => *taken.borrow_mut() = Some((pinch, was)),
+                None => {
+                    gesture.set_state(gtk::EventSequenceState::Denied);
+                }
+            }
+        });
+        let (state, area, pointer, taken) = (self.state.clone(), self.area.clone(), self.pointer.clone(), pinched.clone());
+        zoom.connect_scale_changed(move |_, scale| {
+            let Some((pinch, _)) = *taken.borrow() else { return };
+            state.borrow_mut().pinch(pinch, scale);
+            redraw(&area, &pointer);
+        });
+        let (state, on_price_auto) = (self.state.clone(), self.on_price_auto.clone());
+        zoom.connect_end(move |_, _| {
+            if let Some((_, was)) = pinched.borrow_mut().take() {
+                notify_price_auto(&state, &on_price_auto, was);
+            }
+        });
+        self.area.add_controller(zoom);
     }
 
     fn wire_drag(self: &Rc<Self>) {
@@ -4805,7 +5359,7 @@ impl ChartView {
             Press::Elsewhere => {}
         }
         let mut s = state.borrow_mut();
-        let was_auto = s.price_auto;
+        let was_price = s.scales();
         // The edge wins over whatever region it crosses, because that is
         // what the cursor was already promising.
         let plan = layout(&s, width, height);
@@ -4939,7 +5493,8 @@ impl ChartView {
                         && s.drawings.get(index).is_some_and(|d| d.kind.reads_bars());
                     if still {
                         let left = s.left_edge();
-                        s.drag = Some(Drag::Pan { left, offset: s.price_offset });
+                        let strip = s.strip_pan_at(y, width, height);
+                        s.drag = Some(Drag::Pan { left, offset: s.price_offset, strip });
                     } else if let Some(origin) = s.locate(width, height, x, y) {
                         // Before the first motion, so a drag is one step
                         // back however far it went. A press that never
@@ -4977,20 +5532,31 @@ impl ChartView {
                 }
             }
         }
-        s.drag = Some(
-            match region {
-                Region::PriceAxis => {
-                    // Touching the axis takes the scale off automatic, from
-                    // exactly where it was, so nothing jumps.
-                    s.hold_price(width, height);
-                    Drag::PriceScale { zoom: s.price_zoom }
-                }
-                Region::TimeAxis => Drag::TimeScale { visible: s.columns() },
-                Region::Plot => Drag::Pan { left: s.left_edge(), offset: s.price_offset },
-            },
-        );
+        let axis = s.axis_at(x, y, width, height, false);
+        let strip_from = match axis {
+            Some(Axis::Strip(id)) => s.strip_window(id, s.strip_fit(id, width, height)).map(|from| (id, from)),
+            _ => None,
+        };
+        s.drag = match (region, axis) {
+            // A strip's own axis scales that strip, held from what it shows
+            // once the hand moves; one with nothing to scale takes nothing.
+            (Region::PriceAxis, Some(Axis::Strip(_))) => {
+                strip_from.map(|(id, from)| Drag::StripScale { id, from, held: s.strip_held.contains_key(&id) })
+            }
+            (Region::PriceAxis, _) => {
+                // Touching the axis takes the scale off automatic, from
+                // exactly where it was, so nothing jumps.
+                s.hold_price(width, height);
+                Some(Drag::PriceScale { zoom: s.price_zoom })
+            }
+            (Region::TimeAxis, _) => Some(Drag::TimeScale { visible: s.columns() }),
+            (Region::Plot, _) => {
+                let strip = s.strip_pan_at(y, width, height);
+                Some(Drag::Pan { left: s.left_edge(), offset: s.price_offset, strip })
+            }
+        };
         drop(s);
-        notify_price_auto(&state, &on_price_auto, was_auto);
+        notify_price_auto(&state, &on_price_auto, was_price);
         if let (Some(hit), Some(view)) = (pick, view.upgrade()) {
             view.pick(hit);
         }
@@ -5152,7 +5718,7 @@ impl ChartView {
             }
 
             match drag {
-                Drag::Pan { left, offset } => {
+                Drag::Pan { left, offset, strip } => {
                     let columns = s.columns();
                     if columns > 0 {
                         let bar_w = plot_w / columns as f64;
@@ -5167,10 +5733,26 @@ impl ChartView {
                     // no longer fitting itself to the data. The content follows
                     // the hand: drag down and the bars come down with it, which
                     // means the window moves up the price axis.
-                    if !s.price_auto {
-                        let plot_h = (area.height() as f64 - TIME_AXIS_H - PAD).max(1.0);
-                        s.price_offset = offset + offset_y / plot_h / s.price_zoom;
+                    // In a strip, its own scale, once that is held, and
+                    // never the price's.
+                    match strip {
+                        Some(StripPan { id, held: Some((low, high)), inner_h }) => {
+                            let shift = offset_y / inner_h.max(1.0) * (high - low);
+                            s.hold_strip(id, low + shift, high + shift);
+                        }
+                        Some(_) => {}
+                        None if !s.price_auto => {
+                            let plot_h = (area.height() as f64 - TIME_AXIS_H - PAD).max(1.0);
+                            s.price_offset = offset + offset_y / plot_h / s.price_zoom;
+                        }
+                        None => {}
                     }
+                }
+                Drag::StripScale { id, from, .. } => {
+                    // The same sense as the price's axis: pulling up shows
+                    // less of the strip's values, larger.
+                    let (low, high) = scaled_window(from, 2f64.powf(offset_y / DRAG_PER_DOUBLING));
+                    s.hold_strip(id, low, high);
                 }
                 Drag::PriceScale { zoom } => {
                     // Grabbing the axis and pulling up stretches it: the
@@ -5197,6 +5779,7 @@ impl ChartView {
                         .clamp(MIN_VISIBLE, MAX_VISIBLE);
                     s.visible = next;
                     s.range = None;
+                    s.keep_room_on_screen();
                     s.trim_room(plot_w);
                 }
                 Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } | Drag::Mark { .. } => {
@@ -5209,6 +5792,7 @@ impl ChartView {
 
         let state = self.state.clone();
         let on_resize = self.on_pane_resize.clone();
+        let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         drag.connect_drag_end(move |_, offset_x, offset_y| {
             let finished = state.borrow_mut().drag.take();
@@ -5281,6 +5865,35 @@ impl ChartView {
                             view.tell(DrawingEvent::Changed(drawing));
                         }
                     }
+                    return;
+                }
+                // A held scale dragged up or down, or stretched: told once,
+                // as it is let go of, against where the drag picked it up.
+                Some(Drag::Pan { offset, strip, .. }) => {
+                    let mut was = state.borrow().scales();
+                    match strip {
+                        Some(StripPan { id, held: Some(from), .. }) => {
+                            was.strips.insert(id, from);
+                        }
+                        Some(_) => {}
+                        None => was.price.2 = offset,
+                    }
+                    notify_price_auto(&state, &on_price_auto, was);
+                    return;
+                }
+                Some(Drag::PriceScale { zoom }) => {
+                    let mut was = state.borrow().scales();
+                    was.price.1 = zoom;
+                    notify_price_auto(&state, &on_price_auto, was);
+                    return;
+                }
+                Some(Drag::StripScale { id, from, held }) => {
+                    let mut was = state.borrow().scales();
+                    match held {
+                        true => was.strips.insert(id, from),
+                        false => was.strips.remove(&id),
+                    };
+                    notify_price_auto(&state, &on_price_auto, was);
                     return;
                 }
                 _ => {}
@@ -5367,13 +5980,19 @@ impl ChartView {
                 }
             }
             let mut s = state.borrow_mut();
-            let was_auto = s.price_auto;
+            let was_price = s.scales();
             match region {
-                Region::PriceAxis => s.free_price(),
+                // The price's axis or a strip's: every scale back to
+                // fitting what is on screen, the price's and the strips'.
+                Region::PriceAxis => {
+                    s.free_price();
+                    s.free_strips();
+                }
                 Region::TimeAxis => {
                     s.visible = 160;
                     s.anchored = true;
                     s.overhang = RIGHT_MARGIN;
+                    s.overhang_by_hand = false;
                     s.lead = 0;
                 }
                 // Double-clicking bare chart does nothing, the same as
@@ -5383,7 +6002,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
-            notify_price_auto(&state, &on_price_auto, was_auto);
+            notify_price_auto(&state, &on_price_auto, was_price);
         });
         self.area.add_controller(click);
     }
@@ -5469,20 +6088,20 @@ fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
 }
 
 /// Tell the window if a gesture just changed whether the price scale is
-/// automatic.
+/// automatic, or moved a held one, or a strip's own scale.
 ///
-/// Compared against what it `was` rather than reported outright, because
-/// every notch of the wheel over the axis passes through here and only the
-/// first one changes anything. Called with the state no longer borrowed: the
+/// Compared against what it `was` (see [`State::scales`]) rather than
+/// reported outright, because a pan or a time zoom passes through here too
+/// and changes neither. Called with the state no longer borrowed: the
 /// handler is the window's, and the window reads the chart back.
 fn notify_price_auto(
     state: &Rc<RefCell<State>>,
     on_price_auto: &Handler<dyn Fn(bool)>,
-    was: bool,
+    was: Scales,
 ) {
-    let now = state.borrow().price_auto;
+    let now = state.borrow().scales();
     if now != was && let Some(handler) = on_price_auto.borrow().as_ref() {
-        handler(now);
+        handler(now.price.0);
     }
 }
 
@@ -5554,7 +6173,8 @@ fn frame(state: &State, width: f64, height: f64) -> Option<Frame<'_>> {
     // the first bar and leaving empty what was opened past the last.
     let column_w = plan.plot_w / state.columns().max(1) as f64;
     let bars_x = plan.plot_x + lead as f64 * column_w;
-    let columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
+    let mut columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
+    columns.end = plan.plot_x + plan.plot_w;
 
     let max_volume = columns.bars.iter().fold(0.0_f64, |most, b| most.max(b.volume));
     // Off the real bars rather than the columns. The two agree, because a
@@ -5621,10 +6241,20 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         let Some(drawn) = state.indicators.iter().find(|d| d.indicator.id == id) else {
             continue;
         };
+        // A strip held on a scale of its own can be zoomed past what it
+        // draws, which is then kept to its own box rather than drawn over
+        // the next one.
+        let held = state.strip_held.contains_key(&id);
+        if held {
+            cr.save().ok();
+            cr.rectangle(0.0, row.top, width, row.height);
+            cr.clip();
+        }
         match &drawn.output {
             Output::Volume { .. } => {
-                if max_volume > 0.0 {
-                    draw_volume(cr, state, &drawn.indicator, &columns, row.top, row.height, max_volume);
+                let fit = (max_volume > 0.0).then_some((0.0, max_volume));
+                if let Some(window) = state.strip_window(id, fit) {
+                    draw_volume(cr, state, &drawn.indicator, &columns, row.top, row.height, window);
                 }
                 // Named like the others now that it is one strip among several.
                 // Three unlabelled boxes under a chart is a puzzle.
@@ -5634,6 +6264,9 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                 draw_pane(cr, state, pane, drawn, &columns, plot_w, row.top, row.height, width)
             }
             _ => {}
+        }
+        if held {
+            cr.restore().ok();
         }
     }
 
@@ -5849,7 +6482,10 @@ fn placeholder_text(
 }
 
 fn draw_placeholder(cr: &cairo::Context, width: f64, height: f64, state: &State) {
-    let text = placeholder_text(state.instrument.is_some(), state.loading, state.trouble);
+    let text = match &state.trouble_words {
+        Some(words) if state.instrument.is_some() && !state.loading && state.trouble.is_some() => words.as_str(),
+        _ => placeholder_text(state.instrument.is_some(), state.loading, state.trouble),
+    };
     colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(13.0);
@@ -6226,12 +6862,17 @@ fn draw_volume(
     columns: &Columns,
     top: f64,
     height: f64,
-    max_volume: f64,
+    (low, high): (f64, f64),
 ) {
     // A tenth of the strip clear at the top, so the tallest bar does not
     // reach the line above it. Bars run under the name, which is short.
+    // Bars stand on nought, which is the foot of the strip while it fits
+    // itself, from nought to the tallest bar; zoomed, it is wherever nought
+    // falls on the strip's own scale.
     let inner_top = top + height * 0.1;
     let inner_h = height * 0.9;
+    let to_y = |volume: f64| inner_top + inner_h * (high - volume) / (high - low).max(f64::EPSILON);
+    let base = to_y(0.0);
     let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
     let opacity = volume_opacity(indicator);
     let lit = state.picked == Some(indicator.id);
@@ -6247,11 +6888,11 @@ fn draw_volume(
                     continue;
                 }
                 any = true;
-                let h = (bar.volume / max_volume * inner_h).max(1.0);
+                let h = (base - to_y(bar.volume)).max(1.0);
                 // A column's own pixel once it holds several bars, for the
                 // reason the wicks take it.
                 let (x, w) = columns.tile(i).unwrap_or_else(|| columns.body(i));
-                let (top, h) = ((inner_top + inner_h - h).round(), h.round());
+                let (top, h) = ((base - h).round(), h.round());
                 match glow {
                     true => selection::glow_bar(cr, (x, top, w, h), false),
                     false => cr.rectangle(x, top, w, h),
@@ -6344,7 +6985,7 @@ fn draw_pane_name(cr: &cairo::Context, state: &State, drawn: &Drawn, plot_x: f64
         false => colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8),
     }
     cr.move_to(plot_x + 2.0, top + 11.0);
-    let _ = cr.show_text(&drawn.indicator.label_for(state.timeframe));
+    let _ = cr.show_text(&drawn.indicator.legend_for(state.timeframe, drawn.output.is_estimated()));
 }
 
 /// Room at the top of a strip for its name, so a line at the top of its scale
@@ -6395,6 +7036,102 @@ fn on_screen<T>(series: &[T], first: usize, visible: usize) -> &[T] {
 /// The strip carries its own name because the legend at the top cannot say
 /// which of three stacked panes is which, and a pane you have to count down to
 /// identify is a pane you misread.
+/// A cumulative delta's figure on the axis: whole contracts, grouped, up to
+/// a hundred thousand either way, and past that to three figures with K, M
+/// or B, so a stock's running total of millions of shares stays inside the
+/// axis.
+fn contracts(value: f64) -> String {
+    let size = value.abs();
+    let (scaled, unit) = match size {
+        _ if size >= 1e9 => (value / 1e9, "B"),
+        _ if size >= 1e6 => (value / 1e6, "M"),
+        _ if size >= 1e5 => (value / 1e3, "K"),
+        _ => return grouped_decimals(value.round(), 0),
+    };
+    let decimals = match scaled.abs() {
+        a if a >= 100.0 => 0,
+        a if a >= 10.0 => 1,
+        _ => 2,
+    };
+    format!("{scaled:.decimals$}{unit}")
+}
+
+/// The room either side of a cumulative delta's figures on the axis.
+const DELTA_AXIS_PAD: f64 = 6.0;
+
+/// How far apart, at the least, a cumulative delta's figures are written
+/// down its axis: closer than the price's, as its strip is shorter, but
+/// never so close that two 11px figures crowd each other.
+const DELTA_LABEL_GAP: f64 = 26.0;
+
+/// A round step, 1, 2 or 5 times a power of ten, giving about `rows`
+/// figures across `range`; never smaller than one contract.
+fn delta_step(range: f64, rows: f64) -> f64 {
+    if range.is_nan() || rows.is_nan() || range <= 0.0 || rows <= 0.0 {
+        return 0.0;
+    }
+    let rough = range / rows;
+    let magnitude = 10f64.powf(rough.log10().floor());
+    let step = match rough / magnitude {
+        n if n <= 1.0 => 1.0,
+        n if n <= 2.0 => 2.0,
+        n if n <= 5.0 => 5.0,
+        _ => 10.0,
+    } * magnitude;
+    step.max(1.0)
+}
+
+/// Where a cumulative delta's axis is written, `low` to `high` over `h`
+/// pixels: its step, and every multiple of it in between, lowest first.
+/// Zero is a multiple, so it is written whenever it is on the strip.
+fn delta_ticks(low: f64, high: f64, h: f64) -> (f64, Vec<f64>) {
+    let step = delta_step(high - low, (h / DELTA_LABEL_GAP).max(2.0).floor());
+    if step <= 0.0 {
+        return (0.0, Vec::new());
+    }
+    let (first, last) = ((low / step).ceil() as i64, (high / step).floor() as i64);
+    // A step so fine as to make thousands of figures is no axis.
+    if last - first > 1_000 {
+        return (step, Vec::new());
+    }
+    (step, (first..=last).map(|at| at as f64 * step).collect())
+}
+
+/// A cumulative delta's axis written out: each figure whole and grouped,
+/// as the price axis writes its own, "-1,200"; in K, M or B, to the
+/// precision the step needs, only when one of them in full is wider than
+/// the axis, as a stock's millions of shares are. A future's never are.
+fn delta_figures(ticks: &[f64], step: f64, fits: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let full: Vec<String> = ticks.iter().map(|value| grouped_decimals(*value, 0)).collect();
+    if full.iter().all(|text| fits(text)) {
+        return full;
+    }
+    let most = ticks.iter().fold(0.0_f64, |most, value| most.max(value.abs()));
+    let (by, unit) = match most {
+        _ if most >= 1e9 => (1e9, "B"),
+        _ if most >= 1e6 => (1e6, "M"),
+        _ => (1e3, "K"),
+    };
+    let decimals = decimals_for(step / by);
+    ticks
+        .iter()
+        .map(|value| match *value == 0.0 {
+            true => "0".to_string(),
+            false => format!("{}{unit}", grouped_decimals(*value / by, decimals)),
+        })
+        .collect()
+}
+
+/// A cumulative delta's close on its axis chip: in full when it fits
+/// there, shortened to K, M or B only when it does not.
+fn delta_figure(value: f64, fits: &dyn Fn(&str) -> bool) -> String {
+    let full = grouped_decimals(value.round(), 0);
+    match fits(&full) {
+        true => full,
+        false => contracts(value),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_pane(
     cr: &cairo::Context,
@@ -6411,7 +7148,7 @@ fn draw_pane(
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
     let lit = state.picked == Some(drawn.indicator.id);
-    let Some((low, high)) = pane_range(pane, first, visible) else {
+    let Some((low, high)) = state.strip_window(drawn.indicator.id, pane_range(pane, first, visible)) else {
         // Nothing to scale to and so nothing to draw — but the strip is still
         // a box on the chart, and a box with no name in it is one you have to
         // count down the stack to identify. An ATR zoomed into its own
@@ -6426,7 +7163,14 @@ fn draw_pane(
     // Everything drawn in the strip is kept inside it. Nothing fitted falls
     // outside, but a strip on a fixed scale can be handed a value past its own
     // end, and a rectangle that overshot would be drawn over its neighbour.
-    let strip = |value: f64| to_y(value).clamp(top, top + height);
+    // Zoomed past what it draws, a line runs on out of the strip, which is
+    // clipped to its box, rather than lying flat along its edge as though
+    // it had stopped there.
+    let reach = match state.strip_held.contains_key(&drawn.indicator.id) {
+        true => height,
+        false => 0.0,
+    };
+    let strip = |value: f64| to_y(value).clamp(top - reach, top + height + reach);
 
     // The band between the guides, so overbought and oversold read as regions
     // rather than two lines you have to remember the meaning of.
@@ -6460,8 +7204,34 @@ fn draw_pane(
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(10.0);
     colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.75);
+    // A cumulative delta's axis is ruled as the price's is, in one round
+    // step, its figures one right-aligned column in the price axis's type.
+    let room = width - (plot_x + plot_w) - DELTA_AXIS_PAD * 2.0;
+    let fits = |text: &str| cr.text_extents(text).is_ok_and(|extents| extents.x_advance() <= room);
+    if pane.delta.is_some() {
+        cr.save().ok();
+        cr.set_font_size(11.0);
+        colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
+        let (step, ticks) = delta_ticks(low, high, inner_h);
+        let right = plot_x + plot_w + DELTA_AXIS_PAD + room;
+        // The close's chip is over the axis: a figure it would cover is
+        // left out rather than shown half under it.
+        let close = pane.delta.as_ref().and_then(|delta| delta.last()).map(|last| to_y(last.close));
+        for (value, text) in ticks.iter().zip(delta_figures(&ticks, step, &fits)) {
+            let y = to_y(*value);
+            if y < top || y > top + height || close.is_some_and(|close| (close - y).abs() < AXIS_CHIP_H) {
+                continue;
+            }
+            let wide = cr.text_extents(&text).map_or(0.0, |extents| extents.x_advance());
+            cr.move_to(right - wide, (y + 3.5).min(top + height));
+            let _ = cr.show_text(&text);
+        }
+        cr.restore().ok();
+    }
     let marks: Vec<(f64, String)> = if pane.bounds.is_some() {
         pane.guides.iter().map(|g| (*g, format!("{g:.0}"))).collect()
+    } else if pane.delta.is_some() {
+        Vec::new()
     } else {
         let decimals = pane_decimals(pane, low, high);
         vec![(low, grouped_decimals(low, decimals)), (high, grouped_decimals(high, decimals))]
@@ -6476,6 +7246,38 @@ fn draw_pane(
     }
 
     draw_pane_name(cr, state, drawn, plot_x, top);
+
+    // A cumulative delta is its candles or its line, and its close on the
+    // axis, in place of the lines below.
+    if let Some(delta) = &pane.delta {
+        let shown = on_screen(delta, first, visible);
+        let line = matches!(
+            drawn.indicator.params,
+            omacharts_engine::Params::Cvd { style: omacharts_engine::indicators::cvd::Style::Line, .. }
+        );
+        let (up, down) = state.delta_ink(drawn);
+        let chip = match line {
+            true => {
+                draw_delta_line(cr, state, drawn, shown, columns, &strip, lit);
+                drawn.color.as_str()
+            }
+            false => {
+                draw_delta_candles(cr, state, shown, columns, &strip, (up, down), lit);
+                match delta.last() {
+                    Some(last) if last.close < last.open => down,
+                    _ => up,
+                }
+            }
+        };
+        let chips = delta
+            .last()
+            .map(|last| (to_y(last.close), delta_figure(last.close, &fits), chip))
+            .filter(|(y, _, _)| *y >= top && *y <= top + height)
+            .into_iter()
+            .collect();
+        draw_axis_chips(cr, state, chips, plot_x + plot_w, top + height, width);
+        return;
+    }
 
     // The lines last, over their own furniture.
     let stroke = drawn.indicator.stroke;
@@ -6536,6 +7338,117 @@ fn draw_pane(
     draw_axis_chips(cr, state, chips, plot_x + plot_w, top + height, width);
 }
 
+/// The bars of a cumulative delta a column stands for, as one: from the
+/// first one's open to the last one's close, as far as any went either way.
+fn delta_column(bars: &[indicators::cvd::DeltaBar]) -> Option<indicators::cvd::DeltaBar> {
+    let (first, last) = (bars.first()?, bars.last()?);
+    let mut column = indicators::cvd::DeltaBar { close: last.close, starts: bars.iter().any(|b| b.starts), ..*first };
+    for bar in bars {
+        column.high = column.high.max(bar.high);
+        column.low = column.low.min(bar.low);
+    }
+    Some(column)
+}
+
+/// A cumulative delta's candles: rising ones in the up colour, falling ones
+/// in the down colour, each a body from where its running delta opened to
+/// where it closed and a wick to the furthest it went between. Solid, as
+/// the volume strip's bars are, so a wick reads against the zero line.
+fn draw_delta_candles(
+    cr: &cairo::Context,
+    state: &State,
+    bars: &[indicators::cvd::DeltaBar],
+    columns: &Columns,
+    to_y: &impl Fn(f64) -> f64,
+    (up, down): (&str, &str),
+    lit: bool,
+) {
+    cr.save().ok();
+    cr.set_line_width(1.0);
+    let passes: &[bool] = if lit { &[true, false] } else { &[false] };
+    for glow in passes.iter().copied() {
+        for rising in [false, true] {
+            let mut any = false;
+            for at in 0..columns.len() {
+                let Some(bar) = bars.get(columns.span(at)).and_then(delta_column) else { continue };
+                if (bar.close >= bar.open) != rising || !bar.close.is_finite() {
+                    continue;
+                }
+                any = true;
+                let (top, bottom) = (to_y(bar.open.max(bar.close)), to_y(bar.open.min(bar.close)));
+                let (x, w) = columns.tile(at).unwrap_or_else(|| columns.body(at));
+                let (top, h) = (top.round(), (bottom.round() - top.round()).max(1.0));
+                if glow {
+                    selection::glow_bar(cr, (x, top, w, h), false);
+                    continue;
+                }
+                cr.rectangle(x, top, w, h);
+                // The wick down the column's middle, through the body.
+                let cx = columns.x(at).round() + 0.5;
+                let (high, low) = (to_y(bar.high).round(), to_y(bar.low).round());
+                if high < top {
+                    cr.rectangle(cx - 0.5, high, 1.0, top - high);
+                }
+                if low > top + h {
+                    cr.rectangle(cx - 0.5, top + h, 1.0, low - top - h);
+                }
+            }
+            if any {
+                let alpha = if glow { selection::glow_alpha(&state.theme) } else { 1.0 };
+                colors::set_source_alpha(cr, if rising { up } else { down }, alpha);
+                let _ = cr.fill();
+            }
+        }
+    }
+    cr.restore().ok();
+}
+
+/// A cumulative delta as a line through each bar's close, in its own colour
+/// and stroke, lifted at each reset so a period's first bar is not joined to
+/// the last one's.
+fn draw_delta_line(
+    cr: &cairo::Context,
+    state: &State,
+    drawn: &Drawn,
+    bars: &[indicators::cvd::DeltaBar],
+    columns: &Columns,
+    to_y: &impl Fn(f64) -> f64,
+    lit: bool,
+) {
+    let stroke = drawn.indicator.stroke;
+    if stroke.is_hidden() {
+        return;
+    }
+    let point = |at: usize| {
+        let bar = bars.get(columns.span(at)).and_then(delta_column)?;
+        Some((columns.x(at), to_y(bar.close), bar.starts))
+    };
+    if lit {
+        selection::glow_line(cr, &state.theme, &drawn.color, stroke.width, columns, |at| {
+            point(at).map(|(x, y, _)| (x, y))
+        });
+    }
+    cr.save().ok();
+    cr.set_line_width(stroke.width);
+    cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
+    colors::set_source(cr, &drawn.color);
+    let mut pen_down = false;
+    for at in 0..columns.len() {
+        let Some((x, y, starts)) = point(at) else {
+            pen_down = false;
+            continue;
+        };
+        if pen_down && !starts {
+            cr.line_to(x, y);
+        } else {
+            cr.move_to(x, y);
+            pen_down = true;
+        }
+    }
+    let _ = cr.stroke();
+    cr.restore().ok();
+}
+
 /// Chips on the axis at their own heights, moved apart where they would cover
 /// each other, and kept above `floor`.
 fn draw_axis_chips(
@@ -6575,6 +7488,15 @@ fn spread_chips(ys: &mut [f64], gap: f64, floor: f64) {
     }
 }
 
+/// `window` stretched about its middle by `factor`: above one shows less
+/// of it, larger, as a held price scale's zoom does.
+fn scaled_window((low, high): (f64, f64), factor: f64) -> (f64, f64) {
+    let factor = factor.clamp(1.0 / MAX_PRICE_ZOOM, 1.0 / MIN_PRICE_ZOOM);
+    let middle = (low + high) / 2.0;
+    let half = (high - low) / 2.0 / factor;
+    (middle - half, middle + half)
+}
+
 /// The values a strip's top and bottom stand for, over the bars on screen.
 ///
 /// Its own function because the crosshair has to read the strip on the same
@@ -6606,6 +7528,11 @@ fn pane_range(
             low = low.min(*value);
             high = high.max(*value);
         }
+    }
+    // A cumulative delta's candles reach past their closes.
+    for bar in pane.delta.as_deref().map(|bars| on_screen(bars, first, visible)).unwrap_or_default() {
+        low = low.min(bar.low);
+        high = high.max(bar.high);
     }
     // A guide is part of the scale rather than something drawn on top of it.
     // A MACD's histogram is measured from its zero line, so the zero line has
@@ -7055,14 +7982,20 @@ impl State {
             from: dragged.from,
             at,
             last: self.bars.last().map(|bar| bar.close),
-            tick: self.tick(),
+            tick: self.dragged_tick(),
             places,
         }
     }
 
-    /// The places a price `at` is written to, on the series' tick.
+    /// The step a mark moves in as it is dragged: the traded contract's
+    /// when one was set, else the series'.
+    fn dragged_tick(&self) -> Option<f64> {
+        self.mark_tick.or_else(|| self.tick())
+    }
+
+    /// The places a price `at` is written to, on the dragged tick.
     fn places_at(&self, at: f64) -> usize {
-        self.tick().map_or(2, |tick| omacharts_engine::on_tick(at, tick).1)
+        self.dragged_tick().map_or(2, |tick| omacharts_engine::on_tick(at, tick).1)
     }
 
     /// The price at height `y` of the price plot, on the series' tick, and
@@ -7075,7 +8008,7 @@ impl State {
         let plan = layout(self, width, height);
         let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
         let price = scale.price_at(y.clamp(plan.price_y, plan.price_y + plan.price_h), plan.price_y, plan.price_h);
-        Some(match self.tick() {
+        Some(match self.dragged_tick() {
             Some(tick) => omacharts_engine::on_tick(price, tick),
             None => (price, 2),
         })
@@ -7372,7 +8305,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
         }
     }
-    let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price(state).map(|price| to_y(price).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -7523,13 +8456,14 @@ fn draw_last_price(
     // Where the tag goes when marks' chips on the axis moved it.
     tag_at: Option<f64>,
 ) {
-    let Some(last) = state.bars.last() else { return };
-    let y = to_y(last.close).round() + 0.5;
+    let Some(price) = last_price(state) else { return };
+    let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    let rising = last.close >= last.open;
-    let tag = &state.price_tags[if rising { 0 } else { 1 }];
+    // In the last price's own colour, the line's: one thing on the chart,
+    // whose rise or fall the candles and the header already say.
+    let tag = &state.last_ink.tag;
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
         draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
@@ -7539,12 +8473,19 @@ fn draw_last_price(
     // it; the line stays at the price.
     draw_tag(
         cr,
-        &grouped_decimals(last.close, decimals),
+        &grouped_decimals(price, decimals),
         plot_x + plot_w,
         tag_at.unwrap_or_else(|| below_cover(state, y)),
         width,
         tag,
     );
+}
+
+/// The last price: the feed's latest trade when the bars drawn leave it
+/// out, else the last bar's close.
+fn last_price(state: &State) -> Option<f64> {
+    let last = state.bars.last()?;
+    Some(state.latest.unwrap_or(last.close))
 }
 
 /// The last price's dashed line across the plot.
@@ -7556,16 +8497,15 @@ fn draw_last_price_line(
     price_y: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let Some(last) = state.bars.last() else { return };
-    let y = to_y(last.close).round() + 0.5;
+    let Some(price) = last_price(state) else { return };
+    let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    let colour = if last.close >= last.open { &state.scheme.up } else { &state.scheme.down };
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
-    colors::set_source_alpha(cr, colour, 0.7);
+    colors::set_source_alpha(cr, &state.last_ink.line, 0.7);
     cr.move_to(plot_x, y);
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
@@ -7713,29 +8653,46 @@ fn draw_pane_value(
     let Some(row) = plan.rows.iter().find(|row| row.pane.is_some() && row.covers(py)) else {
         return;
     };
-    let Some(Output::Pane(pane)) = state
+    let Some((id, Output::Pane(pane))) = state
         .indicators
         .iter()
         .find(|drawn| Some(drawn.indicator.id) == row.pane)
-        .map(|drawn| &drawn.output)
+        .map(|drawn| (drawn.indicator.id, &drawn.output))
     else {
         return;
     };
-    let Some((low, high)) = pane_range(pane, first, visible) else {
+    let Some((low, high)) = state.strip_window(id, pane_range(pane, first, visible)) else {
         return;
     };
     let (inner_top, inner_h) = pane_plot(row.top, row.height);
     let value = high - (py - inner_top) / inner_h * (high - low);
-    let decimals = pane_decimals(pane, low, high);
+    let text = match pane.delta.is_some() {
+        true => contracts(value),
+        false => grouped_decimals(value, pane_decimals(pane, low, high)),
+    };
     label_on_axis(
         cr,
         state,
-        &grouped_decimals(value, decimals),
+        &text,
         plan.plot_x + plan.plot_w,
         py.round() + 0.5,
         width,
         &state.theme.ui.crosshair,
     );
+}
+
+/// The last price's colour on the theme, and its tag filled in it.
+#[derive(Clone)]
+struct LastInk {
+    line: String,
+    tag: Tag,
+}
+
+impl LastInk {
+    fn of(theme: &Theme) -> LastInk {
+        let line = omacharts_engine::theme::theme_last_price(theme);
+        LastInk { tag: Tag::on(&line), line }
+    }
 }
 
 /// The last-price tag for each direction: the same fill and label the bar
@@ -8690,6 +9647,93 @@ pub fn volume_opacity(indicator: &Indicator) -> f64 {
     }
 }
 
+/// The colours one side of a volume profile is drawn in: its rows', and
+/// the outline round them.
+#[derive(Clone, Debug, PartialEq)]
+struct ProfileInk {
+    side: selection::Side,
+    fill: String,
+    edge: String,
+}
+
+impl ProfileInk {
+    /// What the side is seen in, which is what its selection is drawn in:
+    /// its rows' colour for the filled style, its outline's for the outline
+    /// style, where the rows' colour is drawn nowhere.
+    fn shown(&self, style: omacharts_engine::indicators::profile::Style) -> &str {
+        match style {
+            omacharts_engine::indicators::profile::Style::Filled => &self.fill,
+            omacharts_engine::indicators::profile::Style::Outline => &self.edge,
+        }
+    }
+}
+
+/// The sides a volume profile is drawn as. A total is one, in the profile's
+/// colour. A delta is two, in the colours the chart's candles go up and
+/// down in, swapped or not, from whatever scheme they wear: bought and sold
+/// read the way rising and falling do. An outline colour chosen is the
+/// outline's on either; unchosen, the outline is the rows' own.
+fn profile_inks(
+    method: omacharts_engine::indicators::profile::Method,
+    outline: Option<&omacharts_engine::theme::ColorChoice>,
+    drawn: &Drawn,
+    state: &State,
+) -> Vec<ProfileInk> {
+    use omacharts_engine::indicators::profile::Method;
+    let ink = |side, fill: &str| ProfileInk {
+        side,
+        fill: fill.to_string(),
+        edge: outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| fill.to_string()),
+    };
+    match method {
+        Method::Total => vec![ink(selection::Side::All, &drawn.color)],
+        Method::Delta => {
+            let (up, down) = state.delta_ink(drawn);
+            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
+        }
+    }
+}
+
+/// What a chart is told the house colouring is until it is told otherwise:
+/// the one Preferences opens with.
+const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
+
+/// A delta profile's bought and sold colours, for the house colouring and
+/// then each colouring a delta can be given, in the order
+/// [`DELTA_COLOURINGS`] offers them. Each is the colouring's rise and fall,
+/// swapped when the house colouring is: red for a rise is said once, in
+/// Preferences, and a delta reads the way the candles do.
+fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
+    let pair = |colouring: BarColouring| {
+        let scheme = colouring.scheme(theme).worn(swapped, false);
+        (scheme.up, scheme.down)
+    };
+    let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
+    inks[0] = pair(house);
+    for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
+        inks[at + 1] = pair(colouring);
+    }
+    inks
+}
+
+/// A delta profile's bought and sold colours, as a pair of hex colours: the
+/// house colouring's, or the one the profile chose of
+/// [`DELTA_COLOURINGS`].
+pub fn delta_colours(
+    colouring: Option<BarColouring>,
+    theme: &Theme,
+    house: BarColouring,
+    swapped: bool,
+) -> (String, String) {
+    let inks = delta_inks(theme, (house, swapped));
+    let at = colouring.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
+    inks[at].clone()
+}
+
+/// How strongly a delta's rows are filled: all as strongly as a total's
+/// value area, a delta having none to set apart.
+const DELTA_ROW_ALPHA: f64 = 0.30;
+
 /// One histogram per period, anchored where its period begins.
 fn draw_profiles(
     cr: &cairo::Context,
@@ -8699,19 +9743,21 @@ fn draw_profiles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let (chosen, edged, outline, outline_width, poc_width) = match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { poc_color, outline: edged, outline_color, outline_width, poc_width, .. } => {
-            (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width)
-        }
-        _ => (None, false, None, 1.0, 1.0),
+    use omacharts_engine::indicators::profile::Method;
+    let (chosen, edged, outline, outline_width, poc_width, method, poc_shown) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile {
+            poc_color, outline: edged, outline_color, outline_width, poc_width, method, poc, ..
+        } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
+        _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
-    let outline = outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| drawn.color.clone());
-    let (style, align) = selection::profile_look(drawn);
+    let inks = profile_inks(method, outline, drawn, state);
+    let look = selection::placed_look(state, drawn);
+    let style = look.style;
 
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
-        let area = selection::profile_box(profile, columns, align);
+        let area = selection::profile_box(profile, columns, &look);
         if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
@@ -8720,49 +9766,62 @@ fn draw_profiles(
             omacharts_engine::indicators::profile::Style::Filled => {
                 let (area_low, area_high) = profile.value_area_bounds();
                 for row in &profile.rows {
-                    if row.volume <= 0.0 {
+                    let Some(ink) = inks.iter().find(|ink| ink.side.length(row.volume) > 0.0) else {
                         continue;
-                    }
-                    let (from, to) = area.row(row.volume / profile.max_volume);
+                    };
+                    let (from, to) = area.row(row.volume.abs() / profile.max_volume);
                     let top = to_y(row.high);
                     let height = (to_y(row.low) - top).max(1.0);
-                    let inside = row.low >= area_low && row.high <= area_high;
-                    colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
+                    let alpha = match method {
+                        Method::Total if row.low >= area_low && row.high <= area_high => 0.30,
+                        Method::Total => 0.14,
+                        Method::Delta => DELTA_ROW_ALPHA,
+                    };
+                    colors::set_source_alpha(cr, &ink.fill, alpha);
                     cr.rectangle(from, top, to - from, height);
                     let _ = cr.fill();
                 }
                 if edged {
-                    colors::set_source_alpha(cr, &outline, drawings::PROFILE_EDGE_ALPHA);
                     cr.set_line_width(outline_width.max(0.5));
                     cr.set_line_join(cairo::LineJoin::Miter);
-                    selection::profile_path(cr, &area, profile, to_y);
-                    let _ = cr.stroke();
+                    for ink in &inks {
+                        colors::set_source_alpha(cr, &ink.edge, drawings::PROFILE_EDGE_ALPHA);
+                        selection::profile_path(cr, &area, profile, to_y, ink.side);
+                        let _ = cr.stroke();
+                    }
                 }
             }
             // Only the shape the rows make, so the candles under it stay
             // as plain as they are without it.
             omacharts_engine::indicators::profile::Style::Outline => {
-                colors::set_source_alpha(cr, &outline, 0.75);
                 cr.set_line_width(outline_width.max(0.5));
                 cr.set_line_join(cairo::LineJoin::Miter);
-                selection::profile_path(cr, &area, profile, to_y);
-                let _ = cr.stroke();
+                for ink in &inks {
+                    colors::set_source_alpha(cr, &ink.edge, 0.75);
+                    selection::profile_path(cr, &area, profile, to_y, ink.side);
+                    let _ = cr.stroke();
+                }
             }
         }
 
         // The point of control, across the period it belongs to, in a colour
         // set against the profile rather than the same one brighter — it is a
         // different fact about the period, drawn on top of it.
-        let y = to_y(profile.poc_price()).round() + 0.5;
-        let (from, to) = area.row(1.0);
-        colors::set_source_alpha(cr, &poc, 0.9);
-        cr.set_line_width(poc_width.max(0.5));
-        cr.move_to(from, y);
-        cr.line_to(to, y);
-        let _ = cr.stroke();
+        // Unless it is turned off, which leaves the rows to say it.
+        if poc_shown {
+            let y = to_y(profile.poc_price()).round() + 0.5;
+            let (from, to) = area.row(1.0);
+            colors::set_source_alpha(cr, &poc, 0.9);
+            cr.set_line_width(poc_width.max(0.5));
+            cr.move_to(from, y);
+            cr.line_to(to, y);
+            let _ = cr.stroke();
+        }
 
         if state.picked == Some(drawn.indicator.id) {
-            selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y);
+            for ink in &inks {
+                selection::outline_profile(cr, &state.theme, ink.shown(style), profile, &area, to_y, ink.side);
+            }
         }
     }
 }
@@ -8816,7 +9875,7 @@ fn draw_profile_drawing(
         }
     }
     cr.set_line_join(cairo::LineJoin::Miter);
-    selection::profile_path(cr, &area, &profile, to_y);
+    selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
     let _ = cr.stroke();
 
     let y = to_y(profile.poc_price()).round() + 0.5;
@@ -9392,17 +10451,15 @@ fn format_axis_time(ts: i64, tick_seconds: i64, intraday: bool, utc: bool, clock
     };
     const DAY: i64 = 86_400;
     let time = clock.format.pattern();
-    if intraday {
-        return match tick_seconds {
-            t if t >= DAY => dt.format(&format!("%d %b {time}")).to_string(),
-            t if t >= 4 * 3_600 => dt.format(&format!("%a {time}")).to_string(),
-            _ => dt.format(time).to_string(),
-        };
-    }
+    // Ticks a month or more apart get no clock, intraday or not: it would only
+    // be the hour each month's first bar opened, and it pushes out the year.
     match tick_seconds {
         t if t >= 300 * DAY => dt.format("%Y").to_string(),
         t if t >= 25 * DAY => dt.format("%b %Y").to_string(),
-        _ => dt.format("%d %b").to_string(),
+        _ if !intraday => dt.format("%d %b").to_string(),
+        t if t >= DAY => dt.format(&format!("%d %b {time}")).to_string(),
+        t if t >= 4 * 3_600 => dt.format(&format!("%a {time}")).to_string(),
+        _ => dt.format(time).to_string(),
     }
 }
 
@@ -10070,6 +11127,256 @@ mod tests {
         assert!(same_scale(drawn_scale(&state, w, h), refitted));
     }
 
+    /// What a restart reads back: the prices a held scale was left
+    /// showing, zoomed and shifted, brought back on a chart that has no
+    /// bars yet and kept through the first series it is given — at another
+    /// size, at the live edge, with bars that have traded since — on a
+    /// linear axis and a log one.
+    #[test]
+    fn a_held_price_scale_comes_back_after_a_restart() {
+        for log in [false, true] {
+            let mut state = charted(400);
+            state.instrument = Some(named("ES"));
+            state.price_log = log;
+            state.visible = 160;
+            state.overhang = 0;
+            let (w, h) = (1200.0, 600.0);
+            let plot_h = layout(&state, w, h).price_h;
+            state.scale_price(3.0, w, h);
+            state.price_offset = 40.0 / plot_h / state.price_zoom;
+            let left = drawn_scale(&state, w, h);
+            let (low, high) = state.held_window().expect("a held scale has prices");
+            assert!(low < high);
+
+            let mut restored = charted(0);
+            restored.price_log = log;
+            restored.hold_window(low, high);
+            assert!(!restored.price_auto, "{log}: held from the start");
+            restored.replace_series(named("ES"), restored.timeframe, ramp(450));
+            restored.visible = 160;
+            for (w, h) in [(1200.0, 600.0), (800.0, 900.0)] {
+                assert!(same_scale(drawn_scale(&restored, w, h), left), "{log}: the same prices at {w}x{h}");
+            }
+            let (again_low, again_high) = restored.held_window().expect("still held");
+            assert!((again_low - low).abs() < 1e-9 && (again_high - high).abs() < 1e-9, "{log}: written down the same");
+
+            // Another symbol is not this one's prices, as before.
+            restored.replace_series(named("NQ"), restored.timeframe, ramp(450));
+            assert!(!same_scale(drawn_scale(&restored, w, h), left), "{log}: another symbol holds its own fit");
+        }
+    }
+
+    /// Nothing to write down while the scale fits itself, and nothing left
+    /// once a reset or auto scale has let go of a held one.
+    #[test]
+    fn a_price_scale_that_fits_itself_holds_no_prices() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = charted(400);
+        assert_eq!(state.held_window(), None, "automatic");
+        state.scale_price(2.0, w, h);
+        let _ = drawn_scale(&state, w, h);
+        assert!(state.held_window().is_some());
+        state.free_price();
+        assert_eq!(state.held_window(), None, "auto scale let go of it");
+        state.hold_window(120.0, 180.0);
+        assert_eq!(state.held_window(), Some((120.0, 180.0)));
+        state.reset_view();
+        assert!(state.price_auto);
+        assert_eq!(state.held_window(), None, "a reset let go of it");
+        // Nothing that is a range of prices is held.
+        for (low, high) in [(f64::NAN, 1.0), (5.0, 5.0), (9.0, 1.0), (0.0, f64::INFINITY)] {
+            state.hold_window(low, high);
+            assert!(state.price_auto, "{low}..{high}");
+        }
+    }
+
+    /// A chart with its volume strip, indicator 1, and a cumulative delta's,
+    /// indicator 2, under the price.
+    fn with_delta(bars: usize) -> State {
+        let mut state = charted(bars);
+        let indicator = Indicator::new(2, indicators::Kind::Cvd);
+        let output = indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+        assert!(matches!(&output, Output::Pane(pane) if pane.delta.is_some()), "a cumulative delta's strip");
+        state.indicators.push(Drawn { color: "#5588ff".to_string(), output, indicator });
+        state
+    }
+
+    /// The middle of a strip's row, on its axis and in its plot.
+    fn strip_points(state: &State, id: u32, w: f64, h: f64) -> ((f64, f64), (f64, f64)) {
+        let plan = layout(state, w, h);
+        let row = plan.rows.iter().find(|row| row.pane == Some(id)).expect("the strip's row");
+        let y = row.top + row.height / 2.0;
+        ((w - PRICE_AXIS_W / 2.0, y), (plan.plot_x + plan.plot_w / 2.0, y))
+    }
+
+    /// The cumulative delta's strip zooms on its own scale, from its axis,
+    /// Ctrl and the wheel over it, a pinch on it or a drag: the price's
+    /// scale stays fitting itself, the volume strip too, and the strip it
+    /// zoomed keeps its range as the chart scrolls. The volume strip is
+    /// zoomed the same way, on the same code.
+    #[test]
+    fn a_strip_zooms_on_its_own_scale_whatever_the_price_s_does() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = with_delta(400);
+        state.visible = 160;
+        let price = drawn_scale(&state, w, h);
+        let ((axis_x, axis_y), (plot_x, plot_y)) = strip_points(&state, 2, w, h);
+        assert_eq!(state.axis_at(axis_x, axis_y, w, h, false), Some(Axis::Strip(2)), "its own axis");
+        assert_eq!(state.axis_at(plot_x, plot_y, w, h, true), Some(Axis::Strip(2)), "Ctrl or a pinch over it");
+        assert_eq!(state.axis_at(plot_x, plot_y, w, h, false), None, "the wheel alone pans or zooms time");
+        let plan = layout(&state, w, h);
+        let price_y = plan.price_y + plan.price_h / 2.0;
+        assert_eq!(state.axis_at(axis_x, price_y, w, h, false), Some(Axis::Price), "the price's axis is the price's");
+
+        let fit = state.strip_fit(2, w, h).expect("a fit");
+        assert_eq!(state.strip_window(2, Some(fit)), Some(fit), "fitting itself until zoomed");
+        state.scale_strip(2, 2.0, w, h);
+        let (low, high) = state.strip_window(2, None).expect("held once zoomed");
+        assert!(((high - low) - (fit.1 - fit.0) / 2.0).abs() < 1e-6, "half the range: {fit:?} to {low}..{high}");
+        assert!(((low + high) - (fit.0 + fit.1)).abs() < 1e-6, "about its middle");
+        assert!(state.price_auto, "the price's scale is untouched");
+        assert!(same_scale(drawn_scale(&state, w, h), price), "the price shows what it did");
+        assert!(!state.strip_held.contains_key(&1), "the volume strip still fits itself");
+
+        // Held, it does not follow the bars as the chart scrolls.
+        state.pan_by(-60.0, w - PRICE_AXIS_W - PAD);
+        assert_eq!(state.strip_window(2, state.strip_fit(2, w, h)), Some((low, high)));
+
+        // A pinch on it, spread to twice as far apart: half again.
+        let pinch = state.pinch_at(plot_x, plot_y, w, h).expect("a pinch on the strip");
+        assert_eq!(pinch, Pinch::Strip { id: 2, from: (low, high) });
+        state.pinch(pinch, 2.0);
+        let (pinched_low, pinched_high) = state.strip_window(2, None).unwrap();
+        assert!(((pinched_high - pinched_low) - (high - low) / 2.0).abs() < 1e-6);
+        assert!(state.pinch_at(plot_x, price_y, w, h).is_none(), "a pinch on the price's plot is not the chart's");
+        assert!(state.price_auto);
+
+        // A drag in it moves its own scale, and the price's not at all.
+        assert!(matches!(state.strip_pan_at(plot_y, w, h), Some(StripPan { id: 2, held: Some(_), .. })));
+        assert_eq!(state.strip_pan_at(price_y, w, h), None, "a drag on the price pans the price");
+
+        // The volume strip, on the same code: from nought to its tallest bar
+        // until it is zoomed.
+        let ((_, volume_y), _) = strip_points(&state, 1, w, h);
+        assert_eq!(state.axis_at(axis_x, volume_y, w, h, false), Some(Axis::Strip(1)));
+        let volume = state.strip_fit(1, w, h).expect("a volume fit");
+        assert_eq!(volume.0, 0.0);
+        state.scale_strip(1, 4.0, w, h);
+        assert!(state.strip_held.contains_key(&1));
+        assert_eq!(state.strip_held.get(&2), Some(&(pinched_low, pinched_high)), "each strip its own");
+
+        // Drawn on its own scale: the strip looks different, the price's
+        // rows not at all.
+        let auto = with_delta(400);
+        let rows = |pixels: &[u8], from: f64, to: f64| pixels[(from as usize) * w as usize * 4..(to as usize) * w as usize * 4].to_vec();
+        let mut left = auto;
+        left.visible = 160;
+        left.pan_by(-60.0, w - PRICE_AXIS_W - PAD);
+        let plain = frame(w, h, |cr| draw(cr, w, h, &left));
+        let zoomed = frame(w, h, |cr| draw(cr, w, h, &state));
+        let strip = layout(&state, w, h).rows.into_iter().find(|row| row.pane == Some(2)).unwrap();
+        assert_eq!(rows(&plain, plan.price_y + 2.0, plan.price_y + plan.price_h - 2.0), rows(&zoomed, plan.price_y + 2.0, plan.price_y + plan.price_h - 2.0), "the price redrawn");
+        assert_ne!(rows(&plain, strip.top, strip.top + strip.height), rows(&zoomed, strip.top, strip.top + strip.height), "the strip on its own scale");
+    }
+
+    /// A mark is dragged on the step of the contract it trades once one is
+    /// set, not the series' step: a quarter-point chart trading a contract
+    /// in halves lands only on halves.
+    #[test]
+    fn a_mark_is_dragged_on_the_traded_contract_s_tick() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = charted(400);
+        state.visible = 160;
+        let plan = layout(&state, w, h);
+        let ys: Vec<f64> = (0..40).map(|at| plan.price_y + plan.price_h * f64::from(at) / 40.0).collect();
+        let on = |state: &State, tick: f64| {
+            ys.iter().all(|y| {
+                let (price, _) = state.tick_price_at(w, h, *y).expect("a price");
+                ((price / tick) - (price / tick).round()).abs() < 1e-9
+            })
+        };
+        state.mark_tick = Some(0.5);
+        assert!(on(&state, 0.5), "every price on the traded half point");
+        assert_eq!(state.dragged_tick(), Some(0.5), "what the rules are asked about");
+        state.mark_tick = None;
+        assert_eq!(state.dragged_tick(), state.tick(), "the series' own once unset");
+    }
+
+    /// A strip held on its own scale lets go of it when the series is
+    /// another symbol's or timeframe's, whose values are nowhere near, as
+    /// the price's held window does; a refresh of the same series keeps it.
+    #[test]
+    fn a_zoomed_strip_fits_itself_again_on_another_series() {
+        let mut state = with_delta(400);
+        state.instrument = Some(named("ES"));
+        let bars = state.bars.clone();
+        state.hold_strip(2, -500.0, 500.0);
+        state.replace_series(named("ES"), state.timeframe, bars.clone());
+        assert_eq!(state.strip_window(2, None), Some((-500.0, 500.0)), "a refresh let go of it");
+        state.replace_series(named("NQ"), state.timeframe, bars.clone());
+        assert!(state.strip_held.is_empty() && state.strip_kinds.is_empty(), "held across a symbol");
+        state.hold_strip(2, -500.0, 500.0);
+        state.replace_series(named("NQ"), Timeframe::minutes(5), bars);
+        assert!(state.strip_held.is_empty(), "held across a timeframe");
+    }
+
+    /// A strip's range goes with its indicator: removed, its id is let go
+    /// of, so one added later under the same id fits itself, and one of
+    /// another kind under a held id, as a template can bring, does not
+    /// take on a range held for something else.
+    #[test]
+    fn a_strip_s_range_goes_with_its_indicator() {
+        let mut state = with_delta(400);
+        state.hold_strip(2, -500.0, 500.0);
+        assert_eq!(state.strip_kinds.get(&2), Some(&indicators::Kind::Cvd));
+        let delta = state.indicators.pop().unwrap();
+        state.prune_strips();
+        assert!(state.strip_held.is_empty() && state.strip_kinds.is_empty(), "kept for a removed indicator");
+        state.indicators.push(delta.clone());
+        state.prune_strips();
+        assert_eq!(state.strip_window(2, None), None, "a new indicator under the id inherited it");
+
+        // Another kind under the id: brought back for a CVD, drawn as an RSI.
+        state.hold_strip(2, -500.0, 500.0);
+        let indicator = Indicator::new(2, indicators::Kind::Rsi);
+        let output = indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+        state.indicators = vec![Drawn { color: "#5588ff".to_string(), output, indicator }];
+        state.prune_strips();
+        assert!(state.strip_held.is_empty(), "an RSI took a CVD's range");
+
+        // Brought back before it is drawn, with its kind: kept for it.
+        state.indicators.clear();
+        state.strip_kinds.insert(2, indicators::Kind::Cvd);
+        state.hold_strip(2, -500.0, 500.0);
+        state.indicators = vec![delta];
+        state.prune_strips();
+        assert_eq!(state.strip_window(2, None), Some((-500.0, 500.0)));
+    }
+
+    /// A reset, from the axis or the menu, lets go of the price's scale and
+    /// of every strip's; nothing that is not a range is held.
+    #[test]
+    fn a_reset_lets_go_of_the_price_and_every_strip() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = with_delta(400);
+        state.scale_price(2.0, w, h);
+        state.scale_strip(1, 2.0, w, h);
+        state.scale_strip(2, 3.0, w, h);
+        assert!(!state.price_auto && state.strip_held.len() == 2);
+        state.reset_view();
+        assert!(state.price_auto, "the price's");
+        assert!(state.strip_held.is_empty(), "the strips'");
+
+        state.scale_strip(2, 3.0, w, h);
+        state.free_price();
+        state.free_strips();
+        assert!(state.strip_held.is_empty(), "the axis's double-click");
+        for (low, high) in [(f64::NAN, 1.0), (5.0, 5.0), (9.0, 1.0), (0.0, f64::INFINITY)] {
+            state.hold_strip(2, low, high);
+            assert!(state.strip_held.is_empty(), "{low}..{high}");
+        }
+    }
+
     /// Panning past either end opens room there — as much as
     /// `OVERHANG_PX` at this zoom, never the whole view — which new bars
     /// do not close, and which a reset puts back to the resting margin.
@@ -10292,6 +11599,132 @@ mod tests {
         state
     }
 
+    /// A cumulative delta's axis keeps a futures total whole and grouped,
+    /// and shortens a stock's millions so they fit the axis.
+    /// A cumulative delta's axis is ruled in one round step, 1, 2 or 5
+    /// times a power of ten: −2,200 to 1,000 down a strip as tall as the
+    /// price axis has rows for sixteen figures is written every 200, zero
+    /// among them, whole and grouped, the step following the strip as it
+    /// is zoomed. K, M or B only when a figure in full would not fit.
+    #[test]
+    fn a_cumulative_delta_s_axis_is_written_in_round_steps() {
+        let (step, ticks) = delta_ticks(-2_200.0, 1_000.0, 16.0 * DELTA_LABEL_GAP);
+        assert_eq!(step, 200.0);
+        assert_eq!(ticks.first(), Some(&-2_200.0));
+        assert_eq!(ticks.last(), Some(&1_000.0));
+        assert_eq!(ticks.len(), 17);
+        assert!(ticks.contains(&0.0), "zero not written");
+        let roomy = |_: &str| true;
+        let column = delta_figures(&ticks, step, &roomy);
+        assert_eq!(column[0], "-2,200");
+        assert_eq!(column[11], "0");
+        assert!(column.iter().all(|text| !text.contains('.')), "{column:?}");
+        assert_eq!(column[16], "1,000");
+
+        // Zoomed in on it, the step follows; a short strip has fewer.
+        assert_eq!(delta_ticks(-400.0, 400.0, 16.0 * DELTA_LABEL_GAP).0, 50.0);
+        assert_eq!(delta_ticks(-2_200.0, 1_000.0, 6.0 * DELTA_LABEL_GAP).0, 1_000.0);
+        // Never finer than one contract.
+        assert_eq!(delta_ticks(-3.0, 3.0, 16.0 * DELTA_LABEL_GAP).0, 1.0);
+
+        // A stock's millions are shortened when they would not fit, all of
+        // the column alike and to the step's precision; a future's never.
+        let (step, ticks) = delta_ticks(-1_200_000.0, 2_000_000.0, 16.0 * DELTA_LABEL_GAP);
+        assert_eq!(step, 200_000.0);
+        let narrow = |text: &str| text.len() <= 7;
+        let column = delta_figures(&ticks, step, &narrow);
+        assert_eq!((column[0].as_str(), column[6].as_str(), column[7].as_str(), column[16].as_str()), ("-1.2M", "0", "0.2M", "2.0M"));
+        let (step, ticks) = delta_ticks(-18_000.0, 6_000.0, 16.0 * DELTA_LABEL_GAP);
+        assert_eq!(delta_figures(&ticks, step, &narrow)[0], "-18,000");
+        assert_eq!(delta_figure(250_400.0, &narrow), "250,400");
+        assert_eq!(delta_figure(-1_424_661.0, &narrow), "-1.42M");
+    }
+
+    #[test]
+    fn a_cumulative_delta_is_written_short_on_the_axis_only_when_it_is_large() {
+        assert_eq!(contracts(-2_145.0), "-2,145");
+        assert_eq!(contracts(18_821.4), "18,821");
+        assert_eq!(contracts(250_400.0), "250K");
+        assert_eq!(contracts(11_215_413.0), "11.2M");
+        assert_eq!(contracts(-1_424_661.0), "-1.42M");
+        assert_eq!(contracts(2_500_000_000.0), "2.50B");
+    }
+
+    /// A volume pane on Default, which every volume pane before its
+    /// Colouring was a delta's is, paints as the chart's candles do; one of
+    /// the three palettes, or a Monochrome kept from before, paints as that
+    /// palette does, as it always did.
+    #[test]
+    fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let scheme = BarColouring::Quiet.scheme(&theme);
+        let mut indicator = Indicator::new(1, indicators::Kind::Volume);
+        assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
+        for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
+            if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
+                *colouring = Some(own);
+            }
+            let painted = own.scheme(&theme);
+            assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
+        }
+    }
+
+    /// A chart of the regular session out of hours: the last price is the
+    /// feed's newest trade, not the last close drawn, following each
+    /// trade; the scale reaches it while
+    /// the chart shows its end, and not once it is panned back.
+    #[test]
+    fn the_last_price_is_the_feed_s_newest_trade_whatever_the_bars_drawn() {
+        let mut state = charted(100);
+        let last = *state.bars.last().unwrap();
+        assert_eq!(last_price(&state), Some(last.close));
+
+        let plan = layout(&state, 600.0, 400.0);
+        let (first, visible, _) = state.view();
+        let (low, high) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
+        let away = high + (high - low);
+        state.latest = Some(away);
+        assert_eq!(last_price(&state), Some(away), "not the close drawn");
+        let (_, reach) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
+        assert!(reach >= away, "the scale reaches it: {reach} for {away}");
+        let (_, back) = price_range(&state, &state.bars[..50], &plan).unwrap().prices();
+        assert!(back < away, "panned back, the bars alone");
+
+        state.latest = Some(last.close - 1.0);
+        assert_eq!(last_price(&state), Some(last.close - 1.0), "the next trade");
+
+        // The line and the tag stand at it.
+        let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
+        let lined = frame(600.0, 400.0, |cr| draw_last_price_line(cr, &state, 0.0, 500.0, 0.0, &to_y));
+        let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
+        let stride = 600 * 4;
+        assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
+    }
+
+    /// The last price is drawn in the theme's own colour for it, the tag
+    /// and the line alike, and in one somebody set on a theme of their own.
+    #[test]
+    fn the_last_price_is_in_the_theme_s_colour() {
+        let mut theme = omacharts_engine::theme::builtin_themes().remove(0);
+        let state = State::blank(theme.clone(), omacharts_engine::theme::theme_bars(&theme));
+        let derived = omacharts_engine::theme::theme_last_price(&theme);
+        assert_eq!(state.last_ink.line, derived);
+        assert_eq!(state.last_ink.tag, Tag::on(&derived));
+
+        theme.last_price = Some("#ffcc00".into());
+        let mut state = charted(20);
+        state.last_ink = LastInk::of(&theme);
+        assert_eq!(state.last_ink.tag, Tag::on("#ffcc00"));
+        let close = state.bars.last().unwrap().close;
+        let to_y = |price: f64| 100.0 - (price - close);
+        let pixels = frame(200.0, 200.0, |cr| draw_last_price_line(cr, &state, 0.0, 200.0, 0.0, &to_y));
+        let row = &pixels[100 * 200 * 4..101 * 200 * 4];
+        // Cairo's bytes are blue, green, red, alpha: a yellow has no blue.
+        let inked: Vec<&[u8]> = row.chunks(4).filter(|pixel| pixel[3] != 0).collect();
+        assert!(!inked.is_empty(), "a line on the price's row");
+        assert!(inked.iter().all(|pixel| pixel[0] == 0 && pixel[2] > pixel[1]), "in the yellow set: {:?}", inked[0]);
+    }
+
     /// Draw something onto a surface of this size and hand back its pixels.
     pub(super) fn frame(width: f64, height: f64, paint: impl FnOnce(&cairo::Context)) -> Vec<u8> {
         let mut surface =
@@ -10494,6 +11927,7 @@ mod tests {
         let mut state = marked();
         state.scheme = omacharts_engine::theme::theme_bars(&theme);
         state.price_tags = price_tags(&state.scheme);
+        state.last_ink = LastInk::of(&theme);
         state.theme = theme;
         let last = state.bars.last().unwrap().close;
         let up = state.scheme.up.clone();
@@ -10559,6 +11993,35 @@ mod tests {
         let bytes = gtk::glib::Bytes::from(&surface.data().unwrap()[..]);
         let texture = gtk::gdk::MemoryTexture::new(w, h, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride);
         texture.save_to_png(path).unwrap();
+    }
+
+    /// A cumulative delta's axis as pictures, for a person to look at: as
+    /// fitted and zoomed in on its own scale, at two
+    /// pixels to the point. Written only when asked for, to the folder in
+    /// `OMACHARTS_MARK_SHOTS`.
+    #[test]
+    fn the_delta_axis_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
+        let (w, h) = (900.0, 600.0);
+        let shot = |state: &State, name: &str| {
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.scale(2.0, 2.0);
+                draw(&cr, w, h, state);
+            }
+            save_png(surface, &format!("{folder}/delta-axis-{name}.png"));
+        };
+        let mut state = with_delta(400);
+        state.visible = 160;
+        if let Some(Drawn { output, .. }) = state.indicators.last_mut() {
+            output.set_pane_height(0.45);
+        }
+        shot(&state, "fitted");
+        let (low, high) = state.strip_fit(2, w, h).unwrap();
+        let middle = (low + high) / 2.0;
+        state.hold_strip(2, middle - (high - low) / 6.0, middle + (high - low) / 6.0);
+        shot(&state, "zoomed");
     }
 
     /// The marks as pictures, for a person to look at: dark and light, at
@@ -11178,7 +12641,7 @@ mod tests {
             let columns = Columns::of(&bars[first..first + visible], first, visible, PAD, wide);
             assert_eq!(columns.per, 2);
             let candles = frame(w as f64, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
-            let volume = frame(w as f64, 100.0, |cr| draw_volume(cr, &state, &Indicator::new(1, indicators::Kind::Volume), &columns, 0.0, 100.0, 2000.0));
+            let volume = frame(w as f64, 100.0, |cr| draw_volume(cr, &state, &Indicator::new(1, indicators::Kind::Volume), &columns, 0.0, 100.0, (0.0, 2000.0)));
             for x in PAD as usize..(PAD + wide) as usize {
                 let inked = |pixels: &[u8]| (0..100).any(|y| pixels[(y * w + x) * 4 + 3] != 0);
                 assert!(inked(&candles), "from bar {first}, no wick at {x}");
@@ -11538,9 +13001,13 @@ mod tests {
         assert!(format_axis_time(ts, 30 * DAY, false, false, Clock::default()).contains("20"), "months get a year");
         // A few days apart: day and month, no year.
         assert!(!format_axis_time(ts, 5 * DAY, false, false, Clock::default()).contains("20"));
-        // Intraday always carries a clock, however far apart the ticks.
+        // Intraday carries a clock until the ticks are months apart.
         assert!(format_axis_time(ts, 3600, true, false, Clock::default()).contains(':'));
-        assert!(format_axis_time(ts, 30 * DAY, true, false, Clock::default()).contains(':'));
+        assert!(format_axis_time(ts, 5 * DAY, true, false, Clock::default()).contains(':'));
+        assert_eq!(
+            format_axis_time(ts, 30 * DAY, true, false, Clock::default()),
+            format_axis_time(ts, 30 * DAY, false, false, Clock::default())
+        );
     }
 
     #[test]
@@ -11705,6 +13172,7 @@ mod tests {
             bounds: None,
             guides: guides.to_vec(),
             band: None,
+            delta: None,
         }
     }
 

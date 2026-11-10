@@ -70,7 +70,19 @@ lay_out "$targets/head/release" "$work/installed-head"
 app="$work/installed-head/lib/omacharts/omacharts"
 [[ -x "$app" ]] || app="$work/installed-head/bin/omacharts"
 
-eval "$(bin/headless-window start)"
+# Once more if the first start fails: a compositor that does not come up on
+# a shared runner is a fact about the runner, not about either revision.
+started=""
+for attempt in 1 2; do
+  if started=$(bin/headless-window start) && [[ "$started" == "export OMACHARTS_WINDOW="* ]]; then
+    break
+  fi
+  started=""
+  echo "startup-compare: the headless window did not start (attempt $attempt)" >&2
+done
+[[ -n "$started" ]] || { echo "startup-compare: no headless window to time the launches in" >&2; exit 1; }
+eval "$started"
+[[ -n "${OMACHARTS_WINDOW:-}" ]] || { echo "startup-compare: the headless window named no session" >&2; exit 1; }
 session="$OMACHARTS_WINDOW"
 
 bin/startup-time --runs "${STARTUP_RUNS:-20}" --version-runs 100 --fail-over 100 \

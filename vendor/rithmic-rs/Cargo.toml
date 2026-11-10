@@ -1,0 +1,40 @@
+# rithmic-rs 3.3.0 from crates.io, unchanged but for one thing: its WebSocket
+# runs over rustls instead of native-tls. Upstream turns on tokio-tungstenite's
+# `native-tls` feature unconditionally and offers no rustls option, and a
+# feature one crate turns on cannot be turned off by another, so keeping the
+# system's OpenSSL out of the binary took a copy. A binary that links libssl
+# only starts where the build machine's OpenSSL soname is installed, which an
+# Arch system a step behind on OpenSSL does not have.
+#
+# Patched in through the workspace's [patch.crates-io]. To move to a newer
+# rithmic-rs: copy its src/ over this one and keep this manifest, or drop the
+# copy and the patch once upstream has a rustls feature.
+[package]
+edition = "2024"
+rust-version = "1.85"
+name = "rithmic-rs"
+version = "3.3.0"
+description = "Rust client for the Rithmic R | Protocol API to build algo trading systems"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pbeets/rithmic-rs"
+publish = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lib]
+name = "rithmic_rs"
+path = "src/lib.rs"
+
+[dependencies]
+futures-util = "0.3"
+prost = "0.14.3"
+serde = { version = "1", features = ["derive"], optional = true }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+# The one change: upstream has `features = ["native-tls"]`.
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+tracing = "0.1.44"

@@ -131,27 +131,47 @@ pub fn delete(store: &Store, id: u32) -> Option<Template> {
 /// Give a profile its first template, once.
 ///
 /// A new install gets "Default", holding the volume study and Session Times
-/// with the extended hours shaded, and its charts open with it. So does a profile from before there were templates — but its
-/// charts are written down without one and keep the indicators they have, so
-/// nothing on screen changes; only the next new chart is different.
+/// with the extended hours shaded, for somebody to put charts on. New charts
+/// open on none: a template is something a chart is put on, by choosing it
+/// or by choosing it as the default, not something a chart starts out
+/// following. So does a profile from before there were templates, whose
+/// charts keep the indicators they have.
 ///
 /// Once means once: the setting existing at all is the mark, so somebody who
 /// deletes every template does not find "Default" back at the next launch.
 /// Asked whether the row exists rather than read, because this runs on every
 /// open of the database and the answer is nearly always yes.
 pub fn seed(store: &Store) {
+    unseed_default(store);
     if store.has_setting(SETTING) {
         return;
     }
-    let default = create_with(
+    create_with(
         store,
         DEFAULT_NAME,
         vec![Indicator::new(1, IndicatorKind::Volume), Indicator::new(2, IndicatorKind::SessionTimes)],
     );
-    // Only when nobody has chosen: an explicit "none" is a choice.
-    if !store.has_setting(SETTING_TEMPLATE) {
-        store.set_setting(SETTING_TEMPLATE, &default.id.to_string());
+}
+
+/// Marks a profile whose new charts no longer open on the "Default" this
+/// file used to seed them with.
+pub const UNSEEDED: &str = "chart_template_unseeded";
+
+/// Take new charts off "Default" where seeding put them on it, once.
+///
+/// Seeding used to name "Default" as the template new charts open with, and
+/// that was nobody's choice, so it goes back to none. A default naming
+/// another template was chosen, and so was an explicit none: both are left
+/// as they are. Existing charts keep the template they are on.
+fn unseed_default(store: &Store) {
+    if store.has_setting(UNSEEDED) {
+        return;
     }
+    let seeded = store.setting(SETTING_TEMPLATE).and_then(|id| id.parse::<u32>().ok()).and_then(|id| get(store, id));
+    if seeded.is_some_and(|template| template.name == DEFAULT_NAME) {
+        store.remove_setting(SETTING_TEMPLATE);
+    }
+    store.set_setting(UNSEEDED, "1");
 }
 
 /// The template a selector names: a name, case-insensitive, or `id:N`.
@@ -212,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_profile_opens_its_charts_with_a_default_holding_volume() {
+    fn a_new_profile_has_a_default_holding_volume_and_opens_its_charts_on_none() {
         let store = Store::memory().unwrap();
         let templates = all(&store);
         assert_eq!(templates.len(), 1);
@@ -228,7 +248,35 @@ mod tests {
                 ranges: vec![omacharts_engine::indicators::Preset::Eth.range()]
             }
         );
-        assert_eq!(ChartDefaults::load(&store).template, Some(templates[0].id));
+        assert_eq!(ChartDefaults::load(&store).template, None);
+    }
+
+    /// A profile seeding put on "Default" opens its new charts on none
+    /// from now on; one that chose a template, or none, keeps its choice,
+    /// and so does one that picks "Default" again afterwards.
+    #[test]
+    fn new_charts_come_off_the_default_seeding_put_them_on() {
+        // A profile from the build that seeded the default: Default made,
+        // new charts on it, and not yet taken off.
+        let seeded = |default: &dyn Fn(&Store) -> String| {
+            let store = Store::memory().unwrap();
+            store.remove_setting(UNSEEDED);
+            store.set_setting(SETTING_TEMPLATE, &default(&store));
+            seed(&store);
+            store
+        };
+        let store = seeded(&|store| all(store)[0].id.to_string());
+        assert_eq!(ChartDefaults::load(&store).template, None, "still on the seeded Default");
+        let default = all(&store)[0].id;
+        store.set_setting(SETTING_TEMPLATE, &default.to_string());
+        seed(&store);
+        assert_eq!(ChartDefaults::load(&store).template, Some(default), "Default chosen again was undone");
+
+        let store = seeded(&|store| create(store, "Swing").id.to_string());
+        assert_eq!(ChartDefaults::load(&store).template.and_then(|id| get(&store, id)).map(|t| t.name), Some("Swing".into()));
+
+        let store = seeded(&|_| crate::chart_defaults::NO_TEMPLATE.to_string());
+        assert_eq!(store.setting(SETTING_TEMPLATE).as_deref(), Some(crate::chart_defaults::NO_TEMPLATE));
     }
 
     #[test]
@@ -248,7 +296,8 @@ mod tests {
     }
 
     /// A profile from before templates gets "Default" too, and a choice it
-    /// had already made about what new charts open with is left alone.
+    /// had already made about what new charts open with is left alone;
+    /// with none made, they open on none.
     #[test]
     fn an_existing_profile_keeps_a_default_it_had_chosen() {
         let store = Store::memory().unwrap();
@@ -262,8 +311,8 @@ mod tests {
         store.remove_setting(SETTING);
         store.remove_setting(SETTING_TEMPLATE);
         seed(&store);
-        let default = all(&store)[0].id;
-        assert_eq!(ChartDefaults::load(&store).template, Some(default));
+        assert_eq!(all(&store).len(), 1);
+        assert_eq!(ChartDefaults::load(&store).template, None, "new charts open on Default");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "omacharts"
-version = "0.2.15"
+version = "0.2.17"
 edition = "2024"
 # `src/bin/omacharts-launch.rs` is the second binary, the one the package
 # installs as /usr/bin/omacharts; `cargo run` means the app.
@@ -10,6 +10,16 @@ license = "MIT"
 
 [workspace]
 members = [".", "crates/omacharts-engine", "crates/omacharts-chart", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
+# Somebody else's crate, patched in below: built, never tested here.
+exclude = ["vendor/rithmic-rs"]
+
+# Nothing in the binary may link the system's OpenSSL: a release links the
+# soname its build machine had, and fails to start anywhere that has another
+# one. Every TLS connection goes through rustls instead, and rithmic-rs, which
+# hard-wires native-tls, is replaced by a copy that does not — see
+# vendor/rithmic-rs/Cargo.toml. CI fails a build that links libssl again.
+[patch.crates-io]
+rithmic-rs = { path = "vendor/rithmic-rs" }
 
 [dependencies]
 omacharts-engine = { path = "crates/omacharts-engine" }
