@@ -289,11 +289,7 @@ impl Window {
                         .collect();
                 }
                 let Some(instrument) = pane.instrument.borrow().clone() else { return Vec::new() };
-                let charted = match self.route_chosen(pane, &instrument) {
-                    Some(Ok(routed)) => routed.feed.provider.charted_contract(&instrument),
-                    _ => None,
-                };
-                let instrument = match charted {
+                let instrument = match self.drawn_contract(pane, &instrument) {
                     Some(contract) => omacharts_engine::Instrument { symbol: contract, ..instrument },
                     None if instrument.is_contract() => instrument,
                     None => return Vec::new(),
@@ -905,6 +901,41 @@ impl Window {
         })
     }
 
+    /// The contract `pane` draws `instrument` as: a root as the month its
+    /// feed charts it in, as the feed says; a contract as itself; nothing
+    /// when the feed does not say.
+    fn drawn_contract(&self, pane: &ChartPane, instrument: &omacharts_engine::Instrument) -> Option<String> {
+        match self.route_chosen(pane, instrument) {
+            Some(Ok(routed)) => routed.feed.provider.charted_contract(instrument),
+            _ => None,
+        }
+    }
+
+    /// Why no order may go from `pane` to `target`, when the month it would
+    /// trade is not the month the chart draws and nobody chose that: a root
+    /// charted as ESH7 on one feed, and a trading service on another that
+    /// takes the root to be ESZ6. A price read off the chart is then a
+    /// price of another contract, and a limit there would fill at once in
+    /// the old month. The same month in the other size, MES of the month an
+    /// ES chart draws, trades as it always did, and so does a contract set
+    /// as the chart's trading symbol, which is chosen; a feed that does not
+    /// say what it draws stops nothing.
+    pub(super) fn wrong_month(&self, pane: &ChartPane, target: &trading::Target) -> Option<String> {
+        let traded = pane.trading_instead();
+        if traded.as_ref().is_some_and(|traded| traded.is_contract() && traded.symbol.eq_ignore_ascii_case(&target.contract)) {
+            return None;
+        }
+        let instrument = pane.instrument.borrow().clone()?;
+        let drawn = self.drawn_contract(pane, &instrument).or_else(|| instrument.is_contract().then(|| instrument.symbol.clone()))?;
+        let same = drawn.eq_ignore_ascii_case(&target.contract) || omacharts_engine::specs::same_month_sizes(&drawn, &target.contract);
+        (!same).then(|| {
+            format!(
+                "this chart draws {drawn} and {} would trade {}: set {} as its trading symbol to trade that month",
+                target.login.name, target.contract, target.contract
+            )
+        })
+    }
+
     /// Why a priced order from `pane` cannot be judged at all, when it
     /// cannot: it trades another contract than it charts, and nothing
     /// says what that contract last traded at.
@@ -961,6 +992,12 @@ impl Window {
             }
         };
         let key = target.account.key();
+        // Another month than the chart draws: one greyed row says so.
+        if let Some(mut why) = self.wrong_month(&pane, &target) {
+            why[..1].make_ascii_uppercase();
+            section.append(Some(&why), Some(UNAVAILABLE));
+            return Some(section);
+        }
         // The contract may have become known since the book last moved.
         self.apply_marks_to(&pane);
         let tick = Self::tick_of(&pane, &target);
@@ -1036,6 +1073,9 @@ impl Window {
         };
         if target.account.key() != account {
             return self.refuse_on(&target, "Not placed · the chart's account changed");
+        }
+        if let Some(why) = self.wrong_month(&pane, &target) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let price = price.map(|price| Self::traded_price(&pane, &target, price));
         if let Some(why) = price.and_then(|_| self.unpriced(&pane, &target)) {
@@ -1171,6 +1211,9 @@ impl Window {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
+        if let Some(why) = self.wrong_month(pane, &target) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
+        }
         let price = Self::traded_price(pane, &target, price);
         let key = target.account.key();
         let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
@@ -1332,6 +1375,9 @@ impl Window {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not moved · {why}")),
         };
+        if let Some(why) = self.wrong_month(pane, &target) {
+            return self.refuse_on(&target, &format!("Not moved · {why}"));
+        }
         let price = Self::traded_price(pane, &target, price);
         if !target.capabilities.modify {
             return self.refuse_on(&target, &format!("Not moved · {} cannot move orders", target.login.name));
@@ -1452,6 +1498,9 @@ impl Window {
         };
         if !target.capabilities.kinds.contains(&OrderKind::Market) {
             return self.refuse_on(&target, &format!("Not placed · {} takes no market orders", target.login.name));
+        }
+        if let Some(why) = self.wrong_month(pane, &target) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let size = self.size_of(pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
@@ -4170,6 +4219,61 @@ pub(super) mod tests {
                 let orders = pane.view.mark_states().1;
                 assert_eq!(orders.iter().map(|(_, price, _)| *price).collect::<Vec<_>>(), vec![above], "{feed}");
             }
+        });
+    }
+
+    /// A root charted on one service's feed as its front month, traded on
+    /// another service that takes the root to be another month: nothing is
+    /// placed from the chart, by key, menu or drag, and why names both
+    /// months, since a price read off the chart is not that month's. Both
+    /// resolving to the same month trades as ever, and so does the other
+    /// month set as the chart's trading symbol, which is chosen.
+    #[test]
+    fn a_chart_drawing_one_month_does_not_trade_another_by_itself() {
+        crate::ui::on_gtk(|| {
+            let sierra = trading::Typed {
+                service: "sierra".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: Vec::new(),
+            };
+            let (window, pane, session, key, front) = held_across("rithmic", &sierra);
+            let log = super::super::log::tests::private(&window);
+            let listed = omacharts_engine::contracts::listing("ES", omacharts_engine::contracts::today());
+            let later = listed.iter().find(|listing| !listing.front && listing.symbol != front).expect("a later month");
+            let next = later.symbol.clone();
+            assert_ne!(next, front);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            let placed = || session.book().orders.len();
+
+            // The same month: Buy goes.
+            let before = placed();
+            window.market_on(&pane, Side::Buy);
+            assert!(settle(&window, || placed() == before + 1 && free(&window)), "the same month was not traded");
+
+            // Another month: refused, naming both, and the menu says so.
+            session.contracts.lock().unwrap().insert("ES".into(), next.clone());
+            window.desk.tell();
+            let target = window.order_target(&pane).expect("a target");
+            assert_eq!(target.contract, next);
+            let before = placed();
+            window.market_on(&pane, Side::Buy);
+            window.exit_mark(&pane, OrderKind::Limit, pane.view.last_price().unwrap() + 10.0);
+            settle(&window, || false);
+            assert_eq!(placed(), before, "an order went to {next} off a chart of {front}");
+            window.catch_up_log();
+            let said: Vec<String> = log.entries().into_iter().map(|e| e.line()).collect();
+            let why = format!("this chart draws {front} and Sierra Chart would trade {next}");
+            assert!(said.iter().any(|line| line.contains(&format!("Not placed · {why}"))), "{said:#?}");
+            let menu = labels(window.order_section(10.0).expect("a section").upcast_ref());
+            assert_eq!(menu.len(), 1, "{menu:?}");
+            assert!(menu[0].0.starts_with("This chart draws") && !menu[0].1, "{menu:?}");
+
+            // That month chosen as the trading symbol: it trades.
+            let chosen = window.index.find("ES", None).and_then(|es| es.in_month(later.month)).expect("the later month");
+            window.set_trading_symbol(pane.id, Some(chosen));
+            assert_eq!(window.wrong_month(&pane, &window.order_target(&pane).unwrap()), None, "chosen on purpose");
         });
     }
 
