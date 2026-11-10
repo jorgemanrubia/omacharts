@@ -592,8 +592,11 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
 /// exactly the kind of thing that gets forgotten. The trait is already the
 /// one description of what a feed can do, and it is object-safe, so this is
 /// the whole dispatch.
+///
+/// A feed that serves each month of a root has its roots stitched from them
+/// here, by [`crate::continuous`], so every caller gets the same series.
 pub fn built(id: &str) -> Option<Box<dyn Provider>> {
-    Some((listed(id)?.build)())
+    Some(crate::continuous::wrapped((listed(id)?.build)()))
 }
 
 /// The feed with this id, or the default for one nobody has heard of. For

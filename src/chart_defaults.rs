@@ -5,12 +5,16 @@
 //! two of what you were looking at is the point of splitting.
 
 use omacharts_engine::theme::StoredColouring;
+use omacharts_engine::continuous::Adjustment;
 use omacharts_engine::{BarColouring, BarStyle, Session};
 
 use crate::store::Store;
 
 pub const SETTING_BAR_STYLE: &str = "bar_style";
 pub const SETTING_SESSION: &str = "chart_session";
+/// How a futures root's months are joined at the rolls, on a feed that
+/// stitches them: back-adjusted or as traded.
+pub const SETTING_CONTINUOUS: &str = "chart_continuous";
 pub const SETTING_SHOW_GRID: &str = "show_grid";
 /// The two switches worn over the colouring: up and down exchanged, and a
 /// rise drawn as an outline. Beside `bar_scheme` rather than part of it, so
@@ -43,6 +47,8 @@ pub struct ChartDefaults {
     /// How many pixels wide an OHLC bar is drawn.
     pub ohlc_thickness: u8,
     pub session: Session,
+    /// How a root's months are joined, on a feed that stitches them.
+    pub continuous: Adjustment,
     pub show_grid: bool,
     pub log_scale: bool,
     pub shows_drawings: bool,
@@ -64,6 +70,7 @@ impl Default for ChartDefaults {
             hollow_up: false,
             ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             session: Session::default(),
+            continuous: Adjustment::default(),
             show_grid: false,
             log_scale: false,
             shows_drawings: true,
@@ -115,6 +122,10 @@ impl ChartDefaults {
                 .setting(SETTING_SESSION)
                 .and_then(|key| Session::from_key(&key))
                 .unwrap_or(fallback.session),
+            continuous: store
+                .setting(SETTING_CONTINUOUS)
+                .and_then(|key| Adjustment::from_key(&key))
+                .unwrap_or(fallback.continuous),
             show_grid: store.setting_bool(SETTING_SHOW_GRID, fallback.show_grid),
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
             shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
@@ -131,6 +142,7 @@ impl ChartDefaults {
         store.set_setting_bool(SETTING_HOLLOW_UP, self.hollow_up);
         store.set_setting(SETTING_OHLC_THICKNESS, &self.ohlc_thickness.to_string());
         store.set_setting(SETTING_SESSION, self.session.key());
+        store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
         store.set_setting_bool(SETTING_SHOW_GRID, self.show_grid);
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
         store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
@@ -167,6 +179,7 @@ mod tests {
             hollow_up: true,
             ohlc_thickness: 3,
             session: Session::ALL[Session::ALL.len() - 1],
+            continuous: Adjustment::AsTraded,
             show_grid: true,
             log_scale: true,
             shows_drawings: false,

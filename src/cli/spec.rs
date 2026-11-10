@@ -272,6 +272,7 @@ const COLOURINGS: &[&str] =
     &["theme", "theme-soft", "theme-quiet", "theme-mono", "theme-hollow", "theme-red-up"];
 const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
+const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
     "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "rsi", "macd", "atr",
@@ -936,6 +937,12 @@ pub const SURFACE: &[Noun] = &[
                         .of(SWITCHES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
+                        "continuous",
+                        "JOIN",
+                        "how a futures root's months are joined at the rolls, on a feed that stitches them",
+                    )
+                    .of(CONTINUOUS),
+                    Flag::valued(
                         "link",
                         "MODE",
                         "what the watchlist does to it: moves it while focused, always (and it leads the others), or never",
@@ -1514,6 +1521,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("hollow_up", "chart set", "--hollow-up"),
     ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
+    ("continuous", "chart set", "--continuous"),
     ("show_grid", "chart set", "--grid"),
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
@@ -1614,6 +1622,12 @@ mod tests {
         let mut engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
         engine.push("none");
         assert_eq!(STYLES, engine.as_slice());
+    }
+
+    #[test]
+    fn the_joins_on_offer_are_the_ones_that_exist() {
+        let engine: Vec<&str> = omacharts_engine::continuous::Adjustment::ALL.iter().map(|a| a.key()).collect();
+        assert_eq!(CONTINUOUS, engine.as_slice());
     }
 
     #[test]

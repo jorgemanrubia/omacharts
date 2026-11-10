@@ -555,7 +555,9 @@ impl Live {
             .borrow()
             .iter()
             .map(|(series, entry)| Report {
-                symbol: entry.symbol.clone(),
+                // A stitched root as the chart names it, not as its feed
+                // is asked for it.
+                symbol: omacharts_engine::continuous::shown(&entry.symbol).to_string(),
                 native: series.native,
                 charts: entry.watchers.len(),
                 bars: entry.bars.as_ref().map(Vec::len).unwrap_or(0),

@@ -292,6 +292,9 @@ pub struct ChartPane {
     /// How many pixels wide its OHLC bars are drawn.
     pub ohlc_thickness: Cell<u8>,
     pub session: Cell<Session>,
+    /// How a futures root's months are joined at the rolls, on a feed
+    /// that stitches them; nothing to any other chart.
+    pub continuous: Cell<omacharts_engine::continuous::Adjustment>,
     pub show_grid: Cell<bool>,
     /// What the rail does to this chart.
     mode: Cell<LinkMode>,
@@ -797,6 +800,7 @@ impl ChartPane {
             hollow_up: Cell::new(false),
             ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
+            continuous: Cell::new(Default::default()),
             show_grid: Cell::new(show_grid),
             mode: Cell::new(mode),
             shows_drawings: Cell::new(true),

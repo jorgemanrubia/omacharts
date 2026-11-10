@@ -711,6 +711,7 @@ mod tests {
                 hollow_up: None,
                 ohlc_thickness: None,
                 session: "extended".to_string(),
+                continuous: None,
                 show_grid: true,
                 link: LinkMode::Focus,
                 shows_drawings: true,
@@ -846,6 +847,7 @@ mod tests {
             hollow_up: None,
             ohlc_thickness: None,
             session: "extended".to_string(),
+            continuous: None,
             show_grid: true,
             link,
             shows_drawings: true,
@@ -1644,6 +1646,65 @@ mod strip_window_tests {
             window.apply_chart_defaults_now(&defaults);
             assert!(window.books.borrow()[1].panes[0].strip_windows.is_empty(), "held where it is written");
         });
+    }
+
+    /// A root on a feed that stitches its months is asked for joined as its
+    /// chart says, which is another series to the cache: switching asks
+    /// afresh, the choice comes back after a restart, a new chart takes the
+    /// default, and a dated contract and a feed with nothing to choose are
+    /// asked for as they always were.
+    #[test]
+    fn a_chart_s_choice_of_how_months_are_joined_is_what_it_asks_its_feed_for() {
+        use omacharts_engine::continuous::{fake::Months, Adjustment, Continuous};
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let store = Rc::new(Store::memory().expect("a store"));
+            let open = |store: &Rc<Store>| {
+                let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+                let feed: Arc<dyn Provider> = Arc::new(Continuous::new(Box::new(Months::all())));
+                Window::build_with(&app, store.clone(), vec![feed])
+            };
+            let window = open(&store);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES");
+            window.show_in(&pane, es.clone());
+            let key = |window: &Rc<Window>, instrument: &Instrument| {
+                let pane = window.focused_pane();
+                window.route_pane(&pane, instrument).expect("routed").key()
+            };
+            assert!(window.offers_continuous());
+            assert_eq!(window.continuous(), Adjustment::BackAdjusted, "the default");
+            assert_eq!(key(&window, &es), "months:ES~ESZ26~back-adjusted");
+            window.set_continuous(Adjustment::AsTraded);
+            assert_eq!(key(&window, &es), "months:ES~ESZ26~as-traded", "another series");
+            let dated = es.in_month(omacharts_engine::contracts::Month::new(2026, 9).unwrap()).unwrap();
+            assert_eq!(key(&window, &dated), "months:ESU6", "a dated contract is itself either way");
+            window.save_workspace();
+            drop(window);
+
+            let again = open(&store);
+            assert_eq!(again.continuous(), Adjustment::AsTraded, "kept with the chart");
+            let mut defaults = ChartDefaults::load(&store);
+            defaults.continuous = Adjustment::AsTraded;
+            defaults.save(&store);
+            let fresh = again.new_default_pane(Timeframe::days(1), Vec::new());
+            assert_eq!(fresh.continuous.get(), Adjustment::AsTraded, "a new chart takes the default");
+            defaults.continuous = Adjustment::BackAdjusted;
+            again.adopt_looks(&again.focused_pane(), &defaults);
+            assert_eq!(again.continuous(), Adjustment::BackAdjusted, "and is put back on it");
+
+            // A feed whose own series is all there is offers nothing.
+            let yahoo = window_on(&store, Arc::new(omacharts_engine::providers::Yahoo::new()));
+            yahoo.show_in(&yahoo.focused_pane(), es.clone());
+            assert!(!yahoo.offers_continuous());
+            yahoo.set_continuous(Adjustment::AsTraded);
+            assert_eq!(key(&yahoo, &es), "yahoo:ES=F", "its own series, as it is");
+        });
+    }
+
+    fn window_on(store: &Rc<Store>, feed: Arc<dyn Provider>) -> Rc<Window> {
+        let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        Window::build_with(&app, store.clone(), vec![feed])
     }
 }
 
@@ -3230,6 +3291,11 @@ struct StoredPane {
     #[serde(default)]
     ohlc_thickness: Option<u8>,
     session: String,
+    /// How a futures root's months are joined at the rolls: `back-adjusted`
+    /// or `as-traded`. Missing from a chart written before there was a
+    /// choice, which takes the default.
+    #[serde(default)]
+    continuous: Option<String>,
     show_grid: bool,
     /// What the rail does to this chart. Missing from a chart written with
     /// link groups instead, which [`upgrade_link_groups`] turns into this
@@ -3341,6 +3407,7 @@ impl StoredPane {
             hollow_up: None,
             ohlc_thickness: None,
             session: String::new(),
+            continuous: None,
             show_grid: true,
             link: LinkMode::default(),
             auto_scale: true,
@@ -4433,6 +4500,7 @@ impl Window {
         );
         pane.template.set(template.map(|t| t.id));
         self.show_header_on(&pane);
+        pane.continuous.set(defaults.continuous);
         pane.view.set_price_log(defaults.log_scale);
         pane.set_ohlc_thickness(defaults.ohlc_thickness);
         pane.shows_drawings.set(defaults.shows_drawings);
@@ -4952,6 +5020,7 @@ impl Window {
         );
         added.template.set(from.template.get());
         self.show_header_on(&added);
+        added.continuous.set(from.continuous.get());
         added.view.set_price_auto(from.view.price_auto());
         added.view.set_price_log(from.view.price_log());
         added.bars_hidden.set(from.bars_hidden.get());
@@ -5740,6 +5809,7 @@ impl Window {
                     hollow_up: Some(pane.hollow_up.get()),
                     ohlc_thickness: Some(pane.ohlc_thickness.get()),
                     session: pane.session.get().key().to_string(),
+                    continuous: Some(pane.continuous.get().key().to_string()),
                     show_grid: pane.show_grid.get(),
                     link: pane.mode(),
                     shows_drawings: pane.shows_drawings.get(),
@@ -6020,6 +6090,13 @@ impl Window {
             );
             pane.template.set(template.map(|t| t.id));
             self.show_header_on(&pane);
+            pane.continuous.set(
+                stored
+                    .continuous
+                    .as_deref()
+                    .and_then(omacharts_engine::continuous::Adjustment::from_key)
+                    .unwrap_or(defaults.continuous),
+            );
             pane.shows_drawings.set(stored.shows_drawings);
             pane.sends_drawings.set(stored.sends_drawings);
             pane.view.set_sends(stored.sends_drawings);
@@ -9635,7 +9712,28 @@ impl Window {
     ///
     /// `None` too when the chosen feed has nothing of the instrument, which
     /// [`Window::missing_from`] names.
+    ///
+    /// A futures root is asked for joined at the rolls as the chart says, on
+    /// a feed with that choice: see [`omacharts_engine::continuous::routed`].
     fn route_chosen(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
+        let adjust = |routed: Routed| {
+            let symbol = omacharts_engine::continuous::routed(
+                routed.feed.provider.as_ref(),
+                instrument,
+                &routed.symbol,
+                pane.continuous.get(),
+            );
+            Routed { symbol, ..routed }
+        };
+        Some(match self.route_chosen_as_stored(pane, instrument)? {
+            Ok(routed) => Ok(adjust(routed)),
+            Err(refused) => Err(refused),
+        })
+    }
+
+    /// [`Window::route_chosen`] in the feed's own spelling, before the
+    /// chart's choice of how a root's months are joined.
+    fn route_chosen_as_stored(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
         let Some(chosen) = self.chosen_route(pane, instrument) else {
             return self.route(instrument).map(Ok);
         };
@@ -11207,6 +11305,33 @@ impl Window {
         self.save_workspace();
     }
 
+    /// How the focused chart joins a futures root's months at the rolls.
+    pub fn continuous(&self) -> omacharts_engine::continuous::Adjustment {
+        self.focused_pane().continuous.get()
+    }
+
+    /// Join the focused chart's months back-adjusted or as traded: another
+    /// series, asked for afresh, so the chart is drawn again from it.
+    pub fn set_continuous(self: &Rc<Self>, adjustment: omacharts_engine::continuous::Adjustment) {
+        let pane = self.focused_pane();
+        if pane.continuous.replace(adjustment) == adjustment {
+            return;
+        }
+        pane.view.free_strip_windows();
+        self.save_workspace();
+        self.redraw_current();
+    }
+
+    /// Is there a choice of how the focused chart's months are joined: a
+    /// futures root on a feed that stitches its months, or that has its own
+    /// series both ways?
+    pub fn offers_continuous(&self) -> bool {
+        let pane = self.focused_pane();
+        let Some(instrument) = pane.instrument.borrow().clone() else { return false };
+        self.route_pane(&pane, &instrument)
+            .is_some_and(|routed| omacharts_engine::continuous::offers_choice(routed.feed.provider.as_ref(), &instrument))
+    }
+
     /// Whether the focused chart is drawing gridlines.
     ///
     /// Read off the chart rather than off the setting, because the setting is
@@ -11563,6 +11688,7 @@ impl Window {
                     stored.strip_windows.clear();
                 }
                 stored.session = defaults.session.key().to_string();
+                stored.continuous = Some(defaults.continuous.key().to_string());
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
                 stored.shows_drawings = defaults.shows_drawings;
@@ -11600,6 +11726,9 @@ impl Window {
         self.apply_marks_to(pane);
         // Other hours let go of the strips held, as `set_session` does.
         if pane.session.replace(defaults.session) != defaults.session {
+            pane.view.free_strip_windows();
+        }
+        if pane.continuous.replace(defaults.continuous) != defaults.continuous {
             pane.view.free_strip_windows();
         }
         pane.show_grid.set(defaults.show_grid);

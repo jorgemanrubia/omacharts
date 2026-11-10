@@ -462,6 +462,24 @@ pub trait Provider: Send + Sync {
         instrument.is_contract().then(|| instrument.symbol.clone())
     }
 
+    /// How it serves a futures root over time: its own continuous series,
+    /// each month's own bars for the engine to stitch, or the front month
+    /// alone, the default. See [`crate::continuous`], which holds the rule
+    /// for a feed that does both.
+    fn continuity(&self) -> crate::continuous::Continuity {
+        crate::continuous::Continuity::FRONT_MONTH
+    }
+
+    /// `symbol`, a root in this feed's spelling, as its own continuous
+    /// series in `adjustment`: asked only of a feed whose
+    /// [`Self::continuity`] lists both adjustments of its own series, which
+    /// is how such a feed says which of the two a chart wants. Itself by
+    /// default.
+    fn adjusted(&self, symbol: &str, adjustment: crate::continuous::Adjustment) -> String {
+        let _ = adjustment;
+        symbol.to_string()
+    }
+
     /// Natively served timeframes. Derived ones are folded by the caller.
     fn capabilities(&self) -> &'static [Capability];
 

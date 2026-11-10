@@ -321,6 +321,11 @@ impl Provider for Tos {
         CAPABILITIES
     }
 
+    /// thinkorswim's `/ES` is its own continuous series of a root, as traded: nothing to stitch and nothing to choose.
+    fn continuity(&self) -> crate::continuous::Continuity {
+        crate::continuous::Continuity::native(&[crate::continuous::Adjustment::AsTraded])
+    }
+
     fn bars(
         &self,
         symbol: &str,

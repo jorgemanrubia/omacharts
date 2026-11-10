@@ -206,7 +206,7 @@ pub fn ladders_failed(key: &str, error: impl std::fmt::Display) -> Entry {
 fn feed_and_symbol(key: &str) -> (String, &str) {
     let (id, symbol) = key.split_once(':').unwrap_or(("", key));
     let feed = omacharts_engine::providers::listed(id).map_or(id.to_string(), |feed| feed.label.to_string());
-    (feed, symbol)
+    (feed, omacharts_engine::continuous::shown(symbol))
 }
 
 /// Something of the app's own went wrong — a file, the database, the bar
