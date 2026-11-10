@@ -92,7 +92,7 @@ jobs:
   # The package people actually install, built the way the PKGBUILD says and
   # attached to the release. After `sync`, so it uses the PKGBUILD carrying
   # this tag's version and digest — which also means a release that gets this
-  # far has proved the PKGBUILD works against the tarball GitHub serves.
+  # far has proved the PKGBUILD builds and packages the tarball GitHub serves.
   #
   # Once per architecture, each on a runner of its own kind. Arch Linux itself
   # is x86_64 only; aarch64 machines — an Omarchy Mac among them — run Arch
@@ -151,7 +151,10 @@ jobs:
             cp packaging/aur/PKGBUILD /home/builder/
             chown -R builder:builder /home/builder
             # Arch Linux ARM defaults to .pkg.tar.xz; one name for every arch.
-            su builder -c "cd ~ && PKGEXT=.pkg.tar.zst makepkg --noconfirm"
+            # No check(): it compiles the whole workspace a second time, which
+            # was two thirds of a release, to run tests CI has already run on
+            # this commit; `publish` will not go ahead until it has.
+            su builder -c "cd ~ && PKGEXT=.pkg.tar.zst makepkg --noconfirm --nocheck"
             # The package must start on any Arch system with its depends, so
             # nothing in it may link the OpenSSL this container happens to have.
             bin/check-links /home/builder/pkg/omacharts/usr/bin/omacharts \
@@ -232,12 +235,38 @@ jobs:
   # the updater finds a release through releases/latest, which skips drafts,
   # so nobody is offered a release they cannot download yet. A release whose
   # package job failed stays a draft, for a person to look at.
+  #
+  # And not before CI has passed on the tagged commit, since the packages are
+  # built without their tests. bin/release pushes that commit to main with the
+  # tag, so CI runs on it alongside this workflow, and is long finished by now.
   publish:
     needs: [draft, sync, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
+      - name: Wait for CI on the tagged commit
+        # A run by hand may be on a commit CI never saw.
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 60); do
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$COMMIT" \
+              --json status,conclusion,url --jq '.[0] // empty')
+            if [ -n "$run" ] && [ "$(jq -r .status <<<"$run")" = completed ]; then
+              conclusion=$(jq -r .conclusion <<<"$run")
+              [ "$conclusion" = success ] && { echo "CI passed: $(jq -r .url <<<"$run")"; exit 0; }
+              echo "CI on $COMMIT ended $conclusion: $(jq -r .url <<<"$run")"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "No finished CI run on $COMMIT after 30 minutes."
+          exit 1
       - name: Publish the release
         if: env.DRY_RUN != 'true'
         env:
