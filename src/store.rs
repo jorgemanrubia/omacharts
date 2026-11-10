@@ -1285,14 +1285,26 @@ pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 /// `$XDG_DATA_HOME/omacharts`, falling back to `~/.local/share/omacharts`.
+///
+/// A test build ignores `XDG_DATA_HOME`, which is usually the real one, and
+/// takes the folder under its scratch home instead.
 pub fn data_dir() -> PathBuf {
-    if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+    if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty() && !cfg!(test)) {
         return PathBuf::from(base).join("omacharts");
     }
     home().join(".local/share/omacharts")
 }
 
+/// `$HOME`, or a scratch directory in a test build.
+///
+/// A test that reaches a path under home, such as the default store or the
+/// bar widget's files, would otherwise write into the real home of whoever
+/// runs the suite: an older build migrates their store, and their window
+/// then finds a file from another version and sets it aside.
 pub fn home() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("omacharts-test-{}", std::process::id()));
+    }
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
