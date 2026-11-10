@@ -159,7 +159,6 @@ fn menu_button(
     button.set_tooltip_text(Some("Pick a colour from the theme's palette"));
     button.set_child(Some(&child));
     let popover = gtk::Popover::new();
-    popover.set_has_arrow(false);
     popover.set_child(Some(&palette_box(theme, choice, resolved, &popover, shown, on_pick)));
     button.set_popover(Some(&popover));
     button

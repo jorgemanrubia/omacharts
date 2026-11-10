@@ -3272,7 +3272,6 @@ fn popup_menu_with(
         popover.add_child(child, id);
     }
     popover.set_parent(over);
-    popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
     popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
     // Clicking an item closes the popover and *then* activates its action, so

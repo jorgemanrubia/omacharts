@@ -443,7 +443,6 @@ impl DateCell {
         let popover = gtk::Popover::new();
         popover.add_css_class("pick-drop");
         popover.add_css_class("range-month-pop");
-        popover.set_has_arrow(false);
         popover.set_position(gtk::PositionType::Bottom);
         popover.set_parent(&anchor);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(0, anchor.height(), anchor.width(), 1)));

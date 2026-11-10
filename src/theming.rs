@@ -365,11 +365,48 @@ impl Theming {
 fn provider(slot: &mut Option<gtk::CssProvider>, priority: u32) -> &gtk::CssProvider {
     slot.get_or_insert_with(|| {
         let provider = gtk::CssProvider::new();
+        popovers_without_arrows();
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &provider, priority);
         }
         provider
     })
+}
+
+/// Every popover opens without an arrow: a menu opens at the pointer and
+/// has nothing to point at, and one popover with an arrow beside one
+/// without reads as two apps. GTK sizes the arrow in code, not CSS, so it
+/// is turned off as each popover is realized, before it is measured. That
+/// reaches the popovers inside library widgets too (a combo row's list, a
+/// menu button's menu), which no call where a popover is built could.
+fn popovers_without_arrows() {
+    use gtk::glib::{self, gobject_ffi::{GSignalInvocationHint, GValue, g_signal_add_emission_hook, g_signal_lookup}};
+    use gtk::prelude::*;
+    use gtk::glib::translate::IntoGlib;
+
+    unsafe extern "C" fn realized(
+        _hint: *mut GSignalInvocationHint,
+        _count: u32,
+        params: *const GValue,
+        _data: glib::ffi::gpointer,
+    ) -> glib::ffi::gboolean {
+        // The first parameter of a signal is the instance it was emitted on.
+        let instance = unsafe { &*params.cast::<glib::Value>() };
+        if let Ok(popover) = instance.get::<gtk::Popover>() {
+            popover.set_has_arrow(false);
+        }
+        // Stay installed.
+        glib::ffi::GTRUE
+    }
+
+    // A signal exists once its class does, and the first theme is applied
+    // before any widget has been built. Once, whoever applies a theme.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let Some(_class) = glib::Class::<gtk::Popover>::from_type(gtk::Popover::static_type()) else { return };
+    ONCE.call_once(|| unsafe {
+        let realize = g_signal_lookup(c"realize".as_ptr(), gtk::Popover::static_type().into_glib());
+        g_signal_add_emission_hook(realize, 0, Some(realized), std::ptr::null_mut(), None);
+    });
 }
 
 /// How far in from its left edge the window's corner starts its buttons:
@@ -793,9 +830,8 @@ row.bars-head button:checked { color: @window_fg_color; border-bottom-color: @ac
 /* Menus and popovers are one surface. A right-click menu and the link
    popover open beside each other often enough that two looks for one kind
    of thing read as two apps. The window's own ground, a hairline edge, a
-   soft shadow, and no arrow — that one is set where each popover is built,
-   since GTK sizes the arrow in code — because a menu opens at the pointer
-   and has nothing to point at. */
+   soft shadow, and no arrow (`popovers_without_arrows`, since GTK sizes
+   the arrow in code). */
 popover.menu > contents,
 popover.background > contents {
   background-color: @popover_bg_color;

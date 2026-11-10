@@ -2956,7 +2956,6 @@ impl Watchlist {
         entry.set_placeholder_text(Some("Section name"));
 
         let popover = gtk::Popover::new();
-        popover.set_has_arrow(false);
         popover.set_child(Some(&entry));
         popover.set_parent(anchor);
 
@@ -3210,7 +3209,6 @@ pub(crate) fn decimals_for(price: f64, kind: omacharts_engine::InstrumentKind) -
 fn popup_menu(model: &gio::Menu, over: &impl IsA<gtk::Widget>, x: f64, y: f64) {
     let popover = gtk::PopoverMenu::from_model(Some(model));
     popover.set_parent(over);
-    popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
     popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
     // Clicking an item closes the popover and *then* activates its action, so
