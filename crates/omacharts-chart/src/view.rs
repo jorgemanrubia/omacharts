@@ -6980,7 +6980,6 @@ fn on_screen<T>(series: &[T], first: usize, visible: usize) -> &[T] {
 /// The strip carries its own name because the legend at the top cannot say
 /// which of three stacked panes is which, and a pane you have to count down to
 /// identify is a pane you misread.
-#[allow(clippy::too_many_arguments)]
 /// A cumulative delta's figure on the axis: whole contracts, grouped, up to
 /// a hundred thousand either way, and past that to three figures with K, M
 /// or B, so a stock's running total of millions of shares stays inside the
@@ -7001,6 +7000,83 @@ fn contracts(value: f64) -> String {
     format!("{scaled:.decimals$}{unit}")
 }
 
+/// The room either side of a cumulative delta's figures on the axis.
+const DELTA_AXIS_PAD: f64 = 6.0;
+
+/// How far apart, at the least, a cumulative delta's figures are written
+/// down its axis: closer than the price's, as its strip is shorter, but
+/// never so close that two 11px figures crowd each other.
+const DELTA_LABEL_GAP: f64 = 26.0;
+
+/// A round step, 1, 2 or 5 times a power of ten, giving about `rows`
+/// figures across `range`; never smaller than one contract.
+fn delta_step(range: f64, rows: f64) -> f64 {
+    if range.is_nan() || rows.is_nan() || range <= 0.0 || rows <= 0.0 {
+        return 0.0;
+    }
+    let rough = range / rows;
+    let magnitude = 10f64.powf(rough.log10().floor());
+    let step = match rough / magnitude {
+        n if n <= 1.0 => 1.0,
+        n if n <= 2.0 => 2.0,
+        n if n <= 5.0 => 5.0,
+        _ => 10.0,
+    } * magnitude;
+    step.max(1.0)
+}
+
+/// Where a cumulative delta's axis is written, `low` to `high` over `h`
+/// pixels: its step, and every multiple of it in between, lowest first.
+/// Zero is a multiple, so it is written whenever it is on the strip.
+fn delta_ticks(low: f64, high: f64, h: f64) -> (f64, Vec<f64>) {
+    let step = delta_step(high - low, (h / DELTA_LABEL_GAP).max(2.0).floor());
+    if step <= 0.0 {
+        return (0.0, Vec::new());
+    }
+    let (first, last) = ((low / step).ceil() as i64, (high / step).floor() as i64);
+    // A step so fine as to make thousands of figures is no axis.
+    if last - first > 1_000 {
+        return (step, Vec::new());
+    }
+    (step, (first..=last).map(|at| at as f64 * step).collect())
+}
+
+/// A cumulative delta's axis written out: each figure whole and grouped,
+/// as the price axis writes its own, "-1,200"; in K, M or B, to the
+/// precision the step needs, only when one of them in full is wider than
+/// the axis, as a stock's millions of shares are. A future's never are.
+fn delta_figures(ticks: &[f64], step: f64, fits: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let full: Vec<String> = ticks.iter().map(|value| grouped_decimals(*value, 0)).collect();
+    if full.iter().all(|text| fits(text)) {
+        return full;
+    }
+    let most = ticks.iter().fold(0.0_f64, |most, value| most.max(value.abs()));
+    let (by, unit) = match most {
+        _ if most >= 1e9 => (1e9, "B"),
+        _ if most >= 1e6 => (1e6, "M"),
+        _ => (1e3, "K"),
+    };
+    let decimals = decimals_for(step / by);
+    ticks
+        .iter()
+        .map(|value| match *value == 0.0 {
+            true => "0".to_string(),
+            false => format!("{}{unit}", grouped_decimals(*value / by, decimals)),
+        })
+        .collect()
+}
+
+/// A cumulative delta's close on its axis chip: in full when it fits
+/// there, shortened to K, M or B only when it does not.
+fn delta_figure(value: f64, fits: &dyn Fn(&str) -> bool) -> String {
+    let full = grouped_decimals(value.round(), 0);
+    match fits(&full) {
+        true => full,
+        false => contracts(value),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_pane(
     cr: &cairo::Context,
     state: &State,
@@ -7031,7 +7107,14 @@ fn draw_pane(
     // Everything drawn in the strip is kept inside it. Nothing fitted falls
     // outside, but a strip on a fixed scale can be handed a value past its own
     // end, and a rectangle that overshot would be drawn over its neighbour.
-    let strip = |value: f64| to_y(value).clamp(top, top + height);
+    // Zoomed past what it draws, a line runs on out of the strip, which is
+    // clipped to its box, rather than lying flat along its edge as though
+    // it had stopped there.
+    let reach = match state.strip_held.contains_key(&drawn.indicator.id) {
+        true => height,
+        false => 0.0,
+    };
+    let strip = |value: f64| to_y(value).clamp(top - reach, top + height + reach);
 
     // The band between the guides, so overbought and oversold read as regions
     // rather than two lines you have to remember the meaning of.
@@ -7065,10 +7148,34 @@ fn draw_pane(
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(10.0);
     colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.75);
+    // A cumulative delta's axis is ruled as the price's is, in one round
+    // step, its figures one right-aligned column in the price axis's type.
+    let room = width - (plot_x + plot_w) - DELTA_AXIS_PAD * 2.0;
+    let fits = |text: &str| cr.text_extents(text).is_ok_and(|extents| extents.x_advance() <= room);
+    if pane.delta.is_some() {
+        cr.save().ok();
+        cr.set_font_size(11.0);
+        colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
+        let (step, ticks) = delta_ticks(low, high, inner_h);
+        let right = plot_x + plot_w + DELTA_AXIS_PAD + room;
+        // The close's chip is over the axis: a figure it would cover is
+        // left out rather than shown half under it.
+        let close = pane.delta.as_ref().and_then(|delta| delta.last()).map(|last| to_y(last.close));
+        for (value, text) in ticks.iter().zip(delta_figures(&ticks, step, &fits)) {
+            let y = to_y(*value);
+            if y < top || y > top + height || close.is_some_and(|close| (close - y).abs() < AXIS_CHIP_H) {
+                continue;
+            }
+            let wide = cr.text_extents(&text).map_or(0.0, |extents| extents.x_advance());
+            cr.move_to(right - wide, (y + 3.5).min(top + height));
+            let _ = cr.show_text(&text);
+        }
+        cr.restore().ok();
+    }
     let marks: Vec<(f64, String)> = if pane.bounds.is_some() {
         pane.guides.iter().map(|g| (*g, format!("{g:.0}"))).collect()
     } else if pane.delta.is_some() {
-        vec![(low, contracts(low)), (high, contracts(high))]
+        Vec::new()
     } else {
         let decimals = pane_decimals(pane, low, high);
         vec![(low, grouped_decimals(low, decimals)), (high, grouped_decimals(high, decimals))]
@@ -7108,7 +7215,7 @@ fn draw_pane(
         };
         let chips = delta
             .last()
-            .map(|last| (to_y(last.close), contracts(last.close), chip))
+            .map(|last| (to_y(last.close), delta_figure(last.close, &fits), chip))
             .filter(|(y, _, _)| *y >= top && *y <= top + height)
             .into_iter()
             .collect();
@@ -11390,6 +11497,45 @@ mod tests {
 
     /// A cumulative delta's axis keeps a futures total whole and grouped,
     /// and shortens a stock's millions so they fit the axis.
+    /// A cumulative delta's axis is ruled in one round step, 1, 2 or 5
+    /// times a power of ten: −2,200 to 1,000 down a strip as tall as the
+    /// price axis has rows for sixteen figures is written every 200, zero
+    /// among them, whole and grouped, the step following the strip as it
+    /// is zoomed. K, M or B only when a figure in full would not fit.
+    #[test]
+    fn a_cumulative_delta_s_axis_is_written_in_round_steps() {
+        let (step, ticks) = delta_ticks(-2_200.0, 1_000.0, 16.0 * DELTA_LABEL_GAP);
+        assert_eq!(step, 200.0);
+        assert_eq!(ticks.first(), Some(&-2_200.0));
+        assert_eq!(ticks.last(), Some(&1_000.0));
+        assert_eq!(ticks.len(), 17);
+        assert!(ticks.contains(&0.0), "zero not written");
+        let roomy = |_: &str| true;
+        let column = delta_figures(&ticks, step, &roomy);
+        assert_eq!(column[0], "-2,200");
+        assert_eq!(column[11], "0");
+        assert!(column.iter().all(|text| !text.contains('.')), "{column:?}");
+        assert_eq!(column[16], "1,000");
+
+        // Zoomed in on it, the step follows; a short strip has fewer.
+        assert_eq!(delta_ticks(-400.0, 400.0, 16.0 * DELTA_LABEL_GAP).0, 50.0);
+        assert_eq!(delta_ticks(-2_200.0, 1_000.0, 6.0 * DELTA_LABEL_GAP).0, 1_000.0);
+        // Never finer than one contract.
+        assert_eq!(delta_ticks(-3.0, 3.0, 16.0 * DELTA_LABEL_GAP).0, 1.0);
+
+        // A stock's millions are shortened when they would not fit, all of
+        // the column alike and to the step's precision; a future's never.
+        let (step, ticks) = delta_ticks(-1_200_000.0, 2_000_000.0, 16.0 * DELTA_LABEL_GAP);
+        assert_eq!(step, 200_000.0);
+        let narrow = |text: &str| text.len() <= 7;
+        let column = delta_figures(&ticks, step, &narrow);
+        assert_eq!((column[0].as_str(), column[6].as_str(), column[7].as_str(), column[16].as_str()), ("-1.2M", "0", "0.2M", "2.0M"));
+        let (step, ticks) = delta_ticks(-18_000.0, 6_000.0, 16.0 * DELTA_LABEL_GAP);
+        assert_eq!(delta_figures(&ticks, step, &narrow)[0], "-18,000");
+        assert_eq!(delta_figure(250_400.0, &narrow), "250,400");
+        assert_eq!(delta_figure(-1_424_661.0, &narrow), "-1.42M");
+    }
+
     #[test]
     fn a_cumulative_delta_is_written_short_on_the_axis_only_when_it_is_large() {
         assert_eq!(contracts(-2_145.0), "-2,145");
@@ -11743,6 +11889,35 @@ mod tests {
         let bytes = gtk::glib::Bytes::from(&surface.data().unwrap()[..]);
         let texture = gtk::gdk::MemoryTexture::new(w, h, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride);
         texture.save_to_png(path).unwrap();
+    }
+
+    /// A cumulative delta's axis as pictures, for a person to look at: as
+    /// fitted and zoomed in on its own scale, at two
+    /// pixels to the point. Written only when asked for, to the folder in
+    /// `OMACHARTS_MARK_SHOTS`.
+    #[test]
+    fn the_delta_axis_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
+        let (w, h) = (900.0, 600.0);
+        let shot = |state: &State, name: &str| {
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.scale(2.0, 2.0);
+                draw(&cr, w, h, state);
+            }
+            save_png(surface, &format!("{folder}/delta-axis-{name}.png"));
+        };
+        let mut state = with_delta(400);
+        state.visible = 160;
+        if let Some(Drawn { output, .. }) = state.indicators.last_mut() {
+            output.set_pane_height(0.45);
+        }
+        shot(&state, "fitted");
+        let (low, high) = state.strip_fit(2, w, h).unwrap();
+        let middle = (low + high) / 2.0;
+        state.hold_strip(2, middle - (high - low) / 6.0, middle + (high - low) / 6.0);
+        shot(&state, "zoomed");
     }
 
     /// The marks as pictures, for a person to look at: dark and light, at
