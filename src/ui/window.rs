@@ -1205,6 +1205,41 @@ mod tests {
 
     /// A window with nothing written down, and one with something unreadable,
     /// both have to end up with a chart rather than with half of one.
+    /// What this build cannot read of a stored chart or book is left out,
+    /// and only that: a field, an entry of a list or a map in it, or the
+    /// book holding a chart it cannot be rebuilt without. A field it has
+    /// never heard of is passed over.
+    #[test]
+    fn what_will_not_read_is_left_out_and_only_that() {
+        let mut value: serde_json::Value = serde_json::from_str(ONE_ARRANGEMENT).unwrap();
+        let mut second = value.clone();
+        let charts = value["panes"].as_array_mut().unwrap();
+        charts[0]["strip_windows"] = serde_json::json!({ "7": "x", "8": { "kind": "cvd", "window": [1.0, 2.0] }, "9": [3.0, 4.0] });
+        charts[0]["log_scale"] = serde_json::json!("yes");
+        charts[0]["indicators"] = serde_json::json!([Indicator::new(4, omacharts_engine::IndicatorKind::Rsi), { "kind": "from-the-future" }]);
+        charts[0]["a_field_from_a_later_build"] = serde_json::json!({ "anything": [1, 2] });
+        charts[1]["strip_windows"] = serde_json::json!("garbage");
+        second["panes"][1]["symbol"] = serde_json::json!(5);
+        second["name"] = serde_json::json!("Broken");
+        let workspace = serde_json::json!({ "books": [value, second], "active": 0 });
+
+        let read = parse_workspace(&workspace.to_string()).expect("read but for what will not");
+        assert_eq!(read.books.len(), 1, "the book with a chart it cannot rebuild goes, and only it");
+        let [one, two] = &read.books[0].panes[..] else { panic!("both charts") };
+        assert_eq!((one.symbol.as_str(), two.symbol.as_str()), ("SPY", "QQQ"));
+        assert_eq!(
+            one.strip_windows.iter().map(|(id, strip)| (*id, strip.clone())).collect::<Vec<_>>(),
+            vec![
+                (8, StoredStrip { kind: Some(omacharts_engine::IndicatorKind::Cvd), window: [1.0, 2.0] }),
+                (9, StoredStrip { kind: None, window: [3.0, 4.0] }),
+            ]
+        );
+        assert!(!one.log_scale, "read as one written without it");
+        assert_eq!(one.indicators.iter().map(|indicator| indicator.id).collect::<Vec<_>>(), vec![4]);
+        assert!(two.strip_windows.is_empty());
+        assert_eq!(two.timeframe, "5m", "the rest of the chart read");
+    }
+
     #[test]
     fn nonsense_in_the_setting_restores_nothing() {
         assert!(parse_workspace("").is_none());
@@ -1488,6 +1523,58 @@ mod strip_window_tests {
             actions.activate_action("reset-view", None);
             assert!(pane.view.held_strip_windows().is_empty(), "the reset let go of it");
             assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "and nothing is written for it");
+        });
+    }
+
+    /// A strip written down as a bare bottom and top, before its kind was
+    /// kept, comes back held, for the kind of the indicator it is on, and is
+    /// written again with it.
+    #[test]
+    fn a_strip_written_without_its_kind_comes_back_for_the_indicator_it_is_on() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            first.save_workspace();
+            let stored = || -> serde_json::Value { serde_json::from_str(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap() };
+            let mut workspace = stored();
+            let chart = &mut workspace["books"][0]["panes"][0];
+            chart["indicators"] = serde_json::json!([Indicator::new(7, omacharts_engine::IndicatorKind::Cvd)]);
+            chart["strip_windows"] = serde_json::json!({ "7": [-1500.0, 2500.0] });
+            store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
+            drop(first);
+
+            let again = window(&store);
+            let pane = again.focused_pane();
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "the old shape not read");
+            assert_eq!(pane.view.held_strip_kinds().get(&7), Some(&omacharts_engine::IndicatorKind::Cvd), "held for no kind");
+            again.save_workspace();
+            let written = stored()["books"][0]["panes"][0]["strip_windows"].clone();
+            assert_eq!(written, serde_json::json!({ "7": { "kind": "cvd", "window": [-1500.0, 2500.0] } }));
+        });
+    }
+
+    /// What a chart's field this build cannot read leaves out is that field,
+    /// not the chartbooks: the window opens on the arrangement written down.
+    #[test]
+    fn a_chart_field_that_will_not_read_leaves_the_chartbooks_open() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            first.save_workspace();
+            let stored = || -> serde_json::Value { serde_json::from_str(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap() };
+            let mut workspace = stored();
+            workspace["books"][0]["name"] = serde_json::json!("Energy");
+            let chart = &mut workspace["books"][0]["panes"][0];
+            chart["symbol"] = serde_json::json!("NQ");
+            chart["strip_windows"] = serde_json::json!("garbage");
+            store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
+            drop(first);
+
+            let again = window(&store);
+            assert_eq!(again.books.borrow()[0].name, "Energy", "opened on a new chartbook");
+            let pane = again.focused_pane();
+            assert_eq!(pane.instrument.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("NQ"));
+            assert!(pane.view.held_strip_windows().is_empty());
         });
     }
 }
@@ -2894,14 +2981,79 @@ struct StoredPane {
     trading_suffix: Option<String>,
 }
 
+impl StoredPane {
+    /// A chart with nothing in it, written down: what stands in for a
+    /// field of a stored one while the others are tried. See [`mend`].
+    fn blank() -> StoredPane {
+        StoredPane {
+            id: 0,
+            title: None,
+            symbol: String::new(),
+            suffix: None,
+            timeframe: String::new(),
+            indicators: Vec::new(),
+            template: None,
+            bar_style: String::new(),
+            bars_hidden: false,
+            colouring: None,
+            swapped: None,
+            hollow_up: None,
+            ohlc_thickness: None,
+            session: String::new(),
+            show_grid: true,
+            link: LinkMode::default(),
+            auto_scale: true,
+            price_window: None,
+            strip_windows: Default::default(),
+            log_scale: false,
+            indicators_shown: true,
+            drawings_shown: true,
+            shows_drawings: true,
+            sends_drawings: true,
+            drawing_uid: String::new(),
+            drawings: Vec::new(),
+            profile_merges: Vec::new(),
+            source: None,
+            account: None,
+            trading_size: None,
+            trading_symbol: None,
+            trading_suffix: None,
+        }
+    }
+}
+
 /// A strip held on its own scale, as written down: the values its bottom
 /// and top show, and the kind of indicator it was held for, so that another
 /// kind given its id later fits itself rather than take it on.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(from = "StripShape")]
 struct StoredStrip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kind: Option<omacharts_engine::IndicatorKind>,
     window: [f64; 2],
+}
+
+/// A held strip as either shape has written it: with its kind, or as the
+/// bare bottom and top a build before kinds were kept wrote, whose kind is
+/// then the indicator's it is brought back on.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StripShape {
+    Held {
+        #[serde(default)]
+        kind: Option<omacharts_engine::IndicatorKind>,
+        window: [f64; 2],
+    },
+    Window([f64; 2]),
+}
+
+impl From<StripShape> for StoredStrip {
+    fn from(shape: StripShape) -> StoredStrip {
+        match shape {
+            StripShape::Held { kind, window } => StoredStrip { kind, window },
+            StripShape::Window(window) => StoredStrip { kind: None, window },
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -2972,6 +3124,23 @@ struct Chartbook {
     /// never takes one is written down exactly as it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     book_template: Option<u32>,
+}
+
+impl Chartbook {
+    /// A book with nothing in it, written down. See [`mend`].
+    fn blank() -> Chartbook {
+        Chartbook {
+            name: String::new(),
+            layout: Node::leaf(0),
+            focused: 0,
+            panes: Vec::new(),
+            watchlist: None,
+            sidebar_shown: None,
+            sidebar_width: None,
+            maximized: None,
+            book_template: None,
+        }
+    }
 }
 
 /// Everything the window had open, as one stored value.
@@ -3113,14 +3282,149 @@ fn shifted(active: usize, from: usize, to: usize) -> usize {
 ///
 /// The two shapes cannot be confused for each other: the old one has no
 /// `books`, and the new one has no `layout`.
+///
+/// A part this build cannot read is left out and said in the Log, not the
+/// whole of it: a field of a chart or a book written by another build, or
+/// one entry of a list or a map in it, goes, and the rest is read. Only a
+/// chart that cannot be read without what was left out — its symbol, its
+/// id — takes its book with it, since the book's layout names it. Leaving
+/// the whole arrangement unread instead would open the window on one new
+/// chart, and its next save would write that over every chartbook.
 fn parse_workspace(json: &str) -> Option<Workspace> {
-    serde_json::from_str::<Workspace>(json)
+    let mut value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut left_out = Vec::new();
+    mend_workspace(&mut value, &mut left_out);
+    for part in left_out {
+        omacharts_engine::log::global()
+            .add(omacharts_engine::log::Entry::warning("Chartbooks", format!("Left out of the saved chartbooks, as it could not be read: {part}")));
+    }
+    serde_json::from_value::<Workspace>(value.clone())
         .ok()
         .filter(|workspace| !workspace.books.is_empty())
         .or_else(|| {
-            let book = serde_json::from_str::<Chartbook>(json).ok()?;
+            let book = serde_json::from_value::<Chartbook>(value).ok()?;
             Some(Workspace { books: vec![book], active: 0 })
         })
+}
+
+/// Take out of a stored arrangement, in place, what this build cannot read
+/// of it, each part left out named in `left_out`. See [`parse_workspace`].
+fn mend_workspace(value: &mut serde_json::Value, left_out: &mut Vec<String>) {
+    // The arrangement from before chartbooks is one book at the top level.
+    if value.get("books").is_none() {
+        mend_book(value, left_out);
+        return;
+    }
+    if let Some(books) = value["books"].as_array_mut() {
+        books.retain_mut(|book| mend_book(book, left_out));
+    }
+    let blank = serde_json::json!({ "books": [], "active": 0 });
+    mend::<Workspace>(value, &blank, "the chartbooks", left_out);
+}
+
+/// [`mend_workspace`] for one book: `false` when it cannot be read even so.
+fn mend_book(book: &mut serde_json::Value, left_out: &mut Vec<String>) -> bool {
+    let name = book.get("name").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let named = match name.is_empty() {
+        true => "a chartbook".to_string(),
+        false => format!("chartbook \u{201c}{name}\u{201d}"),
+    };
+    let blank_pane = serde_json::to_value(StoredPane::blank()).expect("a chart is written down");
+    if let Some(panes) = book.get_mut("panes").and_then(serde_json::Value::as_array_mut) {
+        for pane in panes {
+            let symbol = pane.get("symbol").and_then(serde_json::Value::as_str).unwrap_or("?").to_string();
+            if !mend::<StoredPane>(pane, &blank_pane, &format!("the {symbol} chart in {named}"), left_out) {
+                left_out.push(format!("{named}, whose {symbol} chart it cannot be rebuilt without"));
+                return false;
+            }
+        }
+    }
+    let blank = serde_json::to_value(Chartbook::blank()).expect("a chartbook is written down");
+    let read = mend::<Chartbook>(book, &blank, &named, left_out);
+    if !read {
+        left_out.push(named);
+    }
+    read
+}
+
+/// Make `value` read as a `T`, leaving out what of it does not: each field
+/// that will not read is taken out, so it is read as one written without it,
+/// and a list or a map that will not is kept but for the entries that will
+/// not. `blank`, a `T` written down, stands in for what a field needs while
+/// the others are tried. `false` when it does not read even so: a field it
+/// cannot do without is missing or would not read, or it is not an object.
+fn mend<T: serde::de::DeserializeOwned>(value: &mut serde_json::Value, blank: &serde_json::Value, what: &str, left_out: &mut Vec<String>) -> bool {
+    use serde_json::{Map, Value};
+    if serde_json::from_value::<T>(value.clone()).is_ok() {
+        return true;
+    }
+    let (Some(stored), Some(blank)) = (value.as_object(), blank.as_object()) else { return false };
+    let reads = |object: &Map<String, Value>| serde_json::from_value::<T>(Value::Object(object.clone())).is_ok();
+    let mut mended = blank.clone();
+    let mut bad = Vec::new();
+    for (key, field) in stored {
+        let was = mended.insert(key.clone(), field.clone());
+        if reads(&mended) {
+            continue;
+        }
+        // A list or a map read entry by entry, where an empty one reads.
+        let mut parts = Vec::new();
+        let piecewise = match field {
+            Value::Array(entries) => {
+                mended.insert(key.clone(), Value::Array(Vec::new()));
+                reads(&mended).then(|| {
+                    for (at, entry) in entries.iter().enumerate() {
+                        let Some(Value::Array(kept)) = mended.get_mut(key) else { unreachable!() };
+                        kept.push(entry.clone());
+                        if !reads(&mended) {
+                            let Some(Value::Array(kept)) = mended.get_mut(key) else { unreachable!() };
+                            kept.pop();
+                            parts.push(format!("{key}[{at}]"));
+                        }
+                    }
+                })
+            }
+            Value::Object(entries) => {
+                mended.insert(key.clone(), Value::Object(Map::new()));
+                reads(&mended).then(|| {
+                    for (name, entry) in entries {
+                        let Some(Value::Object(kept)) = mended.get_mut(key) else { unreachable!() };
+                        kept.insert(name.clone(), entry.clone());
+                        if !reads(&mended) {
+                            let Some(Value::Object(kept)) = mended.get_mut(key) else { unreachable!() };
+                            kept.remove(name);
+                            parts.push(format!("{key}.{name}"));
+                        }
+                    }
+                })
+            }
+            _ => None,
+        };
+        match piecewise {
+            Some(()) => bad.extend(parts),
+            None => {
+                match was {
+                    Some(stand_in) => mended.insert(key.clone(), stand_in),
+                    None => mended.remove(key),
+                };
+                bad.push(key.clone());
+            }
+        }
+    }
+    // What was left out, and what it was written without, are read as a
+    // field missing is; one it cannot do without leaves it unread.
+    for key in blank.keys() {
+        let missing = !stored.contains_key(key) || bad.contains(key);
+        if missing && mended.remove(key).is_some() && !reads(&mended) {
+            return false;
+        }
+    }
+    if !reads(&mended) {
+        return false;
+    }
+    left_out.extend(bad.into_iter().map(|part| format!("{part} of {what}")));
+    *value = Value::Object(mended);
+    true
 }
 
 /// Turn the link groups a stored arrangement may still carry into modes, in
