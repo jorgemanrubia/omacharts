@@ -20,10 +20,11 @@
 //! order; failing that, under the first name it confirms of those it may
 //! know it by, all asked at once: the file Sierra Chart is writing for it,
 //! the spelling of its fills, and the likeliest spellings
-//! ([`SierraSession::spelling`]).
+//! ([`SierraSession::spelling`]). What it confirmed holds for one
+//! connection: a drop forgets it, and until the book is asked for again
+//! nothing in it is taken for the server's spelling.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -79,17 +80,12 @@ impl TradingService for Sierra {
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         let changed: Arc<dyn Fn(Change) + Send + Sync> = Arc::from(changed);
         let told = changed.clone();
-        let reconnects = Arc::new(AtomicU64::new(0));
-        let counted = reconnects.clone();
         let trading = dtc::Trading::sign_in(&endpoint_of(login), CLIENT_NAME, move |pulse| match pulse {
-            dtc::Pulse::Back => {
-                counted.fetch_add(1, Ordering::SeqCst);
-                told(Change::Back)
-            }
+            dtc::Pulse::Back => told(Change::Back),
             dtc::Pulse::Moved | dtc::Pulse::Lost(_) => told(Change::Moved),
         })
         .map_err(said)?;
-        Ok(Arc::new(SierraSession::new(login.id.clone(), trading, reconnects)))
+        Ok(Arc::new(SierraSession::new(login.id.clone(), trading)))
     }
 
     fn open(&self) -> bool {
@@ -221,8 +217,8 @@ struct Spelled {
     /// The contracts it knew by no name lately: when, why, and the file's
     /// name when it was silent on that too.
     failed: HashMap<String, (Instant, String, Option<String>)>,
-    /// The connection they were learned on, as [`SierraSession::reconnects`]
-    /// counts.
+    /// The connection they were learned on, as [`dtc::Trading::connection`]
+    /// counts: one more the moment the connection drops.
     connection: u64,
     /// The style the server's positions and working orders were in.
     style: Option<feed::Style>,
@@ -249,28 +245,34 @@ struct SierraSession {
     folder: Folder,
     /// How the server spells contracts it has not been heard to name.
     spelled: Mutex<Spelled>,
-    /// How many times the connection has come back: a server back may be
-    /// on another service, which spells otherwise.
-    reconnects: Arc<AtomicU64>,
     /// The server's symbols that name no dated contract, said once each.
     unread: Mutex<HashSet<String>>,
 }
 
 impl SierraSession {
-    fn new(login: String, trading: dtc::Trading, reconnects: Arc<AtomicU64>) -> SierraSession {
-        SierraSession { login, trading, folder: Folder::default(), spelled: Mutex::default(), reconnects, unread: Mutex::default() }
+    fn new(login: String, trading: dtc::Trading) -> SierraSession {
+        SierraSession { login, trading, folder: Folder::default(), spelled: Mutex::default(), unread: Mutex::default() }
     }
 
     /// The symbols the server names what is held and working by now:
-    /// its own spelling of each, as it trades now.
+    /// its own spelling of each, as it trades now. None while the book is
+    /// being asked for again after a drop, since what it holds until then
+    /// is the last connection's, maybe in another service's spelling.
     fn current(book: &dtc::Book) -> Vec<String> {
+        if !book.synced {
+            return Vec::new();
+        }
         let working = book.orders.iter().filter(|order| order.status.working() && order.status != dtc::Status::Pending);
         book.positions.iter().map(|held| held.symbol.clone()).chain(working.map(|order| order.symbol.clone())).collect()
     }
 
     /// The symbols the server named what was filled or finished in, latest
-    /// first: its spelling then, which may not be its spelling now.
+    /// first: its spelling then, which may not be its spelling now. None
+    /// while the book is being asked for again, as [`Self::current`].
     fn past(book: &dtc::Book) -> Vec<String> {
+        if !book.synced {
+            return Vec::new();
+        }
         let mut orders: Vec<&dtc::Order> = book.orders.iter().filter(|order| !order.status.working()).collect();
         orders.sort_by_key(|order| std::cmp::Reverse(order.at));
         let mut fills: Vec<&dtc::Fill> = book.fills.iter().collect();
@@ -288,42 +290,57 @@ impl SierraSession {
     /// order under a name it does not know goes nowhere and a flatten finds
     /// nothing to close, but for one case: a `market` order, the server
     /// silent on every name, the file's name too, and that name in the
-    /// style it trades in, goes out under the file's name, as it did before
-    /// names were confirmed, since that is Sierra Chart's own name for the
-    /// contract on the service it is on.
+    /// style the server spells what it holds and has working in, goes out
+    /// under the file's name, since that is Sierra Chart's own name for the
+    /// contract on the service it is on. With nothing held or working, or
+    /// the book not yet asked for again after a drop, the server's style is
+    /// not known, and the folder's is only the folder's: refused.
     ///
     /// What it confirmed is kept, and what it confirmed nothing of is, for
     /// [`UNSPELLED_KEPT`], so a click again fails at once; both forgotten
-    /// when the connection comes back or the server spells in another
-    /// style.
+    /// the moment the connection drops or the server spells in another
+    /// style, and nothing learned on a connection that dropped while it was
+    /// asked is kept.
     fn spelling(&self, contract: &str, market: bool) -> Result<Spelling, Failure> {
+        let connection = self.trading.connection();
         let book = self.trading.book();
         let current = Self::current(&book);
         if let Some(own) = current.iter().find(|symbol| feed::exchange_contract(symbol) == contract) {
             return Ok(Spelling::Confirmed(own.clone()));
         }
-        let style = current.iter().find_map(|symbol| feed::symbol_style(symbol)).or_else(self.folder.style);
+        // The style the server spells in, as what it holds and has working
+        // says; to ask in, failing that, the folder's.
+        let held = current.iter().find_map(|symbol| feed::symbol_style(symbol));
+        let style = held.or_else(self.folder.style);
+        // The file's name goes out unconfirmed only in the server's style.
+        let unconfirmed = |stem: &String| market && held.is_some_and(|held| feed::symbol_style(stem) == Some(held));
         let past: Vec<String> = Self::past(&book).into_iter().filter(|symbol| feed::exchange_contract(symbol) == contract).collect();
         {
             let mut spelled = self.spelled.lock().unwrap_or_else(|e| e.into_inner());
-            let connection = self.reconnects.load(Ordering::SeqCst);
-            let restyled = style.is_some() && spelled.style.is_some() && style != spelled.style;
+            let restyled = held.is_some() && spelled.style.is_some() && held != spelled.style;
             if connection != spelled.connection || restyled {
                 *spelled = Spelled { connection, ..Spelled::default() };
             }
-            if style.is_some() {
-                spelled.style = style;
+            if held.is_some() {
+                spelled.style = held;
             }
             if let Some(kept) = spelled.known.get(contract) {
                 return Ok(Spelling::Confirmed(kept.clone()));
             }
             if let Some((at, why, stem)) = spelled.failed.get(contract).filter(|(at, ..)| at.elapsed() < UNSPELLED_KEPT) {
-                return match stem.clone().filter(|_| market) {
+                return match stem.clone().filter(unconfirmed) {
                     Some(stem) => Ok(Spelling::Unconfirmed(stem)),
                     None => Err(Failure::Refused(format!("{why}, {}s ago", at.elapsed().as_secs()))),
                 };
             }
         }
+        // Kept only while the connection it was learned on is the one now.
+        let remember = |learned: &dyn Fn(&mut Spelled)| {
+            let mut spelled = self.spelled.lock().unwrap_or_else(|e| e.into_inner());
+            if spelled.connection == connection && self.trading.connection() == connection {
+                learned(&mut spelled);
+            }
+        };
         let stem = (self.folder.stem)(contract);
         let mut guesses: Vec<String> = Vec::new();
         let spellings = feed::spellings(contract, style.or_else(|| past.iter().find_map(|symbol| feed::symbol_style(symbol))).unwrap_or(feed::Style::Underscored));
@@ -341,7 +358,9 @@ impl SierraSession {
         }
         let answers = self.trading.knows_any(&guesses).map_err(failed)?;
         if let Some(confirmed) = guesses.iter().zip(&answers).find_map(|(guess, known)| matches!(known, dtc::Known::Defined(_)).then_some(guess)) {
-            self.spelled.lock().unwrap_or_else(|e| e.into_inner()).known.insert(contract.to_string(), confirmed.clone());
+            remember(&|spelled| {
+                spelled.known.insert(contract.to_string(), confirmed.clone());
+            });
             crate::log_words::say(crate::log_words::spelled_as(feed::LISTED.label, contract, confirmed));
             return Ok(Spelling::Confirmed(confirmed.clone()));
         }
@@ -354,17 +373,18 @@ impl SierraSession {
             })
             .collect();
         crate::log_words::say(crate::log_words::unspelled(feed::LISTED.label, contract, &tried));
-        // Silent on the file's name, as on every other, and the file in the
-        // style the server trades in: what Sierra Chart calls the contract.
-        let silent = stem.filter(|stem| {
-            let at = guesses.iter().position(|guess| guess == stem);
-            answers.iter().all(|known| *known == dtc::Known::Unanswered)
-                && at.is_some()
-                && style.is_none_or(|style| feed::symbol_style(stem) == Some(style))
+        let unanswered = answers.iter().all(|known| *known == dtc::Known::Unanswered);
+        // Silent on the file's name, as on every other: what Sierra Chart
+        // calls the contract, when the server spells in the file's style.
+        let silent = stem.filter(|stem| unanswered && guesses.contains(stem));
+        let why = match unanswered {
+            true => format!("Sierra Chart didn't confirm {contract}: no answer for {}", guesses.join(", ")),
+            false => format!("Sierra Chart knows {contract} by none of {}", guesses.join(", ")),
+        };
+        remember(&|spelled| {
+            spelled.failed.insert(contract.to_string(), (Instant::now(), why.clone(), silent.clone()));
         });
-        let why = format!("Sierra Chart knows {contract} by none of {}", guesses.join(", "));
-        self.spelled.lock().unwrap_or_else(|e| e.into_inner()).failed.insert(contract.to_string(), (Instant::now(), why.clone(), silent.clone()));
-        match silent.filter(|_| market) {
+        match silent.filter(unconfirmed) {
             Some(stem) => Ok(Spelling::Unconfirmed(stem)),
             None => Err(Failure::Refused(why)),
         }
@@ -850,15 +870,8 @@ mod tests {
     /// [`impatient`], reading `folder` for files' names.
     fn impatient_on(fake: &dtc::fake::Fake, folder: Folder) -> Arc<SierraSession> {
         let timing = dtc::Timing { request: std::time::Duration::from_millis(700), ..dtc::Timing::default() };
-        let reconnects = Arc::new(AtomicU64::new(0));
-        let counted = reconnects.clone();
-        let trading = dtc::Trading::sign_in_with(&fake.endpoint(), CLIENT_NAME, timing, move |pulse| {
-            if pulse == dtc::Pulse::Back {
-                counted.fetch_add(1, Ordering::SeqCst);
-            }
-        })
-        .expect("signed in");
-        let session = Arc::new(SierraSession { folder, ..SierraSession::new("sierra-1".into(), trading, reconnects) });
+        let trading = dtc::Trading::sign_in_with(&fake.endpoint(), CLIENT_NAME, timing, |_| {}).expect("signed in");
+        let session = Arc::new(SierraSession { folder, ..SierraSession::new("sierra-1".into(), trading) });
         session.refresh().expect("refreshed");
         session
     }
@@ -1187,13 +1200,44 @@ mod tests {
         session.cancel("Sim1", &basket).expect("cancelled");
         fake.set_rithmic_symbols(true);
         fake.drop_connections();
-        let back = std::time::Instant::now() + Duration::from_secs(5);
-        while session.reconnects.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < back {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(again(&fake, &session), "never reconnected");
         assert!(until(session.as_ref(), |book| book.refreshed), "never back");
         session.place(&sell_one("ESZ6", OrderKind::Limit, Some(9_000.0))).expect("taken on Rithmic");
         assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER), ["ESZ26_FUT_CME", "ESZ6.CME"]);
+        session.sign_out();
+    }
+
+    /// Wait for `session` to be on a connection after its first, and to
+    /// have begun asking `fake` for its book again on it.
+    fn again(fake: &dtc::fake::Fake, session: &SierraSession) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if session.trading.connection() > 0 && fake.received_of(dtc::wire::TRADE_ACCOUNTS_REQUEST).len() > 1 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// Sierra Chart held ES and had confirmed NQ in its own spelling, and
+    /// comes back on Rithmic, the book never asked for again in full: the
+    /// last connection's names, the position's among them, are not the
+    /// server's now. Each order goes out under the name the new connection
+    /// confirms, never one from before the drop.
+    #[test]
+    fn names_from_before_a_drop_are_not_used_while_the_book_is_asked_for_again() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").position("Sim1", "ESZ26_FUT_CME", 1, 7_600.0).start();
+        let session = impatient_on(&fake, NO_FOLDER);
+        session.place(&sell_one("NQZ6", OrderKind::Limit, Some(30_000.0))).expect("taken");
+        fake.set_rithmic_symbols(true);
+        fake.set_unanswered(Some(dtc::wire::CURRENT_POSITIONS_REQUEST));
+        fake.drop_connections();
+        assert!(again(&fake, &session), "never reconnected");
+        assert!(!session.trading.book().synced);
+        session.place(&sell_one("ESZ6", OrderKind::Limit, Some(9_000.0))).expect("ES taken on Rithmic");
+        session.place(&sell_one("NQZ6", OrderKind::Limit, Some(30_000.0))).expect("NQ taken on Rithmic");
+        assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER), ["NQZ26_FUT_CME", "ESZ6.CME", "NQZ6.CME"]);
         session.sign_out();
     }
 
@@ -1238,20 +1282,50 @@ mod tests {
         Folder { stem: |contract| (contract == "ESZ6").then(|| "ESZ26_FUT_CME".to_string()), style: || Some(feed::Style::Underscored) };
 
     /// Sierra Chart on its own service, silent on every name, its own
-    /// included: a market order goes out under the name of the file the
-    /// chart is drawn from, as it did before names were confirmed, and the
-    /// Log says so. A priced order, whose price needs the definition, does
-    /// not; nor a market order when what the server holds is spelled in
-    /// another style than the file.
+    /// included, and holding NQ in its own spelling: a market order of ES
+    /// goes out under the name of the file the chart is drawn from, and
+    /// the Log says so. What it fills at shows no price, rather than one in
+    /// the server's hundredths, until the definition comes, then its real
+    /// one. A priced order, whose price needs the definition, does not go.
     #[test]
     fn a_market_order_goes_out_under_its_file_s_name_when_the_server_answers_for_no_name() {
-        let fake = dtc::fake::Fake::builder().account("Sim1").unknown_contracts_unanswered().market_price(7_600.0).start();
+        let fake = dtc::fake::Fake::builder()
+            .account("Sim1")
+            .unknown_contracts_unanswered()
+            .position("Sim1", "NQZ26_FUT_CME", 1, 26_000.0)
+            .market_price(765_025.0)
+            .start();
         let session = impatient_on(&fake, OWN_FOLDER);
-        session.place(&sell_one("ESZ6", OrderKind::Market, None)).expect("taken");
+        let basket = session.place(&sell_one("ESZ6", OrderKind::Market, None)).expect("taken");
         assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER), ["ESZ26_FUT_CME"]);
         assert!(session.place(&sell_one("ESZ6", OrderKind::Limit, Some(9_000.0))).is_err());
         session.place(&sell_one("ESZ6", OrderKind::Market, None)).expect("taken again, at once");
         assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER), ["ESZ26_FUT_CME", "ESZ26_FUT_CME"]);
+        fake.fill(&basket, 1, 765_025.0);
+        assert!(until(session.as_ref(), |book| book.position("Sim1", "ESZ6").is_some()), "never held");
+        let book = session.book();
+        assert_eq!(book.position("Sim1", "ESZ6").map(|held| (held.net, held.avg)), Some((-1, None)), "a price a hundred times its own");
+        assert_eq!(book.order(&basket).and_then(|order| order.average_fill()), None);
+        fake.define("ESZ26_FUT_CME", "ES", 0.25, 12.5, 1797206400, 0.009999999776482582);
+        session.refresh().expect("refreshed");
+        assert!(until(session.as_ref(), |book| book.position("Sim1", "ESZ6").and_then(|held| held.avg) == Some(7_650.25)), "never real");
+        assert_eq!(session.book().order(&basket).and_then(|order| order.average_fill()), Some(7_650.25));
+        session.sign_out();
+    }
+
+    /// The same, but nothing held or working, so nothing says how the
+    /// server spells: the folder's style is the folder's own, and the
+    /// market order is refused, saying Sierra Chart didn't confirm the
+    /// contract. Refused too when what is held is in another style.
+    #[test]
+    fn a_market_order_under_an_unconfirmed_name_needs_the_server_s_own_style() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").unknown_contracts_unanswered().market_price(7_600.0).start();
+        let session = impatient_on(&fake, OWN_FOLDER);
+        for _ in 0..2 {
+            let refused = session.place(&sell_one("ESZ6", OrderKind::Market, None));
+            assert!(matches!(&refused, Err(Failure::Refused(why)) if why.contains("didn't confirm ESZ6")), "{refused:?}");
+        }
+        assert!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER).is_empty());
         session.sign_out();
 
         let fake =

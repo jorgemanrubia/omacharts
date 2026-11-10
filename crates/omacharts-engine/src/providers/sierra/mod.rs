@@ -804,14 +804,22 @@ mod tests {
     }
 
     /// A one-digit year means the same year typed as a contract and named
-    /// in a Sierra Chart symbol.
+    /// in a Sierra Chart symbol, both read by the exchange's clock: on New
+    /// Year's Eve in the evening in Chicago, already the new year in UTC,
+    /// as on any other day.
     #[test]
     fn a_one_digit_year_is_the_same_year_typed_and_in_a_symbol() {
-        let today = crate::contracts::today();
-        for digit in 0..10 {
-            let typed = crate::contracts::parse(&format!("CLZ{digit}"), today).unwrap().1.year;
-            let named = sierra::parse(&format!("CLZ{digit}.NYMEX")).unwrap().contract.unwrap().year;
-            assert_eq!(typed, named, "CLZ{digit}");
+        let new_year_utc = sierra::unix_seconds_from_civil(2027, 1, 1);
+        let evening = [-6 * 3600, -1, 0, 2 * 3600, 6 * 3600 - 1, 6 * 3600];
+        let instants = evening.iter().map(|offset| new_year_utc + offset).chain([sierra::unix_seconds_from_civil(2026, 7, 4)]);
+        for at in instants {
+            let today = crate::contracts::date_at(at);
+            assert_eq!(sierra::exchange_year(at), chrono::Datelike::year(&today), "{at}: two clocks");
+            for digit in 0..10 {
+                let typed = crate::contracts::parse(&format!("CLZ{digit}"), today).unwrap().1.year;
+                let named = sierra::symbols::parse_in(&format!("CLZ{digit}.NYMEX"), sierra::exchange_year(at)).unwrap().contract.unwrap().year;
+                assert_eq!(typed, named, "CLZ{digit} at {at}");
+            }
         }
     }
 

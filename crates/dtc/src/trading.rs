@@ -13,7 +13,9 @@
 //! 7651.25 as 765125, and says so in each contract's
 //! `DisplayPriceMultiplier`. So the session learns every contract's
 //! multiplier from its definition before it shows or sends a price for it,
-//! and everything this module hands out or takes in is a real price.
+//! and everything this module hands out or takes in is a real price: a
+//! contract whose definition has not come yet has no price in the book,
+//! and no fills, rather than one a hundred times its own.
 //!
 //! **Orders are never sent behind a trader's back.** A drop is reported
 //! ([`Pulse::Lost`]), reconnected with a doubling wait, and everything the
@@ -23,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -457,13 +459,12 @@ fn wire_price(price: f64, multiplier: f64) -> f64 {
 }
 
 impl State {
-    fn multiplier(&self, symbol: &str) -> f64 {
-        self.multipliers.get(symbol).copied().unwrap_or(1.0)
-    }
-
-    /// The book, with every price made real.
+    /// The book, with every price made real: none for a contract whose
+    /// multiplier is not known yet, and none of its fills, since a price
+    /// that travelled in hundredths would show a hundred times itself.
     pub fn book(&self) -> Book {
-        let scale = |symbol: &str, price: Option<f64>| price.map(|price| real(price, self.multiplier(symbol)));
+        let multiplier = |symbol: &str| self.multipliers.get(symbol).copied();
+        let scale = |symbol: &str, price: Option<f64>| Some(real(price?, multiplier(symbol)?));
         Book {
             accounts: self.accounts.clone(),
             balances: self.accounts.iter().filter_map(|account| self.balances.get(&account.id).cloned()).collect(),
@@ -484,7 +485,11 @@ impl State {
                     ..order.clone()
                 })
                 .collect(),
-            fills: self.fills.iter().map(|fill| Fill { price: real(fill.price, self.multiplier(&fill.symbol)), ..fill.clone() }).collect(),
+            fills: self
+                .fills
+                .iter()
+                .filter_map(|fill| Some(Fill { price: real(fill.price, multiplier(&fill.symbol)?), ..fill.clone() }))
+                .collect(),
             synced: self.synced,
         }
     }
@@ -815,6 +820,8 @@ struct Shared {
     /// Where the next ClientOrderID starts: the sign-in's milliseconds, so
     /// one session's ids are not another's.
     orders: AtomicI64,
+    /// How many times the connection has dropped: see [`Trading::connection`].
+    drops: AtomicU64,
     threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -922,7 +929,8 @@ impl Shared {
 
     /// Ask for everything: the accounts, then each one's balance, positions,
     /// working orders and today's fills, and the definition of every
-    /// contract they name.
+    /// contract they name, waited for, since the book shows none of their
+    /// prices without it.
     fn sync(&self) -> Result<(), Error> {
         let listed = self.ask(wire::TRADE_ACCOUNTS_REQUEST, json!({}), true)?;
         let accounts: Vec<String> = listed.iter().filter_map(|message| message.text("TradeAccount")).collect();
@@ -938,6 +946,7 @@ impl Shared {
                 .iter()
                 .map(|order| order.symbol.clone())
                 .chain(state.positions.iter().map(|position| position.symbol.clone()))
+                .chain(state.fills.iter().map(|fill| fill.symbol.clone()))
                 .filter(|symbol| !state.multipliers.contains_key(symbol))
                 .collect();
             symbols.sort();
@@ -1090,6 +1099,7 @@ impl Trading {
             stop: AtomicBool::new(false),
             ids: AtomicI64::new(1),
             orders: AtomicI64::new(started),
+            drops: AtomicU64::new(0),
             threads: Mutex::new(Vec::new()),
         });
         let thread = {
@@ -1121,6 +1131,14 @@ impl Trading {
     /// `account`'s money, when the server gives it.
     pub fn balance(&self, account: &str) -> Option<Balance> {
         lock(&self.shared.state).balances.get(account).cloned()
+    }
+
+    /// Which connection the session is on: 0 at sign-in, one more the
+    /// moment each one drops, before anything is reconnected or asked
+    /// again. What was learned of the server on one connection may not hold
+    /// on the next, which may be to Sierra Chart on another service.
+    pub fn connection(&self) -> u64 {
+        self.shared.drops.load(Ordering::SeqCst)
     }
 
     /// Everything the session knows, as it stands.
@@ -1605,10 +1623,13 @@ impl Trading {
     }
 
     /// Ask again for every account's balance, positions and working orders,
-    /// and wait for the answers.
+    /// and wait for the answers; and again for the definition of every
+    /// contract the book names that has none yet, whose prices it holds
+    /// back until one comes.
     pub fn refresh(&self) -> Result<(), Error> {
         let accounts: Vec<String> = self.accounts().into_iter().map(|account| account.id).collect();
         self.shared.snapshot(&accounts, false)?;
+        lock(&self.shared.state).asked.clear();
         self.shared.ask_definitions();
         self.shared.told();
         Ok(())
@@ -1616,7 +1637,9 @@ impl Trading {
 
     /// `account`'s fills from `from` to `to`, unix seconds, oldest first:
     /// HISTORICAL_ORDER_FILLS_REQUEST, which takes a start and a number of
-    /// days back; what is past `to` is left out here. Not added to the book.
+    /// days back; what is past `to` is left out here, and so is a fill of a
+    /// contract whose definition does not come, rather than shown at a price
+    /// that may be a hundred times its own. Not added to the book.
     pub fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Fill>, Error> {
         let days = ((now() - from).max(0) / 86_400 + 1).max(1);
         let answers = self.shared.ask(
@@ -1632,10 +1655,13 @@ impl Trading {
             .collect();
         drop(state);
         for symbol in fills.iter().map(|fill| fill.symbol.clone()).collect::<HashSet<_>>() {
-            if let Some(multiplier) = self.shared.multiplier(&symbol) {
-                for fill in fills.iter_mut().filter(|fill| fill.symbol == symbol) {
-                    fill.price = real(fill.price, multiplier);
+            match self.shared.multiplier(&symbol) {
+                Some(multiplier) => {
+                    for fill in fills.iter_mut().filter(|fill| fill.symbol == symbol) {
+                        fill.price = real(fill.price, multiplier);
+                    }
                 }
+                None => fills.retain(|fill| fill.symbol != symbol),
             }
         }
         fills.sort_by_key(|fill| fill.at);
@@ -1759,6 +1785,7 @@ fn run(shared: &Arc<Shared>, first: Link) {
         if let Some(open) = link.take() {
             let ended = read(shared, open);
             *lock(&shared.sender) = None;
+            shared.drops.fetch_add(1, Ordering::SeqCst);
             {
                 let mut state = lock(&shared.state);
                 state.connected = false;

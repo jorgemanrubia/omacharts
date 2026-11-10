@@ -696,6 +696,46 @@ fn a_dropped_connection_is_lost_then_back_with_the_book_asked_for_again() {
     trading.sign_out();
 }
 
+/// The connection is counted as another the moment it drops, before it
+/// is back, and whether or not the book is ever asked for again.
+#[test]
+fn a_dropped_connection_is_another_connection_before_it_is_back() {
+    let fake = stocked().start();
+    let (trading, heard) = sign_in(&fake);
+    assert_eq!(trading.connection(), 0);
+    fake.set_unanswered(Some(wire::CURRENT_POSITIONS_REQUEST));
+    fake.drop_connections();
+    eventually(Duration::from_secs(3), "the drop counted", || trading.connection() == 1);
+    eventually(Duration::from_secs(3), "logged on again", || fake.logons() == 2);
+    assert!(!trading.book().synced, "the book is not whole again");
+    assert!(!heard.lock().unwrap().contains(&Pulse::Back), "back before the book was asked for again");
+    trading.sign_out();
+}
+
+/// A market order for a contract whose definition Sierra has not given:
+/// what it filled at, and the position, show no price at all, not one in
+/// the server's hundredths, until the definition comes, then the real one.
+#[test]
+fn a_contract_with_no_definition_yet_shows_no_price_until_one_comes() {
+    let fake = Fake::builder().account("Sim1").unknown_contracts_unanswered().fills(Fills::Immediately).market_price(765025.0).start();
+    let (trading, _) = sign_in(&fake);
+    let id = trading.place(&order("Sim1", ES, Side::Buy, 1, OrderKind::Market, None)).unwrap();
+    eventually(Duration::from_secs(2), "the position held", || !trading.book().positions.is_empty());
+    let book = trading.book();
+    assert_eq!(book.positions[0].avg_price, None, "a price a hundred times its own");
+    assert_eq!(book.orders.iter().find(|order| order.is(&id)).unwrap().avg_fill_price, None);
+    assert!(book.fills.is_empty());
+    fake.define(ES, "ES", 0.25, 12.5, 1797206400, 0.009999999776482582);
+    trading.refresh().unwrap();
+    eventually(Duration::from_secs(2), "the position at its real price", || {
+        trading.book().positions.first().is_some_and(|position| position.avg_price == Some(7650.25))
+    });
+    let book = trading.book();
+    assert_eq!(book.orders.iter().find(|order| order.is(&id)).unwrap().avg_fill_price, Some(7650.25));
+    assert!(!book.fills.is_empty() && book.fills.iter().all(|fill| fill.price == 7650.25));
+    trading.sign_out();
+}
+
 #[test]
 fn placing_while_the_connection_is_down_fails_at_once() {
     let fake = Fake::builder().account("Sim1").start();
@@ -928,9 +968,15 @@ fn the_session_sierra_sent_folds_into_a_book_of_its_accounts_balance_and_fills()
     assert_eq!(book.balances.len(), 1, "the simulated accounts have none");
     assert_eq!((book.balances[0].cash, book.balances[0].daily_loss_limit), (1852.88, Some(-1500.0)));
     assert!(book.positions.is_empty() && book.orders.is_empty());
-    // The fills arrived in hundredths, before any definition said so; the
-    // definition of MES would make them real.
-    assert!(book.fills.iter().all(|fill| fill.symbol == "MESZ26_FUT_CME" && fill.price > 700_000.0));
+    // The fills arrived in hundredths, before any definition said so: none
+    // shows until the definition of MES makes them real.
+    assert!(book.fills.is_empty(), "a fill shown at a hundred times its price");
+    assert!(state.fold_for_test(&wire::Message::new(
+        wire::SECURITY_DEFINITION_RESPONSE,
+        serde_json::json!({ "Symbol": "MESZ26_FUT_CME", "SecurityType": 1, "MinPriceIncrement": 0.25, "DisplayPriceMultiplier": 0.009999999776482582 }),
+    )));
+    let fills = state.book().fills;
+    assert!(!fills.is_empty() && fills.iter().all(|fill| fill.symbol == "MESZ26_FUT_CME" && fill.price > 6_000.0 && fill.price < 9_000.0));
     let logon = messages.iter().find(|message| message.kind() == wire::LOGON_RESPONSE).unwrap();
     let server = Server::from_logon(logon, wire::EncodingReply { protocol: 8, encoding: Encoding::Json });
     assert!(server.trading && server.oco && server.brackets && !server.historical);

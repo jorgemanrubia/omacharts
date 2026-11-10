@@ -1,4 +1,5 @@
-//! Calendar dates from unix time and back, in UTC.
+//! Calendar dates from unix time and back, in UTC, and this year as the
+//! exchanges count it, in Chicago.
 //!
 //! Small enough to keep here rather than take a date crate for: a `.dly`
 //! row is a date, a two-digit contract year needs this year, and that is
@@ -40,13 +41,25 @@ pub(crate) fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (year as i32, month, day)
 }
 
-/// This year, by the system clock.
+/// Chicago's offset from UTC in winter, Central Standard Time.
+const CHICAGO_WINTER: i64 = -6 * 3600;
+
+/// The year it is in Chicago at a unix time: the exchanges' year, the one
+/// the app reads a contract typed by (`contracts::today`), so that a
+/// contract's one-digit year means the same year in a file's name. Chicago
+/// is on standard time at every new year, daylight saving being from March
+/// to November, so its winter offset gives the year all year round.
+pub fn exchange_year(unix_seconds: i64) -> i32 {
+    civil_from_unix_seconds(unix_seconds + CHICAGO_WINTER).0
+}
+
+/// This year as the exchanges count it, by the system clock.
 pub(crate) fn current_year() -> i32 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    civil_from_unix_seconds(now).0
+    exchange_year(now)
 }
 
 #[cfg(test)]
@@ -59,6 +72,18 @@ mod tests {
             let (y, m, d) = civil_from_days(days);
             assert_eq!(days_from_civil(y, m, d), days);
         }
+    }
+
+    /// New Year's Eve after six in the evening in Chicago is already the
+    /// new year in UTC, and still the old one at the exchange.
+    #[test]
+    fn the_year_turns_at_midnight_in_chicago() {
+        let new_year_utc = unix_seconds_from_civil(2027, 1, 1);
+        assert_eq!(exchange_year(new_year_utc - 1), 2026);
+        assert_eq!(exchange_year(new_year_utc + 2 * 3600), 2026, "8pm on 31 December in Chicago");
+        assert_eq!(exchange_year(new_year_utc + 6 * 3600 - 1), 2026);
+        assert_eq!(exchange_year(new_year_utc + 6 * 3600), 2027, "midnight in Chicago");
+        assert_eq!(exchange_year(unix_seconds_from_civil(2026, 7, 4)), 2026);
     }
 
     #[test]
