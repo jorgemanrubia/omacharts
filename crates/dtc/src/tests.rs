@@ -772,7 +772,10 @@ fn an_order_update_that_comes_before_the_definition_is_made_real_once_it_lands()
     eventually(Duration::from_secs(2), "the fill price is real", || {
         trading.book().orders.iter().any(|order| order.is(&id) && order.avg_fill_price == Some(7650.25))
     });
-    assert_eq!(trading.book().positions[0].avg_price, Some(7650.25));
+    // The position update comes after the fill's order update.
+    eventually(Duration::from_secs(2), "the position is held at its real price", || {
+        trading.book().positions.first().is_some_and(|position| position.avg_price == Some(7650.25))
+    });
     assert!(fake.received_of(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).iter().any(|asked| asked.text("Symbol").as_deref() == Some(ES)));
     assert!(heard.lock().unwrap().contains(&Pulse::Moved));
     trading.sign_out();
