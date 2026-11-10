@@ -89,7 +89,8 @@ From anywhere:
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>V</kbd> | Splits it vertically | [Layouts](/manual/layouts/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>X</kbd> | Closes the focused chart | [Layouts](/manual/layouts/) |
 | <kbd>Ctrl</kbd> + <kbd>M</kbd> | Gives the focused chart the whole window, or puts it back | [Layouts](/manual/layouts/) |
-| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Focuses the chart in that direction | [Layouts](/manual/layouts/) |
+| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Focuses the previous or next chart, row by row, wrapping at either end | [Layouts](/manual/layouts/) |
+| <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Focuses the chart above or below | [Layouts](/manual/layouts/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Grows the focused chart in that direction, by moving the divider it sits against | [Layouts](/manual/layouts/) |
 | <kbd>Ctrl</kbd> + <kbd>L</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd> | The focused chart's next or previous link mode: Focus, Follow, Pinned | [Watchlists](/manual/watchlists/#choosing-a-link-mode) |
 | <kbd>Ctrl</kbd> + <kbd>O</kbd> | A screenshot of the focused chart, to the clipboard | [Screenshots](/manual/screenshots/) |

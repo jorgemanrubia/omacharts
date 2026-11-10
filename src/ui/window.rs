@@ -204,7 +204,8 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+M", "Give this chart the window, or put it back"),
             ("Ctrl+L  Ctrl+Shift+L", "Next or previous link mode"),
             ("Ctrl+O", "Screenshot this chart"),
-            ("Alt+← → ↑ ↓", "Focus the chart that way"),
+            ("Alt+← →", "Focus the previous or next chart, row by row"),
+            ("Alt+↑ ↓", "Focus the chart above or below"),
             ("Ctrl+Alt+Shift+← → ↑ ↓", "Resize this chart"),
         ],
     ),
@@ -1408,7 +1409,8 @@ mod tests {
     #[test]
     fn the_keys_drawn_as_glyphs_are_found_by_their_names() {
         assert!(found("down arrow").iter().any(|row| row.contains("Ctrl+↑ ↓")));
-        assert!(found("alt left").iter().any(|row| row.contains("Alt+← → ↑ ↓")));
+        assert!(found("alt left").iter().any(|row| row.contains("Alt+← →")));
+        assert!(found("alt up").iter().any(|row| row.contains("Alt+↑ ↓")));
         assert_eq!(found("plus"), vec!["+ − — Zoom"]);
         assert_eq!(found("-"), vec!["+ − — Zoom"]);
         assert!(found("escape").iter().any(|row| row.contains("Esc")));
@@ -1711,6 +1713,128 @@ mod tools_toggle_tests {
             assert_eq!(header_starts(&window), vec![inset; 4]);
             assert!(taken(&window).is_empty());
         });
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::bare_window;
+
+    /// Two charts on top and three below, by id: `[top left, top right]`
+    /// and `[bottom left, bottom middle, bottom right]`.
+    fn uneven(window: &Rc<Window>) -> ([u32; 2], [u32; 3]) {
+        let top_left = window.focused.get();
+        window.split_focused(false);
+        let bottom_left = window.focused.get();
+        window.split_focused(true);
+        let bottom_middle = window.focused.get();
+        window.split_focused(true);
+        let bottom_right = window.focused.get();
+        window.focus(top_left);
+        window.split_focused(true);
+        let top_right = window.focused.get();
+        // Laid out at a real size, so the spatial keys have widgets to measure.
+        window.chart_host.allocate(1200, 800, -1, None);
+        ([top_left, top_right], [bottom_left, bottom_middle, bottom_right])
+    }
+
+    fn pressed(window: &Rc<Window>, from: u32, step: i32) -> u32 {
+        window.focus(from);
+        window.focus_along(step);
+        window.focused.get()
+    }
+
+    /// Alt+Right walks every chart in reading order, whatever the rows: off
+    /// the end of the top row into the bottom one, and from the last chart
+    /// back to the first. Alt+Left is the same walk backwards.
+    #[test]
+    fn alt_left_and_right_reach_every_chart_in_reading_order() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let ([tl, tr], [bl, bm, br]) = uneven(&window);
+            let order = [tl, tr, bl, bm, br];
+            assert_eq!(reading_order(&window.layout_rects()), order);
+
+            assert_eq!(pressed(&window, tr, 1), bl, "off the end of the top row");
+            assert_eq!(pressed(&window, br, 1), tl, "the last wraps to the first");
+            assert_eq!(pressed(&window, bl, -1), tr, "back up into the top row");
+            assert_eq!(pressed(&window, tl, -1), br, "the first wraps to the last");
+
+            window.focus(tl);
+            let mut walked = vec![];
+            for _ in 0..order.len() {
+                window.focus_along(1);
+                walked.push(window.focused.get());
+            }
+            assert_eq!(walked, [tr, bl, bm, br, tl]);
+            for _ in 0..order.len() {
+                window.focus_along(-1);
+                walked.push(window.focused.get());
+            }
+            assert_eq!(walked[5..], [br, bm, bl, tr, tl]);
+        });
+    }
+
+    /// Alt+Up and Down are still the chart that way on screen.
+    #[test]
+    fn alt_up_and_down_stay_spatial() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let ([tl, tr], [bl, _, br]) = uneven(&window);
+            let towards = |from: u32, dy: i32| {
+                window.focus(from);
+                window.focus_towards(0, dy);
+                window.focused.get()
+            };
+            assert_eq!(towards(tl, 1), bl);
+            assert_eq!(towards(br, -1), tr);
+            assert_eq!(towards(tl, -1), tl, "nothing above the top row");
+            assert_eq!(towards(bl, 1), bl, "nothing below the bottom row");
+        });
+    }
+
+    /// Maximized, the window goes with the focus: Alt+Left and Right cycle
+    /// through every chart one window at a time, and Up and Down still go
+    /// the way they point.
+    #[test]
+    fn maximized_the_window_follows_the_focus() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let ([tl, tr], [bl, bm, br]) = uneven(&window);
+            window.focus(tr);
+            window.toggle_maximized();
+            assert_eq!(window.maximized.get(), Some(tr));
+            for (step, reached) in [(1, bl), (1, bm), (1, br), (1, tl), (-1, br)] {
+                window.focus_along(step);
+                assert_eq!(window.focused.get(), reached);
+                assert_eq!(window.maximized.get(), Some(reached), "the window stayed behind");
+            }
+            window.focus(tl);
+            window.focus_towards(0, 1);
+            assert_eq!(window.maximized.get(), Some(bl), "down, maximized");
+        });
+    }
+
+    /// Rows are read by where the charts start: a tall chart belongs to the
+    /// row it starts in, and two columns split at nearly the same height
+    /// still read as two rows rather than a staircase.
+    #[test]
+    fn reading_order_reads_rows_off_the_screen() {
+        // A tall chart on the left, two stacked on the right.
+        let tall = HashMap::from([(1, (0.0, 0.0, 600.0, 800.0)), (2, (600.0, 0.0, 600.0, 400.0)), (3, (600.0, 400.0, 600.0, 400.0))]);
+        assert_eq!(reading_order(&tall), [1, 2, 3]);
+        // Columns first, each split near the middle: still row by row.
+        let columns = HashMap::from([
+            (1, (0.0, 0.0, 600.0, 400.0)),
+            (2, (0.0, 400.0, 600.0, 400.0)),
+            (3, (600.0, 0.0, 600.0, 380.0)),
+            (4, (600.0, 380.0, 600.0, 420.0)),
+        ]);
+        assert_eq!(reading_order(&columns), [1, 3, 2, 4]);
     }
 }
 
@@ -2603,6 +2727,35 @@ fn step_round(current: usize, count: usize, by: i32) -> usize {
 }
 
 /// The key that picks the template at `n` in the list, or none for 0.
+/// The charts in reading order: by row from the top, and left to right
+/// within a row, which is the order `chart list` gives a chartbook built row
+/// by row.
+///
+/// A row is the charts whose tops are level, give or take a twentieth of the
+/// area's height: two columns split at slightly different heights still read
+/// as one row below the other, not as a staircase. A chart taller than its
+/// neighbours belongs to the row it starts in.
+fn reading_order(rects: &HashMap<u32, (f64, f64, f64, f64)>) -> Vec<u32> {
+    let mut charts: Vec<(u32, f64, f64)> = rects.iter().map(|(id, r)| (*id, r.0, r.1)).collect();
+    charts.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.1.total_cmp(&b.1)).then(a.0.cmp(&b.0)));
+    let top = rects.values().map(|r| r.1).fold(f64::INFINITY, f64::min);
+    let bottom = rects.values().map(|r| r.1 + r.3).fold(f64::NEG_INFINITY, f64::max);
+    let level = (bottom - top) / 20.0;
+    let mut rows: Vec<Vec<(u32, f64, f64)>> = Vec::new();
+    for chart in charts {
+        match rows.last_mut() {
+            Some(row) if chart.2 - row[0].2 <= level => row.push(chart),
+            _ => rows.push(vec![chart]),
+        }
+    }
+    rows.into_iter()
+        .flat_map(|mut row| {
+            row.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+            row.into_iter().map(|(id, _, _)| id)
+        })
+        .collect()
+}
+
 fn template_accel(n: usize) -> String {
     format!("<Ctrl><Alt><Shift>{n}")
 }
@@ -4699,7 +4852,32 @@ impl Window {
         self.rebuild_layout();
     }
 
-    /// Walk the focus to the next or previous chart in layout order.
+    /// Walk the focus to the next or previous chart in reading order — top
+    /// to bottom, and left to right within a row — wrapping at either end.
+    ///
+    /// This is Alt+Left and Alt+Right, and they are not spatial on purpose.
+    /// A spatial step left or right has nothing to go to at the end of a row,
+    /// so in a chartbook of uneven rows the key did nothing, and a chart in
+    /// the other row was out of reach of it. Reading order goes everywhere:
+    /// in a plain row it is the same step a spatial one would take, and at
+    /// the end of a row it carries on into the next. Taking the spatial step
+    /// whenever there is one, and reading order only when there is not, would
+    /// look kinder and is not: beside a tall chart, the spatial step can jump
+    /// past a chart that the fallback then never lands on either.
+    ///
+    /// Maximized, `focus` hands the window to the chart reached, so the keys
+    /// cycle through the charts one window at a time.
+    pub fn focus_along(self: &Rc<Self>, step: i32) {
+        let order = reading_order(&self.layout_rects());
+        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else { return };
+        if order.len() < 2 {
+            return;
+        }
+        let next = (at as i64 + step as i64).rem_euclid(order.len() as i64) as usize;
+        self.focus(order[next]);
+        self.hush_pointer();
+    }
+
     /// Move the focus to the nearest chart in a direction.
     ///
     /// By where the charts are on screen, not by where they sit in the tree.
@@ -7318,12 +7496,14 @@ impl Window {
                     this.prompt_range();
                     return glib::Propagation::Stop;
                 }
+                // Alt+Left and Right walk every chart in reading order; Up and
+                // Down go to the chart that way. See `focus_along`.
                 Key::Left if alt && !ctrl => {
-                    this.focus_towards(-1, 0);
+                    this.focus_along(-1);
                     return glib::Propagation::Stop;
                 }
                 Key::Right if alt && !ctrl => {
-                    this.focus_towards(1, 0);
+                    this.focus_along(1);
                     return glib::Propagation::Stop;
                 }
                 Key::Up if alt && !ctrl => {
