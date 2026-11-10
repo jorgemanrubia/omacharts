@@ -782,6 +782,9 @@ fn build_charts_page(context: &Rc<Context>) {
     }
     *context.refill_default_template.borrow_mut() = Some(refill);
     indicators.add(&template);
+    indicators.add(&switch(crate::ui::chart_settings::LEGEND_LABEL, current.shows_legend, |d, on| {
+        d.shows_legend = on
+    }));
 
     drawings.add(&footer);
     for group in [&bars, &scales, &hours, &indicators, &drawings] {

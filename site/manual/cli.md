@@ -408,6 +408,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
 | `--indicators on` or `off` | Draws the chart's indicators, or hides them all | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
+| `--legend on` or `off` | Shows the indicator legend, or none of it | [The legend](/manual/indicators/#the-legend) |
 | `--link MODE` | `focus`, `follow`, `pinned` | [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist) |
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
@@ -520,7 +521,7 @@ other states leave them as they are. `config set hollow_up off` and
 charts open with, and remembers nothing to go back to.
 
 The chart defaults (`bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`, `chart_session`, `show_grid`,
-`chart_log_scale`, `chart_header`, `timeframes`) are set with `config set`;
+`chart_log_scale`, `chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
 see [Settings](#settings).
 
 ## Indicators

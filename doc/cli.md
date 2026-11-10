@@ -629,7 +629,7 @@ checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--title`, `--style`,
 `--thickness`, `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
-`--indicators` and `--drawings` — and those are stored with the chart,
+`--indicators`, `--legend` and `--drawings` — and those are stored with the chart,
 so a price axis held still with `--auto-scale off` is still held the next
 time the app opens.
 
@@ -650,6 +650,15 @@ they were. In the window it is Ctrl+Shift+H.
 
 ```sh
 omacharts chart set --indicators off
+```
+
+`--legend off` takes the legend naming the chart's indicators away, every line
+of it; the indicators are drawn as before. With `on`, each indicator's own
+`--legend` (`chart indicator set`) decides whether it is named. A new chart
+takes `chart_shows_legend`, on unless `config set chart_shows_legend off`.
+
+```sh
+omacharts chart set --legend off
 ```
 
 `--drawings off` hides every drawing on the chart, its own and those other
@@ -1027,8 +1036,8 @@ does not remember the scheme that was in use.
 
 What a new chart opens with is a handful of settings, the ones the preferences
 show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`,
-`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings` and
-`chart_sends_drawings`. Changing
+`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings`,
+`chart_sends_drawings` and `chart_shows_legend`. Changing
 one chart never changes them.
 
 ## Which data feed the charts come from

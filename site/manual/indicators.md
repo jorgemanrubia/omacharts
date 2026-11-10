@@ -168,6 +168,8 @@ The legend lists the chart's indicators under the symbol, faint until the pointe
 
 An indicator with **Show in chart legend** off in its settings has no line in the legend, and is still drawn. Hiding it is the switch on its row in the [Indicators page](#the-indicators-page). [Session Times](/manual/indicators/session-times/) starts out of the legend, and every other indicator in it.
 
+**Show legend for indicators**, on the [Indicators page](/manual/chart-settings/#the-indicators-page) under **Chart template**, takes the whole legend off the chart, and puts it back. Each indicator's own **Show in chart legend** applies again once it is on. It is kept with the chart, and Preferences › Charts › **Indicators** says what a new chart opens with ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)). From a terminal it is `omacharts chart set --legend off` for one chart and `omacharts config set chart_shows_legend off` for the default.
+
 The label is the indicator's short name and its lengths, in the order its settings list them, such as **SMA 50** or **MACD 12 26 9**. A VWAP, a volume profile or a cumulative delta shows its period instead, such as **VWAP · Session**. When the period in use differs from the one chosen, the label names the one in use ([Reset periods](#reset-periods)). [Session Times](/manual/indicators/session-times/) names its ranges: **Sessions · ETH, London**.
 
 ## Hiding every indicator

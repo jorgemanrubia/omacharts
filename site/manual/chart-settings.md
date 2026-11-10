@@ -52,7 +52,7 @@ crop: 700,84,1160,1276
 
 ### The Indicators page
 
-The Indicators page lists the chart's indicators under **On the chart**, or the template's under **On the Default template** on a chart on one, with the **Chart template** row above them. <kbd>Ctrl</kbd> + <kbd>I</kbd> and the chart menu's **Indicators…** open the dialog on this page. Its rows are in [Indicators](/manual/indicators/#the-indicators-page), and the template row in [Chart templates](/manual/chart-templates/).
+The Indicators page lists the chart's indicators under **On the chart**, or the template's under **On the Default template** on a chart on one, with the **Chart template** and **Show legend for indicators** rows above them; off, the second takes the [legend](/manual/indicators/#the-legend) off the chart. <kbd>Ctrl</kbd> + <kbd>I</kbd> and the chart menu's **Indicators…** open the dialog on this page. Its rows are in [Indicators](/manual/indicators/#the-indicators-page), and the template row in [Chart templates](/manual/chart-templates/).
 
 ## Defaults for new charts
 
@@ -80,6 +80,7 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 | **Scales** › **Gridlines** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
+| **Indicators** › **Show legend for indicators** | On or off ([The legend](/manual/indicators/#the-legend)) | On |
 | **Drawings** › **Show drawings from other charts**, **Send drawings to other charts** | On or off ([Drawings](/manual/drawings/)) | On |
 
 A new chart's price scale starts by fitting the bars.
@@ -90,7 +91,7 @@ Once a row has changed, *New charts will use these options.* and **Apply to all 
 
 ### Putting one chart back on the defaults
 
-**Reset to defaults** › **Reset**, at the bottom of the Chart page, puts the focused chart's bars, session, scales, drawing switches and template back on the defaults. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
+**Reset to defaults** › **Reset**, at the bottom of the Chart page, puts the focused chart's bars, session, scales, drawing switches, legend and template back on the defaults. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
 
 ## See also
 

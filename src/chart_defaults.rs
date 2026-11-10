@@ -24,6 +24,8 @@ pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THIC
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
+/// Whether a chart draws its indicator legend at all.
+pub const SETTING_SHOWS_LEGEND: &str = "chart_shows_legend";
 /// The chart template a new chart opens with, by id, or [`NO_TEMPLATE`].
 pub const SETTING_TEMPLATE: &str = "chart_template";
 /// How "no template" is written down, so that it reads as a choice rather
@@ -45,6 +47,9 @@ pub struct ChartDefaults {
     pub log_scale: bool,
     pub shows_drawings: bool,
     pub sends_drawings: bool,
+    /// Whether the chart draws its indicator legend. Each indicator's own
+    /// `in_legend` still decides whether it is named while this is on.
+    pub shows_legend: bool,
     /// The chart template it shows, if any. See [`crate::templates`].
     pub template: Option<u32>,
 }
@@ -63,6 +68,7 @@ impl Default for ChartDefaults {
             log_scale: false,
             shows_drawings: true,
             sends_drawings: true,
+            shows_legend: true,
             template: None,
         }
     }
@@ -113,6 +119,7 @@ impl ChartDefaults {
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
             shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
             sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
+            shows_legend: store.setting_bool(SETTING_SHOWS_LEGEND, fallback.shows_legend),
             template: store.setting(SETTING_TEMPLATE).and_then(|id| id.parse().ok()),
         }
     }
@@ -128,6 +135,7 @@ impl ChartDefaults {
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
         store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
         store.set_setting_bool(SETTING_SENDS_DRAWINGS, self.sends_drawings);
+        store.set_setting_bool(SETTING_SHOWS_LEGEND, self.shows_legend);
         let template = self.template.map(|id| id.to_string());
         store.set_setting(SETTING_TEMPLATE, template.as_deref().unwrap_or(NO_TEMPLATE));
     }
@@ -150,6 +158,7 @@ mod tests {
         assert!(!fresh.swapped && !fresh.hollow_up && !fresh.show_grid);
         assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
         assert!(fresh.shows_drawings && fresh.sends_drawings);
+        assert!(fresh.shows_legend, "the legend is shown unless somebody turns it off");
 
         let chosen = ChartDefaults {
             bar_style: BarStyle::Ohlc,
@@ -162,6 +171,7 @@ mod tests {
             log_scale: true,
             shows_drawings: false,
             sends_drawings: false,
+            shows_legend: false,
             template: None,
         };
         chosen.save(&store);

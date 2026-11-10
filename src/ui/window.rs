@@ -714,6 +714,7 @@ mod tests {
                 link: LinkMode::Focus,
                 shows_drawings: true,
                 sends_drawings: true,
+                shows_legend: false,
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 profile_merges: Vec::new(),
@@ -747,6 +748,30 @@ mod tests {
         assert!(!back.books[1].panes[0].auto_scale, "a held price scale is still held");
         assert!(back.books[1].panes[0].log_scale, "a log axis is still log");
         assert!(!back.books[0].panes[0].log_scale);
+        assert!(!back.books[1].panes[0].shows_legend, "a chart with its legend off keeps it off");
+    }
+
+    /// Every chart written before the legend could be turned off drew it.
+    #[test]
+    fn a_chart_written_before_the_legend_switch_draws_its_legend() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(workspace.books[0].panes.iter().all(|pane| pane.shows_legend));
+    }
+
+    /// One chart's legend turned off, written through the store and read
+    /// back as a restart reads it, while its neighbour keeps its own.
+    #[test]
+    fn a_legend_turned_off_survives_a_restart() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut bare = stored_pane(1, "SPY", LinkMode::Focus);
+        bare.shows_legend = false;
+        let book = book_of("Macro", vec![bare, stored_pane(2, "QQQ", LinkMode::Focus)]);
+        let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
+        store.set_setting(SETTING_WORKSPACE, &json);
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        let legends: Vec<bool> = back.books[0].panes.iter().map(|p| p.shows_legend).collect();
+        assert_eq!(legends, vec![false, true]);
     }
 
     /// Every chart written before the axis could be logarithmic was linear.
@@ -824,6 +849,7 @@ mod tests {
             link,
             shows_drawings: true,
             sends_drawings: true,
+            shows_legend: true,
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
@@ -1615,6 +1641,123 @@ mod strip_window_tests {
             window.books.borrow_mut().push(elsewhere);
             window.apply_chart_defaults_now(&defaults);
             assert!(window.books.borrow()[1].panes[0].strip_windows.is_empty(), "held where it is written");
+        });
+    }
+}
+
+#[cfg(test)]
+mod legend_switch_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+
+    /// How many indicators the chart's legend names.
+    fn named(pane: &ChartPane) -> usize {
+        let mut count = 0;
+        let mut child = pane.indicator_legend.first_child();
+        while let Some(row) = child {
+            count += 1;
+            child = row.next_sibling();
+        }
+        count
+    }
+
+    /// Three indicators, one of them left out of the legend by its own switch.
+    fn three(window: &Rc<Window>) -> Rc<ChartPane> {
+        let pane = window.focused_pane();
+        let mut quiet = Indicator::new(3, omacharts_engine::IndicatorKind::Sma);
+        quiet.in_legend = false;
+        window.set_indicators_of(
+            &pane,
+            vec![
+                Indicator::new(1, omacharts_engine::IndicatorKind::Sma),
+                Indicator::new(2, omacharts_engine::IndicatorKind::Rsi),
+                quiet,
+            ],
+        );
+        pane
+    }
+
+    /// On, each indicator's own switch decides; off, the legend names none.
+    #[test]
+    fn turning_the_legend_off_hides_all_of_it_and_on_leaves_each_its_own_say() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = three(&window);
+            assert!(window.shows_legend(), "on to begin with");
+            assert_eq!(named(&pane), 2, "the one out of the legend is left out");
+            window.set_shows_legend(false);
+            assert_eq!(named(&pane), 0, "nothing named with the legend off");
+            window.set_shows_legend(true);
+            assert_eq!(named(&pane), 2);
+        });
+    }
+
+    /// The preferences say what a new chart opens with; a chart that says
+    /// otherwise keeps its own answer, across a restart too.
+    #[test]
+    fn a_chart_s_own_legend_wins_over_the_default_and_survives_a_restart() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let mut defaults = ChartDefaults::load(&store);
+            defaults.shows_legend = false;
+            defaults.save(&store);
+
+            let first = window(&store);
+            let fresh = first.new_default_pane(Timeframe::days(1), Vec::new());
+            assert!(!fresh.shows_legend.get(), "a new chart opens on the default");
+
+            let pane = three(&first);
+            first.set_shows_legend(true);
+            assert_eq!(named(&pane), 2, "this chart's own answer, not the default's");
+            first.save_workspace();
+            drop(first);
+
+            let again = window(&store);
+            let pane = again.focused_pane();
+            assert!(pane.shows_legend.get(), "the chart's own answer came back");
+            assert_eq!(named(&pane), 2);
+
+            again.set_shows_legend(false);
+            again.save_workspace();
+            drop(again);
+            let off = window(&store);
+            assert!(!off.focused_pane().shows_legend.get(), "and off came back off");
+            assert_eq!(named(&off.focused_pane()), 0);
+        });
+    }
+
+    /// Applying the defaults and resetting a chart put its legend back to
+    /// the default, as they do its gridlines: on screen and in a book that is
+    /// not.
+    #[test]
+    fn the_defaults_put_a_chart_s_legend_back() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            window.save_workspace();
+            let pane = three(&window);
+            let mut defaults = ChartDefaults::load(&store);
+            defaults.template = None;
+            defaults.shows_legend = false;
+            window.adopt_looks(&pane, &defaults);
+            assert!(!window.shows_legend());
+            assert_eq!(named(&pane), 0);
+            defaults.shows_legend = true;
+            window.adopt_looks(&pane, &defaults);
+            assert_eq!(named(&pane), 2);
+
+            let elsewhere = {
+                let mut book = window.books.borrow()[0].clone();
+                book.name = "Elsewhere".into();
+                book.panes[0].shows_legend = true;
+                book
+            };
+            window.books.borrow_mut().push(elsewhere);
+            defaults.shows_legend = false;
+            window.apply_chart_defaults_now(&defaults);
+            assert!(!window.shows_legend(), "the chart on screen");
+            assert!(!window.books.borrow()[1].panes[0].shows_legend, "the book written down");
         });
     }
 }
@@ -2984,6 +3127,11 @@ struct StoredPane {
     shows_drawings: bool,
     #[serde(default = "yes")]
     sends_drawings: bool,
+    /// Whether the chart draws its indicator legend at all. Missing from a
+    /// chart written before the legend could be turned off, and every one
+    /// of those drew it.
+    #[serde(default = "yes")]
+    shows_legend: bool,
     /// What this chart is called among the drawings it has made. Empty for
     /// a chart written down before drawings remembered who drew them, which
     /// simply means none of them name it.
@@ -3050,6 +3198,7 @@ impl StoredPane {
             drawings_shown: true,
             shows_drawings: true,
             sends_drawings: true,
+            shows_legend: true,
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
@@ -4136,6 +4285,7 @@ impl Window {
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
         pane.view.set_sends(defaults.sends_drawings);
+        pane.shows_legend.set(defaults.shows_legend);
         pane
     }
 
@@ -4656,6 +4806,7 @@ impl Window {
         added.set_ohlc_thickness(from.ohlc_thickness.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
+        added.shows_legend.set(from.shows_legend.get());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -5415,6 +5566,7 @@ impl Window {
                     link: pane.mode(),
                     shows_drawings: pane.shows_drawings.get(),
                     sends_drawings: pane.sends_drawings.get(),
+                    shows_legend: pane.shows_legend.get(),
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     profile_merges: pane.profile_merges.borrow().clone(),
@@ -5693,6 +5845,7 @@ impl Window {
             pane.shows_drawings.set(stored.shows_drawings);
             pane.sends_drawings.set(stored.sends_drawings);
             pane.view.set_sends(stored.sends_drawings);
+            pane.shows_legend.set(stored.shows_legend);
             // Keep the name it was written down under, so the drawings that
             // name it go on naming it. A chart that has none keeps the one
             // it was just minted.
@@ -10549,6 +10702,11 @@ impl Window {
             pane.indicator_legend.remove(&child);
         }
         pane.write_readout();
+        // Read once for the whole legend: off, nothing is named, whatever
+        // each indicator's own `in_legend` says.
+        if !pane.shows_legend.get() {
+            return;
+        }
         let theme = self.theming.borrow().theme();
 
         let timeframe = pane.timeframe.get();
@@ -10910,6 +11068,23 @@ impl Window {
         self.save_workspace();
     }
 
+    /// Whether the focused chart draws its indicator legend.
+    pub fn shows_legend(&self) -> bool {
+        self.focused_pane().shows_legend.get()
+    }
+
+    /// The one way the focused chart's legend is turned on and off from the
+    /// window. This chart only: the preferences say what the next one opens
+    /// with.
+    pub fn set_shows_legend(self: &Rc<Self>, show: bool) {
+        let pane = self.focused_pane();
+        if pane.shows_legend.replace(show) == show {
+            return;
+        }
+        self.rebuild_legend_of(&pane);
+        self.save_workspace();
+    }
+
     /// Whether the focused chart draws its drawings.
     pub fn drawings_shown(&self) -> bool {
         self.focused_pane().view.show_drawings()
@@ -11211,6 +11386,7 @@ impl Window {
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
                 stored.shows_drawings = defaults.shows_drawings;
+                stored.shows_legend = defaults.shows_legend;
                 // Not sending: turning it on or off moves a chart's drawings
                 // between it and its symbol, which only a chart on screen
                 // can do. It takes the default when its book is next open
@@ -11251,6 +11427,9 @@ impl Window {
         pane.view.set_price_log(defaults.log_scale);
         self.set_pane_shows_drawings(pane, defaults.shows_drawings);
         self.set_pane_sends_drawings(pane, defaults.sends_drawings);
+        if pane.shows_legend.replace(defaults.shows_legend) != defaults.shows_legend {
+            self.rebuild_legend_of(pane);
+        }
     }
 
     pub fn measurement_zone(&self) -> chrono_tz::Tz {

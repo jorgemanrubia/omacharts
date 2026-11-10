@@ -368,6 +368,7 @@ pub fn new_pane(
             "link": LinkMode::default().key(),
             "shows_drawings": defaults.shows_drawings,
             "sends_drawings": defaults.sends_drawings,
+            "shows_legend": defaults.shows_legend,
         // What the chart is called among the drawings it makes, so it can
         // take them back if it stops sending.
         "drawing_uid": gtk::glib::uuid_string_random().to_string(),
