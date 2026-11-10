@@ -907,12 +907,41 @@ impl Window {
 
     /// The contract `pane` draws `instrument` as: a root as the month its
     /// feed charts it in, as the feed says; a contract as itself; nothing
-    /// when the feed does not say.
+    /// when the feed does not say. A stitched root is the month it was
+    /// shown up to, which is what its last price is a price of until it is
+    /// shown again as the month after.
     fn drawn_contract(&self, pane: &ChartPane, instrument: &omacharts_engine::Instrument) -> Option<String> {
+        if let Some(shown) = Self::stitched_up_to(pane) {
+            return Some(shown);
+        }
+        self.front_contract(pane, instrument)
+    }
+
+    /// The month `pane`'s feed charts `instrument` as now.
+    fn front_contract(&self, pane: &ChartPane, instrument: &omacharts_engine::Instrument) -> Option<String> {
         match self.route_chosen(pane, instrument) {
             Some(Ok(routed)) => routed.feed.provider.charted_contract(instrument),
             _ => None,
         }
+    }
+
+    /// The month a stitched root on `pane` was shown up to, `ESZ6`, in the
+    /// spelling a feed charts a root as: from the key it was shown under.
+    fn stitched_up_to(pane: &ChartPane) -> Option<String> {
+        let served = pane.served.borrow().clone()?;
+        let (_, symbol) = served.split_once(':')?;
+        let shown = omacharts_engine::continuous::drawn_front(symbol)?;
+        let (root, month) = omacharts_engine::contracts::parse(&shown, omacharts_engine::contracts::today())?;
+        Some(format!("{root}{}{}", month.code(), month.year.rem_euclid(10)))
+    }
+
+    /// The month a stitched root on `pane` is rolling to: its feed charts
+    /// the root as another month than the one it was shown up to, and the
+    /// chart has not been shown again yet.
+    fn rolling_to(&self, pane: &ChartPane, instrument: &omacharts_engine::Instrument) -> Option<String> {
+        let shown = Self::stitched_up_to(pane)?;
+        let front = self.front_contract(pane, instrument)?;
+        (!front.eq_ignore_ascii_case(&shown) && !omacharts_engine::specs::same_month_sizes(&shown, &front)).then_some(front)
     }
 
     /// Why no order may go from `pane` to `target`, when the month it would
@@ -930,6 +959,9 @@ impl Window {
             return None;
         }
         let instrument = pane.instrument.borrow().clone()?;
+        if let Some(next) = self.rolling_to(pane, &instrument) {
+            return Some(format!("this chart is rolling to {next}: an order waits until it is drawn from {next}"));
+        }
         let drawn = self.drawn_contract(pane, &instrument).or_else(|| instrument.is_contract().then(|| instrument.symbol.clone()))?;
         let same = drawn.eq_ignore_ascii_case(&target.contract) || omacharts_engine::specs::same_month_sizes(&drawn, &target.contract);
         (!same).then(|| {
@@ -4524,6 +4556,82 @@ pub(super) mod tests {
             let chosen = window.index.find("ES", None).and_then(|es| es.in_month(later.month)).expect("the later month");
             window.set_trading_symbol(pane.id, Some(chosen));
             assert_eq!(window.wrong_month(&pane, &window.order_target(&pane).unwrap()), None, "chosen on purpose");
+        });
+    }
+
+    /// A root stitched from its months, left open across a roll: from the
+    /// moment its feed charts the next month nothing is placed off it,
+    /// whenever the chart is shown again, since its last price is the old
+    /// month's; once the roll is heard it is shown again as the next
+    /// month, its stream and ladders that month's, and it trades again.
+    #[test]
+    fn a_stitched_chart_open_across_a_roll_is_drawn_again_from_the_next_month() {
+        use omacharts_engine::continuous::{self, fake::Months, Continuous};
+        crate::ui::on_gtk(|| {
+            // On disk, where ladders are kept.
+            let root = std::env::temp_dir().join(format!("omacharts-window-roll-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let store = Rc::new(Store::open_at(&root.join("omacharts.db")).expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Trading, true);
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let months = Arc::new(Months::all());
+            months.roll_to("ESU6");
+            let stitched: Arc<dyn omacharts_engine::Provider> = Arc::new(Continuous::shared(months.clone()));
+            let window = Window::build_with(&app, store.clone(), vec![stitched]);
+            for listed in window.feeds() {
+                listed.usable.set(true);
+            }
+            let pane = window.focused_pane();
+            pane.feed.replace(Some("months".into()));
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es);
+            assert!(settle(&window, || pane.view.last_price().is_some()), "the chart never drew");
+            let served = || pane.served.borrow().clone();
+            let laddered = || pane.ladders.borrow().as_ref().map(|source| source.symbol.clone());
+            assert_eq!(served().as_deref(), Some("months:ES~ESU26~back-adjusted"));
+            assert_eq!(laddered().as_deref(), Some("ES~ESU26~back-adjusted"));
+            assert!(settle(&window, || months.followed.lock().unwrap().iter().any(|symbol| symbol == "ESU26")), "September not followed");
+
+            let (_, session) = sign_in(&window, &store, &["951"]);
+            session.contracts.lock().unwrap().insert("ES".into(), "ESU6".into());
+            window.desk.tell();
+            let placed = || session.book().orders.len();
+            assert_eq!(window.wrong_month(&pane, &window.order_target(&pane).unwrap()), None, "the month drawn is the month traded");
+
+            // The rule rolls: the feed and the trading service take ES to
+            // be December, and the chart, not shown again yet, is still
+            // September's. Whichever month an order would go to, none goes.
+            months.roll_to("ESZ6");
+            session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+            assert_eq!(served().as_deref(), Some("months:ES~ESU26~back-adjusted"));
+            let why = window.wrong_month(&pane, &window.order_target(&pane).unwrap()).expect("refused");
+            assert!(why.contains("rolling to ESZ6"), "{why}");
+            let before = placed();
+            window.market_on(&pane, Side::Buy);
+            let context = glib::MainContext::default();
+            for _ in 0..50 {
+                context.iteration(false);
+            }
+            assert_eq!(placed(), before, "an order judged by September's prices went to December");
+            assert_eq!(served().as_deref(), Some("months:ES~ESU26~back-adjusted"), "shown again before the roll is heard");
+
+            // Heard, nothing else said: shown again as December's.
+            assert!(continuous::check_rolls(), "the September chart's stream not followed");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while served().as_deref() != Some("months:ES~ESZ26~back-adjusted") && std::time::Instant::now() < deadline {
+                context.iteration(false);
+            }
+            assert_eq!(served().as_deref(), Some("months:ES~ESZ26~back-adjusted"), "never shown again");
+            assert_eq!(laddered().as_deref(), Some("ES~ESZ26~back-adjusted"), "the ladders still September's");
+            assert!(settle(&window, || months.followed.lock().unwrap().iter().any(|symbol| symbol == "ESZ26")), "December not followed");
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            assert_eq!(window.wrong_month(&pane, &window.order_target(&pane).unwrap()), None, "December drawn, December traded");
+            let before = placed();
+            window.market_on(&pane, Side::Buy);
+            assert!(settle(&window, || placed() == before + 1), "December not traded off December's chart");
+            let _ = std::fs::remove_dir_all(&root);
         });
     }
 

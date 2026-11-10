@@ -295,3 +295,62 @@ fn the_adjustments_read_back_as_they_are_written() {
     assert_eq!(Adjustment::default(), Adjustment::BackAdjusted);
     assert_eq!(Adjustment::from_key("sideways"), None);
 }
+
+#[test]
+fn a_root_followed_live_is_heard_to_roll_once_its_feed_charts_the_next_month() {
+    let feed = continuous(Months::all());
+    feed.months.roll_to("ESU6");
+    let symbol = feed.symbol_for(&es()).unwrap();
+    assert_eq!(symbol, "ES~ESU26~back-adjusted");
+    let _live = feed.stream().unwrap().subscribe(&symbol, Timeframe::days(1), None, Box::new(|_| {})).unwrap();
+    let _ladders = Ladders::watch(&*feed, &symbol, 0.25, Box::new(|_| {})).unwrap();
+    assert_eq!(*feed.months.followed.lock().unwrap(), ["ESU26", "ladders ESU26"], "the front month followed, bars and ladders");
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let into = heard.clone();
+    on_rolled(move || {
+        into.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let heard = || heard.load(std::sync::atomic::Ordering::SeqCst);
+
+    assert!(!check_rolls(), "nothing rolled");
+    assert_eq!(heard(), 0);
+    feed.months.roll_to("ESZ6");
+    assert!(check_rolls(), "the feed charts the root as December now");
+    assert_eq!(heard(), 1);
+    assert!(!check_rolls(), "heard once");
+    assert_eq!(feed.symbol_for(&es()).as_deref(), Some("ES~ESZ26~back-adjusted"), "routed again, it is December's");
+    assert_eq!(drawn_front(&symbol).as_deref(), Some("ESU26"), "what the old chart's last price is a price of");
+}
+
+#[test]
+fn a_month_that_could_not_be_read_is_read_again_the_next_time_the_series_is_asked_for() {
+    // Four-hour bars, which no other test asks for: what is stitched short
+    // is known by the feed, the spelling and the timeframe.
+    let feed = continuous(Months::all());
+    let timeframe = Timeframe::hours(4);
+    let symbol = spelled(Adjustment::AsTraded);
+    *feed.months.unreadable.lock().unwrap() = vec![1];
+    let short = feed.bars(&symbol, timeframe, None).unwrap();
+    let said = crate::log::global().entries();
+    assert!(said.iter().any(|entry| entry.line().contains("ESH26 could not be read")), "not said");
+
+    *feed.months.unreadable.lock().unwrap() = Vec::new();
+    let since = last() - 10 * 86_400;
+    let again = feed.bars(&symbol, timeframe, Some(since)).unwrap();
+    let whole = feed.bars(&symbol, timeframe, None).unwrap();
+    assert_ne!(short, whole, "March was stood in for");
+    assert_eq!(again, whole, "asked from where its cache ends, the whole series, March read this time");
+    assert_drawn_from_the_front(&again, timeframe, |_| 0.0);
+    let topped = feed.bars(&symbol, timeframe, Some(since)).unwrap();
+    assert_eq!(topped.first().unwrap().ts, since, "once whole, topped up as before");
+}
+
+#[test]
+fn a_gap_is_measured_on_daily_bars_whatever_the_timeframe_asked() {
+    let feed = continuous(Months::all());
+    let roll = contracts::rule_of("ES").roll(month(2)).unwrap();
+    let hourly = gap(&*feed.months, "ES", month(2), month(3), roll, Timeframe::hours(1));
+    let minutes = gap(&*feed.months, "ES", month(2), month(3), roll, Timeframe::minutes(1));
+    assert_eq!(hourly, Some(PREMIUM));
+    assert_eq!(hourly, minutes, "a series and its ladders moved alike");
+}

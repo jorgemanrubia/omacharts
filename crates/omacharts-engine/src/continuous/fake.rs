@@ -53,6 +53,12 @@ pub struct Months {
     pub per_contract: bool,
     pub ladders: bool,
     pub asked: Mutex<Vec<(String, Timeframe, Option<i64>)>>,
+    /// The contract it charts the root as: `ESZ6` unless a test rolls it.
+    pub front: Mutex<String>,
+    /// Months it holds and cannot read for now, by index.
+    pub unreadable: Mutex<Vec<usize>>,
+    /// What its stream and its live ladders were asked to follow.
+    pub followed: Mutex<Vec<String>>,
 }
 
 impl Months {
@@ -67,6 +73,9 @@ impl Months {
             per_contract: true,
             ladders: true,
             asked: Mutex::new(Vec::new()),
+            front: Mutex::new("ESZ6".into()),
+            unreadable: Mutex::new(Vec::new()),
+            followed: Mutex::new(Vec::new()),
         }
     }
 
@@ -74,6 +83,11 @@ impl Months {
         let (root, month) = contracts::parse(symbol, day("2026-11-10"))?;
         (root == "ES").then_some(())?;
         index_of(month).filter(|index| self.held.contains(index))
+    }
+
+    /// Chart the root as `contract` from now on: the rule rolled.
+    pub fn roll_to(&self, contract: &str) {
+        *self.front.lock().unwrap() = contract.to_string();
     }
 
     pub fn asked_for(&self, symbol: &str) -> bool {
@@ -113,7 +127,7 @@ impl Provider for Months {
     fn charted_contract(&self, instrument: &Instrument) -> Option<String> {
         match instrument.is_contract() {
             true => Some(instrument.symbol.clone()),
-            false => Some("ESZ6".into()),
+            false => Some(self.front.lock().unwrap().clone()),
         }
     }
     fn capabilities(&self) -> &'static [Capability] {
@@ -132,6 +146,9 @@ impl Provider for Months {
     fn bars(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
         self.asked.lock().unwrap().push((symbol.to_string(), timeframe, since));
         let index = self.held(symbol).ok_or(ProviderError::NotFound)?;
+        if self.unreadable.lock().unwrap().contains(&index) {
+            return Err(ProviderError::Network("busy".into()));
+        }
         Ok(series(index, timeframe, since))
     }
     fn stream(&self) -> Option<&dyn Stream> {
@@ -145,6 +162,7 @@ impl Provider for Months {
 /// A snapshot of the month asked for, then one bar of it, at once.
 impl Stream for Months {
     fn subscribe(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>, sink: Sink) -> Result<Box<dyn Subscription>, ProviderError> {
+        self.followed.lock().unwrap().push(symbol.to_string());
         let bars = self.bars(symbol, timeframe, since)?;
         let latest = *bars.last().unwrap();
         sink(Update::Snapshot(bars));
@@ -175,8 +193,12 @@ impl Ladders for Months {
             })
             .collect())
     }
-    fn watch(&self, _: &str, _: f64, _: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
-        Err(ProviderError::Unsupported("not live".into()))
+    /// Noted, and nothing ever heard.
+    fn watch(&self, symbol: &str, _: f64, _: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
+        self.followed.lock().unwrap().push(format!("ladders {symbol}"));
+        struct Quiet;
+        impl Subscription for Quiet {}
+        Ok(Box::new(Quiet))
     }
 }
 

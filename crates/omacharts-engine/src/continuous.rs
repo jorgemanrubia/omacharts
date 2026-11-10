@@ -332,8 +332,9 @@ fn fetch_from<'a>(inner: &'a dyn Provider, root: &str, timeframe: Timeframe) -> 
 
 /// The spans of `root` from `front` back to the one front at `since`, newest
 /// first, each with its own bars over it. A month the feed has nothing of
-/// over its span is drawn from the month after it.
-fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fetch: &Fetch) -> Result<Vec<Span>, ProviderError> {
+/// over its span is drawn from the month after it, and so is one it could
+/// not read just now, which goes in `unread`.
+fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fetch: &Fetch, unread: &mut Vec<(Month, String)>) -> Result<Vec<Span>, ProviderError> {
     let since = since.unwrap_or(i64::MIN);
     let mut found: Vec<Span> = Vec::new();
     // Missing months since the last one found, newest first, with where
@@ -350,7 +351,10 @@ fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fet
         let got = match fetch(month, want) {
             Ok(got) => got.map(|bars| within(bars, want, upper)),
             Err(error) if found.is_empty() => return Err(error),
-            Err(_) => None,
+            Err(error) => {
+                unread.push((month, error.to_string()));
+                None
+            }
         };
         match got {
             // The front month is whatever it has, nothing new included.
@@ -399,22 +403,37 @@ fn stand_in(newer: &mut Span, starts: NaiveDate, from: i64, months: Vec<Month>, 
 }
 
 /// A roll, as a gap is kept under: the feed, the root, the older and newer
-/// month and the roll date.
-type Roll = (String, String, Month, Month, NaiveDate);
+/// month, the roll date, and the bars it was measured on: `None` for daily
+/// bars, else the timeframe, since bars of another one can say otherwise.
+type Roll = (String, String, Month, Month, NaiveDate, Option<Timeframe>);
 
 /// The gaps between months at rolls: a roll in the past never changes.
 static GAPS: Mutex<Option<HashMap<Roll, f64>>> = Mutex::new(None);
 
+/// The bars a gap is measured on when there are no daily ones: hourly where
+/// the feed has them, so a series and its ladders, asked at different
+/// timeframes, are moved by the same gap.
+fn fallback_basis(inner: &dyn Provider, timeframe: Timeframe) -> Timeframe {
+    match inner.serves(Timeframe::hours(1)) {
+        true => Timeframe::hours(1),
+        false => timeframe,
+    }
+}
+
 /// What `newer` traded above `older` at the roll on `roll`, in whole ticks
 /// when the root's tick is known: the two months' closes on the last day
-/// both have a daily bar before the roll; else, at the series' own
-/// timeframe, the older month's last bar before the roll and the newer
-/// month's at the same time. `None` when neither says.
+/// both have a daily bar before the roll, whatever the series' timeframe;
+/// else, on hourly bars, or the series' own where the feed has no hourly
+/// ones, the older month's last bar before the roll and the newer month's
+/// at the same time. `None` when neither says.
 fn gap(inner: &dyn Provider, root: &str, older: Month, newer: Month, roll: NaiveDate, timeframe: Timeframe) -> Option<f64> {
-    let key = (inner.id().to_string(), root.to_string(), older, newer, roll);
-    if let Some(gap) = GAPS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|gaps| gaps.get(&key)) {
-        return Some(*gap);
+    let basis = fallback_basis(inner, timeframe);
+    let key = |on: Option<Timeframe>| (inner.id().to_string(), root.to_string(), older, newer, roll, on);
+    let known = |on: Option<Timeframe>| GAPS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|gaps| gaps.get(&key(on)).copied());
+    if let Some(gap) = known(None) {
+        return Some(gap);
     }
+    let timeframe = basis;
     let close_before = |bars: &[Bar], before: i64| bars.iter().rev().find(|bar| bar.ts < before).copied();
     let daily = Timeframe::days(1);
     let by_day = || -> Option<f64> {
@@ -434,22 +453,29 @@ fn gap(inner: &dyn Provider, root: &str, older: Month, newer: Month, roll: Naive
         let then = close_before(&newer, last.ts + 1)?;
         Some(then.close - last.close)
     };
-    let gap = match inner.serves(daily) {
-        true => by_day().or_else(by_bar),
-        false => by_bar(),
-    }?;
+    // Daily first even when an hourly gap is known: one measured on hourly
+    // bars while the daily ones could not be read gives way to the daily
+    // one as soon as they can, for the series and its ladders alike.
+    let (gap, on) = match inner.serves(daily).then(by_day).flatten() {
+        Some(gap) => (gap, None),
+        None => match known(Some(timeframe)) {
+            Some(gap) => return Some(gap),
+            None => (by_bar()?, Some(timeframe)),
+        },
+    };
     let gap = match crate::specs::tick(root) {
         Some(tick) if tick > 0.0 => (gap / tick).round() * tick,
         _ => gap,
     };
-    GAPS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, gap);
+    GAPS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key(on), gap);
     Some(gap)
 }
 
 /// What each span is moved by, in its order: nothing for the front month,
 /// and for each before it the gaps at every roll after it. As traded,
-/// nothing for any.
-fn offsets(inner: &dyn Provider, root: &str, months: &[(Month, NaiveDate)], adjustment: Adjustment, timeframe: Timeframe) -> Vec<f64> {
+/// nothing for any. A roll with no gap to be had is joined as it is, and
+/// goes in `unjoined`.
+fn offsets(inner: &dyn Provider, root: &str, months: &[(Month, NaiveDate)], adjustment: Adjustment, timeframe: Timeframe, unjoined: &mut Vec<Month>) -> Vec<f64> {
     let mut offsets = Vec::with_capacity(months.len());
     let mut total = 0.0;
     for (at, (month, _)) in months.iter().enumerate() {
@@ -457,11 +483,14 @@ fn offsets(inner: &dyn Provider, root: &str, months: &[(Month, NaiveDate)], adju
             let (newer, roll) = months[at - 1];
             match gap(inner, root, *month, newer, roll, timeframe) {
                 Some(gap) => total += gap,
-                None => say_once(
-                    format!("gap {root} {month:?}"),
-                    inner.label(),
-                    format!("{root}: no price of {} and {} on the same day before the roll, so they are joined without adjusting", contract(root, *month), contract(root, newer)),
-                ),
+                None => {
+                    unjoined.push(*month);
+                    say_once(
+                        format!("gap {root} {month:?}"),
+                        inner.label(),
+                        format!("{root}: no price of {} and {} on the same day before the roll, so they are joined without adjusting", contract(root, *month), contract(root, newer)),
+                    )
+                }
             }
         }
         offsets.push(total);
@@ -507,13 +536,148 @@ fn assembled(spans: &[Span], offsets: &[f64]) -> Vec<Bar> {
 }
 
 /// The stitched series `spelled` names, from `since`, with `fetch` reading
-/// each month.
-fn stitched(inner: &dyn Provider, spelled: &Spelled, timeframe: Timeframe, since: Option<i64>, fetch: &Fetch) -> Result<Vec<Bar>, ProviderError> {
-    let spans = spans(&spelled.root, spelled.front, timeframe, since, fetch)?;
-    say_stood_in(inner, &spelled.root, &spans);
+/// each month, and whether it is short of what it should be: a month that
+/// could not be read, or a roll joined unadjusted that should have been.
+fn stitched(inner: &dyn Provider, spelled: &Spelled, timeframe: Timeframe, since: Option<i64>, fetch: &Fetch) -> Result<(Vec<Bar>, bool), ProviderError> {
+    let root = spelled.root.as_str();
+    let mut unread = Vec::new();
+    let spans = spans(root, spelled.front, timeframe, since, fetch, &mut unread)?;
+    for (month, why) in &unread {
+        // Said every time: it is drawn again until it can be read.
+        crate::log::add(crate::log::Entry::warning(
+            inner.label(),
+            format!("{root}: {} could not be read ({why}), so the month after it is drawn there until it can be", contract(root, *month)),
+        ));
+    }
+    let missing: Vec<Span> = spans
+        .iter()
+        .map(|span| Span { stood_in: span.stood_in.iter().copied().filter(|month| !unread.iter().any(|(m, _)| m == month)).collect(), ..span.clone() })
+        .collect();
+    say_stood_in(inner, root, &missing);
     let months: Vec<(Month, NaiveDate)> = spans.iter().map(|span| (span.month, span.starts)).collect();
-    let offsets = offsets(inner, &spelled.root, &months, spelled.adjustment, timeframe);
-    Ok(assembled(&spans, &offsets))
+    let mut unjoined = Vec::new();
+    let offsets = offsets(inner, root, &months, spelled.adjustment, timeframe, &mut unjoined);
+    Ok((assembled(&spans, &offsets), !unread.is_empty() || !unjoined.is_empty()))
+}
+
+/// A stitched series, as [`DEGRADED`] knows it: the feed, the spelling and
+/// the timeframe.
+type Series = (&'static str, String, Timeframe);
+
+/// The series last stitched short of what they should be. Drawn again
+/// whole the next time they are asked for, as though nothing were cached:
+/// a series topped up from where its cache ends would keep the months
+/// before that short until the next roll.
+static DEGRADED: Mutex<Option<HashSet<Series>>> = Mutex::new(None);
+
+fn degraded(series: &Series) -> bool {
+    DEGRADED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|degraded| degraded.contains(series))
+}
+
+fn note_degraded(series: Series, short: bool) {
+    let mut degraded = DEGRADED.lock().unwrap_or_else(|e| e.into_inner());
+    let degraded = degraded.get_or_insert_with(HashSet::new);
+    match short {
+        true => degraded.insert(series),
+        false => degraded.remove(&series),
+    };
+}
+
+/// How often a stitched root being followed live asks its feed which month
+/// is front, as Sierra Chart's feed does for a root of its own.
+const ROLL_CHECK: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A stitched root followed live: the feed, the root and the month it is
+/// followed in, for as long as `alive` is.
+struct Followed {
+    inner: Arc<dyn Provider>,
+    root: String,
+    front: Month,
+    alive: std::sync::Weak<()>,
+}
+
+static FOLLOWED: Mutex<Vec<Followed>> = Mutex::new(Vec::new());
+type Listener = Box<dyn Fn() + Send + Sync>;
+static ROLLED: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
+static CHECKING: std::sync::Once = std::sync::Once::new();
+
+/// A subscription to a stitched root's front month, followed for a roll
+/// while it is held.
+struct Following {
+    _subscription: Box<dyn Subscription>,
+    _alive: Arc<()>,
+}
+
+impl Subscription for Following {}
+
+/// `subscription`, of `spelled`'s front month, noted as followed: when the
+/// feed's front month of the root is another, [`on_rolled`] hears it.
+fn follow(inner: Arc<dyn Provider>, spelled: Spelled, subscription: Box<dyn Subscription>) -> Following {
+    let alive = Arc::new(());
+    let mut followed = FOLLOWED.lock().unwrap_or_else(|e| e.into_inner());
+    followed.retain(|followed| followed.alive.strong_count() > 0);
+    followed.push(Followed {
+        inner,
+        root: spelled.root,
+        front: spelled.front,
+        alive: Arc::downgrade(&alive),
+    });
+    drop(followed);
+    CHECKING.call_once(|| {
+        let _ = std::thread::Builder::new().name("omacharts rolls".into()).spawn(|| loop {
+            std::thread::sleep(ROLL_CHECK);
+            check_rolls();
+        });
+    });
+    Following { _subscription: subscription, _alive: alive }
+}
+
+/// Be told when a stitched root followed live has rolled: its feed's front
+/// month is no longer the one it is drawn up to. The chart's symbol names
+/// that month, so whoever hears this routes it again, to a series, a stream
+/// and ladders of the month that is front now. Called from any thread.
+pub fn on_rolled(listener: impl Fn() + Send + Sync + 'static) {
+    ROLLED.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(listener));
+}
+
+/// Ask each feed whether a root followed live has rolled, now rather than
+/// at the next check, and tell [`on_rolled`] if one has. Whether one had.
+pub fn check_rolls() -> bool {
+    let followed: Vec<(Arc<dyn Provider>, String, Month)> = {
+        let mut followed = FOLLOWED.lock().unwrap_or_else(|e| e.into_inner());
+        followed.retain(|followed| followed.alive.strong_count() > 0);
+        followed.iter().map(|followed| (followed.inner.clone(), followed.root.clone(), followed.front)).collect()
+    };
+    let rolled: Vec<(String, Month)> = followed
+        .into_iter()
+        .filter(|(inner, root, front)| front_now(inner.as_ref(), root).is_some_and(|now| now != *front))
+        .map(|(_, root, front)| (root, front))
+        .collect();
+    if rolled.is_empty() {
+        return false;
+    }
+    // Heard once: what is routed again follows the month front now.
+    FOLLOWED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|followed| !rolled.iter().any(|(root, front)| *root == followed.root && *front == followed.front));
+    for listener in ROLLED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        listener();
+    }
+    true
+}
+
+/// The month `inner` charts `root` as now.
+fn front_now(inner: &dyn Provider, root: &str) -> Option<Month> {
+    let front = inner.charted_contract(&root_instrument(root))?;
+    contracts::parse(&front, contracts::today()).filter(|(of, _)| of == root).map(|(_, month)| month)
+}
+
+/// The contract a stitched symbol is drawn up to, `ESZ26`, as the feed was
+/// asked for it when the chart was shown: what its last price is a price
+/// of, whatever month is front by now. `None` for any other symbol.
+pub fn drawn_front(symbol: &str) -> Option<String> {
+    Continuous::front_of(symbol).map(|(_, front)| front)
 }
 
 /// A feed whose roots are stitched from its months: everything it does,
@@ -526,6 +690,11 @@ pub struct Continuous {
 impl Continuous {
     pub fn new(inner: Box<dyn Provider>) -> Continuous {
         Continuous { inner: Arc::from(inner) }
+    }
+
+    /// The same, of a feed held elsewhere too.
+    pub fn shared(inner: Arc<dyn Provider>) -> Continuous {
+        Continuous { inner }
     }
 
     /// The front month of a stitched symbol, as the feed is asked for it.
@@ -591,10 +760,18 @@ impl Provider for Continuous {
         self.inner.continuity()
     }
 
+    /// A stitched root's series from `since`; all of it, whatever `since`
+    /// says, when it was last drawn short, so that what replaces it in the
+    /// cache is the whole series: the loader starts a cache over when the
+    /// bars it gets disagree with it.
     fn bars(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
         let Some(spelled) = Spelled::parse(symbol) else { return self.inner.bars(symbol, timeframe, since) };
+        let series = (self.inner.id(), symbol.to_string(), timeframe);
+        let since = since.filter(|_| !degraded(&series));
         let fetch = fetch_from(self.inner.as_ref(), &spelled.root, timeframe);
-        stitched(self.inner.as_ref(), &spelled, timeframe, since, &fetch)
+        let (bars, short) = stitched(self.inner.as_ref(), &spelled, timeframe, since, &fetch)?;
+        note_degraded(series, short);
+        Ok(bars)
     }
 
     fn contracts(&self, root: &str) -> Result<Vec<(String, NaiveDate)>, ProviderError> {
@@ -660,6 +837,8 @@ impl Stream for Continuous {
         let stream = self.inner.stream().ok_or_else(|| ProviderError::Unsupported("no stream".into()))?;
         let Some((spelled, front)) = Continuous::front_of(symbol) else { return stream.subscribe(symbol, timeframe, since, sink) };
         let inner = self.inner.clone();
+        let series = (self.inner.id(), symbol.to_string(), timeframe);
+        let following = spelled.clone();
         let stitching: Sink = Box::new(move |update| match update {
             Update::Snapshot(bars) => {
                 // The snapshot is the front month's; the rest are read here,
@@ -675,14 +854,21 @@ impl Stream for Continuous {
                     }
                     read(month, from)
                 };
+                // The months before the front month in full when they were
+                // drawn short: what the chart holds of them is replaced.
+                let since = since.filter(|_| !degraded(&series));
                 match stitched(inner.as_ref(), &spelled, timeframe, since, &fetch) {
-                    Ok(bars) => sink(Update::Snapshot(bars)),
+                    Ok((bars, short)) => {
+                        note_degraded(series.clone(), short);
+                        sink(Update::Snapshot(bars))
+                    }
                     Err(error) => sink(Update::Lost((&error).into())),
                 }
             }
             other => sink(other),
         });
-        stream.subscribe(&front, timeframe, since, stitching)
+        let subscription = stream.subscribe(&front, timeframe, since, stitching)?;
+        Ok(Box::new(follow(self.inner.clone(), following, subscription)))
     }
 }
 
@@ -776,7 +962,13 @@ impl Ladders for Continuous {
                 break;
             }
         }
-        let offsets = offsets(self.inner.as_ref(), root, &drawn, spelled.adjustment, Timeframe::days(1));
+        // Ladders are kept once read, so a span is not moved by a guess: with
+        // a gap missing nothing is kept, and the next chart asks again.
+        let mut unjoined = Vec::new();
+        let offsets = offsets(self.inner.as_ref(), root, &drawn, spelled.adjustment, Timeframe::days(1), &mut unjoined);
+        if let Some(month) = unjoined.first() {
+            return Err(ProviderError::Malformed(format!("no gap at the roll from {} to know its ladders by", contract(root, *month))));
+        }
         let offset_of = |month: Month| drawn.iter().position(|(m, _)| *m == month).map_or(0.0, |at| offsets[at]);
         let mut minutes = Vec::new();
         for (month, a, b) in reads.into_iter().rev() {
@@ -791,7 +983,7 @@ impl Ladders for Continuous {
     fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
         let ladders = self.inner.ladders().ok_or(ProviderError::NotFound)?;
         match Continuous::front_of(symbol) {
-            Some((_, front)) => ladders.watch(&front, tick_size, sink),
+            Some((spelled, front)) => Ok(Box::new(follow(self.inner.clone(), spelled, ladders.watch(&front, tick_size, sink)?))),
             None => ladders.watch(symbol, tick_size, sink),
         }
     }

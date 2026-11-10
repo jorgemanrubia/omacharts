@@ -279,16 +279,23 @@ impl Store {
     /// month it is read from now: the months it rolled from, never read
     /// again, and what was kept under the root alone before a root was
     /// kept by its month. Whether anything went.
-    pub fn forget_other_months(&self, key: &str, keep: &str) -> rusqlite::Result<bool> {
+    pub fn forget_other_months(&self, key: &str, keep: &[String]) -> rusqlite::Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         // `key@…` is every key from `key@` up to, not including, `keyA`,
         // 'A' following '@': a range the primary keys answer.
         let (low, high) = (format!("{key}@"), format!("{key}A"));
+        let kept = vec!["?"; keep.len().max(1)].join(", ");
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&key, &low, &high];
+        let nothing = String::new();
+        match keep.is_empty() {
+            true => values.push(&nothing),
+            false => values.extend(keep.iter().map(|kept| kept as &dyn rusqlite::ToSql)),
+        }
         let mut gone = 0;
         for table in ["ladder_days", "ladder_tail", "ladder_coverage"] {
             gone += tx.execute(
-                &format!("DELETE FROM {table} WHERE (key = ?1 OR (key >= ?2 AND key < ?3)) AND key != ?4"),
-                params![key, low, high, keep],
+                &format!("DELETE FROM {table} WHERE (key = ?1 OR (key >= ?2 AND key < ?3)) AND key NOT IN ({kept})"),
+                values.as_slice(),
             )?;
         }
         tx.commit()?;
@@ -648,11 +655,11 @@ mod tests {
             store.save_ladder_days(key, TICK, &series.days).unwrap();
             store.cover_ladders(key, 0, 120).unwrap();
         }
-        assert!(store.forget_other_months("sierra:ES", "sierra:ES@ESH27").unwrap());
+        assert!(store.forget_other_months("sierra:ES", &["sierra:ES@ESH27".into()]).unwrap());
         let kept: Vec<&str> = keys.into_iter().filter(|key| !store.ladder_days(key).is_empty()).collect();
         assert_eq!(kept, ["sierra:ES@ESH27", "sierra:ESM27", "sierra:ESX"], "another symbol's keys are its own");
         assert!(store.ladder_coverage("sierra:ES@ESZ26").is_empty());
-        assert!(!store.forget_other_months("sierra:ES", "sierra:ES@ESH27").unwrap(), "once");
+        assert!(!store.forget_other_months("sierra:ES", &["sierra:ES@ESH27".into()]).unwrap(), "once");
     }
 
     #[test]

@@ -54,6 +54,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
+use omacharts_engine::continuous::{Adjustment, Spelled};
 use omacharts_engine::ladders::{Day, Days, Held, Ladder, Minute, Piece};
 use omacharts_engine::{Instrument, LadderUpdate, Provider, Subscription};
 
@@ -688,11 +689,40 @@ impl AtPrice {
 
 /// What the store keeps `key`'s ladders under: the key itself, or, for a
 /// symbol the feed reads from a contract of another name — a root's front
-/// month — the key and that contract.
+/// month — the key and that contract. A stitched root, `ES~ESZ26~as-traded`,
+/// is kept under its root's key with the month it is drawn up to and its
+/// adjustment, `sierra:ES@ESZ26~as-traded`: one of the root's months, let go
+/// with the others once it has rolled.
 fn stored_key(key: &str, symbol: &str, contract: Option<String>) -> String {
+    if let Some(spelled) = Spelled::parse(symbol) {
+        return stitched_key(&family_of(key, symbol), &spelled);
+    }
     match contract {
         Some(contract) if contract != symbol => format!("{key}@{contract}"),
         _ => key.to_string(),
+    }
+}
+
+/// The root's key a stitched symbol's ladders are kept under the family
+/// of: `sierra:ES` for `sierra:ES~ESZ26~as-traded`. Any other key is its own.
+fn family_of(key: &str, symbol: &str) -> String {
+    match (Spelled::parse(symbol), key.strip_suffix(symbol)) {
+        (Some(spelled), Some(feed)) => format!("{feed}{}", spelled.root),
+        _ => key.to_string(),
+    }
+}
+
+fn stitched_key(family: &str, spelled: &Spelled) -> String {
+    format!("{family}@{}~{}", omacharts_engine::continuous::contract(&spelled.root, spelled.front), spelled.adjustment.key())
+}
+
+/// What of `family` stays when `stored` is read: `stored`, and for a
+/// stitched root the month it is drawn up to in the other adjustment too,
+/// which another chart of it may be showing.
+fn kept_with(family: &str, symbol: &str, stored: &str) -> Vec<String> {
+    match Spelled::parse(symbol) {
+        Some(spelled) => Adjustment::ALL.into_iter().map(|adjustment| stitched_key(family, &Spelled { adjustment, ..spelled.clone() })).collect(),
+        None => vec![stored.to_string()],
     }
 }
 
@@ -781,8 +811,9 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
                 let days = Days::new(&instrument);
                 let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
                 let _ = store.compact_ladders(&stored, days.of(now));
-                if stored != key {
-                    let _ = store.forget_other_months(&key, &stored);
+                let family = family_of(&key, &symbol);
+                if stored != family {
+                    let _ = store.forget_other_months(&family, &kept_with(&family, &symbol, &stored));
                 }
                 let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
                 let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
@@ -1394,6 +1425,39 @@ mod tests {
         assert!(store.ladder_days("fake:ES@ESH27_FUT_CME").is_empty());
         assert_eq!(stored_key(KEY, "ESZ26", Some("ESZ26".into())), KEY, "a dated contract is its own");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A stitched root's ladders are one of its root's months, kept by the
+    /// month they are drawn up to and the adjustment: once it rolls, what
+    /// was kept of the month before goes, in either adjustment, and so does
+    /// what a chart of the root's own front month kept, while the month
+    /// drawn now stays in both.
+    #[test]
+    fn a_stitched_root_s_ladders_go_with_the_month_it_rolled_from() {
+        let key = "sierra:ES~ESH27~back-adjusted";
+        let symbol = "ES~ESH27~back-adjusted";
+        let stored = stored_key(key, symbol, None);
+        assert_eq!(stored, "sierra:ES@ESH27~back-adjusted");
+        let family = family_of(key, symbol);
+        assert_eq!(family, "sierra:ES");
+        assert_eq!(kept_with(&family, symbol, &stored), ["sierra:ES@ESH27~back-adjusted", "sierra:ES@ESH27~as-traded"]);
+
+        let store = Store::memory().unwrap();
+        let days = omacharts_engine::ladders::Days::fixed(0);
+        let mut series = omacharts_engine::ladders::Series::new(0.25);
+        series.insert(&days, minute(60));
+        let earlier = ["sierra:ES@ESZ26~back-adjusted", "sierra:ES@ESZ26~as-traded", "sierra:ES@ESZ26_FUT_CME", "sierra:ES"];
+        let now = ["sierra:ES@ESH27~back-adjusted", "sierra:ES@ESH27~as-traded"];
+        for kept in earlier.iter().chain(&now).chain(&["sierra:ESZ26"]) {
+            store.save_ladder_days(kept, 0.25, &series.days).unwrap();
+        }
+        assert!(store.forget_other_months(&family, &kept_with(&family, symbol, &stored)).unwrap());
+        for gone in earlier {
+            assert!(store.ladder_days(gone).is_empty(), "{gone} kept");
+        }
+        for kept in now.iter().chain(&["sierra:ESZ26"]) {
+            assert!(!store.ladder_days(kept).is_empty(), "{kept} gone");
+        }
     }
 
     /// A provider without ladders gets no registry at all: no thread, no

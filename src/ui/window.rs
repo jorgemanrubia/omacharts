@@ -4436,6 +4436,7 @@ impl Window {
         this.wire_refresh();
         this.wire_live();
         this.wire_entitlements();
+        this.wire_rolls();
         this.wire_close();
 
         // The widget is part of the app, so it arrives with it rather than
@@ -9555,6 +9556,24 @@ impl Window {
                     this.say(crate::log_words::serving_changed());
                     this.reroute();
                 }
+            }
+        });
+    }
+
+    /// Re-route the charts when a stitched root followed live rolls: the
+    /// month its chart is drawn up to is in its symbol, so a chart of it is
+    /// shown again as the month that is front now — a series, a stream and
+    /// ladders of its own — and every other chart keeps what it has.
+    fn wire_rolls(self: &Rc<Self>) {
+        let (said, heard) = async_channel::unbounded::<()>();
+        omacharts_engine::continuous::on_rolled(move || {
+            let _ = said.try_send(());
+        });
+        let this = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            while heard.recv().await.is_ok() {
+                let Some(this) = this.upgrade() else { return };
+                this.reroute();
             }
         });
     }
