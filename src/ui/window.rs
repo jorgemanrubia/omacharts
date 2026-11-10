@@ -1577,6 +1577,46 @@ mod strip_window_tests {
             assert!(pane.view.held_strip_windows().is_empty());
         });
     }
+
+    /// The defaults putting a chart on other trading hours let go of its
+    /// strips held on their own scale, as choosing the hours does: on screen
+    /// and in a book that is not.
+    #[test]
+    fn the_defaults_putting_a_chart_on_other_hours_let_go_of_its_strips() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            window.save_workspace();
+            let pane = window.focused_pane();
+            let same = window.session();
+            let other = match same {
+                Session::Regular => Session::Extended,
+                _ => Session::Regular,
+            };
+            let mut defaults = ChartDefaults::load(&store);
+            defaults.template = None;
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
+            defaults.session = same;
+            window.adopt_looks(&pane, &defaults);
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "let go of on the same hours");
+            defaults.session = other;
+            window.adopt_looks(&pane, &defaults);
+            assert_eq!(window.session(), other);
+            assert!(pane.view.held_strip_windows().is_empty(), "held across other hours");
+
+            // A book not on screen, changed where it is written.
+            let elsewhere = {
+                let mut book = window.books.borrow()[0].clone();
+                book.name = "Elsewhere".into();
+                book.panes[0].session = same.key().to_string();
+                book.panes[0].strip_windows.insert(7, StoredStrip { kind: None, window: [-1.0, 1.0] });
+                book
+            };
+            window.books.borrow_mut().push(elsewhere);
+            window.apply_chart_defaults_now(&defaults);
+            assert!(window.books.borrow()[1].panes[0].strip_windows.is_empty(), "held where it is written");
+        });
+    }
 }
 
 #[cfg(test)]
@@ -11161,6 +11201,11 @@ impl Window {
                 stored.swapped = Some(defaults.swapped);
                 stored.hollow_up = Some(defaults.hollow_up);
                 stored.ohlc_thickness = Some(defaults.ohlc_thickness);
+                // And a book not on screen lets go of them where they are
+                // written.
+                if stored.session != defaults.session.key() {
+                    stored.strip_windows.clear();
+                }
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
@@ -11196,7 +11241,10 @@ impl Window {
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
         self.apply_marks_to(pane);
-        pane.session.set(defaults.session);
+        // Other hours let go of the strips held, as `set_session` does.
+        if pane.session.replace(defaults.session) != defaults.session {
+            pane.view.free_strip_windows();
+        }
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);
         pane.view.set_price_log(defaults.log_scale);
