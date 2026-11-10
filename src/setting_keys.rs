@@ -86,6 +86,10 @@ const SHARED: &[&str] = &[
     // Which side of a chart the orders' labels sit at: how somebody reads
     // their charts, wherever they trade from.
     "order_labels",
+    // Whether the charts write P&L as money or in R, and what 1R is worth:
+    // how somebody reads their risk, wherever they trade from.
+    "pnl_display",
+    "pnl_r_amount",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",

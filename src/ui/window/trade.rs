@@ -96,6 +96,9 @@ pub(super) struct Trade {
     /// Which side of the chart the marks' labels sit at, read when trading
     /// comes in and again whenever Preferences changes it.
     pub order_labels: Cell<crate::ui::chart::LabelSide>,
+    /// Whether the charts write P&L as money or in R, read when trading
+    /// comes in and again whenever Preferences or a command changes it.
+    pub pnl: Cell<trading::chart_pnl::ChartPnl>,
 }
 
 /// How often at most the positions are marked to a moving market.
@@ -439,6 +442,7 @@ impl Window {
 
         *self.trade.sizes.borrow_mut() = trading::sizes::load(&self.store);
         self.trade.order_labels.set(crate::ui::trading_settings::order_labels(&self.store));
+        self.trade.pnl.set(trading::chart_pnl::load(&self.store));
 
         // The chart menu's orders, and what the trading keys reach: buy and
         // sell the chart's size at the market, go flat, and pick the size.
@@ -1657,11 +1661,26 @@ impl Window {
                 true => view.account_of(pane.account.borrow().as_deref()).and_then(|account| {
                     let day = view.book.money(&account.key())?.day_pnl?;
                     let sign = day.partial_cmp(&0.0)?;
-                    Some((trading::pnl_text(day, account.currency.as_deref()), sign))
+                    Some((self.trade.pnl.get().text(day, account.currency.as_deref()), sign))
                 }),
             }
         };
         pane.write_day_pnl(day.as_ref().map(|(text, sign)| (text.as_str(), *sign)));
+        // The position in what the chart trades, on its account, with its
+        // open P&L written as the day's is.
+        let held = match self.trade.shown.get() {
+            false => None,
+            true => self.order_target(pane).ok().and_then(|target| {
+                let view = self.trading.borrow();
+                let held = view.book.position(&target.account.key(), &target.contract).filter(|held| held.net != 0)?;
+                let pnl = held.open_pnl.and_then(|money| {
+                    let sign = money.partial_cmp(&0.0)?;
+                    Some((self.trade.pnl.get().text(money, target.account.currency.as_deref()), sign))
+                });
+                Some((held.net, pnl))
+            }),
+        };
+        pane.write_position(held.as_ref().map(|(net, pnl)| (*net, pnl.as_ref().map(|(text, sign)| (text.as_str(), *sign)))));
     }
 
     /// Read the size templates again, after the dialog changed them, and
@@ -1682,6 +1701,13 @@ impl Window {
         for pane in &panes {
             pane.view.set_mark_labels(side);
         }
+    }
+
+    /// Every chart's P&L written as Preferences or a command now says, money
+    /// or R, at once: the header's and the marks'.
+    pub fn adopt_pnl_display(self: &Rc<Self>) {
+        self.trade.pnl.set(trading::chart_pnl::load(&self.store));
+        self.apply_marks();
     }
 
     /// The Trading sizes dialog over `parent`, every chart saying its size
@@ -1766,6 +1792,7 @@ impl Window {
         let view = self.trading.borrow();
         let pending = self.trade.pending.borrow();
         let currency = target.account.currency.clone();
+        let pnl = self.trade.pnl.get();
         // An exit says what it would realise where it rests: closing the
         // position held here, at what a point of it is worth.
         let spec_point = pane.traded().and_then(|i| i.spec()).and_then(|spec| spec.point);
@@ -1791,7 +1818,7 @@ impl Window {
         };
         // An exit's P&L as its body and its colour; an entry's side alone.
         let order_look = |side: Side, kind: OrderKind, qty: u32, at: f64| match exit_pnl(side, kind, qty, at) {
-            Some(pnl) => (Some(trading::pnl_text(pnl, currency.as_deref())), money_colour(pnl)),
+            Some(money) => (Some(pnl.text(money, currency.as_deref())), money_colour(money)),
             None => (None, side_colour(side)),
         };
         // Linked with the other exit: solid once the trading service has made it,
@@ -1903,7 +1930,7 @@ impl Window {
                     contract: held.contract.clone(),
                     price: at,
                     tag: format!("{} {}", held.contract, trading::held_tag(held.net)),
-                    body: held.open_pnl.map(|pnl| trading::pnl_text(pnl, currency.as_deref())),
+                    body: held.open_pnl.map(|money| pnl.text(money, currency.as_deref())),
                     price_text: price(at),
                     colour: held_colour(held.net, held.open_pnl),
                     style: look.position,
@@ -1912,6 +1939,7 @@ impl Window {
                     dim: pending.contains_key(&Request::Flatten(key.clone(), held.contract.clone())),
                     point: held.point.or(spec_point),
                     currency: currency.clone(),
+                    pnl,
                     profit: look.profit.clone(),
                     loss: look.loss.clone(),
                 })
@@ -1932,7 +1960,7 @@ impl Window {
                 contract: target.contract.clone(),
                 price: at,
                 tag: trading::held_tag(held.net),
-                body: held.open_pnl.map(|pnl| trading::pnl_text(pnl, currency.as_deref())),
+                body: held.open_pnl.map(|money| pnl.text(money, currency.as_deref())),
                 price_text: price(at),
                 colour: held_colour(held.net, held.open_pnl),
                 style: look.position,
@@ -1941,6 +1969,7 @@ impl Window {
                 dim: pending.contains_key(&Request::Flatten(key.clone(), target.contract.clone())),
                 point: held.point.or(spec_point),
                 currency: currency.clone(),
+                pnl,
                 profit: look.profit.clone(),
                 loss: look.loss.clone(),
             })
@@ -3394,6 +3423,114 @@ pub(super) mod tests {
                     "the header says the book's {said}"
                 );
             }
+        });
+    }
+
+    /// Shown in R, every P&L on the chart is in R: the header's day, the
+    /// position's open P&L on its line, an exit's on its mark and the
+    /// Current position part, in the same profit and loss colours. The
+    /// panel's Accounts and Positions tabs are the books, and stay in money.
+    /// Money again, and the chart says money again, at once.
+    #[test]
+    fn shown_in_r_the_chart_says_r_and_the_panel_money() {
+        crate::ui::on_gtk(|| {
+            use crate::trading::chart_pnl::{self, Display};
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let day = |window: &Rc<Window>| window.trading.borrow().book.money(&key).and_then(|money| money.day_pnl);
+            session.book.lock().unwrap().accounts =
+                vec![trading::Money { key: "951".into(), day_pnl: Some(-250.0), ..trading::Money::default() }];
+            session.moved();
+            window.desk.tell();
+            settle(&window, || day(&window).is_some());
+            *session.market.lock().unwrap() = Some(7_622.25);
+            window.mark_to_market();
+            let pill = || pane.view.mark_states().0.map(|(words, _)| words).unwrap_or_default();
+            assert!(pill().ends_with("+$500.00"), "{}", pill());
+            let shown_day = day(&window).expect("the day's P&L");
+            let day_class = if shown_day < 0.0 { Some("pnl-loss") } else { Some("pnl-gain") };
+            assert_eq!(pane.day_pnl_text(), Some((trading::pnl_text(shown_day, Some("USD")), day_class)));
+            assert_eq!(pane.position_text(), Some(("+1 (+$500.00)".into(), Some("pnl-gain"))));
+            // A target 10 points up: $500 more than the average, an exit.
+            let avg = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.avg).expect("an average");
+            session.place(&resting(Side::Sell, OrderKind::Limit, Some(avg + 10.0))).unwrap();
+            window.desk.tell();
+            let order = || pane.view.mark_states().1.first().map(|(words, _, _)| words.clone()).unwrap_or_default();
+            assert!(order().contains("+$500.00"), "{}", order());
+
+            chart_pnl::save_display(&window.store, Display::Risk);
+            window.adopt_pnl_display();
+            assert!(pill().ends_with("+1.00R"), "{}", pill());
+            assert!(order().contains("+1.00R"), "{}", order());
+            assert_eq!(pane.day_pnl_text(), Some((chart_pnl::r_text(shown_day, 500.0), day_class)));
+            assert_eq!(pane.position_text(), Some(("+1 (+1.00R)".into(), Some("pnl-gain"))));
+            chart_pnl::save_amount(&window.store, 250.0);
+            window.adopt_pnl_display();
+            assert!(pill().ends_with("+2.00R"), "{}", pill());
+            assert_eq!(pane.position_text(), Some(("+1 (+2.00R)".into(), Some("pnl-gain"))));
+
+            window.show_trading_panel(true);
+            let panel = window.trade.panel.borrow().clone().expect("the panel");
+            let words = panel.accounts_and_positions();
+            assert!(words.iter().any(|word| word == "+$500.00"), "the position's open P&L in money: {words:?}");
+            assert!(words.iter().any(|word| word == &trading::pnl_text(shown_day, Some("USD"))), "{words:?}");
+            assert!(!words.iter().any(|word| word.ends_with('R') && word.starts_with(['+', '-'])), "R in the panel: {words:?}");
+
+            chart_pnl::save_display(&window.store, Display::Money);
+            window.adopt_pnl_display();
+            assert!(pill().ends_with("+$500.00"), "{}", pill());
+            assert_eq!(pane.position_text(), Some(("+1 (+$500.00)".into(), Some("pnl-gain"))));
+        });
+    }
+
+    /// The Current position part says the position the chart trades, its
+    /// size signed and its open P&L in brackets in the day's colours, plain
+    /// at nothing; its size alone until the P&L has come; and nothing at
+    /// all, taking no room, with nothing held or no account.
+    #[test]
+    fn the_current_position_part_says_what_is_held_long_or_short() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            assert_eq!(window(&store).focused_pane().position_text(), None, "a position with no account");
+
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+            assert_eq!(pane.position_text(), Some(("+1".into(), None)), "its size until the P&L has come");
+            let avg = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.avg).expect("an average");
+            for (at, words, class) in [
+                (avg + 2.5, "+1 (+$125.00)", Some("pnl-gain")),
+                (avg - 5.0, "+1 (-$250.00)", Some("pnl-loss")),
+                (avg, "+1 (+$0.00)", None),
+            ] {
+                *session.market.lock().unwrap() = Some(at);
+                window.trade.marked_at.set(None);
+                window.mark_to_market();
+                settle(&window, || pane.position_text().is_some_and(|(said, _)| said == words));
+                assert_eq!(pane.position_text(), Some((words.to_string(), class)));
+            }
+
+            // Sold 3 at the market: short 2.
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            session.place(&trading::OrderRequest { qty: 3, ..resting(Side::Sell, OrderKind::Market, None) }).unwrap();
+            window.desk.tell();
+            settle(&window, || held() == Some(-2) && free(&window));
+            *session.market.lock().unwrap() = Some(avg + 1.0);
+            window.trade.marked_at.set(None);
+            window.mark_to_market();
+            settle(&window, || pane.position_text().is_some_and(|(said, _)| said.starts_with("-2 (")));
+            let open = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.open_pnl).expect("open P&L");
+            let class = match open.partial_cmp(&0.0) {
+                Some(std::cmp::Ordering::Greater) => Some("pnl-gain"),
+                Some(std::cmp::Ordering::Less) => Some("pnl-loss"),
+                _ => None,
+            };
+            assert_eq!(pane.position_text(), Some((format!("-2 ({})", trading::pnl_text(open, Some("USD"))), class)));
+
+            // Flat: nothing at all.
+            session.place(&trading::OrderRequest { qty: 2, ..resting(Side::Buy, OrderKind::Market, None) }).unwrap();
+            window.desk.tell();
+            settle(&window, || held().is_none_or(|net| net == 0) && free(&window));
+            settle(&window, || pane.position_text().is_none());
+            assert!(!pane.position_part.get_visible());
         });
     }
 

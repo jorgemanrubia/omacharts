@@ -5638,6 +5638,7 @@ impl Window {
         self.adopt_theming();
         self.adopt_feed();
         self.adopt_zoom();
+        self.adopt_pnl_display();
         self.reload_watchlists();
         self.reload_workspace();
     }

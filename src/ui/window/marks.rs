@@ -82,6 +82,8 @@ pub struct PositionMark {
     /// so a dragged exit can say what it would realise.
     pub point: Option<f64>,
     pub currency: Option<String>,
+    /// Whether that is written as money or in R.
+    pub pnl: trading::chart_pnl::ChartPnl,
     /// The colours money gained and lost are written in.
     pub profit: String,
     pub loss: String,
@@ -288,6 +290,7 @@ struct Held {
     net: i32,
     point: Option<f64>,
     currency: Option<String>,
+    pnl: trading::chart_pnl::ChartPnl,
     profit: String,
     loss: String,
 }
@@ -300,6 +303,7 @@ impl TradeRules {
                 net: held.net,
                 point: held.point,
                 currency: held.currency.clone(),
+                pnl: held.pnl,
                 profit: held.profit.clone(),
                 loss: held.loss.clone(),
             }),
@@ -397,7 +401,7 @@ impl MarkRules for TradeRules {
         }
         if let Some((pnl, held)) = self.pnl(drag) {
             let colour = if pnl < 0.0 { held.loss.clone() } else { held.profit.clone() };
-            return MarkPreview { text: trading::pnl_text(pnl, held.currency.as_deref()), colour: Some(colour) };
+            return MarkPreview { text: held.pnl.text(pnl, held.currency.as_deref()), colour: Some(colour) };
         }
         let ticks = drag.tick.map(|tick| trading::ticks_between(drag.from, drag.at, tick));
         MarkPreview { text: trading::preview_text(&grouped_decimals(drag.at, drag.places), ticks), colour: None }
@@ -488,6 +492,7 @@ mod tests {
             dim: false,
             point: Some(50.0),
             currency: Some("USD".into()),
+            pnl: trading::chart_pnl::ChartPnl::Money,
             profit: "#00aa00".into(),
             loss: "#aa0000".into(),
         };
@@ -566,6 +571,18 @@ mod tests {
         position.currency = Some("EUR".into());
         let rules = TradeRules::new(Some(&position), &orders, (None, None));
         assert_eq!(said(&rules, Some("limit"), 4990.0).0, "+400.00 EUR");
+    }
+
+    /// Shown in R, an exit in hand says what it would realise in R, in the
+    /// same profit and loss colours.
+    #[test]
+    fn a_dragged_exit_says_it_in_r_when_r_is_shown() {
+        let (mut position, orders) = long();
+        position.pnl = trading::chart_pnl::ChartPnl::R(500.0);
+        let rules = TradeRules::new(Some(&position), &orders, (None, None));
+        assert_eq!(said(&rules, Some("limit"), 5010.0), ("+1.00R".into(), Some("#00aa00".to_string())));
+        assert_eq!(said(&rules, Some("stop"), 4995.0), ("-0.50R".into(), Some("#aa0000".to_string())));
+        assert_eq!(said(&rules, Some("stop"), 5000.0), ("+0.00R".into(), Some("#00aa00".to_string())));
     }
 
     /// What an order in hand may do: an exit goes only on its own side of

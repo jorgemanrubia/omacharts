@@ -41,8 +41,10 @@
 //! - `fake`: a trading service in memory, for the tests, and in the registry of a
 //!   build with the `fakes` feature.
 //! - `sizes`: trading sizes and their templates.
+//! - `chart_pnl`: whether the charts write P&L as money or in R.
 
 pub mod services;
+pub mod chart_pnl;
 mod domain;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;

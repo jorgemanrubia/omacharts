@@ -1,7 +1,7 @@
 //! Preferences → Trading: three sections. "Trading services" lists the
 //! trading service logins, each a row with its accounts under it, edited the way the
 //! Data page edits its data feeds; "Order entry" holds what every chart's
-//! orders follow; "Chart" how the orders are drawn on a chart. The last two
+//! orders follow; "Chart" how the orders and P&L are drawn on a chart. The last two
 //! are there with no login too, to be set before the first one.
 //!
 //! With no login, the accounts' section is its heading and a button. "Add a
@@ -94,6 +94,8 @@ pub struct Panel {
     edit_sizes: RefCell<Option<EditSizes>>,
     /// Puts every chart's labels where the setting now says.
     labels_moved: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Writes every chart's P&L as the settings now say, money or R.
+    pnl_changed: RefCell<Option<Rc<dyn Fn()>>>,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The latest word from a sign-in, by login, until the next one.
     notes: RefCell<HashMap<String, String>>,
@@ -125,6 +127,7 @@ impl Panel {
             page,
             edit_sizes: RefCell::new(None),
             labels_moved: RefCell::new(None),
+            pnl_changed: RefCell::new(None),
             groups: RefCell::new(Vec::new()),
             notes: RefCell::new(HashMap::new()),
             redraw: RefCell::new(None),
@@ -155,6 +158,12 @@ impl Panel {
     /// What moving the labels does to the charts.
     pub fn set_labels_moved(&self, moved: Rc<dyn Fn()>) {
         *self.labels_moved.borrow_mut() = Some(moved);
+    }
+
+    /// What changing how P&L is shown, or what 1R is worth, does to the
+    /// charts.
+    pub fn set_pnl_changed(&self, changed: Rc<dyn Fn()>) {
+        *self.pnl_changed.borrow_mut() = Some(changed);
     }
 
     /// The Data page's redraw, for when a login changes what it says.
@@ -371,7 +380,8 @@ fn order_entry_group(edit: EditSizes) -> adw::PreferencesGroup {
     group
 }
 
-/// How the orders are drawn on a chart: which side their labels sit at.
+/// How the orders are drawn on a chart: which side their labels sit at,
+/// and whether the P&L on them and in the header is money or R.
 fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
@@ -393,7 +403,75 @@ fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
         }
     });
     group.add(&row);
+    let amount = r_amount_row(panel);
+    group.add(&pnl_display_row(panel, &amount));
+    group.add(&amount);
     group
+}
+
+/// "Show P&L as": Money, as the account's books say it, or Risk (R). The
+/// row for what 1R is worth is under it while R is chosen, and only then.
+fn pnl_display_row(panel: &Rc<Panel>, amount: &adw::SpinRow) -> adw::ComboRow {
+    use trading::chart_pnl::{self, Display};
+    let row = adw::ComboRow::new();
+    row.set_title("Show P&L as");
+    let names: Vec<&str> = Display::ALL.iter().map(|display| display.label()).collect();
+    row.set_model(Some(&gtk::StringList::new(&names)));
+    let current = chart_pnl::display(&panel.store);
+    row.set_selected(Display::ALL.iter().position(|display| *display == current).unwrap_or(0) as u32);
+    amount.set_visible(current == Display::Risk);
+    let weak = Rc::downgrade(panel);
+    let amount = amount.downgrade();
+    row.connect_selected_notify(move |row| {
+        let (Some(panel), Some(display)) = (weak.upgrade(), Display::ALL.get(row.selected() as usize)) else { return };
+        if let Some(amount) = amount.upgrade() {
+            amount.set_visible(*display == Display::Risk);
+        }
+        if *display == chart_pnl::display(&panel.store) {
+            return;
+        }
+        chart_pnl::save_display(&panel.store, *display);
+        if let Some(changed) = panel.pnl_changed.borrow().clone() {
+            changed();
+        }
+    });
+    row
+}
+
+/// The least and the most 1R can be worth: a cent, and past any account.
+const R_MIN: f64 = 0.01;
+const R_MAX: f64 = 1_000_000_000.0;
+
+/// The money 1R is worth, in the account's currency: never blank, never
+/// nought or less. What is typed is marked the moment it is not a positive
+/// number, and put back to the figure in force when it is let go.
+fn r_amount_row(panel: &Rc<Panel>) -> adw::SpinRow {
+    use trading::chart_pnl;
+    let row = adw::SpinRow::with_range(R_MIN, R_MAX, 50.0);
+    row.set_title("Value of 1R");
+    row.set_digits(2);
+    row.set_numeric(true);
+    row.set_update_policy(gtk::SpinButtonUpdatePolicy::IfValid);
+    row.set_value(chart_pnl::r_amount(&panel.store));
+    // As it is typed: marked while it would be refused, so nobody is
+    // surprised when it goes back.
+    row.connect_changed(|row| match chart_pnl::parse_amount(&row.text().replace(',', ".")) {
+        Ok(amount) if (R_MIN..=R_MAX).contains(&amount) => row.remove_css_class("error"),
+        _ => row.add_css_class("error"),
+    });
+    let weak = Rc::downgrade(panel);
+    row.connect_value_notify(move |row| {
+        let Some(panel) = weak.upgrade() else { return };
+        let amount = row.value();
+        if chart_pnl::parse_amount(&chart_pnl::amount_text(amount)).is_err() || amount == chart_pnl::r_amount(&panel.store) {
+            return;
+        }
+        chart_pnl::save_amount(&panel.store, amount);
+        if let Some(changed) = panel.pnl_changed.borrow().clone() {
+            changed();
+        }
+    });
+    row
 }
 
 /// "Add a trading service…", last in the accounts' section.
@@ -679,6 +757,107 @@ mod tests {
             rebuild(&panel);
             assert_eq!(combo(&panel).selected(), 1, "kept");
             assert_eq!(told.get(), 1, "drawing the page again moves nothing");
+        });
+    }
+
+    /// The Chart group's rows, under whatever they are wrapped in.
+    fn chart_rows<T: IsA<gtk::Widget>>(panel: &Panel) -> Vec<T> {
+        fn under<T: IsA<gtk::Widget>>(widget: &gtk::Widget, found: &mut Vec<T>) {
+            let mut next = widget.first_child();
+            while let Some(child) = next {
+                match child.clone().downcast::<T>() {
+                    Ok(row) => found.push(row),
+                    Err(_) => under(&child, found),
+                }
+                next = child.next_sibling();
+            }
+        }
+        let group = panel.groups.borrow().iter().find(|group| group.title() == "Chart").cloned().unwrap();
+        let mut found = Vec::new();
+        under(group.upcast_ref(), &mut found);
+        found
+    }
+
+    /// "Show P&L as" is Money, with no row for 1R, until somebody picks
+    /// Risk (R): that is kept, the charts are told, and the row for what 1R
+    /// is worth comes in under it at 500. Money again takes the row away.
+    #[test]
+    fn showing_pnl_in_r_is_chosen_under_the_order_labels() {
+        crate::ui::on_gtk(|| {
+            use crate::trading::chart_pnl::{self, ChartPnl, Display};
+            let store = Rc::new(Store::memory().unwrap());
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
+            let told = Rc::new(std::cell::Cell::new(0));
+            let counted = told.clone();
+            panel.set_pnl_changed(Rc::new(move || counted.set(counted.get() + 1)));
+            let combos = chart_rows::<adw::ComboRow>(&panel);
+            let titles: Vec<String> = combos.iter().map(|row| row.title().to_string()).collect();
+            assert_eq!(titles, ["Order labels", "Show P&L as"]);
+            let display = combos[1].clone();
+            let amount = chart_rows::<adw::SpinRow>(&panel).pop().expect("the row for 1R");
+            assert_eq!(amount.title(), "Value of 1R");
+            for row in [display.upcast_ref::<adw::ActionRow>(), amount.upcast_ref()] {
+                assert!(row.subtitle().is_none_or(|s| s.is_empty()), "no hint under {}", row.title());
+            }
+            assert_eq!(display.selected(), 0, "Money");
+            assert!(!amount.is_visible(), "a value of 1R with money shown");
+
+            display.set_selected(1);
+            assert_eq!(chart_pnl::display(&store), Display::Risk);
+            assert_eq!(told.get(), 1, "the charts are told");
+            assert!(amount.is_visible());
+            assert_eq!(amount.value(), 500.0);
+
+            rebuild(&panel);
+            let display = chart_rows::<adw::ComboRow>(&panel)[1].clone();
+            let amount = chart_rows::<adw::SpinRow>(&panel).pop().unwrap();
+            assert_eq!(display.selected(), 1, "kept");
+            assert!(amount.is_visible(), "the row for 1R drawn again with R kept");
+            assert_eq!(told.get(), 1, "drawing the page again changes nothing");
+
+            display.set_selected(0);
+            assert_eq!(chart_pnl::load(&store), ChartPnl::Money);
+            assert!(!amount.is_visible());
+            assert_eq!(told.get(), 2);
+        });
+    }
+
+    /// What 1R is worth takes a positive number and nothing else: blank,
+    /// nought, below nought and words are marked as they are typed and put
+    /// back to the figure in force, which is all that is kept.
+    #[test]
+    fn what_1r_is_worth_refuses_blank_and_what_is_not_a_positive_number() {
+        crate::ui::on_gtk(|| {
+            use crate::trading::chart_pnl::{self, ChartPnl, Display};
+            let store = Rc::new(Store::memory().unwrap());
+            chart_pnl::save_display(&store, Display::Risk);
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
+            let told = Rc::new(std::cell::Cell::new(0));
+            let counted = told.clone();
+            panel.set_pnl_changed(Rc::new(move || counted.set(counted.get() + 1)));
+            let amount = chart_rows::<adw::SpinRow>(&panel).pop().unwrap();
+            assert!(amount.is_visible());
+            assert!(!amount.has_css_class("error"));
+
+            for refused in ["", "0", "-250", "abc"] {
+                amount.set_text(refused);
+                assert!(amount.has_css_class("error"), "{refused:?} not marked as it is typed");
+                amount.update();
+                assert_eq!(amount.value(), 500.0, "{refused:?} taken");
+                assert!(!amount.text().is_empty(), "left blank after {refused:?}");
+                assert!(chart_pnl::parse_amount(&amount.text()).is_ok(), "{:?} after {refused:?}", amount.text());
+                assert!(!amount.has_css_class("error"), "still marked once {refused:?} was put back");
+            }
+            assert_eq!(store.setting(chart_pnl::R_AMOUNT), None, "nothing kept");
+            assert_eq!(told.get(), 0);
+
+            amount.set_text("250");
+            assert!(!amount.has_css_class("error"));
+            amount.update();
+            assert_eq!(chart_pnl::load(&store), ChartPnl::R(250.0));
+            assert_eq!(told.get(), 1);
+            rebuild(&panel);
+            assert_eq!(chart_rows::<adw::SpinRow>(&panel).pop().unwrap().value(), 250.0, "kept");
         });
     }
 
