@@ -255,8 +255,13 @@ jobs:
         run: |
           set -euo pipefail
           for _ in $(seq 60); do
-            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$COMMIT" \
-              --json status,conclusion,url --jq '.[0] // empty')
+            # A failed request — a 5xx, a rate limit — is "not yet", not a
+            # verdict: the next poll asks again, within the same 30 minutes.
+            if ! run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$COMMIT" \
+              --json status,conclusion,url --jq '.[0] // empty'); then
+              echo "Could not ask GitHub for CI's runs; trying again."
+              run=
+            fi
             if [ -n "$run" ] && [ "$(jq -r .status <<<"$run")" = completed ]; then
               conclusion=$(jq -r .conclusion <<<"$run")
               [ "$conclusion" = success ] && { echo "CI passed: $(jq -r .url <<<"$run")"; exit 0; }
