@@ -662,6 +662,53 @@ fn an_entry_filled_as_it_is_cancelled_is_flattened_too() {
     trading.sign_out();
 }
 
+/// Flat, and a buy filled just before the flatten, its position update not
+/// yet in: the flatten waits for it, though nothing filled as it ran, and
+/// closes what it says is held.
+#[test]
+fn a_fill_whose_position_is_not_yet_told_when_flattening_is_waited_for() {
+    let fake = Fake::builder().account("Sim1").order("Sim1", ES, Side::Buy, 1, OrderKind::Limit, 7651.0).market_price(7650.0).start();
+    let trading = flattener(&fake, Duration::from_secs(2));
+    let limit = working_of(&fake, OrderKind::Limit);
+    fake.hold_positions(true);
+    fake.fill(&limit, 1, 7651.0);
+    eventually(Duration::from_secs(1), "the limit filled", || {
+        trading.book().orders.iter().any(|order| order.is(&limit) && order.status == Status::Filled)
+    });
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened before the position was told");
+        fake.release_positions();
+        flattening.join().unwrap()
+    });
+    assert_eq!(flattened, Ok(0));
+    assert_eq!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).len(), 1, "left long one after a flatten");
+    eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    trading.sign_out();
+}
+
+/// A flatten refused while the position after a fill was never told: what
+/// the book holds is not to be trusted, so the refusal is the answer, never
+/// a flatten taken for done.
+#[test]
+fn a_flatten_refused_with_the_position_never_told_is_said_refused() {
+    let fake = Fake::builder().account("Sim1").order("Sim1", ES, Side::Buy, 1, OrderKind::Limit, 7651.0).market_price(7650.0).start();
+    let timing = Timing { request: Duration::from_millis(500), flatten_cancels: Duration::from_millis(300), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    let limit = working_of(&fake, OrderKind::Limit);
+    fake.hold_positions(true);
+    fake.set_flatten(false);
+    fake.fill(&limit, 1, 7651.0);
+    eventually(Duration::from_secs(1), "the limit filled", || {
+        trading.book().orders.iter().any(|order| order.is(&limit) && order.status == Status::Filled)
+    });
+    assert!(trading.book().positions.is_empty(), "the book flat, as it stood before the fill");
+    assert_eq!(trading.flatten("Sim1", ES), Err(Error::Rejected("No position to flatten".into())));
+    assert_eq!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).len(), 1);
+    trading.sign_out();
+}
+
 /// A fill whose position update never comes: the flatten goes out all the
 /// same once its wait is over, no later, and the server closes what is
 /// held.

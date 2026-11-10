@@ -691,11 +691,12 @@ impl State {
         let fill = (reason == wire::ORDER_FILLED || reason == wire::ORDER_FILLED_PARTIALLY)
             .then(|| self.update_fill(message, at))
             .flatten();
-        if fill.is_some() {
+        let filled = fill.is_some_and(|fill| self.fill(fill));
+        // A fill told again is not another for the position to follow.
+        if filled {
             let order = &self.orders[at];
             self.filled_at.insert((order.account.clone(), order.symbol.clone()), self.seq);
         }
-        let filled = fill.is_some_and(|fill| self.fill(fill));
         changed || filled
     }
 
@@ -807,6 +808,18 @@ impl State {
     fn positions_listed(&mut self, account: &str, answers: &[Message]) {
         let listed: HashSet<String> = answers.iter().filter(|message| !message.flag("NoPositions")).filter_map(|message| message.text("Symbol")).collect();
         self.positions.retain(|position| position.account != account || listed.contains(&position.symbol));
+        // What it leaves out is told flat by the listing, after anything
+        // folded so far; those it lists were told as each was folded.
+        let unlisted: Vec<(String, String)> = self
+            .filled_at
+            .keys()
+            .chain(self.position_told.keys())
+            .filter(|(of, symbol)| of == account && !listed.contains(symbol))
+            .cloned()
+            .collect();
+        for key in unlisted {
+            self.position_told.insert(key, self.seq + 1);
+        }
     }
 }
 
@@ -1582,14 +1595,18 @@ impl Trading {
     /// of the fill that caused it; an order whose cancel is not answered in
     /// that time holds the flatten back no longer than that.
     ///
-    /// A fill on the contract meanwhile is told in its ORDER_UPDATE, ahead
-    /// of the POSITION_UPDATE that says what is held after it: the position
-    /// is waited for, in the same time, until it is told after the last
-    /// fill, and the flatten closes what it says, whatever was held at the
-    /// start, an entry filled as it was cancelled included. A position never
-    /// told in that time is flattened all the same: the server knows what is
-    /// held. The flatten goes out no later than `flatten_cancels` after the
-    /// call, cancels and position waited for together.
+    /// A fill on the contract is told in its ORDER_UPDATE, ahead of the
+    /// POSITION_UPDATE that says what is held after it: the position is
+    /// waited for, in the same time, until it is told after the last fill
+    /// on the contract, whenever that fill was, before the call or as its
+    /// orders were cancelled, and the flatten closes what it says, whatever
+    /// was held at the start, an entry filled as it was cancelled included.
+    /// A position never told in that time is flattened all the same: the
+    /// server knows what is held. The flatten goes out no later than
+    /// `flatten_cancels` after the call, cancels and position waited for
+    /// together. Refused, it is taken for done only once the position, told
+    /// after the last fill, says nothing is held; otherwise the refusal is
+    /// the answer, in the server's words.
     ///
     /// Taken, or nothing left to flatten, it answers how many orders on it
     /// would not cancel or were not answered in time, each once: those need
@@ -1611,22 +1628,17 @@ impl Trading {
                 .unwrap_or(0)
         };
         let held = || held_in(&lock(&self.shared.state));
-        let (before, filled_before) = {
-            let state = lock(&self.shared.state);
-            (held_in(&state), state.filled_at.get(&key).copied())
+        // Told of the position since the last fill on the contract, or no
+        // fill to wait on.
+        let settled = |state: &State| {
+            state.filled_at.get(&key).is_none_or(|filled| state.position_told.get(&key).is_some_and(|told| told > filled))
         };
+        let told_within = |timeout: Duration| self.shared.wait_for(timeout, |state| settled(state).then_some(())).is_ok();
+        let before = held();
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
         let tried = cancels.sent.len() + cancels.failed;
         let (uncancelled, why) = self.cancels_answered(cancels, deadline.saturating_duration_since(Instant::now()), true);
-        let filled = lock(&self.shared.state).filled_at.get(&key).copied();
-        // Told of the position since the last fill, or no fill to wait on.
-        let told = filled == filled_before
-            || self
-                .shared
-                .wait_for(deadline.saturating_duration_since(Instant::now()), |state| {
-                    state.position_told.get(&key).is_some_and(|told| Some(*told) > filled).then_some(())
-                })
-                .is_ok();
+        let told = told_within(deadline.saturating_duration_since(Instant::now()));
         // Nothing held, and sure of it: there is nothing to flatten.
         if told && held() == 0 {
             if before != 0 {
@@ -1654,9 +1666,12 @@ impl Trading {
         })?;
         match status {
             // Refused as there was nothing left to close, which the
-            // position's own update may not have said yet when it was sent.
-            Status::Rejected(_) if held() == 0 => Ok(uncancelled),
-            Status::Rejected(why) => Err(Error::Rejected(why)),
+            // position's own update may not have said yet when it was sent:
+            // done only once that update, after the last fill, says so.
+            Status::Rejected(why) => match told_within(self.shared.timing.request) && held() == 0 {
+                true => Ok(uncancelled),
+                false => Err(Error::Rejected(why)),
+            },
             _ => Ok(uncancelled),
         }
     }

@@ -502,6 +502,12 @@ impl Fake {
         lock(&self.shared.world).cancels = cancels;
     }
 
+    /// Whether a flatten is taken from now on, or refused as one with no
+    /// position to flatten whatever is held.
+    pub fn set_flatten(&self, taken: bool) {
+        lock(&self.shared.world).flatten = taken;
+    }
+
     /// How orders placed from now on fill.
     pub fn set_fills(&self, fills: Fills) {
         lock(&self.shared.world).filling = fills;
