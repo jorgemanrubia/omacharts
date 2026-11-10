@@ -438,6 +438,14 @@ pub struct State {
     requests: HashMap<i64, Slot>,
     synced: bool,
     connected: bool,
+    /// How many messages have been folded: the place of each in turn.
+    seq: u64,
+    /// The last POSITION_UPDATE folded for each account and symbol, by its
+    /// place, whether or not it changed anything.
+    position_told: HashMap<(String, String), u64>,
+    /// The last ORDER_UPDATE that told of a fill on each account and
+    /// symbol, by its place.
+    filled_at: HashMap<(String, String), u64>,
 }
 
 fn quantity(value: Option<f64>) -> u32 {
@@ -500,6 +508,7 @@ impl State {
 
     /// Fold in one message the server sent. True when the book changed.
     fn fold(&mut self, message: &Message) -> bool {
+        self.seq += 1;
         match message.kind() {
             wire::TRADE_ACCOUNT_RESPONSE => self.account(message),
             wire::ACCOUNT_BALANCE_UPDATE => self.balance(message),
@@ -552,6 +561,7 @@ impl State {
             return false;
         }
         let (Some(account), Some(symbol)) = (message.text("TradeAccount"), message.text("Symbol")) else { return false };
+        self.position_told.insert((account.clone(), symbol.clone()), self.seq);
         let position = Position {
             account,
             symbol,
@@ -682,6 +692,11 @@ impl State {
             .then(|| self.update_fill(message, at))
             .flatten();
         let filled = fill.is_some_and(|fill| self.fill(fill));
+        // A fill told again is not another for the position to follow.
+        if filled {
+            let order = &self.orders[at];
+            self.filled_at.insert((order.account.clone(), order.symbol.clone()), self.seq);
+        }
         changed || filled
     }
 
@@ -793,6 +808,18 @@ impl State {
     fn positions_listed(&mut self, account: &str, answers: &[Message]) {
         let listed: HashSet<String> = answers.iter().filter(|message| !message.flag("NoPositions")).filter_map(|message| message.text("Symbol")).collect();
         self.positions.retain(|position| position.account != account || listed.contains(&position.symbol));
+        // What it leaves out is told flat by the listing, after anything
+        // folded so far; those it lists were told as each was folded.
+        let unlisted: Vec<(String, String)> = self
+            .filled_at
+            .keys()
+            .chain(self.position_told.keys())
+            .filter(|(of, symbol)| of == account && !listed.contains(symbol))
+            .cloned()
+            .collect();
+        for key in unlisted {
+            self.position_told.insert(key, self.seq + 1);
+        }
     }
 }
 
@@ -1568,38 +1595,62 @@ impl Trading {
     /// of the fill that caused it; an order whose cancel is not answered in
     /// that time holds the flatten back no longer than that.
     ///
+    /// A fill on the contract is told in its ORDER_UPDATE, ahead of the
+    /// POSITION_UPDATE that says what is held after it: the position is
+    /// waited for, in the same time, until it is told after the last fill
+    /// on the contract, whenever that fill was, before the call or as its
+    /// orders were cancelled, and the flatten closes what it says, whatever
+    /// was held at the start, an entry filled as it was cancelled included.
+    /// A position never told in that time is flattened all the same: the
+    /// server knows what is held. The flatten goes out no later than
+    /// `flatten_cancels` after the call, cancels and position waited for
+    /// together. Refused, it is taken for done only once the position, told
+    /// after the last fill, says nothing is held; otherwise the refusal is
+    /// the answer, in the server's words.
+    ///
     /// Taken, or nothing left to flatten, it answers how many orders on it
     /// would not cancel or were not answered in time, each once: those need
-    /// a look. With nothing held from the start, a cancel that failed is
-    /// the answer, and with nothing working on it either, [`Error::Flat`]:
-    /// a flatten that found nothing to close is never taken for one that
-    /// closed it, since `symbol` spelled otherwise than the server spells it
-    /// finds nothing too. A caller sure of the spelling says the account is
-    /// already flat.
+    /// a look. With nothing held from the start, and nothing held once its
+    /// cancels are answered, a cancel that failed is the answer, and with
+    /// nothing working on it either, [`Error::Flat`]: a flatten that found
+    /// nothing to close is never taken for one that closed it, since
+    /// `symbol` spelled otherwise than the server spells it finds nothing
+    /// too. A caller sure of the spelling says the account is already flat.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
-        let held = || {
-            lock(&self.shared.state)
+        let deadline = Instant::now() + self.shared.timing.flatten_cancels;
+        let key = (account.to_string(), symbol.to_string());
+        let held_in = |state: &State| {
+            state
                 .positions
                 .iter()
                 .find(|position| position.account == account && position.symbol == symbol)
                 .map(|position| position.qty)
                 .unwrap_or(0)
         };
+        let held = || held_in(&lock(&self.shared.state));
+        // Told of the position since the last fill on the contract, or no
+        // fill to wait on.
+        let settled = |state: &State| {
+            state.filled_at.get(&key).is_none_or(|filled| state.position_told.get(&key).is_some_and(|told| told > filled))
+        };
+        let told_within = |timeout: Duration| self.shared.wait_for(timeout, |state| settled(state).then_some(())).is_ok();
         let before = held();
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
         let tried = cancels.sent.len() + cancels.failed;
-        let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels, true);
-        if before == 0 {
+        let (uncancelled, why) = self.cancels_answered(cancels, deadline.saturating_duration_since(Instant::now()), true);
+        let told = told_within(deadline.saturating_duration_since(Instant::now()));
+        // Nothing held, and sure of it: there is nothing to flatten.
+        if told && held() == 0 {
+            if before != 0 {
+                // Closed meanwhile, by an exit that filled as it was
+                // cancelled.
+                return Ok(uncancelled);
+            }
             return match (why, tried) {
                 (Some(why), _) => Err(why),
                 (None, 0) => Err(Error::Flat(format!("{account} holds nothing of {symbol} and has no orders working on it"))),
                 (None, _) => Ok(uncancelled),
             };
-        }
-        // Closed meanwhile, by an exit that filled as it was cancelled:
-        // there is nothing to flatten.
-        if held() == 0 {
-            return Ok(uncancelled);
         }
         let id = self.shared.next_client_id();
         let sent = self.shared.send(&Message::new(
@@ -1615,9 +1666,12 @@ impl Trading {
         })?;
         match status {
             // Refused as there was nothing left to close, which the
-            // position's own update may not have said yet when it was sent.
-            Status::Rejected(_) if held() == 0 => Ok(uncancelled),
-            Status::Rejected(why) => Err(Error::Rejected(why)),
+            // position's own update may not have said yet when it was sent:
+            // done only once that update, after the last fill, says so.
+            Status::Rejected(why) => match told_within(self.shared.timing.request) && held() == 0 {
+                true => Ok(uncancelled),
+                false => Err(Error::Rejected(why)),
+            },
             _ => Ok(uncancelled),
         }
     }
