@@ -1597,7 +1597,14 @@ mod tests {
         let scratch = Scratch::new();
         for (signal, definite) in [("SEGV", true), ("ABRT", true), ("TERM", false), ("KILL", false)] {
             let binary = scratch.0.join(format!("dies-{signal}"));
-            place_executable(&binary, format!("#!/bin/sh\nkill -{signal} $$\n").as_bytes());
+            // A core limit of exactly one byte makes the kernel skip a piped core_pattern
+            // (systemd-coredump), so the deliberate crash leaves no core dump or desktop crash
+            // notification behind. `ulimit -c` counts in blocks and cannot say one byte.
+            // Without prlimit the crash still happens, and the test still holds.
+            place_executable(
+                &binary,
+                format!("#!/bin/sh\nprlimit --pid $$ --core=1:1 2>/dev/null\nkill -{signal} $$\n").as_bytes(),
+            );
             let probed = probe(&binary, Duration::from_secs(5));
             assert_eq!(matches!(probed, Err(Unstarted::Definitely(_))), definite, "{signal}: {probed:?}");
         }
