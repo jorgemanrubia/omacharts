@@ -5013,8 +5013,15 @@ pub(super) mod tests {
                 session.uncancelled.store(1, Ordering::Release);
                 let held = || session.book().position("951", "ESZ6").map(|held| held.net);
                 let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+                let lines = || -> Vec<(Level, String)> {
+                    window.catch_up_log();
+                    log.entries().into_iter().map(|e| (e.level, e.line())).collect()
+                };
+                let once = (Level::Warning, format!("{account} · Flattened · 1 order could not be cancelled: check it"));
                 assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
-                assert!(settle(&window, || held().is_none() && free(&window)), "{cancels_itself}: not flat");
+                // Flat, and then said so, once the flatten's answer is in.
+                let said = || lines().contains(&once);
+                assert!(settle(&window, || held().is_none() && free(&window) && said()), "{cancels_itself}: {:#?}", lines());
                 let heard = session.heard.lock().unwrap().clone();
                 let count = |what: &str| heard.iter().filter(|heard| **heard == what).count();
                 assert_eq!(count("flatten"), 1, "{cancels_itself}: {heard:?}");
@@ -5022,10 +5029,8 @@ pub(super) mod tests {
                 for basket in [&target, &stop] {
                     assert!(!session.book().order(basket).unwrap().status.working(), "{cancels_itself}: left working");
                 }
-                window.catch_up_log();
-                let lines: Vec<(Level, String)> = log.entries().into_iter().map(|e| (e.level, e.line())).collect();
-                let once = (Level::Warning, format!("{account} · Flattened · 1 order could not be cancelled: check it"));
-                assert!(lines.contains(&once), "{cancels_itself}: {lines:#?}");
+                let lines = lines();
+                assert_eq!(lines.iter().filter(|line| **line == once).count(), 1, "{cancels_itself}: {lines:#?}");
             }
         });
     }
@@ -5049,10 +5054,13 @@ pub(super) mod tests {
 
             session.uncancelled.store(2, Ordering::Release);
             assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
-            assert!(settle(&window, || held().is_none() && free(&window)), "not flat");
-            window.catch_up_log();
-            let lines = said();
             let warned = (Level::Warning, format!("{account} · Flattened · 2 orders could not be cancelled: check them"), true);
+            let heard = |warned: &(Level, String, bool)| {
+                window.catch_up_log();
+                said().contains(warned)
+            };
+            assert!(settle(&window, || held().is_none() && free(&window) && heard(&warned)), "not flat: {:#?}", said());
+            let lines = said();
             assert_eq!(lines.iter().filter(|line| **line == warned).count(), 1, "{lines:#?}");
             assert!(!lines.iter().any(|(_, line, _)| line.contains("Not flattened")), "{lines:#?}");
 
@@ -5060,10 +5068,9 @@ pub(super) mod tests {
             assert!(settle(&window, || held() == Some(1) && free(&window)), "bought");
             session.uncancelled.store(1, Ordering::Release);
             pane.view.drop_mark(TradeEvent::Flatten);
-            assert!(settle(&window, || held().is_none() && free(&window)), "not flat from the ×");
-            window.catch_up_log();
-            let lines = said();
             let warned = (Level::Warning, format!("{account} · Flattened · 1 order could not be cancelled: check it"), true);
+            assert!(settle(&window, || held().is_none() && free(&window) && heard(&warned)), "not flat from the ×: {:#?}", said());
+            let lines = said();
             assert_eq!(lines.iter().filter(|line| **line == warned).count(), 1, "{lines:#?}");
             assert!(!lines.iter().any(|(_, line, _)| line.contains("Not flattened")), "{lines:#?}");
 
