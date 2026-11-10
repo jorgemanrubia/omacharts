@@ -573,9 +573,11 @@ impl OrderRequest {
         quantity: Quantity,
         price: Option<f64>,
     ) -> Result<OrderRequest, String> {
+        // On the step of the contract it goes to, whatever the chart it was
+        // priced on steps in: a 6E chart's half tick is no price for M6E.
         let price = match (kind, price) {
             (OrderKind::Market, _) => None,
-            (_, Some(price)) if price.is_finite() => Some(price),
+            (_, Some(price)) if price.is_finite() => Some(on_contract_tick(price, contract.tick)),
             (_, _) => return Err(format!("a {} order needs a price", kind.key())),
         };
         Ok(OrderRequest {
@@ -588,6 +590,20 @@ impl OrderRequest {
             price,
             tag: new_tag(),
         })
+    }
+}
+
+/// `price` on the step `tick` of the contract an order goes to, written to
+/// the places the step has so no float noise goes with it; as it is with no
+/// step known.
+pub fn on_contract_tick(price: f64, tick: Option<f64>) -> f64 {
+    match tick.filter(|tick| tick.is_finite() && *tick > 0.0) {
+        Some(tick) => {
+            let (snapped, places) = omacharts_engine::on_tick(price, tick);
+            let scale = 10f64.powi(places as i32);
+            (snapped * scale).round() / scale
+        }
+        None => price,
     }
 }
 
@@ -604,6 +620,24 @@ pub fn new_tag() -> String {
 mod tests {
     use super::*;
     use crate::trading::fake::tests::*;
+
+    /// An order's price goes on the step of the contract it is sent to,
+    /// whatever the chart it was priced on steps in: a 6E chart's half tick
+    /// is rounded to M6E's whole one, with no float noise; with no step
+    /// known it goes as it is.
+    #[test]
+    fn an_order_s_price_is_on_the_traded_contract_s_tick() {
+        let micro = Contract { symbol: "M6EZ6".into(), exchange: "CME".into(), tick: Some(0.0001) };
+        let size = Quantity::new(1).unwrap();
+        for (asked, sent) in [(1.08746, 1.0875), (1.08773, 1.0877), (1.0877, 1.0877)] {
+            let order = OrderRequest::request("1", &micro, Side::Sell, OrderKind::Stop, size, Some(asked)).unwrap();
+            assert_eq!(order.price, Some(sent), "{asked}");
+        }
+        let unknown = Contract { tick: None, ..micro };
+        let order = OrderRequest::request("1", &unknown, Side::Buy, OrderKind::Limit, size, Some(1.08746)).unwrap();
+        assert_eq!(order.price, Some(1.08746));
+        assert_eq!(on_contract_tick(7_640.3, Some(0.25)), 7_640.25);
+    }
 
     #[test]
     fn balances_read_in_whole_units() {

@@ -162,6 +162,9 @@ pub struct FakeSession {
     pub kinds: Vec<OrderKind>,
     /// What it says it can do beyond placing and cancelling.
     pub modifies: bool,
+    /// The step its contracts trade in, a quarter as ES's unless a test
+    /// says otherwise: a micro stepping coarser than the chart it is priced on.
+    pub tick: Mutex<f64>,
     /// Its flatten cancels what works on the contract itself, as Sierra
     /// Chart's does, and says "flatten" rather than "cancel" for it.
     pub flatten_cancels: bool,
@@ -218,6 +221,7 @@ impl FakeSession {
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             modifies: true,
             flatten_cancels: false,
+            tick: Mutex::new(0.25),
             linking: Linking::AfterTheFact,
             links: Mutex::default(),
             pairs: AtomicUsize::new(0),
@@ -394,7 +398,7 @@ impl Session for FakeSession {
             true => instrument.symbol.clone(),
             false => self.contracts.lock().unwrap().get(&instrument.symbol).cloned().ok_or(Refusal::NotKnownYet)?,
         };
-        Ok(Contract { symbol, exchange: "CME".into(), tick: Some(0.25) })
+        Ok(Contract { symbol, exchange: "CME".into(), tick: Some(*self.tick.lock().unwrap()) })
     }
     fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {
         *self.market.lock().unwrap()

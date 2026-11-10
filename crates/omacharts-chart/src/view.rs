@@ -289,6 +289,10 @@ struct State {
     marks: Marks,
     /// Which end of their lines the marks' labels sit at.
     mark_labels: LabelSide,
+    /// The step a mark is dragged on, set by whoever lays the marks: the
+    /// contract it trades, which need not step as the series charted does
+    /// — a 6E chart trading M6E. The series' own step when unset.
+    mark_tick: Option<f64>,
     /// The handle at the end of a mark the pointer is over, lit.
     hover_mark: Option<MarkHit>,
     loading: bool,
@@ -1375,6 +1379,7 @@ impl State {
             trouble_words: None,
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
+            mark_tick: None,
             hover_mark: None,
             loading: false,
             price_zoom: 1.0,
@@ -4710,6 +4715,13 @@ impl ChartView {
         self.state.borrow().tick()
     }
 
+    /// The step a mark is dragged on: the contract the marks trade, which
+    /// need not step as the series charted does. `None` goes back to the
+    /// series' own.
+    pub fn set_mark_tick(&self, tick: Option<f64>) {
+        self.state.borrow_mut().mark_tick = tick;
+    }
+
     /// Whether a fetch is outstanding for what is on screen.
     ///
     /// An empty chart that is still loading and an empty chart that came back
@@ -7807,14 +7819,20 @@ impl State {
             from: dragged.from,
             at,
             last: self.bars.last().map(|bar| bar.close),
-            tick: self.tick(),
+            tick: self.dragged_tick(),
             places,
         }
     }
 
-    /// The places a price `at` is written to, on the series' tick.
+    /// The step a mark moves in as it is dragged: the traded contract's
+    /// when one was set, else the series'.
+    fn dragged_tick(&self) -> Option<f64> {
+        self.mark_tick.or_else(|| self.tick())
+    }
+
+    /// The places a price `at` is written to, on the dragged tick.
     fn places_at(&self, at: f64) -> usize {
-        self.tick().map_or(2, |tick| omacharts_engine::on_tick(at, tick).1)
+        self.dragged_tick().map_or(2, |tick| omacharts_engine::on_tick(at, tick).1)
     }
 
     /// The price at height `y` of the price plot, on the series' tick, and
@@ -7827,7 +7845,7 @@ impl State {
         let plan = layout(self, width, height);
         let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
         let price = scale.price_at(y.clamp(plan.price_y, plan.price_y + plan.price_h), plan.price_y, plan.price_h);
-        Some(match self.tick() {
+        Some(match self.dragged_tick() {
             Some(tick) => omacharts_engine::on_tick(price, tick),
             None => (price, 2),
         })
@@ -11099,6 +11117,29 @@ mod tests {
         let strip = layout(&state, w, h).rows.into_iter().find(|row| row.pane == Some(2)).unwrap();
         assert_eq!(rows(&plain, plan.price_y + 2.0, plan.price_y + plan.price_h - 2.0), rows(&zoomed, plan.price_y + 2.0, plan.price_y + plan.price_h - 2.0), "the price redrawn");
         assert_ne!(rows(&plain, strip.top, strip.top + strip.height), rows(&zoomed, strip.top, strip.top + strip.height), "the strip on its own scale");
+    }
+
+    /// A mark is dragged on the step of the contract it trades once one is
+    /// set, not the series' step: a quarter-point chart trading a contract
+    /// in halves lands only on halves.
+    #[test]
+    fn a_mark_is_dragged_on_the_traded_contract_s_tick() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = charted(400);
+        state.visible = 160;
+        let plan = layout(&state, w, h);
+        let ys: Vec<f64> = (0..40).map(|at| plan.price_y + plan.price_h * f64::from(at) / 40.0).collect();
+        let on = |state: &State, tick: f64| {
+            ys.iter().all(|y| {
+                let (price, _) = state.tick_price_at(w, h, *y).expect("a price");
+                ((price / tick) - (price / tick).round()).abs() < 1e-9
+            })
+        };
+        state.mark_tick = Some(0.5);
+        assert!(on(&state, 0.5), "every price on the traded half point");
+        assert_eq!(state.dragged_tick(), Some(0.5), "what the rules are asked about");
+        state.mark_tick = None;
+        assert_eq!(state.dragged_tick(), state.tick(), "the series' own once unset");
     }
 
     /// A reset, from the axis or the menu, lets go of the price's scale and

@@ -934,6 +934,13 @@ impl Window {
         target.tick.or_else(|| pane.view.tick())
     }
 
+    /// `price`, wherever it came from — a drag, a click, the menu, a key —
+    /// on the step of the contract the order goes to, so what is checked is
+    /// what is sent.
+    fn traded_price(pane: &ChartPane, target: &trading::Target, price: f64) -> f64 {
+        trading::on_contract_tick(price, Self::tick_of(pane, target))
+    }
+
     /// The chart menu's orders, at height `y` of the focused chart, in one
     /// section: buy and sell at the market, then the limit and stop each
     /// way that the price there allows, and cancelling the order under the
@@ -1030,6 +1037,7 @@ impl Window {
         if target.account.key() != account {
             return self.refuse_on(&target, "Not placed · the chart's account changed");
         }
+        let price = price.map(|price| Self::traded_price(&pane, &target, price));
         if let Some(why) = price.and_then(|_| self.unpriced(&pane, &target)) {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
@@ -1163,6 +1171,7 @@ impl Window {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
+        let price = Self::traded_price(pane, &target, price);
         let key = target.account.key();
         let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
         let Some(held) = held else { return self.refuse_on(&target, "Not placed · nothing held") };
@@ -1323,6 +1332,7 @@ impl Window {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not moved · {why}")),
         };
+        let price = Self::traded_price(pane, &target, price);
         if !target.capabilities.modify {
             return self.refuse_on(&target, &format!("Not moved · {} cannot move orders", target.login.name));
         }
@@ -1690,8 +1700,12 @@ impl Window {
         self.write_size_of(pane);
         pane.view.set_mark_labels(self.trade.order_labels.get());
         let Ok(target) = self.order_target(pane) else {
+            pane.view.set_mark_tick(None);
             return pane.view.set_marks(Vec::new(), super::marks::TradeRules::default());
         };
+        // A mark dragged steps as the contract it trades does, not as the
+        // chart's series does.
+        pane.view.set_mark_tick(target.tick);
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
         // The theme's trading colours, with only the chart's up and down
@@ -4847,6 +4861,31 @@ pub(super) mod tests {
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
             assert_eq!(pane.account_text().as_deref(), Some("951"));
             assert_eq!(dot(&pane), None);
+        });
+    }
+
+    /// A contract that steps coarser than the chart it is priced on, as M6E
+    /// does on a 6E chart: an exit dragged out and an order moved go at the
+    /// traded contract's step, never the chart's, and the marks are dragged
+    /// on it too.
+    #[test]
+    fn a_dragged_exit_or_move_goes_on_the_traded_contract_s_tick() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            *session.tick.lock().unwrap() = 0.5;
+            window.desk.tell();
+            window.apply_marks_to(&pane);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            let target = || session.book().orders.iter().find(|order| order.kind == OrderKind::Limit && order.status.working()).cloned();
+
+            window.exit_mark(&pane, OrderKind::Limit, 7_640.25);
+            assert!(settle(&window, || target().is_some() && free(&window)), "no target placed");
+            assert_eq!(target().unwrap().price, Some(7_640.5), "on the traded contract's half point");
+
+            let basket = target().unwrap().basket_id;
+            window.move_mark(&pane, &basket, 7_650.75);
+            assert!(settle(&window, || target().and_then(|order| order.price) != Some(7_640.5) && free(&window)), "not moved");
+            assert_eq!(target().unwrap().price, Some(7_651.0));
         });
     }
 
