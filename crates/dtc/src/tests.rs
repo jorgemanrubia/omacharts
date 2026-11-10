@@ -585,13 +585,72 @@ fn a_cancel_refused_before_the_fill_leaves_the_flatten_nothing_to_sell() {
     trading.sign_out();
 }
 
+/// Nothing held and nothing working: nothing is sent, and the flatten
+/// says it found nothing rather than that it closed it.
 #[test]
-fn flattening_nothing_held_sends_nothing() {
+fn flattening_nothing_held_sends_nothing_and_says_so() {
     let fake = Fake::builder().account("Sim1").start();
     let (trading, _) = sign_in(&fake);
-    trading.flatten("Sim1", ES).unwrap();
+    let flattened = trading.flatten("Sim1", ES);
+    assert!(matches!(&flattened, Err(Error::Flat(why)) if why.contains("holds nothing of")), "{flattened:?}");
     assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
     trading.sign_out();
+}
+
+/// With Rithmic as Sierra's trading service the position is `ESZ6.CME`:
+/// a flatten of it in Sierra's own spelling finds nothing and says so,
+/// and in the server's own closes it. Only that spelling is known.
+#[test]
+fn on_rithmic_a_contract_is_known_and_flattened_by_rithmic_s_spelling_alone() {
+    let fake = Fake::builder().account("Sim1").rithmic_symbols().position("Sim1", "ESZ6.CME", -2, 7578.0).market_price(7570.0).start();
+    let (trading, _) = sign_in(&fake);
+    assert!(trading.flatten("Sim1", ES).is_err(), "a flatten of nothing taken for done");
+    assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
+    assert!(trading.knows(ES).is_err(), "{ES} known on Rithmic");
+    assert_eq!(trading.knows("ESZ6.CME").map(|definition| definition.symbol), Ok("ESZ6.CME".to_string()));
+    trading.flatten("Sim1", "ESZ6.CME").unwrap();
+    let sent = fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER);
+    assert_eq!(sent.iter().map(|message| message.text("Symbol")).collect::<Vec<_>>(), [Some("ESZ6.CME".to_string())]);
+    eventually(Duration::from_secs(2), "it is flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    trading.sign_out();
+}
+
+/// Names asked of at once, of a server silent on those it does not know,
+/// as Sierra is: one known is confirmed in a moment, though one preferred
+/// to it is never answered, and none known takes one wait, not one each.
+#[test]
+fn several_names_are_asked_of_at_once_and_waited_on_once() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .rithmic_symbols()
+        .unknown_contracts_unanswered()
+        .definition("ESZ6.CME", "ES", 0.25, 12.5, 1797206400, 0.01)
+        .start();
+    let (trading, _) = sign_in(&fake);
+    let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+    let started = Instant::now();
+    let known = trading.knows_any(&names(&[ES, "ESZ6.CME", "ESZ26.CME"])).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1), "{:?} to confirm", started.elapsed());
+    assert_eq!(known[0], Known::Unanswered);
+    assert!(matches!(&known[1], Known::Defined(definition) if definition.symbol == "ESZ6.CME"), "{known:?}");
+    assert_eq!(fake.received_of(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).len(), 3, "all asked at once");
+
+    let started = Instant::now();
+    let known = trading.knows_any(&names(&["NQZ26_FUT_CME", "NQZ6.CME", "NQZ26.CME"])).unwrap();
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(1900) && waited < Duration::from_secs(3), "{waited:?} for three unknown");
+    assert!(known.iter().all(|known| *known == Known::Unanswered), "{known:?}");
+    trading.sign_out();
+}
+
+#[test]
+fn rithmic_s_spelling_has_a_one_digit_year_but_ng_s_two() {
+    for good in ["ESZ6.CME", "MESZ6.CME", "6EZ6.CME", "CLZ6.NYMEX", "GCZ6.COMEX", "NGZ26.NYMEX"] {
+        assert!(crate::fake::rithmic_spelling(good), "{good}");
+    }
+    for bad in ["ESZ26_FUT_CME", "ESZ26.CME", "NGZ6.NYMEX", "ES.CME", "ESZ6", "ES~.FUT_SPREAD.CME", "ESZ6.cme"] {
+        assert!(!crate::fake::rithmic_spelling(bad), "{bad}");
+    }
 }
 
 #[test]
@@ -741,7 +800,10 @@ fn an_order_update_that_comes_before_the_definition_is_made_real_once_it_lands()
     eventually(Duration::from_secs(2), "the fill price is real", || {
         trading.book().orders.iter().any(|order| order.is(&id) && order.avg_fill_price == Some(7650.25))
     });
-    assert_eq!(trading.book().positions[0].avg_price, Some(7650.25));
+    // The position update comes after the fill's order update.
+    eventually(Duration::from_secs(2), "the position is held at its real price", || {
+        trading.book().positions.first().is_some_and(|position| position.avg_price == Some(7650.25))
+    });
     assert!(fake.received_of(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).iter().any(|asked| asked.text("Symbol").as_deref() == Some(ES)));
     assert!(heard.lock().unwrap().contains(&Pulse::Moved));
     trading.sign_out();

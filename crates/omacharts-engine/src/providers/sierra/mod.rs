@@ -16,6 +16,12 @@
 //! Sierra Chart flushes, which it does as often as its "Intraday File Flush
 //! Time in Milliseconds" says.
 //!
+//! With Rithmic as its trading service Sierra Chart names its files as
+//! Rithmic names contracts, `ESZ6.CME`, and a folder that has been on both
+//! services has a file of each for the same contract, one of them no longer
+//! written. A contract is charted from the one being written: see
+//! [`Opened::contract`].
+//!
 //! A root is its front month, as for every feed: the contract the rule in
 //! [`crate::contracts`] says trades now, when Sierra Chart has its trades,
 //! and otherwise the soonest one it does have that has not expired. Not
@@ -27,6 +33,9 @@
 
 pub mod ladders;
 pub mod setup;
+
+/// How a symbol of Sierra Chart's is spelled, which says which service named it.
+pub use sierra::Style;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -78,11 +87,61 @@ pub(crate) struct Opened {
     listed_at: Instant,
 }
 
+/// How live a file is, for choosing between two of one contract: one with
+/// trades over one without, and of two without, one with daily bars beside
+/// it; then the one written last, then the one with more trades, then one
+/// with daily bars beside it.
+fn liveness(entry: &sierra::Entry) -> (bool, bool, Option<std::time::SystemTime>, u64, bool) {
+    let records = entry.intraday.as_ref().map_or(0, |intraday| intraday.records);
+    let modified = entry.intraday.as_ref().and_then(|intraday| intraday.modified);
+    let daily = records == 0 && entry.daily.is_some();
+    (records > 0, daily, modified, records, entry.daily.is_some())
+}
+
 impl Opened {
-    /// The file of `root`'s contract of `month` in `year`.
+    /// The file of `root`'s contract of `month` in `year`. Two services may
+    /// each have written one, Sierra Chart's own `ESZ26_FUT_CME` and
+    /// Rithmic's `ESZ6.CME`, and only one is written now: it is the one
+    /// whose trades were written last, the one with more of them when both
+    /// were written at once. A file of no trades, the header Sierra Chart
+    /// writes for a contract before its first trade, loses to any that has
+    /// them, and to one of daily bars; alone, it is the contract's file,
+    /// which fills as the contract trades. Never two at once: they are the
+    /// same trades from two sources, and would count each twice.
     fn contract(&self, root: &str, month: char, year: i32) -> Option<&sierra::Entry> {
         let wanted = sierra::Contract { year, month };
-        self.listing.of_root(root).iter().find(|entry| entry.symbol.contract == Some(wanted))
+        self.listing
+            .of_root(root)
+            .iter()
+            .filter(|entry| entry.symbol.contract == Some(wanted))
+            .max_by_key(|entry| liveness(entry))
+    }
+
+    /// The stem whose daily bars stand for `stem`'s: its own, or, when it
+    /// has none, another file's of the same contract that has them.
+    fn daily_stem(&self, stem: &str) -> String {
+        let Some(entry) = self.listing.get(stem) else { return stem.to_string() };
+        if entry.daily.is_some() {
+            return stem.to_string();
+        }
+        let Some(contract) = entry.symbol.contract else { return stem.to_string() };
+        self.listing
+            .of_root(&entry.symbol.root)
+            .iter()
+            .filter(|other| other.symbol.contract == Some(contract) && other.daily.is_some())
+            .max_by_key(|other| liveness(other))
+            .map_or_else(|| stem.to_string(), |other| other.symbol.stem.clone())
+    }
+
+    /// How the intraday file written last is spelled: the service Sierra
+    /// Chart is on now, most likely.
+    fn style(&self) -> Option<sierra::Style> {
+        self.listing
+            .entries()
+            .iter()
+            .filter(|entry| entry.symbol.contract.is_some() && entry.has_intraday_records())
+            .max_by_key(|entry| liveness(entry))
+            .map(|entry| entry.symbol.style)
     }
 
     /// How many trades the intraday file `stem` holds, as its size says.
@@ -95,7 +154,7 @@ impl Opened {
         self.listing
             .contracts_of(root)
             .filter(|entry| entry.has_intraday_records())
-            .max_by_key(|entry| entry.intraday.as_ref().and_then(|intraday| intraday.modified))
+            .max_by_key(|entry| liveness(entry))
     }
 
     /// Is there anything of `root` to chart: trades, or daily bars?
@@ -140,7 +199,8 @@ pub(crate) fn forget_opened() {
 }
 
 /// A contract as the app names it, `ESZ6` or `ESZ26`, as Sierra Chart's
-/// file stem says it: `ESZ26_FUT_CME`, if the folder has one.
+/// file stem says it: `ESZ26_FUT_CME` or `ESZ6.CME`, whichever is being
+/// written, if the folder has one.
 fn stem_of_contract(opened: &Opened, symbol: &str) -> Option<String> {
     let (root, month) = crate::contracts::parse(symbol, crate::contracts::today())?;
     opened.contract(&root, month.code(), month.year).map(|entry| entry.symbol.stem.clone())
@@ -175,13 +235,16 @@ pub(crate) fn stem_for(opened: &Opened, symbol: &str) -> Option<String> {
     }
 }
 
-/// What Sierra Chart calls the contract `symbol` trades as, for an order:
-/// a dated contract, `ESZ6`, as `ESZ26_FUT_CME`, and a root as its front
-/// month — the one its charts here are drawn from when the folder has it,
-/// else the rule's. `None` for a root the rule knows no month of.
-pub fn sierra_contract(symbol: &str) -> Option<String> {
+/// The contract `symbol` trades as, in the exchange's spelling: a dated
+/// contract, `ESZ6`, as itself, and a root as its front month — the one its
+/// charts here are drawn from when the folder has it, else the rule's.
+/// `None` for a root the rule knows no month of.
+pub fn traded_contract(symbol: &str) -> Option<String> {
     if let Some(stem) = opened().and_then(|opened| stem_for(&opened, symbol)) {
-        return Some(stem);
+        let contract = exchange_contract(&stem);
+        if root_of(&contract) != contract {
+            return Some(contract);
+        }
     }
     let today = crate::contracts::today();
     let dated = match root_of(symbol) == symbol {
@@ -189,17 +252,53 @@ pub fn sierra_contract(symbol: &str) -> Option<String> {
         false => symbol.to_string(),
     };
     let (root, month) = crate::contracts::parse(&dated, today)?;
-    Some(format!("{root}{}{:02}_FUT_CME", month.code(), month.year.rem_euclid(100)))
+    Some(crate::contracts::symbol(&root, month))
 }
 
-/// A contract of Sierra Chart's, `ESZ26_FUT_CME`, as the exchange spells
-/// it, `ESZ6`; a name that is not a dated future as it is.
+/// The stem of the file the folder charts the dated contract `contract`
+/// from, `ESZ6.CME` or `ESZ26_FUT_CME`: Sierra Chart's name for it on the
+/// service that is writing it. `None` with no folder or no such file.
+pub fn file_stem(contract: &str) -> Option<String> {
+    let opened = opened()?;
+    stem_of_contract(&opened, contract).filter(|stem| opened.records(stem) > 0)
+}
+
+/// How the folder's intraday file written last spells its symbol: the
+/// style the service Sierra Chart is on now most likely spells contracts in.
+pub fn folder_style() -> Option<sierra::Style> {
+    opened()?.style()
+}
+
+/// The ways Sierra Chart may spell the dated contract `contract` (`ESZ6`),
+/// `style`'s first: for a server to confirm. Empty for anything else.
+pub fn spellings(contract: &str, style: sierra::Style) -> Vec<String> {
+    let Some((root, month)) = crate::contracts::parse(contract, crate::contracts::today()) else { return Vec::new() };
+    let exchange = crate::exchanges::registry().contract_exchange(&root).unwrap_or("CME");
+    sierra::symbols::spellings(&root, sierra::Contract { year: month.year, month: month.code() }, exchange, style)
+}
+
+/// A contract of Sierra Chart's, `ESZ26_FUT_CME` or `ESZ6.CME`, as the
+/// exchange spells it, `ESZ6`; a name that is not a dated future as it is.
 pub fn exchange_contract(sierra: &str) -> String {
     let Some(file) = sierra::symbols::parse(sierra) else { return sierra.to_string() };
     match file.contract.and_then(|contract| crate::contracts::Month::of(contract.month, contract.year)) {
         Some(month) => crate::contracts::symbol(&file.root, month),
         None => sierra.to_string(),
     }
+}
+
+/// The exchange a symbol of Sierra Chart's names, when it names one that
+/// can be trusted: `NYMEX` of `CLZ6.NYMEX`. Not of `CLZ26_FUT_CME`, whose
+/// `CME` stands for every CME Group exchange.
+pub fn symbol_exchange(sierra: &str) -> Option<String> {
+    let file = sierra::symbols::parse(sierra)?;
+    (file.style == sierra::Style::Dotted).then_some(file.exchange).flatten()
+}
+
+/// How a symbol of Sierra Chart's is spelled, if it is a dated future.
+pub fn symbol_style(sierra: &str) -> Option<sierra::Style> {
+    let file = sierra::symbols::parse(sierra)?;
+    file.contract.map(|_| file.style)
 }
 
 /// Does Sierra Chart have anything of this root on disk?
@@ -339,7 +438,7 @@ impl Provider for Sierra {
         let opened = opened().ok_or_else(not_set_up)?;
         let stem = stem_for(&opened, symbol).ok_or(ProviderError::NotFound)?;
         match timeframe.unit {
-            Unit::Day if timeframe.count == 1 => daily(&opened, &stem, since),
+            Unit::Day if timeframe.count == 1 => daily(&opened, &opened.daily_stem(&stem), since),
             _ => intraday(&opened, &stem, timeframe, since),
         }
     }
@@ -512,7 +611,7 @@ fn follow(symbol: String, timeframe: Timeframe, since: Option<i64>, sink: Sink, 
         let snapshot = mapped(&path).and_then(|scid| {
             let scid = scid.lock().unwrap_or_else(|e| e.into_inner());
             let bars = match &buckets {
-                Buckets::Days(_) => daily(&opened, &stem, held)?,
+                Buckets::Days(_) => daily(&opened, &opened.daily_stem(&stem), held)?,
                 Buckets::Every(step) => {
                     let records = match held {
                         Some(since) => scid.from(since.div_euclid(*step) * step),
@@ -594,5 +693,137 @@ impl Stream for Sierra {
             .spawn(move || follow(symbol, timeframe, since, sink, stopping, waking))
             .map_err(|error| ProviderError::Network(error.to_string()))?;
         Ok(Box::new(Following { stop, wake }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    /// A Sierra Chart folder of `.scid` files, each written at a time the
+    /// test says. Removed when dropped.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Folder {
+            let root = std::env::temp_dir().join(format!("omacharts-sierra-feed-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("Data")).unwrap();
+            std::fs::write(root.join("Sierra4.config"), b"").unwrap();
+            Folder(root)
+        }
+
+        /// `stem.scid`, a header and `records` records, last written
+        /// `minutes_ago`.
+        fn scid(&self, stem: &str, records: usize, minutes_ago: u64) -> &Folder {
+            let mut bytes = vec![0u8; sierra::scid::HEADER_SIZE];
+            bytes[0..4].copy_from_slice(b"SCID");
+            bytes[4..8].copy_from_slice(&(sierra::scid::HEADER_SIZE as u32).to_le_bytes());
+            bytes[8..12].copy_from_slice(&(sierra::scid::RECORD_SIZE as u32).to_le_bytes());
+            bytes.resize(sierra::scid::HEADER_SIZE + records * sierra::scid::RECORD_SIZE, 0);
+            let path = self.0.join("Data").join(format!("{stem}.scid"));
+            std::fs::write(&path, bytes).unwrap();
+            let at = SystemTime::now() - Duration::from_secs(minutes_ago * 60);
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
+            self
+        }
+
+        fn opened(&self) -> Opened {
+            let install = sierra::Install::open(&self.0).unwrap();
+            let listing = install.listing();
+            Opened { install, listing, listed_at: Instant::now() }
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A folder that has been on Sierra Chart's own service and on Rithmic
+    /// has a file of each for ES's December: the one written last is
+    /// charted, whichever it is.
+    #[test]
+    fn of_two_files_of_one_contract_the_one_written_last_is_charted() {
+        let folder = Folder::new("both-styles");
+        folder.scid("ESZ26_FUT_CME", 500, 600).scid("ESZ6.CME", 300, 1);
+        let opened = folder.opened();
+        assert_eq!(stem_for(&opened, "ESZ6").as_deref(), Some("ESZ6.CME"));
+        assert_eq!(opened.style(), Some(sierra::Style::Dotted));
+
+        folder.scid("ESZ26_FUT_CME", 500, 1).scid("ESZ6.CME", 300, 600);
+        let opened = folder.opened();
+        assert_eq!(stem_for(&opened, "ESZ6").as_deref(), Some("ESZ26_FUT_CME"));
+        assert_eq!(opened.style(), Some(sierra::Style::Underscored));
+        assert_eq!(exchange_contract("ESZ6.CME"), "ESZ6");
+        assert_eq!(exchange_contract("ESZ26_FUT_CME"), "ESZ6");
+    }
+
+    /// Written at the same time, the one with more trades; a header Sierra
+    /// Chart never filled loses to any file with trades, however new.
+    #[test]
+    fn a_file_of_no_trades_is_never_charted() {
+        let folder = Folder::new("stub");
+        folder.scid("ESZ26_FUT_CME", 50, 5).scid("ESZ6.CME", 0, 0);
+        assert_eq!(stem_for(&folder.opened(), "ESZ6").as_deref(), Some("ESZ26_FUT_CME"), "the stub won");
+
+        let folder = Folder::new("tie");
+        folder.scid("ESZ26_FUT_CME", 50, 5).scid("ESZ6.CME", 80, 5);
+        assert_eq!(stem_for(&folder.opened(), "ESZ6").as_deref(), Some("ESZ6.CME"), "the fewer trades won");
+    }
+
+    /// The headers Sierra Chart leaves of contracts, ESH2.CME to ESZ5.CME,
+    /// are never ES's front month: ES is its live December.
+    #[test]
+    fn old_contracts_stubs_are_never_charted() {
+        let folder = Folder::new("old-stubs");
+        for stem in ["ESH2.CME", "ESM3.CME", "ESU4.CME", "ESZ5.CME"] {
+            folder.scid(stem, 0, 0);
+        }
+        let opened = folder.opened();
+        assert_eq!(stem_for(&opened, "ES"), None, "a stub charted");
+        folder.scid("ESZ6.CME", 10, 30);
+        let opened = folder.opened();
+        assert_eq!(stem_for(&opened, "ES").as_deref(), Some("ESZ6.CME"));
+        assert_eq!(stem_for(&opened, "ESZ6").as_deref(), Some("ESZ6.CME"));
+        assert!(has_root(&opened, "ES"));
+    }
+
+    /// A month whose file Sierra Chart has only just made, a header with no
+    /// trades yet, is that file when it is the month's only one; beside one
+    /// with trades, the one with trades.
+    #[test]
+    fn a_month_s_only_file_is_its_file_before_its_first_trade() {
+        let folder = Folder::new("new-month");
+        folder.scid("ESH7.CME", 0, 0);
+        assert_eq!(stem_for(&folder.opened(), "ESH7").as_deref(), Some("ESH7.CME"));
+        folder.scid("ESH27_FUT_CME", 5, 60);
+        assert_eq!(stem_for(&folder.opened(), "ESH7").as_deref(), Some("ESH27_FUT_CME"));
+    }
+
+    /// A one-digit year means the same year typed as a contract and named
+    /// in a Sierra Chart symbol.
+    #[test]
+    fn a_one_digit_year_is_the_same_year_typed_and_in_a_symbol() {
+        let today = crate::contracts::today();
+        for digit in 0..10 {
+            let typed = crate::contracts::parse(&format!("CLZ{digit}"), today).unwrap().1.year;
+            let named = sierra::parse(&format!("CLZ{digit}.NYMEX")).unwrap().contract.unwrap().year;
+            assert_eq!(typed, named, "CLZ{digit}");
+        }
+    }
+
+    /// What a symbol of either spelling says of its exchange and style,
+    /// and the ways a contract may be spelled.
+    #[test]
+    fn a_dotted_symbol_names_its_exchange_and_an_underscored_one_does_not() {
+        assert_eq!(symbol_exchange("CLZ6.NYMEX").as_deref(), Some("NYMEX"));
+        assert_eq!(symbol_exchange("CLZ26_FUT_CME"), None);
+        assert_eq!(symbol_style("NGZ26.NYMEX"), Some(sierra::Style::Dotted));
+        assert_eq!(symbol_style("EURUSD"), None);
+        assert_eq!(spellings("NGZ6", sierra::Style::Dotted), ["NGZ26.NYMEX", "NGZ6.NYMEX", "NGZ26_FUT_CME"]);
+        assert_eq!(spellings("ESZ6", sierra::Style::Underscored), ["ESZ26_FUT_CME", "ESZ6.CME", "ESZ26.CME"]);
     }
 }

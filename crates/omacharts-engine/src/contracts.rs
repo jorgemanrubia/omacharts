@@ -88,7 +88,9 @@ impl Month {
     /// because a contract that expired lately is still spoken of, in a
     /// position held past its last day; and no further back, because a
     /// contract nine years out is listed on some roots and one nine years
-    /// gone is not.
+    /// gone is not. A trading service's symbols are read by the same rule,
+    /// so a contract typed and the same contract a server names are one
+    /// month.
     fn year_of(digit: u32, today: NaiveDate) -> i32 {
         let from = today.year() - 1;
         (from..from + 10).find(|year| year.rem_euclid(10) == digit as i32).unwrap_or(from)

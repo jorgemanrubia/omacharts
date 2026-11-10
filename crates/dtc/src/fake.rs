@@ -152,9 +152,13 @@ struct World {
     orders: Vec<FakeOrder>,
     fills: Vec<FakeFill>,
     definitions: Vec<Value>,
-    /// Answer a definition for any symbol, with a tick of 0.25 and real
-    /// prices, rather than nothing as Sierra does.
+    /// Answer a definition for any symbol spelled as the service it is on
+    /// spells one, with a tick of 0.25 and real prices, rather than nothing
+    /// as Sierra does.
     define_anything: bool,
+    /// Know contracts only by Rithmic's spelling, as Sierra does with
+    /// Rithmic as its trading service: see [`Builder::rithmic_symbols`].
+    rithmic: bool,
     refuse: Option<String>,
     trading: bool,
     /// Say OCO orders are supported, and take a pair.
@@ -186,6 +190,7 @@ impl Default for World {
             fills: Vec::new(),
             definitions: Vec::new(),
             define_anything: true,
+            rithmic: false,
             refuse: None,
             trading: true,
             oco: true,
@@ -296,7 +301,7 @@ impl Builder {
             "SecurityType": 1,
             "Symbol": symbol,
             "UnderlyingSymbol": underlying,
-            "ExchangeSymbol": symbol.split('_').next().unwrap_or(symbol),
+            "ExchangeSymbol": symbol.split(['_', '.']).next().unwrap_or(symbol),
             "Description": format!("{underlying} future"),
             "MinPriceIncrement": tick,
             "CurrencyValuePerIncrement": worth,
@@ -309,9 +314,21 @@ impl Builder {
     }
 
     /// Answer nothing for a contract with no [`Builder::definition`], as
-    /// Sierra does, rather than a definition with real prices.
+    /// Sierra does, rather than a definition with real prices; nothing, too,
+    /// for a name spelled as the other service spells one, rather than a
+    /// refusal.
     pub fn unknown_contracts_unanswered(mut self) -> Builder {
         self.world.define_anything = false;
+        self
+    }
+
+    /// Know contracts by Rithmic's spelling alone, as Sierra does with
+    /// Rithmic as its trading service: `ESZ6.CME`, `CLZ6.NYMEX`, the year
+    /// one digit but NG's two, `NGZ26.NYMEX`. The test gives the world's
+    /// positions, orders and fills in that spelling; a definition asked for
+    /// in any other is refused, and so is an order, a pair or a flatten.
+    pub fn rithmic_symbols(mut self) -> Builder {
+        self.world.rithmic = true;
         self
     }
 
@@ -455,6 +472,12 @@ impl Fake {
     /// Stop answering anything, heartbeats included, or start again.
     pub fn set_silent(&self, silent: bool) {
         lock(&self.shared.world).silent = silent;
+    }
+
+    /// Put Sierra on Rithmic from now on, or back on its own service: see
+    /// [`Builder::rithmic_symbols`]. What it holds keeps its spelling.
+    pub fn set_rithmic_symbols(&self, rithmic: bool) {
+        lock(&self.shared.world).rithmic = rithmic;
     }
 
     /// Reject every order placed from now on with `text`, or none.
@@ -790,6 +813,20 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
         wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST => {
             let symbol = message.text_or_empty("Symbol");
             let known = world.definitions.iter().find(|definition| definition["Symbol"] == symbol.as_str()).cloned();
+            // A contract in the other service's spelling is none the server
+            // knows: on Rithmic, `ESZ26_FUT_CME`; on Sierra's own, `ESZ6.CME`.
+            let foreign = match world.rithmic {
+                true => !rithmic_spelling(&symbol),
+                false => symbol.contains('.'),
+            };
+            // Refused at once; or, as Sierra does, unanswered with
+            // [`Builder::unknown_contracts_unanswered`].
+            if known.is_none() && foreign {
+                if world.define_anything {
+                    replies.push(Message::new(wire::SECURITY_DEFINITION_REJECT, json!({ "RequestID": id, "RejectText": format!("Symbol {symbol} not found") })));
+                }
+                return (replies, pushes);
+            }
             let definition = known.or_else(|| {
                 world.define_anything.then(|| {
                     json!({ "SecurityType": 1, "Symbol": symbol, "MinPriceIncrement": 0.25, "CurrencyValuePerIncrement": 12.5, "DisplayPriceMultiplier": 1 })
@@ -849,6 +886,26 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
         _ => {}
     }
     (replies, pushes)
+}
+
+/// Whether `symbol` is spelled as Rithmic spells a contract: the root, a
+/// month letter and the year's last digit, its last two for NG, then a dot
+/// and the exchange.
+pub fn rithmic_spelling(symbol: &str) -> bool {
+    let Some((code, exchange)) = symbol.split_once('.') else { return false };
+    if exchange.is_empty() || !exchange.bytes().all(|b| b.is_ascii_uppercase()) {
+        return false;
+    }
+    let year = code.bytes().rev().take_while(u8::is_ascii_digit).count();
+    let Some((month_at, month)) = code.char_indices().nth_back(year) else { return false };
+    let root = &code[..month_at];
+    let digits = if root == "NG" { 2 } else { 1 };
+    year == digits && "FGHJKMNQUVXZ".contains(month) && !root.is_empty() && root.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// What a server on Rithmic says of an order for a contract misspelled.
+fn misspelled(world: &World, symbol: &str) -> Option<String> {
+    (world.rithmic && !rithmic_spelling(symbol)).then(|| format!("Symbol {symbol} is not valid"))
 }
 
 fn side_code(side: Side) -> i64 {
@@ -987,8 +1044,8 @@ fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
     }
     let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
     let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
-    let refused = match (world.reject.as_ref().or(world.reject_pairs.as_ref()), world.oco) {
-        (Some(text), _) => Some(text.clone()),
+    let refused = match (world.reject.clone().or(world.reject_pairs.clone()).or_else(|| misspelled(world, &pair[0].symbol)), world.oco) {
+        (Some(text), _) => Some(text),
         (None, false) => Some("OCO orders are not supported".to_string()),
         (None, true) if !world.accounts.contains(&pair[0].account) => Some("Trade account not found".to_string()),
         (None, true) => None,
@@ -1012,7 +1069,7 @@ fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
 fn place(world: &mut World, message: &Message) -> Vec<Message> {
     let mut order = submitted(world, message, "");
     let mut pushes = vec![order_message(&order, 3, "")];
-    if let Some(text) = world.reject.clone() {
+    if let Some(text) = world.reject.clone().or_else(|| misspelled(world, &order.symbol)) {
         order.status = wire::ORDER_STATUS_REJECTED;
         pushes.push(order_message(&order, wire::NEW_ORDER_REJECTED, &text));
         world.orders.push(order);
@@ -1215,6 +1272,12 @@ fn flatten(world: &mut World, message: &Message) -> Vec<Message> {
         avg_fill_price: None,
         oco: None,
     };
+    if let Some(text) = misspelled(world, &order.symbol) {
+        order.status = wire::ORDER_STATUS_REJECTED;
+        let pushes = vec![order_message(&order, wire::NEW_ORDER_REJECTED, &text)];
+        world.orders.push(order);
+        return pushes;
+    }
     if !world.flatten || held == 0 {
         order.status = wire::ORDER_STATUS_REJECTED;
         let pushes = vec![order_message(&order, wire::NEW_ORDER_REJECTED, "No position to flatten")];
