@@ -221,6 +221,25 @@ pub fn note(source: &str, what: impl Into<String>) -> Entry {
     Entry::info(source, what)
 }
 
+/// A contract sent to a trading service under a name its server confirmed,
+/// nothing it had said having named it: "ESZ6 · Sent to Sierra Chart as
+/// ESZ6.CME".
+pub fn spelled_as(source: &str, contract: &str, spelling: &str) -> Entry {
+    Entry::info(source, format!("{contract} · Sent to {source} as {spelling}"))
+}
+
+/// No name a trading service's server knows for a contract, so nothing was
+/// sent: each name tried, with what became of it, behind the details.
+pub fn unspelled(source: &str, contract: &str, tried: &[String]) -> Entry {
+    Entry::warning(source, format!("{contract} · {source} knows no contract by that name, so nothing was sent")).detail(tried.join("\n"))
+}
+
+/// A trading service reported a position or an order in a symbol that is no
+/// futures contract, so it is on no chart.
+pub fn unread_symbol(source: &str, symbol: &str) -> Entry {
+    Entry::warning(source, format!("{symbol} · Not a contract Omacharts can chart, so what is held or working in it is on no chart"))
+}
+
 fn capitalised(line: &str) -> String {
     let mut chars = line.trim().chars();
     match chars.next() {

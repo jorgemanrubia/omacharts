@@ -1537,7 +1537,10 @@ impl Trading {
     /// Taken, or nothing left to flatten, it answers how many orders on it
     /// would not cancel or were not answered in time, each once: those need
     /// a look. With nothing held from the start, a cancel that failed is
-    /// the answer.
+    /// the answer, and with nothing working on it either, that nothing was
+    /// held: a flatten that found nothing to close is never taken for one
+    /// that closed it, since `symbol` spelled otherwise than the server
+    /// spells it finds nothing too.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
         let held = || {
             lock(&self.shared.state)
@@ -1549,9 +1552,14 @@ impl Trading {
         };
         let before = held();
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
+        let tried = cancels.sent.len() + cancels.failed;
         let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels, true);
         if before == 0 {
-            return why.map_or(Ok(0), Err);
+            return match (why, tried) {
+                (Some(why), _) => Err(why),
+                (None, 0) => Err(Error::Rejected(format!("{account} holds nothing of {symbol} and has no orders working on it"))),
+                (None, _) => Ok(uncancelled),
+            };
         }
         // Closed meanwhile, by an exit that filled as it was cancelled:
         // there is nothing to flatten.
@@ -1619,7 +1627,21 @@ impl Trading {
 
     /// `symbol`'s definition, over this session's connection.
     pub fn security_definition(&self, symbol: &str) -> Result<Definition, Error> {
-        let answers = self.shared.ask(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST, json!({ "Symbol": symbol, "Exchange": "" }), true)?;
+        self.definition_within(symbol, self.shared.timing.request)
+    }
+
+    /// `symbol`'s definition if the server knows a contract by that name,
+    /// waited for no longer than a priced order waits for one: Sierra
+    /// answers nothing at all for a name it does not know. Asked to learn
+    /// how the server spells a contract, so the answer's multiplier is kept
+    /// for the order that follows.
+    pub fn knows(&self, symbol: &str) -> Result<Definition, Error> {
+        self.definition_within(symbol, DEFINITION.min(self.shared.timing.request))
+    }
+
+    fn definition_within(&self, symbol: &str, timeout: Duration) -> Result<Definition, Error> {
+        let id = self.shared.begin(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST, json!({ "Symbol": symbol, "Exchange": "" }), true)?;
+        let answers = self.shared.finish(id, timeout)?;
         answers
             .iter()
             .find_map(Definition::from_message)

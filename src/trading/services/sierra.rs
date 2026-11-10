@@ -12,12 +12,18 @@
 //! positions are marked to the charts of their contracts, as the desk does
 //! for any session that cannot.
 //!
-//! Contracts are the exchange's spelling above this, `ESZ6`, and Sierra
-//! Chart's on the wire, `ESZ26_FUT_CME`; this is the one place that turns
-//! one into the other.
+//! Contracts are the exchange's spelling above this, `ESZ6`, and the
+//! server's on the wire; this is the one place that turns one into the
+//! other. The server's depends on the service Sierra Chart trades through:
+//! its own spells December's E-mini `ESZ26_FUT_CME`, Rithmic `ESZ6.CME`. So
+//! a contract goes out as the server has itself spelled it, in a position,
+//! an order or a fill; failing that, as the file Sierra Chart is writing for
+//! it is named, or as the likeliest spelling, each confirmed by the server
+//! knowing a contract by that name before anything is sent
+//! ([`SierraSession::spelling`]).
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use omacharts_engine::providers::sierra::{self as feed, setup};
 use omacharts_engine::specs::{self, root_of};
@@ -76,7 +82,7 @@ impl TradingService for Sierra {
             dtc::Pulse::Moved | dtc::Pulse::Lost(_) => told(Change::Moved),
         })
         .map_err(said)?;
-        Ok(Arc::new(SierraSession { login: login.id.clone(), trading }))
+        Ok(Arc::new(SierraSession::new(login.id.clone(), trading)))
     }
 
     fn open(&self) -> bool {
@@ -112,11 +118,15 @@ fn side_of(side: dtc::Side) -> Side {
     }
 }
 
-/// The exchange an order on `contract` goes to, as the app names it.
-fn exchange_of(contract: &str, said: Option<&str>) -> String {
+/// The exchange `contract` trades on, as the app names it: what the server
+/// said, else what its symbol for it, `symbol`, names (`NYMEX` of
+/// `CLZ6.NYMEX`), else the exchange the root is listed on.
+fn exchange_of(contract: &str, said: Option<&str>, symbol: &str) -> String {
     match said.map(str::trim).filter(|exchange| !exchange.is_empty()) {
         Some(exchange) => exchange.to_string(),
-        None => omacharts_engine::exchanges::registry().contract_exchange(root_of(contract)).unwrap_or("CME").to_string(),
+        None => feed::symbol_exchange(symbol).unwrap_or_else(|| {
+            omacharts_engine::exchanges::registry().contract_exchange(root_of(contract)).unwrap_or("CME").to_string()
+        }),
     }
 }
 
@@ -138,7 +148,7 @@ fn order_of(order: &dtc::Order) -> Order {
         // returned and what a link names it by; the server's for one placed
         // elsewhere. Either reaches it to cancel or move.
         basket_id: order.client_id.clone().or_else(|| order.server_id.clone()).unwrap_or_default(),
-        exchange: exchange_of(&contract, order.exchange.as_deref()),
+        exchange: exchange_of(&contract, order.exchange.as_deref(), &order.symbol),
         contract,
         side: side_of(order.side),
         qty: order.qty,
@@ -165,7 +175,7 @@ fn filled_order(fill: &dtc::Fill) -> Order {
         tick: specs::tick(root_of(&contract)),
         account: fill.account.clone(),
         basket_id: basket.clone(),
-        exchange: exchange_of(&contract, fill.exchange.as_deref()),
+        exchange: exchange_of(&contract, fill.exchange.as_deref(), &fill.symbol),
         contract,
         side: side_of(fill.side),
         qty: fill.qty,
@@ -183,6 +193,91 @@ fn filled_order(fill: &dtc::Fill) -> Order {
 struct SierraSession {
     login: String,
     trading: dtc::Trading,
+    /// How the server spells each contract, by the exchange's spelling,
+    /// once it has confirmed a name it was not heard to use.
+    spelled: Mutex<HashMap<String, String>>,
+    /// The server's symbols that name no dated contract, said once each.
+    unread: Mutex<HashSet<String>>,
+}
+
+impl SierraSession {
+    fn new(login: String, trading: dtc::Trading) -> SierraSession {
+        SierraSession { login, trading, spelled: Mutex::default(), unread: Mutex::default() }
+    }
+
+    /// Every symbol the server has named: the positions' first, then the
+    /// orders' and the fills', latest first.
+    fn named(book: &dtc::Book) -> Vec<String> {
+        let mut orders: Vec<&dtc::Order> = book.orders.iter().collect();
+        orders.sort_by_key(|order| std::cmp::Reverse(order.at));
+        let mut fills: Vec<&dtc::Fill> = book.fills.iter().collect();
+        fills.sort_by_key(|fill| std::cmp::Reverse(fill.at));
+        let positions = book.positions.iter().map(|held| held.symbol.clone());
+        let orders = orders.into_iter().map(|order| order.symbol.clone());
+        positions.chain(orders).chain(fills.into_iter().map(|fill| fill.symbol.clone())).collect()
+    }
+
+    /// How the server spells the contract `contract`, `ESZ6`: as it has
+    /// spelled it itself, in a position, an order or a fill. Failing that,
+    /// the first it confirms of the stem of the file Sierra Chart writes
+    /// for it and the ways it may spell it, in the style of what else it
+    /// has named, or else of the folder's newest file: never a name it has
+    /// not confirmed, since an order under a name it does not know goes
+    /// nowhere, and a flatten finds nothing to close. What it confirmed is
+    /// kept for the session.
+    fn spelling(&self, contract: &str) -> Result<String, Failure> {
+        let named = Self::named(&self.trading.book());
+        if let Some(own) = named.iter().find(|symbol| feed::exchange_contract(symbol) == contract) {
+            return Ok(own.clone());
+        }
+        if let Some(kept) = self.spelled.lock().unwrap_or_else(|e| e.into_inner()).get(contract) {
+            return Ok(kept.clone());
+        }
+        let style = named
+            .iter()
+            .find_map(|symbol| feed::symbol_style(symbol))
+            .or_else(feed::folder_style)
+            .unwrap_or(feed::Style::Underscored);
+        let mut guesses: Vec<String> = feed::file_stem(contract).into_iter().collect();
+        for guess in feed::spellings(contract, style) {
+            if !guesses.contains(&guess) {
+                guesses.push(guess);
+            }
+        }
+        if guesses.is_empty() {
+            return Err(Failure::Refused(format!("{contract} is not a futures contract Sierra Chart can be asked for")));
+        }
+        let mut unknown = Vec::new();
+        for guess in &guesses {
+            match self.trading.knows(guess) {
+                Ok(_) => {
+                    self.spelled.lock().unwrap_or_else(|e| e.into_inner()).insert(contract.to_string(), guess.clone());
+                    crate::log_words::say(crate::log_words::spelled_as(feed::LISTED.label, contract, guess));
+                    return Ok(guess.clone());
+                }
+                // Sierra answers nothing for a name it does not know.
+                Err(dtc::Error::Timeout) => unknown.push(format!("{guess}: no answer")),
+                Err(dtc::Error::Rejected(why)) => unknown.push(format!("{guess}: {why}")),
+                Err(error) => return Err(failed(error)),
+            }
+        }
+        crate::log_words::say(crate::log_words::unspelled(feed::LISTED.label, contract, &unknown));
+        Err(Failure::Refused(format!("Sierra Chart knows {contract} by none of {}", guesses.join(", "))))
+    }
+
+    /// Say, once, a symbol of the server's that names no dated contract:
+    /// what is held or working in it is on no chart.
+    fn unreadable(&self, symbol: &str) {
+        if !symbol.is_empty() && feed::symbol_style(symbol).is_none() && self.unread.lock().unwrap_or_else(|e| e.into_inner()).insert(symbol.to_string()) {
+            crate::log_words::say(crate::log_words::unread_symbol(feed::LISTED.label, symbol));
+        }
+    }
+
+    /// An order as the server takes it, in its own spelling.
+    fn new_order(&self, order: &OrderRequest) -> Result<dtc::NewOrder, Failure> {
+        let symbol = self.spelling(&order.contract)?;
+        Ok(new_order(order, symbol))
+    }
 }
 
 impl Session for SierraSession {
@@ -236,13 +331,16 @@ impl Session for SierraSession {
         if instrument.kind != omacharts_engine::InstrumentKind::FutureRoot {
             return Err(Refusal::NotTradable);
         }
-        let sierra = feed::sierra_contract(&instrument.symbol).ok_or(Refusal::NotKnownYet)?;
-        let symbol = feed::exchange_contract(&sierra);
-        Ok(Contract { tick: specs::tick(root_of(&symbol)), exchange: exchange_of(&symbol, None), symbol })
+        let symbol = feed::traded_contract(&instrument.symbol).ok_or(Refusal::NotKnownYet)?;
+        let stem = feed::file_stem(&symbol).unwrap_or_default();
+        Ok(Contract { tick: specs::tick(root_of(&symbol)), exchange: exchange_of(&symbol, None, &stem), symbol })
     }
 
     fn book(&self) -> Book {
         let book = self.trading.book();
+        for symbol in book.positions.iter().map(|held| &held.symbol).chain(book.orders.iter().map(|order| &order.symbol)) {
+            self.unreadable(symbol);
+        }
         let mut accounts: HashMap<String, Money> = HashMap::new();
         for balance in &book.balances {
             accounts.insert(
@@ -273,7 +371,7 @@ impl Session for SierraSession {
                         tick: specs::tick(root_of(&contract)),
                         point: specs::point(root_of(&contract)),
                         account: held.account.clone(),
-                        exchange: exchange_of(&contract, held.exchange.as_deref()),
+                        exchange: exchange_of(&contract, held.exchange.as_deref(), &held.symbol),
                         contract,
                         net: held.qty,
                         avg: held.avg_price,
@@ -294,13 +392,13 @@ impl Session for SierraSession {
     }
 
     fn place(&self, order: &OrderRequest) -> Result<String, Failure> {
-        self.trading.place(&new_order(order)?).map_err(failed)
+        self.trading.place(&self.new_order(order)?).map_err(failed)
     }
 
     /// One SUBMIT_NEW_OCO_ORDER, with no parent: see
     /// [`dtc::Trading::place_pair`].
     fn place_pair(&self, orders: &[OrderRequest; 2]) -> Result<[String; 2], Failure> {
-        self.trading.place_pair(&[new_order(&orders[0])?, new_order(&orders[1])?]).map_err(failed)
+        self.trading.place_pair(&[self.new_order(&orders[0])?, self.new_order(&orders[1])?]).map_err(failed)
     }
 
     fn cancel(&self, _account: &str, basket: &str) -> Result<(), Failure> {
@@ -321,8 +419,7 @@ impl Session for SierraSession {
     }
 
     fn flatten(&self, account: &str, contract: &str, _exchange: &str) -> Result<usize, Failure> {
-        let symbol = feed::sierra_contract(contract)
-            .ok_or_else(|| Failure::Refused(format!("Sierra Chart has no name for {contract}")))?;
+        let symbol = self.spelling(contract)?;
         self.trading.flatten(account, &symbol).map_err(failed)
     }
 
@@ -335,11 +432,9 @@ impl Session for SierraSession {
     }
 }
 
-/// An order as the server takes it, in Sierra Chart's spelling.
-fn new_order(order: &OrderRequest) -> Result<dtc::NewOrder, Failure> {
-    let symbol = feed::sierra_contract(&order.contract)
-        .ok_or_else(|| Failure::Refused(format!("Sierra Chart has no name for {}", order.contract)))?;
-    Ok(dtc::NewOrder {
+/// An order as the server takes it, for the contract it calls `symbol`.
+fn new_order(order: &OrderRequest, symbol: String) -> dtc::NewOrder {
+    dtc::NewOrder {
         account: order.account.clone(),
         symbol,
         exchange: None,
@@ -357,7 +452,7 @@ fn new_order(order: &OrderRequest) -> Result<dtc::NewOrder, Failure> {
         price2: None,
         time_in_force: dtc::TimeInForce::Day,
         tag: Some(order.tag.clone()),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -622,7 +717,7 @@ mod tests {
     fn impatient(fake: &dtc::fake::Fake) -> Arc<dyn Session> {
         let timing = dtc::Timing { request: std::time::Duration::from_millis(700), ..dtc::Timing::default() };
         let trading = dtc::Trading::sign_in_with(&fake.endpoint(), CLIENT_NAME, timing, |_| {}).expect("signed in");
-        let session: Arc<dyn Session> = Arc::new(SierraSession { login: "sierra-1".into(), trading });
+        let session: Arc<dyn Session> = Arc::new(SierraSession::new("sierra-1".into(), trading));
         session.refresh().expect("refreshed");
         session
     }
@@ -813,6 +908,101 @@ mod tests {
         assert_eq!(link.holder, Holder::App);
         assert!(link.baskets.contains(&back), "{link:?}");
         assert_eq!(on_the_server(&fake), (vec![(2, 7_580.0)], vec![(2, 7_650.0)]));
+        session.sign_out();
+    }
+
+    /// With Rithmic as Sierra Chart's trading service the server names
+    /// contracts as Rithmic does: a position of ESZ6.CME is the app's ESZ6
+    /// on CME, with ES's tick and point, and NQ, CL, GC and NG's two-digit
+    /// year read the same way, each on the exchange its symbol names.
+    #[test]
+    fn on_rithmic_a_position_is_the_contract_its_symbol_names() {
+        let fake = dtc::fake::Fake::builder()
+            .account("Sim1")
+            .rithmic_symbols()
+            .position("Sim1", "ESZ6.CME", -2, 7_578.0)
+            .position("Sim1", "NQZ6.CME", 1, 26_000.0)
+            .position("Sim1", "CLZ6.NYMEX", 3, 61.5)
+            .position("Sim1", "GCZ6.COMEX", 1, 4_100.0)
+            .position("Sim1", "NGZ26.NYMEX", -1, 4.25)
+            .start();
+        let session = Sierra.sign_in(&login(fake.port()), Box::new(|_| {})).expect("signed in");
+        session.refresh().expect("refreshed");
+        let book = session.book();
+        let es = book.position("Sim1", "ESZ6").expect("ESZ6.CME as ESZ6");
+        assert_eq!((es.net, es.avg, es.exchange.as_str(), es.tick, es.point), (-2, Some(7_578.0), "CME", Some(0.25), Some(50.0)));
+        let held = |contract: &str| book.position("Sim1", contract).map(|held| (held.net, held.exchange.clone(), held.tick));
+        assert_eq!(held("NQZ6"), Some((1, "CME".into(), Some(0.25))));
+        assert_eq!(held("CLZ6"), Some((3, "NYMEX".into(), Some(0.01))));
+        assert_eq!(held("GCZ6"), Some((1, "COMEX".into(), Some(0.1))));
+        assert_eq!(held("NGZ6"), Some((-1, "NYMEX".into(), Some(0.001))));
+        session.sign_out();
+    }
+
+    fn sell_one(contract: &str, kind: OrderKind, price: Option<f64>) -> OrderRequest {
+        OrderRequest {
+            account: "Sim1".into(),
+            contract: contract.into(),
+            exchange: "CME".into(),
+            side: Side::Sell,
+            qty: 1,
+            kind,
+            price,
+            tag: new_tag(),
+        }
+    }
+
+    /// The symbols every order of `kind` reached the fake under.
+    fn sent_as(fake: &dtc::fake::Fake, kind: u16) -> Vec<String> {
+        fake.received_of(kind).iter().filter_map(|message| message.text("Symbol")).collect()
+    }
+
+    /// An order from a chart of ES, on a server on Rithmic that has named
+    /// nothing yet, goes out as ESZ6.CME, the name the server confirms;
+    /// NG's as its two-digit NGZ26.NYMEX. Neither is ever sent under a
+    /// name the server does not know.
+    #[test]
+    fn on_rithmic_an_order_from_an_es_chart_goes_out_as_the_server_spells_it() {
+        use crate::trading::fake::tests::instrument;
+        let fake = dtc::fake::Fake::builder().account("Sim1").rithmic_symbols().start();
+        let session = Sierra.sign_in(&login(fake.port()), Box::new(|_| {})).expect("signed in");
+        session.refresh().expect("refreshed");
+        let contract = session.contract_for(&instrument("ES", omacharts_engine::InstrumentKind::FutureRoot)).expect("ES trades");
+        let front = omacharts_engine::contracts::front("ES", omacharts_engine::contracts::today()).expect("a front month");
+        assert_eq!((contract.symbol.as_str(), contract.exchange.as_str()), (front.symbol.as_str(), "CME"));
+        let basket = session.place(&sell_one(&contract.symbol, OrderKind::Limit, Some(9_000.0))).expect("taken");
+        let wanted = format!("{}.CME", contract.symbol);
+        assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER), std::slice::from_ref(&wanted));
+        assert_eq!(session.book().order(&basket).map(|order| order.contract.clone()), Some(contract.symbol.clone()));
+        session.place(&sell_one("NGZ6", OrderKind::Limit, Some(9.0))).expect("NG taken");
+        assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_SINGLE_ORDER), [wanted, "NGZ26.NYMEX".to_string()]);
+        let pair = session.place_pair(&[sell_one("CLZ6", OrderKind::Stop, Some(50.0)), sell_one("CLZ6", OrderKind::Limit, Some(70.0))]);
+        assert!(pair.is_ok(), "{pair:?}");
+        assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_NEW_OCO_ORDER), ["CLZ6.NYMEX"]);
+        session.sign_out();
+    }
+
+    /// Flattening ESZ6 held as ESZ6.CME sends ESZ6.CME, the server's own
+    /// name for it, and closes it.
+    #[test]
+    fn on_rithmic_a_flatten_goes_out_as_the_server_named_the_position() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").rithmic_symbols().position("Sim1", "ESZ6.CME", -2, 7_578.0).market_price(7_570.0).start();
+        let session = impatient(&fake);
+        assert_eq!(session.flatten("Sim1", "ESZ6", "CME"), Ok(0));
+        assert_eq!(sent_as(&fake, dtc::wire::SUBMIT_FLATTEN_POSITION_ORDER), ["ESZ6.CME"]);
+        assert!(until(session.as_ref(), |book| book.position("Sim1", "ESZ6").is_none()), "not flat");
+        assert!(fake.received_of(dtc::wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).iter().all(|asked| asked.text("Symbol").as_deref() != Some("ESZ26_FUT_CME")));
+        session.sign_out();
+    }
+
+    /// A flatten of a contract nothing is held or working in is refused,
+    /// never taken for done.
+    #[test]
+    fn a_flatten_of_nothing_held_is_refused() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").rithmic_symbols().start();
+        let session = impatient(&fake);
+        assert!(matches!(session.flatten("Sim1", "ESZ6", "CME"), Err(Failure::Refused(_))));
+        assert!(fake.received_of(dtc::wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
         session.sign_out();
     }
 

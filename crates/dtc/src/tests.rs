@@ -585,13 +585,44 @@ fn a_cancel_refused_before_the_fill_leaves_the_flatten_nothing_to_sell() {
     trading.sign_out();
 }
 
+/// Nothing held and nothing working: nothing is sent, and the flatten
+/// says it found nothing rather than that it closed it.
 #[test]
-fn flattening_nothing_held_sends_nothing() {
+fn flattening_nothing_held_sends_nothing_and_says_so() {
     let fake = Fake::builder().account("Sim1").start();
     let (trading, _) = sign_in(&fake);
-    trading.flatten("Sim1", ES).unwrap();
+    let flattened = trading.flatten("Sim1", ES);
+    assert!(matches!(&flattened, Err(Error::Rejected(why)) if why.contains("holds nothing of")), "{flattened:?}");
     assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
     trading.sign_out();
+}
+
+/// With Rithmic as Sierra's trading service the position is `ESZ6.CME`:
+/// a flatten of it in Sierra's own spelling finds nothing and says so,
+/// and in the server's own closes it. Only that spelling is known.
+#[test]
+fn on_rithmic_a_contract_is_known_and_flattened_by_rithmic_s_spelling_alone() {
+    let fake = Fake::builder().account("Sim1").rithmic_symbols().position("Sim1", "ESZ6.CME", -2, 7578.0).market_price(7570.0).start();
+    let (trading, _) = sign_in(&fake);
+    assert!(trading.flatten("Sim1", ES).is_err(), "a flatten of nothing taken for done");
+    assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
+    assert!(trading.knows(ES).is_err(), "{ES} known on Rithmic");
+    assert_eq!(trading.knows("ESZ6.CME").map(|definition| definition.symbol), Ok("ESZ6.CME".to_string()));
+    trading.flatten("Sim1", "ESZ6.CME").unwrap();
+    let sent = fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER);
+    assert_eq!(sent.iter().map(|message| message.text("Symbol")).collect::<Vec<_>>(), [Some("ESZ6.CME".to_string())]);
+    eventually(Duration::from_secs(2), "it is flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    trading.sign_out();
+}
+
+#[test]
+fn rithmic_s_spelling_has_a_one_digit_year_but_ng_s_two() {
+    for good in ["ESZ6.CME", "MESZ6.CME", "6EZ6.CME", "CLZ6.NYMEX", "GCZ6.COMEX", "NGZ26.NYMEX"] {
+        assert!(crate::fake::rithmic_spelling(good), "{good}");
+    }
+    for bad in ["ESZ26_FUT_CME", "ESZ26.CME", "NGZ6.NYMEX", "ES.CME", "ESZ6", "ES~.FUT_SPREAD.CME", "ESZ6.cme"] {
+        assert!(!crate::fake::rithmic_spelling(bad), "{bad}");
+    }
 }
 
 #[test]

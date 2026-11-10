@@ -3799,6 +3799,118 @@ pub(super) mod tests {
         bytes
     }
 
+    /// A `.scid` file of a trade a minute from unix second `start`, at
+    /// each of `stored`, as the file stores prices.
+    fn scid_of(start: i64, stored: &[f32]) -> Vec<u8> {
+        let mut bytes = scid_of_es();
+        bytes.truncate(56);
+        let from_1899 = 25_569i64 * 86_400;
+        for (i, price) in stored.iter().enumerate() {
+            let at = (start + i as i64 * 60 + from_1899) * 1_000_000;
+            bytes.extend_from_slice(&at.to_le_bytes());
+            for field in [0.0, price + 25.0, price - 25.0, *price] {
+                bytes.extend_from_slice(&f32::to_le_bytes(field));
+            }
+            for count in [1u32, 1, 0, 1] {
+                bytes.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    impl SierraFolder {
+        /// A folder of a Sierra Chart that was on its own data service and
+        /// is on Rithmic now: ES's December in both spellings, the stale
+        /// `ESZ26_FUT_CME.scid` from yesterday and the live `ESZ6.CME.scid`
+        /// written in the last hour, both stored at a hundred times the
+        /// price, with only Rithmic's symbol settings to say so; and the
+        /// header-only files Sierra Chart leaves of old contracts.
+        fn on_rithmic(name: &str) -> SierraFolder {
+            let folder = SierraFolder::written(name, false);
+            let data = folder.0.join("Data");
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let stale = data.join("ESZ26_FUT_CME.scid");
+            std::fs::write(&stale, scid_of(now - 2 * 86_400, &[660_000.0, 660_100.0])).unwrap();
+            let yesterday = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+            std::fs::File::options().write(true).open(&stale).unwrap().set_modified(yesterday).unwrap();
+            for stub in ["ESH2.CME", "ESZ4.CME", "ESZ5.CME"] {
+                std::fs::write(data.join(format!("{stub}.scid")), scid_of(now, &[])).unwrap();
+            }
+            std::fs::write(data.join("ESZ6.CME.scid"), scid_of(now - 3_600, &[757_900.0, 758_000.0, 758_100.0])).unwrap();
+            std::fs::create_dir_all(folder.0.join("SymbolSettings")).unwrap();
+            let settings = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<symbol-settings>\n    <settings>\n        \
+                <symbol>ES?#.CME</symbol>\n        <tick-size>0.25</tick-size>\n        \
+                <use-pattern-matching-characters>true</use-pattern-matching-characters>\n        \
+                <real-time-multiplier>.01</real-time-multiplier>\n    </settings>\n</symbol-settings>\n";
+            std::fs::write(folder.0.join("SymbolSettings").join("SymbolSettings.rithmic_v2.trading.xml"), settings).unwrap();
+            folder
+        }
+    }
+
+    /// The author's setup: Sierra Chart trading through Rithmic, its DTC
+    /// server naming ES's December ESZ6.CME and knowing no other spelling,
+    /// short 2 at 7,578, and a folder written in Rithmic's spelling beside
+    /// a stale file in Sierra Chart's own. An ES 2m chart is drawn from the
+    /// live file, shows the position with its P&L and its target and stop
+    /// tabs, and Buy and Sell are there to press.
+    #[test]
+    fn an_es_chart_on_sierra_trading_through_rithmic_shows_the_position_and_trades() {
+        use omacharts_engine::providers::sierra::setup;
+        crate::ui::on_gtk(|| {
+            let fake = dtc::fake::Fake::builder().account("Sim1").rithmic_symbols().position("Sim1", "ESZ6.CME", -2, 7_578.0).start();
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Trading, true);
+            crate::features::set(&store, crate::features::Feature::Sierra, true);
+            crate::features::adopt(&store);
+            let folder = SierraFolder::on_rithmic("on-rithmic");
+            folder.adopt(&store);
+            crate::feeds::add_feed(&store, "sierra");
+            crate::feeds::save_order(&store, &["sierra".into(), "yahoo".into()]);
+            let typed = trading::Typed {
+                service: "sierra".into(),
+                name: "Sierra Chart".into(),
+                user: String::new(),
+                password: String::new(),
+                values: vec![(setup::HOST.into(), setup::DEFAULT_HOST.into()), (setup::PORT.into(), fake.port().to_string())],
+            };
+            let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
+            let login = trading::logins(&store).into_iter().find(|login| login.id == id).expect("the login");
+            let service = trading::registry().get("sierra").expect("Sierra Chart's trading service");
+            let session = service.sign_in(&login, Box::new(|_| {})).expect("signed in to the fake");
+            session.refresh().expect("refreshed");
+
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let sierra: Arc<dyn omacharts_engine::Provider> =
+                Arc::from(omacharts_engine::providers::ordered(&["sierra".to_string()]).remove(0));
+            let window = Window::build_with(&app, store.clone(), vec![sierra, Posing::feed("yahoo", "Yahoo Finance", false)]);
+            assert!(window.desk.begin(&id));
+            window.desk.opened(&id, Ok(session.clone()));
+            window.desk.note(&store);
+            window.desk.tell();
+            let pane = window.focused_pane();
+            pane.timeframe.set(omacharts_engine::Timeframe::minutes(2));
+            pane.account.replace(Some(format!("{id}/Sim1")));
+            let es = window.index.find("ES", None).expect("ES");
+            window.show_in(&pane, es);
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("sierra"));
+            assert!(settle_for(&window, 5, || pane.view.last_price().is_some()), "the chart never drew");
+            assert_eq!(pane.view.last_price(), Some(7_581.0), "not drawn from the live ESZ6.CME at its scale");
+
+            let key = format!("{id}/Sim1");
+            let held = window.trading.borrow().book.position(&key, "ESZ6").map(|held| (held.net, held.avg, held.exchange.clone(), held.tick));
+            assert_eq!(held, Some((-2, Some(7_578.0), "CME".to_string(), Some(0.25))), "ESZ6.CME not ESZ6");
+            assert!(settle_for(&window, 5, || pane.view.mark_states().0.is_some()), "no position line");
+            window.mark_to_market();
+            let pill = || pane.view.mark_states().0.map(|(words, _)| words).unwrap_or_default();
+            assert!(settle_for(&window, 2, || pill().ends_with("-$300.00")), "{}", pill());
+            assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Limit, OrderKind::Stop], "no target and stop tabs");
+            assert!(pane.trade_part.property::<bool>("visible"), "no Buy and Sell");
+            assert!(pane.buy_button.is_sensitive() && pane.sell_button.is_sensitive(), "Buy and Sell greyed");
+            session.sign_out();
+        });
+    }
+
     /// What `window` streams now, as symbol and feed pairs.
     fn streamed(window: &Rc<Window>) -> Vec<(String, String)> {
         window
