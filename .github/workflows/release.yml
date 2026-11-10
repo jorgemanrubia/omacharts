@@ -1,44 +1,39 @@
 name: Release
 
+# A tag releases. A pull request that touches the release itself, or a run by
+# hand, is a dry run: every job and every build, the same as a release, but
+# nothing is written — no draft, no digest committed back, no upload, no
+# publish. The assets it would have attached are kept as the run's artifacts
+# instead, so a change to this file is proved, and timed, before a tag
+# depends on it.
 on:
   push:
     tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/aur/PKGBUILD'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  DRY_RUN: ${{ github.event_name != 'push' }}
+
 jobs:
-  build:
+  # A draft until `publish`, at the end: releases/latest, which is what every
+  # installed omacharts asks for, must never name a release whose binaries are
+  # still being built. Nothing is built here: every binary that ships comes out
+  # of the Arch packages below, so the app is compiled once per architecture
+  # and every asset is the binary pacman would install.
+  draft:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install GTK
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked --bin omacharts
-      # Linking the system's OpenSSL ties the binary to the build machine's
-      # soname, and it fails to start anywhere else.
-      - run: bin/check-links target/release/omacharts
-      - name: Name the archive after the tag
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          dir="omacharts-$version-x86_64-linux"
-          mkdir "$dir"
-          cp target/release/omacharts LICENSE README.md "$dir/"
-          cp -r assets packaging "$dir/"
-          tar czf "$dir.tar.gz" "$dir"
-          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
-      # A draft until `publish`, at the end: releases/latest, which is what
-      # every installed omacharts asks for, must never name a release whose
-      # binaries are still being built.
-      - uses: softprops/action-gh-release@v2
+      - if: env.DRY_RUN != 'true'
+        uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: |
-            omacharts-*-x86_64-linux.tar.gz
-            omacharts-*-x86_64-linux.tar.gz.sha256
           generate_release_notes: true
 
   # Everything a tag can carry is already in the tag: bin/release writes the
@@ -51,8 +46,9 @@ jobs:
   # version too, which meant running cargo in a checkout that never builds —
   # that left the lock file behind its own Cargo.toml once and broke every
   # --locked build on main, and failed outright the next time.
+  #
+  # Needs nothing before it: what it writes depends only on the tag.
   sync:
-    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -62,6 +58,7 @@ jobs:
           ref: main
           fetch-depth: 0
       - name: Write the tarball's digest into the PKGBUILD
+        if: env.DRY_RUN != 'true'
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
@@ -77,6 +74,7 @@ jobs:
           sed -i -E "s|^sha256sums=.*|sha256sums=('${digest}')|" packaging/aur/PKGBUILD
           git diff --stat
       - name: Commit it back
+        if: env.DRY_RUN != 'true'
         run: |
           set -euo pipefail
           if git diff --quiet; then
@@ -100,8 +98,12 @@ jobs:
   # is x86_64 only; aarch64 machines — an Omarchy Mac among them — run Arch
   # Linux ARM, which publishes no container image, so its root filesystem is
   # imported from the project's own tarball instead.
+  #
+  # Every binary that ships is the one built here, inside Arch, against Arch's
+  # own libraries: the package, the gzipped app its updater downloads, and on
+  # x86_64 the plain tarball too.
   package:
-    needs: sync
+    needs: [draft, sync]
     strategy:
       matrix:
         include:
@@ -115,9 +117,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # A dry run has no sync to wait for, so it takes the PKGBUILD it was
+      # run with; the source that PKGBUILD names is still the last tag's.
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'push' && 'main' || github.sha }}
       - name: Import Arch Linux ARM's root filesystem
         if: matrix.arch == 'aarch64'
         run: |
@@ -152,11 +156,12 @@ jobs:
             # nothing in it may link the OpenSSL this container happens to have.
             bin/check-links /home/builder/pkg/omacharts/usr/bin/omacharts \
               /home/builder/pkg/omacharts/usr/lib/omacharts/omacharts
-            cp /home/builder/omacharts-*.pkg.tar.zst /w/'
+            cp /home/builder/omacharts-*.pkg.tar.zst /w/
+            # The source makepkg fetched and checked against the PKGBUILD,
+            # for the plain tarball, below.
+            cp /home/builder/omacharts-*[0-9].tar.gz /w/tag-source.tar.gz'
           ls -l omacharts-*.pkg.tar.zst
-      - name: Attach it to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Assemble the assets
         run: |
           set -euo pipefail
           # The debug package is a by-product nobody installs.
@@ -176,21 +181,65 @@ jobs:
           for asset in omacharts-${{ matrix.arch }}.gz omacharts-${{ matrix.arch }}.pkg.tar.zst; do
             sha256sum "$asset" > "$asset.sha256"
           done
+          echo "package=$package" >> "$GITHUB_ENV"
+      # The plain tarball, for x86_64 as it always was: the same app binary,
+      # beside the licence, the README, the icons and the packaging files of
+      # the tag's own source.
+      - name: Assemble the tarball
+        if: matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)
+          dir="omacharts-$version-x86_64-linux"
+          mkdir tag-source "$dir"
+          tar xzf tag-source.tar.gz -C tag-source
+          src="tag-source/omacharts-$version"
+          tar --zstd -xOf "$package" usr/lib/omacharts/omacharts > "$dir/omacharts"
+          chmod 755 "$dir/omacharts"
+          bin/check-links "$dir/omacharts"
+          cp "$src/LICENSE" "$src/README.md" "$dir/"
+          cp -r "$src/assets" "$src/packaging" "$dir/"
+          tar czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+          echo "tarball=$dir.tar.gz" >> "$GITHUB_ENV"
+      - name: Attach them to the release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Only x86_64 has a tarball.
+          plain=()
+          [ -z "${tarball:-}" ] || plain=("$tarball" "$tarball.sha256")
           gh release upload "$GITHUB_REF_NAME" \
             "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst omacharts-${{ matrix.arch }}.pkg.tar.zst.sha256 \
-            omacharts-${{ matrix.arch }}.gz omacharts-${{ matrix.arch }}.gz.sha256 --clobber
+            omacharts-${{ matrix.arch }}.gz omacharts-${{ matrix.arch }}.gz.sha256 \
+            "${plain[@]}" --clobber
+      - name: Keep what a release would have attached
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets-${{ matrix.arch }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            omacharts-*.pkg.tar.zst
+            omacharts-*.sha256
+            omacharts-${{ matrix.arch }}.gz
+            omacharts-*-x86_64-linux.tar.gz
 
   # Out of draft once every architecture's files are on it, and not before:
   # the updater finds a release through releases/latest, which skips drafts,
   # so nobody is offered a release they cannot download yet. A release whose
   # package job failed stays a draft, for a person to look at.
   publish:
-    needs: [build, sync, package]
+    needs: [draft, sync, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Publish the release
+        if: env.DRY_RUN != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
