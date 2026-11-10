@@ -90,9 +90,13 @@ function decimals(price, kind) {
   return 6
 }
 
+// Thousands marked, as the window marks them: 81,373.44. Four digits run
+// together are a misread waiting to happen in a column of prices.
 function formatPrice(value, kind) {
   if (value === null || value === undefined) return "–"
-  return Number(value).toFixed(decimals(value, kind))
+  var parts = Number(value).toFixed(decimals(value, kind)).split(".")
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+$)/g, ",")
+  return parts.join(".")
 }
 
 function formatPercent(value) {
