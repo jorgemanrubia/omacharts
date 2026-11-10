@@ -1478,13 +1478,14 @@ dependencies = [
 
 [[package]]
 name = "omacharts"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "async-channel",
  "chrono",
  "chrono-tz",
  "clap",
  "dtc",
+ "flate2",
  "gio",
  "gtk4",
  "libadwaita",
@@ -1495,6 +1496,8 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
+ "ureq",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # Maintainer: Jorge Manrubia <jorge@37signals.com>
 pkgname=omacharts
-pkgver=0.2.14
+pkgver=0.2.15
 pkgrel=1
 pkgdesc='Fast, beautiful charting software for Omarchy'
 arch=('x86_64' 'aarch64')
@@ -13,7 +13,7 @@ makedepends=('cargo')
 # linker does not read, and every one of their symbols comes back undefined.
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('11ca8c5d1c71f2dd6809bb3072e257f62c22c5fa89e882cf3af7fdb04caea166')
+sha256sums=('0c5163849dc7cf2dfd8987f37212ecd26e2138cb5a10f9d0c7facab2742d61f8')
 
 prepare() {
   cd "$pkgname-$pkgver"
@@ -27,7 +27,7 @@ build() {
   cd "$pkgname-$pkgver"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release --bin omacharts
+  cargo build --frozen --release --bin omacharts --bin omacharts-launch
 }
 
 check() {
@@ -41,7 +41,13 @@ package() {
   cd "$pkgname-$pkgver"
   local id='com.jorgemanrubia.Omacharts'
 
-  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  # The command on PATH is the launcher, which links nothing and execs the
+  # app: this one, or a newer version the app downloaded for this user. The
+  # app itself lives beside the package's other files, never on PATH, so GTK
+  # is loaded once per launch whichever binary keeps the window — see
+  # src/launch.rs.
+  install -Dm755 "target/release/$pkgname-launch" "$pkgdir/usr/bin/$pkgname"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/lib/$pkgname/$pkgname"
   install -Dm644 "packaging/$id.desktop" "$pkgdir/usr/share/applications/$id.desktop"
 
   for size in 16 24 32 48 64 128 256 512; do

@@ -1,5 +1,5 @@
 //! What follows from the book, the accounts and the feeds, with no store
-//! and no broker: which account and feed a chart is on, where an order
+//! and no trading service: which account and feed a chart is on, where an order
 //! goes, which side of the market it may go on, and what answers a request.
 
 use std::sync::Arc;
@@ -31,7 +31,7 @@ pub struct Target {
     pub login: Login,
     pub contract: String,
     pub exchange: String,
-    /// The step the contract's price moves in, when the broker knows it.
+    /// The step the contract's price moves in, when the trading service knows it.
     pub tick: Option<f64>,
     pub capabilities: Capabilities,
 }
@@ -78,11 +78,11 @@ pub fn order_target(
     instrument: Option<&omacharts_engine::Instrument>,
 ) -> Result<Target, String> {
     // A login whose accounts were never listed has not signed in yet, or
-    // signed in and was listed none: the broker gives it nothing to trade.
+    // signed in and was listed none: the trading service gives it nothing to trade.
     let account = view.account_of(chosen).ok_or_else(|| match view.logins.first() {
         Some(login) if session(&login.id).is_some() => format!("{} has no accounts", login.name),
         Some(login) => format!("{} not signed in", login.name),
-        None => "No trading account".to_string(),
+        None => "No trading service".to_string(),
     })?;
     let name = view.account_name(account);
     let login = view.login(&account.login).ok_or_else(|| format!("{name} has no login"))?;
@@ -103,7 +103,7 @@ pub fn order_target(
 }
 
 /// The orders the chart menu offers, in its order: buy and sell at the
-/// market, then a limit and a stop each way, and only the kinds the broker
+/// market, then a limit and a stop each way, and only the kinds the trading service
 /// takes.
 pub fn menu_orders(capabilities: &Capabilities) -> Vec<(Side, OrderKind)> {
     [OrderKind::Market, OrderKind::Limit, OrderKind::Stop]
@@ -255,6 +255,17 @@ pub fn answered(request: &Request, pending: &Pending, book: &Book) -> bool {
     }
 }
 
+/// What the header's Account part calls `account`: its number, "E7029",
+/// with its login's name after it, "E7029 · Sierra Chart", only when
+/// another account listed has the same number.
+pub fn account_label(account: &Account, logins: &[Login], accounts: &[Account]) -> String {
+    let twin = accounts.iter().any(|other| other.login != account.login && other.id == account.id);
+    match (twin, login_in(logins, &account.login)) {
+        (true, Some(login)) => format!("{} · {}", account.id, login.name),
+        _ => account.id.clone(),
+    }
+}
+
 /// How an account is named: its login's name, "Lucid", with the account
 /// number after it only when the name alone would not say which, because
 /// the login holds several accounts or another login has the same name.
@@ -299,10 +310,10 @@ fn own_feed<'a>(
     if view.data_login.as_deref() != Some(account.login.as_str()) {
         return None;
     }
-    let broker = &view.login(&account.login)?.broker;
+    let service = &view.login(&account.login)?.service;
     feeds
         .into_iter()
-        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(broker))
+        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(service))
         .filter(|(provider, usable)| *usable && provider.symbol_for(instrument).is_some())
         .map(|(provider, _)| provider.id())
 }
@@ -323,10 +334,11 @@ pub fn feed_of<'a>(
 }
 
 /// The last price a chart on screen shows for `held`'s contract, to mark
-/// it to while the broker's market data has heard nothing: only a chart of
+/// it to while the trading service's market data has heard nothing: only a chart of
 /// that very contract, MNQZ6 for MNQZ6, on the exchange it is held on.
 /// Never a continuous series, MNQ, whose price may be another month's or
-/// back-adjusted. `charts` is every chart's instrument and last price.
+/// back-adjusted. `charts` is every chart's instrument and last price, a
+/// root's as the contract its feed draws it as, when the feed says.
 pub fn charted_price<'a>(
     held: &Position,
     charts: impl IntoIterator<Item = (&'a omacharts_engine::Instrument, Option<f64>)>,
@@ -442,6 +454,26 @@ mod tests {
         assert_eq!(account_name(&a951, &[rithmic, twin], &[a951.clone(), c7.clone()]), "Rithmic 951");
         // A login that is gone: the number is all there is.
         assert_eq!(account_name(&c7, &[lucid], std::slice::from_ref(&c7)), "7");
+    }
+
+    /// The header calls an account by its number, and by its login too
+    /// only when another login has an account of the same number.
+    #[test]
+    fn the_header_calls_an_account_by_its_number() {
+        let sierra = test_login("s", "Sierra Chart", TEST_SYSTEM);
+        let rithmic = test_login("r", "Rithmic", TEST_SYSTEM);
+        let logins = [sierra, rithmic];
+        let e7029 = account("s", "E7029");
+        let acc1 = account("r", "ACC1");
+        let acc2 = account("r", "ACC2");
+        let accounts = [e7029.clone(), acc1.clone(), acc2.clone()];
+        assert_eq!(account_label(&e7029, &logins, &accounts), "E7029");
+        assert_eq!(account_label(&acc2, &logins, &accounts), "ACC2");
+        let sim_s = account("s", "Sim1");
+        let sim_r = account("r", "Sim1");
+        let accounts = [sim_s.clone(), sim_r.clone(), acc1];
+        assert_eq!(account_label(&sim_s, &logins, &accounts), "Sim1 · Sierra Chart");
+        assert_eq!(account_label(&sim_r, &logins, &accounts), "Sim1 · Rithmic");
     }
 
     /// A chart's feed: the one chosen for it; else its account's own,
@@ -612,10 +644,11 @@ mod tests {
         }
         assert!(side_allowed(OrderKind::Market, Side::Sell, 0.0, last));
 
-        // Only what the broker takes is offered.
+        // Only what the trading service takes is offered.
         let all = Capabilities {
             kinds: vec![OrderKind::Stop, OrderKind::Market, OrderKind::Limit],
             flatten: true,
+            flatten_cancels: false,
             cancel_all: true,
             modify: true,
             link: Linking::AfterTheFact,
@@ -680,9 +713,9 @@ mod tests {
         assert_eq!(
             order_target(&unlisted, |_| Some(session.clone()), None, Some(&es)).unwrap_err(),
             "Rithmic Test has no accounts",
-            "signed in, and the broker listed none"
+            "signed in, and the trading service listed none"
         );
-        assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading account");
+        assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading service");
     }
 
     /// Going flat in a contract cancels every order working in it, entries

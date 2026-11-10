@@ -1,8 +1,8 @@
 //! How many an order from a chart is for: its quantity, the lists of
 //! sizes a trader picks it from, and which list a chart picks from.
 //!
-//! Broker-neutral and pure, beside the accounts, orders and positions in
-//! [`crate::trading`]: no widget, no broker and no store reads in here
+//! The same for every trading service, and pure, beside the accounts, orders and positions in
+//! [`crate::trading`]: no widget, no trading service and no store reads in here
 //! beyond loading and saving the lists. The header's Trading size part,
 //! the keys that set it and the orders that spend it only ask.
 //!
@@ -14,9 +14,13 @@
 //!
 //! A chart's size is the first in its template until somebody picks
 //! another, and sticks once picked. What is stored with the chart is the
-//! size and the template it was picked from, so that a chart moved from
-//! ES to AAPL does not go on buying two shares: a size picked from another
-//! template than the one in force is not the chart's size.
+//! size, the template it was picked from and the contract it was picked
+//! for, so that a chart moved from ES to AAPL does not go on buying two
+//! shares, nor one trading 10 MES go on to 10 ES once it trades ES, or to
+//! 10 NQ once it charts NQ: a size picked from another template than the
+//! one in force, or for another contract than the one traded, is not the
+//! chart's size, and the first in its template is until one is picked for
+//! it. Back on the contract it was picked for, it is again.
 
 use omacharts_engine::{Instrument, InstrumentKind};
 use serde::{Deserialize, Serialize};
@@ -193,6 +197,18 @@ pub fn template_for<'a>(templates: &'a [SizeTemplate], instrument: &Instrument) 
 pub struct Picked {
     pub template: String,
     pub size: Quantity,
+    /// The root, or the stock's symbol, it was picked for: `MES`. None for
+    /// a pick stored before picks said, which stands for whatever the
+    /// chart trades.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<String>,
+}
+
+impl Picked {
+    /// Is this a pick for what `instrument` is?
+    pub fn is_for(&self, instrument: &Instrument) -> bool {
+        self.contract.as_deref().is_none_or(|contract| contract.eq_ignore_ascii_case(instrument.root()))
+    }
 }
 
 /// The size an order from a chart of `instrument` is for: the one picked
@@ -201,7 +217,7 @@ pub struct Picked {
 pub fn size_for(templates: &[SizeTemplate], instrument: &Instrument, picked: Option<&Picked>) -> Option<Quantity> {
     let template = template_for(templates, instrument)?;
     match picked {
-        Some(picked) if picked.template == template.name => Some(picked.size),
+        Some(picked) if picked.template == template.name && picked.is_for(instrument) => Some(picked.size),
         _ => template.first(),
     }
 }
@@ -212,7 +228,7 @@ pub fn size_for(templates: &[SizeTemplate], instrument: &Instrument, picked: Opt
 pub fn pick(templates: &[SizeTemplate], instrument: &Instrument, n: usize) -> Option<Picked> {
     let template = template_for(templates, instrument)?;
     let size = *template.sizes.get(n.checked_sub(1)?)?;
-    Some(Picked { template: template.name.clone(), size })
+    Some(Picked { template: template.name.clone(), size, contract: Some(instrument.root().to_string()) })
 }
 
 /// A size in words, with its unit when the instrument has one: "2
@@ -347,19 +363,25 @@ mod tests {
         assert_eq!(template_for(&templates, &instrument("NQ", InstrumentKind::FutureRoot)).unwrap().name, "Futures");
     }
 
-    /// A pick sticks while its template is the one in force: on ES or NQ,
-    /// both on Futures, and not once the chart is on a stock.
+    /// A pick sticks while its template is the one in force and the
+    /// contract is the one it was picked for: on ES, and not once the
+    /// chart is on NQ, though both are on Futures, nor on a stock. One
+    /// stored before picks named their contract stands for any.
     #[test]
-    fn a_picked_size_sticks_to_its_template() {
+    fn a_picked_size_sticks_to_its_template_and_its_contract() {
         let templates = standard();
         let es = instrument("ES", InstrumentKind::FutureRoot);
         let nq = instrument("NQ", InstrumentKind::FutureRoot);
         let aapl = instrument("AAPL", InstrumentKind::Equity);
         let picked = pick(&templates, &es, 2).unwrap();
-        assert_eq!(picked, Picked { template: "Futures".into(), size: Quantity::new(2).unwrap() });
+        assert_eq!(picked, Picked { template: "Futures".into(), size: Quantity::new(2).unwrap(), contract: Some("ES".into()) });
         assert_eq!(size_for(&templates, &es, Some(&picked)), Quantity::new(2));
-        assert_eq!(size_for(&templates, &nq, Some(&picked)), Quantity::new(2));
+        assert_eq!(size_for(&templates, &nq, Some(&picked)), Quantity::new(1), "ES's size carried over to NQ");
         assert_eq!(size_for(&templates, &aapl, Some(&picked)), Quantity::new(100));
+        let stored = Picked { contract: None, ..picked.clone() };
+        assert_eq!(size_for(&templates, &nq, Some(&stored)), Quantity::new(2));
+        let json = serde_json::to_string(&stored).unwrap();
+        assert_eq!(serde_json::from_str::<Picked>(&json).unwrap(), stored, "{json}");
         assert_eq!(pick(&templates, &aapl, 9).map(|p| p.size), Quantity::new(900));
         assert_eq!(pick(&templates, &es, 10), None);
         assert_eq!(pick(&templates, &es, 0), None);

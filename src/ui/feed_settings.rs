@@ -8,13 +8,13 @@
 //!
 //! What each row says comes from the feeds themselves: what a feed
 //! covers, how fresh it is (asked of the provider), whether it needs
-//! signing in, how, and how that stands. A feed whose login is a broker
+//! signing in, how, and how that stands. A feed whose login is a trading service
 //! connection signs in through a login in Preferences → Trading, the data
 //! login, so while there is one its row says so and leaves signing in, out
-//! and removing to that page; adding it with no login is adding a broker
+//! and removing to that page; adding it with no login is adding a trading service
 //! there. With trading switched off ([`crate::features`]) there is no
-//! Trading page, and the broker's feed is a feed like the others: its
-//! login is typed in the broker's own dialog from its row, kept as the data
+//! Trading page, and the trading service's feed is a feed like the others: its
+//! login is typed in the trading service's own dialog from its row, kept as the data
 //! login, and signs in its data alone, never an order plant. A feed with a dialog of its own is signed in to here, in that
 //! dialog, found in `sign_in_dialogs`; one that signs in in a browser opens
 //! one.
@@ -45,15 +45,15 @@ enum Progress {
     Done(Result<(), String>),
 }
 
-/// Opens the login dialog of the broker with this id, from Trading, over
+/// Opens the login dialog of the trading service with this id, from Trading, over
 /// the widget given.
-pub type AddBroker = Rc<dyn Fn(&str, &gtk::Widget)>;
+pub type AddService = Rc<dyn Fn(&str, &gtk::Widget)>;
 
 struct Panel {
     store: Rc<Store>,
-    /// Adding a broker connection's feed with no login is adding a broker
+    /// Adding a trading service connection's feed with no login is adding a trading service
     /// in Trading.
-    add_broker: Option<AddBroker>,
+    add_service: Option<AddService>,
     /// Has the window chart from the order now stored, and read again
     /// which feeds are signed in. Called after every change here.
     on_change: Rc<dyn Fn()>,
@@ -82,10 +82,10 @@ pub fn build(
     store: Rc<Store>,
     on_change: Rc<dyn Fn()>,
     after: Vec<adw::PreferencesGroup>,
-    add_broker: AddBroker,
+    add_service: AddService,
 ) -> Rc<dyn Fn()> {
     feeds::remember_logins(&store);
-    let panel = Panel::new(page.clone(), store, Some(add_broker), on_change, after);
+    let panel = Panel::new(page.clone(), store, Some(add_service), on_change, after);
     rebuild(&panel);
     Rc::new(move || rebuild(&panel))
 }
@@ -94,13 +94,13 @@ impl Panel {
     fn new(
         page: adw::PreferencesPage,
         store: Rc<Store>,
-        add_broker: Option<AddBroker>,
+        add_service: Option<AddService>,
         on_change: Rc<dyn Fn()>,
         after: Vec<adw::PreferencesGroup>,
     ) -> Rc<Panel> {
         Rc::new(Panel {
             store,
-            add_broker,
+            add_service,
             on_change,
             page,
             group: RefCell::new(None),
@@ -167,7 +167,7 @@ fn set_up(panel: &Panel) -> Vec<&'static Listed> {
     let logins = crate::trading::logins(&panel.store);
     let mut feeds = panel.added();
     for feed in providers::offered() {
-        let logged_in = logins.iter().any(|login| login.broker.eq_ignore_ascii_case(feed.id));
+        let logged_in = logins.iter().any(|login| login.service.eq_ignore_ascii_case(feed.id));
         if logged_in && !feeds.iter().any(|known| known.id == feed.id) {
             feeds.push(feed);
         }
@@ -230,15 +230,15 @@ fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
 }
 
 /// The login a feed signs in through, when that is Trading's business: a
-/// broker connection's feed, while there is a login in Trading.
+/// trading service connection's feed, while there is a login in Trading.
 fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
     if !crate::features::trading() {
         return None;
     }
-    crate::trading::data_login(&panel.store).filter(|login| trades(feed) && login.broker.eq_ignore_ascii_case(feed.id))
+    crate::trading::data_login(&panel.store).filter(|login| trades(feed) && login.service.eq_ignore_ascii_case(feed.id))
 }
 
-/// Is `feed`'s login a broker connection, kept in Trading?
+/// Is `feed`'s login a trading service connection, kept in Trading?
 fn trades(feed: &'static Listed) -> bool {
     feed.setup.is_some_and(|setup| setup.trades())
 }
@@ -334,7 +334,7 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     let anchor = row.clone();
     button.connect_clicked(move |_| match (feed.asks_in_a_dialog(), trades(feed)) {
         (true, true) if !crate::features::trading() => ask_login(&panel, feed, &anchor),
-        (true, true) => ask_broker(&panel, feed, &anchor),
+        (true, true) => ask_service(&panel, feed, &anchor),
         (true, false) => ask_dialog(&panel, feed, &anchor),
         (false, _) => start_sign_in(&panel, feed),
     });
@@ -421,13 +421,13 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
     add
 }
 
-/// A broker connection's feed is added by adding a broker login, in
+/// A trading service connection's feed is added by adding a trading service login, in
 /// Trading, unless there is one already to sign in through. Any other is
 /// added at once, and signed in to from its row.
 fn add_feed(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     match trades(feed) && through_trading(panel, feed).is_none() {
         true if !crate::features::trading() => ask_login(panel, feed, anchor),
-        true => ask_broker(panel, feed, anchor),
+        true => ask_service(panel, feed, anchor),
         false => {
             feeds::add_feed(&panel.store, feed.id);
             panel.changed();
@@ -454,28 +454,29 @@ fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.changed();
 }
 
-/// A broker connection's feed with no login: a broker is added in Trading,
+/// A trading service connection's feed with no login: a trading service is added in Trading,
 /// which puts the feed on top of the feeds and signs it in.
-fn ask_broker(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
-    if let Some(add_broker) = &panel.add_broker {
-        add_broker(feed.id, anchor.upcast_ref());
+fn ask_service(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
+    if let Some(add_service) = &panel.add_service {
+        add_service(feed.id, anchor.upcast_ref());
     }
 }
 
-/// A broker connection's feed with trading switched off: its login typed
-/// in the broker's own dialog — the data login again, prefilled, when
+/// A trading service connection's feed with trading switched off: its login typed
+/// in the trading service's own dialog — the data login again, prefilled, when
 /// there is one — kept, and its data signed in from this row, as any other
-/// feed's. Nothing signs in to the broker's order plant.
+/// feed's. Nothing signs in to the trading service's order plant.
 fn ask_login(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     let Some(dialog) = sign_in_dialogs::login_dialog(feed.id) else { return };
-    let known = crate::trading::data_login(&panel.store).filter(|login| login.broker.eq_ignore_ascii_case(feed.id));
+    let known = crate::trading::data_login(&panel.store).filter(|login| login.service.eq_ignore_ascii_case(feed.id));
     let panel = panel.clone();
     let id = known.as_ref().map(|login| login.id.clone());
     dialog(
         anchor.upcast_ref(),
         known.as_ref(),
+        &crate::trading::names_taken(&panel.store, id.as_deref()),
         Box::new(move |typed| {
-            let secrets = crate::ui::trading_settings::keyring(&typed.broker);
+            let secrets = crate::ui::trading_settings::keyring(&typed.service);
             let kept = match &id {
                 Some(id) => crate::trading::retype_login(&panel.store, &secrets, id, &typed),
                 None => crate::trading::add_login(&panel.store, &secrets, &typed).map(|_| ()),
@@ -722,7 +723,7 @@ mod tests {
 
             let kept = crate::trading::fake::Kept::default();
             let typed = crate::trading::Typed {
-                broker: "rithmic".into(),
+                service: "rithmic".into(),
                 name: "Lucid".into(),
                 user: "trader".into(),
                 password: "PLANTED-PASSWORD".into(),
@@ -755,7 +756,7 @@ mod tests {
             let panel = panel(&store);
             let kept = crate::trading::fake::Kept::default();
             let typed = crate::trading::Typed {
-                broker: "rithmic".into(),
+                service: "rithmic".into(),
                 name: "Lucid".into(),
                 user: "trader".into(),
                 password: "PLANTED-PASSWORD".into(),

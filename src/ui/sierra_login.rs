@@ -2,7 +2,7 @@
 //! its DTC server is, asked as it is typed whether it is there and allows
 //! trading.
 //!
-//! There is no password. Sierra Chart is signed in to its broker itself,
+//! There is no password. Sierra Chart is signed in to its trading service itself,
 //! and its server, set to "Local Computer Only", answers this machine
 //! alone. The steps that turn trading on in Sierra Chart are shown while
 //! the server does not allow it.
@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::providers::sierra::{self as feed, setup};
 
-use crate::trading::{Login, Typed};
+use crate::trading::{self, Login, Typed};
 
 const SIGN_IN: &str = "sign-in";
 const CANCEL: &str = "cancel";
@@ -30,8 +30,10 @@ const STEPS: &[(&str, &str)] = &[
 ];
 
 /// Ask for a login over `parent` — a new one, or `known` again — and hand
-/// what was typed to `signed` when somebody presses Sign in.
-pub fn ask(parent: &gtk::Widget, known: Option<&Login>, signed: Box<dyn Fn(Typed)>) {
+/// what was typed to `signed` when somebody presses Sign in. A new one is
+/// called Sierra Chart, numbered apart from the names `taken`.
+pub fn ask(parent: &gtk::Widget, known: Option<&Login>, taken: &[String], signed: Box<dyn Fn(Typed)>) {
+    let default = trading::numbered(feed::LISTED.label, taken);
     let dialog = adw::AlertDialog::new(Some("Trade through Sierra Chart"), None);
 
     let list = gtk::ListBox::new();
@@ -40,7 +42,7 @@ pub fn ask(parent: &gtk::Widget, known: Option<&Login>, signed: Box<dyn Fn(Typed
 
     let name = adw::EntryRow::new();
     name.set_title("Name");
-    name.set_text(known.map_or("", |login| login.name.as_str()));
+    name.set_text(known.map_or(default.as_str(), |login| login.name.as_str()));
     list.append(&name);
 
     let host = adw::EntryRow::new();
@@ -129,20 +131,20 @@ pub fn ask(parent: &gtk::Widget, known: Option<&Login>, signed: Box<dyn Fn(Typed
         if response != SIGN_IN {
             return;
         }
-        signed(typed(&name.text(), &host.text(), &port.text()));
+        signed(typed(&name.text(), &default, &host.text(), &port.text()));
     });
     dialog.present(Some(parent));
 }
 
-/// What was typed, a login with no name called what it is.
-fn typed(name: &str, host: &str, port: &str) -> Typed {
+/// What was typed, a login with no name called `default`.
+fn typed(name: &str, default: &str, host: &str, port: &str) -> Typed {
     let or = |text: &str, fallback: &str| match text.trim() {
         "" => fallback.to_string(),
         text => text.to_string(),
     };
     Typed {
-        broker: feed::LISTED.id.to_string(),
-        name: or(name, feed::LISTED.label),
+        service: feed::LISTED.id.to_string(),
+        name: or(name, default),
         user: String::new(),
         password: String::new(),
         values: vec![
@@ -160,10 +162,44 @@ mod tests {
     /// port, called Sierra Chart, with no password.
     #[test]
     fn what_is_left_empty_is_this_machines_server() {
-        let empty = typed(" ", "", "");
-        assert_eq!((empty.broker.as_str(), empty.name.as_str(), empty.password.as_str()), ("sierra", "Sierra Chart", ""));
+        let empty = typed(" ", "Sierra Chart", "", "");
+        assert_eq!((empty.service.as_str(), empty.name.as_str(), empty.password.as_str()), ("sierra", "Sierra Chart", ""));
         assert_eq!(empty.values, vec![("host".to_string(), "127.0.0.1".to_string()), ("port".to_string(), "11099".to_string())]);
-        let named = typed("Sim", "10.0.0.2", "11100");
+        let named = typed("Sim", "Sierra Chart", "10.0.0.2", "11100");
         assert_eq!((named.name.as_str(), named.values[1].1.as_str()), ("Sim", "11100"));
+    }
+
+    /// A new login's name starts as Sierra Chart, numbered past the names
+    /// taken; cleared, it is that again, and a login signed in again keeps
+    /// its own.
+    #[test]
+    fn a_new_login_is_called_sierra_chart_numbered_past_the_names_taken() {
+        crate::ui::on_gtk(|| {
+            let name_of = |dialog: &adw::AlertDialog| {
+                super::super::row_titled::<adw::EntryRow>(dialog.upcast_ref(), "Name").expect("its name")
+            };
+            let (dialog, _) = super::super::opened(ask, None, &[]);
+            assert_eq!(name_of(&dialog).text(), "Sierra Chart");
+            dialog.force_close();
+
+            let (dialog, signed) = super::super::opened(ask, None, &["Sierra Chart", "sierra chart 2"]);
+            assert_eq!(name_of(&dialog).text(), "Sierra Chart 3");
+            name_of(&dialog).set_text(" ");
+            dialog.emit_by_name::<()>("response", &[&SIGN_IN]);
+            assert_eq!(signed.borrow().as_ref().map(|typed| typed.name.clone()).as_deref(), Some("Sierra Chart 3"));
+            dialog.force_close();
+
+            let known = Login {
+                id: "a".into(),
+                name: "Sim".into(),
+                service: "sierra".into(),
+                user: String::new(),
+                values: Vec::new(),
+                signed_out: false,
+            };
+            let (dialog, _) = super::super::opened(ask, Some(&known), &["Sierra Chart"]);
+            assert_eq!(name_of(&dialog).text(), "Sim");
+            dialog.force_close();
+        });
     }
 }

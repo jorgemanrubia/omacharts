@@ -5,7 +5,7 @@ section: charting
 nav_order: 16
 ---
 
-A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume) and [Session Times](/manual/indicators/session-times/) with ETH, and new charts open on it.
+A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume) and [Session Times](/manual/indicators/session-times/) with ETH. New charts open on no template until you choose one for them.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -111,7 +111,7 @@ crop: 688,68,1184,1304   (the whole dialog, 16px layout margin)
 
 ## The template new charts open with
 
-Preferences › Charts › Defaults › Indicators › **Template** is the template a new chart opens on, or **None**. A new chartbook's first chart opens on it. A chart made by splitting copies the chart it came from instead.
+Preferences › Charts › Defaults › Indicators › **Template** is the template a new chart opens on, or **None**, which it is until you choose one. A new chartbook's first chart opens on it. A chart made by splitting copies the chart it came from instead.
 
 **Apply to all charts now** under the defaults, and **Reset to defaults** in a chart's settings, put charts on this template the way choosing it does, asking first where a chart would lose its own indicators ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)). If this template is deleted, new charts open on **None**. **Default** can be deleted like any other template, and is not recreated.
 

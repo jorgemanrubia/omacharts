@@ -35,21 +35,26 @@ pub fn command() -> Command {
     build(None)
 }
 
-/// The parser for one command line: every group, with only the one `args`
-/// names built out to its verbs and flags.
+/// The parser for one command line: the group `args` names, built out to its
+/// verbs and flags, and no other.
 ///
 /// A command is parsed on the window's main loop, and the bar widget runs
 /// one every minute or two. Building every verb of every group to parse one
 /// of them made each group added a cost on every command — the chart
-/// templates' alone were a seventh more allocations on `watchlist list`. The
-/// other groups are still there by name, which is all the top-level help and
-/// a "did you mean" ask of them.
+/// templates' alone were a seventh more allocations on `watchlist list`. And
+/// every group there by name still cost a whole `Command` of clap's, most of
+/// a kilobyte, in a list that doubles as it grows: the seventeenth subcommand
+/// was 25 KB more on every command. The other groups are needed only by the
+/// top-level help and by a "did you mean", and both are for a first word that
+/// names no group, which is when they are all there.
 pub fn command_for(args: &[String]) -> Command {
     build(Some(args.get(1).map(String::as_str).unwrap_or("")))
 }
 
 /// The tree, whole or with only the group called `only` built out.
 fn build(only: Option<&str>) -> Command {
+    // A group that is named is the only one parsing can reach.
+    let alone = only.filter(|named| SURFACE.iter().chain(spec::HIDDEN).any(|noun| noun.name == *named));
     let mut app = Command::new("omacharts")
         .about(ABOUT)
         .version(env!("CARGO_PKG_VERSION"))
@@ -105,6 +110,9 @@ fn build(only: Option<&str>) -> Command {
     }
 
     for noun in SURFACE {
+        if alone.is_some_and(|named| named != noun.name) {
+            continue;
+        }
         let mut group = Command::new(noun.name).about(noun.about);
         if only.is_some_and(|named| named != noun.name) {
             app = app.subcommand(group);
@@ -123,6 +131,9 @@ fn build(only: Option<&str>) -> Command {
     // Accepted, never listed: see [`spec::HIDDEN`]. Bare, a hidden group
     // lists what it holds rather than asking for a verb.
     for noun in spec::HIDDEN {
+        if alone.is_some_and(|named| named != noun.name) {
+            continue;
+        }
         let mut group = Command::new(noun.name).about(noun.about).hide(true);
         if only.is_none_or(|named| named == noun.name) {
             for verb in noun.verbs {

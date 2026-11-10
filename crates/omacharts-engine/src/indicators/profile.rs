@@ -51,6 +51,35 @@ pub fn hairline() -> f64 {
     1.0
 }
 
+/// A point of control is drawn unless somebody turns it off, as it was
+/// before it could be.
+pub fn shown() -> bool {
+    true
+}
+
+/// How much of the room a profile has its longest row may reach: of its
+/// period's width, or of the empty space past the last bar when it is drawn
+/// there. What every profile was drawn at before it could be chosen, so one
+/// stored without it looks as it always did.
+pub const DEFAULT_WIDTH: f64 = 0.4;
+/// The narrowest a profile can be asked to be: still a shape, not a hairline.
+pub const MIN_WIDTH: f64 = 0.1;
+/// The whole of its room, edge to edge.
+pub const MAX_WIDTH: f64 = 1.0;
+
+pub fn default_width() -> f64 {
+    DEFAULT_WIDTH
+}
+
+/// A stored width as one a profile can be drawn at: inside the range, and
+/// the default for anything that is not a number.
+pub fn drawn_width(width: f64) -> f64 {
+    match width.is_finite() {
+        true => width.clamp(MIN_WIDTH, MAX_WIDTH),
+        false => DEFAULT_WIDTH,
+    }
+}
+
 /// How a profile's rows are painted: as solid bars, or as only the shape
 /// they make together, which leaves the candles under it in plain sight.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -85,7 +114,8 @@ impl Style {
 
 /// Which edge of its period a profile grows from: the left, into the period,
 /// or the right, back towards its start, so the rows end where the period
-/// does.
+/// does. On the right, the period still forming at the live edge is drawn in
+/// the empty space past its last bar instead, where it covers nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Align {
@@ -116,10 +146,72 @@ impl Align {
     }
 }
 
+/// The colourings a delta can be painted in: the chart's own, less the one
+/// that paints a rise and a fall alike, which would leave bought and sold
+/// the same colour.
+pub const DELTA_COLOURINGS: [crate::theme::BarColouring; 3] = [
+    crate::theme::BarColouring::Vivid,
+    crate::theme::BarColouring::Soft,
+    crate::theme::BarColouring::Quiet,
+];
+
+/// What each row of a profile measures: everything that traded at its
+/// price, or how much more was bought there than sold, the volume traded at
+/// the ask less that traded at the bid. The second is known only where the
+/// source says which side each trade took, so it is drawn only from volume
+/// at price, never estimated from bars.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Method {
+    #[default]
+    Total,
+    Delta,
+}
+
+impl Method {
+    pub const ALL: [Method; 2] = [Method::Total, Method::Delta];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Method::Total => "Total volume",
+            Method::Delta => "Ask volume - bid volume",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Method::Total => "total",
+            Method::Delta => "delta",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Method> {
+        Method::ALL.into_iter().find(|m| m.key() == key)
+    }
+
+    /// What a level adds to its row.
+    fn of(self, level: &crate::ladders::Level) -> f64 {
+        match self {
+            Method::Total => level.volume() as f64,
+            Method::Delta => level.at_ask as f64 - level.at_bid as f64,
+        }
+    }
+
+    /// Whether a ladder holding `level` says anything this method measures.
+    fn counts(self, level: &crate::ladders::Level) -> bool {
+        match self {
+            Method::Total => level.volume() > 0,
+            Method::Delta => level.at_ask + level.at_bid > 0,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct ProfileRow {
     pub low: f64,
     pub high: f64,
+    /// What traded in the row; for a delta profile, the ask volume less the
+    /// bid volume, so below zero where more was sold.
     pub volume: f64,
 }
 
@@ -136,11 +228,16 @@ pub struct Profile {
     pub first_bar: usize,
     pub last_bar: usize,
     pub rows: Vec<ProfileRow>,
-    /// Row holding the most volume.
+    /// Row holding the most volume; for a delta profile, the greatest delta
+    /// either way.
     pub poc: usize,
-    /// Inclusive row range covering `value_area` of the volume.
+    /// Inclusive row range covering `value_area` of the volume. A delta has
+    /// none, a share of a sum that cancels itself out being no share of
+    /// anything, so it is the point of control alone.
     pub value_area: (usize, usize),
+    /// The longest row: the most volume, or the greatest delta either way.
     pub max_volume: f64,
+    /// Everything traded, or for a delta profile the period's net delta.
     pub total_volume: f64,
 }
 
@@ -200,7 +297,7 @@ pub fn compute(
     kind: Option<InstrumentKind>,
     merged: &[i64],
 ) -> Vec<Profile> {
-    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None)
+    compute_with(bars, reset, session_origin, rows, value_area, kind, merged, None, Method::Total, false)
 }
 
 /// What traded at each price, for a chart whose source says: the ladder of
@@ -216,6 +313,13 @@ pub struct AtPrice<'a> {
 /// [`compute`], drawing each period from the volume that actually traded at
 /// each price when `at_price` knows it. Without it, or for a period it does
 /// not know, the volume of each bar is spread over its range as always.
+///
+/// A [`Method::Delta`] profile has nothing to spread: which side a trade took
+/// is not in a bar. A period `at_price` does not know has no profile.
+///
+/// `last_only` profiles the newest period alone, exactly as it is profiled
+/// beside the others: its rows are still of the height every period's
+/// would be, and the periods before it are not read at all.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_with(
     bars: &[Bar],
@@ -226,6 +330,8 @@ pub fn compute_with(
     kind: Option<InstrumentKind>,
     merged: &[i64],
     at_price: Option<&AtPrice>,
+    method: Method,
+    last_only: bool,
 ) -> Vec<Profile> {
     let mut out = Vec::new();
     if bars.is_empty() {
@@ -250,16 +356,18 @@ pub fn compute_with(
         None => Grid::Rows(rows.unwrap_or(MIN_ROWS).clamp(MIN_ROWS, MAX_ROWS)),
     };
 
-    for (start, end) in periods {
+    let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
+    for (start, end) in periods.into_iter().skip(skipped) {
         let slice = &bars[start..end];
         let bucket = reset.bucket(bars[start].ts, session_origin);
         let exact = at_price.and_then(|at| {
             let ladder = (at.of)(slice)?;
-            ladder.levels.iter().any(|level| level.volume() > 0).then_some((ladder, at.tick_size))
+            ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
         });
-        let profile = match exact {
-            Some((ladder, tick)) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick),
-            None => one(slice, start, bucket, grid, value_area),
+        let profile = match (exact, method) {
+            (Some((ladder, tick)), _) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick, method),
+            (None, Method::Total) => one(slice, start, bucket, grid, value_area),
+            (None, Method::Delta) => None,
         };
         if let Some(mut profile) = profile {
             profile.parts = parts(slice, reset, session_origin);
@@ -511,7 +619,7 @@ fn one(
         running += whole[row];
         *volume += running;
     }
-    finish(bars, offset, start_ts, low, step, volumes, value_area)
+    finish(bars, offset, start_ts, low, step, volumes, value_area, Method::Total)
 }
 
 /// `step` rounded up to whole ticks of `tick`, and never under one.
@@ -549,7 +657,10 @@ fn smoothed_ticks(step: f64, tick: f64, span: f64) -> f64 {
 /// Rows are whole ticks tall and cover the period's bars and its ladder
 /// both, so the price that traded at the high has a row of its own.
 ///
-/// Volume a provider reported with no price at all is in no row.
+/// Volume a provider reported with no price at all is in no row. For a
+/// delta, each price's ask volume less its bid volume, and volume with no
+/// known aggressor in neither.
+#[allow(clippy::too_many_arguments)]
 fn one_exact(
     bars: &[Bar],
     offset: usize,
@@ -558,6 +669,7 @@ fn one_exact(
     value_area: f64,
     ladder: &Ladder,
     tick: f64,
+    method: Method,
 ) -> Option<Profile> {
     let (mut low, mut high) = (f64::MAX, f64::MIN);
     for bar in bars {
@@ -582,18 +694,19 @@ fn one_exact(
     let rows = rows.clamp(MIN_ROWS, MAX_ROWS);
     let mut volumes = vec![0.0f64; rows];
     for (at, level) in ladder.iter() {
-        let volume = level.volume();
-        if volume == 0 {
+        let volume = method.of(level);
+        if volume == 0.0 {
             continue;
         }
         let row = ((to_price(at, tick) - base) / step + HAIR).floor();
         let row = (row.max(0.0) as usize).min(rows - 1);
-        volumes[row] += volume as f64;
+        volumes[row] += volume;
     }
-    finish(bars, offset, start_ts, base, step, volumes, value_area)
+    finish(bars, offset, start_ts, base, step, volumes, value_area, method)
 }
 
 /// A profile from its rows' volumes: the point of control, the value area.
+#[allow(clippy::too_many_arguments)]
 fn finish(
     bars: &[Bar],
     offset: usize,
@@ -602,21 +715,30 @@ fn finish(
     step: f64,
     volumes: Vec<f64>,
     value_area: f64,
+    method: Method,
 ) -> Option<Profile> {
     let total: f64 = volumes.iter().sum();
     let poc = volumes
         .iter()
+        .map(|v| match method {
+            Method::Total => *v,
+            Method::Delta => v.abs(),
+        })
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i)?;
-    let max_volume = volumes[poc];
+    let max_volume = volumes[poc].abs();
+    let value_area = match method {
+        Method::Total => expand_value_area(&volumes, poc, total, value_area),
+        Method::Delta => (poc, poc),
+    };
     Some(Profile {
         start_ts,
         parts: vec![start_ts],
         end_ts: bars.last()?.ts,
         first_bar: offset,
         last_bar: offset + bars.len() - 1,
-        value_area: expand_value_area(&volumes, poc, total, value_area),
+        value_area,
         rows: (0..volumes.len())
             .map(|i| ProfileRow {
                 low: low + i as f64 * step,
@@ -676,6 +798,14 @@ mod tests {
 
     fn bar(ts: i64, low: f64, high: f64, volume: f64) -> Bar {
         Bar { ts, open: low, high, low, close: high, volume }
+    }
+
+    #[test]
+    fn a_stored_width_is_drawn_inside_its_range() {
+        assert_eq!(drawn_width(0.25), 0.25);
+        assert_eq!(drawn_width(0.0), MIN_WIDTH);
+        assert_eq!(drawn_width(3.0), MAX_WIDTH);
+        assert_eq!(drawn_width(f64::NAN), DEFAULT_WIDTH);
     }
 
     #[test]
@@ -792,6 +922,36 @@ mod tests {
         let profiles = compute(&bars, Reset::Session, 0, Some(10), 0.7, None, &[DAY]);
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0].parts, vec![DAY]);
+    }
+
+    /// The newest period alone is the newest period as it is profiled beside
+    /// the others, row height, composite and all, and the periods before it
+    /// are not asked for their volume at price.
+    #[test]
+    fn the_last_period_alone_is_profiled_as_it_is_among_the_others() {
+        let mut bars = session(0, 100.0, 4.0);
+        bars.extend(session(1, 120.0, 12.0));
+        bars.extend(session(2, 110.0, 1.0));
+        bars.extend(session(3, 112.0, 2.0));
+        for merged in [&[][..], &[3 * DAY][..]] {
+            for rows in [None, Some(60)] {
+                let asked = std::cell::RefCell::new(Vec::new());
+                let of = |run: &[Bar]| {
+                    asked.borrow_mut().push(run[0].ts / DAY);
+                    None
+                };
+                let at = AtPrice { tick_size: 0.01, of: &of };
+                let kind = Some(InstrumentKind::Equity);
+                let all = compute_with(&bars, Reset::Session, 0, rows, 0.7, kind, merged, Some(&at), Method::Total, false);
+                asked.borrow_mut().clear();
+                let last = compute_with(&bars, Reset::Session, 0, rows, 0.7, kind, merged, Some(&at), Method::Total, true);
+                assert_eq!(last.len(), 1, "{merged:?} {rows:?}");
+                assert_eq!(last.last(), all.last(), "{merged:?} {rows:?}");
+                let newest = if merged.is_empty() { 3 } else { 2 };
+                assert_eq!(*asked.borrow(), vec![newest], "only the newest is read: {merged:?} {rows:?}");
+            }
+        }
+        assert!(compute_with(&[], Reset::Session, 0, None, 0.7, None, &[], None, Method::Total, true).is_empty());
     }
 
     /// A session of one-minute bars wandering over `span` around `price`.

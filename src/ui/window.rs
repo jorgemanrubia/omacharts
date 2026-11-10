@@ -50,6 +50,7 @@ use gtk::gio;
 mod log;
 mod marks;
 mod trade;
+mod updates;
 use trade::Trade;
 
 /// How often the rail's missing prices are looked for.
@@ -383,6 +384,40 @@ thread_local! {
 mod tests {
     use super::*;
 
+    /// A chart of the regular session out of hours: the newest trade is one
+    /// it does not draw, and the last price follows it all the same; in
+    /// hours, on extended hours or on a daily chart, the last bar has it.
+    #[test]
+    fn the_last_price_is_the_feed_s_whatever_the_session_draws() {
+        use chrono::TimeZone;
+        let at = |h: u32| chrono_tz::America::New_York.with_ymd_and_hms(2024, 3, 13, h, 0, 0).single().unwrap().timestamp();
+        let bar = |ts: i64, close: f64| omacharts_engine::Bar { ts, open: close, high: close, low: close, close, volume: 1.0 };
+        let stock = Instrument {
+            symbol: "X".into(),
+            name: "X".into(),
+            kind: omacharts_engine::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        let (regular, extended) = (omacharts_engine::Session::Regular, omacharts_engine::Session::Extended);
+        let hour = Timeframe::hours(1);
+        let evening = vec![bar(at(15), 100.0), bar(at(18), 96.5)];
+        assert_eq!(hidden_latest(&evening, regular, &stock, hour), Some(96.5), "out of hours");
+        assert_eq!(hidden_latest(&evening, extended, &stock, hour), None, "drawn already");
+        assert_eq!(hidden_latest(&evening, regular, &stock, Timeframe::days(1)), None, "a day is a session");
+        let mut ticked = evening.clone();
+        ticked.push(bar(at(19), 95.25));
+        assert_eq!(hidden_latest(&ticked, regular, &stock, hour), Some(95.25), "and follows the next trade");
+        assert_eq!(hidden_latest(&evening[..1], regular, &stock, hour), None, "in hours");
+        assert_eq!(hidden_latest(&[], regular, &stock, hour), None);
+    }
+
     /// The timer is GTK's and cannot be watched from here, so the decision
     /// that installs it is a function of its own and this holds that. A
     /// provider that streams gets no timer at all — nothing to poll, nothing
@@ -397,7 +432,7 @@ mod tests {
         pinned.source = Some("rithmic".into());
         pinned.account = Some("1/951".into());
         let two = crate::trading::Quantity::new(2).unwrap();
-        pinned.trading_size = Some(crate::trading::sizes::Picked { template: "Futures".into(), size: two });
+        pinned.trading_size = Some(crate::trading::sizes::Picked { template: "Futures".into(), size: two, contract: Some("ES".into()) });
         let book = book_of("Futures", vec![pinned, stored_pane(2, "NQ", LinkMode::Focus)]);
         let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
         assert_eq!(json.matches("\"source\"").count(), 1, "only the chosen one is written: {json}");
@@ -685,7 +720,11 @@ mod tests {
                 source: None,
                 account: None,
                 trading_size: None,
+                trading_symbol: None,
+                trading_suffix: None,
                 auto_scale: false,
+                price_window: None,
+                strip_windows: Default::default(),
                 log_scale: true,
                 indicators_shown: true,
                 drawings_shown: true,
@@ -742,6 +781,28 @@ mod tests {
         assert_eq!(scales, vec![false, true], "each chart keeps its own answer");
     }
 
+    /// The prices a held scale shows are written down with it and read back
+    /// through the store; a chart that fits itself writes none, and one
+    /// written before they were remembered has none.
+    #[test]
+    fn a_held_price_window_survives_a_restart() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut held = stored_pane(1, "SPY", LinkMode::Focus);
+        held.auto_scale = false;
+        held.price_window = Some([412.5, 431.25]);
+        let book = book_of("Macro", vec![held, stored_pane(2, "QQQ", LinkMode::Focus)]);
+        let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
+        assert_eq!(json.matches("price_window").count(), 1, "only the held chart writes one");
+        store.set_setting(SETTING_WORKSPACE, &json);
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        let windows: Vec<_> = back.books[0].panes.iter().map(|p| p.price_window).collect();
+        assert_eq!(windows, vec![Some([412.5, 431.25]), None]);
+
+        let old = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(old.books[0].panes.iter().all(|pane| pane.price_window.is_none()));
+    }
+
     /// A chart, as a book that is not on screen holds one.
     fn stored_pane(id: u32, symbol: &str, link: LinkMode) -> StoredPane {
         StoredPane {
@@ -769,7 +830,11 @@ mod tests {
             source: None,
             account: None,
             trading_size: None,
+            trading_symbol: None,
+            trading_suffix: None,
             auto_scale: true,
+            price_window: None,
+            strip_windows: Default::default(),
             log_scale: false,
             indicators_shown: true,
             drawings_shown: true,
@@ -1140,6 +1205,41 @@ mod tests {
 
     /// A window with nothing written down, and one with something unreadable,
     /// both have to end up with a chart rather than with half of one.
+    /// What this build cannot read of a stored chart or book is left out,
+    /// and only that: a field, an entry of a list or a map in it, or the
+    /// book holding a chart it cannot be rebuilt without. A field it has
+    /// never heard of is passed over.
+    #[test]
+    fn what_will_not_read_is_left_out_and_only_that() {
+        let mut value: serde_json::Value = serde_json::from_str(ONE_ARRANGEMENT).unwrap();
+        let mut second = value.clone();
+        let charts = value["panes"].as_array_mut().unwrap();
+        charts[0]["strip_windows"] = serde_json::json!({ "7": "x", "8": { "kind": "cvd", "window": [1.0, 2.0] }, "9": [3.0, 4.0] });
+        charts[0]["log_scale"] = serde_json::json!("yes");
+        charts[0]["indicators"] = serde_json::json!([Indicator::new(4, omacharts_engine::IndicatorKind::Rsi), { "kind": "from-the-future" }]);
+        charts[0]["a_field_from_a_later_build"] = serde_json::json!({ "anything": [1, 2] });
+        charts[1]["strip_windows"] = serde_json::json!("garbage");
+        second["panes"][1]["symbol"] = serde_json::json!(5);
+        second["name"] = serde_json::json!("Broken");
+        let workspace = serde_json::json!({ "books": [value, second], "active": 0 });
+
+        let read = parse_workspace(&workspace.to_string()).expect("read but for what will not");
+        assert_eq!(read.books.len(), 1, "the book with a chart it cannot rebuild goes, and only it");
+        let [one, two] = &read.books[0].panes[..] else { panic!("both charts") };
+        assert_eq!((one.symbol.as_str(), two.symbol.as_str()), ("SPY", "QQQ"));
+        assert_eq!(
+            one.strip_windows.iter().map(|(id, strip)| (*id, strip.clone())).collect::<Vec<_>>(),
+            vec![
+                (8, StoredStrip { kind: Some(omacharts_engine::IndicatorKind::Cvd), window: [1.0, 2.0] }),
+                (9, StoredStrip { kind: None, window: [3.0, 4.0] }),
+            ]
+        );
+        assert!(!one.log_scale, "read as one written without it");
+        assert_eq!(one.indicators.iter().map(|indicator| indicator.id).collect::<Vec<_>>(), vec![4]);
+        assert!(two.strip_windows.is_empty());
+        assert_eq!(two.timeframe, "5m", "the rest of the chart read");
+    }
+
     #[test]
     fn nonsense_in_the_setting_restores_nothing() {
         assert!(parse_workspace("").is_none());
@@ -1347,6 +1447,175 @@ mod tests {
         // Every word has to be found, so a right query and a wrong one
         // together are still wrong.
         assert!(found("split xyzzy").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod strip_window_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+
+    /// A cumulative delta's strip zoomed on its own scale comes back after a
+    /// restart as it was left, and is written down again with the chart;
+    /// a strip whose indicator is gone is not; and resetting the view lets
+    /// go of it, so nothing is written down for it after.
+    #[test]
+    fn a_zoomed_strip_survives_a_restart_and_a_reset_lets_go_of_it() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            first.save_workspace();
+            let stored = || -> serde_json::Value { serde_json::from_str(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap() };
+            let mut workspace = stored();
+            let chart = &mut workspace["books"][0]["panes"][0];
+            assert!(chart.get("strip_windows").is_none(), "nothing zoomed, nothing written");
+            let cvd = Indicator::new(7, omacharts_engine::IndicatorKind::Cvd);
+            chart["indicators"] = serde_json::json!([cvd]);
+            chart["indicators"] = serde_json::json!([cvd, Indicator::new(8, omacharts_engine::IndicatorKind::Rsi)]);
+            // The RSI's is one held for a cumulative delta, whose id a
+            // template has given it: it fits itself.
+            chart["strip_windows"] = serde_json::json!({
+                "7": { "kind": "cvd", "window": [-1500.0, 2500.0] },
+                "8": { "kind": "cvd", "window": [-1500.0, 2500.0] },
+                "99": { "window": [1.0, 2.0] },
+            });
+            store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
+            drop(first);
+
+            let again = window(&store);
+            let pane = again.focused_pane();
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "held as it was left");
+            assert_eq!(pane.view.held_strip_windows().get(&8), None, "an RSI took a cumulative delta's range");
+            again.save_workspace();
+            let written = stored()["books"][0]["panes"][0]["strip_windows"].clone();
+            let kept = serde_json::json!({ "7": { "kind": "cvd", "window": [-1500.0, 2500.0] } });
+            assert_eq!(written, kept, "only the strips the chart has");
+
+            // Other trading hours are another series: let go of, and so
+            // written down.
+            let other = match again.session() {
+                Session::Regular => Session::Extended,
+                _ => Session::Regular,
+            };
+            again.set_session(other);
+            assert!(pane.view.held_strip_windows().is_empty(), "held across other hours");
+            assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "written down held");
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
+            again.save_workspace();
+            assert_eq!(stored()["books"][0]["panes"][0]["strip_windows"], kept);
+
+            // Another symbol: let go of, and written down so.
+            let nq = again.index.find("NQ", None).expect("NQ");
+            again.show_in(&pane, nq);
+            let context = glib::MainContext::default();
+            for _ in 0..400 {
+                if pane.view.held_strip_windows().is_empty() {
+                    break;
+                }
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(pane.view.held_strip_windows().is_empty(), "held across another symbol");
+            assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "written down held");
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
+
+            let actions = again.trade.chart_actions.borrow().clone().expect("the chart's actions");
+            actions.activate_action("reset-view", None);
+            assert!(pane.view.held_strip_windows().is_empty(), "the reset let go of it");
+            assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "and nothing is written for it");
+        });
+    }
+
+    /// A strip written down as a bare bottom and top, before its kind was
+    /// kept, comes back held, for the kind of the indicator it is on, and is
+    /// written again with it.
+    #[test]
+    fn a_strip_written_without_its_kind_comes_back_for_the_indicator_it_is_on() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            first.save_workspace();
+            let stored = || -> serde_json::Value { serde_json::from_str(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap() };
+            let mut workspace = stored();
+            let chart = &mut workspace["books"][0]["panes"][0];
+            chart["indicators"] = serde_json::json!([Indicator::new(7, omacharts_engine::IndicatorKind::Cvd)]);
+            chart["strip_windows"] = serde_json::json!({ "7": [-1500.0, 2500.0] });
+            store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
+            drop(first);
+
+            let again = window(&store);
+            let pane = again.focused_pane();
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "the old shape not read");
+            assert_eq!(pane.view.held_strip_kinds().get(&7), Some(&omacharts_engine::IndicatorKind::Cvd), "held for no kind");
+            again.save_workspace();
+            let written = stored()["books"][0]["panes"][0]["strip_windows"].clone();
+            assert_eq!(written, serde_json::json!({ "7": { "kind": "cvd", "window": [-1500.0, 2500.0] } }));
+        });
+    }
+
+    /// What a chart's field this build cannot read leaves out is that field,
+    /// not the chartbooks: the window opens on the arrangement written down.
+    #[test]
+    fn a_chart_field_that_will_not_read_leaves_the_chartbooks_open() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            first.save_workspace();
+            let stored = || -> serde_json::Value { serde_json::from_str(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap() };
+            let mut workspace = stored();
+            workspace["books"][0]["name"] = serde_json::json!("Energy");
+            let chart = &mut workspace["books"][0]["panes"][0];
+            chart["symbol"] = serde_json::json!("NQ");
+            chart["strip_windows"] = serde_json::json!("garbage");
+            store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
+            drop(first);
+
+            let again = window(&store);
+            assert_eq!(again.books.borrow()[0].name, "Energy", "opened on a new chartbook");
+            let pane = again.focused_pane();
+            assert_eq!(pane.instrument.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("NQ"));
+            assert!(pane.view.held_strip_windows().is_empty());
+        });
+    }
+
+    /// The defaults putting a chart on other trading hours let go of its
+    /// strips held on their own scale, as choosing the hours does: on screen
+    /// and in a book that is not.
+    #[test]
+    fn the_defaults_putting_a_chart_on_other_hours_let_go_of_its_strips() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            window.save_workspace();
+            let pane = window.focused_pane();
+            let same = window.session();
+            let other = match same {
+                Session::Regular => Session::Extended,
+                _ => Session::Regular,
+            };
+            let mut defaults = ChartDefaults::load(&store);
+            defaults.template = None;
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
+            defaults.session = same;
+            window.adopt_looks(&pane, &defaults);
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "let go of on the same hours");
+            defaults.session = other;
+            window.adopt_looks(&pane, &defaults);
+            assert_eq!(window.session(), other);
+            assert!(pane.view.held_strip_windows().is_empty(), "held across other hours");
+
+            // A book not on screen, changed where it is written.
+            let elsewhere = {
+                let mut book = window.books.borrow()[0].clone();
+                book.name = "Elsewhere".into();
+                book.panes[0].session = same.key().to_string();
+                book.panes[0].strip_windows.insert(7, StoredStrip { kind: None, window: [-1.0, 1.0] });
+                book
+            };
+            window.books.borrow_mut().push(elsewhere);
+            window.apply_chart_defaults_now(&defaults);
+            assert!(window.books.borrow()[1].panes[0].strip_windows.is_empty(), "held where it is written");
+        });
     }
 }
 
@@ -1912,12 +2181,14 @@ mod outside_change_tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
+            // A new chart opens on no template, with no volume pane of its own.
+            command(&window, &["chart", "indicator", "add", "volume"]);
             let volume = window
                 .indicators()
                 .iter()
                 .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
                 .map(|i| i.id)
-                .expect("a volume pane on a new chart");
+                .expect("a volume pane added");
             let opacity = || {
                 let indicators = window.indicators();
                 crate::ui::chart::volume_opacity(indicators.iter().find(|i| i.id == volume).unwrap())
@@ -1944,6 +2215,138 @@ mod outside_change_tests {
         });
     }
 
+    /// A volume profile's settings offer a colouring right under its
+    /// calculation method while it measures the delta, and none for the
+    /// total; picking one paints the delta in it.
+    #[test]
+    fn a_delta_profile_offers_a_colouring_under_its_method() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            // Read again after each change: a change can rebuild the page.
+            let rows = || {
+                let method = titled::<adw::ComboRow>(&window, "Calculation method").pop().expect("the method row");
+                let colouring = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring row");
+                (method, colouring)
+            };
+            // Its own switch rather than whether it is drawn: the dialog is
+            // never shown here.
+            let shown = |row: &adw::ComboRow| row.property::<bool>("visible");
+            let (method, row) = rows();
+            assert!(!shown(&row), "a total has no colouring");
+            assert_eq!(method.next_sibling().as_ref(), Some(row.upcast_ref()), "right under the method");
+
+            method.set_selected(1);
+            let (method, row) = rows();
+            assert_eq!(method.selected(), 1);
+            assert!(shown(&row), "a delta has one");
+            assert_eq!(method.next_sibling().as_ref(), Some(row.upcast_ref()), "right under the method");
+            assert_eq!(row.selected(), 0, "the default, to begin with");
+            let names: Vec<String> = (0..row.model().map_or(0, |m| m.n_items()))
+                .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
+                .collect();
+            assert_eq!(names, ["Default", "Vivid", "Soft", "Quiet"]);
+
+            row.set_selected(3);
+            let stored = window.indicators();
+            let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
+            assert!(
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { colouring: Some(BarColouring::Quiet), .. }),
+                "{params:?}"
+            );
+            let (method, row) = rows();
+            assert_eq!(row.selected(), 3, "shown as picked");
+            method.set_selected(0);
+            let (_, row) = rows();
+            assert!(!shown(&row), "hidden again for the total");
+        });
+    }
+
+    /// A volume profile's settings show it in its last period only behind a
+    /// switch under its reset period, off to begin with, on either method.
+    #[test]
+    fn a_profile_is_shown_in_its_last_period_only_from_its_settings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            let label = crate::ui::chart_settings::PROFILE_LAST_ONLY_LABEL;
+            let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
+            let reset = || titled::<adw::ComboRow>(&window, "Reset every").pop().expect("the reset");
+            let last_only = || {
+                let stored = window.indicators();
+                let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { last_only: true, .. })
+            };
+            assert!(!switch().is_active() && !last_only(), "off to begin with");
+            assert_eq!(reset().next_sibling().as_ref(), Some(switch().upcast_ref()), "under the reset");
+
+            for method in ["total", "delta"] {
+                command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
+                switch().set_active(true);
+                assert!(last_only(), "on on {method}");
+                switch().set_active(false);
+                assert!(!last_only(), "off again on {method}");
+            }
+        });
+    }
+
+    /// A volume profile's settings draw its point of control behind a switch
+    /// that is on to begin with; off greys its colour and thickness and
+    /// stops it being drawn, whatever the method.
+    #[test]
+    fn a_profile_s_point_of_control_is_switched_from_its_settings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            let label = crate::ui::chart_settings::PROFILE_POC_LABEL;
+            let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
+            let colour = || titled::<adw::ActionRow>(&window, "Point of control").pop().expect("its colour");
+            let width = || titled::<adw::SpinRow>(&window, "Point of control thickness").pop().expect("its thickness");
+            let drawn = || {
+                let stored = window.indicators();
+                let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
+                matches!(params, omacharts_engine::indicators::Params::VolumeProfile { poc: true, .. })
+            };
+            assert!(switch().is_active() && drawn(), "on to begin with");
+            assert!(colour().is_sensitive() && width().is_sensitive());
+            assert_eq!(switch().next_sibling().as_ref(), Some(colour().upcast_ref()), "above its colour");
+
+            for method in ["total", "delta"] {
+                command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
+                switch().set_active(false);
+                assert!(!drawn(), "off on {method}");
+                assert!(!colour().is_sensitive() && !width().is_sensitive(), "greyed on {method}");
+                switch().set_active(true);
+                assert!(drawn(), "on again on {method}");
+                assert!(colour().is_sensitive() && width().is_sensitive());
+            }
+        });
+    }
+
     /// A chart's settings, open while a command changes its colouring, its
     /// switches and its volume pane's palette, show what the command did —
     /// and showing it changes nothing more.
@@ -1952,12 +2355,14 @@ mod outside_change_tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
+            // A new chart opens on no template, with no volume pane of its own.
+            command(&window, &["chart", "indicator", "add", "volume"]);
             let volume = window
                 .indicators()
                 .iter()
                 .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
                 .map(|i| i.id)
-                .expect("a volume pane on a new chart");
+                .expect("a volume pane added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
             let colourings = titled::<adw::ComboRow>(&window, "Colouring");
             assert_eq!(colourings.len(), 2, "the chart's and the volume pane's");
@@ -1992,6 +2397,144 @@ mod outside_change_tests {
             );
         });
     }
+
+    /// The names a combo row offers, in order.
+    fn offered(row: &adw::ComboRow) -> Vec<String> {
+        (0..row.model().map_or(0, |m| m.n_items()))
+            .filter_map(|at| row.model()?.item(at)?.downcast::<gtk::StringObject>().ok().map(|s| s.string().to_string()))
+            .collect()
+    }
+
+    /// A volume pane's Colouring is the delta profile's: Default first, which
+    /// is the chart's own as it always was, then the three that tell a rise
+    /// from a fall.
+    #[test]
+    fn a_volume_pane_offers_the_delta_profiles_colourings() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume"]);
+            let volume = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
+                .map(|i| i.id)
+                .expect("a volume pane added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
+            let strip = titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the volume pane's");
+            assert_eq!(offered(&strip), ["Default", "Vivid", "Soft", "Quiet"]);
+            assert_eq!(strip.selected(), 0, "the chart's own, to begin with");
+        });
+    }
+
+    /// A cumulative delta's settings: when it resets, with Never last; candles
+    /// or a line, the line's own rows offered only for a line, by a command
+    /// too; its colouring;
+    /// and, on a feed with no bid and ask volume, one line saying it is
+    /// estimated.
+    #[test]
+    fn a_cumulative_delta_is_set_up_from_its_settings() {
+        use omacharts_engine::indicators::{cvd, Params};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            // Intraday, so the session is a period it can be drawn by.
+            command(&window, &["chart", "set", "--resolution", "5m"]);
+            command(&window, &["chart", "indicator", "add", "cvd"]);
+            let cvd = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Cvd)
+                .map(|i| i.id)
+                .expect("a cumulative delta added");
+            let params = || window.indicators().iter().find(|i| i.id == cvd).expect("the delta").params.clone();
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, cvd);
+            // Read again after each change: a change can rebuild the page.
+            let reset = || titled::<adw::ComboRow>(&window, "Reset every").pop().expect("the reset");
+            let style = || {
+                titled::<adw::ComboRow>(&window, "Style")
+                    .into_iter()
+                    .filter(|row| offered(row) == ["Candles", "Line"])
+                    .last()
+                    .expect("the style row")
+            };
+            let colouring = || titled::<adw::ComboRow>(&window, "Colouring").pop().expect("the colouring");
+
+            let names = offered(&reset());
+            assert_eq!(names.last().map(String::as_str), Some(cvd::NEVER));
+            assert_eq!(names[reset().selected() as usize], "Session", "the session, to begin with");
+            assert_eq!(style().selected(), 0);
+            assert_eq!(offered(&colouring()), ["Default", "Vivid", "Soft", "Quiet"]);
+
+            let group = reset().ancestor(adw::PreferencesGroup::static_type()).and_downcast::<adw::PreferencesGroup>();
+            let said = group.and_then(|g| g.description()).map(|d| d.to_string());
+            assert_eq!(said.as_deref(), Some(crate::ui::chart_settings::CVD_ESTIMATED), "a chart with no ladders");
+
+            let line_shown = || {
+                rows::<adw::PreferencesGroup>(window.window.upcast_ref())
+                    .into_iter()
+                    .find(|group| group.title() == "Line")
+                    .expect("the line's group")
+                    .property::<bool>("visible")
+            };
+            assert!(!line_shown(), "candles have no line to set");
+
+            let never = reset().model().map_or(0, |m| m.n_items()) - 1;
+            reset().set_selected(never);
+            assert!(matches!(params(), Params::Cvd { reset: None, .. }), "{:?}", params());
+            style().set_selected(1);
+            assert!(matches!(params(), Params::Cvd { style: cvd::Style::Line, .. }), "{:?}", params());
+            assert!(line_shown(), "a line's own rows");
+            colouring().set_selected(2);
+            assert!(matches!(params(), Params::Cvd { colouring: Some(BarColouring::Soft), .. }), "{:?}", params());
+
+            // The line's rows follow a command that draws it as candles again.
+            command(&window, &["chart", "indicator", "set", "cvd", "--cvd-style", "candles"]);
+            assert!(!line_shown(), "the line's rows stayed for candles");
+        });
+    }
+}
+
+/// The Reset every row of an indicator's menu: the periods, the one being
+/// drawn ringed, and with `never` a last button for never starting again,
+/// which only a cumulative delta has.
+fn reset_strip(
+    pane: &ChartPane,
+    presets: &gio::Menu,
+    rows: &mut Vec<(String, gtk::Widget)>,
+    current: Option<Reset>,
+    never: bool,
+) {
+    let item = gio::MenuItem::new(Some("Reset every"), None);
+    item.set_attribute_value("custom", Some(&"reset".to_variant()));
+    presets.append_item(&item);
+    // Ringed is the period being drawn: a chosen one the chart is
+    // too coarse for is drawn as another, and that is the one in use.
+    let timeframe = pane.timeframe.get();
+    let in_use = current.map(|reset| reset.effective_for(timeframe));
+    let mut choices: Vec<(String, glib::Variant, bool)> =
+        Reset::ALL.iter().map(|r| (r.label().to_string(), r.key().to_variant(), Some(*r) == in_use)).collect();
+    if never {
+        choices.push((omacharts_engine::indicators::cvd::NEVER.to_string(), "never".to_variant(), in_use.is_none()));
+    }
+    let strip = choice_strip(&choices, "chart.indicator-reset", "Reset every");
+    // A period the chart is too coarse for would be promoted to
+    // another the moment it was picked: greyed, and saying why,
+    // rather than a button that seems to do nothing.
+    let mut child = strip.first_child();
+    for period in Reset::ALL {
+        let Some(button) = child else { break };
+        if !period.is_meaningful_for(timeframe) {
+            button.set_sensitive(false);
+            button.set_tooltip_text(Some(&format!(
+                "Too few {} bars in a {} to draw it",
+                timeframe.label(),
+                period.label().to_lowercase()
+            )));
+        }
+        child = button.next_sibling();
+    }
+    rows.push(("reset".to_string(), strip));
 }
 
 /// Does this watchlist hold that symbol?
@@ -2402,6 +2945,22 @@ struct StoredPane {
     /// this was remembered, and every one of those was fitting itself.
     #[serde(default = "fits_itself")]
     auto_scale: bool,
+    /// The prices a held price axis shows, bottom and top, so a restart
+    /// brings back the zoom and the shift it was left at rather than a fresh
+    /// fit of the live edge. Prices, not a zoom on the bars, because the
+    /// bars on screen after a restart are not the ones that were: the prices
+    /// somebody zoomed to are what they were looking at. Missing on a chart
+    /// that fits itself, and on one written before this was remembered,
+    /// which holds the fit it is first drawn with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_window: Option<[f64; 2]>,
+    /// The strips zoomed or dragged on their own scale, by the indicator
+    /// they draw, each with the values its bottom and top show, so a restart
+    /// brings them back as the price's held window does. A strip not named
+    /// fits itself; missing on a chart none of whose strips was zoomed, and
+    /// on one written before they could be.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    strip_windows: std::collections::BTreeMap<u32, StoredStrip>,
     /// Whether the price axis is logarithmic. Missing from a chart written
     /// before it could be, and every one of those was linear.
     #[serde(default)]
@@ -2452,6 +3011,89 @@ struct StoredPane {
     /// of its template, which is every chart until somebody picks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trading_size: Option<crate::trading::sizes::Picked>,
+    /// What this chart's orders go to when it is not what it charts, by
+    /// symbol and suffix, as `symbol` and `suffix` name what it charts.
+    /// Missing for a chart that trades what it charts, which is every chart
+    /// until somebody sets one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trading_symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trading_suffix: Option<String>,
+}
+
+impl StoredPane {
+    /// A chart with nothing in it, written down: what stands in for a
+    /// field of a stored one while the others are tried. See [`mend`].
+    fn blank() -> StoredPane {
+        StoredPane {
+            id: 0,
+            title: None,
+            symbol: String::new(),
+            suffix: None,
+            timeframe: String::new(),
+            indicators: Vec::new(),
+            template: None,
+            bar_style: String::new(),
+            bars_hidden: false,
+            colouring: None,
+            swapped: None,
+            hollow_up: None,
+            ohlc_thickness: None,
+            session: String::new(),
+            show_grid: true,
+            link: LinkMode::default(),
+            auto_scale: true,
+            price_window: None,
+            strip_windows: Default::default(),
+            log_scale: false,
+            indicators_shown: true,
+            drawings_shown: true,
+            shows_drawings: true,
+            sends_drawings: true,
+            drawing_uid: String::new(),
+            drawings: Vec::new(),
+            profile_merges: Vec::new(),
+            source: None,
+            account: None,
+            trading_size: None,
+            trading_symbol: None,
+            trading_suffix: None,
+        }
+    }
+}
+
+/// A strip held on its own scale, as written down: the values its bottom
+/// and top show, and the kind of indicator it was held for, so that another
+/// kind given its id later fits itself rather than take it on.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(from = "StripShape")]
+struct StoredStrip {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<omacharts_engine::IndicatorKind>,
+    window: [f64; 2],
+}
+
+/// A held strip as either shape has written it: with its kind, or as the
+/// bare bottom and top a build before kinds were kept wrote, whose kind is
+/// then the indicator's it is brought back on.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StripShape {
+    Held {
+        #[serde(default)]
+        kind: Option<omacharts_engine::IndicatorKind>,
+        window: [f64; 2],
+    },
+    Window([f64; 2]),
+}
+
+impl From<StripShape> for StoredStrip {
+    fn from(shape: StripShape) -> StoredStrip {
+        match shape {
+            StripShape::Held { kind, window } => StoredStrip { kind, window },
+            StripShape::Window(window) => StoredStrip { kind: None, window },
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -2524,6 +3166,23 @@ struct Chartbook {
     book_template: Option<u32>,
 }
 
+impl Chartbook {
+    /// A book with nothing in it, written down. See [`mend`].
+    fn blank() -> Chartbook {
+        Chartbook {
+            name: String::new(),
+            layout: Node::leaf(0),
+            focused: 0,
+            panes: Vec::new(),
+            watchlist: None,
+            sidebar_shown: None,
+            sidebar_width: None,
+            maximized: None,
+            book_template: None,
+        }
+    }
+}
+
 /// Everything the window had open, as one stored value.
 ///
 /// `Workspace` used to be a single arrangement, which is what `Chartbook` is
@@ -2541,6 +3200,23 @@ fn hundredths(change_pct: f64) -> i64 {
 
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
+/// The feed's latest trade when the chart's session leaves it out of the
+/// bars drawn, a chart of the regular session out of hours: the price is
+/// the price whatever candles are shown, so the last price follows it.
+/// `None` when the last bar is one the chart draws. One bar through the
+/// session's filter, so nothing here grows with the series.
+fn hidden_latest(
+    bars: &[omacharts_engine::Bar],
+    session: omacharts_engine::Session,
+    instrument: &Instrument,
+    timeframe: Timeframe,
+) -> Option<f64> {
+    let newest = bars.last()?;
+    omacharts_engine::session::filter(std::slice::from_ref(newest), session, instrument, timeframe.is_intraday())
+        .is_empty()
+        .then_some(newest.close)
+}
+
 fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
     pane.colouring.get().scheme(theme).worn(pane.swapped.get(), pane.hollow_up.get())
 }
@@ -2646,14 +3322,149 @@ fn shifted(active: usize, from: usize, to: usize) -> usize {
 ///
 /// The two shapes cannot be confused for each other: the old one has no
 /// `books`, and the new one has no `layout`.
+///
+/// A part this build cannot read is left out and said in the Log, not the
+/// whole of it: a field of a chart or a book written by another build, or
+/// one entry of a list or a map in it, goes, and the rest is read. Only a
+/// chart that cannot be read without what was left out — its symbol, its
+/// id — takes its book with it, since the book's layout names it. Leaving
+/// the whole arrangement unread instead would open the window on one new
+/// chart, and its next save would write that over every chartbook.
 fn parse_workspace(json: &str) -> Option<Workspace> {
-    serde_json::from_str::<Workspace>(json)
+    let mut value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut left_out = Vec::new();
+    mend_workspace(&mut value, &mut left_out);
+    for part in left_out {
+        omacharts_engine::log::global()
+            .add(omacharts_engine::log::Entry::warning("Chartbooks", format!("Left out of the saved chartbooks, as it could not be read: {part}")));
+    }
+    serde_json::from_value::<Workspace>(value.clone())
         .ok()
         .filter(|workspace| !workspace.books.is_empty())
         .or_else(|| {
-            let book = serde_json::from_str::<Chartbook>(json).ok()?;
+            let book = serde_json::from_value::<Chartbook>(value).ok()?;
             Some(Workspace { books: vec![book], active: 0 })
         })
+}
+
+/// Take out of a stored arrangement, in place, what this build cannot read
+/// of it, each part left out named in `left_out`. See [`parse_workspace`].
+fn mend_workspace(value: &mut serde_json::Value, left_out: &mut Vec<String>) {
+    // The arrangement from before chartbooks is one book at the top level.
+    if value.get("books").is_none() {
+        mend_book(value, left_out);
+        return;
+    }
+    if let Some(books) = value["books"].as_array_mut() {
+        books.retain_mut(|book| mend_book(book, left_out));
+    }
+    let blank = serde_json::json!({ "books": [], "active": 0 });
+    mend::<Workspace>(value, &blank, "the chartbooks", left_out);
+}
+
+/// [`mend_workspace`] for one book: `false` when it cannot be read even so.
+fn mend_book(book: &mut serde_json::Value, left_out: &mut Vec<String>) -> bool {
+    let name = book.get("name").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+    let named = match name.is_empty() {
+        true => "a chartbook".to_string(),
+        false => format!("chartbook \u{201c}{name}\u{201d}"),
+    };
+    let blank_pane = serde_json::to_value(StoredPane::blank()).expect("a chart is written down");
+    if let Some(panes) = book.get_mut("panes").and_then(serde_json::Value::as_array_mut) {
+        for pane in panes {
+            let symbol = pane.get("symbol").and_then(serde_json::Value::as_str).unwrap_or("?").to_string();
+            if !mend::<StoredPane>(pane, &blank_pane, &format!("the {symbol} chart in {named}"), left_out) {
+                left_out.push(format!("{named}, whose {symbol} chart it cannot be rebuilt without"));
+                return false;
+            }
+        }
+    }
+    let blank = serde_json::to_value(Chartbook::blank()).expect("a chartbook is written down");
+    let read = mend::<Chartbook>(book, &blank, &named, left_out);
+    if !read {
+        left_out.push(named);
+    }
+    read
+}
+
+/// Make `value` read as a `T`, leaving out what of it does not: each field
+/// that will not read is taken out, so it is read as one written without it,
+/// and a list or a map that will not is kept but for the entries that will
+/// not. `blank`, a `T` written down, stands in for what a field needs while
+/// the others are tried. `false` when it does not read even so: a field it
+/// cannot do without is missing or would not read, or it is not an object.
+fn mend<T: serde::de::DeserializeOwned>(value: &mut serde_json::Value, blank: &serde_json::Value, what: &str, left_out: &mut Vec<String>) -> bool {
+    use serde_json::{Map, Value};
+    if serde_json::from_value::<T>(value.clone()).is_ok() {
+        return true;
+    }
+    let (Some(stored), Some(blank)) = (value.as_object(), blank.as_object()) else { return false };
+    let reads = |object: &Map<String, Value>| serde_json::from_value::<T>(Value::Object(object.clone())).is_ok();
+    let mut mended = blank.clone();
+    let mut bad = Vec::new();
+    for (key, field) in stored {
+        let was = mended.insert(key.clone(), field.clone());
+        if reads(&mended) {
+            continue;
+        }
+        // A list or a map read entry by entry, where an empty one reads.
+        let mut parts = Vec::new();
+        let piecewise = match field {
+            Value::Array(entries) => {
+                mended.insert(key.clone(), Value::Array(Vec::new()));
+                reads(&mended).then(|| {
+                    for (at, entry) in entries.iter().enumerate() {
+                        let Some(Value::Array(kept)) = mended.get_mut(key) else { unreachable!() };
+                        kept.push(entry.clone());
+                        if !reads(&mended) {
+                            let Some(Value::Array(kept)) = mended.get_mut(key) else { unreachable!() };
+                            kept.pop();
+                            parts.push(format!("{key}[{at}]"));
+                        }
+                    }
+                })
+            }
+            Value::Object(entries) => {
+                mended.insert(key.clone(), Value::Object(Map::new()));
+                reads(&mended).then(|| {
+                    for (name, entry) in entries {
+                        let Some(Value::Object(kept)) = mended.get_mut(key) else { unreachable!() };
+                        kept.insert(name.clone(), entry.clone());
+                        if !reads(&mended) {
+                            let Some(Value::Object(kept)) = mended.get_mut(key) else { unreachable!() };
+                            kept.remove(name);
+                            parts.push(format!("{key}.{name}"));
+                        }
+                    }
+                })
+            }
+            _ => None,
+        };
+        match piecewise {
+            Some(()) => bad.extend(parts),
+            None => {
+                match was {
+                    Some(stand_in) => mended.insert(key.clone(), stand_in),
+                    None => mended.remove(key),
+                };
+                bad.push(key.clone());
+            }
+        }
+    }
+    // What was left out, and what it was written without, are read as a
+    // field missing is; one it cannot do without leaves it unread.
+    for key in blank.keys() {
+        let missing = !stored.contains_key(key) || bad.contains(key);
+        if missing && mended.remove(key).is_some() && !reads(&mended) {
+            return false;
+        }
+    }
+    if !reads(&mended) {
+        return false;
+    }
+    left_out.extend(bad.into_iter().map(|part| format!("{part} of {what}")));
+    *value = Value::Object(mended);
+    true
 }
 
 /// Turn the link groups a stored arrangement may still carry into modes, in
@@ -2948,7 +3759,7 @@ pub struct Window {
     /// replaces it, in order. Which of them serves a chart is
     /// [`Window::route`]'s to say.
     feeds: RefCell<Vec<Rc<Feed>>>,
-    /// Every broker login's trading session, at most one each, kept for the
+    /// Every trading service login's trading session, at most one each, kept for the
     /// life of the window.
     desk: Rc<crate::trading::Desk>,
     /// The logins and accounts, as Trading last stored them, for the
@@ -3000,6 +3811,10 @@ impl Window {
         // a login may have only one of; any other passes such a feed over
         // rather than open a second. A flag: no feed is built by setting it.
         omacharts_engine::providers::serve_from_here();
+        // The flags first: a feed behind one, Sierra Chart's, is no feed at
+        // all to the order until they are read, and the window would open on
+        // the feeds under it.
+        crate::features::adopt(&store);
         let feeds = crate::feeds::ordered(&store).into_iter().map(Arc::from).collect();
         Window::build_with(app, store, feeds)
     }
@@ -3127,6 +3942,7 @@ impl Window {
         this.watch_trading();
         this.watch_log();
         this.sign_in_after_first_frame();
+        this.update_after_first_frame();
         let watchlist = this.build_watchlist();
         // Which list the rail is showing is part of the chartbook, so every
         // way of changing it has to write the book down. One hook, because a
@@ -3347,6 +4163,8 @@ impl Window {
         pane.colouring.set(look.colouring);
         pane.swapped.set(look.swapped);
         pane.hollow_up.set(look.hollow_up);
+        let (house, swapped) = self.house_look();
+        pane.view.set_house_look(house, swapped);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -3582,9 +4400,10 @@ impl Window {
             }
         });
 
-        // A drag or a wheel on the price axis takes the scale off automatic
-        // inside the chart, where nothing is written down. It is a setting
-        // like the gridlines, so it is stored the way they are.
+        // A drag or a wheel on the price axis takes the scale off automatic,
+        // or moves a held one, inside the chart, where nothing is written
+        // down. It is a setting like the gridlines, so it is stored the way
+        // they are, once the wheel or the drag stops.
         let scaler = self.clone();
         pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
 
@@ -4376,31 +5195,38 @@ impl Window {
         }
     }
 
-    /// The Account part's menu, for the chart `id` as it is now: the
-    /// accounts, a mark on the chart's own, and an account's trouble after
-    /// its name, only when it has some.
+    /// The Account part's menu, for the chart `id` as it is now: each
+    /// trading service, its login, a heading with its trouble after its
+    /// name, only when it has some, and its accounts by number under it,
+    /// a mark on the chart's own. Picking an account picks its service.
     fn account_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
         let menu = gio::Menu::new();
         let Some(pane) = self.pane(id) else { return menu };
         let view = self.trading.borrow().clone();
         let account = view.account_of(pane.account.borrow().as_deref()).cloned();
         Self::mark_choice(&pane, "account", account.map(|account| account.key()).unwrap_or_default().to_variant());
-        for listed in &view.accounts {
-            let name = view.account_name(listed);
-            let label = match view.trouble(&self.desk, listed) {
-                Some(trouble) => format!("{name} · {trouble}"),
-                None => name,
+        for login in &view.logins {
+            let theirs: Vec<&crate::trading::Account> =
+                view.accounts.iter().filter(|listed| listed.login == login.id).collect();
+            let Some(first) = theirs.first() else { continue };
+            let heading = match view.trouble(&self.desk, first) {
+                Some(trouble) => format!("{} · {trouble}", login.name),
+                None => login.name.clone(),
             };
-            let item = gio::MenuItem::new(Some(&label), None);
-            item.set_action_and_target_value(Some("pane.account"), Some(&listed.key().to_variant()));
-            menu.append_item(&item);
+            let section = gio::Menu::new();
+            for listed in theirs {
+                let item = gio::MenuItem::new(Some(&listed.id), None);
+                item.set_action_and_target_value(Some("pane.account"), Some(&listed.key().to_variant()));
+                section.append_item(&item);
+            }
+            menu.append_section(Some(&heading), &section);
         }
         menu
     }
 
     /// The chart `id` on the account with the key `key`. Choosing the
-    /// default stores nothing, so the chart keeps following it; choosing
-    /// another account forgets the chart's feed.
+    /// default stores nothing, so the chart keeps following it; the chart's
+    /// feed is left as it was.
     fn pick_account(self: &Rc<Self>, id: u32, key: &str) {
         let Some(pane) = self.pane(id) else { return };
         let (current, default_account) = {
@@ -4441,7 +5267,7 @@ impl Window {
         serving.sort_by_key(|feed| Some(feed.provider.id()) != default);
         let in_force = match self.route_chosen(pane, instrument) {
             Some(Ok(routed) | Err(routed)) => Some(routed.feed.provider.id()),
-            None => None,
+            None => self.missing_from(pane, instrument).map(|feed| feed.provider.id()),
         };
         (serving, default, in_force)
     }
@@ -4595,7 +5421,37 @@ impl Window {
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
+                    // One still to be found is written back as it was kept.
+                    trading_symbol: pane
+                        .trading_symbol
+                        .borrow()
+                        .as_ref()
+                        .map(|traded| traded.symbol.clone())
+                        .or_else(|| pane.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())),
+                    trading_suffix: match pane.trading_symbol.borrow().as_ref() {
+                        Some(traded) => traded.suffix.clone(),
+                        None => pane.trading_pending.borrow().as_ref().and_then(|(_, suffix)| suffix.clone()),
+                    },
                     auto_scale: pane.view.price_auto(),
+                    price_window: pane.view.held_price_window().map(|(low, high)| [low, high]),
+                    // Only the strips of indicators the chart still has: one
+                    // removed, or gone with a template, takes its zoom along.
+                    strip_windows: {
+                        let kinds = pane.view.held_strip_kinds();
+                        let indicators = pane.indicators.borrow();
+                        pane.view
+                            .held_strip_windows()
+                            .into_iter()
+                            .filter_map(|(id, (low, high))| {
+                                let kind = indicators.iter().find(|indicator| indicator.id == id)?.kind;
+                                // Held for another kind than the chart has under its id now.
+                                if kinds.get(&id).is_some_and(|held| *held != kind) {
+                                    return None;
+                                }
+                                Some((id, StoredStrip { kind: Some(kind), window: [low, high] }))
+                            })
+                            .collect()
+                    },
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
                     drawings_shown: pane.view.show_drawings(),
@@ -4747,6 +5603,20 @@ impl Window {
         self.backfill();
     }
 
+    /// Whether the focused chart's feed has volume at price for it: bid and
+    /// ask volume a cumulative delta can be read from rather than estimated.
+    pub fn focused_pane_has_ladders(&self) -> bool {
+        self.focused_pane().ladders.borrow().is_some()
+    }
+
+    /// The colouring chosen in Preferences, and whether it is worn the other
+    /// way round: what a delta profile or a cumulative delta with no
+    /// colouring of its own is painted in, on every chart.
+    pub fn house_look(&self) -> (BarColouring, bool) {
+        let theming = self.theming.borrow();
+        (theming.colouring(), theming.swapped())
+    }
+
     /// Adopt a theme or bar scheme chosen outside this window, and repaint.
     ///
     /// `restyle` paints from the `Theming` this process is holding, so without
@@ -4833,7 +5703,29 @@ impl Window {
             *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
+            // The window opens on the curated half, which may not name it:
+            // then it waits for the rest, as the chart's own symbol does,
+            // and nothing is traded meanwhile.
+            if let Some(symbol) = stored.trading_symbol.as_deref() {
+                match self.index.find(symbol, stored.trading_suffix.as_deref()) {
+                    Some(traded) => *pane.trading_symbol.borrow_mut() = Some(traded),
+                    None => *pane.trading_pending.borrow_mut() = Some((symbol.to_string(), stored.trading_suffix.clone())),
+                }
+            }
             pane.view.set_price_auto(stored.auto_scale);
+            if let (false, Some([low, high])) = (stored.auto_scale, stored.price_window) {
+                pane.view.hold_price_window(low, high);
+            }
+            for (id, strip) in &stored.strip_windows {
+                // Only for the kind of indicator it was held for, should a
+                // template have put another under its id.
+                let now = pane.indicators.borrow().iter().find(|indicator| indicator.id == *id).map(|indicator| indicator.kind);
+                if strip.kind.is_some_and(|kind| now != Some(kind)) {
+                    continue;
+                }
+                let [low, high] = strip.window;
+                pane.view.hold_strip_window(*id, strip.kind, low, high);
+            }
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
             pane.view.set_bars_hidden(stored.bars_hidden);
@@ -4918,6 +5810,23 @@ impl Window {
             })
             .collect();
         let mut charted = false;
+        // Trading symbols first, so that a chart charted below is judged
+        // against the one it trades.
+        let trading: Vec<Rc<ChartPane>> =
+            self.panes.borrow().iter().filter(|pane| pane.trading_pending.borrow().is_some()).cloned().collect();
+        for pane in trading {
+            let Some((symbol, suffix)) = pane.trading_pending.borrow().clone() else { continue };
+            let Some(traded) = self.index.find(&symbol, suffix.as_deref()) else { continue };
+            pane.trading_pending.replace(None);
+            let charted_now = pane.instrument.borrow().clone();
+            match charted_now {
+                Some(instrument) if !instrument.tracks(&traded) => {}
+                _ => *pane.trading_symbol.borrow_mut() = Some(traded),
+            }
+            pane.write_readout();
+            self.apply_marks_to(&pane);
+            charted = true;
+        }
         for (pane, symbol, suffix) in waiting {
             if let Some(instrument) = self.index.find(&symbol, suffix.as_deref()) {
                 self.show_in(&pane, instrument);
@@ -6825,8 +7734,10 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             bar.restyle();
         }
+        let (house, swapped) = self.house_look();
         for pane in self.panes.borrow().iter() {
             pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+            pane.view.set_house_look(house, swapped);
             self.apply_marks_to(pane);
             // The colour is the theme's answer about the mode, which has just
             // changed.
@@ -6847,6 +7758,23 @@ impl Window {
 
     fn open_search(self: &Rc<Self>) {
         self.open_search_with("");
+    }
+
+    /// The symbol picker, for what chart `id` trades instead of what it
+    /// charts.
+    pub fn find_trading_symbol(self: &Rc<Self>, id: u32) {
+        let this = self.clone();
+        // Over the chart settings it is asked from, which hold the keyboard.
+        let from: gtk::Widget = self.window.visible_dialog().map_or_else(|| self.window.clone().upcast(), |dialog| dialog.upcast());
+        let over = Over::window(&from, crate::ui::chart_settings::TRADING_SYMBOL_LABEL);
+        // What a trading service takes an order on, futures and their months,
+        // whether or not one is signed in to say so yet.
+        let signed_in = self.trading.borrow().logins.iter().any(|login| self.desk.session(&login.id).is_some());
+        let note = (!signed_in).then_some("No trading service is signed in");
+        // Only what tracks what it charts: its own root's months, its micro
+        // or its full-size contract.
+        let charted = self.pane(id).and_then(|pane| pane.instrument.borrow().clone());
+        self.search.present_futures(over, note, charted, move |instrument| this.set_trading_symbol(id, Some(instrument)));
     }
 
     /// Over the focused chart, which is the one a pick changes.
@@ -7266,6 +8194,13 @@ impl Window {
     /// in the background.
     fn show_in(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
         let timeframe = pane.timeframe.get();
+        Self::own_size(pane);
+        // What it trades instead goes with what it charted, unless it
+        // tracks the new one too: NQ charted where ES was must not go on
+        // trading MES at NQ's prices.
+        if self.drop_trading_symbol_unless(pane, &instrument) {
+            self.save_soon();
+        }
         // A chart moved to something its chosen feed has no name for, or
         // whose feed has gone from the order, follows the order again.
         if self.settle_feed(pane, &instrument) {
@@ -7284,11 +8219,15 @@ impl Window {
                 return;
             }
             None => {
-                self.show_unserved(pane, instrument);
+                match self.missing_from(pane, &instrument) {
+                    Some(feed) => self.show_missing(pane, instrument, &feed),
+                    None => self.show_unserved(pane, instrument),
+                }
                 return;
             }
         };
         let key = routed.key();
+        pane.served.replace(Some(key.clone()));
         let Routed { feed, symbol, passed } = routed;
         let native = timeframe.native();
         // Whatever this chart streamed from another feed, it is this one's now.
@@ -7436,6 +8375,7 @@ impl Window {
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
         self.write_feed_of(pane, None, &[]);
+        pane.served.replace(None);
         // Whatever this chart was streaming, it is not showing it now.
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
@@ -7456,6 +8396,40 @@ impl Window {
         pane.set_feed_phase(pane::FeedPhase::Lost(FetchFailure::Unserved));
     }
 
+    /// Chart an instrument on the feed somebody chose for it, which could
+    /// chart it and has nothing of it: Sierra Chart chosen for MES, with no
+    /// files of MES. The choice stays, and the chart says plainly why it is
+    /// empty, rather than moving to another feed nobody chose.
+    fn show_missing(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument, feed: &Rc<Feed>) {
+        let timeframe = pane.timeframe.get();
+        *pane.instrument.borrow_mut() = Some(instrument.clone());
+        self.apply_marks_to(pane);
+        *pane.pending.borrow_mut() = None;
+        pane.write_readout();
+        self.write_header_of(pane);
+        self.write_account_of(pane);
+        let part = self.feed_part_of(pane, |part| {
+            part.label = Some(feed.provider.label().to_string());
+            part.refused = Some(format!("no {} in its data", instrument.symbol));
+        });
+        pane.write_feed(part);
+        pane.served.replace(None);
+        self.release_pane(pane.id);
+        if pane.id == self.focused.get() {
+            self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
+            self.store
+                .set_setting(LAST_SUFFIX, instrument.suffix.as_deref().unwrap_or(""));
+            if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+                watchlist.highlight(&instrument);
+            }
+        }
+        let words = format!("{} isn't in {}'s data", instrument.symbol, feed.provider.label());
+        pane.view.set_series(instrument, timeframe, Vec::new());
+        pane.view.set_loading(false);
+        pane.view.set_trouble_saying(FetchFailure::Unserved, words);
+        pane.set_feed_phase(pane::FeedPhase::Lost(FetchFailure::Unserved));
+    }
+
     /// Chart an instrument on the feed somebody chose for it, which cannot
     /// be used: not signed in, or its session expired.
     ///
@@ -7472,6 +8446,7 @@ impl Window {
         pane.write_readout();
         self.write_header_of(pane);
         self.write_refused_feed(pane, &refused.feed);
+        pane.served.replace(None);
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
             self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
@@ -7942,6 +8917,7 @@ impl Window {
         // Then what nobody could have traded, left out or cut back: here,
         // on the way to the screen, and never where the bars are kept.
         omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
+        let latest = hidden_latest(&bars, pane.session.get(), instrument, timeframe);
         let bars = omacharts_engine::session::filter(
             &bars,
             pane.session.get(),
@@ -7964,7 +8940,14 @@ impl Window {
             }
             series.insert((key.to_string(), timeframe), bars.clone());
         }
+        let held = !pane.view.held_strip_windows().is_empty();
         pane.view.set_series(instrument.clone(), timeframe, (*bars).clone());
+        // Another symbol or timeframe lets go of the strips held on their own
+        // scale: written down so, rather than brought back after a restart.
+        if held && pane.view.held_strip_windows().is_empty() {
+            self.save_workspace();
+        }
+        pane.view.set_latest(latest);
         // Bars from a feed are when it has found the contract they are
         // from, which is what an order on the chart goes to: the marks can
         // be drawn from here, without waiting for the book to move.
@@ -7999,7 +8982,7 @@ impl Window {
     /// them over the series the chart already holds, borrowed from it — and
     /// a chart cannot be handed its indicators while it is lending its bars.
     fn drawn_indicators(
-        &self,
+        self: &Rc<Self>,
         pane: &Rc<ChartPane>,
         instrument: &Instrument,
         timeframe: Timeframe,
@@ -8012,7 +8995,41 @@ impl Window {
             instrument,
             timeframe,
             self.clock_for(instrument).zone,
-        );
+        )
+        .with_memos(Some(&pane.cvd_memos));
+        let ids: Vec<u32> = all.iter().map(|indicator| indicator.id).collect();
+        pane.cvd_memos.keep(&ids);
+        let drawn = self.compute_drawn(pane, instrument, timeframe, bars, &all, colors, &context);
+        // The legend marks a cumulative delta that is estimated anywhere,
+        // and is built again only when which ones are changes — after this
+        // computation, since the chart may be lending its bars to it.
+        let estimated: Vec<u32> =
+            drawn.iter().filter(|d| d.output.is_estimated()).map(|d| d.indicator.id).collect();
+        if *pane.estimated.borrow() != estimated {
+            *pane.estimated.borrow_mut() = estimated;
+            let (this, pane) = (Rc::downgrade(self), Rc::downgrade(pane));
+            glib::idle_add_local_once(move || {
+                if let (Some(this), Some(pane)) = (this.upgrade(), pane.upgrade()) {
+                    this.rebuild_legend_of(&pane);
+                }
+            });
+        }
+        drawn
+    }
+
+    /// [`Self::drawn_indicators`]'s computation, on the context it made.
+    #[allow(clippy::too_many_arguments)]
+    fn compute_drawn(
+        &self,
+        pane: &Rc<ChartPane>,
+        instrument: &Instrument,
+        timeframe: Timeframe,
+        bars: &[omacharts_engine::Bar],
+        all: &[Indicator],
+        colors: Vec<String>,
+        context: &omacharts_engine::indicators::Context,
+    ) -> Vec<Drawn> {
+        let context = *context;
         let merges = pane.profile_merges.borrow();
         let compute = |context: &omacharts_engine::indicators::Context| -> Vec<Drawn> {
             all.iter()
@@ -8123,10 +9140,9 @@ impl Window {
         glib::spawn_future_local(async move {
             while heard.recv().await.is_ok() {
                 let Some(this) = this.upgrade() else { return };
-                let before = this.routes_on_screen();
                 if providers::adopt_serving() {
                     this.say(crate::log_words::serving_changed());
-                    this.reroute(&before);
+                    this.reroute();
                 }
             }
         });
@@ -8146,8 +9162,14 @@ impl Window {
         let this = self.clone();
         let done = at_price.done();
         glib::spawn_future_local(async move {
-            while let Ok(done) = done.recv().await {
-                let panes = at_price.finished(done);
+            while let Ok(first) = done.recv().await {
+                // Whatever else is back by now goes in before the charts
+                // are worked out again, once: a scroll back asks a day of
+                // pieces at a time.
+                let mut panes = at_price.finished(first);
+                while let Ok(more) = done.try_recv() {
+                    panes.extend(at_price.finished(more));
+                }
                 this.recompute_panes(&panes);
             }
         });
@@ -8211,7 +9233,7 @@ impl Window {
     /// of ticks are in memory and nowhere else, and a feed's threads are
     /// still running. The same retirement a feed switch does, with nothing
     /// installed after it. Every trading session is signed out too, so a
-    /// closed app leaves nothing signed in at the broker, waiting no longer
+    /// closed app leaves nothing signed in at the trading service, waiting no longer
     /// than the data session does.
     fn wire_close(self: &Rc<Self>) {
         let this = self.clone();
@@ -8276,27 +9298,47 @@ impl Window {
     ///
     /// The feed is the one [`crate::trading::feed_of`] points the chart at
     /// — chosen for it, or its account's own — else the order's.
+    ///
+    /// `None` too when the chosen feed has nothing of the instrument, which
+    /// [`Window::missing_from`] names.
     fn route_chosen(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
+        let Some(chosen) = self.chosen_route(pane, instrument) else {
+            return self.route(instrument).map(Ok);
+        };
+        let feeds = self.feeds.borrow();
+        match chosen? {
+            providers::Chosen::Route(route) => {
+                let feed = feeds.get(route.at)?.clone();
+                let passed = route.passed.iter().filter_map(|at| feeds.get(*at).cloned()).collect();
+                Some(Ok(Routed { feed, symbol: route.symbol, passed }))
+            }
+            providers::Chosen::Refused { at, symbol } => {
+                Some(Err(Routed { feed: feeds.get(at)?.clone(), symbol, passed: Vec::new() }))
+            }
+            providers::Chosen::Missing { .. } => None,
+        }
+    }
+
+    /// The feed chosen for `pane` that could chart `instrument` and has
+    /// nothing of it: Sierra Chart chosen for MES with no files of MES.
+    fn missing_from(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Rc<Feed>> {
+        match self.chosen_route(pane, instrument)?? {
+            providers::Chosen::Missing { at } => self.feeds.borrow().get(at).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The engine's answer for `pane`'s chart of `instrument` on the feed
+    /// [`crate::trading::feed_of`] points it at; `None` when it points it
+    /// at none and the order decides.
+    fn chosen_route(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Option<providers::Chosen>> {
         let chosen_feed = pane.feed.borrow();
         let feeds = self.feeds.borrow();
         let usable = || feeds.iter().map(|feed| (feed.provider.as_ref() as &dyn Provider, feed.usable.get()));
         let view = self.trading.borrow();
         let account = view.account_of(pane.account.borrow().as_deref());
-        let chosen = crate::trading::feed_of(&view, account, chosen_feed.as_deref(), usable(), instrument);
-        if chosen.is_none() {
-            return self.route(instrument).map(Ok);
-        }
-        let route = providers::route_chosen(usable(), chosen, instrument)?;
-        Some(match route {
-            providers::Chosen::Route(route) => {
-                let feed = feeds.get(route.at)?.clone();
-                let passed = route.passed.iter().filter_map(|at| feeds.get(*at).cloned()).collect();
-                Ok(Routed { feed, symbol: route.symbol, passed })
-            }
-            providers::Chosen::Refused { at, symbol } => {
-                Err(Routed { feed: feeds.get(at)?.clone(), symbol, passed: Vec::new() })
-            }
-        })
+        let chosen = crate::trading::feed_of(&view, account, chosen_feed.as_deref(), usable(), instrument)?;
+        Some(providers::route_chosen(usable(), Some(chosen), instrument))
     }
 
     /// Drop a chart's chosen feed if it can no longer be chosen for
@@ -8333,19 +9375,95 @@ impl Window {
     }
 
     /// Put one chart on an account, or back on the default with `None`,
-    /// and say so in its header. The chart's feed is forgotten with the
-    /// account it was chosen on: it goes back to the new account's default.
+    /// and say so in its header. A feed chosen for the chart stays: what a
+    /// chart is drawn from and where its orders go are chosen apart, a
+    /// Sierra Chart feed under a Rithmic account as well as either alone. A
+    /// chart on no chosen feed follows the new account's default.
     fn choose_account(self: &Rc<Self>, id: u32, account: Option<String>) {
         let Some(pane) = self.pane(id) else { return };
         if *pane.account.borrow() == account {
             return;
         }
-        let before = self.routes_on_screen();
         pane.account.replace(account);
-        pane.feed.replace(None);
         self.apply_marks_to(&pane);
-        self.reroute(&before);
+        self.reroute();
         self.save_workspace();
+    }
+
+    /// What chart `id` trades instead of what it charts, if anything.
+    pub fn trading_symbol_of(&self, id: u32) -> Option<Instrument> {
+        self.pane(id).and_then(|pane| pane.trading_symbol.borrow().clone())
+    }
+
+    /// The trading symbol of chart `id` as its settings name it: the one
+    /// set, or the one kept with it that is still to be found.
+    pub fn trading_symbol_named(&self, id: u32) -> Option<String> {
+        let pane = self.pane(id)?;
+        let set = pane.trading_symbol.borrow().as_ref().map(|traded| traded.display_symbol());
+        set.or_else(|| pane.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone()))
+    }
+
+    /// A size picked before picks named their contract is the one `pane`
+    /// trades now, about to change: it is named so, and stays that
+    /// contract's rather than going on to the next, 10 MES never 10 ES.
+    fn own_size(pane: &ChartPane) {
+        let Some(traded) = pane.traded() else { return };
+        if let Some(picked) = pane.trading_size.borrow_mut().as_mut().filter(|picked| picked.contract.is_none()) {
+            picked.contract = Some(traded.root().to_string());
+        }
+    }
+
+    /// Forget what `pane` trades instead when it does not track
+    /// `instrument`, which it is about to chart. True when it did.
+    fn drop_trading_symbol_unless(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
+        let traded = pane.trading_symbol.borrow().clone();
+        let stale = traded.is_some_and(|traded| !instrument.tracks(&traded));
+        // One still to be found is judged by its root, as written.
+        let waiting = pane.trading_pending.borrow().as_ref().is_some_and(|(symbol, _)| {
+            instrument.kind != omacharts_engine::InstrumentKind::FutureRoot
+                || !omacharts_engine::specs::track_together(instrument.root(), omacharts_engine::specs::root_of(symbol))
+        });
+        if stale {
+            pane.trading_symbol.replace(None);
+        }
+        if waiting {
+            pane.trading_pending.replace(None);
+        }
+        stale || waiting
+    }
+
+    /// Have chart `id` trade `traded` rather than what it charts, or what
+    /// it charts again for `None`: its header names both at once, and its
+    /// orders, position, marks and P&L follow the trading contract.
+    pub fn set_trading_symbol(self: &Rc<Self>, id: u32, traded: Option<Instrument>) {
+        let Some(pane) = self.pane(id) else { return };
+        // Only what tracks what it charts, at its prices: MES for ES, never
+        // NQ. The picker offers nothing else.
+        let charted = pane.instrument.borrow().clone();
+        if let Some(traded) = &traded
+            && !charted.is_some_and(|charted| charted.tracks(traded))
+        {
+            return;
+        }
+        // Set or cleared by hand: whatever was waiting to be found is
+        // settled.
+        let waited = pane.trading_pending.replace(None).is_some();
+        let same = |a: &Instrument, b: &Instrument| a.symbol == b.symbol && a.suffix == b.suffix;
+        let unchanged = match (pane.trading_symbol.borrow().as_ref(), traded.as_ref()) {
+            (None, None) => true,
+            (Some(was), Some(now)) => same(was, now),
+            _ => false,
+        };
+        if unchanged && !waited {
+            return;
+        }
+        Self::own_size(&pane);
+        pane.trading_symbol.replace(traded);
+        pane.write_readout();
+        self.apply_marks_to(&pane);
+        self.mark_to_market();
+        self.save_workspace();
+        self.chart_changed_elsewhere();
     }
 
     /// Drop a chart's account if it is no longer listed, say because its
@@ -8374,13 +9492,12 @@ impl Window {
     /// Read Trading again — the logins, their accounts, the default — and
     /// redraw every chart's account part from it.
     pub fn adopt_trading(self: &Rc<Self>) {
-        // Where every chart is served from before, so that a chart whose
-        // account's feed changed with the default is shown again.
-        let before = self.routes_on_screen();
         let mut view = crate::trading::View::load(&self.store);
         view.book = self.marked_book(&view.logins);
         *self.trading.borrow_mut() = view;
-        self.reroute(&before);
+        // A chart whose account's feed changed with the default is shown
+        // again.
+        self.reroute();
         self.sync_trading();
     }
 
@@ -8524,35 +9641,17 @@ impl Window {
             feeds.len() == wanted.len()
                 && feeds.iter().zip(&wanted).all(|(feed, want)| feed.provider.id() == want.id())
         };
-        // Where every chart is served from now, before anything changes, so
-        // that only the charts whose feed changes are shown again.
-        let before = self.routes_on_screen();
         if !same {
             self.regroup_feeds(wanted.into_iter().map(Arc::from).collect());
-            self.reroute(&before);
-            return;
         }
-        // The same feeds. Only a change in which can be used moves a chart,
-        // and then only the charts that change routes.
-        let mut changed = false;
         for feed in self.feeds() {
-            changed |= feed.read_access();
+            feed.read_access();
         }
-        if changed {
-            self.reroute(&before);
-        }
-    }
-
-    /// Each chart on screen with the cache key of the feed serving it.
-    fn routes_on_screen(&self) -> Vec<(u32, Option<String>)> {
-        let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
-        panes
-            .iter()
-            .filter_map(|pane| {
-                let instrument = pane.instrument.borrow().clone()?;
-                Some((pane.id, self.route_pane(pane, &instrument).map(|routed| routed.key())))
-            })
-            .collect()
+        // Whatever changed — the feeds, which of them can be used, or what
+        // one of them has, a folder set up that has ES now — every chart is
+        // held against the feed it was shown from, and the ones it moves
+        // are shown again, at once.
+        self.reroute();
     }
 
     /// Chart from `providers`, top first, keeping the feeds that stay on
@@ -8600,16 +9699,16 @@ impl Window {
         self.wire_refresh();
     }
 
-    /// Show again the charts whose feed is no longer the one in `before`,
-    /// and only rewrite the header of the rest: a chart still on the feed
-    /// it was on keeps its series and its stream as they are.
-    fn reroute(self: &Rc<Self>, before: &[(u32, Option<String>)]) {
+    /// Show again the charts whose feed is no longer the one they were
+    /// shown from, and only rewrite the header of the rest: a chart still
+    /// on the feed it was on keeps its series and its stream as they are.
+    fn reroute(self: &Rc<Self>) {
         let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
         let mut settled = false;
         for pane in panes {
             let instrument = pane.instrument.borrow().clone();
             let Some(instrument) = instrument else { continue };
-            let was = before.iter().find(|(id, _)| *id == pane.id).and_then(|(_, key)| key.clone());
+            let was = pane.served.borrow().clone();
             // A chart whose chosen feed has left the order follows it again,
             // and one whose account has gone is on the default.
             settled |= self.settle_feed(&pane, &instrument);
@@ -8828,7 +9927,7 @@ impl Window {
                     let instrument = pane.instrument.borrow().clone();
                     let Some(instrument) = instrument else { continue };
                     let timeframe = pane.timeframe.get();
-                    let tail = live
+                    let (tail, latest) = live
                         .with_bars(&series, |native| {
                             let grid = Grid::new(&instrument, pane.session.get());
                             let start = omacharts_engine::stream::tail_start(native, from, timeframe, &grid);
@@ -8843,18 +9942,28 @@ impl Window {
                                 &instrument,
                                 timeframe.is_intraday(),
                             );
-                            if timeframe.is_derived() {
-                                resample(&tail, timeframe, &grid)
-                            } else {
-                                tail
-                            }
+                            // The trade the session leaves out of the bars,
+                            // which the last price still follows.
+                            let latest = native.last().filter(|newest| {
+                                hidden_latest(std::slice::from_ref(*newest), pane.session.get(), &instrument, timeframe)
+                                    .is_some()
+                            });
+                            let tail = if timeframe.is_derived() { resample(&tail, timeframe, &grid) } else { tail };
+                            (tail, latest.copied())
                         })
                         .unwrap_or_default();
+                    pane.view.set_latest(latest.map(|newest| newest.close));
+                    if let Some(newest) = latest
+                        && pane.shows(crate::header::Part::Change)
+                    {
+                        self.write_live_change_of(&pane, &newest);
+                    }
                     if tail.is_empty() {
                         continue;
                     }
                     pane.view.apply_tail(&tail);
                     if let Some(newest) = tail.last()
+                        && latest.is_none()
                         && pane.shows(crate::header::Part::Change)
                     {
                         self.write_live_change_of(&pane, newest);
@@ -9275,15 +10384,15 @@ impl Window {
         pane.write_feed(part);
     }
 
-    /// The Account part's words for `pane`: the account's name with its
-    /// trouble after it, "Lucid 1234 signed out", while there is more than
-    /// one account; nothing otherwise.
+    /// The Account part's words for `pane`: the account with its trouble
+    /// after it, "1234 signed out", while there is more than one account
+    /// across the trading services; nothing otherwise.
     fn write_account_of(&self, pane: &ChartPane) {
         let view = self.trading.borrow();
         let text = match view.accounts.len() > 1 {
             true => view.account_of(pane.account.borrow().as_deref()).map(|account| {
                 let trouble = view.trouble(&self.desk, account);
-                crate::trading::account_text(&view.account_name(account), trouble.as_deref())
+                crate::trading::account_text(&view.account_label(account), trouble.as_deref())
             }),
             false => None,
         };
@@ -9325,16 +10434,14 @@ impl Window {
             let routed = self.route_pane(pane, &instrument)?;
             crate::cli::quote(&self.store, routed.feed.provider.as_ref(), &instrument)
         });
-        // In the chart's own colours for a rise and a fall, as its candles
-        // are painted — a chart whose rises are red says so here too.
-        let scheme = pane_scheme(pane, &self.theme());
-        let direction = |change: f64| omacharts_engine::Direction::of_change(change);
+        // In the theme's green and red, a chart whose rises are red saying
+        // so here too; see `header::change_colour`.
         match quote {
             Some(quote) => {
                 pane.change_basis.set(Some((quote.last - quote.change, crate::cli::session_day(quote.as_of))));
                 pane.change_shown.set(Some(hundredths(quote.change_pct)));
-                let colour = scheme.outline(direction(quote.change)).to_string();
-                pane.write_change(Some((quote.change_pct, &colour)));
+                let colour = crate::header::change_colour(&self.theme(), pane.swapped.get(), quote.change);
+                pane.write_change(Some((quote.change_pct, colour.as_deref())));
             }
             None => {
                 pane.change_basis.set(None);
@@ -9358,9 +10465,8 @@ impl Window {
         if pane.change_shown.replace(Some(hundredths(change_pct))) == Some(hundredths(change_pct)) {
             return;
         }
-        let scheme = pane_scheme(pane, &self.theme());
-        let colour = scheme.outline(omacharts_engine::Direction::of_change(change)).to_string();
-        pane.write_change(Some((change_pct, &colour)));
+        let colour = crate::header::change_colour(&self.theme(), pane.swapped.get(), change);
+        pane.write_change(Some((change_pct, colour.as_deref())));
     }
 
     /// Delete a template. Its charts keep what it was showing them.
@@ -9470,7 +10576,8 @@ impl Window {
                 }
             });
 
-            let label = gtk::Label::new(Some(&indicator.label_for(timeframe)));
+            let estimated = pane.estimated.borrow().contains(&id);
+            let label = gtk::Label::new(Some(&indicator.legend_for(timeframe, estimated)));
             label.add_css_class("legend-indicator");
             label.set_xalign(0.0);
             if !indicator.visible || !pane.view.show_indicators() {
@@ -9640,33 +10747,9 @@ impl Window {
                 rows.push(("period".to_string(), choice_strip(&choices, "chart.indicator-period", "Period")));
             }
             Some(Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. }) => {
-                let item = gio::MenuItem::new(Some("Reset every"), None);
-                item.set_attribute_value("custom", Some(&"reset".to_variant()));
-                presets.append_item(&item);
-                // Ringed is the period being drawn: a chosen one the chart is
-                // too coarse for is drawn as another, and that is the one in use.
-                let in_use = reset.effective_for(pane.timeframe.get());
-                let choices = Reset::ALL.map(|r| (r.label().to_string(), r.key().to_variant(), r == in_use));
-                let strip = choice_strip(&choices, "chart.indicator-reset", "Reset every");
-                // A period the chart is too coarse for would be promoted to
-                // another the moment it was picked: greyed, and saying why,
-                // rather than a button that seems to do nothing.
-                let timeframe = pane.timeframe.get();
-                let mut child = strip.first_child();
-                for period in Reset::ALL {
-                    let Some(button) = child else { break };
-                    if !period.is_meaningful_for(timeframe) {
-                        button.set_sensitive(false);
-                        button.set_tooltip_text(Some(&format!(
-                            "Too few {} bars in a {} to draw it",
-                            timeframe.label(),
-                            period.label().to_lowercase()
-                        )));
-                    }
-                    child = button.next_sibling();
-                }
-                rows.push(("reset".to_string(), strip));
+                reset_strip(&pane, &presets, &mut rows, Some(*reset), false);
             }
+            Some(Params::Cvd { reset, .. }) => reset_strip(&pane, &presets, &mut rows, *reset, true),
             _ => {}
         }
         if !rows.is_empty() {
@@ -9776,7 +10859,12 @@ impl Window {
     }
 
     pub fn set_session(self: &Rc<Self>, session: Session) {
-        self.focused_pane().session.set(session);
+        let pane = self.focused_pane();
+        // Other hours are another series to a strip: a cumulative delta
+        // counted over them is nowhere near the range it was held at.
+        if pane.session.replace(session) != session {
+            pane.view.free_strip_windows();
+        }
         self.save_workspace();
     }
 
@@ -10113,6 +11201,11 @@ impl Window {
                 stored.swapped = Some(defaults.swapped);
                 stored.hollow_up = Some(defaults.hollow_up);
                 stored.ohlc_thickness = Some(defaults.ohlc_thickness);
+                // And a book not on screen lets go of them where they are
+                // written.
+                if stored.session != defaults.session.key() {
+                    stored.strip_windows.clear();
+                }
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
@@ -10148,7 +11241,10 @@ impl Window {
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
         self.apply_marks_to(pane);
-        pane.session.set(defaults.session);
+        // Other hours let go of the strips held, as `set_session` does.
+        if pane.session.replace(defaults.session) != defaults.session {
+            pane.view.free_strip_windows();
+        }
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);
         pane.view.set_price_log(defaults.log_scale);
@@ -11335,10 +12431,23 @@ impl Window {
         let reset = gio::SimpleAction::new("indicator-reset", Some(glib::VariantTy::STRING));
         let this = self.clone();
         reset.connect_activate(move |_, value| {
-            let Some(chosen) = value.and_then(|v| v.get::<String>()).and_then(|k| Reset::from_key(&k)) else { return };
+            let Some(key) = value.and_then(|v| v.get::<String>()) else { return };
+            // `never` is a cumulative delta's alone: one running total.
+            let chosen = match key.as_str() {
+                "never" => None,
+                key => match Reset::from_key(key) {
+                    Some(reset) => Some(reset),
+                    None => return,
+                },
+            };
             if let Some(id) = this.menu_indicator.borrow_mut().take() {
                 this.edit_indicator(id, |params| match params {
-                    Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } => *reset = chosen,
+                    Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } => {
+                        if let Some(chosen) = chosen {
+                            *reset = chosen;
+                        }
+                    }
+                    Params::Cvd { reset, .. } => *reset = chosen,
                     _ => {}
                 });
             }

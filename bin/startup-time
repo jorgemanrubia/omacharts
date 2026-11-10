@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""How long a launch takes to put a window on screen, measured from outside.
+
+    eval "$(bin/headless-window start)"
+    bin/startup-time [--runs 30] [--cold 5] [--fail-over PCT] LABEL=BINARY[@SHELF] ...
+    bin/headless-window stop
+
+From the moment the process is spawned to the moment the compositor maps its
+window, which on Wayland is the first frame the app commits: sway reports a
+window as new when its first buffer arrives, not when it is created. Nothing
+inside the app is timed, so two revisions are measured by the same clock
+whatever either of them contains, and the release build pays for no probe.
+
+Inside a `bin/headless-window` session, so it needs no screen and touches
+nobody's session bus, and each case gets a data folder of its own, launched
+once to set up before anything is counted.
+
+SHELF says what the updater finds in that folder's `versions/`:
+
+    none            no folder at all (the default)
+    older           a folder with an older version in it: nothing to hand over to
+    newer=BINARY    BINARY as a newer version to hand over to with an exec,
+                    under the version it reports or, if that is not newer
+                    than anything, 99.0.0
+
+BINARY is whatever `/usr/bin/omacharts` would be: an app, or the launcher
+in a folder laid out like the package, `bin/omacharts` with the app at
+`lib/omacharts/omacharts`. Every case runs with OMACHARTS_UPDATE_SOURCE
+pointing at a port nothing listens on, which keeps the check after the first
+frame off the network; a binary from before the updater ignores it.
+
+Also times `BINARY --version` from spawn to exit, which is the launch path on
+its own with no GTK in it: the closest look at what deciding to hand over
+costs. --cold evicts the binary and every library its last run mapped from the
+page cache before each of that many extra runs, which needs no root.
+
+With --fail-over, the first case is the baseline, and the exit status is 1
+when another case's median first frame is more than PCT percent slower than
+its; a case more than a quarter of that slower is named without failing.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import socket
+import statistics
+import struct
+import subprocess
+import sys
+import time
+
+MAGIC = b"i3-ipc"
+RUN_COMMAND, SUBSCRIBE = 0, 2
+
+
+def session_env():
+    window = os.environ.get("OMACHARTS_WINDOW")
+    if not window:
+        sys.exit('startup-time: no session; eval "$(bin/headless-window start)" first')
+    env = dict(os.environ)
+    with open(os.path.join(window, "env")) as f:
+        for line in f:
+            key, _, value = line.strip().partition("=")
+            if key:
+                env[key] = value
+    return window, env
+
+
+class Sway:
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)
+
+    def send(self, kind, payload):
+        data = payload.encode()
+        self.sock.sendall(MAGIC + struct.pack("=II", len(data), kind) + data)
+
+    def receive(self, timeout=None):
+        self.sock.settimeout(timeout)
+        header = self._exactly(len(MAGIC) + 8)
+        length, kind = struct.unpack("=II", header[len(MAGIC):])
+        return kind, json.loads(self._exactly(length))
+
+    def _exactly(self, n):
+        out = b""
+        while len(out) < n:
+            chunk = self.sock.recv(n - len(out))
+            if not chunk:
+                raise ConnectionError("sway closed the socket")
+            out += chunk
+        return out
+
+
+def mapped_files(pid):
+    files = set()
+    try:
+        with open(f"/proc/{pid}/maps") as f:
+            for line in f:
+                parts = line.split(None, 5)
+                if len(parts) == 6 and parts[5].startswith("/"):
+                    files.add(parts[5].strip())
+    except OSError:
+        pass
+    return files
+
+
+def evict(paths):
+    for path in paths:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+
+
+def as_tuple(version):
+    parts = (version or "").split(".")
+    return tuple(int(p) for p in parts) if len(parts) == 3 and all(p.isdigit() for p in parts) else None
+
+
+def prepare(folder, shelf, running_version):
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(os.path.join(folder, "omacharts"))
+    versions = os.path.join(folder, "omacharts", "versions")
+    if shelf == "none":
+        return
+    os.makedirs(versions)
+    if shelf == "older":
+        older = os.path.join(versions, "0.0.1")
+        os.makedirs(older)
+        with open(os.path.join(older, "omacharts"), "w") as f:
+            f.write("#!/bin/sh\necho omacharts 0.0.1\n")
+        os.chmod(os.path.join(older, "omacharts"), 0o755)
+        return
+    if shelf.startswith("newer="):
+        binary = shelf.split("=", 1)[1]
+        said = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                              env={**os.environ, "DBUS_SESSION_BUS_ADDRESS": ""}).stdout.split()
+        version = said[-1] if said else "0.0.0"
+        if as_tuple(version) is None or as_tuple(version) <= (as_tuple(running_version) or (0, 0, 0)):
+            version = "99.0.0"
+        target = os.path.join(versions, version)
+        os.makedirs(target)
+        shutil.copy2(binary, os.path.join(target, "omacharts"))
+        return
+    sys.exit(f"startup-time: unknown shelf {shelf!r}")
+
+
+def reported_version(binary, env):
+    said = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                          env={**env, "DBUS_SESSION_BUS_ADDRESS": ""}).stdout.split()
+    return said[-1] if said else None
+
+
+def launch_once(sway_path, binary, env, evict_first=None):
+    """Spawn, wait for the window to map, close it. Milliseconds, and the pid's mapped files."""
+    events = Sway(sway_path)
+    events.send(SUBSCRIBE, '["window"]')
+    events.receive(5)
+    if evict_first:
+        evict(evict_first)
+    start = time.monotonic_ns()
+    child = subprocess.Popen([binary], env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    took = None
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            kind, event = events.receive(max(0.1, deadline - time.monotonic()))
+        except socket.timeout:
+            break
+        if kind & 0x80000000 and event.get("change") == "new" and event["container"].get("pid") == child.pid:
+            took = (time.monotonic_ns() - start) / 1e6
+            break
+    files = mapped_files(child.pid)
+    control = Sway(sway_path)
+    control.send(RUN_COMMAND, f"[pid={child.pid}] kill")
+    try:
+        child.wait(15)
+    except subprocess.TimeoutExpired:
+        child.send_signal(signal.SIGKILL)
+        child.wait()
+    if took is None:
+        raise RuntimeError(f"{binary}: no window in 30s")
+    # Let the bus see the name go before the next launch asks for it.
+    time.sleep(0.3)
+    return took, files
+
+
+def version_once(binary, env):
+    start = time.monotonic_ns()
+    subprocess.run([binary, "--version"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return (time.monotonic_ns() - start) / 1e6
+
+
+def stats(samples):
+    ordered = sorted(samples)
+    p90 = ordered[min(len(ordered) - 1, int(round(0.9 * (len(ordered) - 1))))]
+    return statistics.median(ordered), p90, ordered[0], ordered[-1]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--runs", type=int, default=30)
+    parser.add_argument("--cold", type=int, default=0)
+    parser.add_argument("--version-runs", type=int, default=200)
+    parser.add_argument("--fail-over", type=float, default=None, metavar="PCT")
+    parser.add_argument("cases", nargs="+", metavar="LABEL=BINARY[@SHELF]")
+    args = parser.parse_args()
+
+    window, env = session_env()
+    sway_path = env["SWAYSOCK"]
+    cases = []
+    for case in args.cases:
+        label, _, rest = case.partition("=")
+        binary, _, shelf = rest.partition("@")
+        binary = os.path.abspath(binary)
+        folder = os.path.join(window, "startup", label)
+        prepare(folder, shelf or "none", reported_version(binary, env))
+        case_env = {**env, "XDG_DATA_HOME": folder, "OMACHARTS_UPDATE_SOURCE": "http://127.0.0.1:9"}
+        # Set up: the first launch makes the database and seeds a watchlist.
+        _, files = launch_once(sway_path, binary, case_env)
+        cases.append({"label": label, "binary": binary, "env": case_env, "files": files,
+                      "warm": [], "cold": [], "versions": []})
+
+    # Round-robin, one launch of each case per round, so whatever else the
+    # machine is doing lands on every case alike rather than on whichever
+    # happened to be running at the time.
+    for _ in range(args.runs):
+        for case in cases:
+            took, case["files"] = launch_once(sway_path, case["binary"], case["env"])
+            case["warm"].append(took)
+    for _ in range(args.cold):
+        for case in cases:
+            took, case["files"] = launch_once(sway_path, case["binary"], case["env"],
+                                              evict_first=case["files"] | {case["binary"]})
+            case["cold"].append(took)
+    for case in cases:
+        case["quiet"] = {**case["env"], "DBUS_SESSION_BUS_ADDRESS": ""}
+        for _ in range(10):
+            version_once(case["binary"], case["quiet"])
+    for _ in range(args.version_runs):
+        for case in cases:
+            case["versions"].append(version_once(case["binary"], case["quiet"]))
+    rows = [(case["label"], case["warm"], case["cold"], case["versions"]) for case in cases]
+
+    def cell(samples):
+        if not samples:
+            return "-"
+        median, p90, low, high = stats(samples)
+        return f"{median:7.1f} {p90:7.1f} {low:7.1f}-{high:<7.1f}"
+
+    print(f"{'case':<28} {'first frame, ms: median p90 min-max':<36} {'cold':<36} {'--version, ms: median p90 min-max':<36}")
+    for label, warm, cold, versions in rows:
+        print(f"{label:<28} {cell(warm):<36} {cell(cold):<36} {cell(versions):<36}")
+    print()
+    print(f"{args.runs} warm runs and {args.cold} cold per case, {args.version_runs} of --version,")
+    print("taken in turn, one of each case per round.")
+
+    if args.fail_over is None or len(rows) < 2:
+        return
+    baseline = statistics.median(rows[0][1])
+    failed = False
+    for label, warm, _, _ in rows[1:]:
+        slower = (statistics.median(warm) - baseline) / baseline * 100
+        if slower > args.fail_over:
+            print(f"{label} reaches its first frame {slower:.0f}% later than {rows[0][0]}")
+            failed = True
+        elif slower > args.fail_over / 4:
+            print(f"{label} is {slower:.0f}% later than {rows[0][0]}: more than noise usually is, not enough to fail")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()

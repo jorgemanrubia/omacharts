@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# How long this branch takes to put a window up, beside another revision.
+#
+#   bin/startup-compare                   # against the merge base with origin/main
+#   bin/startup-compare <ref>
+#
+# Builds both revisions' binaries in release, lays each out as the package
+# installs it — the launcher at bin/omacharts with the app at
+# lib/omacharts/omacharts, or for a revision from before the launcher, the app
+# at bin/omacharts — and times launch to first frame with bin/startup-time
+# inside a bin/headless-window session, one launch of each case in turn.
+#
+# Three cases: the base, this branch, and this branch handing over to a
+# downloaded version, which is the launch most people run while Omarchy's
+# repository is behind GitHub's. Fails only when a case is twice as slow as
+# the base, for the reason bin/perf-compare gives: on a shared runner, one
+# sample of noise and one sample of a small regression are the same number.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+base="${1:-}"
+if [[ -z "$base" ]]; then
+  for ref in origin/main main; do
+    if git rev-parse --verify --quiet "$ref" >/dev/null; then
+      base=$(git merge-base HEAD "$ref")
+      break
+    fi
+  done
+fi
+[[ -n "$base" ]] || { echo "usage: bin/startup-compare <ref>" >&2; exit 2; }
+base=$(git rev-parse --verify "$base^{commit}")
+
+work=$(mktemp -d)
+tree="$work/base"
+session=""
+cleanup() {
+  [[ -n "$session" ]] && OMACHARTS_WINDOW="$session" bin/headless-window stop >/dev/null 2>&1 || true
+  git worktree remove --force "$tree" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# One target directory per side, as bin/perf-compare explains.
+targets="${PERF_TARGETS:-$PWD/target/perf}"
+
+build_at() {
+  local where="$1" into="$2"
+  (cd "$where" && CARGO_TARGET_DIR="$into" cargo build --release --bins >&2)
+}
+
+lay_out() {
+  local built="$1" prefix="$2"
+  mkdir -p "$prefix/bin"
+  if [[ -x "$built/omacharts-launch" ]]; then
+    mkdir -p "$prefix/lib/omacharts"
+    cp "$built/omacharts-launch" "$prefix/bin/omacharts"
+    cp "$built/omacharts" "$prefix/lib/omacharts/omacharts"
+  else
+    cp "$built/omacharts" "$prefix/bin/omacharts"
+  fi
+}
+
+echo "comparing $(git rev-parse --short HEAD) against $(git rev-parse --short "$base")" >&2
+git worktree add --detach "$tree" "$base" >&2
+build_at "$tree" "$targets/base"
+build_at . "$targets/head"
+lay_out "$targets/base/release" "$work/installed-base"
+lay_out "$targets/head/release" "$work/installed-head"
+app="$work/installed-head/lib/omacharts/omacharts"
+[[ -x "$app" ]] || app="$work/installed-head/bin/omacharts"
+
+eval "$(bin/headless-window start)"
+session="$OMACHARTS_WINDOW"
+
+bin/startup-time --runs "${STARTUP_RUNS:-20}" --version-runs 100 --fail-over 100 \
+  "base=$work/installed-base/bin/omacharts" \
+  "head=$work/installed-head/bin/omacharts" \
+  "head-handing-over=$work/installed-head/bin/omacharts@newer=$app"

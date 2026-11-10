@@ -51,6 +51,15 @@ pub struct Timing {
     pub backoff: Duration,
     /// The longest wait before reconnecting.
     pub backoff_cap: Duration,
+    /// How long an order sent and never heard of is kept once a listing
+    /// of the account's open orders leaves it out: past this, the server
+    /// never had it.
+    pub unheard: Duration,
+    /// How long a flatten waits for the cancels of the orders on the
+    /// position before it goes out all the same: about one round trip.
+    /// An order filled while its cancel was on the way is answered by
+    /// then, so the flatten is sized to what is left.
+    pub flatten_cancels: Duration,
 }
 
 impl Default for Timing {
@@ -61,6 +70,8 @@ impl Default for Timing {
             request: Duration::from_secs(10),
             backoff: Duration::from_millis(500),
             backoff_cap: Duration::from_secs(30),
+            unheard: Duration::from_secs(30),
+            flatten_cancels: Duration::from_secs(2),
         }
     }
 }
@@ -306,6 +317,15 @@ impl Order {
     }
 }
 
+/// Cancels sent and not yet answered, with those that could not be sent:
+/// how many, and the first reason.
+#[derive(Default)]
+struct Cancels {
+    sent: Vec<(Order, u64)>,
+    failed: usize,
+    first: Option<Error>,
+}
+
 /// What an account holds of one contract, from POSITION_UPDATE.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Position {
@@ -411,6 +431,10 @@ fn quantity(value: Option<f64>) -> u32 {
 fn real(price: f64, multiplier: f64) -> f64 {
     ((price * multiplier) * 1e10).round() / 1e10
 }
+
+/// An order's multiplier, `None` for one with no price, and its Price1 and
+/// Price2 on the wire.
+type Priced = (Option<f64>, Option<f64>, Option<f64>);
 
 fn wire_price(price: f64, multiplier: f64) -> f64 {
     ((price / multiplier) * 1e8).round() / 1e8
@@ -720,15 +744,20 @@ impl State {
 
     /// An open orders snapshot for `account` is done: what it did not list
     /// is no longer working, and goes, rather than be shown working when it
-    /// is not.
-    fn open_orders_listed(&mut self, account: &str, answers: &[Message]) {
+    /// is not. So does an order sent from here more than `unheard` ago that
+    /// the server has never said a word of, which the listing would have
+    /// named had the server had it: it never arrived, and drawn as working
+    /// it would be cancelled, linked and flattened around for ever.
+    fn open_orders_listed(&mut self, account: &str, answers: &[Message], unheard: Duration) {
         let listed: HashSet<String> = answers.iter().filter_map(|message| message.text("ServerOrderID")).collect();
+        let since = now() - unheard.as_secs() as i64;
         let mut at = 0;
         while at < self.orders.len() {
             let order = &self.orders[at];
+            let never_heard = order.server_id.is_none() && order.status == Status::Pending && self.told[at].0 == 0 && order.at <= since;
             let unlisted = order.account == account
                 && order.status.working()
-                && order.server_id.as_ref().is_some_and(|id| !listed.contains(id));
+                && (never_heard || order.server_id.as_ref().is_some_and(|id| !listed.contains(id)));
             if unlisted {
                 self.orders.remove(at);
                 self.told.remove(at);
@@ -942,7 +971,7 @@ impl Shared {
                     let mut state = lock(&self.state);
                     match what {
                         1 => state.positions_listed(account, &answers),
-                        2 => state.open_orders_listed(account, &answers),
+                        2 => state.open_orders_listed(account, &answers, self.timing.unheard),
                         _ => {}
                     }
                 }
@@ -1186,8 +1215,10 @@ impl Trading {
     }
 
     /// `order`'s prices checked against its kind and put in the server's
-    /// units: the contract's multiplier, Price1 and Price2 on the wire.
-    fn priced(&self, order: &NewOrder) -> Result<(f64, Option<f64>, Option<f64>), Error> {
+    /// units: the contract's multiplier, Price1 and Price2 on the wire. An
+    /// order with no price, a market order, has no multiplier, rather than
+    /// a made-up one the book would keep and so never ask the definition for.
+    fn priced(&self, order: &NewOrder) -> Result<Priced, Error> {
         if order.qty == 0 {
             return Err(Error::Rejected("an order needs a quantity".into()));
         }
@@ -1201,22 +1232,22 @@ impl Trading {
                 Some(order.price2.ok_or_else(|| Error::Rejected("a stop-limit needs its limit price".into()))?),
             ),
         };
-        let multiplier = match price1 {
-            None => 1.0,
-            Some(_) => self.shared.multiplier(&order.symbol).ok_or_else(|| {
-                Error::Rejected(format!("Sierra Chart did not say how {} is priced, so the order was not sent", order.symbol))
-            })?,
-        };
-        Ok((multiplier, price1.map(|price| wire_price(price, multiplier)), price2.map(|price| wire_price(price, multiplier))))
+        let Some(price1) = price1 else { return Ok((None, None, None)) };
+        let multiplier = self.shared.multiplier(&order.symbol).ok_or_else(|| {
+            Error::Rejected(format!("Sierra Chart did not say how {} is priced, so the order was not sent", order.symbol))
+        })?;
+        Ok((Some(multiplier), Some(wire_price(price1, multiplier)), price2.map(|price| wire_price(price, multiplier))))
     }
 
     /// Put each order about to be sent in the book as pending, under its
     /// ClientOrderID, so that what the server says of it lands on it.
     #[allow(clippy::type_complexity)]
-    fn expect(&self, orders: &[(&NewOrder, &String, (f64, Option<f64>, Option<f64>), Option<String>)]) {
+    fn expect(&self, orders: &[(&NewOrder, &String, Priced, Option<String>)]) {
         let mut state = lock(&self.shared.state);
         for (order, id, (multiplier, wire1, wire2), tag) in orders {
-            state.multipliers.entry(order.symbol.clone()).or_insert(*multiplier);
+            if let Some(multiplier) = multiplier {
+                state.multipliers.entry(order.symbol.clone()).or_insert(*multiplier);
+            }
             state.orders.push(Order {
                 account: order.account.clone(),
                 server_id: None,
@@ -1281,7 +1312,20 @@ impl Trading {
     /// Wait for the server to tell of order `id` again with one of `done`
     /// as its reason, or a refusal; the order's words for a refusal.
     fn answered(&self, id: &str, since: u64, done: &[i64], refused: &[i64], finished: impl Fn(&Status) -> bool) -> Result<(), Error> {
-        self.shared.wait_for(self.shared.timing.request, |state| {
+        self.answered_within(self.shared.timing.request, id, since, done, refused, finished)
+    }
+
+    /// [`Trading::answered`], waiting no longer than `timeout`.
+    fn answered_within(
+        &self,
+        timeout: Duration,
+        id: &str,
+        since: u64,
+        done: &[i64],
+        refused: &[i64],
+        finished: impl Fn(&Status) -> bool,
+    ) -> Result<(), Error> {
+        self.shared.wait_for(timeout, |state| {
             let at = state.order_at(id)?;
             let (count, reason) = state.told[at];
             let order = &state.orders[at];
@@ -1297,13 +1341,38 @@ impl Trading {
 
     /// Cancel the order `id` names, by the server's id or the client's, and
     /// wait until the server says it is cancelled, or why not.
+    ///
+    /// An order sent from here that the server had never said a word of,
+    /// whose cancel it refuses, is one it does not know: it leaves the
+    /// book, rather than stay drawn as working for ever. The refusal is
+    /// still the answer, since a server may refuse for other reasons an
+    /// order it has: only its listing of open orders says it has none.
     pub fn cancel(&self, id: &str) -> Result<(), Error> {
         let (order, since) = self.find(id)?;
         if !order.status.working() {
             return Err(Error::Rejected(format!("order {id} is no longer working")));
         }
         self.send_cancel(&order)?;
-        self.answered(id, since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working())
+        let answer = self.answered(id, since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
+        self.forget_unknown(&order, since, &answer);
+        answer
+    }
+
+    /// `order`, told of `since` times before its cancel was sent: out of the
+    /// book if the server refused the cancel of an order it had never said
+    /// a word of.
+    fn forget_unknown(&self, order: &Order, since: u64, answer: &Result<(), Error>) {
+        if since > 0 || !matches!(answer, Err(Error::Rejected(_))) {
+            return;
+        }
+        let mut state = lock(&self.shared.state);
+        let Some(at) = order.client_id.as_deref().and_then(|id| state.order_at(id)) else { return };
+        if state.orders[at].server_id.is_none() && state.orders[at].status == Status::Pending {
+            state.orders.remove(at);
+            state.told.remove(at);
+            drop(state);
+            self.shared.told();
+        }
     }
 
     fn send_cancel(&self, order: &Order) -> Result<(), Error> {
@@ -1364,10 +1433,20 @@ impl Trading {
     /// Cancel every order working on `account`, each with its own
     /// CANCEL_ORDER, and wait for them all: the first refusal, if any.
     pub fn cancel_all(&self, account: &str) -> Result<(), Error> {
-        self.cancel_where(|order| order.account == account)
+        let (_, first) = self.cancel_where(|order| order.account == account);
+        first.map_or(Ok(()), Err)
     }
 
-    fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> Result<(), Error> {
+    /// Cancel every working order `which` takes, each tried whatever became
+    /// of the one before: how many would not cancel, and the first reason.
+    fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> (usize, Option<Error>) {
+        let cancels = self.send_cancels(which);
+        self.cancels_answered(cancels, self.shared.timing.request, false)
+    }
+
+    /// Send a CANCEL_ORDER for every working order `which` takes, all of
+    /// them before any answer is waited for.
+    fn send_cancels(&self, which: impl Fn(&Order) -> bool) -> Cancels {
         let working: Vec<(Order, u64)> = {
             let state = lock(&self.shared.state);
             state
@@ -1378,48 +1457,125 @@ impl Trading {
                 .map(|(order, told)| (order.clone(), told.0))
                 .collect()
         };
-        for (order, _) in &working {
-            self.send_cancel(order)?;
+        let mut cancels = Cancels::default();
+        for (order, since) in working {
+            match self.send_cancel(&order) {
+                Ok(()) => cancels.sent.push((order, since)),
+                Err(error) => {
+                    cancels.failed += 1;
+                    cancels.first.get_or_insert(error);
+                }
+            }
         }
-        let mut first = None;
-        for (order, since) in &working {
-            let outcome =
-                self.answered(order.id(), *since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| !status.working());
+        cancels
+    }
+
+    /// Wait for the answers to cancels sent, all in the same time rather
+    /// than one after another and none longer than `timeout`: how many
+    /// would not cancel or were not answered in time, each once, and the
+    /// first reason.
+    ///
+    /// With `settled`, a refused cancel of an order the server has is waited
+    /// on further, within the same `timeout`, until the order stops working:
+    /// "too late to cancel" can come before the fill that made it too late,
+    /// and what is held is not what is left until that fill is in.
+    fn cancels_answered(&self, cancels: Cancels, timeout: Duration, settled: bool) -> (usize, Option<Error>) {
+        let Cancels { sent, mut failed, mut first } = cancels;
+        let outcomes: Vec<(&Order, u64, Result<(), Error>)> = std::thread::scope(|scope| {
+            let waits: Vec<_> = sent
+                .iter()
+                .map(|(order, since)| {
+                    let since = *since;
+                    scope.spawn(move || {
+                        let deadline = Instant::now() + timeout;
+                        let outcome = self.answered_within(timeout, order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| {
+                            !status.working()
+                        });
+                        if settled && matches!(outcome, Err(Error::Rejected(_))) {
+                            // Out of time, it is counted as still working.
+                            let _ = self.shared.wait_for(deadline.saturating_duration_since(Instant::now()), |state| {
+                                let Some(at) = state.order_at(order.id()) else { return Some(()) };
+                                let now = &state.orders[at];
+                                // One the server never said a word of will
+                                // not fill: it leaves the book below.
+                                let unknown = since == 0 && now.server_id.is_none() && now.status == Status::Pending;
+                                (!now.status.working() || unknown).then_some(())
+                            });
+                        }
+                        (order, since, outcome)
+                    })
+                })
+                .collect();
+            waits.into_iter().map(|wait| wait.join().expect("a cancel's wait")).collect()
+        });
+        for (order, since, outcome) in outcomes {
+            self.forget_unknown(order, since, &outcome);
             if let Err(error) = outcome {
+                // One the server never had is gone from the book now, not
+                // left working.
+                let state = lock(&self.shared.state);
+                if state.order_at(order.id()).is_some_and(|at| state.orders[at].status.working()) {
+                    failed += 1;
+                }
                 first.get_or_insert(error);
             }
         }
-        first.map_or(Ok(()), Err)
+        (failed, first)
     }
 
     /// Close `account`'s position in `symbol`: its working orders there are
-    /// cancelled first, then SUBMIT_FLATTEN_POSITION_ORDER has the server
-    /// close what is held at the market. Waits until the server has taken
-    /// the flatten, or refused it.
-    pub fn flatten(&self, account: &str, symbol: &str) -> Result<(), Error> {
-        self.cancel_where(|order| order.account == account && order.symbol == symbol)?;
-        let held = lock(&self.shared.state)
-            .positions
-            .iter()
-            .find(|position| position.account == account && position.symbol == symbol)
-            .map(|position| position.qty)
-            .unwrap_or(0);
-        if held == 0 {
-            return Ok(());
+    /// cancelled, all at once, and once they are answered, or
+    /// [`Timing::flatten_cancels`] has passed, SUBMIT_FLATTEN_POSITION_ORDER
+    /// has the server close what is held then at the market. A stop that
+    /// filled while its cancel was on the way has closed the position by
+    /// then, and the server sizes the flatten to what is left, so it never
+    /// turns the position around; one whose cancel is refused is waited on
+    /// in that time until it stops working, since a refusal can come ahead
+    /// of the fill that caused it; an order whose cancel is not answered in
+    /// that time holds the flatten back no longer than that.
+    ///
+    /// Taken, or nothing left to flatten, it answers how many orders on it
+    /// would not cancel or were not answered in time, each once: those need
+    /// a look. With nothing held from the start, a cancel that failed is
+    /// the answer.
+    pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
+        let held = || {
+            lock(&self.shared.state)
+                .positions
+                .iter()
+                .find(|position| position.account == account && position.symbol == symbol)
+                .map(|position| position.qty)
+                .unwrap_or(0)
+        };
+        let before = held();
+        let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
+        let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels, true);
+        if before == 0 {
+            return why.map_or(Ok(0), Err);
+        }
+        // Closed meanwhile, by an exit that filled as it was cancelled:
+        // there is nothing to flatten.
+        if held() == 0 {
+            return Ok(uncancelled);
         }
         let id = self.shared.next_client_id();
-        self.shared.send(&Message::new(
+        let sent = self.shared.send(&Message::new(
             wire::SUBMIT_FLATTEN_POSITION_ORDER,
             json!({ "Symbol": symbol, "Exchange": "", "TradeAccount": account, "ClientOrderID": id, "FreeFormText": "", "IsAutomatedOrder": 0 }),
-        ))?;
-        let status = self.shared.wait_for(self.shared.timing.request, |state| {
-            let at = state.order_at(&id)?;
-            let order = &state.orders[at];
-            (order.status != Status::Pending).then(|| order.status.clone())
+        ));
+        let status = sent.and_then(|()| {
+            self.shared.wait_for(self.shared.timing.request, |state| {
+                let at = state.order_at(&id)?;
+                let order = &state.orders[at];
+                (order.status != Status::Pending).then(|| order.status.clone())
+            })
         })?;
         match status {
+            // Refused as there was nothing left to close, which the
+            // position's own update may not have said yet when it was sent.
+            Status::Rejected(_) if held() == 0 => Ok(uncancelled),
             Status::Rejected(why) => Err(Error::Rejected(why)),
-            _ => Ok(()),
+            _ => Ok(uncancelled),
         }
     }
 

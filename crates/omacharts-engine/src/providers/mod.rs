@@ -682,7 +682,7 @@ pub fn serving<'a>(feeds: impl IntoIterator<Item = &'a dyn Provider>, instrument
     feeds
         .into_iter()
         .enumerate()
-        .filter(|(_, provider)| provider.symbol_for(instrument).is_some())
+        .filter(|(_, provider)| provider.could_serve(instrument))
         .map(|(at, _)| at)
         .collect()
 }
@@ -697,7 +697,7 @@ pub fn choosable<'a>(
 ) -> bool {
     feeds
         .into_iter()
-        .any(|provider| provider.id().eq_ignore_ascii_case(chosen) && provider.symbol_for(instrument).is_some())
+        .any(|provider| provider.id().eq_ignore_ascii_case(chosen) && provider.could_serve(instrument))
 }
 
 /// Where a chart goes when somebody has chosen its feed.
@@ -708,15 +708,19 @@ pub enum Chosen {
     /// The chosen feed would serve it and cannot be used: the chart says so
     /// rather than going to the next feed down without telling anybody.
     Refused { at: usize, symbol: String },
+    /// The chosen feed could chart it and has nothing of it: Sierra Chart
+    /// chosen for MES with no files of MES. Said, not passed over.
+    Missing { at: usize },
 }
 
 /// [`route`], with the feed somebody chose for the chart first.
 ///
-/// `chosen` is a feed's id. A choice the order no longer holds, or one with
-/// no name for the instrument, is no choice at all and the order decides —
-/// which is how a chart whose feed was taken off the list goes back to
-/// following it. A chosen feed is never passed over: when it cannot be used
-/// the chart is refused, with the place of the feed that refused it.
+/// `chosen` is a feed's id. A choice the order no longer holds, or one that
+/// could never chart the instrument, is no choice at all and the order
+/// decides — which is how a chart whose feed was taken off the list goes back
+/// to following it. A chosen feed is never passed over: when it cannot be
+/// used the chart is refused, with the place of the feed that refused it,
+/// and when it has nothing of the instrument it is [`Chosen::Missing`].
 pub fn route_chosen<'a>(
     feeds: impl IntoIterator<Item = (&'a dyn Provider, bool)>,
     chosen: Option<&str>,
@@ -725,13 +729,16 @@ pub fn route_chosen<'a>(
     let feeds: Vec<(&dyn Provider, bool)> = feeds.into_iter().collect();
     if let Some(id) = chosen {
         let found = feeds.iter().enumerate().find(|(_, (provider, _))| provider.id().eq_ignore_ascii_case(id));
-        if let Some((at, (provider, usable))) = found
-            && let Some(symbol) = provider.symbol_for(instrument)
-        {
-            return Some(match usable {
-                true => Chosen::Route(Route { at, symbol, passed: Vec::new() }),
-                false => Chosen::Refused { at, symbol },
-            });
+        if let Some((at, (provider, usable))) = found {
+            match (provider.symbol_for(instrument), *usable) {
+                (Some(symbol), true) => return Some(Chosen::Route(Route { at, symbol, passed: Vec::new() })),
+                (Some(symbol), false) => return Some(Chosen::Refused { at, symbol }),
+                (None, false) if provider.could_serve(instrument) => {
+                    return Some(Chosen::Refused { at, symbol: instrument.symbol.clone() });
+                }
+                (None, true) if provider.could_serve(instrument) => return Some(Chosen::Missing { at }),
+                (None, _) => {}
+            }
         }
     }
     route(feeds, instrument).map(Chosen::Route)

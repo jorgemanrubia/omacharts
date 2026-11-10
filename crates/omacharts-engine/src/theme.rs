@@ -115,6 +115,49 @@ pub const SWATCH_NAMES: [&str; 8] = [
 pub const SWATCH_SEQUENCE: [&str; 6] =
     ["Blue", "Amber", "Violet", "Teal", "Orange", "Cyan"];
 
+/// The palette's one colour with no hue of its own to pick: a very light
+/// tone of the theme's own hue on a dark theme and a very dark one on a
+/// light theme, close to the text in weight but tinted, for an outline, a
+/// profile or a line that should read plainly without taking a colour. It
+/// is not one of a theme's [`Swatch`]es, because nobody sets it: it is
+/// worked out from the theme each time it is asked for, so it follows the
+/// theme as the others do. See [`Theme::neutral`].
+pub const NEUTRAL: &str = "Neutral";
+
+/// Every name a colour can be picked by, in the order the palette shows
+/// them: the theme's swatches, then [`NEUTRAL`].
+pub const PALETTE_NAMES: [&str; 9] = [
+    "Blue", "Amber", "Violet", "Teal", "Rose", "Green", "Orange", "Cyan", NEUTRAL,
+];
+
+/// The OKLCh lightness of [`Theme::neutral`] on a dark theme: very light,
+/// near the text of most themes, short of white.
+const NEUTRAL_LIGHT: f64 = 0.89;
+
+/// Its lightness on a light theme: very dark, short of black.
+const NEUTRAL_DARK: f64 = 0.32;
+
+/// The least and the most of the theme's tint it carries, in OKLCh chroma:
+/// enough at the ends of the scale to read as the theme's own tone rather
+/// than a grey, not so much that it reads as one more hue of the palette.
+const NEUTRAL_MIN_CHROMA: f64 = 0.035;
+const NEUTRAL_MAX_CHROMA: f64 = 0.06;
+
+/// A theme's text tinted at least this much, in OKLCh chroma, gives the
+/// neutral its hue; text greyer than this leaves the hue to the panels.
+const NEUTRAL_TEXT_TINT: f64 = 0.015;
+
+/// Below this a panel's chroma is too slight to take a hue from.
+const NEUTRAL_TINT: f64 = 0.004;
+
+/// The least the neutral is from the theme's text, as [`delta_e`] sees it,
+/// so that it is never just the text colour over again.
+const NEUTRAL_FROM_TEXT: f64 = 0.04;
+
+/// How far from the text towards the chart it is moved, in OKLCh
+/// lightness, when the usual lightness would land on the text.
+const NEUTRAL_FROM_TEXT_STEP: f64 = 0.05;
+
 /// The least a companion may be from what it accompanies, as `delta_e` sees
 /// it — the floor consecutive entries of the sequence are held to, and so
 /// the one the rule that usually hands out the next entry has to meet when
@@ -141,10 +184,11 @@ impl ColorChoice {
     pub fn resolve(&self, theme: &Theme) -> String {
         match self {
             ColorChoice::Fixed { hex } => hex.clone(),
-            ColorChoice::Swatch { name } => theme
-                .swatch(name)
-                .map(|s| s.hex.clone())
-                .unwrap_or_else(|| theme.ui.accent.clone()),
+            ColorChoice::Swatch { name } => match theme.swatch(name) {
+                Some(swatch) => swatch.hex.clone(),
+                None if name == NEUTRAL => theme.neutral(),
+                None => theme.ui.accent.clone(),
+            },
         }
     }
 }
@@ -168,6 +212,10 @@ pub struct Theme {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Boxed: most themes have none, and every theme is carried about.
     pub trading: Option<Box<TradingLook>>,
+    /// The last price's colour, set by hand on a theme of its own. Absent,
+    /// it is worked out from the palette; see [`theme_last_price`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<String>,
 }
 
 /// How a theme draws orders and positions, as somebody set it. Every slot
@@ -343,6 +391,65 @@ pub fn theme_trading(theme: &Theme, inverted: bool) -> TradingColours {
     }
 }
 
+/// The palette's colours the last price may be drawn in, the first that
+/// stands apart from the candles taken: a cyan reads as no candle's on
+/// any theme that has one, and the others follow far round the wheel.
+const LAST_PRICE_SWATCHES: [&str; 5] = ["Cyan", "Amber", "Teal", "Blue", "Violet"];
+
+/// How far round the wheel the last price stands from either candle, at
+/// least, so that its line across the chart is never taken for one.
+const LAST_PRICE_HUE_GAP: f64 = 40.0;
+
+/// Below this a colour, in OKLCh chroma, is a grey with no hue to speak of.
+const LAST_PRICE_TINT: f64 = 0.03;
+
+/// How light the last price is on a dark theme, at least, in OKLCh
+/// lightness: a pale tint of its swatch, which stands out over the
+/// candles and the profiles the line crosses rather than sitting among
+/// them.
+const LAST_PRICE_LIGHT: f64 = 0.86;
+
+/// The contrast the last price is held to on a light theme, at least:
+/// a line that must be found at a glance on a pale chart, darkened in its
+/// own hue until it is.
+const LAST_PRICE_ON_LIGHT: ContrastBand = ContrastBand::new(4.5, 21.0);
+
+/// The last price's colour on `theme`: its own if somebody set one;
+/// otherwise the first of the palette's cyan, amber, teal, blue and violet
+/// far enough round the wheel from both candles, as a pale tint of itself
+/// on a dark theme and darkened in its own hue until it reads on a light
+/// one. A theme without the swatches takes its accent the same way.
+///
+/// Worked out when the theme is put on, never on a frame.
+pub fn theme_last_price(theme: &Theme) -> String {
+    if let Some(hex) = &theme.last_price {
+        return hex.clone();
+    }
+    let bars = theme_bars(theme);
+    // A grey candle has no hue to keep away from.
+    let hues: Vec<f64> = [&bars.up, &bars.down]
+        .into_iter()
+        .filter_map(|hex| Oklch::of(hex))
+        .filter(|c| c.c >= LAST_PRICE_TINT)
+        .map(|c| c.h)
+        .collect();
+    let apart = |hex: &str| {
+        Oklch::of(hex).is_some_and(|c| c.c >= LAST_PRICE_TINT && hues.iter().all(|h| hue_gap(c.h, *h) >= LAST_PRICE_HUE_GAP))
+    };
+    let base = LAST_PRICE_SWATCHES
+        .into_iter()
+        .filter_map(|name| theme.swatch(name).map(|swatch| swatch.hex.clone()))
+        .find(|hex| apart(hex))
+        .unwrap_or_else(|| theme.ui.accent.clone());
+    match theme.mode {
+        Mode::Dark => match Oklch::of(&base) {
+            Some(colour) if colour.l < LAST_PRICE_LIGHT => colour.with_lightness(LAST_PRICE_LIGHT).hex(),
+            _ => base,
+        },
+        Mode::Light => held_to(&base, &theme.ui.background, LAST_PRICE_ON_LIGHT, None),
+    }
+}
+
 /// What a theme holds as set by hand, which an edit starts from.
 pub fn editable_trading(theme: &Theme) -> TradingLook {
     theme.trading.as_deref().cloned().unwrap_or_default()
@@ -351,6 +458,53 @@ pub fn editable_trading(theme: &Theme) -> TradingLook {
 impl Theme {
     pub fn swatch(&self, name: &str) -> Option<&Swatch> {
         self.swatches.iter().find(|s| s.name == name)
+    }
+
+    /// Every colour the palette offers, as the picker shows them: the
+    /// theme's swatches and then [`NEUTRAL`], worked out from it now.
+    pub fn palette(&self) -> Vec<Swatch> {
+        let mut all = self.swatches.clone();
+        if self.swatch(NEUTRAL).is_none() {
+            all.push(Swatch { name: NEUTRAL.to_string(), hex: self.neutral() });
+        }
+        all
+    }
+
+    /// The theme's neutral: a very light tone of its own hue on a dark
+    /// chart, a very dark one on a light chart.
+    ///
+    /// The hue and the tint come from the theme's text when it has any, so
+    /// Tokyo Night's is a pale lavender and Gruvbox's a cream; from its
+    /// background or panels when the text is a plain grey; and from its
+    /// accent when the whole theme is grey, so no theme gets a white or a
+    /// black that belongs to no theme. The tint is held to a narrow band
+    /// of chroma: a tone, not a colour. Whichever side of the background
+    /// the text is on decides light or dark, and when that lightness would make it the text
+    /// colour over again, as on a theme whose text is already that light,
+    /// it is the text's own lightness toned a step towards the chart.
+    pub fn neutral(&self) -> String {
+        let (Some(ground), Some(text)) = (Oklch::of(&self.ui.background), Oklch::of(&self.ui.text)) else {
+            return self.ui.text.clone();
+        };
+        let panels = [&self.ui.background, &self.ui.surface, &self.ui.surface_variant, &self.ui.border]
+            .into_iter()
+            .filter_map(|hex| Oklch::of(hex))
+            .find(|colour| colour.c >= NEUTRAL_TINT);
+        let source = Some(text)
+            .filter(|text| text.c >= NEUTRAL_TEXT_TINT)
+            .or(panels)
+            .or_else(|| Oklch::of(&self.ui.accent))
+            .unwrap_or(text);
+        let c = source.c.clamp(NEUTRAL_MIN_CHROMA, NEUTRAL_MAX_CHROMA);
+        let light = text.l > ground.l;
+        let tone = |l: f64| Oklch { l, c, h: source.h }.hex();
+        let first = tone(if light { NEUTRAL_LIGHT } else { NEUTRAL_DARK });
+        if delta_e(&first, &self.ui.text) >= NEUTRAL_FROM_TEXT {
+            return first;
+        }
+        // Back from the text towards the chart, which keeps the tint: past
+        // a near-white text there is too little room left for any.
+        tone(if light { text.l - NEUTRAL_FROM_TEXT_STEP } else { text.l + NEUTRAL_FROM_TEXT_STEP })
     }
 
     /// The nth colour to hand an overlay that has not been given one.
@@ -760,6 +914,7 @@ fn midnight() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -788,6 +943,7 @@ fn carbon() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -821,6 +977,7 @@ fn paper() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -851,6 +1008,7 @@ fn daylight() -> Theme {
         ]),
         bars: None,
         trading: None,
+        last_price: None,
     }
 }
 
@@ -1676,6 +1834,130 @@ pub fn rgb(hex: &str) -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A theme of the given ground and text, with nothing else that matters
+    /// to its neutral: the panels and the grid sit on the ground itself.
+    fn grounded(mode: Mode, background: &str, text: &str, grid: &str) -> Theme {
+        let mut theme = midnight();
+        theme.mode = mode;
+        theme.ui.background = background.into();
+        theme.ui.text = text.into();
+        theme.ui.grid = grid.into();
+        theme.ui.surface = background.into();
+        theme.ui.surface_variant = background.into();
+        theme.ui.border = background.into();
+        theme
+    }
+
+    /// The last price is a pale tint of the palette's cyan on a dark theme
+    /// and a darkened one on a light theme, the next of the palette's
+    /// colours when the cyan is a candle's, and whatever somebody set on a
+    /// theme of their own; a theme stored before it could be set has none.
+    #[test]
+    fn the_last_price_is_a_palette_colour_apart_from_the_candles_unless_set() {
+        let themes = builtin_themes();
+        let dark = themes.iter().find(|t| t.mode == Mode::Dark).unwrap();
+        let light = themes.iter().find(|t| t.mode == Mode::Light).unwrap();
+        let tint = |theme: &Theme| Oklch::of(&theme_last_price(theme)).unwrap();
+        let cyan = |theme: &Theme| Oklch::of(&theme.swatch("Cyan").unwrap().hex).unwrap();
+        assert!(tint(dark).l >= LAST_PRICE_LIGHT - 0.01, "pale on a dark chart");
+        assert!(hue_gap(tint(dark).h, cyan(dark).h) < 5.0, "and the cyan's own hue");
+        assert!(contrast_ratio(&theme_last_price(light), &light.ui.background) >= 4.5, "reads on a light one");
+        assert!(hue_gap(tint(light).h, cyan(light).h) < 5.0);
+
+        let mut cyan_up = dark.clone();
+        cyan_up.bars = Some(BarScheme { up: dark.swatch("Cyan").unwrap().hex.clone(), ..theme_bars(dark) });
+        let amber = Oklch::of(&dark.swatch("Amber").unwrap().hex).unwrap();
+        assert!(hue_gap(tint(&cyan_up).h, amber.h) < 5.0, "the cyan is a candle's, so the amber");
+
+        let mut own = dark.clone();
+        own.last_price = Some("#ffcc00".into());
+        assert_eq!(theme_last_price(&own), "#ffcc00");
+        let stored = serde_json::to_string(dark).unwrap();
+        assert!(!stored.contains("last_price"), "nothing written unless set");
+        assert_eq!(serde_json::from_str::<Theme>(&stored).unwrap().last_price, None);
+    }
+
+    /// The neutral is a name like the others, stored as a name and
+    /// resolved against whichever theme is showing: on a navy chart a very
+    /// light lavender, the text's own hue a step lighter than the text, and
+    /// on a warm white one a very dark warm brown, so it stands out from
+    /// the chart rather than sitting on it.
+    #[test]
+    fn the_neutral_is_worked_out_from_a_dark_theme_and_from_a_light_one() {
+        let neutral = ColorChoice::swatch(NEUTRAL);
+
+        // Tokyo Night's ground and text.
+        let dark = grounded(Mode::Dark, "#1a1b26", "#a9b1d6", "#24283b");
+        let hex = neutral.resolve(&dark);
+        assert_eq!(hex, dark.neutral());
+        let (text, tone) = (Oklch::of("#a9b1d6").unwrap(), Oklch::of(&hex).unwrap());
+        assert!(tone.l > 0.85, "{hex} is not very light");
+        assert!(delta_e(&hex, "#1a1b26") >= 0.5, "{hex} does not stand out from the chart");
+        assert!(delta_e(&hex, "#24283b") >= 0.5, "{hex} could be taken for the grid");
+        assert!(delta_e(&hex, "#a9b1d6") >= NEUTRAL_FROM_TEXT, "{hex} is just the text colour");
+        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c >= NEUTRAL_MIN_CHROMA, "{hex} lost the theme's lavender");
+
+        // Paper: a warm white with warm near-black text, so a very dark
+        // warm tone, not the text and not a black.
+        let light = paper();
+        let hex = neutral.resolve(&light);
+        assert_eq!(hex, light.neutral());
+        let (ground, tone) = (Oklch::of(&light.ui.background).unwrap(), Oklch::of(&hex).unwrap());
+        assert!(tone.l < 0.4, "{hex} is not very dark");
+        assert!(delta_e(&hex, &light.ui.background) >= 0.5, "{hex} does not stand out from the chart");
+        assert!(delta_e(&hex, &light.ui.grid) >= 0.5, "{hex} could be taken for the grid");
+        assert!(delta_e(&hex, &light.ui.text) >= NEUTRAL_FROM_TEXT, "{hex} is just the text colour");
+        assert!(hue_gap(tone.h, ground.h) < 30.0 && tone.c >= 0.03, "{hex} lost Paper's warmth");
+
+        // The same stored name is a different colour on each.
+        assert_ne!(neutral.resolve(&dark), neutral.resolve(&light));
+    }
+
+    /// Text already as light as the neutral would be is not handed back as
+    /// the neutral: it is toned a step towards the chart, keeping its tint.
+    #[test]
+    fn a_neutral_that_would_be_the_text_is_toned_back_from_it() {
+        let theme = grounded(Mode::Dark, "#1e1e2e", "#cdd6f4", "#2b2c3d");
+        let (hex, text) = (theme.neutral(), Oklch::of("#cdd6f4").unwrap());
+        let tone = Oklch::of(&hex).unwrap();
+        assert!(delta_e(&hex, "#cdd6f4") >= NEUTRAL_FROM_TEXT, "{hex}");
+        assert!(tone.l < text.l && tone.l > 0.8, "{hex} is not a light tone just under the text");
+        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c > 0.03, "{hex} lost the tint");
+    }
+
+    /// A theme that is grey all through, black and white, takes its tint
+    /// from its accent rather than ending on a white or a black that
+    /// belongs to no theme: very light on the black chart, very dark on
+    /// the white one, and far from the grid either way.
+    #[test]
+    fn a_grey_theme_takes_its_neutral_tint_from_its_accent() {
+        let black = grounded(Mode::Dark, "#000000", "#ffffff", "#191919");
+        let accent = Oklch::of(&black.ui.accent).unwrap();
+        let hex = black.neutral();
+        let tone = Oklch::of(&hex).unwrap();
+        assert!(tone.l > 0.85 && delta_e(&hex, "#ffffff") >= NEUTRAL_FROM_TEXT, "{hex}");
+        assert!(delta_e(&hex, "#191919") >= 0.5, "{hex} reads as a grid line");
+        assert!(hue_gap(tone.h, accent.h) < 10.0 && tone.c > 0.03, "{hex} is a plain grey");
+
+        let white = grounded(Mode::Light, "#ffffff", "#000000", "#ececec");
+        let hex = white.neutral();
+        let tone = Oklch::of(&hex).unwrap();
+        assert!(tone.l < 0.4 && delta_e(&hex, "#000000") >= NEUTRAL_FROM_TEXT, "{hex}");
+        assert!(delta_e(&hex, "#ececec") >= 0.5, "{hex} reads as a grid line");
+        assert!(hue_gap(tone.h, accent.h) < 10.0 && tone.c > 0.03, "{hex} is a plain grey");
+    }
+
+    /// The picker shows the palette in the order the names list it, the
+    /// neutral last, on every built-in theme.
+    #[test]
+    fn the_palette_is_the_swatches_and_then_the_neutral() {
+        for theme in builtin_themes() {
+            let names: Vec<String> = theme.palette().into_iter().map(|s| s.name).collect();
+            assert_eq!(names, PALETTE_NAMES, "{}", theme.name);
+            assert_eq!(theme.palette().last().unwrap().hex, theme.neutral());
+        }
+    }
 
     /// A side is the theme's Blue and Amber, money its up and down, so
     /// the two are never told in the same colours; and the trading colours
