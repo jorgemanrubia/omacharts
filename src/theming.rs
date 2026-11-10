@@ -875,6 +875,107 @@ popover.menu radio:checked { color: @accent_color; }
 popover.menu radio { border: none; padding: 2px; }
 popover.menu radio:checked { -gtk-icon-source: -gtk-icontheme('object-select-symbolic'); }
 popover.menu radio:not(:checked) { -gtk-icon-source: none; }
+/* A dropdown's list is the same menu: its rows are menu rows, and the one
+   picked carries the same tick. Only the hover fills a row: the picked one
+   is the list's selection, and filling it too would say it twice. */
+popover.menu listview > row {
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+popover.menu listview > row:selected { background: none; }
+popover.menu listview > row:hover { background-color: alpha(@accent_color, 0.22); }
+popover.menu listview > row image { color: @accent_color; }
+
+/* Every control speaks quietly, in one voice: what is picked reads, what is
+   not fades, and the accent marks the choice. A control that shouts (a
+   bright slab of a switch, a filled pill of a tab) pulls the eye off the
+   setting it changes. Some selectors reach into libadwaita's own widgets
+   (a combo row's list, a view switcher's box, a switch's glyphs), checked
+   against libadwaita 1.10.
+   A dropdown is its value and a chevron, a step dimmer than the title, so
+   the row reads as a setting rather than a field to fill in. */
+row.combo listview.inline,
+row.combo .dropdown-arrow { color: alpha(@window_fg_color, 0.60); }
+row.combo:hover listview.inline,
+row.combo:hover .dropdown-arrow { color: @window_fg_color; }
+/* A switch is the accent only when on. Off, its track is bright enough
+   to read as a control on the row rather than a smudge beside it. */
+switch {
+  min-width: 0;
+  min-height: 0;
+  padding: 3px;
+  border: none;
+  border-radius: 99px;
+  box-shadow: none;
+  background-color: alpha(@window_fg_color, 0.22);
+}
+switch:hover { background-color: alpha(@window_fg_color, 0.28); }
+switch:checked { background-color: @accent_bg_color; }
+switch > slider {
+  min-width: 16px;
+  min-height: 16px;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  box-shadow: none;
+  background-color: @window_fg_color;
+}
+switch:checked > slider { background-color: @view_bg_color; }
+/* Its on and off glyphs stay hidden, and take no room: GTK sizes a switch
+   by the larger of them and its knob. */
+switch > image { color: transparent; -gtk-icon-size: 1px; }
+/* A menu of actions behind a word (Add a data feed…, Save as…) is that
+   word in the accent, as a row's action is, its chevron saying it opens. */
+menubutton > button.text-button {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  box-shadow: none;
+  background: none;
+  font-weight: normal;
+  color: @accent_color;
+}
+menubutton > button.text-button:hover,
+menubutton > button.text-button:checked { background-color: alpha(@accent_color, 0.12); }
+/* Tabs are words: the one shown reads, underlined in the accent, the
+   others fade. Both kinds of switcher give every tab the widest one's
+   width, so the underline is the word's (and its icon's), to hug it. */
+stackswitcher.linked > button,
+viewswitcher button {
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.38);
+}
+stackswitcher.linked > button > label,
+viewswitcher button > stack > box.wide {
+  padding: 3px 1px;
+  border-bottom: 2px solid transparent;
+}
+stackswitcher.linked > button:hover,
+viewswitcher button:hover { color: alpha(@window_fg_color, 0.60); }
+stackswitcher.linked > button:checked,
+viewswitcher button:checked { color: @window_fg_color; }
+stackswitcher.linked > button:checked > label,
+viewswitcher button:checked > stack > box.wide { border-bottom-color: @accent_color; }
+/* A choice of two or three, all in view (see `controls::Hours`): the same
+   words as the tabs, a size down, without the underline. */
+.words { border-spacing: 2px; }
+.words button {
+  min-height: 26px;
+  min-width: 0;
+  padding: 0 6px;
+  border-radius: 5px;
+  color: alpha(@window_fg_color, 0.38);
+}
+.words button:hover { background-color: alpha(@window_fg_color, 0.08); }
+.words button:checked { background: none; color: @window_fg_color; font-weight: 600; }
+.words button:checked:hover { background-color: alpha(@window_fg_color, 0.08); }
+.words label.dot { color: alpha(@window_fg_color, 0.38); }
 
 /* A picker over a chart (see `pick_frame`) is the same surface with no title
    bar: the search box is its top edge, on a hairline, and the chart it will

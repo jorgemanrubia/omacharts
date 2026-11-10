@@ -41,7 +41,7 @@ crop: 496,176,1568,1328 (both; the whole window, 12px layout margin)
 | **Scales** › **Gridlines** | Draws the grid, on every chart, or on this chart alone when it has [a look of its own](/manual/charts/#a-charts-own-look). The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) |
 | **Scales** › **Last price line** | The dashed line across at the last price, on every chart, or on this chart alone when it has a look of its own. The price stays on the axis either way ([The last price line](/manual/charts/#the-last-price-line)) |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
-| **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
+| **Session** › **Hours** | **Extended** or **Regular** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
 | **Drawings** › **Send drawings to other charts** | Off, what is drawn on this chart stays on this chart ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |
 | **Reset to defaults** › **Reset** | Puts this chart back on the defaults. See [Putting one chart back on the defaults](#putting-one-chart-back-on-the-defaults) |
@@ -70,7 +70,7 @@ crop: 449,69,1662,1302   (the whole window, 12px margin)
 | Group › row | Choices | Default |
 |---|---|---|
 | **Scales** › **Logarithmic scale** | On or off | Off |
-| **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
+| **Session** › **Hours** | **Extended**, **Regular** | **Extended** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
 | **Indicators** › **Show legend for indicators** | On or off ([The legend](/manual/indicators/#the-legend)) | On |
 | **Drawings** › **Show drawings from other charts**, **Send drawings to other charts** | On or off ([Drawings](/manual/drawings/)) | On |

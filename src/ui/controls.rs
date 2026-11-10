@@ -5,6 +5,51 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
+use omacharts_engine::Session;
+
+/// Which hours a chart shows: the Hours row, its two choices as words.
+///
+/// Both are in view rather than behind a dropdown, since the whole answer
+/// fits on the row: the one picked reads, the other fades, and one click
+/// changes it. The buttons are one group, so showing a session is
+/// `set_active` on its button, and a pick is one turning active.
+pub(crate) struct Hours {
+    /// The row, ready to be added to a group. It holds the buttons.
+    pub row: adw::ActionRow,
+    pub buttons: Vec<(Session, gtk::ToggleButton)>,
+}
+
+impl Hours {
+    pub(crate) fn new() -> Hours {
+        let row = adw::ActionRow::new();
+        row.set_title("Hours");
+        let words = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        words.add_css_class("words");
+        words.set_valign(gtk::Align::Center);
+        let mut buttons: Vec<(Session, gtk::ToggleButton)> = Vec::new();
+        for (at, session) in Session::ALL.into_iter().enumerate() {
+            if at > 0 {
+                let dot = gtk::Label::new(Some("·"));
+                dot.add_css_class("dot");
+                words.append(&dot);
+            }
+            // The row is titled Hours, so each word leaves "hours" out.
+            let word = match session {
+                Session::Extended => "Extended",
+                Session::Regular => "Regular",
+            };
+            let button = gtk::ToggleButton::with_label(word);
+            button.add_css_class("flat");
+            if let Some((_, first)) = buttons.first() {
+                button.set_group(Some(first));
+            }
+            words.append(&button);
+            buttons.push((session, button));
+        }
+        row.add_suffix(&words);
+        Hours { row, buttons }
+    }
+}
 
 /// A number with two ends: a slider to aim with, and a box to say it in.
 ///

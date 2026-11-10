@@ -377,7 +377,7 @@ const SWITCHES: [Switch; 4] = [
 /// one, and `settled` runs after them. Only a person's change is one: the
 /// rows announce their value as they are set, too.
 pub(crate) struct ChartRows {
-    pub session: adw::ComboRow,
+    pub session: adw::ActionRow,
     pub continuous: adw::ComboRow,
     pub log: adw::SwitchRow,
     pub shows: adw::SwitchRow,
@@ -399,7 +399,7 @@ impl ChartRows {
             row.set_model(Some(&gtk::StringList::new(&names)));
             row
         };
-        let session = choice("Hours", Session::ALL.iter().map(|s| s.label()).collect());
+        let hours = controls::Hours::new();
         let continuous = choice("Continuous futures", Adjustment::ALL.iter().map(|a| a.label()).collect());
         let template = choice("Template", Vec::new());
         let switches = SWITCHES.map(|(title, ..)| {
@@ -417,12 +417,11 @@ impl ChartRows {
         // whatever window shows them.
         let show: Rc<dyn Fn()> = {
             let (window, every, ids, showing) = (window.clone(), every.clone(), ids.clone(), showing.clone());
-            let (session, continuous, template) = (session.downgrade(), continuous.downgrade(), template.downgrade());
+            let (continuous, template) = (continuous.downgrade(), template.downgrade());
+            let sessions: Vec<_> = hours.buttons.iter().map(|(session, button)| (*session, button.downgrade())).collect();
             let switches = switches.each_ref().map(|row| row.downgrade());
             Rc::new(move || {
-                let (Some(session), Some(continuous), Some(template)) =
-                    (session.upgrade(), continuous.upgrade(), template.upgrade())
-                else {
+                let (Some(continuous), Some(template)) = (continuous.upgrade(), template.upgrade()) else {
                     return;
                 };
                 let current = match every() {
@@ -432,7 +431,9 @@ impl ChartRows {
                 let templates = window.templates();
                 *ids.borrow_mut() = templates.iter().map(|t| t.id).collect();
                 showing.set(true);
-                session.set_selected(Session::ALL.iter().position(|s| *s == current.session).unwrap_or(0) as u32);
+                if let Some(button) = sessions.iter().find(|(s, _)| *s == current.session).and_then(|(_, b)| b.upgrade()) {
+                    button.set_active(true);
+                }
                 continuous.set_selected(Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0) as u32);
                 for (row, (_, on, _)) in switches.iter().zip(SWITCHES) {
                     if let Some(row) = row.upgrade() {
@@ -461,11 +462,13 @@ impl ChartRows {
                 });
             })
         };
-        {
-            let change = change.clone();
-            session.connect_selected_notify(move |row| {
-                let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
-                change(ChartSetting::Session(chosen));
+        for (chosen, button) in &hours.buttons {
+            let (change, chosen) = (change.clone(), *chosen);
+            // The one turning off is not a pick: the one turning on is.
+            button.connect_toggled(move |button| {
+                if button.is_active() {
+                    change(ChartSetting::Session(chosen));
+                }
             });
         }
         {
@@ -491,7 +494,7 @@ impl ChartRows {
         });
 
         let [log, shows, sends, legend] = switches;
-        ChartRows { session, continuous, log, shows, sends, legend, template, show }
+        ChartRows { session: hours.row, continuous, log, shows, sends, legend, template, show }
     }
 }
 
