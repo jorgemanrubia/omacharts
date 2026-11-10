@@ -456,10 +456,33 @@ fn reform(session: &dyn Session, account: &str, cancel: &Order, pair: &[OrderReq
         };
         ran.placed = pair.iter().map(|order| (order.clone(), Err(why.clone()))).collect();
         if gone {
-            let left = cancel.qty.saturating_sub(now.map_or(cancel.filled, |now| now.filled));
+            // As much of it as is still held, as the other branches size
+            // it: less what it and its partners filled meanwhile, and
+            // nothing at all once the position is flat or held the other
+            // way. A partner still working is linked with it again.
+            let partnered = |partner: &Order| book.order(&partner.basket_id).map_or(0, |now| now.filled.saturating_sub(partner.filled));
+            let partners_filled: u32 = partners.iter().map(partnered).sum();
+            let remaining = cancel.qty.saturating_sub(cancel.filled).saturating_sub(partners_filled);
+            let still: Vec<String> = partners
+                .iter()
+                .filter(|partner| book.order(&partner.basket_id).is_some_and(|now| now.status.working()))
+                .map(|partner| partner.basket_id.clone())
+                .collect();
+            // Not listed is flat as often as not told yet: with the cancel
+            // unanswered there is no fill to go by, so it is not guessed.
+            let listed = book.position(account, &cancel.contract).is_some();
+            drop(book);
+            let left = if listed { left_to_close(session, account, cancel, remaining) } else { 0 };
+            if !listed {
+                ran.unsure = Some(format!("the {what} was cancelled with no answer and no position is listed, check the position"));
+            }
             if left > 0 {
                 let back = OrderRequest { qty: left, ..pair[again].clone() };
                 put_back(session, &mut ran, back);
+                if let Some((_, Ok(basket))) = ran.restored.as_ref().filter(|_| !still.is_empty()) {
+                    let baskets = std::iter::once(basket.clone()).chain(still).collect();
+                    ran.link = Some(Ok(Link { account: account.to_string(), baskets, holder: Holder::App }));
+                }
             }
         }
         return ran;
@@ -834,6 +857,63 @@ mod tests {
         assert!(ran.placed.iter().all(|(_, placed)| matches!(placed, Err(Failure::Unanswered(_)))));
         assert_eq!(session.heard.lock().unwrap().iter().filter(|heard| **heard == "pair").count(), 0, "a pair sent blind");
         assert!(ran.restored.is_none());
+    }
+
+    /// The working exit's cancel unanswered, though the book has it
+    /// cancelled: it goes back in, sized to what is still held, as the
+    /// other ways of putting it back are. Nothing goes back once the
+    /// position is flat, nor more than a partner that filled meanwhile
+    /// left, and a partner still working is linked with it again.
+    #[test]
+    fn an_exit_gone_unanswered_goes_back_only_for_what_is_held() {
+        // Held whole: back as it was.
+        let session = session(Linking::AtSubmission);
+        long(&session, 2);
+        let working_target = first(&session, &target(2));
+        let plan = Plan::exit(Linking::AtSubmission, stop(2), Some(&working_target));
+        session.cancel_lost.store(true, Ordering::Release);
+        let ran = plan.run(&session, "951");
+        assert!(matches!(ran.cancelled, Some(Err(Failure::Unanswered(_)))), "{ran:?}");
+        let (again, placed) = ran.restored.expect("the target put back");
+        assert!(placed.is_ok());
+        assert_eq!((again.kind, again.qty), (OrderKind::Limit, 2));
+
+        // Half closed meanwhile by hand: back for the half still held.
+        let session = self::session(Linking::AtSubmission);
+        long(&session, 2);
+        let working_target = first(&session, &target(2));
+        let plan = Plan::exit(Linking::AtSubmission, stop(2), Some(&working_target));
+        session.place(&request(Side::Sell, OrderKind::Market, 1, None)).unwrap();
+        session.cancel_lost.store(true, Ordering::Release);
+        let ran = plan.run(&session, "951");
+        assert_eq!(ran.restored.map(|(again, _)| again.qty), Some(1), "more put back than is held");
+
+        // Flat meanwhile: nothing goes back, which would open a position.
+        let session = self::session(Linking::AtSubmission);
+        long(&session, 1);
+        let working_target = first(&session, &target(1));
+        let plan = Plan::exit(Linking::AtSubmission, stop(1), Some(&working_target));
+        session.place(&request(Side::Sell, OrderKind::Market, 1, None)).unwrap();
+        session.cancel_lost.store(true, Ordering::Release);
+        let ran = plan.run(&session, "951");
+        assert!(ran.restored.is_none(), "an exit put back on a flat position: {ran:?}");
+        assert!(ran.unsure.is_some_and(|why| why.contains("no position is listed")));
+        assert!(working(&session).is_empty());
+
+        // Paired with a stop that filled in part, the rest working: back
+        // for what the stop left, and linked with it.
+        let session = self::session(Linking::AtSubmission);
+        long(&session, 3);
+        let working_target = first(&session, &target(3));
+        let partner = first(&session, &stop(3));
+        let plan = Plan::exit(Linking::AtSubmission, stop(3), Some(&working_target)).paired_with(vec![partner.clone()]);
+        session.fill_part(&partner.basket_id, 1);
+        session.cancel_lost.store(true, Ordering::Release);
+        let ran = plan.run(&session, "951");
+        let (again, placed) = ran.restored.clone().expect("the target put back");
+        assert_eq!(again.qty, 2, "{ran:?}");
+        let link = ran.link.expect("linked again").expect("linked");
+        assert_eq!((link.holder, link.baskets), (Holder::App, vec![placed.unwrap(), partner.basket_id]));
     }
 
     /// A target added to a working stop, where the trading service links

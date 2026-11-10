@@ -195,6 +195,9 @@ pub struct FakeSession {
     /// before the exchange has it, until [`FakeSession::open`] or
     /// [`FakeSession::fill`]; a market order too.
     pub holds: std::sync::atomic::AtomicBool,
+    /// The next cancel goes through, but its answer is lost on the way:
+    /// the order is cancelled and the cancel says nothing came back.
+    pub cancel_lost: std::sync::atomic::AtomicBool,
 }
 
 impl FakeSession {
@@ -232,6 +235,7 @@ impl FakeSession {
             uncancelled: AtomicUsize::new(0),
             silent: Default::default(),
             holds: Default::default(),
+            cancel_lost: Default::default(),
         }
     }
 
@@ -510,7 +514,10 @@ impl Session for FakeSession {
         self.end_linked(&mut book, basket);
         drop(book);
         self.moved();
-        Ok(())
+        match self.cancel_lost.swap(false, Ordering::AcqRel) {
+            true => Err(Failure::Unanswered("no answer in time".into())),
+            false => Ok(()),
+        }
     }
     fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), Failure> {
         self.refused()?;
