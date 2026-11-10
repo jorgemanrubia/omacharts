@@ -323,6 +323,11 @@ struct State {
     /// here keeps its range however the bars change, as a held price scale
     /// does, and is let go of by a reset.
     strip_held: BTreeMap<u32, (f64, f64)>,
+    /// The kind of indicator each held strip was held for: an id is reused
+    /// once its indicator is removed, and one of another kind under it, or
+    /// one a template brings in under an id it had of its own, fits itself
+    /// rather than take on a range that was never its.
+    strip_kinds: BTreeMap<u32, indicators::Kind>,
     /// Whether the price axis is logarithmic: equal distances on it are equal
     /// ratios rather than equal differences. Asked for, not promised — see
     /// [`PriceScale`] for when it is drawn linear anyway.
@@ -1387,6 +1392,7 @@ impl State {
             price_auto: true,
             price_base: Cell::new(None),
             strip_held: BTreeMap::new(),
+            strip_kinds: BTreeMap::new(),
             price_log: false,
             drawings: Vec::new(),
             show_drawings: true,
@@ -2058,7 +2064,28 @@ impl State {
     fn hold_strip(&mut self, id: u32, low: f64, high: f64) {
         if low.is_finite() && high.is_finite() && high - low > f64::EPSILON * low.abs().max(high.abs()).max(1.0) {
             self.strip_held.insert(id, (low, high));
+            if let Some(drawn) = self.indicators.iter().find(|d| d.indicator.id == id) {
+                self.strip_kinds.insert(id, drawn.indicator.kind);
+            }
         }
+    }
+
+    /// Let go of the strips held for an indicator the chart no longer
+    /// draws, or for one of another kind than now has its id.
+    fn prune_strips(&mut self) {
+        let now: BTreeMap<u32, indicators::Kind> = self.indicators.iter().map(|d| (d.indicator.id, d.indicator.kind)).collect();
+        let kinds = &mut self.strip_kinds;
+        self.strip_held.retain(|id, _| match (now.get(id), kinds.get(id)) {
+            (None, _) => false,
+            (Some(kind), Some(held)) => kind == held,
+            // Brought back before its kind was known: it is this one's.
+            (Some(kind), None) => {
+                kinds.insert(*id, *kind);
+                true
+            }
+        });
+        let held = &self.strip_held;
+        self.strip_kinds.retain(|id, _| held.contains_key(id));
     }
 
     /// Stretch or squeeze the strip `id`'s scale about its middle, taking
@@ -2072,6 +2099,7 @@ impl State {
     /// Every strip back to fitting what is on screen.
     fn free_strips(&mut self) {
         self.strip_held.clear();
+        self.strip_kinds.clear();
     }
 
     /// Which scale a gesture at `x`, `y` works on: a strip's when it is
@@ -2396,6 +2424,10 @@ impl State {
             // brought back for it, from before a restart.
             if !first {
                 self.price_base.set(None);
+                // A strip's range is in values of this series, which
+                // another symbol's or timeframe's are nowhere near: each
+                // fits itself again.
+                self.free_strips();
             }
         }
         self.fit_range();
@@ -4521,11 +4553,33 @@ impl ChartView {
         self.state.borrow().strip_held.clone()
     }
 
+    /// The kind of indicator each held strip was held for, where known.
+    pub fn held_strip_kinds(&self) -> BTreeMap<u32, indicators::Kind> {
+        self.state.borrow().strip_kinds.clone()
+    }
+
     /// Hold the strip of the indicator `id` at these values, bottom and top:
     /// one brought back from where it was written down, before or after the
-    /// indicator is drawn.
-    pub fn hold_strip_window(&self, id: u32, low: f64, high: f64) {
-        self.state.borrow_mut().hold_strip(id, low, high);
+    /// indicator is drawn. Held for `kind` when it is known, so that only
+    /// an indicator of that kind under `id` takes it.
+    pub fn hold_strip_window(&self, id: u32, kind: Option<indicators::Kind>, low: f64, high: f64) {
+        let mut state = self.state.borrow_mut();
+        state.hold_strip(id, low, high);
+        if let (Some(kind), true) = (kind, state.strip_held.contains_key(&id)) {
+            state.strip_kinds.insert(id, kind);
+        }
+        // Drawn already: held only if it is that kind.
+        if state.indicators.iter().any(|d| d.indicator.id == id) {
+            state.prune_strips();
+        }
+        drop(state);
+        self.redraw();
+    }
+
+    /// Every strip back to fitting itself: when what the series is drawn
+    /// from changes in a way the chart cannot see, its trading hours.
+    pub fn free_strip_windows(&self) {
+        self.state.borrow_mut().free_strips();
         self.redraw();
     }
 
@@ -4588,6 +4642,7 @@ impl ChartView {
         let wanted = {
             let mut s = self.state.borrow_mut();
             s.indicators = indicators;
+            s.prune_strips();
             let arrived = s.pending_pick.filter(|id| s.indicators.iter().any(|d| d.indicator.id == *id));
             if arrived.is_some() {
                 s.pending_pick = None;
@@ -11247,6 +11302,57 @@ mod tests {
         assert_eq!(state.dragged_tick(), Some(0.5), "what the rules are asked about");
         state.mark_tick = None;
         assert_eq!(state.dragged_tick(), state.tick(), "the series' own once unset");
+    }
+
+    /// A strip held on its own scale lets go of it when the series is
+    /// another symbol's or timeframe's, whose values are nowhere near, as
+    /// the price's held window does; a refresh of the same series keeps it.
+    #[test]
+    fn a_zoomed_strip_fits_itself_again_on_another_series() {
+        let mut state = with_delta(400);
+        state.instrument = Some(named("ES"));
+        let bars = state.bars.clone();
+        state.hold_strip(2, -500.0, 500.0);
+        state.replace_series(named("ES"), state.timeframe, bars.clone());
+        assert_eq!(state.strip_window(2, None), Some((-500.0, 500.0)), "a refresh let go of it");
+        state.replace_series(named("NQ"), state.timeframe, bars.clone());
+        assert!(state.strip_held.is_empty() && state.strip_kinds.is_empty(), "held across a symbol");
+        state.hold_strip(2, -500.0, 500.0);
+        state.replace_series(named("NQ"), Timeframe::minutes(5), bars);
+        assert!(state.strip_held.is_empty(), "held across a timeframe");
+    }
+
+    /// A strip's range goes with its indicator: removed, its id is let go
+    /// of, so one added later under the same id fits itself, and one of
+    /// another kind under a held id, as a template can bring, does not
+    /// take on a range held for something else.
+    #[test]
+    fn a_strip_s_range_goes_with_its_indicator() {
+        let mut state = with_delta(400);
+        state.hold_strip(2, -500.0, 500.0);
+        assert_eq!(state.strip_kinds.get(&2), Some(&indicators::Kind::Cvd));
+        let delta = state.indicators.pop().unwrap();
+        state.prune_strips();
+        assert!(state.strip_held.is_empty() && state.strip_kinds.is_empty(), "kept for a removed indicator");
+        state.indicators.push(delta.clone());
+        state.prune_strips();
+        assert_eq!(state.strip_window(2, None), None, "a new indicator under the id inherited it");
+
+        // Another kind under the id: brought back for a CVD, drawn as an RSI.
+        state.hold_strip(2, -500.0, 500.0);
+        let indicator = Indicator::new(2, indicators::Kind::Rsi);
+        let output = indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+        state.indicators = vec![Drawn { color: "#5588ff".to_string(), output, indicator }];
+        state.prune_strips();
+        assert!(state.strip_held.is_empty(), "an RSI took a CVD's range");
+
+        // Brought back before it is drawn, with its kind: kept for it.
+        state.indicators.clear();
+        state.strip_kinds.insert(2, indicators::Kind::Cvd);
+        state.hold_strip(2, -500.0, 500.0);
+        state.indicators = vec![delta];
+        state.prune_strips();
+        assert_eq!(state.strip_window(2, None), Some((-500.0, 500.0)));
     }
 
     /// A reset, from the axis or the menu, lets go of the price's scale and

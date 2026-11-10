@@ -1436,16 +1436,53 @@ mod strip_window_tests {
             assert!(chart.get("strip_windows").is_none(), "nothing zoomed, nothing written");
             let cvd = Indicator::new(7, omacharts_engine::IndicatorKind::Cvd);
             chart["indicators"] = serde_json::json!([cvd]);
-            chart["strip_windows"] = serde_json::json!({ "7": [-1500.0, 2500.0], "99": [1.0, 2.0] });
+            chart["indicators"] = serde_json::json!([cvd, Indicator::new(8, omacharts_engine::IndicatorKind::Rsi)]);
+            // The RSI's is one held for a cumulative delta, whose id a
+            // template has given it: it fits itself.
+            chart["strip_windows"] = serde_json::json!({
+                "7": { "kind": "cvd", "window": [-1500.0, 2500.0] },
+                "8": { "kind": "cvd", "window": [-1500.0, 2500.0] },
+                "99": { "window": [1.0, 2.0] },
+            });
             store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
             drop(first);
 
             let again = window(&store);
             let pane = again.focused_pane();
             assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "held as it was left");
+            assert_eq!(pane.view.held_strip_windows().get(&8), None, "an RSI took a cumulative delta's range");
             again.save_workspace();
             let written = stored()["books"][0]["panes"][0]["strip_windows"].clone();
-            assert_eq!(written, serde_json::json!({ "7": [-1500.0, 2500.0] }), "only the strips the chart has");
+            let kept = serde_json::json!({ "7": { "kind": "cvd", "window": [-1500.0, 2500.0] } });
+            assert_eq!(written, kept, "only the strips the chart has");
+
+            // Other trading hours are another series: let go of, and so
+            // written down.
+            let other = match again.session() {
+                Session::Regular => Session::Extended,
+                _ => Session::Regular,
+            };
+            again.set_session(other);
+            assert!(pane.view.held_strip_windows().is_empty(), "held across other hours");
+            assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "written down held");
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
+            again.save_workspace();
+            assert_eq!(stored()["books"][0]["panes"][0]["strip_windows"], kept);
+
+            // Another symbol: let go of, and written down so.
+            let nq = again.index.find("NQ", None).expect("NQ");
+            again.show_in(&pane, nq);
+            let context = glib::MainContext::default();
+            for _ in 0..400 {
+                if pane.view.held_strip_windows().is_empty() {
+                    break;
+                }
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(pane.view.held_strip_windows().is_empty(), "held across another symbol");
+            assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "written down held");
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
 
             let actions = again.trade.chart_actions.borrow().clone().expect("the chart's actions");
             actions.activate_action("reset-view", None);
@@ -2796,7 +2833,7 @@ struct StoredPane {
     /// fits itself; missing on a chart none of whose strips was zoomed, and
     /// on one written before they could be.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    strip_windows: std::collections::BTreeMap<u32, [f64; 2]>,
+    strip_windows: std::collections::BTreeMap<u32, StoredStrip>,
     /// Whether the price axis is logarithmic. Missing from a chart written
     /// before it could be, and every one of those was linear.
     #[serde(default)]
@@ -2855,6 +2892,16 @@ struct StoredPane {
     trading_symbol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trading_suffix: Option<String>,
+}
+
+/// A strip held on its own scale, as written down: the values its bottom
+/// and top show, and the kind of indicator it was held for, so that another
+/// kind given its id later fits itself rather than take it on.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+struct StoredStrip {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<omacharts_engine::IndicatorKind>,
+    window: [f64; 2],
 }
 
 fn yes() -> bool {
@@ -5045,13 +5092,22 @@ impl Window {
                     price_window: pane.view.held_price_window().map(|(low, high)| [low, high]),
                     // Only the strips of indicators the chart still has: one
                     // removed, or gone with a template, takes its zoom along.
-                    strip_windows: pane
-                        .view
-                        .held_strip_windows()
-                        .into_iter()
-                        .filter(|(id, _)| pane.indicators.borrow().iter().any(|indicator| indicator.id == *id))
-                        .map(|(id, (low, high))| (id, [low, high]))
-                        .collect(),
+                    strip_windows: {
+                        let kinds = pane.view.held_strip_kinds();
+                        let indicators = pane.indicators.borrow();
+                        pane.view
+                            .held_strip_windows()
+                            .into_iter()
+                            .filter_map(|(id, (low, high))| {
+                                let kind = indicators.iter().find(|indicator| indicator.id == id)?.kind;
+                                // Held for another kind than the chart has under its id now.
+                                if kinds.get(&id).is_some_and(|held| *held != kind) {
+                                    return None;
+                                }
+                                Some((id, StoredStrip { kind: Some(kind), window: [low, high] }))
+                            })
+                            .collect()
+                    },
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
                     drawings_shown: pane.view.show_drawings(),
@@ -5316,8 +5372,15 @@ impl Window {
             if let (false, Some([low, high])) = (stored.auto_scale, stored.price_window) {
                 pane.view.hold_price_window(low, high);
             }
-            for (id, [low, high]) in &stored.strip_windows {
-                pane.view.hold_strip_window(*id, *low, *high);
+            for (id, strip) in &stored.strip_windows {
+                // Only for the kind of indicator it was held for, should a
+                // template have put another under its id.
+                let now = pane.indicators.borrow().iter().find(|indicator| indicator.id == *id).map(|indicator| indicator.kind);
+                if strip.kind.is_some_and(|kind| now != Some(kind)) {
+                    continue;
+                }
+                let [low, high] = strip.window;
+                pane.view.hold_strip_window(*id, strip.kind, low, high);
             }
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
@@ -8533,7 +8596,13 @@ impl Window {
             }
             series.insert((key.to_string(), timeframe), bars.clone());
         }
+        let held = !pane.view.held_strip_windows().is_empty();
         pane.view.set_series(instrument.clone(), timeframe, (*bars).clone());
+        // Another symbol or timeframe lets go of the strips held on their own
+        // scale: written down so, rather than brought back after a restart.
+        if held && pane.view.held_strip_windows().is_empty() {
+            self.save_workspace();
+        }
         pane.view.set_latest(latest);
         // Bars from a feed are when it has found the contract they are
         // from, which is what an order on the chart goes to: the marks can
@@ -10446,7 +10515,12 @@ impl Window {
     }
 
     pub fn set_session(self: &Rc<Self>, session: Session) {
-        self.focused_pane().session.set(session);
+        let pane = self.focused_pane();
+        // Other hours are another series to a strip: a cumulative delta
+        // counted over them is nowhere near the range it was held at.
+        if pane.session.replace(session) != session {
+            pane.view.free_strip_windows();
+        }
         self.save_workspace();
     }
 
