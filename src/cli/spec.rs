@@ -1529,6 +1529,12 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "presentational: where a held price axis was zoomed and dragged to, remembered so a restart finds it, \
          and let go of with --auto-scale on",
     ),
+    (
+        "strip_windows",
+        "",
+        "presentational: where a strip zoomed on its own scale was left, remembered so a restart finds it, \
+         and let go of by resetting the chart's view",
+    ),
     ("log_scale", "chart set", "--log-scale"),
     ("template", "chart set", "--template"),
     ("indicators_shown", "chart set", "--indicators"),

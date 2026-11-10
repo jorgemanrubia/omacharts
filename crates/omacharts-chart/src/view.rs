@@ -25,6 +25,7 @@ pub use selection::ProfileSpot;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use gtk::cairo;
@@ -312,6 +313,12 @@ struct State {
     /// restored before the chart had a size — which the first frame fills
     /// with what it fits. A cell for that reason: drawing reads the state.
     price_base: Cell<Option<(f64, f64)>>,
+    /// The strips zoomed or dragged on their own scale, by indicator, each
+    /// with the values its bottom and top show. A strip not in here fits
+    /// what is on screen, which every strip does until it is zoomed; one in
+    /// here keeps its range however the bars change, as a held price scale
+    /// does, and is let go of by a reset.
+    strip_held: BTreeMap<u32, (f64, f64)>,
     /// Whether the price axis is logarithmic: equal distances on it are equal
     /// ratios rather than equal differences. Asked for, not promised — see
     /// [`PriceScale`] for when it is drawn linear anyway.
@@ -442,8 +449,16 @@ const HISTORY: usize = 200;
 /// charting tool, because muscle memory is the feature.
 #[derive(Clone, PartialEq, Debug)]
 enum Drag {
-    Pan { left: i64, offset: f64 },
+    /// The chart dragged: across in time, and up or down the price's scale
+    /// once it is held — or, `strip` pressed in, that strip's, whose range
+    /// it was taken at is there once it is held, with the height it is
+    /// drawn in, so the values follow the hand.
+    Pan { left: i64, offset: f64, strip: Option<StripPan> },
     PriceScale { zoom: f64 },
+    /// A strip's own axis pulled: its scale stretched or squeezed from
+    /// `from`, the range it showed as the hand took hold, which `held` says
+    /// whether it was holding then or fitting itself.
+    StripScale { id: u32, from: (f64, f64), held: bool },
     TimeScale { visible: usize },
     /// Pulling a line between two rows, to make the pane beside it taller or
     /// shorter.
@@ -466,6 +481,39 @@ enum Drag {
     /// the mark's rules let it go there. Only a preview until the release;
     /// nothing is said from here.
     Mark { what: Grab, at: f64, allowed: bool },
+}
+
+/// A strip a pan was pressed in: see [`Drag::Pan`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StripPan {
+    id: u32,
+    held: Option<(f64, f64)>,
+    inner_h: f64,
+}
+
+/// Which scale a gesture over the chart's right-hand column, or a strip,
+/// works on: the price's, or one strip's own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Axis {
+    Price,
+    Strip(u32),
+}
+
+/// What a pinch scales, and what it showed as the fingers met it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pinch {
+    Price { zoom: f64 },
+    Strip { id: u32, from: (f64, f64) },
+}
+
+/// Every vertical scale the chart has, as a gesture is compared against
+/// to tell whether it changed anything worth writing down: whether the
+/// price's is automatic, the zoom and shift of a held one, and the strips
+/// held on their own.
+#[derive(Clone, Debug, PartialEq)]
+struct Scales {
+    price: (bool, f64, f64),
+    strips: BTreeMap<u32, (f64, f64)>,
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -1333,6 +1381,7 @@ impl State {
             price_offset: 0.0,
             price_auto: true,
             price_base: Cell::new(None),
+            strip_held: BTreeMap::new(),
             price_log: false,
             drawings: Vec::new(),
             show_drawings: true,
@@ -1975,6 +2024,114 @@ impl State {
         self.price_base.set(Some((low, high)));
     }
 
+    /// The values the strip `id` shows, bottom and top: the range it is
+    /// held at, or `fit`, what is on screen, while it fits itself.
+    fn strip_window(&self, id: u32, fit: Option<(f64, f64)>) -> Option<(f64, f64)> {
+        self.strip_held.get(&id).copied().or(fit)
+    }
+
+    /// What the strip `id` fits over the bars on screen in a chart this
+    /// size: where a held one starts from, so taking hold of it never makes
+    /// it jump. A volume strip stands on nought and reaches its tallest bar.
+    fn strip_fit(&self, id: u32, width: f64, height: f64) -> Option<(f64, f64)> {
+        let drawn = self.indicators.iter().find(|d| d.indicator.id == id)?;
+        match &drawn.output {
+            Output::Volume { .. } => {
+                let most = frame(self, width, height)?.max_volume;
+                (most > 0.0).then_some((0.0, most))
+            }
+            Output::Pane(pane) => {
+                let (first, visible, _) = self.view();
+                pane_range(pane, first, visible)
+            }
+            _ => None,
+        }
+    }
+
+    /// Hold the strip `id` at these values, bottom and top. Anything that
+    /// is not a range leaves it as it was.
+    fn hold_strip(&mut self, id: u32, low: f64, high: f64) {
+        if low.is_finite() && high.is_finite() && high - low > f64::EPSILON * low.abs().max(high.abs()).max(1.0) {
+            self.strip_held.insert(id, (low, high));
+        }
+    }
+
+    /// Stretch or squeeze the strip `id`'s scale about its middle, taking
+    /// it off fitting itself: above one shows less of it, larger.
+    fn scale_strip(&mut self, id: u32, factor: f64, width: f64, height: f64) {
+        let Some(from) = self.strip_window(id, self.strip_fit(id, width, height)) else { return };
+        let (low, high) = scaled_window(from, factor);
+        self.hold_strip(id, low, high);
+    }
+
+    /// Every strip back to fitting what is on screen.
+    fn free_strips(&mut self) {
+        self.strip_held.clear();
+    }
+
+    /// Which scale a gesture at `x`, `y` works on: a strip's when it is
+    /// over that strip's row, on its axis or, with `in_plot`, anywhere in
+    /// it; otherwise the price's, over the axis. `None` over the price's
+    /// plot when `in_plot` is not asked for, and the time axis.
+    fn axis_at(&self, x: f64, y: f64, width: f64, height: f64, in_plot: bool) -> Option<Axis> {
+        let region = region_at(x, y, width, height);
+        if region == Region::TimeAxis || (region == Region::Plot && !in_plot) {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        match plan.rows.iter().find(|row| row.covers(y)).and_then(|row| row.pane) {
+            Some(id) if self.indicators.iter().any(|d| d.indicator.id == id) => Some(Axis::Strip(id)),
+            _ => (region == Region::PriceAxis).then_some(Axis::Price),
+        }
+    }
+
+    /// Where a pan pressed at `y` would move a strip's scale: the strip's
+    /// row it is in, with its held range if it holds one. `None` in the
+    /// price's row.
+    fn strip_pan_at(&self, y: f64, width: f64, height: f64) -> Option<StripPan> {
+        let plan = layout(self, width, height);
+        let row = plan.rows.iter().find(|row| row.covers(y))?;
+        let id = row.pane?;
+        let (_, inner_h) = pane_plot(row.top, row.height);
+        Some(StripPan { id, held: self.strip_held.get(&id).copied(), inner_h })
+    }
+
+    /// What a pinch begun at `x`, `y` scales: the strip it is over, from
+    /// what it shows, or the price's held scale over the price's axis. Nothing
+    /// over the price's plot or the time axis.
+    fn pinch_at(&mut self, x: f64, y: f64, width: f64, height: f64) -> Option<Pinch> {
+        match self.axis_at(x, y, width, height, true)? {
+            Axis::Strip(id) => {
+                let from = self.strip_window(id, self.strip_fit(id, width, height))?;
+                Some(Pinch::Strip { id, from })
+            }
+            Axis::Price => {
+                self.hold_price(width, height);
+                Some(Pinch::Price { zoom: self.price_zoom })
+            }
+        }
+    }
+
+    /// The fingers `scale` times as far apart as they started: that much
+    /// larger, on whichever scale the pinch took.
+    fn pinch(&mut self, pinch: Pinch, scale: f64) {
+        if !(scale.is_finite() && scale > 0.0) {
+            return;
+        }
+        match pinch {
+            Pinch::Strip { id, from } => {
+                let (low, high) = scaled_window(from, scale);
+                self.hold_strip(id, low, high);
+            }
+            Pinch::Price { zoom } => self.price_zoom = (zoom * scale).clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM),
+        }
+    }
+
+    /// Every vertical scale as it stands: see [`Scales`].
+    fn scales(&self) -> Scales {
+        Scales { price: self.price_hold(), strips: self.strip_held.clone() }
+    }
+
     /// Shift the view by a number of bars. Positive moves forward in time.
     /// Past either end of the series the view runs into empty room, as far
     /// as `OVERHANG_PX` allows at this zoom — which needs the plot's width.
@@ -2191,10 +2348,11 @@ impl State {
     }
 
     /// Back to fitting the data, at the live edge, with the resting margin
-    /// past it.
+    /// past it: the price and every strip.
     fn reset_view(&mut self) {
         self.range = None;
         self.free_price();
+        self.free_strips();
         self.visible = 160;
         self.anchored = true;
         self.overhang = RIGHT_MARGIN;
@@ -4351,6 +4509,21 @@ impl ChartView {
         self.redraw();
     }
 
+    /// The strips zoomed or dragged on their own scale, by indicator, each
+    /// with the values its bottom and top show; a strip that fits itself is
+    /// not among them. What the window writes down with the chart.
+    pub fn held_strip_windows(&self) -> BTreeMap<u32, (f64, f64)> {
+        self.state.borrow().strip_held.clone()
+    }
+
+    /// Hold the strip of the indicator `id` at these values, bottom and top:
+    /// one brought back from where it was written down, before or after the
+    /// indicator is drawn.
+    pub fn hold_strip_window(&self, id: u32, low: f64, high: f64) {
+        self.state.borrow_mut().hold_strip(id, low, high);
+        self.redraw();
+    }
+
     /// Is the price axis logarithmic? What was asked for, which is what the
     /// chart remembers: a stretch of bars at or below zero draws linear
     /// without changing the answer.
@@ -4368,9 +4541,9 @@ impl ChartView {
     }
 
     /// Be told when a gesture on the chart changes whether the price scale
-    /// is automatic, or moves a held one: a wheel notch over the axis at
-    /// once, a drag once it is let go of. Handed whether it is automatic
-    /// now. Not called for [`set_price_auto`](Self::set_price_auto) or the
+    /// is automatic, or moves a held one, or zooms or drags a strip on its
+    /// own scale: a wheel notch over the axis at once, a drag or a pinch
+    /// once it is let go of. Handed whether the price's is automatic now. Not called for [`set_price_auto`](Self::set_price_auto) or the
     /// resets: whoever called those already knows.
     pub fn set_price_auto_handler(&self, handler: impl Fn(bool) + 'static) {
         *self.on_price_auto.borrow_mut() = Some(Box::new(handler));
@@ -4865,11 +5038,17 @@ impl ChartView {
             if matches!(s.drag, Some(Drag::Mark { .. })) {
                 return glib::Propagation::Stop;
             }
-            let was_price = s.price_hold();
+            let was_price = s.scales();
             let region = s
                 .pointer
                 .map(|(x, y)| region_at(x, y, width, height))
                 .unwrap_or(Region::Plot);
+            // Over a strip's axis, or Ctrl over the strip, the wheel scales
+            // that strip as it does the price over the price's.
+            let strip = match s.pointer.and_then(|(x, y)| s.axis_at(x, y, width, height, ctrl && !shift)) {
+                Some(Axis::Strip(id)) => Some(id),
+                _ => None,
+            };
 
             // A trackpad's horizontal axis always pans, whatever is held.
             if dx != 0.0 && dy == 0.0 {
@@ -4885,7 +5064,11 @@ impl ChartView {
             };
             let notches = crate::zoom::notches(dy, unit, crate::zoom::current());
 
+            let scales = matches!((region, shift, ctrl), (Region::PriceAxis, _, _) | (Region::Plot, false, true));
             match (region, shift, ctrl) {
+                _ if scales && let Some(id) = strip => {
+                    s.scale_strip(id, 2f64.powf(notches / 4.0), width, height);
+                }
                 (Region::PriceAxis, _, _) | (Region::Plot, false, true) => {
                     // Same sense as dragging the axis.
                     s.scale_price(2f64.powf(notches / 4.0), width, height);
@@ -4914,6 +5097,38 @@ impl ChartView {
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
+
+        // Two fingers spread or pinched on a strip scale that strip on its
+        // own, and on the price's axis the price's, as a drag on the axis
+        // does. Anywhere else it is not the chart's to take.
+        let zoom = gtk::GestureZoom::new();
+        let pinched: Rc<RefCell<Option<(Pinch, Scales)>>> = Rc::default();
+        let (state, area, taken) = (self.state.clone(), self.area.clone(), pinched.clone());
+        zoom.connect_begin(move |gesture, _| {
+            let (width, height) = (area.width() as f64, area.height() as f64);
+            let Some((x, y)) = gesture.bounding_box_center() else { return };
+            let mut s = state.borrow_mut();
+            let was = s.scales();
+            match s.pinch_at(x, y, width, height) {
+                Some(pinch) => *taken.borrow_mut() = Some((pinch, was)),
+                None => {
+                    gesture.set_state(gtk::EventSequenceState::Denied);
+                }
+            }
+        });
+        let (state, area, pointer, taken) = (self.state.clone(), self.area.clone(), self.pointer.clone(), pinched.clone());
+        zoom.connect_scale_changed(move |_, scale| {
+            let Some((pinch, _)) = *taken.borrow() else { return };
+            state.borrow_mut().pinch(pinch, scale);
+            redraw(&area, &pointer);
+        });
+        let (state, on_price_auto) = (self.state.clone(), self.on_price_auto.clone());
+        zoom.connect_end(move |_, _| {
+            if let Some((_, was)) = pinched.borrow_mut().take() {
+                notify_price_auto(&state, &on_price_auto, was);
+            }
+        });
+        self.area.add_controller(zoom);
     }
 
     fn wire_drag(self: &Rc<Self>) {
@@ -5077,7 +5292,7 @@ impl ChartView {
             Press::Elsewhere => {}
         }
         let mut s = state.borrow_mut();
-        let was_price = s.price_hold();
+        let was_price = s.scales();
         // The edge wins over whatever region it crosses, because that is
         // what the cursor was already promising.
         let plan = layout(&s, width, height);
@@ -5211,7 +5426,8 @@ impl ChartView {
                         && s.drawings.get(index).is_some_and(|d| d.kind.reads_bars());
                     if still {
                         let left = s.left_edge();
-                        s.drag = Some(Drag::Pan { left, offset: s.price_offset });
+                        let strip = s.strip_pan_at(y, width, height);
+                        s.drag = Some(Drag::Pan { left, offset: s.price_offset, strip });
                     } else if let Some(origin) = s.locate(width, height, x, y) {
                         // Before the first motion, so a drag is one step
                         // back however far it went. A press that never
@@ -5249,18 +5465,29 @@ impl ChartView {
                 }
             }
         }
-        s.drag = Some(
-            match region {
-                Region::PriceAxis => {
-                    // Touching the axis takes the scale off automatic, from
-                    // exactly where it was, so nothing jumps.
-                    s.hold_price(width, height);
-                    Drag::PriceScale { zoom: s.price_zoom }
-                }
-                Region::TimeAxis => Drag::TimeScale { visible: s.columns() },
-                Region::Plot => Drag::Pan { left: s.left_edge(), offset: s.price_offset },
-            },
-        );
+        let axis = s.axis_at(x, y, width, height, false);
+        let strip_from = match axis {
+            Some(Axis::Strip(id)) => s.strip_window(id, s.strip_fit(id, width, height)).map(|from| (id, from)),
+            _ => None,
+        };
+        s.drag = match (region, axis) {
+            // A strip's own axis scales that strip, held from what it shows
+            // once the hand moves; one with nothing to scale takes nothing.
+            (Region::PriceAxis, Some(Axis::Strip(_))) => {
+                strip_from.map(|(id, from)| Drag::StripScale { id, from, held: s.strip_held.contains_key(&id) })
+            }
+            (Region::PriceAxis, _) => {
+                // Touching the axis takes the scale off automatic, from
+                // exactly where it was, so nothing jumps.
+                s.hold_price(width, height);
+                Some(Drag::PriceScale { zoom: s.price_zoom })
+            }
+            (Region::TimeAxis, _) => Some(Drag::TimeScale { visible: s.columns() }),
+            (Region::Plot, _) => {
+                let strip = s.strip_pan_at(y, width, height);
+                Some(Drag::Pan { left: s.left_edge(), offset: s.price_offset, strip })
+            }
+        };
         drop(s);
         notify_price_auto(&state, &on_price_auto, was_price);
         if let (Some(hit), Some(view)) = (pick, view.upgrade()) {
@@ -5424,7 +5651,7 @@ impl ChartView {
             }
 
             match drag {
-                Drag::Pan { left, offset } => {
+                Drag::Pan { left, offset, strip } => {
                     let columns = s.columns();
                     if columns > 0 {
                         let bar_w = plot_w / columns as f64;
@@ -5439,10 +5666,26 @@ impl ChartView {
                     // no longer fitting itself to the data. The content follows
                     // the hand: drag down and the bars come down with it, which
                     // means the window moves up the price axis.
-                    if !s.price_auto {
-                        let plot_h = (area.height() as f64 - TIME_AXIS_H - PAD).max(1.0);
-                        s.price_offset = offset + offset_y / plot_h / s.price_zoom;
+                    // In a strip, its own scale, once that is held, and
+                    // never the price's.
+                    match strip {
+                        Some(StripPan { id, held: Some((low, high)), inner_h }) => {
+                            let shift = offset_y / inner_h.max(1.0) * (high - low);
+                            s.hold_strip(id, low + shift, high + shift);
+                        }
+                        Some(_) => {}
+                        None if !s.price_auto => {
+                            let plot_h = (area.height() as f64 - TIME_AXIS_H - PAD).max(1.0);
+                            s.price_offset = offset + offset_y / plot_h / s.price_zoom;
+                        }
+                        None => {}
                     }
+                }
+                Drag::StripScale { id, from, .. } => {
+                    // The same sense as the price's axis: pulling up shows
+                    // less of the strip's values, larger.
+                    let (low, high) = scaled_window(from, 2f64.powf(offset_y / DRAG_PER_DOUBLING));
+                    s.hold_strip(id, low, high);
                 }
                 Drag::PriceScale { zoom } => {
                     // Grabbing the axis and pulling up stretches it: the
@@ -5559,14 +5802,31 @@ impl ChartView {
                 }
                 // A held scale dragged up or down, or stretched: told once,
                 // as it is let go of, against where the drag picked it up.
-                Some(Drag::Pan { offset, .. }) => {
-                    let (auto, zoom, _) = state.borrow().price_hold();
-                    notify_price_auto(&state, &on_price_auto, (auto, zoom, offset));
+                Some(Drag::Pan { offset, strip, .. }) => {
+                    let mut was = state.borrow().scales();
+                    match strip {
+                        Some(StripPan { id, held: Some(from), .. }) => {
+                            was.strips.insert(id, from);
+                        }
+                        Some(_) => {}
+                        None => was.price.2 = offset,
+                    }
+                    notify_price_auto(&state, &on_price_auto, was);
                     return;
                 }
                 Some(Drag::PriceScale { zoom }) => {
-                    let (auto, _, offset) = state.borrow().price_hold();
-                    notify_price_auto(&state, &on_price_auto, (auto, zoom, offset));
+                    let mut was = state.borrow().scales();
+                    was.price.1 = zoom;
+                    notify_price_auto(&state, &on_price_auto, was);
+                    return;
+                }
+                Some(Drag::StripScale { id, from, held }) => {
+                    let mut was = state.borrow().scales();
+                    match held {
+                        true => was.strips.insert(id, from),
+                        false => was.strips.remove(&id),
+                    };
+                    notify_price_auto(&state, &on_price_auto, was);
                     return;
                 }
                 _ => {}
@@ -5653,9 +5913,14 @@ impl ChartView {
                 }
             }
             let mut s = state.borrow_mut();
-            let was_price = s.price_hold();
+            let was_price = s.scales();
             match region {
-                Region::PriceAxis => s.free_price(),
+                // The price's axis or a strip's: every scale back to
+                // fitting what is on screen, the price's and the strips'.
+                Region::PriceAxis => {
+                    s.free_price();
+                    s.free_strips();
+                }
                 Region::TimeAxis => {
                     s.visible = 160;
                     s.anchored = true;
@@ -5756,20 +6021,20 @@ fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
 }
 
 /// Tell the window if a gesture just changed whether the price scale is
-/// automatic, or moved a held one.
+/// automatic, or moved a held one, or a strip's own scale.
 ///
-/// Compared against what it `was` (see [`State::price_hold`]) rather than
+/// Compared against what it `was` (see [`State::scales`]) rather than
 /// reported outright, because a pan or a time zoom passes through here too
 /// and changes neither. Called with the state no longer borrowed: the
 /// handler is the window's, and the window reads the chart back.
 fn notify_price_auto(
     state: &Rc<RefCell<State>>,
     on_price_auto: &Handler<dyn Fn(bool)>,
-    was: (bool, f64, f64),
+    was: Scales,
 ) {
-    let now = state.borrow().price_hold();
+    let now = state.borrow().scales();
     if now != was && let Some(handler) = on_price_auto.borrow().as_ref() {
-        handler(now.0);
+        handler(now.price.0);
     }
 }
 
@@ -5909,10 +6174,20 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         let Some(drawn) = state.indicators.iter().find(|d| d.indicator.id == id) else {
             continue;
         };
+        // A strip held on a scale of its own can be zoomed past what it
+        // draws, which is then kept to its own box rather than drawn over
+        // the next one.
+        let held = state.strip_held.contains_key(&id);
+        if held {
+            cr.save().ok();
+            cr.rectangle(0.0, row.top, width, row.height);
+            cr.clip();
+        }
         match &drawn.output {
             Output::Volume { .. } => {
-                if max_volume > 0.0 {
-                    draw_volume(cr, state, &drawn.indicator, &columns, row.top, row.height, max_volume);
+                let fit = (max_volume > 0.0).then_some((0.0, max_volume));
+                if let Some(window) = state.strip_window(id, fit) {
+                    draw_volume(cr, state, &drawn.indicator, &columns, row.top, row.height, window);
                 }
                 // Named like the others now that it is one strip among several.
                 // Three unlabelled boxes under a chart is a puzzle.
@@ -5922,6 +6197,9 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                 draw_pane(cr, state, pane, drawn, &columns, plot_w, row.top, row.height, width)
             }
             _ => {}
+        }
+        if held {
+            cr.restore().ok();
         }
     }
 
@@ -6516,12 +6794,17 @@ fn draw_volume(
     columns: &Columns,
     top: f64,
     height: f64,
-    max_volume: f64,
+    (low, high): (f64, f64),
 ) {
     // A tenth of the strip clear at the top, so the tallest bar does not
     // reach the line above it. Bars run under the name, which is short.
+    // Bars stand on nought, which is the foot of the strip while it fits
+    // itself, from nought to the tallest bar; zoomed, it is wherever nought
+    // falls on the strip's own scale.
     let inner_top = top + height * 0.1;
     let inner_h = height * 0.9;
+    let to_y = |volume: f64| inner_top + inner_h * (high - volume) / (high - low).max(f64::EPSILON);
+    let base = to_y(0.0);
     let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
     let opacity = volume_opacity(indicator);
     let lit = state.picked == Some(indicator.id);
@@ -6537,11 +6820,11 @@ fn draw_volume(
                     continue;
                 }
                 any = true;
-                let h = (bar.volume / max_volume * inner_h).max(1.0);
+                let h = (base - to_y(bar.volume)).max(1.0);
                 // A column's own pixel once it holds several bars, for the
                 // reason the wicks take it.
                 let (x, w) = columns.tile(i).unwrap_or_else(|| columns.body(i));
-                let (top, h) = ((inner_top + inner_h - h).round(), h.round());
+                let (top, h) = ((base - h).round(), h.round());
                 match glow {
                     true => selection::glow_bar(cr, (x, top, w, h), false),
                     false => cr.rectangle(x, top, w, h),
@@ -6721,7 +7004,7 @@ fn draw_pane(
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
     let lit = state.picked == Some(drawn.indicator.id);
-    let Some((low, high)) = pane_range(pane, first, visible) else {
+    let Some((low, high)) = state.strip_window(drawn.indicator.id, pane_range(pane, first, visible)) else {
         // Nothing to scale to and so nothing to draw — but the strip is still
         // a box on the chart, and a box with no name in it is one you have to
         // count down the stack to identify. An ATR zoomed into its own
@@ -7028,6 +7311,15 @@ fn spread_chips(ys: &mut [f64], gap: f64, floor: f64) {
             *y -= overshoot;
         }
     }
+}
+
+/// `window` stretched about its middle by `factor`: above one shows less
+/// of it, larger, as a held price scale's zoom does.
+fn scaled_window((low, high): (f64, f64), factor: f64) -> (f64, f64) {
+    let factor = factor.clamp(1.0 / MAX_PRICE_ZOOM, 1.0 / MIN_PRICE_ZOOM);
+    let middle = (low + high) / 2.0;
+    let half = (high - low) / 2.0 / factor;
+    (middle - half, middle + half)
 }
 
 /// The values a strip's top and bottom stand for, over the bars on screen.
@@ -8180,15 +8472,15 @@ fn draw_pane_value(
     let Some(row) = plan.rows.iter().find(|row| row.pane.is_some() && row.covers(py)) else {
         return;
     };
-    let Some(Output::Pane(pane)) = state
+    let Some((id, Output::Pane(pane))) = state
         .indicators
         .iter()
         .find(|drawn| Some(drawn.indicator.id) == row.pane)
-        .map(|drawn| &drawn.output)
+        .map(|drawn| (drawn.indicator.id, &drawn.output))
     else {
         return;
     };
-    let Some((low, high)) = pane_range(pane, first, visible) else {
+    let Some((low, high)) = state.strip_window(id, pane_range(pane, first, visible)) else {
         return;
     };
     let (inner_top, inner_h) = pane_plot(row.top, row.height);
@@ -10720,6 +11012,119 @@ mod tests {
         }
     }
 
+    /// A chart with its volume strip, indicator 1, and a cumulative delta's,
+    /// indicator 2, under the price.
+    fn with_delta(bars: usize) -> State {
+        let mut state = charted(bars);
+        let indicator = Indicator::new(2, indicators::Kind::Cvd);
+        let output = indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+        assert!(matches!(&output, Output::Pane(pane) if pane.delta.is_some()), "a cumulative delta's strip");
+        state.indicators.push(Drawn { color: "#5588ff".to_string(), output, indicator });
+        state
+    }
+
+    /// The middle of a strip's row, on its axis and in its plot.
+    fn strip_points(state: &State, id: u32, w: f64, h: f64) -> ((f64, f64), (f64, f64)) {
+        let plan = layout(state, w, h);
+        let row = plan.rows.iter().find(|row| row.pane == Some(id)).expect("the strip's row");
+        let y = row.top + row.height / 2.0;
+        ((w - PRICE_AXIS_W / 2.0, y), (plan.plot_x + plan.plot_w / 2.0, y))
+    }
+
+    /// The cumulative delta's strip zooms on its own scale, from its axis,
+    /// Ctrl and the wheel over it, a pinch on it or a drag: the price's
+    /// scale stays fitting itself, the volume strip too, and the strip it
+    /// zoomed keeps its range as the chart scrolls. The volume strip is
+    /// zoomed the same way, on the same code.
+    #[test]
+    fn a_strip_zooms_on_its_own_scale_whatever_the_price_s_does() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = with_delta(400);
+        state.visible = 160;
+        let price = drawn_scale(&state, w, h);
+        let ((axis_x, axis_y), (plot_x, plot_y)) = strip_points(&state, 2, w, h);
+        assert_eq!(state.axis_at(axis_x, axis_y, w, h, false), Some(Axis::Strip(2)), "its own axis");
+        assert_eq!(state.axis_at(plot_x, plot_y, w, h, true), Some(Axis::Strip(2)), "Ctrl or a pinch over it");
+        assert_eq!(state.axis_at(plot_x, plot_y, w, h, false), None, "the wheel alone pans or zooms time");
+        let plan = layout(&state, w, h);
+        let price_y = plan.price_y + plan.price_h / 2.0;
+        assert_eq!(state.axis_at(axis_x, price_y, w, h, false), Some(Axis::Price), "the price's axis is the price's");
+
+        let fit = state.strip_fit(2, w, h).expect("a fit");
+        assert_eq!(state.strip_window(2, Some(fit)), Some(fit), "fitting itself until zoomed");
+        state.scale_strip(2, 2.0, w, h);
+        let (low, high) = state.strip_window(2, None).expect("held once zoomed");
+        assert!(((high - low) - (fit.1 - fit.0) / 2.0).abs() < 1e-6, "half the range: {fit:?} to {low}..{high}");
+        assert!(((low + high) - (fit.0 + fit.1)).abs() < 1e-6, "about its middle");
+        assert!(state.price_auto, "the price's scale is untouched");
+        assert!(same_scale(drawn_scale(&state, w, h), price), "the price shows what it did");
+        assert!(!state.strip_held.contains_key(&1), "the volume strip still fits itself");
+
+        // Held, it does not follow the bars as the chart scrolls.
+        state.pan_by(-60.0, w - PRICE_AXIS_W - PAD);
+        assert_eq!(state.strip_window(2, state.strip_fit(2, w, h)), Some((low, high)));
+
+        // A pinch on it, spread to twice as far apart: half again.
+        let pinch = state.pinch_at(plot_x, plot_y, w, h).expect("a pinch on the strip");
+        assert_eq!(pinch, Pinch::Strip { id: 2, from: (low, high) });
+        state.pinch(pinch, 2.0);
+        let (pinched_low, pinched_high) = state.strip_window(2, None).unwrap();
+        assert!(((pinched_high - pinched_low) - (high - low) / 2.0).abs() < 1e-6);
+        assert!(state.pinch_at(plot_x, price_y, w, h).is_none(), "a pinch on the price's plot is not the chart's");
+        assert!(state.price_auto);
+
+        // A drag in it moves its own scale, and the price's not at all.
+        assert!(matches!(state.strip_pan_at(plot_y, w, h), Some(StripPan { id: 2, held: Some(_), .. })));
+        assert_eq!(state.strip_pan_at(price_y, w, h), None, "a drag on the price pans the price");
+
+        // The volume strip, on the same code: from nought to its tallest bar
+        // until it is zoomed.
+        let ((_, volume_y), _) = strip_points(&state, 1, w, h);
+        assert_eq!(state.axis_at(axis_x, volume_y, w, h, false), Some(Axis::Strip(1)));
+        let volume = state.strip_fit(1, w, h).expect("a volume fit");
+        assert_eq!(volume.0, 0.0);
+        state.scale_strip(1, 4.0, w, h);
+        assert!(state.strip_held.contains_key(&1));
+        assert_eq!(state.strip_held.get(&2), Some(&(pinched_low, pinched_high)), "each strip its own");
+
+        // Drawn on its own scale: the strip looks different, the price's
+        // rows not at all.
+        let auto = with_delta(400);
+        let rows = |pixels: &[u8], from: f64, to: f64| pixels[(from as usize) * w as usize * 4..(to as usize) * w as usize * 4].to_vec();
+        let mut left = auto;
+        left.visible = 160;
+        left.pan_by(-60.0, w - PRICE_AXIS_W - PAD);
+        let plain = frame(w, h, |cr| draw(cr, w, h, &left));
+        let zoomed = frame(w, h, |cr| draw(cr, w, h, &state));
+        let strip = layout(&state, w, h).rows.into_iter().find(|row| row.pane == Some(2)).unwrap();
+        assert_eq!(rows(&plain, plan.price_y + 2.0, plan.price_y + plan.price_h - 2.0), rows(&zoomed, plan.price_y + 2.0, plan.price_y + plan.price_h - 2.0), "the price redrawn");
+        assert_ne!(rows(&plain, strip.top, strip.top + strip.height), rows(&zoomed, strip.top, strip.top + strip.height), "the strip on its own scale");
+    }
+
+    /// A reset, from the axis or the menu, lets go of the price's scale and
+    /// of every strip's; nothing that is not a range is held.
+    #[test]
+    fn a_reset_lets_go_of_the_price_and_every_strip() {
+        let (w, h) = (1200.0, 600.0);
+        let mut state = with_delta(400);
+        state.scale_price(2.0, w, h);
+        state.scale_strip(1, 2.0, w, h);
+        state.scale_strip(2, 3.0, w, h);
+        assert!(!state.price_auto && state.strip_held.len() == 2);
+        state.reset_view();
+        assert!(state.price_auto, "the price's");
+        assert!(state.strip_held.is_empty(), "the strips'");
+
+        state.scale_strip(2, 3.0, w, h);
+        state.free_price();
+        state.free_strips();
+        assert!(state.strip_held.is_empty(), "the axis's double-click");
+        for (low, high) in [(f64::NAN, 1.0), (5.0, 5.0), (9.0, 1.0), (0.0, f64::INFINITY)] {
+            state.hold_strip(2, low, high);
+            assert!(state.strip_held.is_empty(), "{low}..{high}");
+        }
+    }
+
     /// Panning past either end opens room there — as much as
     /// `OVERHANG_PX` at this zoom, never the whole view — which new bars
     /// do not close, and which a reset puts back to the resting margin.
@@ -11916,7 +12321,7 @@ mod tests {
             let columns = Columns::of(&bars[first..first + visible], first, visible, PAD, wide);
             assert_eq!(columns.per, 2);
             let candles = frame(w as f64, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
-            let volume = frame(w as f64, 100.0, |cr| draw_volume(cr, &state, &Indicator::new(1, indicators::Kind::Volume), &columns, 0.0, 100.0, 2000.0));
+            let volume = frame(w as f64, 100.0, |cr| draw_volume(cr, &state, &Indicator::new(1, indicators::Kind::Volume), &columns, 0.0, 100.0, (0.0, 2000.0)));
             for x in PAD as usize..(PAD + wide) as usize {
                 let inked = |pixels: &[u8]| (0..100).any(|y| pixels[(y * w + x) * 4 + 3] != 0);
                 assert!(inked(&candles), "from bar {first}, no wick at {x}");

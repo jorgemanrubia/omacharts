@@ -724,6 +724,7 @@ mod tests {
                 trading_suffix: None,
                 auto_scale: false,
                 price_window: None,
+                strip_windows: Default::default(),
                 log_scale: true,
                 indicators_shown: true,
                 drawings_shown: true,
@@ -833,6 +834,7 @@ mod tests {
             trading_suffix: None,
             auto_scale: true,
             price_window: None,
+            strip_windows: Default::default(),
             log_scale: false,
             indicators_shown: true,
             drawings_shown: true,
@@ -1410,6 +1412,46 @@ mod tests {
         // Every word has to be found, so a right query and a wrong one
         // together are still wrong.
         assert!(found("split xyzzy").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod strip_window_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+
+    /// A cumulative delta's strip zoomed on its own scale comes back after a
+    /// restart as it was left, and is written down again with the chart;
+    /// a strip whose indicator is gone is not; and resetting the view lets
+    /// go of it, so nothing is written down for it after.
+    #[test]
+    fn a_zoomed_strip_survives_a_restart_and_a_reset_lets_go_of_it() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            first.save_workspace();
+            let stored = || -> serde_json::Value { serde_json::from_str(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap() };
+            let mut workspace = stored();
+            let chart = &mut workspace["books"][0]["panes"][0];
+            assert!(chart.get("strip_windows").is_none(), "nothing zoomed, nothing written");
+            let cvd = Indicator::new(7, omacharts_engine::IndicatorKind::Cvd);
+            chart["indicators"] = serde_json::json!([cvd]);
+            chart["strip_windows"] = serde_json::json!({ "7": [-1500.0, 2500.0], "99": [1.0, 2.0] });
+            store.set_setting(SETTING_WORKSPACE, &workspace.to_string());
+            drop(first);
+
+            let again = window(&store);
+            let pane = again.focused_pane();
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "held as it was left");
+            again.save_workspace();
+            let written = stored()["books"][0]["panes"][0]["strip_windows"].clone();
+            assert_eq!(written, serde_json::json!({ "7": [-1500.0, 2500.0] }), "only the strips the chart has");
+
+            let actions = again.trade.chart_actions.borrow().clone().expect("the chart's actions");
+            actions.activate_action("reset-view", None);
+            assert!(pane.view.held_strip_windows().is_empty(), "the reset let go of it");
+            assert!(stored()["books"][0]["panes"][0].get("strip_windows").is_none(), "and nothing is written for it");
+        });
     }
 }
 
@@ -2748,6 +2790,13 @@ struct StoredPane {
     /// which holds the fit it is first drawn with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     price_window: Option<[f64; 2]>,
+    /// The strips zoomed or dragged on their own scale, by the indicator
+    /// they draw, each with the values its bottom and top show, so a restart
+    /// brings them back as the price's held window does. A strip not named
+    /// fits itself; missing on a chart none of whose strips was zoomed, and
+    /// on one written before they could be.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    strip_windows: std::collections::BTreeMap<u32, [f64; 2]>,
     /// Whether the price axis is logarithmic. Missing from a chart written
     /// before it could be, and every one of those was linear.
     #[serde(default)]
@@ -4994,6 +5043,15 @@ impl Window {
                     },
                     auto_scale: pane.view.price_auto(),
                     price_window: pane.view.held_price_window().map(|(low, high)| [low, high]),
+                    // Only the strips of indicators the chart still has: one
+                    // removed, or gone with a template, takes its zoom along.
+                    strip_windows: pane
+                        .view
+                        .held_strip_windows()
+                        .into_iter()
+                        .filter(|(id, _)| pane.indicators.borrow().iter().any(|indicator| indicator.id == *id))
+                        .map(|(id, (low, high))| (id, [low, high]))
+                        .collect(),
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
                     drawings_shown: pane.view.show_drawings(),
@@ -5257,6 +5315,9 @@ impl Window {
             pane.view.set_price_auto(stored.auto_scale);
             if let (false, Some([low, high])) = (stored.auto_scale, stored.price_window) {
                 pane.view.hold_price_window(low, high);
+            }
+            for (id, [low, high]) in &stored.strip_windows {
+                pane.view.hold_strip_window(*id, *low, *high);
             }
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
