@@ -1604,7 +1604,7 @@ same.
 | `chart_shows_drawings` | on, off | on | Charts › Settings › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Settings › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Settings › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `look`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `look`, `title`, `feed`, `stripe`, `name`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
 | `chart_header_center` | the same | `title` | Overlays › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | General › Time › Time format | [Preferences](/manual/preferences/#time) |

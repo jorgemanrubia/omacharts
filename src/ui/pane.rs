@@ -287,6 +287,8 @@ pub struct ChartPane {
     /// half. Held until the rest arrives to name it, written back as it
     /// was, and nothing is traded meanwhile — never what the chart charts.
     pub trading_pending: RefCell<Option<(String, Option<String>)>>,
+    /// The instrument's name, under the line rather than on it.
+    name_label: gtk::Label,
     /// Whether its bars are hidden. How they are drawn when they are not is
     /// its look's answer.
     pub bars_hidden: Cell<bool>,
@@ -607,6 +609,14 @@ impl ChartPane {
         // every chart but the focused one and the symbol would jump on focus.
         bar.set_height_request(SYMBOL_ROW_HEIGHT);
 
+        let name_label = gtk::Label::new(None);
+        name_label.add_css_class("legend-name");
+        name_label.set_halign(gtk::Align::Start);
+        name_label.set_xalign(0.0);
+        name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        name_label.set_max_width_chars(40);
+        name_label.set_visible(false);
+
         let indicator_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
         indicator_legend.set_halign(gtk::Align::Start);
         indicator_legend.set_visible(false);
@@ -617,6 +627,7 @@ impl ChartPane {
         legend.set_margin_start(LEGEND_MARGIN);
         legend.set_margin_top(6);
         legend.append(&bar);
+        legend.append(&name_label);
         legend.append(&indicator_legend);
 
         // The strip sits across the top of its own chart rather than in the
@@ -833,6 +844,7 @@ impl ChartPane {
             trading_size: RefCell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
+            name_label,
             bars_hidden: Cell::new(false),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),
@@ -1135,6 +1147,7 @@ impl ChartPane {
             }
             self.header_row.append(button);
         }
+        self.write_name();
     }
 
     /// Whether the title can be typed where it stands: the header has it,
@@ -1421,6 +1434,23 @@ impl ChartPane {
     pub fn write_readout(&self) {
         self.symbol_button.set_label(&self.shown_symbol());
         self.write_timeframe();
+        self.write_name();
+    }
+
+    /// The instrument's name under the header, when the header shows it.
+    /// Nothing for a name that only repeats the ticker, as one looked up
+    /// outside the inventory has.
+    fn write_name(&self) {
+        let symbol = self.symbol_button.label().unwrap_or_default();
+        let name = self
+            .instrument
+            .borrow()
+            .as_ref()
+            .filter(|_| self.shows(crate::header::Part::Name))
+            .map(|i| i.name.trim().to_string())
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case(&symbol));
+        self.name_label.set_text(name.as_deref().unwrap_or(""));
+        self.name_label.set_visible(name.is_some());
     }
 
     /// The trading symbol in force: the one set for this chart while

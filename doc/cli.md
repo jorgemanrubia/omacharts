@@ -231,13 +231,15 @@ which is the same setting `template default` writes.
 The line at a chart's top-left shows its data feed, symbol, resolution and the
 day's move — as a percentage, in the theme's green for a rise and red for a
 fall, swapped on a chart set to red up — and can also show the name of its
-chart template. It is one line for the whole
+chart template, and the instrument's full name, which goes on a line of its
+own under the rest. It is one line for the whole
 app: every chart in every chartbook shows the same parts, in the order given,
 and a window that is open changes them all at once:
 
 ```
 omacharts config set chart_header symbol,resolution,change
 omacharts config set chart_header template,symbol
+omacharts config set chart_header symbol,resolution,name
 ```
 
 `none` is a header with nothing in it. The day's move comes from the same

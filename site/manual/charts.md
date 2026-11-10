@@ -428,6 +428,7 @@ The header is the line at a chart's top-left and the row centred across its top.
 | **Local visuals** | A window pulled off another, dimmed, on a chart whose [look of its own](#a-charts-own-look) differs from every chart's. Nothing on any other |
 | **Chart title** | The chart's own title. Click it to [edit it](#chart-titles) |
 | **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
+| **Name** | The instrument's full name, faded, on a line of its own under the rest wherever it sits. Nothing when the feed knows no name beyond the ticker |
 
 Out of the box the left shows the data feed, the symbol, the resolution and the daily change, and the center the chart title.
 
