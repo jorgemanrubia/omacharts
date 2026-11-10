@@ -569,7 +569,13 @@ pub fn choose(root: &str, listed: &[(String, NaiveDate)], today: NaiveDate) -> O
 
 /// Today, as the exchanges count it: in Chicago.
 pub fn today() -> NaiveDate {
-    chrono::Utc::now().with_timezone(&chrono_tz::America::Chicago).date_naive()
+    date_at(chrono::Utc::now().timestamp())
+}
+
+/// The date in Chicago at a unix time, as [`today`] reads the clock: the
+/// clock Sierra Chart's file names are read by too (`sierra::exchange_year`).
+pub fn date_at(unix_seconds: i64) -> NaiveDate {
+    chrono::DateTime::from_timestamp(unix_seconds, 0).unwrap_or_default().with_timezone(&chrono_tz::America::Chicago).date_naive()
 }
 
 #[cfg(test)]

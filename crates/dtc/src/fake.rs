@@ -173,6 +173,8 @@ struct World {
     filling: Fills,
     market_price: f64,
     silent: bool,
+    /// A kind of request left unanswered: see [`Fake::set_unanswered`].
+    unanswered: Option<u16>,
     flatten: bool,
     bars: HashMap<String, Vec<Value>>,
     history_reject: Option<String>,
@@ -201,6 +203,7 @@ impl Default for World {
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
+            unanswered: None,
             flatten: true,
             bars: HashMap::new(),
             history_reject: None,
@@ -297,19 +300,7 @@ impl Builder {
     /// A contract: Sierra's name for it, its root, its tick, its tick's
     /// worth, its expiry and the multiplier its prices travel with.
     pub fn definition(mut self, symbol: &str, underlying: &str, tick: f64, worth: f64, expiration: i64, multiplier: f64) -> Builder {
-        self.world.definitions.push(json!({
-            "SecurityType": 1,
-            "Symbol": symbol,
-            "UnderlyingSymbol": underlying,
-            "ExchangeSymbol": symbol.split(['_', '.']).next().unwrap_or(symbol),
-            "Description": format!("{underlying} future"),
-            "MinPriceIncrement": tick,
-            "CurrencyValuePerIncrement": worth,
-            "PriceDisplayFormat": 2,
-            "SecurityExpirationDate": expiration,
-            "DisplayPriceMultiplier": multiplier,
-            "Currency": "USD",
-        }));
+        self.world.definitions.push(definition(symbol, underlying, tick, worth, expiration, multiplier));
         self
     }
 
@@ -514,6 +505,18 @@ impl Fake {
         world.positions.push(FakePosition { account: account.into(), symbol: symbol.into(), qty, avg, open_pnl: None });
     }
 
+    /// Know a contract from now on, as [`Builder::definition`] does,
+    /// telling nobody: a definition Sierra was silent on until now.
+    pub fn define(&self, symbol: &str, underlying: &str, tick: f64, worth: f64, expiration: i64, multiplier: f64) {
+        lock(&self.shared.world).definitions.push(definition(symbol, underlying, tick, worth, expiration, multiplier));
+    }
+
+    /// Leave every request of `kind` unanswered from now on, or answer it
+    /// again: a resync that never finishes, with `CURRENT_POSITIONS_REQUEST`.
+    pub fn set_unanswered(&self, kind: Option<u16>) {
+        lock(&self.shared.world).unanswered = kind;
+    }
+
     /// Forget order `id`, telling nobody: an order that finished while a
     /// session was away.
     pub fn forget_order(&self, id: &str) {
@@ -696,6 +699,7 @@ fn serve(shared: &Arc<Shared>, mut stream: TcpStream) -> io::Result<()> {
                     let _ = stream.shutdown(Shutdown::Both);
                     return Ok(());
                 }
+                kind if lock(&shared.world).unanswered == Some(kind) => {}
                 _ => {
                     let (replies, pushes) = answer(&mut lock(&shared.world), &message);
                     send(&writer, &replies)?;
@@ -886,6 +890,23 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
         _ => {}
     }
     (replies, pushes)
+}
+
+/// A contract's definition, as [`Builder::definition`] takes it.
+fn definition(symbol: &str, underlying: &str, tick: f64, worth: f64, expiration: i64, multiplier: f64) -> Value {
+    json!({
+        "SecurityType": 1,
+        "Symbol": symbol,
+        "UnderlyingSymbol": underlying,
+        "ExchangeSymbol": symbol.split(['_', '.']).next().unwrap_or(symbol),
+        "Description": format!("{underlying} future"),
+        "MinPriceIncrement": tick,
+        "CurrencyValuePerIncrement": worth,
+        "PriceDisplayFormat": 2,
+        "SecurityExpirationDate": expiration,
+        "DisplayPriceMultiplier": multiplier,
+        "Currency": "USD",
+    })
 }
 
 /// Whether `symbol` is spelled as Rithmic spells a contract: the root, a
