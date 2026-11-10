@@ -106,7 +106,7 @@ pub use prices::{HistoryRecord, Interval, history};
 pub use probe::{Probe, Server, probe};
 pub use reference::{Definition, Quote, SecurityKind, contract_month, definition, definitions, quote};
 pub use trading::{
-    Account, Balance, Book, Fill, NewOrder, Order, OrderKind, Position, Pulse, Side, State, Status, TimeInForce, Timing, Trading,
+    Account, Balance, Book, Fill, Known, NewOrder, Order, OrderKind, Position, Pulse, Side, State, Status, TimeInForce, Timing, Trading,
 };
 pub use wire::Encoding;
 
@@ -171,6 +171,11 @@ pub enum Error {
     Closed,
     /// Something answered that does not speak DTC as expected.
     Protocol(String),
+    /// A flatten found the account holding nothing of the contract and
+    /// nothing working on it, in this crate's words. Already flat, when the
+    /// server knows the contract by the name asked; a name it spells
+    /// otherwise finds nothing too.
+    Flat(String),
 }
 
 impl std::fmt::Display for Error {
@@ -182,6 +187,7 @@ impl std::fmt::Display for Error {
             Error::Timeout => write!(f, "Sierra Chart did not answer in time"),
             Error::Closed => write!(f, "the Sierra Chart session was signed out"),
             Error::Protocol(why) => write!(f, "Sierra Chart's DTC server said something unexpected: {why}"),
+            Error::Flat(why) => write!(f, "{why}"),
         }
     }
 }

@@ -314,7 +314,9 @@ impl Builder {
     }
 
     /// Answer nothing for a contract with no [`Builder::definition`], as
-    /// Sierra does, rather than a definition with real prices.
+    /// Sierra does, rather than a definition with real prices; nothing, too,
+    /// for a name spelled as the other service spells one, rather than a
+    /// refusal.
     pub fn unknown_contracts_unanswered(mut self) -> Builder {
         self.world.define_anything = false;
         self
@@ -470,6 +472,12 @@ impl Fake {
     /// Stop answering anything, heartbeats included, or start again.
     pub fn set_silent(&self, silent: bool) {
         lock(&self.shared.world).silent = silent;
+    }
+
+    /// Put Sierra on Rithmic from now on, or back on its own service: see
+    /// [`Builder::rithmic_symbols`]. What it holds keeps its spelling.
+    pub fn set_rithmic_symbols(&self, rithmic: bool) {
+        lock(&self.shared.world).rithmic = rithmic;
     }
 
     /// Reject every order placed from now on with `text`, or none.
@@ -811,8 +819,12 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
                 true => !rithmic_spelling(&symbol),
                 false => symbol.contains('.'),
             };
+            // Refused at once; or, as Sierra does, unanswered with
+            // [`Builder::unknown_contracts_unanswered`].
             if known.is_none() && foreign {
-                replies.push(Message::new(wire::SECURITY_DEFINITION_REJECT, json!({ "RequestID": id, "RejectText": format!("Symbol {symbol} not found") })));
+                if world.define_anything {
+                    replies.push(Message::new(wire::SECURITY_DEFINITION_REJECT, json!({ "RequestID": id, "RejectText": format!("Symbol {symbol} not found") })));
+                }
                 return (replies, pushes);
             }
             let definition = known.or_else(|| {

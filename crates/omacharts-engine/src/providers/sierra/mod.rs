@@ -88,12 +88,14 @@ pub(crate) struct Opened {
 }
 
 /// How live a file is, for choosing between two of one contract: one with
-/// trades over one without, then the one written last, then the one with
-/// more trades, then one with daily bars beside it.
-fn liveness(entry: &sierra::Entry) -> (bool, Option<std::time::SystemTime>, u64, bool) {
+/// trades over one without, and of two without, one with daily bars beside
+/// it; then the one written last, then the one with more trades, then one
+/// with daily bars beside it.
+fn liveness(entry: &sierra::Entry) -> (bool, bool, Option<std::time::SystemTime>, u64, bool) {
     let records = entry.intraday.as_ref().map_or(0, |intraday| intraday.records);
-    let modified = entry.intraday.as_ref().filter(|_| records > 0).and_then(|intraday| intraday.modified);
-    (records > 0, modified, records, entry.daily.is_some())
+    let modified = entry.intraday.as_ref().and_then(|intraday| intraday.modified);
+    let daily = records == 0 && entry.daily.is_some();
+    (records > 0, daily, modified, records, entry.daily.is_some())
 }
 
 impl Opened {
@@ -102,16 +104,16 @@ impl Opened {
     /// Rithmic's `ESZ6.CME`, and only one is written now: it is the one
     /// whose trades were written last, the one with more of them when both
     /// were written at once. A file of no trades, the header Sierra Chart
-    /// writes for a contract it never filled, is never it; a file of daily
-    /// bars alone is when no file of the contract has trades. Never both:
-    /// they are the same trades from two sources, and would count each twice.
+    /// writes for a contract before its first trade, loses to any that has
+    /// them, and to one of daily bars; alone, it is the contract's file,
+    /// which fills as the contract trades. Never two at once: they are the
+    /// same trades from two sources, and would count each twice.
     fn contract(&self, root: &str, month: char, year: i32) -> Option<&sierra::Entry> {
         let wanted = sierra::Contract { year, month };
         self.listing
             .of_root(root)
             .iter()
             .filter(|entry| entry.symbol.contract == Some(wanted))
-            .filter(|entry| entry.has_intraday_records() || entry.daily.is_some())
             .max_by_key(|entry| liveness(entry))
     }
 
@@ -772,9 +774,8 @@ mod tests {
         assert_eq!(stem_for(&folder.opened(), "ESZ6").as_deref(), Some("ESZ6.CME"), "the fewer trades won");
     }
 
-    /// The headers Sierra Chart leaves of contracts long gone, ESH2.CME to
-    /// ESZ5.CME, are never charted: ES is its live December, and a month
-    /// of a stub alone is nothing to chart.
+    /// The headers Sierra Chart leaves of contracts, ESH2.CME to ESZ5.CME,
+    /// are never ES's front month: ES is its live December.
     #[test]
     fn old_contracts_stubs_are_never_charted() {
         let folder = Folder::new("old-stubs");
@@ -783,12 +784,35 @@ mod tests {
         }
         let opened = folder.opened();
         assert_eq!(stem_for(&opened, "ES"), None, "a stub charted");
-        assert_eq!(stem_for(&opened, "ESZ5"), None);
         folder.scid("ESZ6.CME", 10, 30);
         let opened = folder.opened();
         assert_eq!(stem_for(&opened, "ES").as_deref(), Some("ESZ6.CME"));
         assert_eq!(stem_for(&opened, "ESZ6").as_deref(), Some("ESZ6.CME"));
         assert!(has_root(&opened, "ES"));
+    }
+
+    /// A month whose file Sierra Chart has only just made, a header with no
+    /// trades yet, is that file when it is the month's only one; beside one
+    /// with trades, the one with trades.
+    #[test]
+    fn a_month_s_only_file_is_its_file_before_its_first_trade() {
+        let folder = Folder::new("new-month");
+        folder.scid("ESH7.CME", 0, 0);
+        assert_eq!(stem_for(&folder.opened(), "ESH7").as_deref(), Some("ESH7.CME"));
+        folder.scid("ESH27_FUT_CME", 5, 60);
+        assert_eq!(stem_for(&folder.opened(), "ESH7").as_deref(), Some("ESH27_FUT_CME"));
+    }
+
+    /// A one-digit year means the same year typed as a contract and named
+    /// in a Sierra Chart symbol.
+    #[test]
+    fn a_one_digit_year_is_the_same_year_typed_and_in_a_symbol() {
+        let today = crate::contracts::today();
+        for digit in 0..10 {
+            let typed = crate::contracts::parse(&format!("CLZ{digit}"), today).unwrap().1.year;
+            let named = sierra::parse(&format!("CLZ{digit}.NYMEX")).unwrap().contract.unwrap().year;
+            assert_eq!(typed, named, "CLZ{digit}");
+        }
     }
 
     /// What a symbol of either spelling says of its exchange and style,
@@ -799,7 +823,7 @@ mod tests {
         assert_eq!(symbol_exchange("CLZ26_FUT_CME"), None);
         assert_eq!(symbol_style("NGZ26.NYMEX"), Some(sierra::Style::Dotted));
         assert_eq!(symbol_style("EURUSD"), None);
-        assert_eq!(spellings("NGZ6", sierra::Style::Dotted), ["NGZ6.NYMEX", "NGZ26.NYMEX", "NGZ26_FUT_CME"]);
+        assert_eq!(spellings("NGZ6", sierra::Style::Dotted), ["NGZ26.NYMEX", "NGZ6.NYMEX", "NGZ26_FUT_CME"]);
         assert_eq!(spellings("ESZ6", sierra::Style::Underscored), ["ESZ26_FUT_CME", "ESZ6.CME", "ESZ26.CME"]);
     }
 }

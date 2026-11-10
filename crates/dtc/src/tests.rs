@@ -592,7 +592,7 @@ fn flattening_nothing_held_sends_nothing_and_says_so() {
     let fake = Fake::builder().account("Sim1").start();
     let (trading, _) = sign_in(&fake);
     let flattened = trading.flatten("Sim1", ES);
-    assert!(matches!(&flattened, Err(Error::Rejected(why)) if why.contains("holds nothing of")), "{flattened:?}");
+    assert!(matches!(&flattened, Err(Error::Flat(why)) if why.contains("holds nothing of")), "{flattened:?}");
     assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
     trading.sign_out();
 }
@@ -612,6 +612,34 @@ fn on_rithmic_a_contract_is_known_and_flattened_by_rithmic_s_spelling_alone() {
     let sent = fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER);
     assert_eq!(sent.iter().map(|message| message.text("Symbol")).collect::<Vec<_>>(), [Some("ESZ6.CME".to_string())]);
     eventually(Duration::from_secs(2), "it is flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    trading.sign_out();
+}
+
+/// Names asked of at once, of a server silent on those it does not know,
+/// as Sierra is: one known is confirmed in a moment, though one preferred
+/// to it is never answered, and none known takes one wait, not one each.
+#[test]
+fn several_names_are_asked_of_at_once_and_waited_on_once() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .rithmic_symbols()
+        .unknown_contracts_unanswered()
+        .definition("ESZ6.CME", "ES", 0.25, 12.5, 1797206400, 0.01)
+        .start();
+    let (trading, _) = sign_in(&fake);
+    let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+    let started = Instant::now();
+    let known = trading.knows_any(&names(&[ES, "ESZ6.CME", "ESZ26.CME"])).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1), "{:?} to confirm", started.elapsed());
+    assert_eq!(known[0], Known::Unanswered);
+    assert!(matches!(&known[1], Known::Defined(definition) if definition.symbol == "ESZ6.CME"), "{known:?}");
+    assert_eq!(fake.received_of(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST).len(), 3, "all asked at once");
+
+    let started = Instant::now();
+    let known = trading.knows_any(&names(&["NQZ26_FUT_CME", "NQZ6.CME", "NQZ26.CME"])).unwrap();
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(1900) && waited < Duration::from_secs(3), "{waited:?} for three unknown");
+    assert!(known.iter().all(|known| *known == Known::Unanswered), "{known:?}");
     trading.sign_out();
 }
 

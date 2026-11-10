@@ -84,6 +84,22 @@ const TICK: Duration = Duration::from_millis(50);
 /// is refused rather than sent at a price that might be off a hundredfold.
 const DEFINITION: Duration = Duration::from_secs(3);
 
+/// How long, once one name asked of at once has been confirmed, the names
+/// preferred to it are waited on: answers to requests sent together come
+/// together, so one not here by then is one the server is silent on.
+const PREFERRED_GRACE: Duration = Duration::from_millis(150);
+
+/// What the server said of a name asked of with [`Trading::knows_any`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Known {
+    /// It knows a contract by that name.
+    Defined(Definition),
+    /// It said it knows none, in its words.
+    Unknown(String),
+    /// It said nothing in time, as Sierra does for a name it does not know.
+    Unanswered,
+}
+
 /// How many recent fills the book keeps.
 const FILLS_KEPT: usize = 500;
 
@@ -1537,10 +1553,11 @@ impl Trading {
     /// Taken, or nothing left to flatten, it answers how many orders on it
     /// would not cancel or were not answered in time, each once: those need
     /// a look. With nothing held from the start, a cancel that failed is
-    /// the answer, and with nothing working on it either, that nothing was
-    /// held: a flatten that found nothing to close is never taken for one
-    /// that closed it, since `symbol` spelled otherwise than the server
-    /// spells it finds nothing too.
+    /// the answer, and with nothing working on it either, [`Error::Flat`]:
+    /// a flatten that found nothing to close is never taken for one that
+    /// closed it, since `symbol` spelled otherwise than the server spells it
+    /// finds nothing too. A caller sure of the spelling says the account is
+    /// already flat.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
         let held = || {
             lock(&self.shared.state)
@@ -1557,7 +1574,7 @@ impl Trading {
         if before == 0 {
             return match (why, tried) {
                 (Some(why), _) => Err(why),
-                (None, 0) => Err(Error::Rejected(format!("{account} holds nothing of {symbol} and has no orders working on it"))),
+                (None, 0) => Err(Error::Flat(format!("{account} holds nothing of {symbol} and has no orders working on it"))),
                 (None, _) => Ok(uncancelled),
             };
         }
@@ -1637,6 +1654,62 @@ impl Trading {
     /// for the order that follows.
     pub fn knows(&self, symbol: &str) -> Result<Definition, Error> {
         self.definition_within(symbol, DEFINITION.min(self.shared.timing.request))
+    }
+
+    /// What the server says of each of `symbols`, asked of all at once:
+    /// one wait of no longer than [`Trading::knows`] waits for one, however
+    /// many there are, since Sierra answers nothing for a name it does not
+    /// know. In the order asked. Done as soon as the first name is
+    /// confirmed and every one before it refused, or, once one is
+    /// confirmed, a moment later, for any before it to answer as well: the
+    /// caller takes the first confirmed, the order its preference. Each
+    /// confirmed contract's multiplier is kept for the order that follows.
+    pub fn knows_any(&self, symbols: &[String]) -> Result<Vec<Known>, Error> {
+        let mut ids = Vec::new();
+        for symbol in symbols {
+            match self.shared.begin(wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST, json!({ "Symbol": symbol, "Exchange": "" }), true) {
+                Ok(id) => ids.push(id),
+                Err(error) => {
+                    let mut state = lock(&self.shared.state);
+                    for id in &ids {
+                        state.requests.remove(id);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let defined = |slot: &Slot| slot.done && slot.rejected.is_none() && slot.answers.iter().any(|answer| Definition::from_message(answer).is_some());
+        let mut confirmed_at: Option<Instant> = None;
+        let waited = self.shared.wait_for(DEFINITION.min(self.shared.timing.request), |state| {
+            let slots: Vec<Option<&Slot>> = ids.iter().map(|id| state.requests.get(id)).collect();
+            let first = slots.iter().position(|slot| slot.is_some_and(defined));
+            let refused_before = |at: usize| slots[..at].iter().all(|slot| slot.is_some_and(|slot| slot.done && !defined(slot)));
+            match first {
+                Some(at) if refused_before(at) => Some(()),
+                Some(_) => {
+                    let since = *confirmed_at.get_or_insert_with(Instant::now);
+                    (since.elapsed() >= PREFERRED_GRACE).then_some(())
+                }
+                None => slots.iter().all(|slot| slot.is_some_and(|slot| slot.done)).then_some(()),
+            }
+        });
+        let mut state = lock(&self.shared.state);
+        let known = ids
+            .iter()
+            .zip(symbols)
+            .map(|(id, symbol)| match state.requests.remove(id) {
+                Some(slot) if slot.done => match (slot.rejected, slot.answers.iter().find_map(Definition::from_message)) {
+                    (Some(why), _) => Known::Unknown(why),
+                    (None, Some(definition)) => Known::Defined(definition),
+                    (None, None) => Known::Unknown(format!("Sierra Chart has no contract named {symbol}")),
+                },
+                _ => Known::Unanswered,
+            })
+            .collect();
+        match waited {
+            Ok(()) | Err(Error::Timeout) => Ok(known),
+            Err(error) => Err(error),
+        }
     }
 
     fn definition_within(&self, symbol: &str, timeout: Duration) -> Result<Definition, Error> {

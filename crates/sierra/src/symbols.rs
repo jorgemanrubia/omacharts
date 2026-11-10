@@ -91,12 +91,25 @@ pub struct FileSymbol {
     pub style: Style,
 }
 
-/// How far back of this year a one-digit year is read: `ESH2` in 2026 is
-/// 2022. With [`ONE_DIGIT_AHEAD`], ten years, each digit once.
-pub const ONE_DIGIT_BACK: i32 = 5;
-/// How far ahead of this year a one-digit year is read: `ESH0` in 2026 is
-/// 2030.
-pub const ONE_DIGIT_AHEAD: i32 = 4;
+/// How far back of this year a one-digit year is read: `ESZ5` in 2026 is
+/// 2025. With [`ONE_DIGIT_AHEAD`], ten years, each digit once. One year
+/// back, because a contract that expired lately is still spoken of, in a
+/// position held past its last day; no further, because CL and GC list
+/// contracts eight and more years out, and one of those, `CLZ4` in 2026,
+/// is 2034 to a server that spells it so, not a contract long gone.
+pub const ONE_DIGIT_BACK: i32 = 1;
+/// How far ahead of this year a one-digit year is read: `CLZ4` in 2026 is
+/// 2034.
+pub const ONE_DIGIT_AHEAD: i32 = 8;
+
+/// The year a one-digit year `digit` means in `current_year`: the one
+/// ending in it from [`ONE_DIGIT_BACK`] years back to [`ONE_DIGIT_AHEAD`]
+/// on, the rule the app reads a contract typed by, so a file's, a server's
+/// and one typed are the same month.
+pub fn one_digit_year(digit: i32, current_year: i32) -> i32 {
+    let earliest = current_year - ONE_DIGIT_BACK;
+    earliest + (digit - earliest).rem_euclid(10)
+}
 
 /// Reads a file name's stem as a symbol, taking a two-digit year to be
 /// within [`YEARS_AHEAD`] years ahead of this one. `None` only for an empty
@@ -162,8 +175,7 @@ fn split_one_digit(code: &str, current_year: i32) -> Option<(&str, Contract)> {
         return None;
     }
     let digit = i32::from(b[b.len() - 1] - b'0');
-    let earliest = current_year - ONE_DIGIT_BACK;
-    let year = earliest + (digit - earliest).rem_euclid(10);
+    let year = one_digit_year(digit, current_year);
     Some((&code[..b.len() - 2], Contract { year, month }))
 }
 
@@ -175,11 +187,19 @@ pub fn spellings(root: &str, contract: Contract, exchange: &str, style: Style) -
     let underscored = format!("{root}{}{:02}_FUT_CME", contract.month, contract.year.rem_euclid(100));
     let one = format!("{root}{}{}.{exchange}", contract.month, contract.year.rem_euclid(10));
     let two = format!("{root}{}{:02}.{exchange}", contract.month, contract.year.rem_euclid(100));
+    let dotted = match TWO_DIGIT_ROOTS.contains(&root) {
+        true => vec![two, one],
+        false => vec![one, two],
+    };
     match style {
-        Style::Underscored => vec![underscored, one, two],
-        Style::Dotted => vec![one, two, underscored],
+        Style::Underscored => [vec![underscored], dotted].concat(),
+        Style::Dotted => [dotted, vec![underscored]].concat(),
     }
 }
+
+/// The roots Rithmic spells with a two-digit year, as Sierra Chart's
+/// settings for it say (`NG?##`): `NGZ26.NYMEX`.
+const TWO_DIGIT_ROOTS: [&str; 1] = ["NG"];
 
 /// `ESZ26` as `ES` and December 2026.
 fn split_contract(code: &str, current_year: i32) -> Option<(&str, Contract)> {
@@ -404,20 +424,23 @@ mod tests {
         }
     }
 
-    /// A one-digit year is the one of the ten from five years back to four
-    /// ahead that ends in it.
+    /// A one-digit year is the one of the ten from a year back to eight
+    /// ahead that ends in it: a long-dated CL is years out, not gone.
     #[test]
-    fn a_one_digit_year_is_within_five_years_back_and_four_ahead() {
+    fn a_one_digit_year_is_within_a_year_back_and_eight_ahead() {
         let year = |stem, current| parse_in(stem, current).unwrap().contract.unwrap().year;
-        assert_eq!(year("ESH2.CME", 2026), 2022);
-        assert_eq!(year("ESZ6.CME", 2026), 2026);
-        assert_eq!(year("ESH1.CME", 2026), 2021);
-        assert_eq!(year("ESH0.CME", 2026), 2030);
         assert_eq!(year("ESZ5.CME", 2026), 2025);
-        assert_eq!(year("ESH9.CME", 2026), 2029);
+        assert_eq!(year("ESZ6.CME", 2026), 2026);
+        assert_eq!(year("CLZ4.NYMEX", 2026), 2034);
+        assert_eq!(year("GCZ2.COMEX", 2026), 2032);
+        assert_eq!(year("ESH0.CME", 2026), 2030);
         assert_eq!(year("ESH0.CME", 2031), 2030);
-        assert_eq!(year("ESH6.CME", 2031), 2026);
-        assert_eq!(year("ESH5.CME", 2031), 2035);
+        assert_eq!(year("ESH6.CME", 2031), 2036);
+        assert_eq!(year("ESH9.CME", 2031), 2039);
+        for digit in 0..10 {
+            let read = one_digit_year(digit, 2026);
+            assert!((2025..=2034).contains(&read) && read.rem_euclid(10) == digit, "{digit}: {read}");
+        }
     }
 
     /// The spellings a server may use for a contract, the style asked for
@@ -426,7 +449,8 @@ mod tests {
     fn a_contract_is_spelled_both_ways_the_style_asked_first() {
         let z26 = Contract { year: 2026, month: 'Z' };
         assert_eq!(spellings("ES", z26, "CME", Style::Underscored), ["ESZ26_FUT_CME", "ESZ6.CME", "ESZ26.CME"]);
-        assert_eq!(spellings("NG", z26, "NYMEX", Style::Dotted), ["NGZ6.NYMEX", "NGZ26.NYMEX", "NGZ26_FUT_CME"]);
+        assert_eq!(spellings("NG", z26, "NYMEX", Style::Dotted), ["NGZ26.NYMEX", "NGZ6.NYMEX", "NGZ26_FUT_CME"]);
+        assert_eq!(spellings("ES", z26, "CME", Style::Dotted), ["ESZ6.CME", "ESZ26.CME", "ESZ26_FUT_CME"]);
         for spelled in spellings("CL", Contract { year: 2027, month: 'F' }, "NYMEX", Style::Dotted) {
             let s = parse_in(&spelled, 2026).unwrap();
             assert_eq!((s.root.as_str(), s.contract), ("CL", Some(Contract { year: 2027, month: 'F' })), "{spelled}");
@@ -440,11 +464,11 @@ mod tests {
         let dir = Scratch::new();
         scid_file(&dir.join("ESZ26_FUT_CME.scid"), &[trade(1, 1.0, 1, true)]);
         scid_file(&dir.join("ESZ6.CME.scid"), &[trade(1, 1.0, 1, true), trade(2, 1.0, 1, true)]);
-        scid_file(&dir.join("ESH2.CME.scid"), &[]);
+        scid_file(&dir.join("ESZ5.CME.scid"), &[]);
         let listing = Listing::read_in(dir.path(), 2026);
         let es: Vec<(&str, Option<Contract>)> = listing.contracts_of("ES").map(|e| (e.symbol.stem.as_str(), e.symbol.contract)).collect();
         let z26 = Some(Contract { year: 2026, month: 'Z' });
-        assert_eq!(es, [("ESH2.CME", Some(Contract { year: 2022, month: 'H' })), ("ESZ26_FUT_CME", z26), ("ESZ6.CME", z26)]);
+        assert_eq!(es, [("ESZ5.CME", Some(Contract { year: 2025, month: 'Z' })), ("ESZ26_FUT_CME", z26), ("ESZ6.CME", z26)]);
         assert_eq!(listing.get("ESZ6.CME").unwrap().intraday.as_ref().unwrap().records, 2);
     }
 
