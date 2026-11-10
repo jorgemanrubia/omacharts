@@ -205,18 +205,20 @@ fn an_order_placed_is_acknowledged_then_filled_in_parts_and_the_book_follows() {
     assert_eq!((sent.int("OrderType"), sent.int("BuySell"), sent.int("Quantity"), sent.int("TimeInForce")), (Some(1), Some(1), Some(3), Some(1)));
     assert_eq!(sent.text("FreeFormText").as_deref(), Some("from the chart"));
     assert!(id.len() < 32);
-    // The position update comes after the fill's order update.
-    eventually(Duration::from_secs(2), "it fills", || {
-        let book = trading.book();
-        book.orders.iter().any(|order| order.is(&id) && order.status == Status::Filled)
-            && book.positions.first().is_some_and(|position| position.qty == 3)
-    });
+    // The position update comes after the fill's order update, and ES's
+    // definition, asked for only once the order named it, after both: the
+    // fill's price and the fills themselves show only once it lands.
+    let filled = |book: &Book| {
+        let placed = book.orders.iter().find(|order| order.is(&id))?;
+        let fills: Vec<u32> = book.fills.iter().filter(|fill| fill.server_id == placed.server_id).map(|fill| fill.qty).collect();
+        Some((placed.status.clone(), placed.filled, placed.avg_fill_price, fills, book.positions.first().map(|position| position.qty)))
+    };
+    let whole = Some((Status::Filled, 3, Some(7651.0), vec![1, 2], Some(3)));
+    eventually(Duration::from_secs(2), "it fills, at its real price", || filled(&trading.book()) == whole);
     let book = trading.book();
     let placed = book.orders.iter().find(|order| order.is(&id)).unwrap();
-    assert_eq!((placed.filled, placed.avg_fill_price, placed.tag.as_deref()), (3, Some(7651.0), Some("from the chart")));
+    assert_eq!(placed.tag.as_deref(), Some("from the chart"));
     assert!(placed.server_id.is_some());
-    assert_eq!(book.fills.iter().filter(|fill| fill.server_id == placed.server_id).map(|fill| fill.qty).collect::<Vec<_>>(), [1, 2]);
-    assert_eq!(book.positions[0].qty, 3);
     assert!(heard.lock().unwrap().iter().filter(|pulse| **pulse == Pulse::Moved).count() >= 3);
     trading.sign_out();
 }
@@ -771,6 +773,8 @@ fn signing_out_logs_off_and_returns_promptly() {
     let started = Instant::now();
     trading.sign_out();
     assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    // Written as it returns; the fake reads it a moment later.
+    eventually(Duration::from_secs(1), "the logoff reaches the server", || !fake.received_of(wire::LOGOFF).is_empty());
     assert_eq!(fake.received_of(wire::LOGOFF).len(), 1);
     assert_eq!(trading.place(&order("Sim1", ES, Side::Buy, 1, OrderKind::Market, None)), Err(Error::Closed));
 }
@@ -868,7 +872,8 @@ fn a_balance_pushed_lands_in_the_book_and_pulses() {
     heard.lock().unwrap().clear();
     fake.push_balance("LIVE1", 24_500.0);
     eventually(Duration::from_secs(2), "the balance moves", || trading.balance("LIVE1").is_some_and(|balance| balance.cash == 24_500.0));
-    assert!(heard.lock().unwrap().contains(&Pulse::Moved));
+    // The pulse goes once the book has the balance, not with it.
+    eventually(Duration::from_secs(2), "it pulses", || heard.lock().unwrap().contains(&Pulse::Moved));
     trading.sign_out();
 }
 

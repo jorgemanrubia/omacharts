@@ -1577,18 +1577,38 @@ impl Trading {
     /// finds nothing too. A caller sure of the spelling says the account is
     /// already flat.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
-        let held = || {
-            lock(&self.shared.state)
+        let held_in = |state: &State| {
+            state
                 .positions
                 .iter()
                 .find(|position| position.account == account && position.symbol == symbol)
                 .map(|position| position.qty)
                 .unwrap_or(0)
         };
+        let held = || held_in(&lock(&self.shared.state));
         let before = held();
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
         let tried = cancels.sent.len() + cancels.failed;
+        let was: Vec<(String, Side, u32)> = cancels.sent.iter().map(|(order, _)| (order.id().to_string(), order.side, order.filled)).collect();
         let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels, true);
+        // A fill of one of them is told in its ORDER_UPDATE, ahead of the
+        // POSITION_UPDATE that says what is held after it: what is held is
+        // waited for until it has moved by those fills, for a while, rather
+        // than flattened as it stood before them.
+        let moved: i64 = {
+            let state = lock(&self.shared.state);
+            was.iter()
+                .filter_map(|(id, side, filled)| {
+                    let now = state.orders[state.order_at(id)?].filled;
+                    let more = i64::from(now.saturating_sub(*filled));
+                    Some(if *side == Side::Buy { more } else { -more })
+                })
+                .sum()
+        };
+        if before != 0 && moved != 0 {
+            let after = i64::from(before) + moved;
+            let _ = self.shared.wait_for(self.shared.timing.flatten_cancels, |state| (i64::from(held_in(state)) == after).then_some(()));
+        }
         if before == 0 {
             return match (why, tried) {
                 (Some(why), _) => Err(why),
