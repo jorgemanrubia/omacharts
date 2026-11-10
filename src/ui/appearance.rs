@@ -21,16 +21,13 @@ use omacharts_engine::theme::{
 };
 
 use crate::chart_look::{ChartLook, LookEdit};
-use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::window::Window;
 use crate::ui::{colors, palette, scope_rule, theme_picker};
 
 struct Context {
     window: Rc<Window>,
-    store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
-    on_change: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
     /// The look the page shows, as the rule scopes it: read once per
     /// rebuild and per change, not per picture drawn.
@@ -46,21 +43,13 @@ thread_local! {
     static SHOWN: RefCell<Vec<Weak<Context>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The Appearance page. `on_change` repaints the charts after the theme
-/// has been stored; the bars go through [`scope_rule::change`], which
-/// repaints what it changed.
-pub fn page(
-    window: Rc<Window>,
-    store: Rc<Store>,
-    theming: Rc<RefCell<Theming>>,
-    on_change: Rc<dyn Fn()>,
-) -> adw::PreferencesPage {
+/// The Appearance page. The theme and the bars go through
+/// [`scope_rule::change`], which repaints what it changed.
+pub fn page(window: Rc<Window>, theming: Rc<RefCell<Theming>>) -> adw::PreferencesPage {
     let context = Rc::new(Context {
         look: RefCell::new(scope_rule::look(&window)),
         window,
-        store,
         theming,
-        on_change,
         page: adw::PreferencesPage::new(),
         groups: RefCell::new(Vec::new()),
     });
@@ -100,38 +89,35 @@ fn rebuild(context: &Rc<Context>) {
     *context.groups.borrow_mut() = groups;
 }
 
-/// Store a change, then repaint the charts.
-fn apply(context: &Rc<Context>) {
-    context.theming.borrow_mut().apply();
-    (context.on_change)();
+/// The theme the look in scope is drawn on: the window's, or the focused
+/// chart's own.
+fn theme(context: &Context) -> Theme {
+    context.window.theme_of(&context.look.borrow())
 }
 
 fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
-    let theming = context.theming.borrow();
-    let look = theming.bar_look().clone();
+    let look = context.look.borrow().bars.clone();
     let choices = theme_picker::Choices {
-        themes: theming.themes().into_iter().cloned().collect(),
-        current: theming.theme_id().to_string(),
+        desktop: context.theming.borrow().desktop().cloned(),
+        named: context.theming.borrow().named().to_vec(),
+        current: theme(context).id,
         bars: Rc::new(move |theme| look.scheme(theme)),
         pick: {
             let ctx = context.clone();
             Rc::new(move |id| choose_theme(&ctx, id))
         },
     };
-    drop(theming);
-    let group = theme_picker::group(choices);
-    group.set_widget_name(crate::ui::scope_rule::GLOBAL_ONLY);
-    group
+    theme_picker::group(choices)
 }
 
-/// Wear a theme, and rebuild the page once the card that chose it has
-/// finished: the cards and the bar colours on offer are the theme's.
+/// Wear a theme, where the rule says, and rebuild the page once the card
+/// that chose it has finished: the cards and the bar colours on offer are
+/// the theme's.
 fn choose_theme(context: &Rc<Context>, id: &str) {
-    if id == context.theming.borrow().theme_id() {
+    if id == theme(context).id {
         return;
     }
-    context.theming.borrow_mut().select_theme(id, &context.store);
-    apply(context);
+    scope_rule::change(&context.window, LookEdit::Theme(Some(id.to_string())));
     // Every page, not only this one: the other one open shows the old
     // theme's cards and colours otherwise.
     glib::idle_add_local_once(restyled);
@@ -146,7 +132,7 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
 
-    let offered = bar_palette(&context.theming.borrow().theme());
+    let offered = bar_palette(&theme(context));
 
     let card = Card::default();
     group.add(&style_head(context, &card));
@@ -260,7 +246,7 @@ fn direction_row(context: &Rc<Context>, offered: &Theme, up: bool, card: &Card) 
                 true => bars.up_body = body,
                 false => bars.down_body = body,
             }
-            draw_bar(cr, w, h, &bars.scheme(&drawn_by.theming.borrow().theme()), up, BarStyle::Candles);
+            draw_bar(cr, w, h, &bars.scheme(&theme(&drawn_by)), up, BarStyle::Candles);
         },
         move |body| change(&picked_by, if up { LookEdit::UpBody(body) } else { LookEdit::DownBody(body) }, &repaint),
     );
@@ -280,7 +266,7 @@ fn direction_row(context: &Rc<Context>, offered: &Theme, up: bool, card: &Card) 
                 true => bars.up_thickness = px,
                 false => bars.down_thickness = px,
             }
-            draw_bar(cr, w, h, &bars.scheme(&drawn_by.theming.borrow().theme()), up, BarStyle::Ohlc);
+            draw_bar(cr, w, h, &bars.scheme(&theme(&drawn_by)), up, BarStyle::Ohlc);
         },
         move |px| change(&picked_by, if up { LookEdit::UpThickness(px) } else { LookEdit::DownThickness(px) }, &repaint),
     );
@@ -408,7 +394,7 @@ fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
     area.set_valign(gtk::Align::Center);
     let ctx = context.clone();
     area.set_draw_func(move |_, cr, _, _| {
-        let theme = ctx.theming.borrow().theme();
+        let theme = theme(&ctx);
         let scheme = ctx.look.borrow().bars.scheme(&theme);
         // Drawn on an 18 by 22 grid, centred.
         cr.translate(f64::from(W - 18) / 2.0, f64::from(H - 22) / 2.0);

@@ -964,10 +964,6 @@ impl Owner {
         self.indicators().iter().map(|i| i.id).max().unwrap_or(0) + 1
     }
 
-    fn theme(&self) -> omacharts_engine::Theme {
-        self.app.theme()
-    }
-
     /// Whether a cumulative delta on the chart in front of whoever is
     /// editing is estimated because its feed has no bid and ask volume.
     /// Never for a template, which is on charts of every feed.
@@ -975,8 +971,13 @@ impl Owner {
         self.template.is_none() && !self.app.focused_pane_has_ladders()
     }
 
-    /// The focused chart's, for a template too: it is the chart in front of
-    /// whoever is editing, and a template has no bars of its own.
+    /// The focused chart's theme and candles, for a template too: it is
+    /// the chart in front of whoever is editing, and a template has no
+    /// bars of its own.
+    fn theme(&self) -> omacharts_engine::Theme {
+        self.app.focused_pane().view.theme()
+    }
+
     fn bar_scheme(&self) -> omacharts_engine::BarScheme {
         self.app.focused_pane().view.scheme()
     }

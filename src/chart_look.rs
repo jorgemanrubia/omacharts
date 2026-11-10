@@ -1,12 +1,16 @@
-//! What a chart wears: how its bars are drawn and coloured, its header, and
-//! the two lines across it.
+//! What a chart wears: its theme, how its bars are drawn and coloured, its
+//! header, and the two lines across it.
 //!
 //! Two layers and no more. Every chart follows the look kept in the settings
 //! rows, unless it holds a copy of its own, whole: the first change made to
 //! one chart alone copies every chart's look onto it and changes the copy,
-//! and from then on changes to every chart's leave it as it is. The theme and
-//! the crosshair across Follow charts are not in it: a window wears one
-//! theme, and a crosshair between charts is not one chart's.
+//! and from then on changes to every chart's leave it as it is. The
+//! crosshair across Follow charts is not in it: a crosshair between charts
+//! is not one chart's.
+//!
+//! A copy starts on the window's theme and follows it, until a theme is
+//! picked for the chart alone. The window keeps one theme for everything
+//! that is not a chart.
 //!
 //! Colours are kept as the choices they were (a swatch's name, Foreground,
 //! a hex), so a chart's copy follows a change of theme the way every chart
@@ -20,9 +24,15 @@ use crate::header::{self, Header, Part, Section};
 use crate::store::Store;
 use crate::theming;
 
+/// How a look on the window's theme spells its theme, and how
+/// `chart look --theme` puts a chart back on it.
+pub const WINDOW_THEME: &str = "window";
+
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(from = "Spelled", into = "Spelled")]
 pub struct ChartLook {
+    /// The theme's id, or `None` for the window's.
+    pub theme: Option<String>,
     pub style: BarStyle,
     pub bars: BarLook,
     pub header: Header,
@@ -34,6 +44,7 @@ pub struct ChartLook {
 impl Default for ChartLook {
     fn default() -> ChartLook {
         ChartLook {
+            theme: None,
             style: BarStyle::default(),
             bars: BarLook::default(),
             header: Header::standard(),
@@ -46,6 +57,7 @@ impl Default for ChartLook {
 /// One answer of a look, changed.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum LookEdit {
+    Theme(Option<String>),
     Style(BarStyle),
     Up(ColorChoice),
     Down(ColorChoice),
@@ -63,6 +75,7 @@ impl ChartLook {
     /// Every chart's look, as the settings rows hold it.
     pub fn global(store: &Store) -> ChartLook {
         ChartLook {
+            theme: None,
             style: crate::chart_defaults::bar_style(store),
             bars: theming::bar_look(store),
             header: header::load(store),
@@ -73,6 +86,7 @@ impl ChartLook {
 
     pub fn set(&mut self, edit: LookEdit) {
         match edit {
+            LookEdit::Theme(id) => self.theme = id,
             LookEdit::Style(style) => self.style = style,
             LookEdit::Up(colour) => self.bars.up = colour,
             LookEdit::Down(colour) => self.bars.down = colour,
@@ -103,15 +117,17 @@ impl ChartLook {
         )
     }
 
-    /// The whole look, said: the bars, then the lines and the header.
+    /// The whole look, said: the bars, the lines and the header, then the
+    /// theme, the way `chart look --theme` takes it.
     pub fn spell(&self) -> String {
         let on_off = |on: bool| if on { "on" } else { "off" };
         format!(
-            "{}, grid {}, price line {}, header {}",
+            "{}, grid {}, price line {}, header {}, theme {}",
             self.spell_bars(),
             on_off(self.grid),
             on_off(self.price_line),
-            self.header.spell()
+            self.header.spell(),
+            self.theme.as_deref().map_or(WINDOW_THEME, theming::spell_theme),
         )
     }
 }
@@ -121,6 +137,9 @@ impl LookEdit {
     /// kept in, and to no other, so a row nobody chose stays unchosen.
     pub fn save_global(self, store: &Store) {
         match self {
+            LookEdit::Theme(Some(id)) => store.set_setting(theming::SETTING_THEME, &id),
+            // Every chart already wears the window's.
+            LookEdit::Theme(None) => {}
             LookEdit::Style(style) => store.set_setting(SETTING_BAR_STYLE, style.key()),
             LookEdit::Header(section, parts) => {
                 let mut header = header::load(store);
@@ -140,7 +159,7 @@ impl LookEdit {
     /// Whether it changes a colour, which the window's own stylesheet and
     /// the rail wear too, rather than only what the charts draw.
     pub fn colours(&self) -> bool {
-        matches!(self, LookEdit::Up(_) | LookEdit::Down(_) | LookEdit::UpBody(_) | LookEdit::DownBody(_))
+        matches!(self, LookEdit::Theme(_) | LookEdit::Up(_) | LookEdit::Down(_) | LookEdit::UpBody(_) | LookEdit::DownBody(_))
     }
 }
 
@@ -152,6 +171,8 @@ impl LookEdit {
 /// arrangement it is stored in.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Spelled {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme: Option<String>,
     #[serde(default)]
     style: Option<String>,
     #[serde(default)]
@@ -195,6 +216,7 @@ impl From<Spelled> for ChartLook {
             read.unwrap_or(fallback)
         };
         ChartLook {
+            theme: spelled.theme,
             style: spelled.style.and_then(|key| BarStyle::from_key(&key)).unwrap_or(fallback.style),
             bars: BarLook {
                 up: colour(spelled.up, fallback.bars.up),
@@ -214,6 +236,7 @@ impl From<Spelled> for ChartLook {
 impl From<ChartLook> for Spelled {
     fn from(look: ChartLook) -> Spelled {
         Spelled {
+            theme: look.theme,
             style: Some(look.style.key().to_string()),
             up: Some(spell_bar_colour(&look.bars.up)),
             down: Some(spell_bar_colour(&look.bars.down)),
@@ -327,6 +350,32 @@ mod tests {
         let json = serde_json::json!({"up_thickness": 4, "down_thickness": 1});
         let look: ChartLook = serde_json::from_value(json).unwrap();
         assert_eq!((look.bars.up_thickness, look.bars.down_thickness), (Thickness::Three, Thickness::One));
+    }
+
+    /// A look on the window's theme writes no theme down, so a look stored
+    /// before charts had themes of their own reads as on the window's.
+    #[test]
+    fn a_look_names_its_theme_only_when_it_has_one_of_its_own() {
+        let mut look = ChartLook::default();
+        assert!(serde_json::to_value(&look).unwrap().get("theme").is_none());
+        assert!(look.spell().ends_with(", theme window"), "{}", look.spell());
+        look.set(LookEdit::Theme(Some(omacharts_engine::theme::OMARCHY_ID.to_string())));
+        let json = serde_json::to_value(&look).unwrap();
+        assert_eq!(json["theme"], omacharts_engine::theme::OMARCHY_ID);
+        assert_eq!(serde_json::from_value::<ChartLook>(json).unwrap(), look);
+        assert!(look.spell().ends_with(", theme system"), "{}", look.spell());
+    }
+
+    /// Every chart's theme is the window's, kept where `config theme`
+    /// keeps it.
+    #[test]
+    fn a_theme_for_every_chart_is_the_windows() {
+        let store = Store::memory().unwrap();
+        LookEdit::Theme(None).save_global(&store);
+        assert!(!store.has_setting(theming::SETTING_THEME));
+        LookEdit::Theme(Some("nord".to_string())).save_global(&store);
+        assert_eq!(store.setting(theming::SETTING_THEME).as_deref(), Some("nord"));
+        assert_eq!(ChartLook::global(&store).theme, None);
     }
 
     /// A copy holds the swatch, not the colour it was on the theme it was

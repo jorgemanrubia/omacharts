@@ -944,7 +944,7 @@ move, click; Escape clears it.
 
 ## A chart's own look
 
-A chart's look is how its bars are drawn and coloured, its header, its
+A chart's look is its theme, how its bars are drawn and coloured, its header, its
 gridlines and its last-price line. Every chart wears every chart's look until
 it is given its own. `chart look` gives the chart one: the first change
 copies every chart's look onto it and changes the copy, so a later
@@ -957,7 +957,11 @@ pos:0 NVDA 1D in Macro follows all charts
   [exit 0]
 
 $ omacharts chart look --style ohlc --grid off
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme window
+  [exit 0]
+
+$ omacharts chart look --theme catppuccin-latte
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme catppuccin-latte
   [exit 0]
 
 $ omacharts chart look --follow
@@ -965,13 +969,18 @@ pos:0 NVDA 1D in Macro now follows all charts
   [exit 0]
 ```
 
-`--style`, `--up`, `--down`, `--up-body`, `--down-body`, `--up-thickness`
-and `--down-thickness` take what `config bars` takes, `--header` what `config set chart_header` takes, and
-`--grid` and `--price-line` `on` or `off`. Colours are kept as the names
+`--theme` takes a theme `config theme` lists, or `window` for the window's,
+which a copy starts on and follows. `--style`, `--up`, `--down`, `--up-body`,
+`--down-body`, `--up-thickness` and `--down-thickness` take what `config bars` takes, `--header` what
+`config set chart_header` takes, and `--grid` and `--price-line` `on` or
+`off`. Colours are kept as the names
 given, so a chart's own look follows a change of theme as every chart's
 does. A split copies the chart's own look, and so does `chartbook duplicate`.
-The theme is never one chart's. In the window, choosing a style from a
-chart's Bar style menu gives that chart a look of its own.
+A chart on a theme of its own draws its header, legend and buttons in it
+too; the rest of the window keeps the window's. In the window, choosing a
+style from a chart's Bar style menu gives that chart a look of its own.
+In `chart list --json`, each chart's `own_look` is `true` while it has a
+look of its own.
 
 ## Price alerts
 

@@ -1815,11 +1815,11 @@ impl Window {
         // chart's series does.
         pane.view.set_mark_tick(target.tick);
         let key = target.account.key();
-        let theme = self.theming.borrow().theme();
-        // The theme's trading colours, with profit and loss in the bars' own
-        // up and down: red-up bars turn them round.
-        let bars = self.theming.borrow().bar_look().clone();
-        let look = omacharts_engine::theme_trading(&theme, &bars);
+        // The trading colours on the theme and bars this chart wears, with
+        // profit and loss in the bars' own up and down: red-up bars turn
+        // them round.
+        let worn = self.look_of(pane);
+        let look = omacharts_engine::theme_trading(&self.theme_of(&worn), self.theming.borrow().trading_look(), &worn.bars);
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();
@@ -3442,6 +3442,31 @@ pub(super) mod tests {
                     "the header says the book's {said}"
                 );
             }
+        });
+    }
+
+    /// Profit and loss on a chart wear that chart's bars: one with red-up
+    /// bars of its own shows a gain in its own up colour, not in every
+    /// chart's.
+    #[test]
+    fn a_charts_own_bars_colour_its_profit_and_loss() {
+        crate::ui::on_gtk(|| {
+            use crate::chart_look::LookEdit;
+            use omacharts_engine::BarLook;
+            let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
+            *session.market.lock().unwrap() = Some(7_622.25);
+            window.mark_to_market();
+            let held = || {
+                let marks = pane.view.price_marks();
+                marks.into_iter().find(|mark| mark.id == super::super::marks::POSITION).map(|mark| mark.colour)
+            };
+            let theme = window.theme_of(&window.look_of(&pane));
+            assert_eq!(held(), Some(BarLook::default().scheme(&theme).up), "a gain in every chart's up");
+
+            let red_up = BarLook::red_up();
+            window.change_look(LookEdit::Up(red_up.up.clone()), false);
+            window.change_look(LookEdit::Down(red_up.down.clone()), false);
+            assert_eq!(held(), Some(red_up.scheme(&theme).up), "a gain in the chart's own up");
         });
     }
 

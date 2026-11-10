@@ -472,9 +472,11 @@ A chart made by splitting another starts with no chart title.
 
 ## A chart's own look
 
-A chart's look is how its bars are drawn and coloured, its header, its gridlines and its last-price line. Every chart wears the same look until you give one a look of its own. The theme is always every chart's.
+A chart's look is its theme, how its bars are drawn and coloured, its header, its gridlines and its last-price line. Every chart wears the same look until you give one a look of its own.
 
 The first change you make to one chart alone copies every chart's look onto it, then makes the change. From then on, a change to every chart's look leaves that chart as it was. Colours are kept as the names you picked, such as **Blue** or **Foreground**, so a new theme recolours the chart the way it recolours every other. A hex colour stays that colour.
+
+A chart with a look of its own is on the window's theme until you pick one for it under Preferences › **LOCAL** › Appearance › Theme. The chart then draws in that theme: its background, scales and bars, and its header, legend and buttons too. The rest of the window keeps the window's theme. The reset arrow after **LOCAL** puts the chart back on the window's theme with the rest of every chart's look.
 
 To give one chart a look of its own, focus it, open Preferences and pick **LOCAL** on the **VISUAL** rule, then change Appearance or Overlays. The reset arrow after **LOCAL** puts it back on every chart's look. Choosing a style from a chart's **Bar style** submenu also gives that chart a look of its own. A chart's own look comes with it when you split it or duplicate its chartbook.
 
@@ -482,6 +484,7 @@ To give one chart a look of its own, focus it, open Preferences and pick **LOCAL
 
 ```sh
 omacharts chart look --style ohlc --up blue --grid off
+omacharts chart look --theme catppuccin-latte
 omacharts chart look --follow
 ```
 

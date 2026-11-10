@@ -4908,9 +4908,22 @@ impl ChartView {
         self.state.borrow().scheme.clone()
     }
 
+    /// The theme the chart is drawn on: the window's, or its own.
+    pub fn theme(&self) -> Theme {
+        self.state.borrow().theme.clone()
+    }
+
+    /// Paint the chart on `theme` with `scheme`'s bars. An indicator with
+    /// no colour of its own takes one from the theme's palette, so it is
+    /// recoloured here rather than computed again: its values are the
+    /// same on any theme.
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
+            let shown: Vec<Indicator> = state.indicators.iter().map(|drawn| drawn.indicator.clone()).collect();
+            for (drawn, colour) in state.indicators.iter_mut().zip(omacharts_engine::palette_colors(&shown, &theme)) {
+                drawn.color = colour;
+            }
             state.delta_ink = delta_ink(&theme, &state.house);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
@@ -12219,7 +12232,7 @@ mod tests {
         }
         let Some(home) = std::env::var_os("HOME") else { return };
         let wanted = ["tokyo-night", "catppuccin-latte", "gruvbox", "nord", "rose-pine", "flexoki-light", "everforest", "matte-black"];
-        for theme in omacharts_engine::omarchy::installed(std::path::Path::new(&home)) {
+        for theme in omacharts_engine::omarchy::installed(std::path::Path::new(&home)).into_iter().map(omacharts_engine::omarchy::Palette::into_theme) {
             let slug = theme.id.rsplit(':').next().unwrap_or_default().to_string();
             if wanted.contains(&slug.as_str()) {
                 picture(&waiting(theme).with_progress(Some(0.72)), 2.0, &format!("loading-later-omarchy-{slug}"));
@@ -12310,7 +12323,7 @@ mod tests {
                 let mut state = at_the_last_price(theme);
                 state.mark_labels = side;
                 state.hover_mark = None;
-                let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::theme::BarLook::default());
+                let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::TradingLook::default(), &omacharts_engine::theme::BarLook::default());
                 let (first, visible, _) = state.view();
                 let plan = layout(&state, w, h);
                 let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
@@ -12453,7 +12466,7 @@ mod tests {
         for (theme, name) in [(0, "dark"), (3, "light")] {
             let mut state = at_the_last_price(theme);
             state.hover_mark = None;
-            let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::theme::BarLook::default());
+            let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::TradingLook::default(), &omacharts_engine::theme::BarLook::default());
             let (first, visible, _) = state.view();
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();

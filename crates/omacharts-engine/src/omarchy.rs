@@ -11,6 +11,8 @@
 //! exactly the case where watching a path either misses the change or needs
 //! re-arming. Two `stat` calls on a timer cost nothing and never miss.
 
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -74,7 +76,7 @@ pub fn current(home: &Path) -> Option<Theme> {
 /// name. Read once rather than followed, because only the current theme ever
 /// changes under a name, and that one is offered separately, as System.
 /// Sorted by name, the way the list prints them.
-pub fn installed(home: &Path) -> Vec<Theme> {
+pub fn installed(home: &Path) -> Vec<Palette> {
     let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
     for dir in [THEMES, USER_THEMES] {
         let Ok(entries) = std::fs::read_dir(home.join(dir)) else { continue };
@@ -89,7 +91,7 @@ pub fn installed(home: &Path) -> Vec<Theme> {
     }
     found
         .into_iter()
-        .filter_map(|(id, path)| Some(named(&id, &std::fs::read_to_string(path).ok()?)))
+        .filter_map(|(id, path)| Some(Palette::new(id.into(), std::fs::read_to_string(path).ok()?.into())))
         .collect()
 }
 
@@ -98,8 +100,8 @@ pub fn installed(home: &Path) -> Vec<Theme> {
 /// A few of the themes Omarchy ships, chosen to give a dark and a light of
 /// each temperament, rather than a set of our own: the derivation is tuned
 /// against these files, and they are what everybody on Omarchy sees.
-pub fn bundled() -> Vec<Theme> {
-    BUNDLED.iter().map(|(id, text)| named(id, text)).collect()
+pub fn bundled() -> Vec<Palette> {
+    BUNDLED.iter().map(|(id, text)| Palette::new((*id).into(), (*text).into())).collect()
 }
 
 const BUNDLED: [(&str, &str); 9] = [
@@ -113,6 +115,40 @@ const BUNDLED: [(&str, &str); 9] = [
     ("catppuccin-latte", include_str!("../themes/catppuccin-latte.toml")),
     ("flexoki-light", include_str!("../themes/flexoki-light.toml")),
 ];
+
+/// A fixed theme on offer, its palette read and its theme derived the first
+/// time somebody looks at it.
+///
+/// Deriving is what a theme costs: the furniture held to its contrast bands
+/// a lightness step at a time, eight swatches placed clear of each other. A
+/// window wears one theme of twenty, so the list is of palettes, and only
+/// the ones worn, or all of them while the list is on screen, are derived.
+pub struct Palette {
+    id: Cow<'static, str>,
+    text: Cow<'static, str>,
+    theme: OnceCell<Theme>,
+}
+
+impl Palette {
+    fn new(id: Cow<'static, str>, text: Cow<'static, str>) -> Palette {
+        Palette { id, text, theme: OnceCell::new() }
+    }
+
+    /// The theme's id, which is its directory's name: known without
+    /// deriving it.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn theme(&self) -> &Theme {
+        self.theme.get_or_init(|| named(&self.id, &self.text))
+    }
+
+    pub fn into_theme(self) -> Theme {
+        let Palette { id, text, theme } = self;
+        theme.into_inner().unwrap_or_else(|| named(&id, &text))
+    }
+}
 
 /// One theme by its directory name, fixed rather than following the desktop.
 fn named(id: &str, text: &str) -> Theme {
@@ -304,7 +340,6 @@ pub fn derive(keys: &HashMap<String, String>, name: &str) -> Theme {
             accent,
         },
         swatches,
-        trading: None,
     }
 }
 
@@ -459,7 +494,7 @@ magenta = "#d699b6"
         write(THEMES, "no-palette", "");
         write(USER_THEMES, "tokyo-night", "background = \"#000000\"\n");
 
-        let themes = installed(&home);
+        let themes: Vec<Theme> = installed(&home).into_iter().map(Palette::into_theme).collect();
         let _ = std::fs::remove_dir_all(&home);
         let ids: Vec<&str> = themes.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["everforest", "tokyo-night"]);
@@ -470,7 +505,7 @@ magenta = "#d699b6"
 
     #[test]
     fn every_bundled_theme_is_a_named_theme_of_its_own() {
-        let themes = bundled();
+        let themes: Vec<Theme> = bundled().into_iter().map(Palette::into_theme).collect();
         assert!(themes.iter().any(|t| t.mode == Mode::Light), "a light theme is offered");
         for theme in &themes {
             assert_ne!(theme.id, OMARCHY_ID);

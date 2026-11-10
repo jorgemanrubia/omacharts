@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use omacharts_engine::{
-    FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
+    BarScheme, FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
 };
 
 use crate::ui::chart::{ChartView, Hidden};
@@ -378,6 +378,7 @@ impl ChartPane {
         session: Session,
         mode: LinkMode,
     ) -> Rc<ChartPane> {
+        let theme_class = crate::theming::theme_class(&theme.id);
         let view = ChartView::new(theme, scheme);
 
         let symbol_button = gtk::Button::new();
@@ -760,6 +761,8 @@ impl ChartPane {
         let menu_actions = gtk::gio::SimpleActionGroup::new();
         root.insert_action_group("pane", Some(&menu_actions));
         root.add_css_class("chart-pane");
+        // Its theme's colours, as `wear_theme` changes them.
+        root.add_css_class(&theme_class);
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.append(&overlay);
@@ -989,8 +992,7 @@ impl ChartPane {
     }
 
     /// Change what the rail does to this chart. The colour is resolved against
-    /// the live theme by the window and handed in, because a pane has no theme
-    /// of its own to ask once the user has changed it.
+    /// the theme the chart is drawn on by the caller and handed in.
     pub fn set_mode(&self, mode: LinkMode, colour: Option<String>) {
         self.mode.set(mode);
         *self.link_colour.borrow_mut() = colour;
@@ -1000,6 +1002,23 @@ impl ChartPane {
         if let Some(icon) = self.link.child() {
             icon.queue_draw();
         }
+    }
+
+    /// Draw the chart on `theme`, with `bars` for its candles, and give
+    /// its header, legend and controls the same theme through the theme's
+    /// class ([`crate::theming::theme_class`]). Whether either changed: what
+    /// is coloured from the palette or the bars has to be worked out again.
+    pub fn wear_theme(&self, theme: Theme, bars: BarScheme) -> bool {
+        let was = self.view.theme();
+        if was == theme && self.view.scheme() == bars {
+            return false;
+        }
+        self.root.remove_css_class(&crate::theming::theme_class(&was.id));
+        self.root.add_css_class(&crate::theming::theme_class(&theme.id));
+        let mode = self.mode();
+        self.set_mode(mode, mode.colour(&theme));
+        self.view.restyle(theme, bars);
+        true
     }
 
     /// Point at the pin, for a rail click this chart refused.

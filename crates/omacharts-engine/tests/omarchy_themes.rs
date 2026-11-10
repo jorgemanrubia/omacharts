@@ -16,7 +16,7 @@ use std::path::Path;
 use omacharts_engine::frame::{MIN_FROM_CANDLE, MIN_FROM_FURNITURE, MIN_GUTTER, RING_CONTRAST};
 use omacharts_engine::omarchy::{AXIS_CONTRAST, CROSSHAIR_CONTRAST, GRID_CONTRAST};
 use omacharts_engine::theme::{
-    contrast_ratio, delta_e, hue_gap, theme_bars, theme_mono_bars, Direction, Oklch,
+    contrast_ratio, delta_e, hue_gap, theme_bars, BarLook, Direction, Oklch,
     COMPANION_GAP, MONO_CONTRAST, SWATCH_SEQUENCE,
 };
 use omacharts_engine::{omarchy, palette, Theme};
@@ -550,7 +550,7 @@ fn the_frame_is_visible_and_unmistakable_in_every_theme() {
 fn every_monochrome_bar_is_legible_and_unlike_the_colours_it_replaces() {
     for (name, theme) in fixtures() {
         let coloured = theme_bars(&theme);
-        let mono = theme_mono_bars(&theme);
+        let mono = BarLook::monochrome().scheme(&theme);
         assert_eq!(mono.up, mono.down, "{name}: a direction colour survived");
 
         let ratio = contrast_ratio(&mono.up, &theme.ui.background);

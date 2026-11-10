@@ -283,6 +283,9 @@ pub trait Live {
     /// Re-read the gridlines and the last-price line, and put them on every
     /// chart. Nothing to do without a window.
     fn adopt_chart_look(&self) {}
+    /// Write every chart's template name again, after one was renamed.
+    /// Nothing to do without a window.
+    fn adopt_template_names(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -1094,6 +1097,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_chart_look(&self) {
         crate::ui::Window::adopt_chart_look(self);
+    }
+
+    fn adopt_template_names(&self) {
+        crate::ui::Window::adopt_template_names(self);
     }
 
     fn screenshot(

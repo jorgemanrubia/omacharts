@@ -26,9 +26,10 @@ const TILE_H: i32 = 84;
 
 /// What the cards need from whoever shows them.
 pub struct Choices {
-    /// Every theme on offer, the one following the desktop first if there is
-    /// one.
-    pub themes: Vec<Theme>,
+    /// The theme following the desktop, if there is a desktop to follow.
+    pub desktop: Option<Theme>,
+    /// Every other theme on offer, each fixed at its palette.
+    pub named: Vec<Theme>,
     /// The theme being worn.
     pub current: String,
     /// The bars as chosen, on a given theme.
@@ -43,13 +44,12 @@ pub fn group(choices: Choices) -> adw::PreferencesGroup {
     group.set_title("Theme");
 
     let choices = Rc::new(choices);
-    let desktop = choices.themes.iter().find(|t| t.id == OMARCHY_ID);
-    let following = choices.current == OMARCHY_ID && desktop.is_some();
+    let following = choices.current == OMARCHY_ID && choices.desktop.is_some();
 
     let cards = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     cards.set_homogeneous(true);
 
-    if let Some(desktop) = desktop {
+    if let Some(desktop) = &choices.desktop {
         let preview = framed(preview(desktop.clone(), (choices.bars)(desktop), false));
         let card = card(
             &preview,
@@ -62,25 +62,25 @@ pub fn group(choices: Choices) -> adw::PreferencesGroup {
         card.connect_clicked(move |_| pick(OMARCHY_ID));
         cards.append(&card);
     } else {
-        group.set_description(Some("How the whole app looks, in one of Omarchy's palettes."));
+        group.set_description(Some("One of Omarchy's palettes."));
         // The catalogue keeps half the row and its place on the right, so
         // its picture is the size it is beside Follow system rather than
         // the whole width.
         cards.append(&gtk::Box::new(gtk::Orientation::Horizontal, 0));
     }
 
-    let named: Vec<&Theme> = choices.themes.iter().filter(|t| t.id != OMARCHY_ID).collect();
+    let named = &choices.named;
     let picked = named.iter().find(|t| !following && t.id == choices.current);
     let catalogue = match picked {
         Some(theme) => card(
-            &framed(preview((*theme).clone(), (choices.bars)(theme), false)),
+            &framed(preview(theme.clone(), (choices.bars)(theme), false)),
             &theme.name,
             &format!("Catalogue · {} themes", named.len()),
             true,
             true,
         ),
         None => card(
-            &mosaic(&named, &choices.bars),
+            &mosaic(named, &choices.bars),
             "Catalogue",
             &format!("{} Omarchy themes", named.len()),
             true,
@@ -93,7 +93,7 @@ pub fn group(choices: Choices) -> adw::PreferencesGroup {
             .ancestor(adw::NavigationView::static_type())
             .and_downcast::<adw::NavigationView>();
         if let Some(view) = view {
-            open_catalogue(&view, &opening);
+            open_catalogue(&view, &opening, following);
         }
     });
     cards.append(&catalogue);
@@ -146,7 +146,7 @@ fn card(picture: &impl IsA<gtk::Widget>, title: &str, line: &str, opens: bool, s
 
 /// Six themes in a grid, for the catalogue card before one has been picked:
 /// what is in there, without having to open it.
-fn mosaic(themes: &[&Theme], bars: &Rc<dyn Fn(&Theme) -> BarScheme>) -> gtk::AspectFrame {
+fn mosaic(themes: &[Theme], bars: &Rc<dyn Fn(&Theme) -> BarScheme>) -> gtk::AspectFrame {
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);
@@ -155,7 +155,7 @@ fn mosaic(themes: &[&Theme], bars: &Rc<dyn Fn(&Theme) -> BarScheme>) -> gtk::Asp
     // Spread across the list, so the six are not six of a kind.
     let step = (themes.len() / 6).max(1);
     for (n, theme) in themes.iter().step_by(step).take(6).enumerate() {
-        let area = preview((*theme).clone(), bars(theme), true);
+        let area = preview(theme.clone(), bars(theme), true);
         area.set_hexpand(true);
         area.set_vexpand(true);
         grid.attach(&area, n as i32 % 3, n as i32 / 3, 1, 1);
@@ -170,13 +170,13 @@ fn mosaic(themes: &[&Theme], bars: &Rc<dyn Fn(&Theme) -> BarScheme>) -> gtk::Asp
 }
 
 /// Every theme as a tile; picking one closes the catalogue and wears it.
-fn open_catalogue(view: &adw::NavigationView, choices: &Rc<Choices>) {
+/// None is marked picked while the desktop is `following`.
+fn open_catalogue(view: &adw::NavigationView, choices: &Rc<Choices>, following: bool) {
     if view.find_page(CATALOGUE).is_some() {
         view.pop_to_tag(CATALOGUE);
         return;
     }
-    let desktop = choices.themes.iter().find(|t| t.id == OMARCHY_ID).map(|t| t.name.clone());
-    let following = choices.current == OMARCHY_ID;
+    let desktop = choices.desktop.as_ref().map(|t| t.name.as_str());
 
     let flow = gtk::FlowBox::new();
     flow.set_selection_mode(gtk::SelectionMode::None);
@@ -185,7 +185,7 @@ fn open_catalogue(view: &adw::NavigationView, choices: &Rc<Choices>) {
     flow.set_max_children_per_line(5);
     flow.set_column_spacing(12);
     flow.set_row_spacing(12);
-    for theme in choices.themes.iter().filter(|t| t.id != OMARCHY_ID) {
+    for theme in &choices.named {
         // A fixed size rather than a frame: a flow box gives its children
         // their natural height, so a frame there could only ever shrink.
         let picture = preview(theme.clone(), (choices.bars)(theme), false);
@@ -198,7 +198,7 @@ fn open_catalogue(view: &adw::NavigationView, choices: &Rc<Choices>) {
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         label.append(&name);
         // The theme the desktop is wearing, so it can be found by name.
-        if desktop.as_deref() == Some(theme.name.as_str()) {
+        if desktop == Some(theme.name.as_str()) {
             let tag = gtk::Label::new(Some("desktop"));
             tag.add_css_class("detail");
             label.append(&tag);

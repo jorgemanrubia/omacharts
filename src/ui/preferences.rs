@@ -585,7 +585,7 @@ fn trading_look_group(context: &Rc<Context>, first: Vec<adw::PreferencesRow>) ->
     }
     let theming = context.theming.borrow();
     let theme = theming.theme();
-    let shown = omacharts_engine::theme_trading(&theme, theming.bar_look());
+    let shown = omacharts_engine::theme_trading(&theme, theming.trading_look(), theming.bar_look());
     let mut set = theming.trading_look().clone();
     drop(theming);
     // Change the look by `edit`, and nothing else in it.

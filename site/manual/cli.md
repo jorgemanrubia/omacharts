@@ -466,8 +466,8 @@ over. Run `chart range` last.
 
 ### `chart look`
 
-Gives the focused chart a look of its own: how its bars are drawn and
-coloured, its header, its gridlines and its last-price line
+Gives the focused chart a look of its own: its theme, how its bars are
+drawn and coloured, its header, its gridlines and its last-price line
 ([A chart's own look](/manual/charts/#a-charts-own-look)). The first change
 copies every chart's look onto the chart and changes the copy, so later
 changes to every chart's leave it as it is. With no flags it says the look
@@ -479,7 +479,11 @@ pos:0 NVDA 1D in Macro follows all charts
   [exit 0]
 
 $ omacharts chart look --style ohlc --grid off
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme window
+  [exit 0]
+
+$ omacharts chart look --theme catppuccin-latte
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme catppuccin-latte
   [exit 0]
 
 $ omacharts chart look --follow
@@ -493,6 +497,7 @@ omacharts: give --follow or changes to the look, not both
 
 | Flag | Takes | Does |
 |---|---|---|
+| `--theme THEME` | A theme as `omacharts config theme` lists them, or `window` | The theme the chart is drawn on; `window` puts it back on the window's ([A chart's own look](/manual/charts/#a-charts-own-look)) |
 | `--style STYLE` | `candles`, `ohlc` | How the chart draws its bars ([Style](/manual/charts/#style)) |
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
@@ -1587,7 +1592,7 @@ same.
 
 | Setting | Values | Default | Preferences row | Chapter |
 |---|---|---|---|---|
-| `theme` | `omarchy` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `omarchy` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
+| `theme` | `system` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `system` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
 | `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
@@ -1625,8 +1630,7 @@ the theme is Gruvbox
   [exit 0]
 ```
 
-`config set theme` writes the same setting with no check. There, Follow
-system is `omarchy`.
+`config set theme` writes the same setting with no check.
 
 ### When a setting is checked and takes effect
 

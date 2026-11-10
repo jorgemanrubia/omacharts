@@ -102,7 +102,7 @@ The list of chart templates, the same for every chart on one. **+** makes one, a
 
 ### Appearance
 
-Everything on this page is the same on every chart, in every chartbook, and changes them all as you change it. A chart's settings show the same page, under **Global**.
+Under **GLOBAL**, everything on this page is every chart's, in every chartbook, and changes them all as you change it. Under **LOCAL**, the theme, the bars and OHLC thickness are the focused chart's: the first change gives it a look of its own. A chart's settings show the same page, under **Global**.
 
 | Group › row | Does | Chapter |
 |---|---|---|
@@ -112,7 +112,7 @@ Everything on this page is the same on every chart, in every chartbook, and chan
 
 ### Overlays
 
-The same on every chart, in every chartbook. A chart's settings show the same page, under **Global**.
+Like Appearance: every chart's under **GLOBAL**, the focused chart's under **LOCAL**. **Crosshair across Follow charts** is between charts by nature, so it is greyed under LOCAL. A chart's settings show the same page, under **Global**.
 
 | Group › row | Does | Chapter |
 |---|---|---|

@@ -4059,6 +4059,10 @@ pub struct Window {
     /// to read it again when something else changed it. Each says whether
     /// it is still on screen, and goes once it is not.
     chart_watchers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    /// Every chart's look, as the settings rows held it when last read:
+    /// read once here and again whenever it may have changed
+    /// ([`Window::reread_look`]), rather than a dozen rows per chart worn.
+    global_look: RefCell<ChartLook>,
     /// A save is already queued, so a drag does not queue one per pixel.
     save_pending: Cell<bool>,
     /// The chart menu's stateful actions, so they can be re-pointed at
@@ -4261,6 +4265,7 @@ impl Window {
             next_pane: Cell::new(1),
             template_leaves: RefCell::new(Vec::new()),
             chart_watchers: RefCell::new(Vec::new()),
+            global_look: RefCell::new(ChartLook::global(&store)),
             save_pending: Cell::new(false),
             linked_action: RefCell::new(None),
             bar_style_action: RefCell::new(None),
@@ -4529,12 +4534,15 @@ impl Window {
         let id = self.next_pane.get();
         self.next_pane.set(id + 1);
 
-        let theme = self.theme();
-        // Any colours: `wear` puts on the ones its look says, straight after.
-        let bars = omacharts_engine::theme_bars(&theme);
-        let pane = ChartPane::new(id, theme.clone(), bars, timeframe, indicators, session, mode);
+        // Built on the theme and the bars its look wears, so `wear` has
+        // nothing to repaint.
+        let global = self.global_look.borrow().clone();
+        let worn = look.as_ref().unwrap_or(&global);
+        let theme = self.theme_of(worn);
+        let bars = worn.bars.scheme(&theme);
+        let pane = ChartPane::new(id, theme, bars, timeframe, indicators, session, mode);
         *pane.look.borrow_mut() = look;
-        self.wear(&pane, &ChartLook::global(&self.store), &theme);
+        self.wear(&pane, &global);
         pane.view.set_house_look(self.house_look());
 
         let searcher = self.clone();
@@ -4644,7 +4652,7 @@ impl Window {
                 window.set_pane_mode(id, mode);
             },
         );
-        pane.set_mode(mode, mode.colour(&self.theming.borrow().theme()));
+        pane.set_mode(mode, mode.colour(&pane.view.theme()));
 
         // Right-clicking a strip offers to edit the list, rather than throwing
         // a modal at you for a click you may not have meant. The list is one
@@ -5601,7 +5609,7 @@ impl Window {
     pub fn set_pane_mode(self: &Rc<Self>, id: u32, mode: LinkMode) {
         let Some(pane) = self.pane(id) else { return };
         let before = pane.mode();
-        pane.set_mode(mode, mode.colour(&self.theming.borrow().theme()));
+        pane.set_mode(mode, mode.colour(&pane.view.theme()));
         self.sync_chart_actions(&pane);
         let showing = pane.instrument.borrow().clone();
         if mode == LinkMode::Follow && before != mode && let Some(instrument) = showing {
@@ -5631,7 +5639,7 @@ impl Window {
             self.set_pane_mode(pane.id, mode);
             return;
         };
-        pane.set_mode(mode, mode.colour(&self.theming.borrow().theme()));
+        pane.set_mode(mode, mode.colour(&pane.view.theme()));
         self.sync_chart_actions(pane);
         self.show_in(pane, instrument);
         self.save_workspace();
@@ -6112,6 +6120,7 @@ impl Window {
     /// its theme cards, its colours and the border's Black or White are the
     /// theme's, and nothing on the page asked for the change.
     pub fn adopt_theming(self: &Rc<Self>) {
+        self.reread_look();
         self.theming.borrow_mut().reload_selection(&self.store);
         self.restyle();
         crate::ui::appearance::restyled();
@@ -8237,20 +8246,12 @@ impl Window {
             bar.restyle();
         }
         self.wear_looks();
-        let theme = self.theme();
         let house = self.house_look();
         for pane in self.panes.borrow().iter() {
             pane.view.set_house_look(house.clone());
-            // The colour is the theme's answer about the mode, which has just
-            // changed.
-            let mode = pane.mode();
-            pane.set_mode(mode, mode.colour(&theme));
         }
-        // Indicators without a colour of their own take one from the theme's
-        // palette, and that answer just changed. Repainting without asking
-        // again leaves them wearing the old theme's colours.
-        self.rebuild_indicator_legend();
-        self.redraw_current();
+        // The trading look, which colours nothing `wear_looks` repaints.
+        self.apply_marks();
         if let Some(watchlist) = self.watchlist.borrow().as_ref() {
             watchlist.rebuild();
         }
@@ -8382,15 +8383,18 @@ impl Window {
     /// The Appearance page, for Preferences and for a chart's settings:
     /// every chart's look, beside the chart you noticed it on.
     pub fn appearance_page(self: &Rc<Self>) -> adw::PreferencesPage {
-        let this = self.clone();
-        crate::ui::appearance::page(self.clone(), self.store.clone(), self.theming.clone(), Rc::new(move || this.restyle()))
+        crate::ui::appearance::page(self.clone(), self.theming.clone())
     }
 
     /// The Overlays page, for Preferences and for a chart's settings: what
     /// every chart draws over its bars.
     pub fn overlays_page(self: &Rc<Self>) -> adw::PreferencesPage {
         let charts = self.clone();
-        crate::ui::overlays::page(self.clone(), self.store.clone(), Rc::new(move || charts.adopt_chart_look()))
+        crate::ui::overlays::page(
+            self.clone(),
+            self.store.clone(),
+            Rc::new(move || charts.adopt_chart_look()),
+        )
     }
 
     /// Re-fold and repaint what is on screen, after something that changes
@@ -9517,7 +9521,7 @@ impl Window {
         timeframe: Timeframe,
         bars: &[omacharts_engine::Bar],
     ) -> Vec<Drawn> {
-        let theme = self.theming.borrow().theme();
+        let theme = pane.view.theme();
         let all = pane.indicators.borrow().clone();
         let colors = omacharts_engine::palette_colors(&all, &theme);
         let context = omacharts_engine::indicators::Context::of(
@@ -10900,10 +10904,15 @@ impl Window {
 
     pub fn rename_template(self: &Rc<Self>, template: u32, name: &str) {
         crate::templates::rename(&self.store, template, name);
-        // The menus and the chart's own settings read the name when they are
-        // opened; a header showing it is the one place it is on screen.
+        self.adopt_template_names();
+    }
+
+    /// Write every chart's template name again, after one was renamed. The
+    /// menus and the chart's own settings read the name when they are
+    /// opened; a header showing it is the one place it is on screen.
+    pub fn adopt_template_names(self: &Rc<Self>) {
         let panes = self.panes.borrow().clone();
-        for pane in panes.iter().filter(|pane| pane.template.get() == Some(template)) {
+        for pane in panes.iter().filter(|pane| pane.template.get().is_some()) {
             self.write_header_of(pane);
         }
     }
@@ -10913,6 +10922,7 @@ impl Window {
     /// Adopt a header set outside this window, a command, and show it on the
     /// header card too, which nothing on the card asked to change.
     pub fn adopt_header(self: &Rc<Self>) {
+        self.reread_look();
         self.wear_looks();
         crate::ui::overlays::header_changed();
     }
@@ -11130,7 +11140,7 @@ impl Window {
         if !pane.shows_legend.get() {
             return;
         }
-        let theme = self.theming.borrow().theme();
+        let theme = pane.view.theme();
 
         let timeframe = pane.timeframe.get();
         let all = pane.indicators.borrow().clone();
@@ -11474,16 +11484,27 @@ impl Window {
 
     // -- the look ----------------------------------------------------------
 
+    /// The theme `look` is drawn on: its own, or the window's.
+    pub fn theme_of(&self, look: &ChartLook) -> omacharts_engine::Theme {
+        self.theming.borrow().theme_of(look)
+    }
+
     /// What `pane` wears: its own look, or every chart's.
     pub fn look_of(&self, pane: &ChartPane) -> ChartLook {
-        pane.look.borrow().clone().unwrap_or_else(|| ChartLook::global(&self.store))
+        pane.look.borrow().clone().unwrap_or_else(|| self.global_look.borrow().clone())
+    }
+
+    /// Read every chart's look from the settings again, after something
+    /// wrote it.
+    fn reread_look(&self) {
+        *self.global_look.borrow_mut() = ChartLook::global(&self.store);
     }
 
     /// The look Preferences shows: every chart's, or with `every` false the
     /// one the focused chart wears.
     pub fn look(&self, every: bool) -> ChartLook {
         match every {
-            true => ChartLook::global(&self.store),
+            true => self.global_look.borrow().clone(),
             false => self.look_of(&self.focused_pane()),
         }
     }
@@ -11497,7 +11518,7 @@ impl Window {
     /// what a reset to every chart's would change. A copy nobody has
     /// changed yet, or has changed back, has nothing to reset.
     pub fn own_look_differs(&self) -> bool {
-        self.focused_pane().look.borrow().as_ref().is_some_and(|own| *own != ChartLook::global(&self.store))
+        self.focused_pane().look.borrow().as_ref().is_some_and(|own| *own != *self.global_look.borrow())
     }
 
     /// Change one answer of the look: every chart's, in the settings, or
@@ -11508,6 +11529,7 @@ impl Window {
         if every {
             let colours = edit.colours();
             edit.save_global(&self.store);
+            self.reread_look();
             match colours {
                 // The window's stylesheet and the rail wear every chart's
                 // colours too.
@@ -11522,10 +11544,7 @@ impl Window {
         let pane = self.focused_pane();
         let mut look = self.look_of(&pane);
         look.set(edit);
-        *pane.look.borrow_mut() = Some(look);
-        self.wear(&pane, &ChartLook::global(&self.store), &self.theme());
-        self.sync_chart_actions(&pane);
-        self.save_workspace();
+        self.dress(&pane, Some(look));
     }
 
     /// Change the look the focused chart wears, wherever it is kept: its
@@ -11540,41 +11559,64 @@ impl Window {
     /// Put the focused chart back on every chart's look, dropping its own.
     pub fn follow_global_look(self: &Rc<Self>) {
         let pane = self.focused_pane();
-        if pane.look.borrow_mut().take().is_none() {
+        if pane.look.borrow().is_none() {
             return;
         }
-        self.wear(&pane, &ChartLook::global(&self.store), &self.theme());
-        self.sync_chart_actions(&pane);
+        self.dress(&pane, None);
+    }
+
+    /// Give `pane` its own look, or with `None` every chart's, and keep it.
+    fn dress(self: &Rc<Self>, pane: &Rc<ChartPane>, own: Option<ChartLook>) {
+        *pane.look.borrow_mut() = own;
+        let global = self.global_look.borrow().clone();
+        self.wear(pane, &global);
+        self.sync_chart_actions(pane);
         self.save_workspace();
     }
 
-    /// Dress a chart in its own look, or while it has none in `global`, its
-    /// colours resolved on `theme`, with the Local mark while the two differ.
-    fn wear(self: &Rc<Self>, pane: &Rc<ChartPane>, global: &ChartLook, theme: &omacharts_engine::Theme) {
+    /// Dress a chart in its own look, or while it has none in `global`, on
+    /// the theme the look names or the window's, with the Local mark while
+    /// the two differ. Only what changed is done again: a new theme or new
+    /// colours repaint the chart, its legend, its marks and the day's move,
+    /// and a new header fills its parts in; the bars are not asked for
+    /// again.
+    fn wear(self: &Rc<Self>, pane: &Rc<ChartPane>, global: &ChartLook) {
         let own = pane.look.borrow().clone();
         let look = own.as_ref().unwrap_or(global);
         pane.look_mark.set_visible(own.as_ref().is_some_and(|own| own != global));
-        pane.view.restyle(theme.clone(), look.bars.scheme(theme));
+        let theme = self.theme_of(look);
+        self.theming.borrow_mut().cover(&theme.id);
+        let scheme = look.bars.scheme(&theme);
+        let repainted = pane.wear_theme(theme, scheme);
+        if repainted {
+            // The legend's dots wear the palette the chart was recoloured
+            // from.
+            self.rebuild_legend_of(pane);
+            // Profit and loss turn round with the candles.
+            self.apply_marks_to(pane);
+        }
         pane.view.set_bar_style(look.style);
         pane.view.set_show_grid(look.grid);
         pane.view.set_price_line(look.price_line);
-        if *pane.header.borrow() != look.header {
+        let rearranged = *pane.header.borrow() != look.header;
+        if rearranged {
             *pane.header.borrow_mut() = look.header.clone();
             pane.arrange_header();
         }
-        self.write_header_of(pane);
-        // Profit and loss turn round with the candles.
-        self.apply_marks_to(pane);
+        // The day's move is written in the candles' colours.
+        if repainted || rearranged {
+            self.write_header_of(pane);
+        }
     }
 
     /// Every chart on screen in the look it wears, as the settings and its
     /// own say now. Every chart's look is read once, not per chart. A
     /// chartbook not on screen wears its looks when it is built.
     pub fn wear_looks(self: &Rc<Self>) {
-        let (global, theme) = (ChartLook::global(&self.store), self.theme());
+        let global = self.global_look.borrow().clone();
         let panes = self.panes.borrow().clone();
         for pane in &panes {
-            self.wear(pane, &global, &theme);
+            self.wear(pane, &global);
         }
     }
 
@@ -11582,6 +11624,7 @@ impl Window {
     /// chart on screen that wears it. Also how a command from a terminal
     /// reaches an open window.
     pub fn adopt_chart_look(self: &Rc<Self>) {
+        self.reread_look();
         self.wear_looks();
         // The menu's ticks, for when the answer came from the key, the
         // settings or a command rather than from the menu itself.
@@ -11988,7 +12031,6 @@ impl Window {
         into: Option<&std::path::Path>,
         clipboard: bool,
     ) -> Result<(String, std::path::PathBuf), String> {
-        let theme = self.theming.borrow().theme();
         let book = self.book_label(self.active.get());
         if whole_book {
             let charts = self.panes.borrow().len();
@@ -11996,7 +12038,7 @@ impl Window {
                 &self.store,
                 &self.chart_host,
                 &book,
-                &theme,
+                &self.theme(),
                 into,
                 clipboard,
             )?;
@@ -12010,7 +12052,7 @@ impl Window {
             .map(|instrument| instrument.display_symbol())
             .unwrap_or_default();
         let at = self.layout.borrow().leaves().iter().position(|leaf| *leaf == pane.id);
-        let path = screenshot::write_chart(&self.store, &pane, &theme, into, clipboard)?;
+        let path = screenshot::write_chart(&self.store, &pane, &pane.view.theme(), into, clipboard)?;
         let what = format!(
             "pos:{} {symbol} {} in \"{book}\"",
             at.unwrap_or(0),
@@ -12638,7 +12680,7 @@ impl Window {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         row.add_css_class("drawing-head-row");
         row.set_homogeneous(true);
-        let theme = self.theme();
+        let theme = pane.view.theme();
         let all = self.drawing_configurations();
         let Some(kind) = pane.view.selection_kind() else { return row.upcast() };
         let following = pane.view.selected_drawing().and_then(|d| d.config);
@@ -13263,12 +13305,8 @@ impl Window {
         let shot = gio::SimpleAction::new("screenshot", None);
         let this = self.clone();
         shot.connect_activate(move |_, _| {
-            screenshot::take_chart(
-                &this.window,
-                &this.store,
-                &this.focused_pane(),
-                &this.theming.borrow().theme(),
-            );
+            let pane = this.focused_pane();
+            screenshot::take_chart(&this.window, &this.store, &pane, &pane.view.theme());
         });
         actions.add_action(&shot);
 

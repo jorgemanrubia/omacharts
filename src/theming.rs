@@ -11,22 +11,46 @@
 //! the chart all come from one palette rather than the chart being a themed
 //! island in a default-grey window.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use std::fmt::Write as _;
 
 use omacharts_engine::frame::{GUTTER_WIDTH, RING_WIDTH};
 use omacharts_engine::theme::{
-    builtin_themes, parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Body, Mode, Theme,
+    parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Body, Mode, Theme,
     Thickness, TradingLook, FALLBACK_THEME_ID, OMARCHY_ID,
 };
 use omacharts_engine::Ink;
-use omacharts_engine::omarchy;
+use omacharts_engine::omarchy::{self, Palette};
 
+use crate::chart_look::ChartLook;
 use crate::store::{home, Store};
 use crate::ui::colors;
 
 pub const SETTING_THEME: &str = "theme";
+
+/// What the theme that follows the desktop is called on the command line:
+/// the word every other setting on this platform uses, rather than its
+/// stored id.
+pub const SYSTEM_THEME: &str = "system";
+
+/// A theme's id as the command line says it.
+pub fn spell_theme(id: &str) -> &str {
+    match id == OMARCHY_ID {
+        true => SYSTEM_THEME,
+        false => id,
+    }
+}
+
+/// The id a theme typed on the command line is stored by: [`spell_theme`]
+/// the other way round.
+pub fn theme_id(word: &str) -> &str {
+    match word.eq_ignore_ascii_case(SYSTEM_THEME) {
+        true => OMARCHY_ID,
+        false => word,
+    }
+}
 /// The answers a candle's look is made of. The window and `config bars`
 /// both write these, so there is no second spelling to drift.
 pub const SETTING_BAR_UP: &str = "bar_up";
@@ -136,12 +160,19 @@ pub struct Theming {
     omarchy: Option<Theme>,
     omarchy_fingerprint: Option<String>,
     /// Every other theme on offer, each fixed at its palette: the machine's
-    /// Omarchy themes, or the bundled ones where there are none.
-    named: Vec<Theme>,
+    /// Omarchy themes, or the bundled ones where there are none. Derived
+    /// as they are worn or listed.
+    named: Vec<Palette>,
     theme_id: String,
     bars: BarLook,
     trading: TradingLook,
     provider: Option<gtk::CssProvider>,
+    /// The themes charts have worn since the window opened, each given its
+    /// colours under its class by `scoped` ([`Theming::cover`]). Only
+    /// grows: a theme no chart wears any more costs a few lines, and keeps
+    /// the sheet from being reloaded as charts change theme back and forth.
+    worn: BTreeSet<String>,
+    scoped: Option<gtk::CssProvider>,
 }
 
 impl Theming {
@@ -163,13 +194,25 @@ impl Theming {
             omarchy_fingerprint,
             home,
             provider: None,
+            worn: BTreeSet::new(),
+            scoped: None,
         }
     }
 
     /// Every theme on offer: the one following the desktop, then the fixed
     /// ones.
     pub fn themes(&self) -> Vec<&Theme> {
-        self.omarchy.iter().chain(self.named.iter()).collect()
+        self.omarchy.iter().chain(self.named.iter().map(Palette::theme)).collect()
+    }
+
+    /// The theme following the desktop, while there is a desktop to follow.
+    pub fn desktop(&self) -> Option<&Theme> {
+        self.omarchy.as_ref()
+    }
+
+    /// The fixed themes on offer.
+    pub fn named(&self) -> Vec<Theme> {
+        self.named.iter().map(|p| p.theme().clone()).collect()
     }
 
     /// The active theme, owned, wearing the trading look.
@@ -178,15 +221,30 @@ impl Theming {
     /// a name stored by an older version — so this falls back rather than
     /// refusing to draw.
     pub fn theme(&self) -> Theme {
-        let themes = self.themes();
-        let mut theme = themes
-            .iter()
-            .find(|t| t.id == self.theme_id)
-            .or_else(|| themes.first())
-            .map(|t| (*t).clone())
-            .unwrap_or_else(|| builtin_themes().swap_remove(0));
-        theme.trading = (self.trading != TradingLook::default()).then(|| Box::new(self.trading.clone()));
-        theme
+        self.resolve(None)
+    }
+
+    /// The theme `look` is drawn on: its own, or the window's. A chart's
+    /// theme that has vanished falls back to the window's.
+    pub fn theme_of(&self, look: &ChartLook) -> Theme {
+        self.resolve(look.theme.as_deref())
+    }
+
+    fn resolve(&self, id: Option<&str>) -> Theme {
+        id.and_then(|id| self.find(id))
+            .or_else(|| self.find(&self.theme_id))
+            .or(self.omarchy.as_ref())
+            .or_else(|| self.named.first().map(Palette::theme))
+            .cloned()
+            .unwrap_or_else(|| omarchy::bundled().swap_remove(0).into_theme())
+    }
+
+    /// The theme on offer called `id`, deriving that one and no other.
+    fn find(&self, id: &str) -> Option<&Theme> {
+        self.omarchy
+            .as_ref()
+            .filter(|t| t.id == id)
+            .or_else(|| self.named.iter().find(|p| p.id() == id).map(Palette::theme))
     }
 
     /// The candles' colours on the active theme.
@@ -210,15 +268,6 @@ impl Theming {
     pub fn bar_widget_ink(&self) -> Ink {
         let theme = self.omarchy.clone().unwrap_or_else(|| self.theme());
         theme.ink(&self.bars.scheme(&theme))
-    }
-
-    pub fn theme_id(&self) -> &str {
-        &self.theme_id
-    }
-
-    pub fn select_theme(&mut self, id: &str, store: &Store) {
-        self.theme_id = id.to_string();
-        store.set_setting(SETTING_THEME, id);
     }
 
     /// How orders and positions are drawn as somebody set it: what an edit
@@ -265,7 +314,8 @@ impl Theming {
         true
     }
 
-    /// Push the active theme into libadwaita's named colours.
+    /// Push the active theme into libadwaita's named colours, and the
+    /// themes charts wear under their classes, on the bars as they are now.
     pub fn apply(&mut self) {
         let theme = self.theme();
 
@@ -275,21 +325,41 @@ impl Theming {
         });
 
         let mut css = stylesheet(&theme, &self.bar_scheme());
-        css.push_str(&trading_css(&theme, &self.bars));
-        let provider = self.provider.get_or_insert_with(|| {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gtk::gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    // Above the platform stylesheet, so our named colours win.
-                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
-                );
-            }
-            provider
-        });
-        provider.load_from_data(&css);
+        css.push_str(&trading_css(&theme, &self.trading, &self.bars));
+        // Above the platform stylesheet, so our named colours win.
+        provider(&mut self.provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1).load_from_data(&css);
+        self.load_scoped();
     }
+
+    /// Give a chart wearing theme `id` that theme's colours under its
+    /// class: the sheet is reloaded only the first time a chart wears it.
+    pub fn cover(&mut self, id: &str) {
+        if !self.worn.contains(id) {
+            self.worn.insert(id.to_string());
+            self.load_scoped();
+        }
+    }
+
+    /// The worn themes' colours, apart from the window's sheet so a chart
+    /// changing theme reloads only these few lines. One above it, so under
+    /// a chart's class its theme wins, as it did when both were one sheet
+    /// and this came last.
+    fn load_scoped(&mut self) {
+        let css = scoped_stylesheet(self.worn.iter().filter_map(|id| self.find(id)), &self.bars);
+        provider(&mut self.scoped, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 2).load_from_data(&css);
+    }
+}
+
+/// The provider in `slot`, added to the display at `priority` the first
+/// time it is asked for.
+fn provider(slot: &mut Option<gtk::CssProvider>, priority: u32) -> &gtk::CssProvider {
+    slot.get_or_insert_with(|| {
+        let provider = gtk::CssProvider::new();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &provider, priority);
+        }
+        provider
+    })
 }
 
 /// How far in from its left edge the window's corner starts its buttons:
@@ -307,8 +377,8 @@ pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
 /// P&L, a side and a position are written in with them: the one pair for
 /// money, the other for a side, as the chart's marks wear them, on bars
 /// that look like `bars`.
-pub fn trading_css(theme: &Theme, bars: &BarLook) -> String {
-    let look = omacharts_engine::theme_trading(theme, bars);
+pub fn trading_css(theme: &Theme, trading: &TradingLook, bars: &BarLook) -> String {
+    let look = omacharts_engine::theme_trading(theme, trading, bars);
     format!(
         "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
          @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
@@ -322,25 +392,27 @@ pub fn trading_css(theme: &Theme, bars: &BarLook) -> String {
 
 /// The fixed themes on offer: this machine's Omarchy themes, or where it has
 /// none, the ones built in.
-fn named_themes(home: &std::path::Path) -> Vec<Theme> {
+fn named_themes(home: &std::path::Path) -> Vec<Palette> {
     let installed = omarchy::installed(home);
     match installed.is_empty() {
-        true => builtin_themes(),
+        true => omarchy::bundled(),
         false => installed,
     }
 }
 
-/// The app's CSS: libadwaita's named colours, redefined from the theme, plus
-/// the few classes we add ourselves.
-pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
+/// The colours a theme hands the window, by libadwaita's names and our own.
+///
+/// One list. The window gets it as named colours and as properties at its
+/// root; a chart on a theme of its own gets it again as properties under
+/// its class ([`scoped_stylesheet`]). The rules read the properties
+/// ([`read_as_properties`]), so either answer reaches them.
+fn named_colours(theme: &Theme, scheme: &BarScheme) -> Vec<(&'static str, String)> {
     let ui = &theme.ui;
     let accent_fg = colors::readable_on(&ui.accent);
     let frame = theme.frame(scheme);
 
-    let mut css = String::with_capacity(2048);
-    let mut define = |name: &str, value: &str| {
-        css.push_str(&format!("@define-color {name} {value};\n"));
-    };
+    let mut colours = Vec::with_capacity(32);
+    let mut define = |name: &'static str, value: &str| colours.push((name, value.to_string()));
 
     // Windows and views. `view_bg_color` is the chart's own ground, so lists
     // and the chart agree.
@@ -397,7 +469,56 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("omacharts_focus", &frame.focus);
     // The chart's price-axis rule, for the corner that stands on it.
     define("omacharts_axis", &ui.axis);
+    colours
+}
 
+/// `window_bg_color` as a custom property: `--window-bg-color`, the name
+/// libadwaita's own rules read.
+fn property(name: &str) -> String {
+    format!("--{}", name.replace('_', "-"))
+}
+
+/// The class a chart wearing theme `id` carries, under which
+/// [`scoped_stylesheet`] gives that theme's colours.
+pub fn theme_class(id: &str) -> String {
+    let slug: String = id.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    format!("theme-{slug}")
+}
+
+/// Every theme's colours under its [`theme_class`], so a chart can wear a
+/// theme the window does not: its header, legend and controls take the
+/// chart's theme the way its canvas does. Custom properties inherit, and
+/// libadwaita's rules and ours read them, so one block per theme is all.
+pub fn scoped_stylesheet<'a>(themes: impl IntoIterator<Item = &'a Theme>, bars: &BarLook) -> String {
+    let mut css = String::new();
+    for theme in themes {
+        let _ = write!(css, ".{} {{", theme_class(&theme.id));
+        for (name, value) in named_colours(theme, &bars.scheme(theme)) {
+            let _ = write!(css, " {}: {value};", property(name));
+        }
+        css.push_str(" }\n");
+    }
+    css
+}
+
+/// The window's stylesheet, on `theme` with `scheme`'s candles.
+pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
+    let colours = named_colours(theme, scheme);
+    let mut css = String::with_capacity(2048);
+    // Named colours too, for libadwaita's rules that read a name rather
+    // than its property.
+    for (name, value) in &colours {
+        let _ = writeln!(css, "@define-color {name} {value};");
+    }
+    css.push_str(":root {");
+    for (name, value) in &colours {
+        let _ = write!(css, " {}: {value};", property(name));
+    }
+    css.push_str(" }\n");
+
+    // Everything after the root block is rules, whoever adds them, and
+    // reads the colours as properties.
+    let rules_from = css.len();
     css.push_str(
         "
 .change-up { color: @omacharts_up; }
@@ -1483,6 +1604,9 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
    nothing to be told apart from. */
 .chart-pane {{
   background-color: @view_bg_color;
+  /* Text inherits the colour its parent worked out, so a chart on a theme
+     of its own says its own again. */
+  color: @view_fg_color;
   border: {ring}px solid transparent;
 }}
 .chart-split .chart-pane.focused {{ border-color: @omacharts_focus; }}
@@ -1512,12 +1636,44 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
         ring = RING_WIDTH,
         double = 2 * RING_WIDTH,
     );
+    let rules = read_as_properties(&css[rules_from..], &colours);
+    css.truncate(rules_from);
+    css.push_str(&rules);
     css
+}
+
+/// `rules` with every one of `colours` read as its property rather than by
+/// name: `@view_bg_color` becomes `var(--view-bg-color)`. A name is fixed
+/// for the whole window and a property can be set again under a chart, so
+/// this is what lets a chart on a theme of its own reach every rule. The
+/// rules are written with names, as libadwaita's guide writes them.
+fn read_as_properties(rules: &str, colours: &[(&'static str, String)]) -> String {
+    let mut out = String::with_capacity(rules.len() + rules.len() / 8);
+    let mut rest = rules;
+    while let Some(at) = rest.find('@') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 1..];
+        let end = tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(tail.len());
+        let name = &tail[..end];
+        match colours.iter().any(|(known, _)| *known == name) {
+            true => {
+                let _ = write!(out, "var({})", property(name));
+            }
+            false => {
+                out.push('@');
+                out.push_str(name);
+            }
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omacharts_engine::theme::builtin_themes;
 
     /// A signed P&L is written in the trading look's profit and loss, which
     /// red up turns round with the bars.
@@ -1525,11 +1681,11 @@ mod tests {
     fn profit_and_loss_are_named_colours_from_the_trading_look() {
         let theme = &builtin_themes()[0];
         let bars = BarLook::default().scheme(theme);
-        let css = trading_css(theme, &BarLook::default());
+        let css = trading_css(theme, &TradingLook::default(), &BarLook::default());
         assert!(css.contains(&format!("@define-color omacharts_profit {};", bars.up)), "{css}");
         assert!(css.contains(&format!("@define-color omacharts_loss {};", bars.down)), "{css}");
         assert!(css.contains(".pnl-gain { color: @omacharts_profit; }"));
-        let red_up = trading_css(theme, &BarLook::red_up());
+        let red_up = trading_css(theme, &TradingLook::default(), &BarLook::red_up());
         assert!(red_up.contains(&format!("@define-color omacharts_profit {};", bars.down)), "{red_up}");
         // A side and a position are the theme's Blue and Amber, never money's
         // colours, so the header's Buy and Sell match the chart's entries.
@@ -1562,7 +1718,7 @@ mod tests {
         assert!(css.contains("@define-color omacharts_down "));
         // The marks on the heading row are the headings' own colour rather
         // than a colour of their own.
-        assert!(css.contains(".column-drop { border-radius: 1px; background: alpha(@window_fg_color"));
+        assert!(css.contains(".column-drop { border-radius: 1px; background: alpha(var(--window-fg-color)"));
         // The headings carry the drop tick alone; a frame as well is noise.
         assert!(css.contains(".column-headings:drop(active)"));
         assert!(css.contains(".symbol-row:drop(active)"));
@@ -1591,9 +1747,34 @@ mod tests {
         assert!(css.contains(&format!("min-width: {GUTTER_WIDTH}px;")));
         assert!(css.contains(&format!("border: {RING_WIDTH}px solid transparent;")));
         // Only a split shows focus; a lone chart has nothing to be told from.
-        assert!(css.contains(".chart-split .chart-pane.focused { border-color: @omacharts_focus; }"));
+        assert!(css.contains(".chart-split .chart-pane.focused { border-color: var(--omacharts-focus); }"));
         // And the wide handle's two hairlines are gone.
         assert!(css.contains("box-shadow: none;"));
+    }
+
+    /// The rules read the colours as properties, which the window sets at
+    /// the root and a chart on a theme of its own sets again under its
+    /// class: so its header and controls wear its theme, not the window's.
+    #[test]
+    fn a_chart_on_another_theme_gets_that_themes_colours_under_its_class() {
+        let themes = builtin_themes();
+        let (window, other) = (&themes[0], &themes[1]);
+        let css = stylesheet(window, &omacharts_engine::theme::theme_bars(window));
+        assert!(css.contains(&format!(":root {{ --window-bg-color: {};", window.ui.surface)));
+        let rules = &css[css.find(" }\n").expect("the root block")..];
+        assert!(!rules.contains("@window_fg_color"), "a rule reads a named colour, which no chart can change");
+        assert!(rules.contains(".change-up { color: var(--omacharts-up); }"));
+        // A colour libadwaita works out for itself stays a name, and a name
+        // that starts like one of ours is not taken for it.
+        assert!(rules.contains("@destructive_color"));
+        assert!(rules.contains("var(--omacharts-gutter-hover)"));
+
+        let scoped = scoped_stylesheet(&themes, &BarLook::default());
+        let class = theme_class(&other.id);
+        let block = scoped.lines().find(|line| line.starts_with(&format!(".{class} {{"))).expect("a block for the theme");
+        assert!(block.contains(&format!("--view-bg-color: {};", other.ui.background)), "{block}");
+        assert!(block.contains(&format!("--accent-color: {};", other.ui.accent)), "{block}");
+        assert_eq!(scoped.lines().count(), themes.len());
     }
 
     /// A menu and a popover are one surface, and a menu row is a rail row.
@@ -1619,7 +1800,7 @@ mod tests {
         let store = Store::memory().unwrap();
         let theming = Theming::load(&store);
         let expected = if omarchy::available(&home()) { OMARCHY_ID } else { FALLBACK_THEME_ID };
-        assert_eq!(theming.theme_id(), expected);
+        assert_eq!(theming.theme().id, expected);
         assert_eq!(theming.bar_look(), &BarLook::default());
     }
 
@@ -1630,7 +1811,6 @@ mod tests {
         use omacharts_engine::indicators::LineStyle;
         let store = Store::memory().unwrap();
         let mut theming = Theming::load(&store);
-        assert_eq!(theming.theme().trading, None);
 
         let look = TradingLook {
             buy: Some(omacharts_engine::ColorChoice::Fixed { hex: "#123456".into() }),
@@ -1639,7 +1819,7 @@ mod tests {
         };
         theming.set_trading_look(look.clone(), &store);
         assert_eq!(trading_look(&store), look);
-        let worn = omacharts_engine::theme_trading(&theming.theme(), theming.bar_look());
+        let worn = omacharts_engine::theme_trading(&theming.theme(), theming.trading_look(), theming.bar_look());
         assert_eq!((worn.buy.as_str(), worn.stop), ("#123456", LineStyle::Solid));
 
         store.set_setting(SETTING_TRADING_LOOK, "{}");

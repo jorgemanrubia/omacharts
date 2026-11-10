@@ -176,7 +176,7 @@ pub fn dispatch(
                 && verb == "rename"
                 && let Some(live) = live
             {
-                live.adopt_header();
+                live.adopt_template_names();
             }
             outcome
         }
@@ -5228,6 +5228,12 @@ fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     let value = store
         .setting(key)
         .ok_or_else(|| Fault::not_found(format!("{key:?} has never been set")))?;
+    // The theme that follows the desktop is stored by its id and said as
+    // `config theme` says it.
+    let value = match key == crate::theming::SETTING_THEME {
+        true => crate::theming::spell_theme(&value).to_string(),
+        false => value,
+    };
     match as_json {
         true => Ok(format!("{}\n", json!({"key": key, "value": value}))),
         false => Ok(format!("{value}\n")),
@@ -5265,6 +5271,14 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // charts on them holding copies; written raw, the charts would not follow.
     // The clock every chart reads: a zone nobody has heard of would be read
     // back as New York with nothing said, so it is refused here.
+    // The theme that follows the desktop is `system` to whoever types it, as
+    // `config theme` has it, and stored by its id.
+    if key == crate::theming::SETTING_THEME {
+        let id = crate::theming::theme_id(value);
+        store.set_setting(key, id);
+        let value = crate::theming::spell_theme(id);
+        return said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"));
+    }
     if key == crate::clock::SETTING_ZONE {
         let zone = crate::clock::parse_zone(value).map_err(Fault::usage)?;
         crate::clock::save_zone(store, zone);
@@ -5363,9 +5377,16 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
 }
 
-/// What the theme that follows the desktop is called here: the word every
-/// other setting on this platform uses, rather than its stored id.
-const SYSTEM_THEME: &str = "system";
+
+/// The theme `wanted` names, as `config theme` and `chart look --theme`
+/// take one: by id, any case, spaces for dashes, or `system`.
+fn theme_named<'a>(themes: &[&'a omacharts_engine::Theme], wanted: &str) -> Result<&'a omacharts_engine::Theme, Fault> {
+    let id = crate::theming::theme_id(wanted).to_ascii_lowercase().replace(' ', "-");
+    themes.iter().find(|t| t.id == id).copied().ok_or_else(|| {
+        let names: Vec<&str> = themes.iter().map(|t| crate::theming::spell_theme(&t.id)).collect();
+        Fault::usage(format!("no such theme: {wanted:?}; the themes are {}", names.join(", ")))
+    })
+}
 
 /// Which theme, said by name, and the list to choose from.
 ///
@@ -5379,10 +5400,7 @@ fn config_theme(
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let theming = crate::theming::Theming::load(store);
-    let spell = |id: &str| match id == omacharts_engine::theme::OMARCHY_ID {
-        true => SYSTEM_THEME.to_string(),
-        false => id.to_string(),
-    };
+    let spell = crate::theming::spell_theme;
     let current = theming.theme();
     let themes = theming.themes();
 
@@ -5407,18 +5425,8 @@ fn config_theme(
         return Ok(out);
     };
 
-    let id = match wanted.eq_ignore_ascii_case(SYSTEM_THEME) {
-        true => omacharts_engine::theme::OMARCHY_ID.to_string(),
-        false => wanted.to_ascii_lowercase().replace(' ', "-"),
-    };
-    let Some(theme) = themes.iter().find(|t| t.id == id) else {
-        let names: Vec<String> = themes.iter().map(|t| spell(&t.id)).collect();
-        return Err(Fault::usage(format!(
-            "no such theme: {wanted:?}; the themes are {}",
-            names.join(", ")
-        )));
-    };
-    let name = theme.name.clone();
+    let theme = theme_named(&themes, wanted)?;
+    let (id, name) = (theme.id.clone(), theme.name.clone());
     let already = theme.id == current.id && store.setting(crate::theming::SETTING_THEME).is_some();
     store.set_setting(crate::theming::SETTING_THEME, &id);
     if let Some(live) = live {
@@ -5598,7 +5606,14 @@ fn chart_look(
     at: usize,
     pane: u32,
 ) -> Result<String, Fault> {
-    let edits = look_edits(m)?;
+    let mut edits = look_edits(m)?;
+    if let Some(wanted) = arg(m, "theme") {
+        let id = match wanted.eq_ignore_ascii_case(crate::chart_look::WINDOW_THEME) {
+            true => None,
+            false => Some(theme_named(&crate::theming::Theming::load(store).themes(), wanted)?.id.clone()),
+        };
+        edits.push(LookEdit::Theme(id));
+    }
     let follow = flag(m, "follow");
     if follow && !edits.is_empty() {
         return Err(Fault::usage("give --follow or changes to the look, not both".into()));
@@ -7101,6 +7116,31 @@ mod tests {
         assert_eq!((&read["own"], &read["look"]["up"]), (&json!(false), &json!("teal")));
     }
 
+    /// A chart's theme is a theme `config theme` offers, or the window's,
+    /// and putting it back on the window's keeps the rest of its own look.
+    #[test]
+    fn a_chart_wears_a_theme_of_its_own() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart split horizontal --book Macro --chart pos:0", &store);
+        // Whichever this machine offers: Omarchy's, or the ones built in.
+        let theming = crate::theming::Theming::load(&store);
+        let id = crate::theming::spell_theme(&theming.themes().last().expect("a theme").id).to_string();
+        let said = ok(&format!("chart look --book Macro --chart pos:1 --theme {id}"), &store);
+        assert!(said.ends_with(&format!(", theme {id}\n")), "{said}");
+        let panes = panes_of(&store, "Macro");
+        assert!(panes[1]["look"]["theme"].is_string(), "{}", panes[1]);
+        assert!(panes[0]["look"].is_null(), "the other chart was given a look too");
+
+        let refused = run("chart look --book Macro --chart pos:1 --theme no-such-theme", &store);
+        assert_eq!(refused.code, EXIT_USAGE, "{}", refused.err);
+
+        let said = ok("chart look --book Macro --chart pos:1 --theme window --grid off", &store);
+        assert!(said.ends_with(", theme window\n"), "{said}");
+        let look = &panes_of(&store, "Macro")[1]["look"];
+        assert!(look.get("theme").is_none() && look["grid"] == json!(false), "{look}");
+    }
+
     /// A split copies the chart it divides, and a duplicated chartbook its
     /// charts, own looks and all.
     #[test]
@@ -7510,6 +7550,17 @@ mod tests {
         let typo = run("config theme midnight", &store);
         assert_eq!(typo.code, crate::cli::EXIT_USAGE);
         assert_eq!(run("config get theme", &store).out.trim(), other, "a typo changes nothing");
+    }
+    /// The theme that follows the desktop is `system` to `config set` and
+    /// `config get`, as it is to `config theme`, and stored by its id.
+    #[test]
+    fn the_desktop_s_theme_is_system_to_config_set() {
+        let store = bare();
+        assert_eq!(run("config set theme System", &store).out.trim(), "set theme to system");
+        assert_eq!(store.setting(crate::theming::SETTING_THEME).as_deref(), Some(omacharts_engine::theme::OMARCHY_ID));
+        assert_eq!(run("config get theme", &store).out.trim(), "system");
+        assert_eq!(run("config set theme omarchy", &store).out.trim(), "set theme to system", "the stored word still reads");
+        assert_eq!(run("config set theme tokyo-night", &store).out.trim(), "set theme to tokyo-night");
     }
     #[test]
     fn bars_are_answers_set_together_or_alone() {

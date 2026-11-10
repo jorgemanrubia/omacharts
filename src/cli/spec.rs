@@ -912,11 +912,16 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "look",
-                about: "Give a chart a look of its own, or put it back on every chart's: how its bars are drawn and coloured, its header, gridlines and last-price line. The first change copies every chart's look onto it; omit everything to read the look it wears",
+                about: "Give a chart a look of its own, or put it back on every chart's: its theme, how its bars are drawn and coloured, its header, gridlines and last-price line. The first change copies every chart's look onto it; omit everything to read the look it wears",
                 args: &[],
                 flags: &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued(
+                        "theme",
+                        "THEME",
+                        "the theme it is drawn on: one `config theme` lists, or window for the window's",
+                    ),
                     STYLE_FLAG,
                     UP_FLAG,
                     DOWN_FLAG,

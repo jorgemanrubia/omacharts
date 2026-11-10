@@ -70,7 +70,8 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         return;
     }
     let Some(drawing) = view.selected_drawing() else { return };
-    let theme = window.theme();
+    // The chart's, which may wear a theme of its own.
+    let theme = view.theme();
     let kind = drawing.kind;
     let configs_now = window.drawing_configurations();
 
@@ -149,7 +150,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             call_refresh();
         })
     };
-    let editor = style_editor(window, kind, drawing.style(&configs_now).clone(), on_style.clone());
+    let editor = style_editor(theme.clone(), kind, drawing.style(&configs_now).clone(), on_style.clone());
     page.add(&editor.group);
     for group in &editor.more {
         page.add(group);
@@ -171,7 +172,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
                 call_refresh();
             })
         };
-        text_page(window, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
+        text_page(theme.clone(), &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
     });
 
     // No row for who else sees it. Where a drawing goes is the chart's
@@ -432,7 +433,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                         }
                     })
                 };
-                let editor = style_editor(&window, kind, current, on_style);
+                let editor = style_editor(window.theme(), kind, current, on_style);
                 let sub = adw::PreferencesPage::new();
                 sub.add(&editor.group);
                 for group in &editor.more {
@@ -689,10 +690,9 @@ impl Editor {
     }
 }
 
-/// The rows for a kind's properties. Every change calls `on_style` with the
-/// whole style as it now is.
-fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dyn Fn(Style)>) -> Editor {
-    let theme = window.theme();
+/// The rows for a kind's properties, their colours picked on `theme`. Every
+/// change calls `on_style` with the whole style as it now is.
+fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(Style)>) -> Editor {
     let style: Rc<RefCell<Style>> = Rc::new(RefCell::new(current));
     // Set while the rows are being shown a style, so a row's own signal does
     // not call back as if the hand had changed it.
@@ -1256,13 +1256,12 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
 /// the drawing; the three style rows are, and go through the same editor the
 /// shape's rows do.
 fn text_page(
-    window: &Rc<Window>,
+    theme: Theme,
     drawing: &omacharts_engine::Drawing,
     style: Style,
     on_style: Rc<dyn Fn(Style)>,
     on_text: Rc<dyn Fn(Text)>,
 ) -> TextTab {
-    let theme = window.theme();
     let page = adw::PreferencesPage::new();
     let showing = Rc::new(std::cell::Cell::new(false));
     let text: Rc<RefCell<Text>> = Rc::new(RefCell::new(drawing.text.clone()));
