@@ -1285,8 +1285,11 @@ pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 /// `$XDG_DATA_HOME/omacharts`, falling back to `~/.local/share/omacharts`.
+///
+/// A test build ignores `XDG_DATA_HOME`, which is usually the real one, and
+/// takes the folder under its scratch home instead.
 pub fn data_dir() -> PathBuf {
-    if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+    if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty() && !cfg!(test)) {
         return PathBuf::from(base).join("omacharts");
     }
     home().join(".local/share/omacharts")
