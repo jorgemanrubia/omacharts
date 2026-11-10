@@ -903,9 +903,9 @@ enum Outcome {
     Failed { error: ProviderError, bars: Vec<Bar> },
     /// The cached history had been adjusted out from under us, or no longer
     /// joins what the provider serves, and has been dropped. The same
-    /// request, sent again, now asks for everything — and
-    /// is sent again by the queue, which keeps it the provider's gap away
-    /// from this one like any other request.
+    /// request, sent again, now asks for everything — and is sent again by
+    /// the queue, which keeps it the provider's gap away from this one like
+    /// any other request.
     StartOver,
 }
 
@@ -1121,19 +1121,19 @@ fn failed(request: &Request, bars: Vec<Bar>, failure: FetchFailure) -> Response 
 /// Do the bars we already had still match what the provider just sent for the
 /// same timestamps?
 ///
-/// Only completed bars count. The newest cached bar may have been forming when
-/// we stored it, so its prices are expected to differ.
+/// The answer has to share at least one bar with the cache. A tail fetch asks
+/// from before the newest cached bar, so an answer that shares none started
+/// after the cache, and what happened in between is unknown.
 ///
-/// But the answer has to share at least one bar with the cache. A tail fetch
-/// asks from before the newest cached bar, so an answer that shares none
-/// started after the cache, and what happened in between is unknown.
+/// The newest cached bar counts as shared but its prices are not compared: it
+/// may have been forming when we stored it, so they are expected to differ.
 fn overlap_agrees(cached: &[Bar], fresh: &[Bar]) -> bool {
-    let newest_complete = cached.last().map(|b| b.ts).unwrap_or(i64::MIN);
+    let forming = cached.last().map(|b| b.ts).unwrap_or(i64::MIN);
     let mut shared = false;
     for bar in fresh {
         if let Ok(at) = cached.binary_search_by_key(&bar.ts, |b| b.ts) {
             shared = true;
-            if bar.ts < newest_complete
+            if bar.ts < forming
                 && (!close(cached[at].close, bar.close) || !close(cached[at].open, bar.open))
             {
                 return false;
