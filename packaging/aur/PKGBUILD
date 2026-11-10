@@ -6,7 +6,10 @@ pkgdesc='Fast, beautiful charting software for Omarchy'
 arch=('x86_64' 'aarch64')
 url='https://github.com/jorgemanrubia/omacharts'
 license=('MIT')
-depends=('gtk4' 'libadwaita')
+# Every package owning a library the binaries link (readelf -d, NEEDED), and
+# the certificate store rustls reads the trusted roots from. No openssl: the
+# binary must not link it, and CI fails one that does.
+depends=('cairo' 'ca-certificates' 'gcc-libs' 'glib2' 'glibc' 'graphene' 'gtk4' 'libadwaita' 'pango')
 makedepends=('cargo')
 # SQLite and ring are compiled from C by build scripts. makepkg's default
 # link-time optimisation hands the linker GCC's LTO bytecode, which rustc's

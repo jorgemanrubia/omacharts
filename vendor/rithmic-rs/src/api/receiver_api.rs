@@ -1,0 +1,2448 @@
+pub use super::response::RithmicResponse;
+use super::rp_code::{classify_rp_code_error, reject_error};
+use prost::{Message, bytes::Bytes};
+use tracing::{error, warn};
+
+use crate::{
+    error::RithmicError,
+    rti::{
+        AccountPnLPositionUpdate, AccountRmsUpdates, BestBidOffer, BracketUpdates, DepthByOrder,
+        DepthByOrderEndEvent, EndOfDayPrices, ExchangeOrderNotification, ForcedLogout,
+        FrontMonthContractUpdate, IndicatorPrices, InstrumentPnLPositionUpdate, LastTrade,
+        MarketMode, MessageType, OpenInterest, OrderBook, OrderPriceLimits, QuoteStatistics,
+        Reject, RequestHeartbeat, ResponseAcceptAgreement, ResponseAccountList,
+        ResponseAccountRmsInfo, ResponseAccountRmsUpdates, ResponseAuxilliaryReferenceData,
+        ResponseBracketOrder, ResponseCancelAllOrders, ResponseCancelOrder,
+        ResponseDepthByOrderSnapshot, ResponseDepthByOrderUpdates, ResponseEasyToBorrowList,
+        ResponseExitPosition, ResponseFrontMonthContract, ResponseGetInstrumentByUnderlying,
+        ResponseGetInstrumentByUnderlyingKeys, ResponseGetUserInfo, ResponseGetVolumeAtPrice,
+        ResponseGiveTickSizeTypeTable, ResponseHeartbeat, ResponseLinkOrders,
+        ResponseListAcceptedAgreements, ResponseListExchangePermissions,
+        ResponseListUnacceptedAgreements, ResponseLogin, ResponseLoginInfo, ResponseLogout,
+        ResponseMarketDataUpdate, ResponseMarketDataUpdateByUnderlying, ResponseModifyOrder,
+        ResponseModifyOrderReferenceData, ResponseNewOrder, ResponseOcoOrder,
+        ResponseOrderSessionConfig, ResponsePnLPositionSnapshot, ResponsePnLPositionUpdates,
+        ResponseProductCodes, ResponseProductRmsInfo, ResponseReferenceData,
+        ResponseReplayExecutions, ResponseResumeBars, ResponseRithmicSystemGatewayInfo,
+        ResponseRithmicSystemInfo, ResponseSearchSymbols, ResponseSetRithmicMrktDataSelfCertStatus,
+        ResponseShowAgreement, ResponseShowBracketStops, ResponseShowBrackets,
+        ResponseShowFillHistory, ResponseShowOrderHistory, ResponseShowOrderHistoryDates,
+        ResponseShowOrderHistoryDetail, ResponseShowOrderHistorySummary, ResponseShowOrders,
+        ResponseSubscribeForOrderUpdates, ResponseSubscribeToBracketUpdates, ResponseTickBarReplay,
+        ResponseTickBarUpdate, ResponseTimeBarReplay, ResponseTimeBarUpdate, ResponseTradeRoutes,
+        ResponseUpdateStopBracketLevel, ResponseUpdateTargetBracketLevel,
+        ResponseVolumeProfileMinuteBars, RithmicOrderNotification, SymbolMarginRate, TickBar,
+        TimeBar, TradeRoute, TradeStatistics, UpdateEasyToBorrowList, UserAccountUpdate,
+        UserInfoUpdate, messages::RithmicMessage,
+    },
+    util::unknown_message::UnknownTemplateMessage,
+};
+
+/// Decodes one plant's inbound frames into [`RithmicResponse`]s tagged with
+/// `source`.
+#[derive(Debug)]
+pub(crate) struct RithmicReceiverApi {
+    pub(crate) source: String,
+}
+
+impl RithmicReceiverApi {
+    // The Result is large (~1296 bytes) because of `RithmicMessage`, but it is
+    // matched at once and never passed down deep call stacks.
+    /// Decode one length-prefixed frame. `Err` is still a routable response:
+    /// `error` holds the `ProtocolError`, and `request_id` is recovered if it can be.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn buf_to_message(&self, data: Bytes) -> Result<RithmicResponse, RithmicResponse> {
+        if data.len() < 4 {
+            error!("Received message too short: {} bytes", data.len());
+
+            return Err(RithmicResponse {
+                request_id: "".to_string(),
+                message: RithmicMessage::Unknown,
+                is_update: false,
+                has_more: false,
+                multi_response: false,
+                error: Some(RithmicError::ProtocolError(format!(
+                    "Message too short: {} bytes",
+                    data.len()
+                ))),
+                source: self.source.clone(),
+            });
+        }
+
+        let payload = &data[4..];
+
+        let parsed_message = match MessageType::decode(payload) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!(
+                    "Failed to decode MessageType: {} - data_size: {} bytes",
+                    e,
+                    data.len()
+                );
+
+                // `template_id` is the envelope's only field, so wire-type
+                // drift there still leaves the echoed `user_msg` readable.
+                return Err(route_decode_failure(
+                    payload,
+                    RithmicResponse {
+                        request_id: "".to_string(),
+                        message: RithmicMessage::Unknown,
+                        is_update: false,
+                        has_more: false,
+                        multi_response: false,
+                        error: Some(RithmicError::ProtocolError(format!(
+                            "Failed to decode message: {}",
+                            e
+                        ))),
+                        source: self.source.clone(),
+                    },
+                ));
+            }
+        };
+
+        if parsed_message.template_id <= 0 {
+            error!("{}: frame carries no template_id", self.source);
+
+            return Err(RithmicResponse {
+                request_id: "".to_string(),
+                message: RithmicMessage::Unknown,
+                is_update: false,
+                has_more: false,
+                multi_response: false,
+                error: Some(RithmicError::ProtocolError(
+                    "Frame carries no template_id".to_string(),
+                )),
+                source: self.source.clone(),
+            });
+        }
+
+        self.decode_body(data.slice(4..), parsed_message.template_id)
+            .map_err(|response| {
+                let response = route_decode_failure(payload, response);
+
+                error!(
+                    "{}: template {} failed to decode: {:?}; recovered request_id {:?}, routing it {}",
+                    self.source,
+                    parsed_message.template_id,
+                    response.error,
+                    response.request_id,
+                    if response.is_update {
+                        "onto the subscription"
+                    } else {
+                        "to the request waiting on it"
+                    }
+                );
+
+                response
+            })
+    }
+
+    /// Decode the body against the message type its `template_id` selects.
+    ///
+    /// Returns `Err` with `request_id: ""`; [`route_decode_failure`] fills in
+    /// `request_id` and `is_update` before the caller sees the response.
+    #[allow(clippy::result_large_err)]
+    fn decode_body(
+        &self,
+        payload: Bytes,
+        template_id: i32,
+    ) -> Result<RithmicResponse, RithmicResponse> {
+        let response = match template_id {
+            11 => {
+                let resp = ResponseLogin::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseLogin(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            13 => {
+                let resp = ResponseLogout::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseLogout(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            15 => {
+                let resp = ResponseReferenceData::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseReferenceData(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            17 => {
+                let resp = ResponseRithmicSystemInfo::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseRithmicSystemInfo(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            18 => {
+                let resp = RequestHeartbeat::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    // The frame's user_msg is the server's own token, not an id
+                    // this client handed out, so it is not surfaced as one.
+                    request_id: "".to_string(),
+                    message: RithmicMessage::RequestHeartbeat(resp),
+                    is_update: true, // Server-initiated keep-alive - route to subscription channel
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            19 => {
+                let resp = ResponseHeartbeat::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseHeartbeat(resp),
+                    is_update: true, // `forward_response` special-cases heartbeats before this flag
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            21 => {
+                let resp = ResponseRithmicSystemGatewayInfo::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseRithmicSystemGatewayInfo(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            75 => {
+                let resp =
+                    Reject::decode(payload).map_err(|e| decode_error(&self.source, e, false))?;
+                let error = Some(reject_error(&resp.rp_code));
+                let request_id = resp.user_msg.first().cloned().unwrap_or_default();
+
+                if request_id.is_empty() {
+                    // No caller to reach: `forward_response` drops it, so this
+                    // log is its only record. `rp_code` is all a `Reject` holds
+                    // besides the empty `user_msg`.
+                    warn!(
+                        "{}: unsolicited reject, rp_code {:?}",
+                        self.source, resp.rp_code
+                    );
+                }
+
+                RithmicResponse {
+                    request_id,
+                    message: RithmicMessage::Reject(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            // 76 is retained for older gateways; template version 5.42 sends
+            // the same message schema as 358.
+            76 | 358 => {
+                let resp = UserAccountUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::UserAccountUpdate(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            77 => {
+                let resp = ForcedLogout::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::ForcedLogout(resp),
+                    is_update: true, // Forced logout is a connection health event - route to subscription channel
+                    has_more: false,
+                    multi_response: false,
+                    error: Some(RithmicError::ForcedLogout(
+                        "forced logout from server".to_string(),
+                    )),
+                    source: self.source.clone(),
+                }
+            }
+            101 => {
+                let resp = ResponseMarketDataUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseMarketDataUpdate(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            103 => {
+                let resp = ResponseGetInstrumentByUnderlying::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseGetInstrumentByUnderlying(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            104 => {
+                let resp = ResponseGetInstrumentByUnderlyingKeys::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseGetInstrumentByUnderlyingKeys(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            106 => {
+                let resp = ResponseMarketDataUpdateByUnderlying::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseMarketDataUpdateByUnderlying(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            108 => {
+                let resp = ResponseGiveTickSizeTypeTable::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseGiveTickSizeTypeTable(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            110 => {
+                let resp = ResponseSearchSymbols::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseSearchSymbols(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            112 => {
+                let resp = ResponseProductCodes::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseProductCodes(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            114 => {
+                let resp = ResponseFrontMonthContract::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseFrontMonthContract(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            116 => {
+                let resp = ResponseDepthByOrderSnapshot::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseDepthByOrderSnapshot(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            118 => {
+                let resp = ResponseDepthByOrderUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseDepthByOrderUpdates(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            120 => {
+                let resp = ResponseGetVolumeAtPrice::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseGetVolumeAtPrice(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            122 => {
+                let resp = ResponseAuxilliaryReferenceData::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseAuxilliaryReferenceData(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            150 => {
+                let resp =
+                    LastTrade::decode(payload).map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::LastTrade(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            151 => {
+                let resp = BestBidOffer::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::BestBidOffer(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            152 => {
+                let resp = TradeStatistics::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::TradeStatistics(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            153 => {
+                let resp = QuoteStatistics::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::QuoteStatistics(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            154 => {
+                let resp = IndicatorPrices::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::IndicatorPrices(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            155 => {
+                let resp = EndOfDayPrices::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::EndOfDayPrices(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            156 => {
+                let resp =
+                    OrderBook::decode(payload).map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::OrderBook(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            157 => {
+                let resp =
+                    MarketMode::decode(payload).map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::MarketMode(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            158 => {
+                let resp = OpenInterest::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::OpenInterest(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            159 => {
+                let resp = FrontMonthContractUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::FrontMonthContractUpdate(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            160 => {
+                let resp = DepthByOrder::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::DepthByOrder(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            161 => {
+                let resp = DepthByOrderEndEvent::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::DepthByOrderEndEvent(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            162 => {
+                let resp = SymbolMarginRate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::SymbolMarginRate(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            163 => {
+                let resp = OrderPriceLimits::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::OrderPriceLimits(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            201 => {
+                let resp = ResponseTimeBarUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseTimeBarUpdate(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            203 => {
+                let resp = ResponseTimeBarReplay::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseTimeBarReplay(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            205 => {
+                let resp = ResponseTickBarUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseTickBarUpdate(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            207 => {
+                let resp = ResponseTickBarReplay::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseTickBarReplay(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            209 => {
+                let resp = ResponseVolumeProfileMinuteBars::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseVolumeProfileMinuteBars(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            211 => {
+                let resp = ResponseResumeBars::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseResumeBars(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            250 => {
+                let resp =
+                    TimeBar::decode(payload).map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::TimeBar(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            251 => {
+                let resp =
+                    TickBar::decode(payload).map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::TickBar(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            301 => {
+                let resp = ResponseLoginInfo::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseLoginInfo(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            303 => {
+                let resp = ResponseAccountList::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseAccountList(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            305 => {
+                let resp = ResponseAccountRmsInfo::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseAccountRmsInfo(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            307 => {
+                let resp = ResponseProductRmsInfo::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseProductRmsInfo(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            309 => {
+                let resp = ResponseSubscribeForOrderUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseSubscribeForOrderUpdates(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            311 => {
+                let resp = ResponseTradeRoutes::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseTradeRoutes(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            313 => {
+                let resp = ResponseNewOrder::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseNewOrder(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            315 => {
+                let resp = ResponseModifyOrder::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseModifyOrder(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            317 => {
+                let resp = ResponseCancelOrder::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseCancelOrder(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            319 => {
+                let resp = ResponseShowOrderHistoryDates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowOrderHistoryDates(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            321 => {
+                let resp = ResponseShowOrders::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowOrders(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            323 => {
+                let resp = ResponseShowOrderHistory::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowOrderHistory(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            325 => {
+                let resp = ResponseShowOrderHistorySummary::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowOrderHistorySummary(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            327 => {
+                let resp = ResponseShowOrderHistoryDetail::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowOrderHistoryDetail(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            329 => {
+                let resp = ResponseOcoOrder::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseOcoOrder(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            331 => {
+                let resp = ResponseBracketOrder::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseBracketOrder(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            333 => {
+                let resp = ResponseUpdateTargetBracketLevel::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseUpdateTargetBracketLevel(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            335 => {
+                let resp = ResponseUpdateStopBracketLevel::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseUpdateStopBracketLevel(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            337 => {
+                let resp = ResponseSubscribeToBracketUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseSubscribeToBracketUpdates(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            339 => {
+                let resp = ResponseShowBrackets::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowBrackets(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            341 => {
+                let resp = ResponseShowBracketStops::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowBracketStops(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            343 => {
+                let resp = ResponseListExchangePermissions::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseListExchangePermissions(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            345 => {
+                let resp = ResponseLinkOrders::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseLinkOrders(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            347 => {
+                let resp = ResponseCancelAllOrders::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseCancelAllOrders(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            349 => {
+                let resp = ResponseEasyToBorrowList::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseEasyToBorrowList(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            350 => {
+                let resp =
+                    TradeRoute::decode(payload).map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::TradeRoute(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            351 => {
+                let resp = RithmicOrderNotification::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::RithmicOrderNotification(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            352 => {
+                let resp = ExchangeOrderNotification::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::ExchangeOrderNotification(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            353 => {
+                let resp = BracketUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::BracketUpdates(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            355 => {
+                let resp = UpdateEasyToBorrowList::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::UpdateEasyToBorrowList(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            356 => {
+                let resp = AccountRmsUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::AccountRmsUpdates(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            357 => {
+                let resp = UserInfoUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::UserInfoUpdate(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            401 => {
+                let resp = ResponsePnLPositionUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponsePnLPositionUpdates(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            403 => {
+                let resp = ResponsePnLPositionSnapshot::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponsePnLPositionSnapshot(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            450 => {
+                let resp = InstrumentPnLPositionUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::InstrumentPnLPositionUpdate(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            451 => {
+                let resp = AccountPnLPositionUpdate::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, true))?;
+
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::AccountPnLPositionUpdate(resp),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+            501 => {
+                let resp = ResponseListUnacceptedAgreements::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseListUnacceptedAgreements(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            503 => {
+                let resp = ResponseListAcceptedAgreements::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseListAcceptedAgreements(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            505 => {
+                let resp = ResponseAcceptAgreement::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseAcceptAgreement(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            507 => {
+                let resp = ResponseShowAgreement::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowAgreement(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            509 => {
+                let resp = ResponseSetRithmicMrktDataSelfCertStatus::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseSetRithmicMrktDataSelfCertStatus(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3501 => {
+                let resp = ResponseModifyOrderReferenceData::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseModifyOrderReferenceData(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3503 => {
+                let resp = ResponseOrderSessionConfig::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseOrderSessionConfig(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3505 => {
+                let resp = ResponseExitPosition::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseExitPosition(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3507 => {
+                let resp = ResponseReplayExecutions::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseReplayExecutions(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3509 => {
+                let resp = ResponseAccountRmsUpdates::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseAccountRmsUpdates(resp),
+                    is_update: false,
+                    has_more: false,
+                    multi_response: false,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3511 => {
+                let resp = ResponseGetUserInfo::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseGetUserInfo(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            3513 => {
+                let resp = ResponseShowFillHistory::decode(payload)
+                    .map_err(|e| decode_error(&self.source, e, false))?;
+                let has_more = has_multiple(&resp.rq_handler_rp_code);
+                let error = classify_rp_code_error(&resp.rp_code);
+
+                RithmicResponse {
+                    request_id: resp.user_msg.first().cloned().unwrap_or_default(),
+                    message: RithmicMessage::ResponseShowFillHistory(resp),
+                    is_update: false,
+                    has_more,
+                    multi_response: true,
+                    error,
+                    source: self.source.clone(),
+                }
+            }
+            _ => {
+                // Not a recognized message template.
+                let unknown = UnknownTemplateMessage {
+                    template_id,
+                    payload,
+                };
+
+                // Payload stays out of the log: it may carry account and order
+                // ids, and the caller receives the frame to log as it sees fit.
+                warn!(
+                    "{}: unmapped Rithmic template {} ({} bytes)",
+                    self.source,
+                    unknown.template_id,
+                    unknown.payload.len()
+                );
+
+                // No request_id can be read without a schema. As a reply it
+                // would match no request and be dropped, so route it as an update.
+                RithmicResponse {
+                    request_id: "".to_string(),
+                    message: RithmicMessage::UnknownTemplate(unknown),
+                    is_update: true,
+                    has_more: false,
+                    multi_response: false,
+                    error: None,
+                    source: self.source.clone(),
+                }
+            }
+        };
+
+        Ok(response)
+    }
+}
+
+// A non-empty `rq_handler_rp_code` marks a frame with more to follow, whatever
+// it holds: keying on `[0] == "0"` would cut replies short whose middle frames carry
+// another status. An empty repeated field is the same as an absent one.
+fn has_multiple(rq_handler_rp_code: &[String]) -> bool {
+    !rq_handler_rp_code.is_empty()
+}
+
+fn decode_error(source: &str, e: prost::DecodeError, is_update: bool) -> RithmicResponse {
+    RithmicResponse {
+        request_id: "".to_string(),
+        message: RithmicMessage::Unknown,
+        is_update,
+        has_more: false,
+        multi_response: false,
+        error: Some(RithmicError::ProtocolError(format!(
+            "Failed to decode message: {}",
+            e
+        ))),
+        source: source.to_string(),
+    }
+}
+
+/// Reads `user_msg` off a body that failed to decode; prost skips the other
+/// tags. Tag 132760 is `user_msg` in every [`crate::rti`] type and nothing
+/// else, so recheck if `rti.rs` is regenerated.
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct UserMsgProbe {
+    #[prost(string, repeated, tag = "132760")]
+    user_msg: Vec<String>,
+}
+
+/// A failed reply has no `request_id` and would be dropped with its
+/// `ProtocolError`. Recover the echoed id so it reaches its caller, or route
+/// it as an update when there is none.
+fn route_decode_failure(payload: &[u8], mut response: RithmicResponse) -> RithmicResponse {
+    if response.is_update || !response.request_id.is_empty() {
+        return response;
+    }
+
+    response.request_id = UserMsgProbe::decode(payload)
+        .ok()
+        .and_then(|probe| probe.user_msg.into_iter().next())
+        .unwrap_or_default();
+    response.is_update = response.request_id.is_empty();
+
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::{Message, bytes::Bytes};
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    use crate::{
+        error::{RithmicError, RithmicRequestError},
+        rti::{
+            Reject, ResponseAccountList, ResponseGetUserInfo, ResponseListAcceptedAgreements,
+            ResponseLogin, ResponseOrderSessionConfig, ResponseReplayExecutions,
+            ResponseSearchSymbols, ResponseShowFillHistory, RithmicOrderNotification, TradeRoute,
+            UpdateEasyToBorrowList, UserInfoUpdate, messages::RithmicMessage,
+        },
+    };
+
+    // Prost keeps template_id's wire tag but drops the canonical mapping,
+    // which lives outside the .proto schema, so this table supplies it. `multi`
+    // is set exactly for the vendor protos that carry `rq_handler_rp_code`.
+    macro_rules! inbound_templates {
+        ($consumer:ident) => {
+            $consumer! {
+                11 => ResponseLogin { update: false, multi: false },
+                13 => ResponseLogout { update: false, multi: false },
+                15 => ResponseReferenceData { update: false, multi: false },
+                17 => ResponseRithmicSystemInfo { update: false, multi: false },
+                18 => RequestHeartbeat { update: true, multi: false },
+                // A reply, but flagged as an update. `forward_response` checks for
+                // heartbeats first, and only a failed one reaches subscribers.
+                19 => ResponseHeartbeat { update: true, multi: false },
+                21 => ResponseRithmicSystemGatewayInfo { update: false, multi: false },
+                75 => Reject { update: false, multi: false },
+                76 => UserAccountUpdate { update: true, multi: false },
+                77 => ForcedLogout { update: true, multi: false },
+                101 => ResponseMarketDataUpdate { update: false, multi: false },
+                103 => ResponseGetInstrumentByUnderlying { update: false, multi: true },
+                104 => ResponseGetInstrumentByUnderlyingKeys { update: false, multi: false },
+                106 => ResponseMarketDataUpdateByUnderlying { update: false, multi: false },
+                108 => ResponseGiveTickSizeTypeTable { update: false, multi: true },
+                110 => ResponseSearchSymbols { update: false, multi: true },
+                112 => ResponseProductCodes { update: false, multi: true },
+                114 => ResponseFrontMonthContract { update: false, multi: false },
+                116 => ResponseDepthByOrderSnapshot { update: false, multi: true },
+                118 => ResponseDepthByOrderUpdates { update: false, multi: false },
+                120 => ResponseGetVolumeAtPrice { update: false, multi: true },
+                122 => ResponseAuxilliaryReferenceData { update: false, multi: false },
+                150 => LastTrade { update: true, multi: false },
+                151 => BestBidOffer { update: true, multi: false },
+                152 => TradeStatistics { update: true, multi: false },
+                153 => QuoteStatistics { update: true, multi: false },
+                154 => IndicatorPrices { update: true, multi: false },
+                155 => EndOfDayPrices { update: true, multi: false },
+                156 => OrderBook { update: true, multi: false },
+                157 => MarketMode { update: true, multi: false },
+                158 => OpenInterest { update: true, multi: false },
+                159 => FrontMonthContractUpdate { update: true, multi: false },
+                160 => DepthByOrder { update: true, multi: false },
+                161 => DepthByOrderEndEvent { update: true, multi: false },
+                162 => SymbolMarginRate { update: true, multi: false },
+                163 => OrderPriceLimits { update: true, multi: false },
+                201 => ResponseTimeBarUpdate { update: false, multi: false },
+                203 => ResponseTimeBarReplay { update: false, multi: true },
+                205 => ResponseTickBarUpdate { update: false, multi: false },
+                207 => ResponseTickBarReplay { update: false, multi: true },
+                209 => ResponseVolumeProfileMinuteBars { update: false, multi: true },
+                211 => ResponseResumeBars { update: false, multi: false },
+                250 => TimeBar { update: true, multi: false },
+                251 => TickBar { update: true, multi: false },
+                301 => ResponseLoginInfo { update: false, multi: false },
+                303 => ResponseAccountList { update: false, multi: true },
+                305 => ResponseAccountRmsInfo { update: false, multi: true },
+                307 => ResponseProductRmsInfo { update: false, multi: true },
+                309 => ResponseSubscribeForOrderUpdates { update: false, multi: false },
+                311 => ResponseTradeRoutes { update: false, multi: true },
+                313 => ResponseNewOrder { update: false, multi: true },
+                315 => ResponseModifyOrder { update: false, multi: true },
+                317 => ResponseCancelOrder { update: false, multi: true },
+                319 => ResponseShowOrderHistoryDates { update: false, multi: true },
+                321 => ResponseShowOrders { update: false, multi: false },
+                323 => ResponseShowOrderHistory { update: false, multi: false },
+                325 => ResponseShowOrderHistorySummary { update: false, multi: false },
+                327 => ResponseShowOrderHistoryDetail { update: false, multi: false },
+                329 => ResponseOcoOrder { update: false, multi: true },
+                331 => ResponseBracketOrder { update: false, multi: true },
+                333 => ResponseUpdateTargetBracketLevel { update: false, multi: false },
+                335 => ResponseUpdateStopBracketLevel { update: false, multi: false },
+                337 => ResponseSubscribeToBracketUpdates { update: false, multi: false },
+                339 => ResponseShowBrackets { update: false, multi: true },
+                341 => ResponseShowBracketStops { update: false, multi: true },
+                343 => ResponseListExchangePermissions { update: false, multi: true },
+                345 => ResponseLinkOrders { update: false, multi: false },
+                347 => ResponseCancelAllOrders { update: false, multi: false },
+                349 => ResponseEasyToBorrowList { update: false, multi: true },
+                350 => TradeRoute { update: true, multi: false },
+                351 => RithmicOrderNotification { update: true, multi: false },
+                352 => ExchangeOrderNotification { update: true, multi: false },
+                353 => BracketUpdates { update: true, multi: false },
+                355 => UpdateEasyToBorrowList { update: true, multi: false },
+                356 => AccountRmsUpdates { update: true, multi: false },
+                357 => UserInfoUpdate { update: true, multi: false },
+                358 => UserAccountUpdate { update: true, multi: false },
+                401 => ResponsePnLPositionUpdates { update: false, multi: false },
+                403 => ResponsePnLPositionSnapshot { update: false, multi: false },
+                450 => InstrumentPnLPositionUpdate { update: true, multi: false },
+                451 => AccountPnLPositionUpdate { update: true, multi: false },
+                501 => ResponseListUnacceptedAgreements { update: false, multi: true },
+                503 => ResponseListAcceptedAgreements { update: false, multi: true },
+                505 => ResponseAcceptAgreement { update: false, multi: false },
+                507 => ResponseShowAgreement { update: false, multi: true },
+                509 => ResponseSetRithmicMrktDataSelfCertStatus { update: false, multi: false },
+                3501 => ResponseModifyOrderReferenceData { update: false, multi: false },
+                3503 => ResponseOrderSessionConfig { update: false, multi: false },
+                3505 => ResponseExitPosition { update: false, multi: true },
+                3507 => ResponseReplayExecutions { update: false, multi: false },
+                3509 => ResponseAccountRmsUpdates { update: false, multi: false },
+                3511 => ResponseGetUserInfo { update: false, multi: true },
+                3513 => ResponseShowFillHistory { update: false, multi: true },
+            }
+        };
+    }
+
+    fn encode_with_header<T: Message>(message: &T) -> Bytes {
+        let mut payload = Vec::new();
+
+        message.encode(&mut payload).unwrap();
+
+        let mut framed = (payload.len() as u32).to_be_bytes().to_vec();
+
+        framed.extend(payload);
+
+        Bytes::from(framed)
+    }
+
+    fn decode_with_api<T: Message>(message: &T) -> RithmicResponse {
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        api.buf_to_message(encode_with_header(message)).unwrap()
+    }
+
+    #[test]
+    fn unsolicited_reject_decodes_without_a_request_id() {
+        // No echoed `user_msg` means no request id to correlate against, and
+        // the rejection is not a subscription update either. `forward_response`
+        // drops it; decoding it must not fail or panic.
+        let response = decode_with_api(&Reject {
+            template_id: 75,
+            user_msg: vec![],
+            rp_code: vec!["5".to_string(), "permission denied".to_string()],
+        });
+
+        assert!(matches!(response.message, RithmicMessage::Reject(_)));
+        assert!(!response.is_update);
+        assert_eq!(response.request_id, "");
+        assert_eq!(
+            response.error,
+            Some(RithmicError::RequestRejected(RithmicRequestError {
+                rp_code: vec!["5".to_string(), "permission denied".to_string()],
+                code: Some("5".to_string()),
+                message: Some("permission denied".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn reject_with_user_msg_decodes_as_request_correlated() {
+        let response = decode_with_api(&Reject {
+            template_id: 75,
+            user_msg: vec!["req-9".to_string()],
+            rp_code: vec!["5".to_string(), "permission denied".to_string()],
+        });
+
+        assert!(matches!(response.message, RithmicMessage::Reject(_)));
+        assert!(!response.is_update);
+        assert_eq!(response.request_id, "req-9");
+    }
+
+    #[test]
+    fn reject_carrying_a_response_success_rp_code_still_carries_an_error() {
+        // The rp_code a `Response*` decodes as a success, on a request-
+        // correlated `Reject`: the caller's oneshot resolves with `error` set,
+        // so the documented `resp.error` check sees the rejection. The rp_code
+        // reaches the caller unread, to interpret as it sees fit.
+        let response = decode_with_api(&Reject {
+            template_id: 75,
+            user_msg: vec!["req-9".to_string()],
+            rp_code: vec!["0".to_string()],
+        });
+
+        assert!(!response.is_update);
+        assert_eq!(
+            response.error,
+            Some(RithmicError::RequestRejected(RithmicRequestError {
+                rp_code: vec!["0".to_string()],
+                code: Some("0".to_string()),
+                message: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn trade_route_decodes_as_update() {
+        let response = decode_with_api(&TradeRoute {
+            template_id: 350,
+            ..TradeRoute::default()
+        });
+
+        assert!(matches!(response.message, RithmicMessage::TradeRoute(_)));
+        assert!(response.is_update);
+    }
+
+    #[test]
+    fn update_easy_to_borrow_list_decodes_as_update() {
+        let response = decode_with_api(&UpdateEasyToBorrowList {
+            template_id: 355,
+            ..UpdateEasyToBorrowList::default()
+        });
+
+        assert!(matches!(
+            response.message,
+            RithmicMessage::UpdateEasyToBorrowList(_)
+        ));
+        assert!(response.is_update);
+    }
+
+    #[test]
+    fn unmapped_template_decodes_as_update_without_error() {
+        const UNKNOWN_TEMPLATE_ID: i32 = 999_999;
+
+        let api = RithmicReceiverApi {
+            source: "order_plant".to_string(),
+        };
+        let notification = RithmicOrderNotification {
+            template_id: UNKNOWN_TEMPLATE_ID,
+            basket_id: Some("9214-2".to_string()),
+            symbol: Some("MESU6".to_string()),
+            ..RithmicOrderNotification::default()
+        };
+        let result = api.buf_to_message(encode_with_header(&notification));
+
+        let response = result.expect("unmapped templates are not decode failures");
+
+        assert!(response.error.is_none());
+        assert!(response.is_update);
+        assert_eq!(response.request_id, "");
+
+        let RithmicMessage::UnknownTemplate(frame) = &response.message else {
+            panic!("expected UnknownTemplate, got {:?}", response.message);
+        };
+
+        assert_eq!(frame.template_id, UNKNOWN_TEMPLATE_ID);
+
+        // Byte-identical to what was framed, length prefix aside.
+        assert_eq!(frame.payload, Bytes::from(notification.encode_to_vec()));
+    }
+
+    #[test]
+    fn every_generated_inbound_template_is_registered_and_decodes_with_its_routing_flags() {
+        macro_rules! registered_type_names {
+            ($($template_id:literal => $message:ident { $($flags:tt)* },)*) => {
+                BTreeSet::from([$(stringify!($message)),*])
+            };
+        }
+
+        macro_rules! assert_all_decode {
+            ($(
+                $template_id:literal => $message:ident {
+                    update: $update:literal, multi: $multi:literal
+                },
+            )*) => {
+                $(
+                    let message = crate::rti::$message {
+                        template_id: $template_id,
+                        ..Default::default()
+                    };
+                    let response = decode_with_api(&message);
+
+                    assert!(
+                        matches!(response.message, RithmicMessage::$message(_)),
+                        "template {} ({}) is not decoded by the receiver, got {:?}",
+                        $template_id,
+                        stringify!($message),
+                        response.message,
+                    );
+                    assert_eq!(
+                        (response.is_update, response.multi_response),
+                        ($update, $multi),
+                        "template {} ({}): (is_update, multi_response)",
+                        $template_id,
+                        stringify!($message),
+                    );
+                )*
+            };
+        }
+
+        let registered = inbound_templates!(registered_type_names);
+        let generated = generated_template_types();
+        let expected = generated
+            .iter()
+            .copied()
+            .filter(|name| {
+                *name != "MessageType"
+                    && (!name.starts_with("Request") || *name == "RequestHeartbeat")
+            })
+            .collect::<BTreeSet<_>>();
+
+        let unregistered = expected.difference(&registered).collect::<Vec<_>>();
+        let stale = registered.difference(&expected).collect::<Vec<_>>();
+
+        assert!(
+            unregistered.is_empty() && stale.is_empty(),
+            "src/rti.rs messages missing from the registry: {unregistered:?}; \
+             registry entries no longer in src/rti.rs: {stale:?}"
+        );
+
+        inbound_templates!(assert_all_decode);
+    }
+
+    fn generated_template_types() -> BTreeSet<&'static str> {
+        let mut template_types = BTreeSet::new();
+        let mut current_struct = None;
+
+        for line in include_str!("../rti.rs").lines() {
+            if let Some(declaration) = line.strip_prefix("pub struct ") {
+                current_struct = declaration.split_whitespace().next();
+            } else if line.trim() == "pub template_id: i32," {
+                if let Some(name) = current_struct {
+                    template_types.insert(name);
+                }
+            } else if line == "}" {
+                current_struct = None;
+            }
+        }
+
+        template_types
+    }
+
+    #[test]
+    fn frame_without_a_template_id_stays_an_error() {
+        // prost decodes a missing proto2 `required` int32 as 0, so this must
+        // not be mistaken for a template we don't map.
+        let api = RithmicReceiverApi {
+            source: "order_plant".to_string(),
+        };
+
+        let mut framed = 2u32.to_be_bytes().to_vec();
+        framed.extend_from_slice(&[0x08, 0x01]); // field 1, not in MessageType
+
+        let response = api
+            .buf_to_message(Bytes::from(framed))
+            .expect_err("a frame with no template_id is malformed");
+
+        assert!(matches!(response.message, RithmicMessage::Unknown));
+        assert!(matches!(
+            response.error,
+            Some(RithmicError::ProtocolError(_))
+        ));
+        assert!(!response.is_update);
+    }
+
+    /// A body whose `template_id` and `user_msg` are readable but whose fourth
+    /// field contradicts the message type `template_id` selects.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct MalformedBody {
+        #[prost(int32, required, tag = "154467")]
+        template_id: i32,
+        #[prost(string, repeated, tag = "132760")]
+        user_msg: Vec<String>,
+        /// `ResponseLogin::template_version`: a string there, a varint here.
+        #[prost(int32, optional, tag = "153634")]
+        template_version: Option<i32>,
+        /// `LastTrade::symbol`: a string there, a varint here.
+        #[prost(int32, optional, tag = "110100")]
+        symbol: Option<i32>,
+    }
+
+    fn malformed_response_login(user_msg: &[&str]) -> MalformedBody {
+        MalformedBody {
+            template_id: 11,
+            user_msg: user_msg.iter().map(|m| m.to_string()).collect(),
+            template_version: Some(1),
+            symbol: None,
+        }
+    }
+
+    /// `template_id` as a string rather than a varint, so the envelope itself
+    /// fails to decode while the echoed `user_msg` stays readable.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct DivergedEnvelope {
+        #[prost(string, optional, tag = "154467")]
+        template_id: Option<String>,
+        #[prost(string, repeated, tag = "132760")]
+        user_msg: Vec<String>,
+    }
+
+    #[test]
+    fn envelope_wire_type_divergence_correlates_on_echoed_user_msg() {
+        // The realistic case: schema drift on `template_id`, not a corrupt
+        // frame. It takes the envelope down but leaves the echoed id readable.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        let response = api
+            .buf_to_message(encode_with_header(&DivergedEnvelope {
+                template_id: Some("11".to_string()),
+                user_msg: vec!["req-9".to_string()],
+            }))
+            .expect_err("an envelope that fails to decode is a decode failure");
+
+        assert!(matches!(
+            response.error,
+            Some(RithmicError::ProtocolError(_))
+        ));
+        assert!(!response.is_update);
+        assert_eq!(response.request_id, "req-9");
+    }
+
+    #[test]
+    fn response_decode_failure_correlates_on_echoed_user_msg() {
+        // Template 11 is ResponseLogin; the body then contradicts its schema.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        let response = api
+            .buf_to_message(encode_with_header(&malformed_response_login(&["req-7"])))
+            .expect_err("a body contradicting ResponseLogin must not decode");
+
+        assert!(matches!(response.message, RithmicMessage::Unknown));
+        assert!(matches!(
+            response.error,
+            Some(RithmicError::ProtocolError(_))
+        ));
+        assert!(!response.is_update);
+        assert_eq!(response.request_id, "req-7");
+    }
+
+    #[test]
+    fn a_correlated_decode_failure_names_the_request_in_the_log() {
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        let (_, logged) = crate::request_handler::log_capture::capture(|| {
+            let _ = api.buf_to_message(encode_with_header(&malformed_response_login(&["req-7"])));
+        });
+
+        assert!(logged.contains("template 11 failed to decode"), "{logged}");
+        assert!(
+            logged.contains(r#"recovered request_id "req-7""#),
+            "{logged}"
+        );
+        assert!(
+            logged.contains("routing it to the request waiting on it"),
+            "{logged}"
+        );
+    }
+
+    #[test]
+    fn an_uncorrelatable_decode_failure_says_so_in_the_log() {
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        let (_, logged) = crate::request_handler::log_capture::capture(|| {
+            let _ = api.buf_to_message(encode_with_header(&malformed_response_login(&[])));
+        });
+
+        assert!(logged.contains("template 11 failed to decode"), "{logged}");
+        assert!(logged.contains(r#"recovered request_id """#), "{logged}");
+        assert!(
+            logged.contains("routing it onto the subscription"),
+            "{logged}"
+        );
+    }
+
+    #[test]
+    fn response_decode_failure_without_user_msg_routes_as_update() {
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        let response = api
+            .buf_to_message(encode_with_header(&malformed_response_login(&[])))
+            .expect_err("a body contradicting ResponseLogin must not decode");
+
+        assert!(matches!(response.message, RithmicMessage::Unknown));
+        assert!(matches!(
+            response.error,
+            Some(RithmicError::ProtocolError(_))
+        ));
+        assert!(response.is_update);
+        assert_eq!(response.request_id, "");
+    }
+
+    #[test]
+    fn update_arm_decode_failure_stays_an_update() {
+        // Template 150 is a subscription update. Its decode failure already
+        // reaches the broadcast channel, so an echoed user_msg must not divert
+        // it to the request handler.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        let response = api
+            .buf_to_message(encode_with_header(&MalformedBody {
+                template_id: 150,
+                user_msg: vec!["req-7".to_string()],
+                template_version: None,
+                symbol: Some(1),
+            }))
+            .expect_err("a body contradicting LastTrade must not decode");
+
+        assert!(matches!(response.message, RithmicMessage::Unknown));
+        assert!(response.is_update);
+        assert_eq!(response.request_id, "");
+    }
+
+    #[test]
+    fn has_multiple_keys_on_rq_handler_presence_not_value() {
+        // Middle frames may carry any status there; presence alone means more follow.
+        assert!(super::has_multiple(&["0".to_string()]));
+        assert!(super::has_multiple(&["7".to_string()]));
+        assert!(super::has_multiple(&["1".to_string(), "0".to_string()]));
+        assert!(!super::has_multiple(&[]));
+    }
+
+    #[test]
+    fn list_accounts_no_data_decodes_as_ok() {
+        // rp_code ["7", "no data"] on a ResponseAccountList decodes as Ok with no
+        // error, so the benign-empty mapping covers list replies too.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+        let result = api.buf_to_message(encode_with_header(&ResponseAccountList {
+            template_id: 303,
+            user_msg: vec!["req-1".to_string()],
+            rq_handler_rp_code: vec![],
+            rp_code: vec!["7".to_string(), "no data".to_string()],
+            ..ResponseAccountList::default()
+        }));
+
+        assert!(
+            result.is_ok(),
+            "expected Ok but got Err: {:?}",
+            result.err()
+        );
+        let response = result.unwrap();
+
+        assert_eq!(response.error, None);
+    }
+
+    #[test]
+    fn response_login_rejection_decodes_with_structured_error() {
+        // A protocol-level rejection shows up in `request_rejection()` as well as
+        // the legacy `error: Option<String>`.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+        let result = api.buf_to_message(encode_with_header(&ResponseLogin {
+            template_id: 11,
+            user_msg: vec!["req-1".to_string()],
+            rp_code: vec!["3".to_string(), "bad request".to_string()],
+            ..ResponseLogin::default()
+        }));
+        let response = match result {
+            Ok(r) => r,
+            Err(r) => r,
+        };
+
+        assert_eq!(
+            response.error,
+            Some(RithmicError::RequestRejected(RithmicRequestError {
+                rp_code: vec!["3".to_string(), "bad request".to_string()],
+                code: Some("3".to_string()),
+                message: Some("bad request".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn response_order_session_config_parse_error_decodes_with_structured_error() {
+        // Captured fixture: this rp_code must decode as a RequestRejected with the
+        // full payload kept, not be swallowed as KnownBenignEmpty.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+        let result = api.buf_to_message(encode_with_header(&ResponseOrderSessionConfig {
+            template_id: 3503,
+            user_msg: vec!["req-1".to_string()],
+            rp_code: vec![
+                "7".to_string(),
+                "an error occurred while parsing data.".to_string(),
+            ],
+        }));
+        let response = match result {
+            Ok(r) => r,
+            Err(r) => r,
+        };
+
+        assert_eq!(
+            response.error,
+            Some(RithmicError::RequestRejected(RithmicRequestError {
+                rp_code: vec![
+                    "7".to_string(),
+                    "an error occurred while parsing data.".to_string(),
+                ],
+                code: Some("7".to_string()),
+                message: Some("an error occurred while parsing data.".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn replay_no_data_decodes_as_ok() {
+        // rp_code ["7", "no data"] on a ResponseReplayExecutions decodes as Ok
+        // through buf_to_message.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+        let result = api.buf_to_message(encode_with_header(&ResponseReplayExecutions {
+            template_id: 3507,
+            user_msg: vec!["req-1".to_string()],
+            rp_code: vec!["7".to_string(), "no data".to_string()],
+        }));
+
+        assert!(
+            result.is_ok(),
+            "expected Ok but got Err: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().error, None);
+    }
+
+    // =========================================================================
+    // Typed rejection surface and macro-driven rp_code info
+    // =========================================================================
+
+    #[test]
+    fn response_request_error_maps_code_6_to_request_rejected_with_full_text() {
+        let response = decode_with_api(&ResponseListAcceptedAgreements {
+            template_id: 503,
+            user_msg: vec!["req-4".to_string()],
+            rp_code: vec!["6".to_string(), "agreement already signed".to_string()],
+            ..ResponseListAcceptedAgreements::default()
+        });
+
+        assert_eq!(response.rp_code_num(), Some("6"));
+        assert_eq!(response.rp_code_text(), Some("agreement already signed"));
+        assert!(matches!(
+            &response.error,
+            Some(RithmicError::RequestRejected(RithmicRequestError { rp_code, code, message }))
+                if *rp_code == vec!["6".to_string(), "agreement already signed".to_string()]
+                    && code.as_deref() == Some("6")
+                    && message.as_deref() == Some("agreement already signed")
+        ));
+    }
+
+    #[test]
+    fn search_symbols_multipart_uses_rq_handler_field_presence_not_value() {
+        // Presence of `rq_handler_rp_code` marks an intermediate frame,
+        // regardless of the value inside.
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        // Intermediate frame with a non-"0" rq_handler_rp_code. The old
+        // `[0] == "0"` gate dropped it and truncated multipart replies.
+        let intermediate = api
+            .buf_to_message(encode_with_header(&ResponseSearchSymbols {
+                template_id: 110,
+                user_msg: vec!["multi-1".to_string()],
+                rq_handler_rp_code: vec!["7".to_string()],
+                ..ResponseSearchSymbols::default()
+            }))
+            .expect("intermediate multi-response frame should decode");
+
+        assert!(
+            intermediate.has_more,
+            "presence of rq_handler_rp_code must mark has_more=true regardless of value"
+        );
+        assert!(intermediate.multi_response);
+        assert!(intermediate.error.is_none());
+
+        // Terminal frame: no rq_handler_rp_code, rp_code set to success.
+        let terminal = api
+            .buf_to_message(encode_with_header(&ResponseSearchSymbols {
+                template_id: 110,
+                user_msg: vec!["multi-1".to_string()],
+                rp_code: vec!["0".to_string()],
+                ..ResponseSearchSymbols::default()
+            }))
+            .expect("terminal multi-response frame should decode");
+
+        assert!(!terminal.has_more);
+        assert!(terminal.multi_response);
+        assert!(terminal.error.is_none());
+    }
+
+    /// The three frames a per-price replay is made of, as decoded: a data
+    /// part (`rq_handler_rp_code` present), the notice that closes a replay
+    /// the server truncated (a `request_key`, no code at all), and the end
+    /// marker of a complete replay (`rp_code` `["0"]`).
+    #[test]
+    fn a_replay_truncation_notice_resolves_the_reply_and_says_so() {
+        let data = decode_with_api(&ResponseVolumeProfileMinuteBars {
+            template_id: 209,
+            user_msg: vec!["probe".to_string()],
+            rq_handler_rp_code: vec!["0".to_string()],
+            marker: Some(1_788_732_060),
+            ..Default::default()
+        });
+        assert!(data.has_more);
+        assert!(!data.is_truncated());
+
+        let notice = decode_with_api(&ResponseVolumeProfileMinuteBars {
+            template_id: 209,
+            user_msg: vec!["probe".to_string()],
+            request_key: Some("0".to_string()),
+            ..Default::default()
+        });
+        assert!(notice.multi_response);
+        assert!(
+            !notice.has_more,
+            "no rq_handler_rp_code: the reply resolves here"
+        );
+        assert!(notice.error.is_none(), "no rp_code: nothing was refused");
+        assert_eq!(notice.resume_key(), Some("0"));
+        assert!(notice.is_truncated());
+
+        let complete = decode_with_api(&ResponseVolumeProfileMinuteBars {
+            template_id: 209,
+            user_msg: vec!["probe".to_string()],
+            rp_code: vec!["0".to_string()],
+            ..Default::default()
+        });
+        assert!(!complete.has_more);
+        assert!(complete.error.is_none());
+        assert_eq!(complete.resume_key(), None);
+        assert!(!complete.is_truncated());
+    }
+
+    #[test]
+    fn user_info_update_decodes_as_update() {
+        let response = decode_with_api(&UserInfoUpdate {
+            template_id: 357,
+            ..UserInfoUpdate::default()
+        });
+
+        assert!(matches!(
+            response.message,
+            RithmicMessage::UserInfoUpdate(_)
+        ));
+        assert!(response.is_update);
+        assert_eq!(response.request_id, "");
+    }
+
+    #[test]
+    fn get_user_info_response_correlates_by_user_msg() {
+        let response = decode_with_api(&ResponseGetUserInfo {
+            template_id: 3511,
+            user_msg: vec!["req-42".to_string()],
+            rp_code: vec!["0".to_string()],
+            ..ResponseGetUserInfo::default()
+        });
+
+        assert!(matches!(
+            response.message,
+            RithmicMessage::ResponseGetUserInfo(_)
+        ));
+        assert!(!response.is_update);
+        assert!(response.multi_response);
+        assert!(!response.has_more);
+        assert_eq!(response.request_id, "req-42");
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn show_fill_history_streams_fills_until_the_terminal_frame() {
+        let api = RithmicReceiverApi {
+            source: "test".to_string(),
+        };
+
+        // One frame per fill, marked intermediate by rq_handler_rp_code.
+        let fill = api
+            .buf_to_message(encode_with_header(&ResponseShowFillHistory {
+                template_id: 3513,
+                user_msg: vec!["req-7".to_string()],
+                rq_handler_rp_code: vec!["0".to_string()],
+                ..ResponseShowFillHistory::default()
+            }))
+            .expect("fill frame should decode");
+
+        assert!(matches!(
+            fill.message,
+            RithmicMessage::ResponseShowFillHistory(_)
+        ));
+        assert!(fill.has_more);
+        assert!(fill.multi_response);
+        assert_eq!(fill.request_id, "req-7");
+
+        let terminal = api
+            .buf_to_message(encode_with_header(&ResponseShowFillHistory {
+                template_id: 3513,
+                user_msg: vec!["req-7".to_string()],
+                rp_code: vec!["0".to_string()],
+                ..ResponseShowFillHistory::default()
+            }))
+            .expect("terminal frame should decode");
+
+        assert!(!terminal.has_more);
+        assert!(terminal.multi_response);
+        assert!(terminal.error.is_none());
+    }
+}

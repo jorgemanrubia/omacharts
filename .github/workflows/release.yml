@@ -18,6 +18,9 @@ jobs:
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked --bin omacharts
+      # Linking the system's OpenSSL ties the binary to the build machine's
+      # soname, and it fails to start anywhere else.
+      - run: bin/check-links target/release/omacharts
       - name: Name the archive after the tag
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -145,6 +148,10 @@ jobs:
             chown -R builder:builder /home/builder
             # Arch Linux ARM defaults to .pkg.tar.xz; one name for every arch.
             su builder -c "cd ~ && PKGEXT=.pkg.tar.zst makepkg --noconfirm"
+            # The package must start on any Arch system with its depends, so
+            # nothing in it may link the OpenSSL this container happens to have.
+            bin/check-links /home/builder/pkg/omacharts/usr/bin/omacharts \
+              /home/builder/pkg/omacharts/usr/lib/omacharts/omacharts
             cp /home/builder/omacharts-*.pkg.tar.zst /w/'
           ls -l omacharts-*.pkg.tar.zst
       - name: Attach it to the release
