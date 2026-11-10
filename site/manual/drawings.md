@@ -91,19 +91,21 @@ state:
   omacharts chart set --symbol NVDA --resolution 1D --template none
   key ctrl+shift+d
   key alt+m
-  click 515 520
+  click 488 581
   move 668 160
   click 668 160
   move 1275 795
 capture: bin/headless-window shot /tmp/ruler.png; magick /tmp/ruler.png -crop 1950x1600+0+0 +repage -resize 1600x site/assets/manual/drawings/ruler.png
 crop: 0,0,1950,1600
 -->
-{% include figure.html src="/assets/manual/drawings/ruler.png" alt="A rise on NVDA measured in green, labelled +22.92% +43.62 over 28 bars, 41d" caption="A move measured from the August low, left fixed by the second click." %}
+{% include figure.html src="/assets/manual/drawings/ruler.png" alt="A rise on NVDA measured in green, labelled +23.65% +44.95 over 33 bars, 6w 6d" caption="A move measured from the August low, left fixed by the second click." %}
 
 Bar distance counts the spaces between candles. Elapsed time includes weekends
-and market closures. The price change has as many decimals as the price axis
-gives that price. With fewer than two loaded candles the label shows the time
-without a bar distance, and a move that starts at zero shows no percentage.
+and market closures, and is written in days up to two weeks, then in weeks up
+to two months, then in months up to a year, then in years: `5w 6d`, `7y 7mo`.
+The price change has as many decimals as the price axis gives that price.
+With fewer than two loaded candles the label shows the time without a bar
+distance, and a move that starts at zero shows no percentage.
 Points beyond the loaded candles use the chart's estimated times. The
 measurement is not saved or shared with other charts. Choosing another tool or
 changing the symbol or resolution clears it.

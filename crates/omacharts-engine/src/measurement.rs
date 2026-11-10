@@ -91,9 +91,23 @@ fn signed(value: f64, decimals: usize) -> String {
 }
 
 /// Calendar time in its two largest units, the smaller left off when it is
-/// zero: `32d`, `5h 55m`, `5h`, `40s`.
+/// zero: `7y 7mo`, `3mo 1w`, `5w 6d`, `12d 4h`, `5h 55m`, `5h`, `40s`.
+///
+/// A span of two weeks or more is written in weeks, two months or more in
+/// months, and a year or more in years, since a long count of days is a
+/// number to divide in your head. A year is 365 days and a month a twelfth
+/// of one: a span in seconds has no calendar to count real months on.
 fn duration(seconds: u64) -> String {
-    let (big, small, units) = if seconds >= 86400 {
+    const WEEK: u64 = 7 * 86400;
+    const YEAR: u64 = 365 * 86400;
+    const MONTH: u64 = YEAR / 12;
+    let (big, small, units) = if seconds >= YEAR {
+        (seconds / YEAR, seconds % YEAR / MONTH, ("y", "mo"))
+    } else if seconds >= 2 * MONTH {
+        (seconds / MONTH, seconds % MONTH / WEEK, ("mo", "w"))
+    } else if seconds >= 2 * WEEK {
+        (seconds / WEEK, seconds % WEEK / 86400, ("w", "d"))
+    } else if seconds >= 86400 {
         (seconds / 86400, seconds % 86400 / 3600, ("d", "h"))
     } else if seconds >= 3600 {
         (seconds / 3600, seconds % 3600 / 60, ("h", "m"))
@@ -204,17 +218,28 @@ mod tests {
         assert_eq!(from_zero.parts().line(), "+10.00; 1 bar, 1d");
         // Too few candles to count columns: the time alone.
         let bare = Measurement::between(Anchor::new(0, 100.0), Anchor::new(32 * 86400, 101.0), &[], None);
-        assert_eq!(bare.parts().line(), "+1.00% +1.00; 32d");
+        assert_eq!(bare.parts().line(), "+1.00% +1.00; 4w 4d");
     }
 
     #[test]
     fn elapsed_time_leaves_off_a_smaller_unit_that_is_zero() {
-        assert_eq!(duration(32 * 86400), "32d");
-        assert_eq!(duration(32 * 86400 + 3 * 3600), "32d 3h");
+        assert_eq!(duration(13 * 86400 + 3 * 3600), "13d 3h");
+        assert_eq!(duration(4 * 86400), "4d");
         assert_eq!(duration(5 * 3600 + 55 * 60), "5h 55m");
         assert_eq!(duration(5 * 3600), "5h");
         assert_eq!(duration(90), "1m 30s");
         assert_eq!(duration(40), "40s");
         assert_eq!(duration(0), "0s");
+    }
+
+    #[test]
+    fn a_long_span_is_written_in_weeks_months_and_years() {
+        assert_eq!(duration(14 * 86400), "2w");
+        assert_eq!(duration(41 * 86400), "5w 6d");
+        assert_eq!(duration(60 * 86400), "8w 4d");
+        assert_eq!(duration(100 * 86400), "3mo 1w");
+        assert_eq!(duration(364 * 86400), "11mo 4w");
+        assert_eq!(duration(365 * 86400), "1y");
+        assert_eq!(duration(2771 * 86400), "7y 7mo");
     }
 }
