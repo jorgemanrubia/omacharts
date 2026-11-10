@@ -10,6 +10,8 @@
 //!
 //! Which entries surface at all, and how, is [`surface`]'s to say, apart
 //! from any widget.
+//!
+//! The same corner says when an update is ready, in [`UpdateNotice`].
 
 use std::rc::Rc;
 
@@ -123,6 +125,70 @@ impl Notice {
 
     pub fn more(&self) -> Option<String> {
         self.more.property::<bool>("visible").then(|| self.more.label().to_string())
+    }
+}
+
+/// The corner notice's other use: a downloaded update, ready, and the
+/// restart that brings it in. Built the same way and laid over the same
+/// corner, so it reads as the app speaking in its usual voice rather than
+/// as a dialog.
+pub struct UpdateNotice {
+    pub revealer: gtk::Revealer,
+    text: gtk::Label,
+    pub restart: gtk::Button,
+}
+
+impl UpdateNotice {
+    /// `restart` quits into the new version, and `dismiss` takes the notice
+    /// away until a newer one is ready.
+    pub fn new(restart: impl Fn() + 'static, dismiss: impl Fn() + 'static) -> Rc<UpdateNotice> {
+        let icon = gtk::Image::from_icon_name("software-update-available-symbolic");
+        icon.add_css_class("accent");
+        icon.set_valign(gtk::Align::Center);
+
+        let text = gtk::Label::new(None);
+        text.set_xalign(0.0);
+        text.set_valign(gtk::Align::Center);
+
+        let button = gtk::Button::with_label("Restart to update");
+        button.add_css_class("suggested-action");
+        button.connect_clicked(move |_| restart());
+        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        close.add_css_class("flat");
+        close.add_css_class("circular");
+        close.set_tooltip_text(Some("Dismiss"));
+        close.connect_clicked(move |_| dismiss());
+        for button in [&button, &close] {
+            button.set_focus_on_click(false);
+            button.set_can_focus(false);
+            button.set_valign(gtk::Align::Center);
+        }
+
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        card.add_css_class("card");
+        card.add_css_class("log-notice");
+        card.append(&icon);
+        card.append(&text);
+        card.append(&button);
+        card.append(&close);
+
+        let revealer = gtk::Revealer::new();
+        revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        revealer.set_halign(gtk::Align::Start);
+        revealer.set_valign(gtk::Align::End);
+        revealer.set_can_focus(false);
+        revealer.set_child(Some(&card));
+        Rc::new(UpdateNotice { revealer, text, restart: button })
+    }
+
+    /// Say that `version` is ready.
+    pub fn say(&self, version: &str) {
+        self.text.set_label(&format!("Omacharts {version} is ready"));
+        self.revealer.set_reveal_child(true);
+    }
+
+    pub fn text(&self) -> String {
+        self.text.label().to_string()
     }
 }
 

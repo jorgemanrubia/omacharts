@@ -408,6 +408,14 @@ pub trait Ladders: Send + Sync {
     /// further back than this.
     fn history_days(&self) -> u32;
 
+    /// The contract `symbol` is served from now, when a root is served as
+    /// its front month and that month rolls: the ladders of one month are
+    /// not another's, so what is kept is kept by contract. `None` for a feed
+    /// whose symbol is the contract.
+    fn contract(&self, _symbol: &str) -> Option<String> {
+        None
+    }
+
     /// The minutes of `symbol` opening in `from..to`, unix seconds, oldest
     /// first, priced in whole ticks of `tick_size`. One request, made now,
     /// on the caller's thread, which is never the one drawing the window.
@@ -436,6 +444,23 @@ pub trait Provider: Send + Sync {
 
     /// This instrument in the provider's own symbology, if it serves it.
     fn symbol_for(&self, instrument: &Instrument) -> Option<String>;
+
+    /// Could this feed chart `instrument` at all, whatever it holds of it
+    /// right now? What a chart may be pointed at: a feed of files on this
+    /// machine is a feed of every future, and says so of a future whose
+    /// files are not there rather than dropping out of the choice.
+    fn could_serve(&self, instrument: &Instrument) -> bool {
+        self.symbol_for(instrument).is_some()
+    }
+
+    /// The dated contract a chart of `instrument` from here draws, in the
+    /// exchange's spelling, `MESZ6`, whatever this provider calls it: a
+    /// dated contract is itself, and a root is `None` unless the provider
+    /// charts it as the one month it says, since a continuous series may be
+    /// another month's or back-adjusted. Never waits.
+    fn charted_contract(&self, instrument: &Instrument) -> Option<String> {
+        instrument.is_contract().then(|| instrument.symbol.clone())
+    }
 
     /// Natively served timeframes. Derived ones are folded by the caller.
     fn capabilities(&self) -> &'static [Capability];

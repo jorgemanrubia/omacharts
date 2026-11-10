@@ -694,3 +694,59 @@ fn the_charts_text_is_reported() {
         );
     }
 }
+
+/// Every shipped theme's neutral stands out from its chart, very light on
+/// a dark theme and very dark on a light one, is never its grid nor quite
+/// its text, and carries a tint of the theme's own rather than being a
+/// white or a black: a pale lavender on Tokyo Night, a cream on Gruvbox.
+#[test]
+fn every_shipped_theme_has_a_neutral_of_its_own() {
+    for (name, theme) in fixtures() {
+        let neutral = theme.neutral();
+        let tone = Oklch::of(&neutral).unwrap();
+        let (ground, text) = (Oklch::of(&theme.ui.background).unwrap(), Oklch::of(&theme.ui.text).unwrap());
+        if text.l > ground.l {
+            assert!(tone.l > 0.8, "{name}: {neutral} is not very light");
+        } else {
+            assert!(tone.l < 0.4, "{name}: {neutral} is not very dark");
+        }
+        assert!(delta_e(&neutral, &theme.ui.background) >= 0.5, "{name}: {neutral} on {}", theme.ui.background);
+        assert!(delta_e(&neutral, &theme.ui.grid) >= 0.4, "{name}: {neutral} reads as the grid {}", theme.ui.grid);
+        assert!(delta_e(&neutral, &theme.ui.text) >= 0.04, "{name}: {neutral} is the text {}", theme.ui.text);
+        assert!(tone.c >= 0.02, "{name}: {neutral} is a plain grey");
+        if text.c >= 0.015 {
+            assert!(hue_gap(tone.h, text.h) < 10.0, "{name}: {neutral} lost the hue of {}", theme.ui.text);
+        }
+    }
+    let by_name = |wanted: &str| fixtures().into_iter().find(|(name, _)| name == wanted).unwrap().1;
+    let tokyo = Oklch::of(&by_name("tokyo-night").neutral()).unwrap();
+    assert!(tokyo.l > 0.85 && (250.0..300.0).contains(&tokyo.h), "tokyo-night's neutral is not a pale lavender: {tokyo:?}");
+    let gruvbox = Oklch::of(&by_name("gruvbox").neutral()).unwrap();
+    assert!(gruvbox.l > 0.85 && gruvbox.c > 0.03 && (20.0..90.0).contains(&gruvbox.h), "gruvbox's neutral is not a cream: {gruvbox:?}");
+    let latte = Oklch::of(&by_name("catppuccin-latte").neutral()).unwrap();
+    assert!(latte.l < 0.4 && (250.0..300.0).contains(&latte.h), "catppuccin-latte's neutral is not a dark blue-grey: {latte:?}");
+}
+
+/// The last price on every shipped theme is its own colour: light on a
+/// dark chart and readable on a light one, and round the wheel from both
+/// candles, so its line is never taken for one.
+#[test]
+fn every_shipped_theme_has_a_last_price_apart_from_its_candles() {
+    use omacharts_engine::theme::{theme_last_price, Mode};
+    for (name, theme) in fixtures() {
+        let price = theme_last_price(&theme);
+        let colour = Oklch::of(&price).expect("a colour");
+        let ratio = contrast_ratio(&price, &theme.ui.background);
+        match theme.mode {
+            Mode::Dark => assert!(colour.l >= 0.85 && ratio >= 7.0, "{name}: {price} is not light ({ratio:.1})"),
+            Mode::Light => assert!(ratio >= 4.5, "{name}: {price} does not read ({ratio:.1})"),
+        }
+        let bars = theme_bars(&theme);
+        for candle in [&bars.up, &bars.down] {
+            let candle = Oklch::of(candle).unwrap();
+            if candle.c >= 0.03 {
+                assert!(hue_gap(colour.h, candle.h) >= 35.0, "{name}: {price} is a candle's hue");
+            }
+        }
+    }
+}

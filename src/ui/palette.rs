@@ -20,7 +20,9 @@ use omacharts_engine::theme::{ColorChoice, Theme};
 use crate::ui::colors;
 
 const SWATCH: i32 = 26;
-const COLUMNS: i32 = 4;
+/// Nine colours, the eight with a hue and the neutral, as a square: three
+/// rows of three, the neutral last, in the corner by itself.
+const COLUMNS: i32 = 3;
 
 /// A button showing `resolved`, which opens the theme's palette.
 ///
@@ -81,7 +83,7 @@ fn palette_box(
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);
-    for (n, swatch) in theme.swatches.iter().enumerate() {
+    for (n, swatch) in theme.palette().iter().enumerate() {
         let picked = current_name.as_deref() == Some(swatch.name.as_str());
         let cell = gtk::Button::new();
         cell.add_css_class("flat");
