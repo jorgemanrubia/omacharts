@@ -333,6 +333,7 @@ fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     row.set_activatable(true);
 
     let button = gtk::Button::with_label("Edit…");
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     let edit = context.on_edit_resolutions.clone();
     button.connect_clicked(move |_| edit());
@@ -1015,6 +1016,7 @@ fn build_data_page(context: &Rc<Context>) {
     refresh();
 
     let clear = gtk::Button::with_label("Clear");
+    clear.add_css_class("action-word");
     clear.add_css_class("destructive-action");
     clear.set_valign(gtk::Align::Center);
     let ctx = context.clone();
@@ -1110,6 +1112,7 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let row = adw::ActionRow::new();
     row.set_title("Last backup");
     let restore = gtk::Button::with_label("Restore…");
+    restore.add_css_class("action-word");
     restore.set_valign(gtk::Align::Center);
 
     // One closure, because taking a backup and restoring one both change the
@@ -1132,6 +1135,7 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     refresh();
 
     let now = gtk::Button::with_label("Back Up Now");
+    now.add_css_class("action-word");
     now.set_valign(gtk::Align::Center);
     now.set_sensitive(settings.is_some());
     let store = context.store.clone();

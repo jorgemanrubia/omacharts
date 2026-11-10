@@ -801,6 +801,7 @@ fn defaults_group(window: &Rc<Window>, frame: &adw::Window) -> adw::PreferencesG
     let row = adw::ActionRow::new();
     row.set_title("Reset to defaults");
     let button = gtk::Button::with_label("Reset");
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     let window = window.clone();
     let frame = frame.clone();
@@ -904,6 +905,7 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let reset = adw::ActionRow::new();
     reset.set_title("Reset chart");
     let button = gtk::Button::with_label("Reset");
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     button.set_tooltip_text(Some(&shortcuts::tooltip("Reset chart", "chart.reset-view")));
     let window_for_reset = window.clone();
@@ -1935,6 +1937,7 @@ fn colour_row(
     row.set_title(title);
 
     let default = gtk::Button::with_label("Reset");
+    default.add_css_class("action-word");
     default.add_css_class("flat");
     default.add_css_class("subtle-link");
     default.set_valign(gtk::Align::Center);

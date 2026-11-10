@@ -112,6 +112,8 @@ fn palette_box(
 
     let custom = gtk::Button::with_label("Custom…");
     custom.add_css_class("flat");
+    // An action word wherever a row's actions are, as it always was there.
+    custom.add_css_class("action-word");
     custom.set_tooltip_text(Some("Pick an exact colour, which the theme will not change"));
     let choose = on_pick.clone();
     let popover_weak = popover.downgrade();

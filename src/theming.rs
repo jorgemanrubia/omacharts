@@ -469,19 +469,21 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   text-transform: uppercase;
   opacity: 0.6;
 }
-/* A row's action is a word in the accent colour, not a grey slab. */
-.form-window row button.text-button:not(.swatch-button) {
+/* A row's action is a word in the accent colour, not a grey slab. Opted
+   into, so a choice or a control that only happens to carry words keeps
+   its own look. */
+.form-window row button.action-word {
   background: none;
   box-shadow: none;
   color: @accent_color;
   font-weight: normal;
   padding: 4px 10px;
 }
-.form-window row button.text-button:not(.swatch-button):hover {
+.form-window row button.action-word:hover {
   background: alpha(@accent_color, 0.12);
 }
-.form-window row button.text-button.destructive-action { color: @destructive_color; }
-.form-window row button.text-button.destructive-action:hover {
+.form-window row button.action-word.destructive-action { color: @destructive_color; }
+.form-window row button.action-word.destructive-action:hover {
   background: alpha(@destructive_color, 0.12);
 }
 /* A candle's body, as one slab of three candles with the chosen one lit and

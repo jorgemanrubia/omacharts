@@ -289,6 +289,7 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
 
     if others {
         let remove = gtk::Button::with_label("Remove");
+        remove.add_css_class("action-word");
         remove.add_css_class("flat");
         remove.set_valign(gtk::Align::Center);
         let panel_for_remove = panel.clone();
@@ -311,6 +312,7 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
         Access::Expired(_) | Access::Missing => verbs.start,
     };
     let button = gtk::Button::with_label(label);
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     let panel = panel.clone();
     if access.ready() {

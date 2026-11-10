@@ -292,6 +292,7 @@ fn login_row(
     // the data session and signs charts in through it from then on.
     if several && !data && trading::data_feed_of(login).is_some() {
         let feed = gtk::Button::with_label("Use for data");
+        feed.add_css_class("action-word");
         feed.add_css_class("flat");
         let panel_for_feed = panel.clone();
         let id = login.id.clone();
@@ -309,6 +310,7 @@ fn login_row(
         actions.append(&action_button(panel, login, data));
     }
     let remove = gtk::Button::with_label("Remove");
+    remove.add_css_class("action-word");
     remove.add_css_class("flat");
     let panel_for_remove = panel.clone();
     let id = login.id.clone();
@@ -332,6 +334,7 @@ fn action_button(panel: &Rc<Panel>, login: &Login, data: bool) -> gtk::Button {
         Standing::SignedOut | Standing::Refused(_) => "Sign in…",
     };
     let button = gtk::Button::with_label(label);
+    button.add_css_class("action-word");
     let panel = panel.clone();
     let id = login.id.clone();
     match standing {
@@ -370,6 +373,7 @@ fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::Acti
         row.add_suffix(&tag);
     } else {
         let make = gtk::Button::with_label("Make default");
+        make.add_css_class("action-word");
         make.add_css_class("flat");
         make.set_valign(gtk::Align::Center);
         let panel = panel.clone();
