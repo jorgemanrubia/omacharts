@@ -18,6 +18,7 @@ fn quick() -> Timing {
         backoff: Duration::from_millis(50),
         backoff_cap: Duration::from_millis(200),
         unheard: Duration::from_secs(30),
+        flatten_cancels: Duration::from_millis(500),
     }
 }
 
@@ -491,8 +492,11 @@ fn flattening_goes_out_whatever_becomes_of_the_cancels() {
 /// A target whose cancel is never answered: the flatten goes straight
 /// behind the cancels rather than once they are answered, so the position
 /// closes within a round trip, and the target is counted once as left.
+/// A cancel never answered holds the flatten back by the flatten's wait
+/// for its cancels, about a round trip, and no more: the flatten then goes
+/// out, the position is closed, and the order is counted once.
 #[test]
-fn a_cancel_never_answered_does_not_hold_the_flatten_back() {
+fn a_cancel_never_answered_holds_the_flatten_back_only_so_long() {
     let fake = Fake::builder()
         .account("Sim1")
         .position("Sim1", ES, 1, 7650.0)
@@ -500,19 +504,52 @@ fn a_cancel_never_answered_does_not_hold_the_flatten_back() {
         .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7600.0)
         .market_price(7660.0)
         .start();
-    let timing = Timing { request: Duration::from_secs(3), ..quick() };
+    let timing = Timing { request: Duration::from_secs(5), flatten_cancels: Duration::from_millis(500), ..quick() };
     let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
     fake.set_cancels(Cancels::LimitsUnanswered);
     let started = std::time::Instant::now();
     let flattened = std::thread::scope(|scope| {
         let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
-        eventually(Duration::from_secs(1), "the flatten sent", || !fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
+        eventually(Duration::from_secs(2), "the flatten sent", || !fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty());
+        let sent = started.elapsed();
+        assert!(sent >= Duration::from_millis(450), "sent before its cancels were waited for: {sent:?}");
+        assert!(sent < Duration::from_millis(1_500), "held back past the wait: {sent:?}");
         eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
-        assert!(started.elapsed() < Duration::from_secs(1), "held back {:?}", started.elapsed());
         flattening.join().unwrap()
     });
+    assert!(started.elapsed() < Duration::from_secs(2), "held back {:?}", started.elapsed());
     assert_eq!(flattened, Ok(1), "the target, once");
     assert_eq!(fake.received_of(wire::CANCEL_ORDER).len(), 2, "each cancelled once");
+    trading.sign_out();
+}
+
+/// Long one, with a sell stop near the market hit while its cancel is on
+/// the way: the flatten waits for the cancel's answer, which is the fill,
+/// and so sells nothing more. The account is flat, never short.
+#[test]
+fn a_stop_filled_as_it_is_cancelled_leaves_the_flatten_nothing_to_sell() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 1, 7650.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7649.0)
+        .market_price(7649.0)
+        .start();
+    let timing = Timing { request: Duration::from_secs(5), flatten_cancels: Duration::from_secs(2), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    let stop = fake.working()[0].server_id.clone();
+    fake.set_cancels(Cancels::StopsUnanswered);
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        eventually(Duration::from_secs(1), "the cancel sent", || !fake.received_of(wire::CANCEL_ORDER).is_empty());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened with the stop's cancel unanswered");
+        fake.fill(&stop, 1, 7649.0);
+        flattening.join().unwrap()
+    });
+    assert_eq!(flattened, Ok(0), "the stop filled: nothing left working");
+    eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(trading.book().positions.iter().all(|held| held.qty == 0), "turned short: {:?}", trading.book().positions);
     trading.sign_out();
 }
 

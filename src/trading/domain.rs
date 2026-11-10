@@ -103,8 +103,11 @@ pub struct Capabilities {
     pub kinds: Vec<OrderKind>,
     pub flatten: bool,
     /// Its flatten cancels the orders working on the position's contract
-    /// itself, and counts any that would not cancel: nothing need cancel
-    /// them first, and cancelling them twice only holds the flatten back.
+    /// itself, waits about a round trip for their answers so that one
+    /// filled meanwhile is not sold again, then closes what is left, and
+    /// counts any that would not cancel or did not answer in time: nothing
+    /// need cancel them first, and cancelling them twice only holds the
+    /// flatten back.
     pub flatten_cancels: bool,
     pub cancel_all: bool,
     /// A working order's price can be changed where it stands.

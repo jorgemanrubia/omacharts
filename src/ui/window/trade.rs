@@ -1539,13 +1539,14 @@ impl Window {
         let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
         let cancels = flat.cancel.clone();
         // A flatten that cancels for itself, Sierra Chart's, is all there
-        // is to send: cancelling the orders here first as well would cancel
-        // each twice, and wait out one that will not cancel before the
-        // position is closed.
+        // is to send: it cancels the orders, waits a round trip for their
+        // answers, and closes only what is held then, so a stop that filled
+        // as it was cancelled is not sold again. Cancelling them here first
+        // as well would cancel each twice.
         let cancels_itself = flat.flatten && target.capabilities.flatten_cancels;
-        // Otherwise the orders first, so that none of them fills into the
-        // position being closed, all at once rather than each waiting on
-        // the one before; then the position.
+        // Otherwise the orders first, all at once rather than each waiting
+        // on the one before, and every answer waited for; then what is
+        // held, so that none of them fills into the position being closed.
         self.send(
             &target,
             // A cancel that failed does not stop the flatten: the position

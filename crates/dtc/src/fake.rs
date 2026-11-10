@@ -136,6 +136,11 @@ pub enum Cancels {
     /// working: a target stuck at the exchange. Any other order cancelled
     /// as it would be.
     LimitsUnanswered,
+    /// A cancel of a stop it holds not answered, the stop left working, as
+    /// one that reaches the exchange as the stop is hit: what becomes of it
+    /// is the test's to say, by [`Fake::fill`]. Any other order cancelled
+    /// as it would be.
+    StopsUnanswered,
 }
 
 /// The fake's world, which the builder sets up and the connections change.
@@ -1129,6 +1134,11 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
         }
         Cancels::LimitsUnanswered => {
             if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Limit) {
+                return Vec::new();
+            }
+        }
+        Cancels::StopsUnanswered => {
+            if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Stop) {
                 return Vec::new();
             }
         }

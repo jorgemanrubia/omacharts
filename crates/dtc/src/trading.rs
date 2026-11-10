@@ -55,6 +55,11 @@ pub struct Timing {
     /// of the account's open orders leaves it out: past this, the server
     /// never had it.
     pub unheard: Duration,
+    /// How long a flatten waits for the cancels of the orders on the
+    /// position before it goes out all the same: about one round trip.
+    /// An order filled while its cancel was on the way is answered by
+    /// then, so the flatten is sized to what is left.
+    pub flatten_cancels: Duration,
 }
 
 impl Default for Timing {
@@ -66,6 +71,7 @@ impl Default for Timing {
             backoff: Duration::from_millis(500),
             backoff_cap: Duration::from_secs(30),
             unheard: Duration::from_secs(30),
+            flatten_cancels: Duration::from_secs(2),
         }
     }
 }
@@ -1306,7 +1312,20 @@ impl Trading {
     /// Wait for the server to tell of order `id` again with one of `done`
     /// as its reason, or a refusal; the order's words for a refusal.
     fn answered(&self, id: &str, since: u64, done: &[i64], refused: &[i64], finished: impl Fn(&Status) -> bool) -> Result<(), Error> {
-        self.shared.wait_for(self.shared.timing.request, |state| {
+        self.answered_within(self.shared.timing.request, id, since, done, refused, finished)
+    }
+
+    /// [`Trading::answered`], waiting no longer than `timeout`.
+    fn answered_within(
+        &self,
+        timeout: Duration,
+        id: &str,
+        since: u64,
+        done: &[i64],
+        refused: &[i64],
+        finished: impl Fn(&Status) -> bool,
+    ) -> Result<(), Error> {
+        self.shared.wait_for(timeout, |state| {
             let at = state.order_at(id)?;
             let (count, reason) = state.told[at];
             let order = &state.orders[at];
@@ -1422,7 +1441,7 @@ impl Trading {
     /// of the one before: how many would not cancel, and the first reason.
     fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> (usize, Option<Error>) {
         let cancels = self.send_cancels(which);
-        self.cancels_answered(cancels)
+        self.cancels_answered(cancels, self.shared.timing.request)
     }
 
     /// Send a CANCEL_ORDER for every working order `which` takes, all of
@@ -1452,9 +1471,10 @@ impl Trading {
     }
 
     /// Wait for the answers to cancels sent, all in the same time rather
-    /// than one after another: how many would not cancel, each once, and the
+    /// than one after another and none longer than `timeout`: how many
+    /// would not cancel or were not answered in time, each once, and the
     /// first reason.
-    fn cancels_answered(&self, cancels: Cancels) -> (usize, Option<Error>) {
+    fn cancels_answered(&self, cancels: Cancels, timeout: Duration) -> (usize, Option<Error>) {
         let Cancels { sent, mut failed, mut first } = cancels;
         let outcomes: Vec<(&Order, u64, Result<(), Error>)> = std::thread::scope(|scope| {
             let waits: Vec<_> = sent
@@ -1462,7 +1482,7 @@ impl Trading {
                 .map(|(order, since)| {
                     let since = *since;
                     scope.spawn(move || {
-                        let outcome = self.answered(order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| {
+                        let outcome = self.answered_within(timeout, order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| {
                             !status.working()
                         });
                         (order, since, outcome)
@@ -1487,29 +1507,37 @@ impl Trading {
     }
 
     /// Close `account`'s position in `symbol`: its working orders there are
-    /// cancelled, and SUBMIT_FLATTEN_POSITION_ORDER has the server close
-    /// what is held at the market, sent straight after the cancels rather
-    /// than once they are answered — the server takes them in order, so
-    /// none of them fills into the position being closed, and an order whose
-    /// cancel is never answered does not keep it open meanwhile. Waits
-    /// until the server has taken the flatten, or refused it, and has
-    /// answered the cancels, or not in time.
+    /// cancelled, all at once, and once they are answered, or
+    /// [`Timing::flatten_cancels`] has passed, SUBMIT_FLATTEN_POSITION_ORDER
+    /// has the server close what is held then at the market. A stop that
+    /// filled while its cancel was on the way has closed the position by
+    /// then, and the server sizes the flatten to what is left, so it never
+    /// turns the position around; an order whose cancel is not answered in
+    /// that time holds the flatten back no longer than that.
     ///
-    /// Taken, it answers how many orders on it are still working because
-    /// they would not cancel, each once: the position is flat, and those
-    /// need a look. With nothing held there is nothing to flatten, and a
-    /// cancel that failed is the answer.
+    /// Taken, or nothing left to flatten, it answers how many orders on it
+    /// would not cancel or were not answered in time, each once: those need
+    /// a look. With nothing held from the start, a cancel that failed is
+    /// the answer.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
+        let held = || {
+            lock(&self.shared.state)
+                .positions
+                .iter()
+                .find(|position| position.account == account && position.symbol == symbol)
+                .map(|position| position.qty)
+                .unwrap_or(0)
+        };
+        let before = held();
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
-        let held = lock(&self.shared.state)
-            .positions
-            .iter()
-            .find(|position| position.account == account && position.symbol == symbol)
-            .map(|position| position.qty)
-            .unwrap_or(0);
-        if held == 0 {
-            let (_, why) = self.cancels_answered(cancels);
+        let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels);
+        if before == 0 {
             return why.map_or(Ok(0), Err);
+        }
+        // Closed meanwhile, by an exit that filled as it was cancelled:
+        // there is nothing to flatten.
+        if held() == 0 {
+            return Ok(uncancelled);
         }
         let id = self.shared.next_client_id();
         let sent = self.shared.send(&Message::new(
@@ -1522,9 +1550,11 @@ impl Trading {
                 let order = &state.orders[at];
                 (order.status != Status::Pending).then(|| order.status.clone())
             })
-        });
-        let (uncancelled, _) = self.cancels_answered(cancels);
-        match status? {
+        })?;
+        match status {
+            // Refused as there was nothing left to close, which the
+            // position's own update may not have said yet when it was sent.
+            Status::Rejected(_) if held() == 0 => Ok(uncancelled),
             Status::Rejected(why) => Err(Error::Rejected(why)),
             _ => Ok(uncancelled),
         }
