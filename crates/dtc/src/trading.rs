@@ -438,6 +438,14 @@ pub struct State {
     requests: HashMap<i64, Slot>,
     synced: bool,
     connected: bool,
+    /// How many messages have been folded: the place of each in turn.
+    seq: u64,
+    /// The last POSITION_UPDATE folded for each account and symbol, by its
+    /// place, whether or not it changed anything.
+    position_told: HashMap<(String, String), u64>,
+    /// The last ORDER_UPDATE that told of a fill on each account and
+    /// symbol, by its place.
+    filled_at: HashMap<(String, String), u64>,
 }
 
 fn quantity(value: Option<f64>) -> u32 {
@@ -500,6 +508,7 @@ impl State {
 
     /// Fold in one message the server sent. True when the book changed.
     fn fold(&mut self, message: &Message) -> bool {
+        self.seq += 1;
         match message.kind() {
             wire::TRADE_ACCOUNT_RESPONSE => self.account(message),
             wire::ACCOUNT_BALANCE_UPDATE => self.balance(message),
@@ -552,6 +561,7 @@ impl State {
             return false;
         }
         let (Some(account), Some(symbol)) = (message.text("TradeAccount"), message.text("Symbol")) else { return false };
+        self.position_told.insert((account.clone(), symbol.clone()), self.seq);
         let position = Position {
             account,
             symbol,
@@ -681,6 +691,10 @@ impl State {
         let fill = (reason == wire::ORDER_FILLED || reason == wire::ORDER_FILLED_PARTIALLY)
             .then(|| self.update_fill(message, at))
             .flatten();
+        if fill.is_some() {
+            let order = &self.orders[at];
+            self.filled_at.insert((order.account.clone(), order.symbol.clone()), self.seq);
+        }
         let filled = fill.is_some_and(|fill| self.fill(fill));
         changed || filled
     }
@@ -1568,15 +1582,26 @@ impl Trading {
     /// of the fill that caused it; an order whose cancel is not answered in
     /// that time holds the flatten back no longer than that.
     ///
+    /// A fill on the contract meanwhile is told in its ORDER_UPDATE, ahead
+    /// of the POSITION_UPDATE that says what is held after it: the position
+    /// is waited for, in the same time, until it is told after the last
+    /// fill, and the flatten closes what it says, whatever was held at the
+    /// start, an entry filled as it was cancelled included. A position never
+    /// told in that time is flattened all the same: the server knows what is
+    /// held. The flatten goes out no later than `flatten_cancels` after the
+    /// call, cancels and position waited for together.
+    ///
     /// Taken, or nothing left to flatten, it answers how many orders on it
     /// would not cancel or were not answered in time, each once: those need
-    /// a look. With nothing held from the start, a cancel that failed is
-    /// the answer, and with nothing working on it either, [`Error::Flat`]:
-    /// a flatten that found nothing to close is never taken for one that
-    /// closed it, since `symbol` spelled otherwise than the server spells it
-    /// finds nothing too. A caller sure of the spelling says the account is
-    /// already flat.
+    /// a look. With nothing held from the start, and nothing held once its
+    /// cancels are answered, a cancel that failed is the answer, and with
+    /// nothing working on it either, [`Error::Flat`]: a flatten that found
+    /// nothing to close is never taken for one that closed it, since
+    /// `symbol` spelled otherwise than the server spells it finds nothing
+    /// too. A caller sure of the spelling says the account is already flat.
     pub fn flatten(&self, account: &str, symbol: &str) -> Result<usize, Error> {
+        let deadline = Instant::now() + self.shared.timing.flatten_cancels;
+        let key = (account.to_string(), symbol.to_string());
         let held_in = |state: &State| {
             state
                 .positions
@@ -1586,40 +1611,34 @@ impl Trading {
                 .unwrap_or(0)
         };
         let held = || held_in(&lock(&self.shared.state));
-        let before = held();
+        let (before, filled_before) = {
+            let state = lock(&self.shared.state);
+            (held_in(&state), state.filled_at.get(&key).copied())
+        };
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
         let tried = cancels.sent.len() + cancels.failed;
-        let was: Vec<(String, Side, u32)> = cancels.sent.iter().map(|(order, _)| (order.id().to_string(), order.side, order.filled)).collect();
-        let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels, true);
-        // A fill of one of them is told in its ORDER_UPDATE, ahead of the
-        // POSITION_UPDATE that says what is held after it: what is held is
-        // waited for until it has moved by those fills, for a while, rather
-        // than flattened as it stood before them.
-        let moved: i64 = {
-            let state = lock(&self.shared.state);
-            was.iter()
-                .filter_map(|(id, side, filled)| {
-                    let now = state.orders[state.order_at(id)?].filled;
-                    let more = i64::from(now.saturating_sub(*filled));
-                    Some(if *side == Side::Buy { more } else { -more })
+        let (uncancelled, why) = self.cancels_answered(cancels, deadline.saturating_duration_since(Instant::now()), true);
+        let filled = lock(&self.shared.state).filled_at.get(&key).copied();
+        // Told of the position since the last fill, or no fill to wait on.
+        let told = filled == filled_before
+            || self
+                .shared
+                .wait_for(deadline.saturating_duration_since(Instant::now()), |state| {
+                    state.position_told.get(&key).is_some_and(|told| Some(*told) > filled).then_some(())
                 })
-                .sum()
-        };
-        if before != 0 && moved != 0 {
-            let after = i64::from(before) + moved;
-            let _ = self.shared.wait_for(self.shared.timing.flatten_cancels, |state| (i64::from(held_in(state)) == after).then_some(()));
-        }
-        if before == 0 {
+                .is_ok();
+        // Nothing held, and sure of it: there is nothing to flatten.
+        if told && held() == 0 {
+            if before != 0 {
+                // Closed meanwhile, by an exit that filled as it was
+                // cancelled.
+                return Ok(uncancelled);
+            }
             return match (why, tried) {
                 (Some(why), _) => Err(why),
                 (None, 0) => Err(Error::Flat(format!("{account} holds nothing of {symbol} and has no orders working on it"))),
                 (None, _) => Ok(uncancelled),
             };
-        }
-        // Closed meanwhile, by an exit that filled as it was cancelled:
-        // there is nothing to flatten.
-        if held() == 0 {
-            return Ok(uncancelled);
         }
         let id = self.shared.next_client_id();
         let sent = self.shared.send(&Message::new(

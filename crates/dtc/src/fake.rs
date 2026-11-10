@@ -141,6 +141,10 @@ pub enum Cancels {
     /// is the test's to say, by [`Fake::fill`]. Any other order cancelled
     /// as it would be.
     StopsUnanswered,
+    /// A cancel of any order it holds working not answered, the order left
+    /// working: the test fills it, [`Fake::fill`], or cancels it,
+    /// [`Fake::cancel`].
+    Unanswered,
 }
 
 /// The fake's world, which the builder sets up and the connections change.
@@ -173,6 +177,10 @@ struct World {
     filling: Fills,
     market_price: f64,
     silent: bool,
+    /// Hold back the position updates of [`Fake::fill`]: see
+    /// [`Fake::hold_positions`].
+    holding_positions: bool,
+    held_positions: Vec<Message>,
     /// A kind of request left unanswered: see [`Fake::set_unanswered`].
     unanswered: Option<u16>,
     flatten: bool,
@@ -203,6 +211,8 @@ impl Default for World {
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
+            holding_positions: false,
+            held_positions: Vec::new(),
             unanswered: None,
             flatten: true,
             bars: HashMap::new(),
@@ -533,12 +543,49 @@ impl Fake {
         lock(&self.shared.world).orders.iter().find(|order| order.server_id == id || order.client_id == id).cloned()
     }
 
-    /// Fill `qty` of order `id` at `price`, and tell every connection.
+    /// Fill `qty` of order `id` at `price`, and tell every connection: of
+    /// the position after it too, unless [`Fake::hold_positions`] holds
+    /// that back.
     pub fn fill(&self, id: &str, qty: u32, price: f64) {
         let pushes = {
             let mut world = lock(&self.shared.world);
-            match world.orders.iter().position(|order| order.server_id == id || order.client_id == id) {
+            let pushes = match world.orders.iter().position(|order| order.server_id == id || order.client_id == id) {
                 Some(at) => fill(&mut world, at, qty, price),
+                None => Vec::new(),
+            };
+            if !world.holding_positions {
+                pushes
+            } else {
+                let (held, told): (Vec<Message>, Vec<Message>) = pushes.into_iter().partition(|message| message.kind() == wire::POSITION_UPDATE);
+                world.held_positions.extend(held);
+                told
+            }
+        };
+        self.shared.push(&pushes);
+    }
+
+    /// Hold back, or not, the position update of each [`Fake::fill`] from
+    /// now on, as a position update slow to follow its fill's order
+    /// update: told only once [`Fake::release_positions`] says.
+    pub fn hold_positions(&self, holding: bool) {
+        lock(&self.shared.world).holding_positions = holding;
+    }
+
+    /// Tell every connection the position updates held back, in turn.
+    pub fn release_positions(&self) {
+        let held = std::mem::take(&mut lock(&self.shared.world).held_positions);
+        self.shared.push(&held);
+    }
+
+    /// Cancel order `id`, working, and tell every connection.
+    pub fn cancel(&self, id: &str) {
+        let pushes = {
+            let mut world = lock(&self.shared.world);
+            match world.orders.iter_mut().find(|order| (order.server_id == id || order.client_id == id) && order.working()) {
+                Some(order) => {
+                    order.status = wire::ORDER_STATUS_CANCELED;
+                    vec![order_message(order, wire::ORDER_CANCELED, "")]
+                }
                 None => Vec::new(),
             }
         };
@@ -581,8 +628,11 @@ impl Shared {
         }
         let writers = lock(&self.writers).clone();
         for writer in writers {
+            // All of them in one go, so that no answer is told in among
+            // them, as a server tells what it tells in turn.
+            let mut writer = lock(&writer);
             for message in messages {
-                let _ = lock(&writer).write_all(&message.frame());
+                let _ = writer.write_all(&message.frame());
             }
         }
     }
@@ -1217,6 +1267,11 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
         }
         Cancels::StopsUnanswered => {
             if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Stop) {
+                return Vec::new();
+            }
+        }
+        Cancels::Unanswered => {
+            if named(world, message).is_some_and(|order| order.working()) {
                 return Vec::new();
             }
         }
