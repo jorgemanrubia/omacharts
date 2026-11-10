@@ -2,9 +2,10 @@
 //! Rithmic and OMNE artwork, and their copyright and trademark notices.
 //!
 //! Shown only where somebody connects to Rithmic: in its login dialog, on the
-//! Data page while Rithmic is one of the feeds or there is a Rithmic login, and
-//! in the menu a chart's feed dot opens when Rithmic is one of the feeds it
-//! offers. `sign_in_dialogs` is how the rest of the app reaches it. Nothing
+//! Data page while Rithmic is one of the feeds or there is a Rithmic login, in
+//! the menu a chart's feed dot opens when Rithmic is one of the feeds it
+//! offers, and in the trading panel's tab bar while it shows a Rithmic
+//! login's accounts, positions, orders and fills. `sign_in_dialogs` is how the rest of the app reaches it. Nothing
 //! here is drawn on a chart, and with no Rithmic set up the app shows none of
 //! it.
 //!

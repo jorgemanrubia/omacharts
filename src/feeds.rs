@@ -194,9 +194,11 @@ fn trades(feed: &Listed) -> bool {
 
 /// Tell the engine which release of Omacharts is signing in: this crate's
 /// version, the app's, which no library crate's is. Called once at
-/// startup.
+/// startup, which is also when the record of the sessions the feeds open
+/// starts being kept.
 pub fn identify() {
     providers::identify(crate::launch::VERSION);
+    crate::trading::services::keep_session_records();
 }
 
 /// Hand every feed whose login is a trading service connection the data login: the

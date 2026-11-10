@@ -7,6 +7,9 @@
 //! button to open it. Drawn again from the window's [`View`] whenever a
 //! session pushes something, never on a timer.
 //!
+//! Between the tabs and the buttons, each trading service's artwork, as its
+//! terms ask: Rithmic's logos while a Rithmic login is listed.
+//!
 //! The Orders tab shows the open orders, or all of the day's: a pair of
 //! toggles beside Cancel all, there only while that tab is in front,
 //! which hide and show rows already drawn rather than drawing them again.
@@ -87,6 +90,11 @@ pub struct TradingPanel {
     positions: gtk::Box,
     orders: gtk::Box,
     cancel_all: gtk::Button,
+    /// Where the trading services' artwork goes, between the tabs and the
+    /// buttons: Rithmic's terms ask for its logos wherever its data shows.
+    credits: gtk::Box,
+    /// The services whose artwork is in `credits`, as last drawn.
+    credited: RefCell<Vec<String>>,
     /// The default account's key, as last drawn.
     default: Rc<RefCell<Option<String>>>,
     hands: Rc<Hands>,
@@ -264,9 +272,14 @@ impl TradingPanel {
         trailing.set_hexpand(true);
         trailing.append(&toggles);
         trailing.append(&cancel_all);
+        let credits = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        credits.add_css_class("trading-credits");
+        credits.set_valign(gtk::Align::Center);
+        credits.set_margin_start(12);
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         bar.add_css_class("trading-tabs");
         bar.append(&switcher);
+        bar.append(&credits);
         bar.append(&trailing);
         root.append(&bar);
         root.append(&stack);
@@ -286,6 +299,8 @@ impl TradingPanel {
             positions,
             orders,
             cancel_all,
+            credits,
+            credited: RefCell::default(),
             default,
             hands,
             store,
@@ -382,6 +397,7 @@ impl TradingPanel {
 
     /// Draw everything again from `view`.
     pub fn redraw(&self, view: &View) {
+        self.redraw_credits(view);
         self.redraw_accounts(view);
         self.redraw_positions(view);
         self.redraw_orders(view);
@@ -400,6 +416,33 @@ impl TradingPanel {
         self.cancel_all.set_label(&label);
         // Read when it is pressed, so it cancels on the default in force.
         *self.default.borrow_mut() = default;
+    }
+
+    /// The artwork of each trading service the panel shows a login of,
+    /// once each, put there again only when which they are changes.
+    fn redraw_credits(&self, view: &View) {
+        let mut services: Vec<String> = Vec::new();
+        for login in &view.logins {
+            if !services.contains(&login.service) {
+                services.push(login.service.clone());
+            }
+        }
+        if *self.credited.borrow() == services {
+            return;
+        }
+        while let Some(child) = self.credits.first_child() {
+            self.credits.remove(&child);
+        }
+        for credits in services.iter().filter_map(|service| super::sign_in_dialogs::trading_credits(service)) {
+            self.credits.append(&credits);
+        }
+        *self.credited.borrow_mut() = services;
+    }
+
+    /// The services whose artwork the tab bar shows.
+    #[cfg(test)]
+    pub fn credited(&self) -> Vec<String> {
+        self.credited.borrow().clone()
     }
 
     fn currency_of<'a>(view: &'a View, key: &str) -> Option<&'a str> {
@@ -621,6 +664,27 @@ mod tests {
     fn toggles(panel: &TradingPanel) -> (bool, bool, bool) {
         let (toggles, open, all) = &panel.filter_toggles;
         (toggles.is_visible(), open.is_active(), all.is_active())
+    }
+
+    /// Rithmic's terms ask for its logos wherever its orders, positions and
+    /// fills show: in the tab bar while a Rithmic login is listed, once
+    /// however many there are, and gone with them.
+    #[test]
+    fn a_rithmic_login_puts_its_logos_in_the_tab_bar() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let panel = panel(&store);
+            let rithmic = crate::trading::fake::tests::test_login("a", "Lucid", "Rithmic Test");
+            let other = crate::trading::fake::tests::test_login("b", "Tradeify", "Rithmic Test");
+            panel.redraw(&View { logins: vec![rithmic, other], ..view(Vec::new()) });
+            assert_eq!(panel.credited(), ["rithmic"]);
+            let logos = panel.credits.first_child().expect("Rithmic's logos");
+            assert!(logos.has_css_class("rithmic-attribution"));
+            assert!(logos.next_sibling().is_none(), "once");
+
+            panel.redraw(&view(Vec::new()));
+            assert!(panel.credits.first_child().is_none(), "gone with the login");
+        });
     }
 
     /// The tab opens on the open orders, with a pending one faint among

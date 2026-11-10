@@ -125,6 +125,19 @@ fn menu_credits(feed: &str) -> Option<gtk::Widget> {
     }
 }
 
+/// What a trading service has to show beside its accounts, positions and
+/// orders in the trading panel, as its terms ask: Rithmic's logos, small
+/// and side by side, for a Rithmic login. `service` is the login's trading
+/// service, by the id it is listed under.
+pub fn trading_credits(service: &str) -> Option<gtk::Widget> {
+    match service {
+        id if id == omacharts_engine::providers::rithmic::LISTED.id => {
+            Some(rithmic_attribution::logos(14, gtk::Orientation::Horizontal).upcast())
+        }
+        _ => None,
+    }
+}
+
 /// Put each feed's artwork where `popover`'s menu left room for it.
 pub fn fill_credits(popover: &gtk::PopoverMenu) {
     let Some(model) = popover.menu_model() else { return };

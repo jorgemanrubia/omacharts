@@ -681,7 +681,7 @@ pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<DataP
 
     let ticker = within(REQUEST, RithmicTickerPlant::connect(&config, ConnectStrategy::Simple)).await?;
     let ticker_updates = ticker.get_handle();
-    if let Err(error) = signed_in(within(REQUEST, ticker_updates.login()).await) {
+    if let Err(error) = signed_in("ticker", credentials, within(REQUEST, ticker_updates.login()).await) {
         ticker_updates.abort();
         return Err(error);
     }
@@ -693,7 +693,7 @@ pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<DataP
         }
     };
     let history_updates = history.get_handle();
-    if let Err(error) = signed_in(within(REQUEST, history_updates.login()).await) {
+    if let Err(error) = signed_in("history", credentials, within(REQUEST, history_updates.login()).await) {
         history_updates.abort();
         let _ = within(REQUEST, ticker_updates.disconnect()).await;
         return Err(error);
@@ -1209,9 +1209,18 @@ pub(crate) async fn within<T>(
 
 /// A login's outcome: a refusal is the login's fault and final, a broken
 /// connection is worth another go.
-pub(crate) fn signed_in(outcome: Result<RithmicResponse, Error>) -> Result<(), Error> {
+/// A plant's login answered: its session is told of ([`crate::sessions`]),
+/// or the refusal is Rithmic's refusing the login.
+pub(crate) fn signed_in(
+    plant: &'static str,
+    credentials: &Credentials,
+    outcome: Result<RithmicResponse, Error>,
+) -> Result<(), Error> {
     match outcome {
-        Ok(_) => Ok(()),
+        Ok(response) => {
+            crate::sessions::heard(plant, credentials, &response);
+            Ok(())
+        }
         Err(Error::Rejected(why)) => Err(Error::Refused(why)),
         Err(error) => Err(error),
     }
@@ -1814,7 +1823,13 @@ pub(crate) mod tests {
     fn no_error_carries_a_password() {
         // Every constructor of an error here is built from Rithmic's words
         // or this crate's; none takes a login. What a refusal looks like:
-        let refused = signed_in(Err(Error::Rejected("permission denied".into()))).unwrap_err();
+        let login = Credentials {
+            user: "someone".into(),
+            password: "secret".into(),
+            system: crate::TEST_SYSTEM.into(),
+            url: crate::TEST_URL.into(),
+        };
+        let refused = signed_in("order", &login, Err(Error::Rejected("permission denied".into()))).unwrap_err();
         assert_eq!(refused, Error::Refused("permission denied".into()));
         assert_eq!(refused.to_string(), "Rithmic refused the login: permission denied");
     }

@@ -36,12 +36,14 @@
 //!
 //! **Nobody's password leaves here except to the gateway.** [`Credentials`]'
 //! `Debug` leaves it out, no [`Error`] is built from one, and nothing in this
-//! crate logs.
+//! crate logs. What a plant's session is called, which Rithmic's review asks
+//! for, is told to whoever asked with [`on_session`].
 
 mod client;
 mod connection;
 pub mod keyring;
 mod login;
+mod sessions;
 mod trading;
 
 pub use client::{
@@ -50,6 +52,7 @@ pub use client::{
 };
 pub use connection::{close, connection, open_data, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
+pub use sessions::{on_session, Session};
 pub use trading::{
     listing, Account, AccountPnl, Book, Fill, Kind, Limits, ListReply, Listing, Order, Position, Pulse, Status, Trading,
     WorkingOrder,

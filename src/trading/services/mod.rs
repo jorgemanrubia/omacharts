@@ -8,9 +8,17 @@ use std::sync::Arc;
 use super::{TradingService, Registry};
 
 mod rithmic;
+mod rithmic_sessions;
 mod sierra;
 
 pub use rithmic::SIGN_OUT_WAIT;
+
+/// Start keeping the record each trading service's terms ask for of the
+/// sessions it opens: for Rithmic, every plant's session id
+/// ([`rithmic_sessions`]). Once, at startup.
+pub fn keep_session_records() {
+    rithmic_sessions::keep();
+}
 
 /// Every trading service this build has, in the order "Add a trading service…" offers
 /// them.
