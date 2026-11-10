@@ -553,6 +553,38 @@ fn a_stop_filled_as_it_is_cancelled_leaves_the_flatten_nothing_to_sell() {
     trading.sign_out();
 }
 
+/// Long one, with a sell stop whose cancel is refused as too late before
+/// its fill is told: the flatten waits on the stop, within its wait for
+/// the cancels, until it is no longer working, and so sells nothing more.
+/// The account is flat, never short.
+#[test]
+fn a_cancel_refused_before_the_fill_leaves_the_flatten_nothing_to_sell() {
+    let fake = Fake::builder()
+        .account("Sim1")
+        .position("Sim1", ES, 1, 7650.0)
+        .order("Sim1", ES, Side::Sell, 1, OrderKind::Stop, 7649.0)
+        .market_price(7649.0)
+        .start();
+    let timing = Timing { request: Duration::from_secs(5), flatten_cancels: Duration::from_secs(2), ..quick() };
+    let trading = Trading::sign_in_with(&fake.endpoint(), "omacharts test", timing, |_| {}).expect("signs in to the fake");
+    let stop = fake.working()[0].server_id.clone();
+    fake.set_cancels(Cancels::Refused("Too late to cancel".into()));
+    let flattened = std::thread::scope(|scope| {
+        let flattening = scope.spawn(|| trading.flatten("Sim1", ES));
+        eventually(Duration::from_secs(1), "the cancel sent", || !fake.received_of(wire::CANCEL_ORDER).is_empty());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened on the refusal with the stop working");
+        fake.fill(&stop, 1, 7649.0);
+        flattening.join().unwrap()
+    });
+    assert_eq!(flattened, Ok(0), "the stop filled: nothing left working");
+    assert!(fake.received_of(wire::SUBMIT_FLATTEN_POSITION_ORDER).is_empty(), "flattened what the stop closed");
+    eventually(Duration::from_secs(1), "flat", || trading.book().positions.iter().all(|held| held.qty == 0));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(trading.book().positions.iter().all(|held| held.qty == 0), "turned short: {:?}", trading.book().positions);
+    trading.sign_out();
+}
+
 #[test]
 fn flattening_nothing_held_sends_nothing() {
     let fake = Fake::builder().account("Sim1").start();

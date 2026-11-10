@@ -1441,7 +1441,7 @@ impl Trading {
     /// of the one before: how many would not cancel, and the first reason.
     fn cancel_where(&self, which: impl Fn(&Order) -> bool) -> (usize, Option<Error>) {
         let cancels = self.send_cancels(which);
-        self.cancels_answered(cancels, self.shared.timing.request)
+        self.cancels_answered(cancels, self.shared.timing.request, false)
     }
 
     /// Send a CANCEL_ORDER for every working order `which` takes, all of
@@ -1474,7 +1474,12 @@ impl Trading {
     /// than one after another and none longer than `timeout`: how many
     /// would not cancel or were not answered in time, each once, and the
     /// first reason.
-    fn cancels_answered(&self, cancels: Cancels, timeout: Duration) -> (usize, Option<Error>) {
+    ///
+    /// With `settled`, a refused cancel of an order the server has is waited
+    /// on further, within the same `timeout`, until the order stops working:
+    /// "too late to cancel" can come before the fill that made it too late,
+    /// and what is held is not what is left until that fill is in.
+    fn cancels_answered(&self, cancels: Cancels, timeout: Duration, settled: bool) -> (usize, Option<Error>) {
         let Cancels { sent, mut failed, mut first } = cancels;
         let outcomes: Vec<(&Order, u64, Result<(), Error>)> = std::thread::scope(|scope| {
             let waits: Vec<_> = sent
@@ -1482,9 +1487,21 @@ impl Trading {
                 .map(|(order, since)| {
                     let since = *since;
                     scope.spawn(move || {
+                        let deadline = Instant::now() + timeout;
                         let outcome = self.answered_within(timeout, order.id(), since, &[wire::ORDER_CANCELED], &[wire::ORDER_CANCEL_REJECTED], |status| {
                             !status.working()
                         });
+                        if settled && matches!(outcome, Err(Error::Rejected(_))) {
+                            // Out of time, it is counted as still working.
+                            let _ = self.shared.wait_for(deadline.saturating_duration_since(Instant::now()), |state| {
+                                let Some(at) = state.order_at(order.id()) else { return Some(()) };
+                                let now = &state.orders[at];
+                                // One the server never said a word of will
+                                // not fill: it leaves the book below.
+                                let unknown = since == 0 && now.server_id.is_none() && now.status == Status::Pending;
+                                (!now.status.working() || unknown).then_some(())
+                            });
+                        }
                         (order, since, outcome)
                     })
                 })
@@ -1512,7 +1529,9 @@ impl Trading {
     /// has the server close what is held then at the market. A stop that
     /// filled while its cancel was on the way has closed the position by
     /// then, and the server sizes the flatten to what is left, so it never
-    /// turns the position around; an order whose cancel is not answered in
+    /// turns the position around; one whose cancel is refused is waited on
+    /// in that time until it stops working, since a refusal can come ahead
+    /// of the fill that caused it; an order whose cancel is not answered in
     /// that time holds the flatten back no longer than that.
     ///
     /// Taken, or nothing left to flatten, it answers how many orders on it
@@ -1530,7 +1549,7 @@ impl Trading {
         };
         let before = held();
         let cancels = self.send_cancels(|order| order.account == account && order.symbol == symbol);
-        let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels);
+        let (uncancelled, why) = self.cancels_answered(cancels, self.shared.timing.flatten_cancels, true);
         if before == 0 {
             return why.map_or(Ok(0), Err);
         }
