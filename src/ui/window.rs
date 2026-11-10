@@ -655,6 +655,35 @@ mod tests {
         assert_eq!(value["panes"][0]["link"], "follow");
     }
 
+    /// One OHLC thickness, as a chart was written down with, becomes its
+    /// look's for both directions: a chart as thick as every chart stays on
+    /// every chart's look, a thicker one is given its own, and a look of its
+    /// own keeps its colours. Once: the thickness is gone after.
+    #[test]
+    fn one_stored_thickness_is_folded_into_the_look_once() {
+        let store = Store::memory().expect("an in-memory store");
+        LookEdit::Up(omacharts_engine::ColorChoice::swatch("Teal")).save_global(&store);
+        let mut value = serde_json::json!({"books": [{"panes": [
+            {"id": 1, "ohlc_thickness": 2},
+            {"id": 2, "ohlc_thickness": 4},
+            {"id": 3, "ohlc_thickness": 1, "look": {"up": "blue"}},
+            {"id": 4},
+        ]}]});
+        assert!(upgrade_thicknesses(&mut value, &store));
+        let panes = &value["books"][0]["panes"];
+        assert!(panes[0].get("look").is_none(), "{}", panes[0]);
+        let thick: ChartLook = serde_json::from_value(panes[1]["look"].clone()).expect("a look of its own");
+        let three = omacharts_engine::Thickness::Three;
+        assert_eq!((thick.bars.up_thickness, thick.bars.down_thickness), (three, three), "4 is no more; 3 is nearest");
+        assert_eq!(thick.bars.up, omacharts_engine::ColorChoice::swatch("Teal"), "every chart's colours");
+        let own: ChartLook = serde_json::from_value(panes[2]["look"].clone()).expect("its own look");
+        let one = omacharts_engine::Thickness::One;
+        assert_eq!((own.bars.up_thickness, own.bars.down_thickness), (one, one));
+        assert_eq!(own.bars.up, omacharts_engine::ColorChoice::swatch("Blue"), "its own colours");
+        assert!(panes.as_array().unwrap().iter().all(|pane| pane.get("ohlc_thickness").is_none()));
+        assert!(!upgrade_thicknesses(&mut value, &store), "nothing left to fold");
+    }
+
     #[test]
     fn a_mode_survives_being_written_down() {
         for mode in omacharts_engine::link::MODES {
@@ -712,7 +741,6 @@ mod tests {
                 template: None,
                 bar_style: "candle".to_string(),
                 bars_hidden: false,
-                ohlc_thickness: None,
                 session: "extended".to_string(),
                 continuous: None,
                 show_grid: true,
@@ -865,7 +893,6 @@ mod tests {
             template: None,
             bar_style: "candle".to_string(),
             bars_hidden: false,
-            ohlc_thickness: None,
             session: "extended".to_string(),
             continuous: None,
             show_grid: true,
@@ -2593,34 +2620,6 @@ mod outside_change_tests {
         });
     }
 
-    /// The Thickness row is offered under Style only while the bars are
-    /// OHLC bars, follows a command that changes them, and moves them as it
-    /// is moved.
-    #[test]
-    fn the_thickness_row_is_there_for_ohlc_bars_only_and_follows_a_command() {
-        crate::ui::on_gtk(|| {
-            let store = Rc::new(Store::memory().expect("a store"));
-            let window = bare_window(&store);
-            crate::ui::chart_settings::ChartSettings::present(&window);
-            let row = titled::<adw::ActionRow>(&window, crate::ui::chart_settings::THICKNESS_LABEL)
-                .into_iter()
-                .next()
-                .expect("a Thickness row");
-            assert!(!row.get_visible(), "offered for candles");
-            let slider = rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
-
-            command(&window, &["chart", "set", "--style", "ohlc", "--thickness", "3"]);
-            assert!(row.get_visible(), "not offered for OHLC bars");
-            assert_eq!(slider.value(), 3.0);
-            assert_eq!(window.ohlc_thickness(), 3);
-
-            slider.set_value(1.0);
-            assert_eq!(window.ohlc_thickness(), 1, "the slider did not reach the chart");
-            command(&window, &["chart", "set", "--style", "candles"]);
-            assert!(!row.get_visible());
-        });
-    }
-
     /// The volume pane's Opacity starts at 85%, reaches the pane from its
     /// slider and follows a command.
     #[test]
@@ -2755,14 +2754,7 @@ mod outside_change_tests {
                 .expect("a volume pane added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
             let show = titled::<adw::SwitchRow>(&window, "Show bars").into_iter().next().expect("a Show bars row");
-            let thickness = || {
-                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::THICKNESS_LABEL)
-                    .into_iter()
-                    .next()
-                    .expect("a Thickness row")
-            };
             assert!(show.is_active());
-            assert!(!thickness().is_visible(), "candles have no thickness to set");
 
             command(&window, &["chart", "set", "--bars", "off"]);
             assert!(!show.is_active(), "the Show bars row kept the old answer");
@@ -2771,7 +2763,6 @@ mod outside_change_tests {
             command(&window, &["chart", "set", "--bars", "on"]);
             command(&window, &["config", "bars", "--style", "ohlc"]);
             assert!(show.is_active());
-            assert!(thickness().is_visible(), "OHLC bars offer their thickness");
         });
     }
 
@@ -3297,10 +3288,6 @@ struct StoredPane {
     /// could be, and every one of those was drawing them.
     #[serde(default)]
     bars_hidden: bool,
-    /// How many pixels wide its OHLC bars are drawn. Missing from a chart
-    /// written before they could be thicker, which takes the default.
-    #[serde(default)]
-    ohlc_thickness: Option<u8>,
     session: String,
     /// How a futures root's months are joined at the rolls: `back-adjusted`
     /// or `as-traded`. Missing from a chart written before there was a
@@ -3422,7 +3409,6 @@ impl StoredPane {
             template: None,
             bar_style: String::new(),
             bars_hidden: false,
-            ohlc_thickness: None,
             look: None,
             session: String::new(),
             continuous: None,
@@ -3835,14 +3821,7 @@ pub(crate) fn upgrade_link_groups(workspace: &mut serde_json::Value, store: &Sto
     use serde_json::Value;
 
     let legacy = |pane: &Value| pane.get("linked").is_some();
-    // The arrangement from before chartbooks is one book at the top level.
-    let mut books: Vec<&mut Value> = match workspace.get("books").is_some() {
-        true => match workspace["books"].as_array_mut() {
-            Some(books) => books.iter_mut().collect(),
-            None => return false,
-        },
-        false => vec![workspace],
-    };
+    let mut books = books_in(workspace);
     let any = books.iter().any(|book| {
         book["panes"].as_array().is_some_and(|panes| panes.iter().any(legacy))
     });
@@ -3892,6 +3871,51 @@ pub(crate) fn upgrade_link_groups(workspace: &mut serde_json::Value, store: &Sto
         }
     }
     true
+}
+
+/// The chartbooks of a stored arrangement, to be changed in place. The
+/// arrangement from before chartbooks is one book at the top level.
+fn books_in(workspace: &mut serde_json::Value) -> Vec<&mut serde_json::Value> {
+    match workspace.get("books").is_some() {
+        true => workspace["books"].as_array_mut().map(|books| books.iter_mut().collect()).unwrap_or_default(),
+        false => vec![workspace],
+    }
+}
+
+/// Fold the one OHLC thickness a stored chart may still carry into its
+/// look, for both directions, in place. `true` when there was any to fold.
+///
+/// Charts were written down with one thickness each, beside a look that had
+/// none. A chart on every chart's look, drawn as thick as every chart now
+/// is, stays on it; one drawn thicker or thinner is given a look of its own
+/// at its thickness, so nothing on screen changes. On the stored value, as
+/// [`upgrade_link_groups`] is and for the same reasons; the thickness is
+/// dropped as it is folded, so this happens once.
+pub(crate) fn upgrade_thicknesses(workspace: &mut serde_json::Value, store: &Store) -> bool {
+    let mut every: Option<ChartLook> = None;
+    let mut any = false;
+    for book in books_in(workspace) {
+        let Some(panes) = book.get_mut("panes").and_then(serde_json::Value::as_array_mut) else { continue };
+        for pane in panes {
+            let Some(fields) = pane.as_object_mut() else { continue };
+            let Some(stored) = fields.remove("ohlc_thickness") else { continue };
+            any = true;
+            let Some(px) = stored.as_f64().map(omacharts_engine::Thickness::nearest) else { continue };
+            let every = every.get_or_insert_with(|| ChartLook::global(store));
+            let own = fields.get("look").and_then(|look| serde_json::from_value::<Option<ChartLook>>(look.clone()).ok());
+            let mut look = match own.flatten() {
+                Some(own) => own,
+                None if (every.bars.up_thickness, every.bars.down_thickness) == (px, px) => continue,
+                None => every.clone(),
+            };
+            look.set(LookEdit::UpThickness(px));
+            look.set(LookEdit::DownThickness(px));
+            if let Ok(look) = serde_json::to_value(&look) {
+                fields.insert("look".to_string(), look);
+            }
+        }
+    }
+    any
 }
 
 /// The symbol and venue a chart is written down under.
@@ -4484,7 +4508,6 @@ impl Window {
         self.write_header_of(&pane);
         pane.continuous.set(defaults.continuous);
         pane.view.set_price_log(defaults.log_scale);
-        pane.set_ohlc_thickness(defaults.ohlc_thickness);
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
         pane.view.set_sends(defaults.sends_drawings);
@@ -5094,7 +5117,6 @@ impl Window {
         added.view.set_price_log(from.view.price_log());
         added.bars_hidden.set(from.bars_hidden.get());
         added.view.set_bars_hidden(from.bars_hidden.get());
-        added.set_ohlc_thickness(from.ohlc_thickness.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
         added.shows_legend.set(from.shows_legend.get());
@@ -5873,7 +5895,6 @@ impl Window {
                     template: pane.template.get(),
                     bar_style: pane.view.bar_style().key().to_string(),
                     bars_hidden: pane.bars_hidden.get(),
-                    ohlc_thickness: Some(pane.ohlc_thickness.get()),
                     session: pane.session.get().key().to_string(),
                     continuous: Some(pane.continuous.get().key().to_string()),
                     show_grid: pane.view.show_grid(),
@@ -5973,7 +5994,7 @@ impl Window {
     fn restore_workspace(self: &Rc<Self>) -> bool {
         let Some(mut json) = self.store.setting(SETTING_WORKSPACE) else { return false };
         if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&json)
-            && upgrade_link_groups(&mut value, &self.store)
+            && (upgrade_link_groups(&mut value, &self.store) | upgrade_thicknesses(&mut value, &self.store))
         {
             json = value.to_string();
         }
@@ -6205,7 +6226,6 @@ impl Window {
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
             pane.view.set_bars_hidden(stored.bars_hidden);
-            pane.set_ohlc_thickness(stored.ohlc_thickness.unwrap_or(defaults.ohlc_thickness));
             pane.write_title(stored.title.as_deref().unwrap_or(""));
             pane.view.set_show_indicators(stored.indicators_shown);
             pane.view.set_show_drawings(stored.drawings_shown);
@@ -8371,10 +8391,6 @@ impl Window {
     pub fn overlays_page(self: &Rc<Self>) -> adw::PreferencesPage {
         let charts = self.clone();
         crate::ui::overlays::page(self.clone(), self.store.clone(), Rc::new(move || charts.adopt_chart_look()))
-    }
-
-    pub fn shared_store(&self) -> Rc<Store> {
-        self.store.clone()
     }
 
     /// Re-fold and repaint what is on screen, after something that changes
@@ -11738,15 +11754,6 @@ impl Window {
         });
     }
 
-    /// How many pixels wide the focused chart draws its OHLC bars.
-    pub fn ohlc_thickness(&self) -> u8 {
-        self.focused_pane().ohlc_thickness.get()
-    }
-
-    pub fn set_ohlc_thickness(self: &Rc<Self>, thickness: u8) {
-        self.focused_pane().set_ohlc_thickness(thickness);
-        self.save_workspace();
-    }
 
     /// Put the focused chart back to what a new chart opens with.
     /// The template is chosen the way any other choice of it is, asking first
@@ -11757,9 +11764,11 @@ impl Window {
         let pane = self.focused_pane();
         pane.bars_hidden.set(false);
         pane.view.set_bars_hidden(false);
-        pane.set_ohlc_thickness(defaults.ohlc_thickness);
-        pane.session.set(defaults.session);
-        if pane.continuous.replace(defaults.continuous) != defaults.continuous {
+        // Other hours or another join are another series to a strip, as in
+        // `set_session` and `set_continuous`: let go of the strips held.
+        let other_hours = pane.session.replace(defaults.session) != defaults.session;
+        let other_join = pane.continuous.replace(defaults.continuous) != defaults.continuous;
+        if other_hours || other_join {
             pane.view.free_strip_windows();
         }
         pane.view.set_price_log(defaults.log_scale);
@@ -11783,7 +11792,6 @@ impl Window {
             shows_drawings: pane.shows_drawings.get(),
             sends_drawings: pane.sends_drawings.get(),
             template: pane.template.get(),
-            ohlc_thickness: pane.ohlc_thickness.get(),
             continuous: pane.continuous.get(),
             shows_legend: pane.shows_legend.get(),
         }
@@ -11856,7 +11864,6 @@ impl Window {
                     // on screen can do.
                     ChartSetting::SendsDrawings(_) => {}
                     ChartSetting::Template(_) => {}
-                    ChartSetting::Thickness(px) => stored.ohlc_thickness = Some(px),
                     ChartSetting::Continuous(join) => stored.continuous = Some(join.key().to_string()),
                     ChartSetting::Legend(on) => stored.shows_legend = on,
                 }
@@ -11881,7 +11888,6 @@ impl Window {
             ChartSetting::ShowsDrawings(on) => self.set_pane_shows_drawings(pane, on),
             ChartSetting::SendsDrawings(on) => self.set_pane_sends_drawings(pane, on),
             ChartSetting::Template(template) => self.put_on_template(pane, template),
-            ChartSetting::Thickness(px) => pane.set_ohlc_thickness(px),
             // Another series, asked for afresh, as `set_continuous` does.
             ChartSetting::Continuous(join) => {
                 if pane.continuous.replace(join) != join {

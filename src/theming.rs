@@ -17,8 +17,8 @@ use std::fmt::Write as _;
 
 use omacharts_engine::frame::{GUTTER_WIDTH, RING_WIDTH};
 use omacharts_engine::theme::{
-    builtin_themes, parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Body, Mode, Theme, TradingLook,
-    FALLBACK_THEME_ID, OMARCHY_ID,
+    builtin_themes, parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Body, Mode, Theme,
+    Thickness, TradingLook, FALLBACK_THEME_ID, OMARCHY_ID,
 };
 use omacharts_engine::Ink;
 use omacharts_engine::omarchy;
@@ -38,9 +38,19 @@ const SETTING_BAR_UP_HOLLOW: &str = "bar_up_hollow";
 const SETTING_BAR_DOWN_HOLLOW: &str = "bar_down_hollow";
 const SETTING_BAR_UP_BORDER: &str = "bar_up_border";
 const SETTING_BAR_DOWN_BORDER: &str = "bar_down_border";
-/// Where an older version stored a named bar scheme, read when none of the
-/// four has been written yet, so an upgrade keeps the bars somebody chose.
+/// How many pixels wide each direction's OHLC bars are drawn.
+const SETTING_BAR_UP_THICKNESS: &str = "bar_up_thickness";
+const SETTING_BAR_DOWN_THICKNESS: &str = "bar_down_thickness";
+/// Where an older version stored one thickness for both directions, read
+/// until the bars are next changed, which writes the two above instead.
+const LEGACY_OHLC_THICKNESS: &str = "ohlc_thickness";
+/// Where an older version stored a named bar scheme, and the two switches
+/// it wore over any scheme: up and down exchanged, and a rise drawn
+/// hollow. Read while the rows above are unwritten, so an upgrade keeps
+/// the bars somebody chose.
 const LEGACY_BAR_SCHEME: &str = "bar_scheme";
+const LEGACY_SWAP_COLOURS: &str = "swap_colours";
+const LEGACY_HOLLOW_UP: &str = "hollow_up";
 /// How orders and positions are drawn, as a [`TradingLook`] in JSON: one
 /// for every theme, since a theme is Omarchy's and not ours to edit.
 pub const SETTING_TRADING_LOOK: &str = "trading_look";
@@ -53,7 +63,7 @@ pub fn trading_look(store: &Store) -> TradingLook {
 
 /// How candles look, as stored.
 pub fn bar_look(store: &Store) -> BarLook {
-    let legacy = legacy_bar_look(store.setting(LEGACY_BAR_SCHEME).as_deref());
+    let legacy = legacy_bar_look(store);
     let colour = |key: &str, fallback: omacharts_engine::ColorChoice| {
         store.setting(key).and_then(|text| parse_bar_colour(&text)).unwrap_or(fallback)
     };
@@ -64,11 +74,15 @@ pub fn bar_look(store: &Store) -> BarLook {
             (false, false) => Body::Filled,
         }
     };
+    let px = |key: &str| store.setting(key).and_then(|text| Thickness::parse(&text));
+    let one = px(LEGACY_OHLC_THICKNESS).unwrap_or(legacy.up_thickness);
     BarLook {
         up: colour(SETTING_BAR_UP, legacy.up),
         down: colour(SETTING_BAR_DOWN, legacy.down),
         up_body: body(SETTING_BAR_UP_HOLLOW, SETTING_BAR_UP_BORDER, legacy.up_body),
         down_body: body(SETTING_BAR_DOWN_HOLLOW, SETTING_BAR_DOWN_BORDER, legacy.down_body),
+        up_thickness: px(SETTING_BAR_UP_THICKNESS).unwrap_or(one),
+        down_thickness: px(SETTING_BAR_DOWN_THICKNESS).unwrap_or(one),
     }
 }
 
@@ -81,25 +95,39 @@ pub fn save_bar_look(store: &Store, look: &BarLook) {
     store.set_setting_bool(SETTING_BAR_DOWN_HOLLOW, look.down_body == Body::Hollow);
     store.set_setting_bool(SETTING_BAR_UP_BORDER, look.up_body == Body::Bordered);
     store.set_setting_bool(SETTING_BAR_DOWN_BORDER, look.down_body == Body::Bordered);
+    store.set_setting(SETTING_BAR_UP_THICKNESS, look.up_thickness.key());
+    store.set_setting(SETTING_BAR_DOWN_THICKNESS, look.down_thickness.key());
+    store.remove_setting(LEGACY_OHLC_THICKNESS);
 }
 
-/// The look an older version's named scheme stood for. A scheme somebody
-/// made themselves is not carried over: those were copies with colour
-/// pickers, and the default is a better guess than a half-read one.
-fn legacy_bar_look(scheme: Option<&str>) -> BarLook {
+/// The look an older version's named scheme stood for, with its switches
+/// worn over it the way that version wore them: a switch and a scheme
+/// saying the same thing say it once. A scheme somebody made themselves is
+/// not carried over: those were copies with colour pickers, and the
+/// default is a better guess than a half-read one.
+fn legacy_bar_look(store: &Store) -> BarLook {
+    use omacharts_engine::theme::{GRAPHITE, SAND, SILVER, SLATE};
     let swatches = |up: &str, down: &str| BarLook {
         up: omacharts_engine::ColorChoice::swatch(up),
         down: omacharts_engine::ColorChoice::swatch(down),
         ..BarLook::default()
     };
-    match scheme {
-        Some("theme-red-up") => BarLook::red_up(),
-        Some("theme-mono") => BarLook::monochrome(),
-        Some("monochrome") => BarLook { up_body: Body::Hollow, ..BarLook::monochrome() },
-        Some("hollow") => BarLook { up_body: Body::Hollow, ..BarLook::default() },
-        Some("accessible") => swatches("Blue", "Orange"),
-        _ => BarLook::default(),
+    let (mut look, swapped, hollow_up) = match store.setting(LEGACY_BAR_SCHEME).as_deref() {
+        Some("theme-red-up") => (BarLook::default(), true, false),
+        Some("theme-hollow" | "hollow") => (BarLook::default(), false, true),
+        Some("theme-mono" | "monochrome") => (BarLook::monochrome(), false, false),
+        Some("theme-soft") => (swatches(SLATE, SAND), false, false),
+        Some("theme-quiet") => (swatches(SILVER, GRAPHITE), false, false),
+        Some("accessible") => (swatches("Blue", "Orange"), false, false),
+        _ => (BarLook::default(), false, false),
+    };
+    if swapped || store.setting_bool(LEGACY_SWAP_COLOURS, false) {
+        std::mem::swap(&mut look.up, &mut look.down);
     }
+    if hollow_up || store.setting_bool(LEGACY_HOLLOW_UP, false) {
+        look.up_body = Body::Hollow;
+    }
+    look
 }
 
 pub struct Theming {
@@ -1641,6 +1669,45 @@ mod tests {
         assert_eq!(bar_look(&store).up, BarLook::red_up().up);
     }
 
+    /// Every scheme v0.2.20 could have stored, with its two switches, comes
+    /// back as the bars it drew.
+    #[test]
+    fn every_scheme_an_older_version_stored_is_carried_over() {
+        use omacharts_engine::theme::{GRAPHITE, SAND, SILVER, SLATE};
+        let pair = |up: &str, down: &str| BarLook {
+            up: omacharts_engine::ColorChoice::swatch(up),
+            down: omacharts_engine::ColorChoice::swatch(down),
+            ..BarLook::default()
+        };
+        let hollow = |look: BarLook| BarLook { up_body: Body::Hollow, ..look };
+        let cases = [
+            (Some("theme"), false, false, BarLook::default()),
+            (Some("theme-red-up"), false, false, BarLook::red_up()),
+            (Some("theme-hollow"), false, false, hollow(BarLook::default())),
+            (Some("hollow"), false, false, hollow(BarLook::default())),
+            (Some("theme-mono"), false, false, BarLook::monochrome()),
+            (Some("monochrome"), false, false, BarLook::monochrome()),
+            (Some("theme-soft"), false, false, pair(SLATE, SAND)),
+            (Some("theme-quiet"), false, false, pair(SILVER, GRAPHITE)),
+            (Some("accessible"), false, false, pair("Blue", "Orange")),
+            (Some("theme"), true, false, BarLook::red_up()),
+            (Some("theme-soft"), true, false, pair(SAND, SLATE)),
+            (Some("theme-quiet"), false, true, hollow(pair(SILVER, GRAPHITE))),
+            (None, true, true, hollow(BarLook::red_up())),
+            // A switch and a scheme that say the same thing say it once.
+            (Some("theme-red-up"), true, false, BarLook::red_up()),
+        ];
+        for (scheme, swapped, hollow_up, bars) in cases {
+            let store = Store::memory().unwrap();
+            if let Some(scheme) = scheme {
+                store.set_setting(LEGACY_BAR_SCHEME, scheme);
+            }
+            store.set_setting_bool(LEGACY_SWAP_COLOURS, swapped);
+            store.set_setting_bool(LEGACY_HOLLOW_UP, hollow_up);
+            assert_eq!(crate::chart_look::ChartLook::global(&store).bars, bars, "{scheme:?} swapped {swapped} hollow {hollow_up}");
+        }
+    }
+
     #[test]
     fn the_bars_round_trip_through_the_store() {
         let store = Store::memory().unwrap();
@@ -1649,11 +1716,32 @@ mod tests {
             down: parse_bar_colour("#123456").unwrap(),
             up_body: Body::Hollow,
             down_body: Body::Bordered,
+            up_thickness: Thickness::One,
+            down_thickness: Thickness::OneAndAHalf,
         };
         save_bar_look(&store, &look);
         assert_eq!(bar_look(&store), look);
         // And nonsense typed into the row falls back rather than failing.
         store.set_setting(SETTING_BAR_DOWN, "chartreuse");
         assert_eq!(bar_look(&store).down, BarLook::default().down);
+        store.set_setting(SETTING_BAR_UP_THICKNESS, "4");
+        assert_eq!(bar_look(&store).up_thickness, Thickness::Three, "4, which an older build offered, is 3");
+        store.set_setting(SETTING_BAR_UP_THICKNESS, "thick");
+        assert_eq!(bar_look(&store).up_thickness, Thickness::default());
+    }
+
+    /// One thickness for both directions, as an older version stored it,
+    /// is both directions' until the bars are next changed, which writes
+    /// each its own and drops the old row.
+    #[test]
+    fn one_thickness_an_older_version_stored_is_both_directions() {
+        let store = Store::memory().unwrap();
+        store.set_setting(LEGACY_OHLC_THICKNESS, "3");
+        let look = bar_look(&store);
+        assert_eq!((look.up_thickness, look.down_thickness), (Thickness::Three, Thickness::Three));
+        save_bar_look(&store, &BarLook { down_thickness: Thickness::One, ..look });
+        assert!(!store.has_setting(LEGACY_OHLC_THICKNESS));
+        let look = bar_look(&store);
+        assert_eq!((look.up_thickness, look.down_thickness), (Thickness::Three, Thickness::One));
     }
 }

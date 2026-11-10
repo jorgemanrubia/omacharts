@@ -684,10 +684,6 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
-/// The row for how many pixels wide OHLC bars are drawn, in a chart's
-/// settings and in the preferences alike.
-pub const THICKNESS_LABEL: &str = "Thickness";
-
 /// The way back to what a new chart opens with, for a chart that has wandered.
 fn defaults_group(window: &Rc<Window>, frame: &adw::Window) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();

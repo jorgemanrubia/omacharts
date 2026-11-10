@@ -54,5 +54,5 @@ pub use frame::Frame;
 pub use ink::{Ink, Tag};
 pub use theme::{
     editable_trading, theme_bars, theme_trading, BarLook, BarScheme, Body, ColorChoice, Direction, Mode, Source,
-    Swatch, Theme, TradingColour, TradingColours, TradingLine, TradingLook, UiColors,
+    Swatch, Theme, TradingColour, TradingColours, TradingLine, Thickness, TradingLook, UiColors,
 };

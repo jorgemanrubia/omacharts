@@ -1585,7 +1585,6 @@ fn chart_set(
         }
     };
     let bars = switch("bars")?;
-    let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
     // Blank takes the title away, as clearing it in the header does.
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
     let shows_drawings = switch("show-drawings")?;
@@ -1637,10 +1636,6 @@ fn chart_set(
             }
             false => "bars hidden".to_string(),
         });
-    }
-    if let Some(thickness) = thickness {
-        chart["ohlc_thickness"] = json!(thickness);
-        changed.push(format!("OHLC bars {thickness}px"));
     }
     if let Some(session) = session {
         chart["session"] = json!(session.key());
@@ -1716,7 +1711,7 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --title, --symbol, --resolution, --thickness, --bars, \
+            "nothing to change; pass --title, --symbol, --resolution, --bars, \
              --session, --link, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
@@ -4184,20 +4179,6 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
         })
 }
 
-/// A thickness for OHLC bars, in whole pixels from 1 to 4.
-fn parse_thickness(text: &str, what: &str) -> Result<u8, Fault> {
-    use crate::chart_defaults::{MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
-    text.trim()
-        .parse::<u8>()
-        .ok()
-        .filter(|n| (MIN_OHLC_THICKNESS..=MAX_OHLC_THICKNESS).contains(n))
-        .ok_or_else(|| {
-            Fault::usage(format!(
-                "{what} is a whole number of pixels from {MIN_OHLC_THICKNESS} to {MAX_OHLC_THICKNESS}, not {text:?}"
-            ))
-        })
-}
-
 /// The style a chart's bars are drawn in, its own look's or `every` chart's,
 /// or `none` while they are hidden.
 fn shown_style(pane: &Value, every: &ChartLook) -> &'static str {
@@ -4219,8 +4200,6 @@ fn pane_json(pane: &Value, every: &ChartLook) -> String {
         "style": shown_style(pane, every),
         "own_look": charts::own_look(pane).is_some(),
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
-        // Missing from a chart stored before OHLC bars could be thicker.
-        "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
         "session": pane["session"],
         // Missing from a chart stored before there was a choice, which is
         // drawn as the default says.
@@ -5334,14 +5313,6 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("1R is {amount}");
         return said(as_json, json!({"key": key, "value": amount}), text);
     }
-    // Read back clamped, so a figure out of range is refused rather than
-    // stored as something else.
-    if key == crate::chart_defaults::SETTING_OHLC_THICKNESS {
-        let thickness = parse_thickness(value, key)?;
-        store.set_setting(key, &thickness.to_string());
-        let text = format!("new charts draw OHLC bars {thickness}px wide");
-        return said(as_json, json!({"key": key, "value": thickness.to_string()}), text);
-    }
     if key == crate::chart_defaults::SETTING_CONTINUOUS {
         let join = omacharts_engine::continuous::Adjustment::from_key(value)
             .ok_or_else(|| Fault::usage(format!("{value:?} is not back-adjusted or as-traded")))?;
@@ -5573,7 +5544,9 @@ fn config_bars(
     };
     let mut answer = to_value(&look)?;
     if let Some(fields) = answer.as_object_mut() {
-        fields.retain(|key, _| ["style", "up", "down", "up_body", "down_body"].contains(&key.as_str()));
+        fields.retain(|key, _| {
+            ["style", "up", "down", "up_body", "down_body", "up_thickness", "down_thickness"].contains(&key.as_str())
+        });
     }
     said(as_json, answer, text)
 }
@@ -5584,7 +5557,7 @@ fn config_bars(
 /// The parser has already held the style, the bodies and the switches to the
 /// values there are; a colour and a header are free text, and checked here.
 fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
-    use omacharts_engine::theme::{parse_bar_colour, Body};
+    use omacharts_engine::theme::{parse_bar_colour, Body, Thickness};
 
     let colour = |flag: &str| -> Result<Option<ColorChoice>, Fault> {
         let Some(text) = arg(m, flag) else { return Ok(None) };
@@ -5602,6 +5575,10 @@ fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
     edits.extend(colour("down")?.map(LookEdit::Down));
     edits.extend(arg(m, "up-body").and_then(|key| Body::from_key(key)).map(LookEdit::UpBody));
     edits.extend(arg(m, "down-body").and_then(|key| Body::from_key(key)).map(LookEdit::DownBody));
+    // The parser has held these to the thicknesses there are.
+    let thickness = |flag: &str| arg(m, flag).and_then(|px| Thickness::parse(px));
+    edits.extend(thickness("up-thickness").map(LookEdit::UpThickness));
+    edits.extend(thickness("down-thickness").map(LookEdit::DownThickness));
     if let Some(text) = arg(m, "header") {
         let parts = crate::header::parse(text).map_err(Fault::usage)?;
         edits.push(LookEdit::Header(crate::header::Section::Left, parts));
@@ -7536,14 +7513,14 @@ mod tests {
     #[test]
     fn bars_are_answers_set_together_or_alone() {
         let store = Store::memory().unwrap();
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up green filled, down rose filled");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up green filled 2px, down rose filled 2px");
 
         assert_eq!(run("config bars red-up --up-body hollow", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow, down green filled");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down green filled 2px");
 
         // A flag alone leaves the others as they were.
         assert_eq!(run("config bars --down Foreground", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow, down foreground filled");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down foreground filled 2px");
         assert_eq!(run("config get bar_down", &store).out.trim(), "foreground");
 
         // A flag wins over the preset it is given with.
@@ -7551,20 +7528,33 @@ mod tests {
         let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
         assert_eq!(
             json,
-            json!({"style": "candles", "up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled"})
+            json!({
+                "style": "candles", "up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled",
+                "up_thickness": "2", "down_thickness": "2"
+            })
         );
 
         let again = run("config bars monochrome --up #336699 --up-body filled", &store);
         assert!(again.out.starts_with("bars were already"), "{}", again.out);
 
         assert_eq!(run("config bars --down-body bordered", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up #336699 filled, down foreground bordered");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up #336699 filled 2px, down foreground bordered 2px");
 
         // The style is one more answer, and leaves the colours alone.
         assert_eq!(run("config bars --style ohlc", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "ohlc, up #336699 filled, down foreground bordered");
+        assert_eq!(run("config bars", &store).out.trim(), "ohlc, up #336699 filled 2px, down foreground bordered 2px");
         assert_eq!(run("config get bar_style", &store).out.trim(), "ohlc");
         assert_ne!(run("config bars --up-body outlined", &store).code, 0, "a body that does not exist is refused");
+
+        // Each direction's OHLC bars are as thick as it says, and no thicker
+        // than there is.
+        assert_eq!(run("config bars --up-thickness 1 --down-thickness 1.5", &store).code, 0);
+        let look = crate::theming::bar_look(&store);
+        use omacharts_engine::theme::Thickness;
+        assert_eq!((look.up_thickness, look.down_thickness), (Thickness::One, Thickness::OneAndAHalf));
+        for wrong in ["4", "2.5"] {
+            assert_eq!(run(&format!("config bars --up-thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE, "{wrong}");
+        }
     }
 
     #[test]
@@ -8272,29 +8262,22 @@ mod tests {
         assert!(listed(&store)["charts"].as_array().unwrap().iter().all(|c| c["title"].is_null()));
     }
 
-    /// How thick OHLC bars are drawn is a chart's own, from one pixel to
-    /// four, and a default for new charts; a chart written before it could
-    /// be reads as two. A figure out of range is refused, not clamped.
+    /// How thick each direction's OHLC bars are drawn is part of a chart's
+    /// look, 1, 1.5, 2 or 3 pixels, set as its bodies are; there is no one
+    /// thickness for both any more.
     #[test]
-    fn ohlc_thickness_is_set_on_a_chart_and_as_a_default_within_its_range() {
+    fn a_chart_takes_a_thickness_for_each_direction_in_its_look() {
         let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
-        let listed = |store: &Store| -> serde_json::Value {
-            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
-        };
-        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(2));
-        let out = run("chart set --book Macro --thickness 3", &store);
+        let out = run("chart look --book Macro --style ohlc --down-thickness 1.5", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("OHLC bars 3px"), "{}", out.out);
-        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));
-        for wrong in ["0", "5", "1.5", "thick"] {
-            let out = run(&format!("chart set --book Macro --thickness {wrong}"), &store);
-            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{wrong}");
-            assert_eq!(run(&format!("config set ohlc_thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE, "{wrong}");
+        assert!(out.out.contains("up green filled 2px, down rose filled 1.5px"), "{}", out.out);
+        let look = &panes_of(&store, "Macro")[0]["look"];
+        assert_eq!((&look["up_thickness"], &look["down_thickness"]), (&json!("2"), &json!("1.5")));
+        for wrong in ["0", "4", "thick"] {
+            assert_eq!(run(&format!("chart look --book Macro --up-thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE);
         }
-        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));
-        assert_eq!(run("config set ohlc_thickness 4", &store).code, 0);
-        assert_eq!(crate::chart_defaults::ChartDefaults::load(&store).ohlc_thickness, 4);
+        assert_eq!(run("chart set --book Macro --thickness 3", &store).code, crate::cli::EXIT_USAGE);
     }
 
 

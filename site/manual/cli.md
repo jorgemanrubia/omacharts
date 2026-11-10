@@ -397,7 +397,6 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
-| `--thickness PX` | How many pixels wide OHLC bars are drawn, `1` to `4` | [Style](/manual/charts/#style) |
 | `--bars on` or `off` | Shows the chart's bars, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
@@ -480,7 +479,7 @@ pos:0 NVDA 1D in Macro follows all charts
   [exit 0]
 
 $ omacharts chart look --style ohlc --grid off
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled, down rose filled, grid off, price line on, header symbol,resolution
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution
   [exit 0]
 
 $ omacharts chart look --follow
@@ -497,6 +496,7 @@ omacharts: give --follow or changes to the look, not both
 | `--style STYLE` | `candles`, `ohlc` | How the chart draws its bars ([Style](/manual/charts/#style)) |
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
+| `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn |
 | `--header PARTS` | `symbol`, `resolution`, `change`, `template`, joined with commas, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
 | `--grid on` or `off` | | Draws the grid ([Gridlines](/manual/charts/#gridlines)) |
 | `--price-line on` or `off` | | Draws the dashed line at the last price |
@@ -509,23 +509,23 @@ exits `6`.
 
 ### `config bars`
 
-Sets how bars look on every chart that has no look of its own, as Preferences › Appearance › Bars does: how they are drawn, and for each direction a colour and a body, filled, bordered or hollow ([Bars](/manual/themes/#bars)).
+Sets how bars look on every chart that has no look of its own, as Preferences › Appearance › Bars does: how they are drawn, and for each direction a colour, a body (filled, bordered or hollow) and how thick its OHLC bars are ([Bars](/manual/themes/#bars)).
 
 ```
 $ omacharts config bars
-candles, up green filled, down rose filled
+candles, up green filled 2px, down rose filled 2px
   [exit 0]
 
 $ omacharts config bars red-up --up-body hollow
-bars are now candles, up rose hollow, down green filled
+bars are now candles, up rose hollow 2px, down green filled 2px
   [exit 0]
 
-$ omacharts config bars --style ohlc
-bars are now ohlc, up rose hollow, down green filled
+$ omacharts config bars --style ohlc --up-thickness 1 --down-thickness 3
+bars are now ohlc, up rose hollow 1px, down green filled 3px
   [exit 0]
 
 $ omacharts config bars monochrome --up-body filled --down-body filled
-bars are now ohlc, up foreground filled, down foreground filled
+bars are now ohlc, up foreground filled 1px, down foreground filled 3px
   [exit 0]
 ```
 
@@ -535,6 +535,7 @@ bars are now ohlc, up foreground filled, down foreground filled
 | `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Foreground. Omitted, the command prints the current look |
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
+| `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn, `2` until set. A bar is drawn thinner where bars are too close for it |
 
 A flag changes only its own answer. The others stay as they were.
 
@@ -554,8 +555,8 @@ on
   [exit 0]
 ```
 
-The chart defaults (`ohlc_thickness`, `chart_session`, `chart_log_scale`,
-`chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
+The chart defaults (`chart_session`, `chart_log_scale`, `chart_shows_legend`,
+`chart_header`, `timeframes`) are set with `config set`;
 see [Settings](#settings).
 
 ## Indicators
@@ -1590,7 +1591,7 @@ same.
 | `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
-| `ohlc_thickness` | `1` to `4` | `2` | Appearance › Bars › Thickness | [Style](/manual/charts/#style) |
+| `bar_up_thickness`, `bar_down_thickness` | `1`, `1.5`, `2`, `3` | `2` | Appearance › Bars › Up, Down, under OHLC | [Themes](/manual/themes/#bars) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Settings › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
 | `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |

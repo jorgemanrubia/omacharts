@@ -21,10 +21,6 @@ pub const SETTING_CONTINUOUS: &str = "chart_continuous";
 /// see [`crate::ui::appearance`].
 pub const SETTING_SHOW_GRID: &str = "show_grid";
 pub const SETTING_PRICE_LINE: &str = "price_line";
-/// How many pixels wide an OHLC bar's line and ticks are drawn.
-pub const SETTING_OHLC_THICKNESS: &str = "ohlc_thickness";
-/// The range it takes is the chart's own.
-pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 
 /// Whether one of the switches every chart shares, stored under `key`, is
@@ -47,8 +43,6 @@ pub const NO_TEMPLATE: &str = "none";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ChartDefaults {
-    /// How many pixels wide an OHLC bar is drawn.
-    pub ohlc_thickness: u8,
     pub session: Session,
     /// How a root's months are joined, on a feed that stitches them.
     pub continuous: Adjustment,
@@ -66,7 +60,6 @@ pub struct ChartDefaults {
 impl Default for ChartDefaults {
     fn default() -> ChartDefaults {
         ChartDefaults {
-            ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             session: Session::default(),
             continuous: Adjustment::default(),
             log_scale: false,
@@ -82,10 +75,6 @@ impl ChartDefaults {
     pub fn load(store: &Store) -> ChartDefaults {
         let fallback = ChartDefaults::default();
         ChartDefaults {
-            ohlc_thickness: store
-                .setting(SETTING_OHLC_THICKNESS)
-                .and_then(|n| n.trim().parse::<u8>().ok())
-                .map_or(fallback.ohlc_thickness, clamp_thickness),
             session: store
                 .setting(SETTING_SESSION)
                 .and_then(|key| Session::from_key(&key))
@@ -103,7 +92,6 @@ impl ChartDefaults {
     }
 
     pub fn save(&self, store: &Store) {
-        store.set_setting(SETTING_OHLC_THICKNESS, &self.ohlc_thickness.to_string());
         store.set_setting(SETTING_SESSION, self.session.key());
         store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
@@ -124,7 +112,6 @@ pub enum ChartSetting {
     ShowsDrawings(bool),
     SendsDrawings(bool),
     Template(Option<u32>),
-    Thickness(u8),
     Continuous(Adjustment),
     Legend(bool),
 }
@@ -137,7 +124,6 @@ impl ChartDefaults {
             ChartSetting::ShowsDrawings(on) => self.shows_drawings = on,
             ChartSetting::SendsDrawings(on) => self.sends_drawings = on,
             ChartSetting::Template(template) => self.template = template,
-            ChartSetting::Thickness(px) => self.ohlc_thickness = clamp_thickness(px),
             ChartSetting::Continuous(join) => self.continuous = join,
             ChartSetting::Legend(on) => self.shows_legend = on,
         }
@@ -157,12 +143,10 @@ mod tests {
     fn what_is_saved_is_what_comes_back() {
         let store = Store::memory().unwrap();
         let fresh = ChartDefaults::load(&store);
-        assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
         assert!(fresh.shows_drawings && fresh.sends_drawings);
         assert!(fresh.shows_legend, "the legend is shown unless somebody turns it off");
 
         let chosen = ChartDefaults {
-            ohlc_thickness: 3,
             session: Session::ALL[Session::ALL.len() - 1],
             continuous: Adjustment::AsTraded,
             log_scale: true,
@@ -189,16 +173,5 @@ mod tests {
         store.set_setting_bool(SETTING_PRICE_LINE, false);
         assert!(chart_switch(&store, SETTING_SHOW_GRID));
         assert!(!chart_switch(&store, SETTING_PRICE_LINE));
-    }
-
-    /// A thickness typed into the settings by hand comes back inside the
-    /// range a chart can draw.
-    #[test]
-    fn a_stored_thickness_is_held_to_the_range() {
-        let store = Store::memory().unwrap();
-        store.set_setting(SETTING_OHLC_THICKNESS, "40");
-        assert_eq!(ChartDefaults::load(&store).ohlc_thickness, MAX_OHLC_THICKNESS);
-        store.set_setting(SETTING_OHLC_THICKNESS, "thick");
-        assert_eq!(ChartDefaults::load(&store).ohlc_thickness, DEFAULT_OHLC_THICKNESS);
     }
 }

@@ -37,7 +37,7 @@ A theme of your own is made with Omarchy's tools, and then appears in the catalo
 
 ## Bars
 
-Preferences › Appearance › **Bars** sets how bars look on every chart, or under **LOCAL** on the focused chart alone ([A chart's own look](/manual/charts/#a-charts-own-look)). Tabs at its head pick **Candles** or **OHLC**, and on OHLC bars the **Thickness** row under them sets how wide they are drawn ([Style](/manual/charts/#style)). Under them, the **Up** and **Down** rows each hold the direction's colour and, for candles, its body, each picked from a list showing a bar drawn as the charts draw it. OHLC bars have no body, so the bodies go with them.
+Preferences › Appearance › **Bars** sets how bars look on every chart, or under **LOCAL** on the focused chart alone ([A chart's own look](/manual/charts/#a-charts-own-look)). Tabs at its head pick the style: **Candles** or **OHLC** ([Style](/manual/charts/#style)). Under them, the **Up** and **Down** rows each hold the direction's colour and, beside it, its body for candles or its thickness for OHLC bars, each picked from a list showing a bar drawn as the charts draw it.
 
 | Control | Does |
 |---|---|
@@ -45,6 +45,7 @@ Preferences › Appearance › **Bars** sets how bars look on every chart, or un
 | Filled | The whole candle in its colour |
 | Bordered | The wick and the body's edge in the theme's text colour, as TradingView draws one. It follows the theme, so it is light on a dark theme and dark on a light one |
 | Hollow | The body as an outline in the candle's colour. Foreground and Hollow make a hollow candle in the text colour |
+| Thickness | How many pixels wide an OHLC bar is drawn, 1, 1.5, 2 or 3, for rising and falling bars apart. Bars too close together for it are drawn thinner |
 
 A border needs room: a candle whose body is under five pixels wide keeps its own colour throughout, and one too narrow for a body is drawn as a line in its colour. `omacharts config bars` sets the same answers ([`config bars`](/manual/cli/#config-bars)).
 

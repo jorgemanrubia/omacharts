@@ -290,6 +290,8 @@ const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const BODIES: &[&str] = &["filled", "bordered", "hollow"];
+/// An OHLC bar's thickness in pixels: `Thickness::ALL`.
+const THICKNESSES: &[&str] = &["1", "1.5", "2", "3"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
      foreground (the text colour) for none, or #rrggbb";
 /// How bars are drawn: the same five flags for every chart's look, `config
@@ -304,6 +306,10 @@ const UP_BODY_FLAG: Flag = Flag::valued(
 )
 .of(BODIES);
 const DOWN_BODY_FLAG: Flag = Flag::valued("down-body", "BODY", "the same for a falling candle").of(BODIES);
+const UP_THICKNESS_FLAG: Flag =
+    Flag::valued("up-thickness", "PX", "how many pixels wide a rising OHLC bar is drawn").of(THICKNESSES);
+const DOWN_THICKNESS_FLAG: Flag =
+    Flag::valued("down-thickness", "PX", "the same for a falling OHLC bar").of(THICKNESSES);
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -916,6 +922,8 @@ pub const SURFACE: &[Noun] = &[
                     DOWN_FLAG,
                     UP_BODY_FLAG,
                     DOWN_BODY_FLAG,
+                    UP_THICKNESS_FLAG,
+                    DOWN_THICKNESS_FLAG,
                     Flag::valued("grid", "BOOL", "draw gridlines").of(SWITCHES),
                     Flag::valued("price-line", "BOOL", "draw a line across at the last price").of(SWITCHES),
                     Flag::valued(
@@ -951,7 +959,6 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
-                    Flag::valued("thickness", "PX", "how many pixels wide OHLC bars are drawn, from 1 to 4"),
                     Flag::valued("bars", "BOOL", "hide the chart's bars, or show them again").of(SWITCHES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
@@ -1298,9 +1305,17 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "How every chart draws its bars: candles or OHLC bars, a colour for up and for down, and how each body is drawn",
+                about: "How every chart draws its bars: candles or OHLC bars, a colour for up and for down, how each body is drawn, and how thick each OHLC bar is",
                 args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or foreground; omit to read them").of(COLOURING)],
-                flags: &[STYLE_FLAG, UP_FLAG, DOWN_FLAG, UP_BODY_FLAG, DOWN_BODY_FLAG],
+                flags: &[
+                    STYLE_FLAG,
+                    UP_FLAG,
+                    DOWN_FLAG,
+                    UP_BODY_FLAG,
+                    DOWN_BODY_FLAG,
+                    UP_THICKNESS_FLAG,
+                    DOWN_THICKNESS_FLAG,
+                ],
                 example: "omacharts config bars monochrome --style candles --up-body hollow --down-body bordered",
                 json: true,
                 writes: true,
@@ -1563,7 +1578,6 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("indicators", "chart indicator", ""),
     ("bar_style", "", "never read: how bars are drawn is the chart's look, `chart look --style`; written for older builds"),
     ("bars_hidden", "chart set", "--bars"),
-    ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("continuous", "chart set", "--continuous"),
     ("show_grid", "", "never read: gridlines are the chart's look, `chart look --grid`; written for older builds"),
@@ -1778,6 +1792,12 @@ mod tests {
     fn the_bodies_on_offer_are_the_ones_that_exist() {
         let engine: Vec<&str> = omacharts_engine::Body::ALL.iter().map(|b| b.key()).collect();
         assert_eq!(BODIES.to_vec(), engine);
+    }
+
+    #[test]
+    fn the_thicknesses_on_offer_are_the_ones_there_are() {
+        let engine: Vec<&str> = omacharts_engine::Thickness::ALL.iter().map(|px| px.key()).collect();
+        assert_eq!(THICKNESSES.to_vec(), engine);
     }
 
     /// The help names the palette, and a name it offers that the theme does

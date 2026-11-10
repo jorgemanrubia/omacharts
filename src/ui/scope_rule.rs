@@ -59,21 +59,6 @@ pub fn look(window: &Window) -> ChartLook {
     window.look(!LOCAL.get())
 }
 
-/// A chart's settings as the rule scopes them: what a new chart opens with,
-/// which every chart was given, or with Local picked the focused chart's.
-pub fn settings(window: &Window) -> crate::chart_defaults::ChartDefaults {
-    match LOCAL.get() {
-        true => window.focused_settings(),
-        false => crate::chart_defaults::ChartDefaults::load(&window.shared_store()),
-    }
-}
-
-/// Change one of a chart's settings where the rule says: the defaults and
-/// every chart, or the focused chart alone.
-pub fn change_setting(window: &Rc<Window>, setting: crate::chart_defaults::ChartSetting) {
-    window.change_chart_setting(setting, !LOCAL.get(), || {});
-}
-
 /// Change the look where the rule says: every chart's, or the focused
 /// chart's alone, copying every chart's look onto it on its first change.
 pub fn change(window: &Rc<Window>, edit: LookEdit) {

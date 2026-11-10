@@ -33,9 +33,11 @@ impl Workspace {
             .and_then(|json| serde_json::from_str::<Value>(&json).ok())
             .filter(|value| value.get("books").is_some_and(Value::is_array))
             .unwrap_or_else(|| json!({ "books": [], "active": 0 }));
-        // A chart still written with a link group gets its mode the way the
-        // window gives it one, so both read the same row the same way.
+        // A chart still written with a link group gets its mode, and one
+        // written with one OHLC thickness its look, the way the window gives
+        // them, so both read the same row the same way.
         crate::ui::window::upgrade_link_groups(&mut value, store);
+        crate::ui::window::upgrade_thicknesses(&mut value, store);
         Workspace { value }
     }
 

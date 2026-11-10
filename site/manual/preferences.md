@@ -106,8 +106,7 @@ Everything on this page is the same on every chart, in every chartbook, and chan
 |---|---|---|
 | Theme › **Follow system**, **Catalogue** | The theme: the desktop's, or one picked from every Omarchy theme. | [Choosing a theme](/manual/themes/#choosing-a-theme) |
 | Bars › **Candles**, **OHLC** | The style, as tabs at the group's head. | [Style](/manual/charts/#style) |
-| Bars › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there while the bars are OHLC. | [Style](/manual/charts/#style) |
-| Bars › **Up**, **Down** | Each direction's colour, and its body: filled, bordered or hollow. | [Bars](/manual/themes/#bars) |
+| Bars › **Up**, **Down** | Each direction's colour, and its body for candles (filled, bordered or hollow) or its thickness for OHLC bars: 1, 1.5, 2 or 3 pixels. | [Bars](/manual/themes/#bars) |
 
 ### Overlays
 

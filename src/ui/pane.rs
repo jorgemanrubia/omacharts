@@ -288,8 +288,6 @@ pub struct ChartPane {
     /// Whether its bars are hidden. How they are drawn when they are not is
     /// its look's answer.
     pub bars_hidden: Cell<bool>,
-    /// How many pixels wide its OHLC bars are drawn.
-    pub ohlc_thickness: Cell<u8>,
     pub session: Cell<Session>,
     /// How a futures root's months are joined at the rolls, on a feed
     /// that stitches them; nothing to any other chart.
@@ -827,7 +825,6 @@ impl ChartPane {
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
             bars_hidden: Cell::new(false),
-            ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),
             mode: Cell::new(mode),
@@ -971,13 +968,6 @@ impl ChartPane {
     /// A ring rather than anything louder: with four charts on screen the
     /// focused one has to be obvious at a glance and invisible the moment you
     /// stop looking for it.
-    /// Draw its OHLC bars this many pixels wide.
-    pub fn set_ohlc_thickness(&self, thickness: u8) {
-        let thickness = crate::chart_defaults::clamp_thickness(thickness);
-        self.ohlc_thickness.set(thickness);
-        self.view.set_ohlc_thickness(thickness);
-    }
-
     pub fn set_focused(&self, focused: bool) {
         if focused {
             self.root.add_css_class("focused");

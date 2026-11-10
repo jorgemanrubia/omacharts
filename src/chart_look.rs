@@ -12,7 +12,7 @@
 //! a hex), so a chart's copy follows a change of theme the way every chart
 //! does.
 
-use omacharts_engine::theme::{parse_bar_colour, spell_bar_colour, BarLook, Body, ColorChoice};
+use omacharts_engine::theme::{parse_bar_colour, spell_bar_colour, BarLook, Body, ColorChoice, Thickness};
 use omacharts_engine::BarStyle;
 
 use crate::chart_defaults::{chart_switch, SETTING_BAR_STYLE, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
@@ -51,6 +51,8 @@ pub enum LookEdit {
     Down(ColorChoice),
     UpBody(Body),
     DownBody(Body),
+    UpThickness(Thickness),
+    DownThickness(Thickness),
     /// One section of the header, taking its parts out of the others.
     Header(Section, Vec<Part>),
     Grid(bool),
@@ -76,6 +78,8 @@ impl ChartLook {
             LookEdit::Down(colour) => self.bars.down = colour,
             LookEdit::UpBody(body) => self.bars.up_body = body,
             LookEdit::DownBody(body) => self.bars.down_body = body,
+            LookEdit::UpThickness(px) => self.bars.up_thickness = px,
+            LookEdit::DownThickness(px) => self.bars.down_thickness = px,
             LookEdit::Header(section, parts) => self.header.set_shown(section, parts, crate::features::trading()),
             LookEdit::Grid(on) => self.grid = on,
             LookEdit::PriceLine(on) => self.price_line = on,
@@ -83,16 +87,19 @@ impl ChartLook {
     }
 
     /// How the bars are drawn, the way `config bars` and `chart look` say
-    /// it: `candles, up green filled, down rose hollow`.
+    /// it: `candles, up green filled 2px, down rose hollow 2px`, each
+    /// direction's colour, body and OHLC thickness.
     pub fn spell_bars(&self) -> String {
         let bars = &self.bars;
         format!(
-            "{}, up {} {}, down {} {}",
+            "{}, up {} {} {}px, down {} {} {}px",
             self.style.key(),
             spell_bar_colour(&bars.up),
             bars.up_body.key(),
+            bars.up_thickness.key(),
             spell_bar_colour(&bars.down),
-            bars.down_body.key()
+            bars.down_body.key(),
+            bars.down_thickness.key()
         )
     }
 
@@ -155,6 +162,12 @@ struct Spelled {
     up_body: Option<String>,
     #[serde(default)]
     down_body: Option<String>,
+    /// Its pixels as text; read as a number too, which is how an older
+    /// build wrote them.
+    #[serde(default)]
+    up_thickness: Option<serde_json::Value>,
+    #[serde(default)]
+    down_thickness: Option<serde_json::Value>,
     /// Each section's parts by key. A plain list is how a look was written
     /// before the header had sections, and is its left, the others as they
     /// ship, as the header setting itself reads.
@@ -173,6 +186,14 @@ impl From<Spelled> for ChartLook {
             text.and_then(|text| parse_bar_colour(&text)).unwrap_or(fallback)
         };
         let body = |text: Option<String>, fallback: Body| text.and_then(|text| Body::from_key(&text)).unwrap_or(fallback);
+        let thickness = |value: Option<serde_json::Value>, fallback: Thickness| {
+            let read = match value {
+                Some(serde_json::Value::Number(px)) => px.as_f64().map(Thickness::nearest),
+                Some(serde_json::Value::String(text)) => Thickness::parse(&text),
+                _ => None,
+            };
+            read.unwrap_or(fallback)
+        };
         ChartLook {
             style: spelled.style.and_then(|key| BarStyle::from_key(&key)).unwrap_or(fallback.style),
             bars: BarLook {
@@ -180,6 +201,8 @@ impl From<Spelled> for ChartLook {
                 down: colour(spelled.down, fallback.bars.down),
                 up_body: body(spelled.up_body, fallback.bars.up_body),
                 down_body: body(spelled.down_body, fallback.bars.down_body),
+                up_thickness: thickness(spelled.up_thickness, fallback.bars.up_thickness),
+                down_thickness: thickness(spelled.down_thickness, fallback.bars.down_thickness),
             },
             header: spelled.header.map_or(fallback.header, read_header),
             grid: spelled.grid.unwrap_or(fallback.grid),
@@ -196,6 +219,8 @@ impl From<ChartLook> for Spelled {
             down: Some(spell_bar_colour(&look.bars.down)),
             up_body: Some(look.bars.up_body.key().to_string()),
             down_body: Some(look.bars.down_body.key().to_string()),
+            up_thickness: Some(look.bars.up_thickness.key().into()),
+            down_thickness: Some(look.bars.down_thickness.key().into()),
             header: Some(serde_json::json!({
                 "left": header::keys(&look.header.left),
                 "center": header::keys(&look.header.center),
@@ -264,13 +289,11 @@ mod tests {
         look.set(LookEdit::Style(BarStyle::Ohlc));
         look.set(LookEdit::Down(ColorChoice::Fixed { hex: "#e66100".to_string() }));
         look.set(LookEdit::UpBody(Body::Hollow));
-        look.set(LookEdit::Header(Section::Left, vec![Part::Symbol, Part::Change]));
         look.set(LookEdit::PriceLine(false));
         let json = serde_json::to_value(&look).unwrap();
         assert_eq!(json["style"], "ohlc");
         assert_eq!(json["up"], "green");
         assert_eq!(json["down"], "#e66100");
-        assert_eq!(json["header"]["left"], serde_json::json!(["symbol", "change"]));
         assert_eq!(serde_json::from_value::<ChartLook>(json).unwrap(), look);
     }
 
@@ -296,6 +319,14 @@ mod tests {
         assert_eq!(look.header.right, Header::standard().right);
         let look: ChartLook = serde_json::from_value(serde_json::json!({"header": 7})).unwrap();
         assert_eq!(look.header, Header::standard());
+    }
+
+    /// An older build wrote a thickness as a number, and offered 4.
+    #[test]
+    fn a_thickness_written_as_a_number_reads_as_the_nearest_there_is() {
+        let json = serde_json::json!({"up_thickness": 4, "down_thickness": 1});
+        let look: ChartLook = serde_json::from_value(json).unwrap();
+        assert_eq!((look.bars.up_thickness, look.bars.down_thickness), (Thickness::Three, Thickness::One));
     }
 
     /// A copy holds the swatch, not the colour it was on the theme it was

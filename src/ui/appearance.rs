@@ -17,7 +17,8 @@ use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::BarStyle;
 use omacharts_engine::theme::{
-    foreground, pair_colours, BarLook, BarScheme, Body, ColorChoice, Direction, Swatch, Theme, FOREGROUND,
+    foreground, pair_colours, BarLook, BarScheme, Body, ColorChoice, Direction, Swatch, Theme, Thickness,
+    FOREGROUND,
 };
 
 use crate::chart_look::{ChartLook, LookEdit};
@@ -139,8 +140,9 @@ fn choose_theme(context: &Rc<Context>, id: &str) {
 
 /// The bars as a card: how they are drawn at its head, then Up and Down,
 /// each its colour and, beside it, what the style draws of that direction:
-/// a candle's body. What a style does not draw is not shown, rather than
-/// greyed: a body on OHLC bars, and their thickness on candles.
+/// a candle's body, an OHLC bar's thickness. What a style does not draw is
+/// not shown, rather than greyed: a body on OHLC bars, a thickness on
+/// candles.
 fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
@@ -154,7 +156,6 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
 
     let card = Card::default();
     group.add(&style_head(context, &card));
-    group.add(&thickness_row(context, &card));
     for up in [true, false] {
         group.add(&direction_row(context, &offered, up, &card));
     }
@@ -241,35 +242,16 @@ fn style_head(context: &Rc<Context>, card: &Card) -> adw::PreferencesRow {
     head
 }
 
-/// How many pixels wide OHLC bars are drawn, shown only while they are
-/// what the bars are drawn as. A chart's own setting rather than part of
-/// its look, changed where the rule says as the look is.
-fn thickness_row(context: &Rc<Context>, card: &Card) -> adw::ActionRow {
-    let window = context.window.clone();
-    let row = crate::ui::controls::bounded_row(
-        crate::ui::chart_settings::THICKNESS_LABEL,
-        None,
-        f64::from(scope_rule::settings(&context.window).ohlc_thickness),
-        f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
-        f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
-        1.0,
-        0,
-        move |px| scope_rule::change_setting(&window, crate::chart_defaults::ChartSetting::Thickness(px.round() as u8)),
-    )
-    .row;
-    card.shown_under(&row, |style| style == BarStyle::Ohlc);
-    row
-}
-
-/// One direction's row: its body for candles, then its colour. The colour
-/// last, at the edge, so it does not move with the style.
+/// One direction's row: its body for candles, or its thickness for OHLC
+/// bars, then its colour. The colour last, at the edge, so it does not move
+/// with the style.
 fn direction_row(context: &Rc<Context>, offered: &Theme, up: bool, card: &Card) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(if up { "Up" } else { "Down" });
-    let (colour, body) = {
+    let (colour, body, thickness) = {
         let look = context.look.borrow();
-        let (colour, body) = side(&look.bars, up);
-        (colour.clone(), body)
+        let (colour, body, thickness) = side(&look.bars, up);
+        (colour.clone(), body, thickness)
     };
     let (drawn_by, picked_by) = (context.clone(), context.clone());
     let repaint = card.clone();
@@ -290,6 +272,26 @@ fn direction_row(context: &Rc<Context>, offered: &Theme, up: bool, card: &Card) 
     );
     card.shown_under(&bodies, |style| style == BarStyle::Candles);
     row.add_suffix(&bodies);
+
+    let (drawn_by, picked_by) = (context.clone(), context.clone());
+    let repaint = card.clone();
+    let thicknesses = choice(
+        card,
+        Thickness::ALL.to_vec(),
+        thickness,
+        |px| px.key().to_string(),
+        move |cr, w, h, px| {
+            let mut bars = drawn_by.look.borrow().bars.clone();
+            match up {
+                true => bars.up_thickness = px,
+                false => bars.down_thickness = px,
+            }
+            draw_bar(cr, w, h, &bars.scheme(&drawn_by.theming.borrow().theme()), up, BarStyle::Ohlc);
+        },
+        move |px| change(&picked_by, if up { LookEdit::UpThickness(px) } else { LookEdit::DownThickness(px) }, &repaint),
+    );
+    card.shown_under(&thicknesses, |style| style == BarStyle::Ohlc);
+    row.add_suffix(&thicknesses);
 
     let (ctx, repaint) = (context.clone(), card.clone());
     let chip = palette::chip(offered, colour, move |choice| {
@@ -320,9 +322,9 @@ fn body_word(body: Body) -> &'static str {
 
 /// A dropdown of a few answers, each told by a picture and a word, in the
 /// shape of the colour beside it: its face the answer picked, and its list
-/// the app's menu, the answer picked ticked. Every face is one picture's
-/// box and the longest body wide, so the row does not move as a word or the
-/// style changes; the picture at its
+/// the app's menu, the answer picked ticked. Every face, a body's or a
+/// thickness's, is one picture's box and the longest body wide, so the
+/// row does not move as a word or the style changes; the picture at its
 /// left, the chevron after the word, and the room left over after that: a
 /// chevron out at the edge would sit against the colour's dot and read as
 /// the colour's. `draw` paints an answer's picture when it is drawn, so
@@ -446,11 +448,11 @@ fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
     area
 }
 
-/// One direction's half of the look: its colour and its body.
-fn side(look: &BarLook, up: bool) -> (&ColorChoice, Body) {
+/// One direction's half of the look: its colour, its body and its thickness.
+fn side(look: &BarLook, up: bool) -> (&ColorChoice, Body, Thickness) {
     match up {
-        true => (&look.up, look.up_body),
-        false => (&look.down, look.down_body),
+        true => (&look.up, look.up_body, look.up_thickness),
+        false => (&look.down, look.down_body, look.down_thickness),
     }
 }
 
@@ -465,16 +467,21 @@ fn draw_bar(cr: &gtk::cairo::Context, w: f64, h: f64, scheme: &BarScheme, up: bo
     cr.set_line_width(1.0);
     match style {
         BarStyle::Ohlc => {
-            // The open to the left, the close to the right.
-            let (open, close) = if up { (bottom, top) } else { (top, bottom) };
-            cr.set_line_width(1.5);
+            // As thick as the chart draws it, its edge on a pixel's as the
+            // chart's is; the open to the left, the close to the right.
+            let px = if up { scheme.up_thickness } else { scheme.down_thickness };
+            let centre = (px / 2.0).fract();
+            let x = (w / 2.0).floor() + centre;
+            let (open, close) = if up { (bottom + centre, top + centre) } else { (top + centre, bottom + centre) };
+            cr.set_line_width(px);
             colors::set_source(cr, scheme.outline(direction));
             cr.move_to(x, 1.0);
             cr.line_to(x, h - 1.0);
-            cr.move_to(left, open);
+            let reach = (h * 0.3).round();
+            cr.move_to(x - reach, open);
             cr.line_to(x, open);
             cr.move_to(x, close);
-            cr.line_to(left + width, close);
+            cr.line_to(x + reach, close);
             let _ = cr.stroke();
         }
         BarStyle::Candles => {

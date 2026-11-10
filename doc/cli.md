@@ -628,7 +628,7 @@ A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--title`,
-`--thickness`, `--bars`, `--session`, `--auto-scale`, `--log-scale`,
+`--bars`, `--session`, `--auto-scale`, `--log-scale`,
 `--indicators`, `--legend` and `--drawings` — and those are stored with the
 chart, so a price axis held still with `--auto-scale off` is still held the
 next time the app opens. `--bars off` hides the chart's bars, for a chart that
@@ -957,7 +957,7 @@ pos:0 NVDA 1D in Macro follows all charts
   [exit 0]
 
 $ omacharts chart look --style ohlc --grid off
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled, down rose filled, grid off, price line on, header symbol,resolution
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution
   [exit 0]
 
 $ omacharts chart look --follow
@@ -965,8 +965,8 @@ pos:0 NVDA 1D in Macro now follows all charts
   [exit 0]
 ```
 
-`--style`, `--up`, `--down`, `--up-body` and `--down-body` take what
-`config bars` takes, `--header` what `config set chart_header` takes, and
+`--style`, `--up`, `--down`, `--up-body`, `--down-body`, `--up-thickness`
+and `--down-thickness` take what `config bars` takes, `--header` what `config set chart_header` takes, and
 `--grid` and `--price-line` `on` or `off`. Colours are kept as the names
 given, so a chart's own look follows a change of theme as every chart's
 does. A split copies the chart's own look, and so does `chartbook duplicate`.
@@ -1157,11 +1157,11 @@ up green filled, down rose filled
   [exit 0]
 
 $ omacharts config bars red-up --up-body hollow
-bars are now candles, up rose hollow, down green filled
+bars are now candles, up rose hollow 2px, down green filled 2px
   [exit 0]
 
 $ omacharts config bars --style ohlc
-bars are now ohlc, up rose hollow, down green filled
+bars are now ohlc, up rose hollow 2px, down green filled 2px
   [exit 0]
 ```
 
@@ -1171,22 +1171,23 @@ Each direction has a colour (`--up`, `--down`: a theme colour by name —
 green, rose, blue, amber, violet, teal, orange, cyan — `foreground` for
 the theme's text colour, or a `#rrggbb` hex, which the theme leaves alone) and a
 body (`--up-body`, `--down-body`): `filled`, `bordered` (its wick and body
-edge in the theme's text colour, as TradingView draws one) or `hollow`.
-`STATE` sets both colours at once: `coloured`, `red-up` (the theme's colours
+edge in the theme's text colour, as TradingView draws one) or `hollow`,
+and a thickness for its OHLC bars (`--up-thickness`, `--down-thickness`):
+`1`, `1.5`, `2` or `3` pixels, `2` until set. `STATE` sets both colours at once: `coloured`, `red-up` (the theme's colours
 the other way round, red for a rise, the way charts are read in Taiwan,
 mainland China, Japan and Korea) or `monochrome`. A flag changes only its own
 answer, and wins over `STATE`. Stored as `bar_up`, `bar_down`,
-`bar_up_hollow`, `bar_down_hollow`, `bar_up_border` and `bar_down_border`.
+`bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border`,
+`bar_up_thickness` and `bar_down_thickness`.
 
 Volume bars are always solid, in the candles' colours, drawn at
 `--opacity`, 0.2 to 1 and 0.85 unless set. The look is every chart's, except on a chart with a look of
 its own (`chart look`).
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts › Settings: `ohlc_thickness`, `chart_session`,
-`chart_log_scale`, `chart_template`, `chart_shows_drawings`,
-`chart_sends_drawings` and `chart_shows_legend`. Changing one chart never
-changes them.
+show under Charts › Settings: `chart_session`, `chart_log_scale`,
+`chart_template`, `chart_shows_drawings`, `chart_sends_drawings` and
+`chart_shows_legend`. Changing one chart never changes them.
 
 The theme is another. `config theme` lists the themes, the one in use
 starred: `system`, which follows the desktop's Omarchy theme as it changes,

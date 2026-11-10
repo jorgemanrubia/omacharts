@@ -70,12 +70,9 @@ const KEYS: &[(&str, Kind)] = &[
 #[cfg(test)]
 const SHARED: &[&str] = &[
     "theme",
-    "bar_scheme",
-    "ohlc_thickness",
     // How orders and positions are drawn: a trader's colours, the same on
     // every machine they trade from.
     "trading_look",
-    "coloured_bar_scheme",
     "workspace",
     "timeframes",
     "indicators",
@@ -103,6 +100,8 @@ const SHARED: &[&str] = &[
     "bar_down_hollow",
     "bar_up_border",
     "bar_down_border",
+    "bar_up_thickness",
+    "bar_down_thickness",
     "chart_session",
     "chart_continuous",
     "show_grid",

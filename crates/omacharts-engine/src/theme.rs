@@ -550,7 +550,7 @@ impl Direction {
 /// Colour, edge and body are separate so a candle can be hollow (a
 /// transparent body), solid (body == edge), or bordered (edge != body) with
 /// no other machinery.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BarScheme {
     /// The direction's colour: what an OHLC bar, a line or a price tag is
     /// drawn in.
@@ -563,6 +563,9 @@ pub struct BarScheme {
     pub down_fill: String,
     /// Used when open == close.
     pub neutral: String,
+    /// How many pixels wide a rising OHLC bar is drawn, and a falling one.
+    pub up_thickness: f64,
+    pub down_thickness: f64,
 }
 
 impl BarScheme {
@@ -638,6 +641,59 @@ pub struct BarLook {
     pub down: ColorChoice,
     pub up_body: Body,
     pub down_body: Body,
+    /// An OHLC bar's width, per direction: a body is a candle's, and a
+    /// thickness is what an OHLC bar has in its place.
+    pub up_thickness: Thickness,
+    pub down_thickness: Thickness,
+}
+
+/// How wide an OHLC bar is drawn: one of a few widths rather than any
+/// number, because past 3 pixels a bar stops reading as a bar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Thickness {
+    One,
+    OneAndAHalf,
+    #[default]
+    Two,
+    Three,
+}
+
+impl Thickness {
+    pub const ALL: [Thickness; 4] = [Thickness::One, Thickness::OneAndAHalf, Thickness::Two, Thickness::Three];
+
+    /// As it is stored, typed and shown: its pixels.
+    pub fn key(self) -> &'static str {
+        match self {
+            Thickness::One => "1",
+            Thickness::OneAndAHalf => "1.5",
+            Thickness::Two => "2",
+            Thickness::Three => "3",
+        }
+    }
+
+    pub fn px(self) -> f64 {
+        match self {
+            Thickness::One => 1.0,
+            Thickness::OneAndAHalf => 1.5,
+            Thickness::Two => 2.0,
+            Thickness::Three => 3.0,
+        }
+    }
+
+    /// The width there is nearest `px`: what an older build stored as any
+    /// whole number from 1 to 4, or a hand typed into a settings row.
+    pub fn nearest(px: f64) -> Thickness {
+        Thickness::ALL
+            .into_iter()
+            .min_by(|a, b| (a.px() - px).abs().total_cmp(&(b.px() - px).abs()))
+            .unwrap_or_default()
+    }
+
+    /// A number of pixels as text, to the nearest width there is; `None`
+    /// for anything that is not a number.
+    pub fn parse(text: &str) -> Option<Thickness> {
+        text.trim().parse::<f64>().ok().filter(|px| px.is_finite()).map(Thickness::nearest)
+    }
 }
 
 /// How a candle's body is drawn in its colour.
@@ -694,6 +750,8 @@ impl Default for BarLook {
             down: ColorChoice::swatch("Rose"),
             up_body: Body::Filled,
             down_body: Body::Filled,
+            up_thickness: Thickness::default(),
+            down_thickness: Thickness::default(),
         }
     }
 }
@@ -737,6 +795,8 @@ impl BarLook {
             },
             up,
             down,
+            up_thickness: self.up_thickness.px(),
+            down_thickness: self.down_thickness.px(),
         }
     }
 }
@@ -1775,6 +1835,20 @@ mod tests {
         assert_eq!(rgba_alpha(&hollow.up_fill), 0);
         assert_eq!(hollow.down_fill, filled.down_fill, "the other direction is untouched");
         assert_eq!(hollow.volume(Direction::Up), filled.volume(Direction::Up), "volume is never hollow");
+    }
+
+    /// Every width reads back as itself, and any other number, such as the
+    /// 4 an older build offered, as the nearest width there is.
+    #[test]
+    fn a_thickness_reads_as_the_nearest_width_there_is() {
+        for thickness in Thickness::ALL {
+            assert_eq!(Thickness::parse(thickness.key()), Some(thickness));
+        }
+        assert_eq!(Thickness::parse("4"), Some(Thickness::Three));
+        assert_eq!(Thickness::parse(" 40 "), Some(Thickness::Three));
+        assert_eq!(Thickness::parse("0"), Some(Thickness::One));
+        assert_eq!(Thickness::parse("thick"), None);
+        assert_eq!(Thickness::parse("NaN"), None);
     }
 
     #[test]

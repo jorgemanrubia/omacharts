@@ -120,7 +120,7 @@ Charts draw their bars in the style picked at the head of Preferences › Appear
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
 
-OHLC bars have a **Thickness**, from 1 to 4 pixels and 2 by default: the **Thickness** row under **Style** in Preferences › Appearance › Bars, there while the bars are OHLC, for every chart and for new ones; `omacharts chart set --thickness` sets one chart's. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
+OHLC bars have a thickness, 1, 1.5, 2 or 3 pixels and 2 by default, for rising and falling bars apart. It is part of the bars' look, beside each direction's colour in Preferences › Appearance › [Bars](/manual/themes/#bars), there while the bars are OHLC bars, and `omacharts config bars --up-thickness`, `--down-thickness` sets it too. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -131,7 +131,7 @@ state:
 capture: bin/headless-window shot /tmp/thickness.png
 crop: the Bars group
 -->
-{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="Preferences › Appearance › Bars on OHLC bars, with the Thickness slider under Style" caption="Thickness, under Style on OHLC bars." %}
+{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="The Bars group of Preferences › Appearance on OHLC bars, Down's thickness list open on 1, 1.5, 2 and 3" caption="Each direction's thickness, beside its colour on OHLC bars." %}
 
 <!-- regenerate:
 theme: tokyo-night
