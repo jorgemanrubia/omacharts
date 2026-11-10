@@ -48,7 +48,12 @@ pub fn index_of(month: Month) -> Option<usize> {
 
 /// The feed: the months it holds, what it declares, and what it was asked.
 pub struct Months {
+    /// `months` unless a test needs what is known of its rolls to itself.
+    pub id: &'static str,
     pub held: Vec<usize>,
+    /// Months with no history before they became front, by index: their
+    /// roll into them has nothing to measure.
+    pub late: Vec<usize>,
     pub native: &'static [Adjustment],
     pub per_contract: bool,
     pub ladders: bool,
@@ -68,7 +73,9 @@ impl Months {
 
     pub fn without(missing: &[usize]) -> Months {
         Months {
+            id: "months",
             held: (0..MONTHS.len()).filter(|index| !missing.contains(index)).collect(),
+            late: Vec::new(),
             native: &[],
             per_contract: true,
             ladders: true,
@@ -83,6 +90,13 @@ impl Months {
         let (root, month) = contracts::parse(symbol, day("2026-11-10"))?;
         (root == "ES").then_some(())?;
         index_of(month).filter(|index| self.held.contains(index))
+    }
+
+    /// Forget what is known only for as long as the app runs, as a restart
+    /// does: which series were drawn short, and the gaps.
+    pub fn restart() {
+        *super::DEGRADED.lock().unwrap() = None;
+        *super::GAPS.lock().unwrap() = None;
     }
 
     /// Chart the root as `contract` from now on: the rule rolled.
@@ -113,7 +127,7 @@ pub fn series(index: usize, timeframe: Timeframe, since: Option<i64>) -> Vec<Bar
 
 impl Provider for Months {
     fn id(&self) -> &'static str {
-        "months"
+        self.id
     }
     fn label(&self) -> &'static str {
         "Months"
@@ -149,7 +163,13 @@ impl Provider for Months {
         if self.unreadable.lock().unwrap().contains(&index) {
             return Err(ProviderError::Network("busy".into()));
         }
-        Ok(series(index, timeframe, since))
+        let mut bars = series(index, timeframe, since);
+        if self.late.contains(&index) {
+            let rule = contracts::rule_of("ES");
+            let starts = rule.roll(super::previous(&rule, month(index))).unwrap();
+            bars.retain(|bar| bar.ts >= midnight(starts));
+        }
+        Ok(bars)
     }
     fn stream(&self) -> Option<&dyn Stream> {
         Some(self)

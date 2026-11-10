@@ -783,7 +783,16 @@ fn fill(
     // The minute trading now is the live feed's.
     let to = now.div_euclid(60) * 60;
     let mut asked = Vec::new();
-    for (a, b) in store.missing_ladders(key, from, to) {
+    // A stitched root's holes asked a month at a time: a span its feed
+    // cannot move just now waits, and the others, the front month's own
+    // among them, are kept.
+    let holes = store.missing_ladders(key, from, to).into_iter().flat_map(|(a, b)| {
+        let mut edges = vec![a];
+        edges.extend(omacharts_engine::continuous::roll_cuts(symbol, a, b));
+        edges.push(b);
+        edges.windows(2).map(|pair| (pair[0], pair[1])).collect::<Vec<_>>()
+    });
+    for (a, b) in holes {
         match ladders.minutes(symbol, tick_size, a, b) {
             Ok(minutes) => {
                 if store.save_ladder_history(key, tick_size, days, a, b, &minutes).is_ok() {

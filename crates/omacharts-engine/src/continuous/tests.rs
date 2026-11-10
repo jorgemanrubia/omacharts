@@ -309,8 +309,16 @@ fn a_root_followed_live_is_heard_to_roll_once_its_feed_charts_the_next_month() {
     let into = heard.clone();
     on_rolled(move || {
         into.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        true
     });
     let heard = || heard.load(std::sync::atomic::Ordering::SeqCst);
+    // One that stops listening, as a closed window does, hears no more.
+    let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let into = closed.clone();
+    on_rolled(move || {
+        into.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        false
+    });
 
     assert!(!check_rolls(), "nothing rolled");
     assert_eq!(heard(), 0);
@@ -318,8 +326,15 @@ fn a_root_followed_live_is_heard_to_roll_once_its_feed_charts_the_next_month() {
     assert!(check_rolls(), "the feed charts the root as December now");
     assert_eq!(heard(), 1);
     assert!(!check_rolls(), "heard once");
-    assert_eq!(feed.symbol_for(&es()).as_deref(), Some("ES~ESZ26~back-adjusted"), "routed again, it is December's");
+    let december = feed.symbol_for(&es()).unwrap();
+    assert_eq!(december, "ES~ESZ26~back-adjusted", "routed again, it is December's");
     assert_eq!(drawn_front(&symbol).as_deref(), Some("ESU26"), "what the old chart's last price is a price of");
+
+    let _again = feed.stream().unwrap().subscribe(&december, Timeframe::days(1), None, Box::new(|_| {})).unwrap();
+    feed.months.roll_to("ESH7");
+    assert!(check_rolls());
+    assert_eq!(heard(), 2);
+    assert_eq!(closed.load(std::sync::atomic::Ordering::SeqCst), 1, "let go once it stopped listening");
 }
 
 #[test]
@@ -351,6 +366,64 @@ fn a_gap_is_measured_on_daily_bars_whatever_the_timeframe_asked() {
     let roll = contracts::rule_of("ES").roll(month(2)).unwrap();
     let hourly = gap(&*feed.months, "ES", month(2), month(3), roll, Timeframe::hours(1));
     let minutes = gap(&*feed.months, "ES", month(2), month(3), roll, Timeframe::minutes(1));
-    assert_eq!(hourly, Some(PREMIUM));
+    assert_eq!(hourly, Gap::Measured(PREMIUM));
     assert_eq!(hourly, minutes, "a series and its ladders moved alike");
+}
+
+/// A feed of its own name, so what is known of its rolls is its own.
+fn named(id: &'static str, months: Months) -> Feed {
+    continuous(Months { id, ..months })
+}
+
+#[test]
+fn a_roll_with_nothing_to_measure_is_joined_as_it_is_once_and_for_all() {
+    // September's history starts the day it became front: June and
+    // September never traded at the same time.
+    let feed = named("months-late", Months { late: vec![3], ..Months::all() });
+    let roll = contracts::rule_of("ES").roll(month(2)).unwrap();
+    assert_eq!(gap(&*feed.months, "ES", month(2), month(3), roll, Timeframe::hours(1)), Gap::Unmeasurable);
+    let daily = Timeframe::days(1);
+    let symbol = spelled(Adjustment::BackAdjusted);
+    let bars = feed.bars(&symbol, daily, None).unwrap();
+    assert!(!drawn_short("months-late", &symbol, daily), "a stitch that is all it can be is not short");
+    // Each month moved by the gaps after it but the one there is none of.
+    assert_drawn_from_the_front(&bars, daily, |front| PREMIUM * ((4 - front) - usize::from(front <= 2)) as f64);
+    let said = crate::log::global().entries();
+    assert!(said.iter().any(|entry| entry.line().contains("no price of ESM26 and ESU26 at the same time before the roll")), "not said");
+
+    // Its ladders are moved alike, across that roll too.
+    let at = cut("ES", roll, Timeframe::minutes(1));
+    let minutes = Ladders::minutes(&*feed, &symbol, 0.25, at - 5 * 3_600, at + 5 * 3_600).unwrap();
+    assert_eq!(minutes.len(), 10);
+}
+
+#[test]
+fn a_roll_that_could_not_be_measured_just_now_holds_back_only_the_ladders_before_it() {
+    let feed = named("months-busy", Months::all());
+    let roll = contracts::rule_of("ES").roll(month(3)).unwrap();
+    let at = cut("ES", roll, Timeframe::minutes(1));
+    let symbol = spelled(Adjustment::BackAdjusted);
+    let (from, to) = (at - 5 * 3_600, at + 5 * 3_600);
+    assert_eq!(roll_cuts(&symbol, from, to), [at], "split where the front month starts");
+    assert_eq!(roll_cuts("ESZ26", from, to), Vec::<i64>::new());
+    *feed.months.unreadable.lock().unwrap() = vec![3];
+    assert!(Ladders::minutes(&*feed, &symbol, 0.25, from, at).is_err(), "September moved by a guess");
+    let front = Ladders::minutes(&*feed, &symbol, 0.25, at, to).unwrap();
+    assert_eq!(front.len(), 5, "December's own, whatever September's");
+    *feed.months.unreadable.lock().unwrap() = Vec::new();
+    assert_eq!(Ladders::minutes(&*feed, &symbol, 0.25, from, at).unwrap().len(), 5, "asked again, measured");
+}
+
+#[test]
+fn what_was_drawn_short_is_known_until_it_is_drawn_whole() {
+    let feed = named("months-short", Months::all());
+    let daily = Timeframe::days(1);
+    let symbol = spelled(Adjustment::AsTraded);
+    *feed.months.unreadable.lock().unwrap() = vec![1];
+    feed.bars(&symbol, daily, None).unwrap();
+    assert!(drawn_short("months-short", &symbol, daily));
+    assert!(!drawn_short("months-short", &symbol, Timeframe::hours(1)), "by timeframe");
+    *feed.months.unreadable.lock().unwrap() = Vec::new();
+    feed.bars(&symbol, daily, Some(last())).unwrap();
+    assert!(!drawn_short("months-short", &symbol, daily));
 }

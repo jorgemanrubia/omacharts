@@ -9566,9 +9566,9 @@ impl Window {
     /// ladders of its own — and every other chart keeps what it has.
     fn wire_rolls(self: &Rc<Self>) {
         let (said, heard) = async_channel::unbounded::<()>();
-        omacharts_engine::continuous::on_rolled(move || {
-            let _ = said.try_send(());
-        });
+        // Heard for as long as the window is open: once it has gone, so has
+        // the receiving end, and the engine lets this go.
+        omacharts_engine::continuous::on_rolled(move || said.try_send(()).is_ok());
         let this = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             while heard.recv().await.is_ok() {

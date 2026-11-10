@@ -614,11 +614,22 @@ impl Writer {
                             for bar in snapshot {
                                 upsert(&mut fresh, bar);
                             }
-                            let bars = store.merge_bars(&series.key, series.native, &fresh);
+                            // A stitched root drawn short just now is not
+                            // kept, as the loader keeps none: what is kept
+                            // of it goes, and it is read whole next time.
+                            let bars = match crate::loader::drawn_short(&series.key, series.native) {
+                                true => {
+                                    store.drop_series(&series.key, series.native);
+                                    fresh
+                                }
+                                false => store.merge_bars(&series.key, series.native, &fresh),
+                            };
                             Written::Merged { series, bars }
                         }
                         Job::Write { series, bars } => {
-                            store.merge_bars(&series.key, series.native, &bars);
+                            if !crate::loader::drawn_short(&series.key, series.native) {
+                                store.merge_bars(&series.key, series.native, &bars);
+                            }
                             Written::Flushed { series }
                         }
                         Job::Sync(done) => {

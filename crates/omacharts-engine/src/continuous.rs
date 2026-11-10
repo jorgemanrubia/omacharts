@@ -408,7 +408,26 @@ fn stand_in(newer: &mut Span, starts: NaiveDate, from: i64, months: Vec<Month>, 
 type Roll = (String, String, Month, Month, NaiveDate, Option<Timeframe>);
 
 /// The gaps between months at rolls: a roll in the past never changes.
-static GAPS: Mutex<Option<HashMap<Roll, f64>>> = Mutex::new(None);
+/// `None` for a roll whose months have no price at the same time before it,
+/// read whole: one that will never be measured.
+static GAPS: Mutex<Option<HashMap<Roll, Option<f64>>>> = Mutex::new(None);
+
+/// What is known of the gap at a roll.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Gap {
+    Measured(f64),
+    /// Both months were read and never traded at the same time before the
+    /// roll: there is nothing to measure, now or later.
+    Unmeasurable,
+    /// A month could not be read just now: asked again next time.
+    Unknown,
+}
+
+impl Gap {
+    fn of(kept: Option<f64>) -> Gap {
+        kept.map_or(Gap::Unmeasurable, Gap::Measured)
+    }
+}
 
 /// The bars a gap is measured on when there are no daily ones: hourly where
 /// the feed has them, so a series and its ladders, asked at different
@@ -425,56 +444,77 @@ fn fallback_basis(inner: &dyn Provider, timeframe: Timeframe) -> Timeframe {
 /// both have a daily bar before the roll, whatever the series' timeframe;
 /// else, on hourly bars, or the series' own where the feed has no hourly
 /// ones, the older month's last bar before the roll and the newer month's
-/// at the same time. `None` when neither says.
-fn gap(inner: &dyn Provider, root: &str, older: Month, newer: Month, roll: NaiveDate, timeframe: Timeframe) -> Option<f64> {
+/// at the same time.
+pub(crate) fn gap(inner: &dyn Provider, root: &str, older: Month, newer: Month, roll: NaiveDate, timeframe: Timeframe) -> Gap {
     let basis = fallback_basis(inner, timeframe);
     let key = |on: Option<Timeframe>| (inner.id().to_string(), root.to_string(), older, newer, roll, on);
     let known = |on: Option<Timeframe>| GAPS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|gaps| gaps.get(&key(on)).copied());
-    if let Some(gap) = known(None) {
-        return Some(gap);
+    let keep = |on: Option<Timeframe>, gap: Option<f64>| {
+        GAPS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key(on), gap);
+    };
+    if let Some(kept) = known(None) {
+        return Gap::of(kept);
     }
     let timeframe = basis;
+    // A month's bars, none when the feed has none of it; `Err` when it could
+    // not be read just now.
+    let read = |month: Month, on: Timeframe, since: i64| -> Result<Vec<Bar>, ()> {
+        match inner.bars(&contract(root, month), on, Some(since)) {
+            Ok(bars) => Ok(bars),
+            Err(ProviderError::NotFound) => Ok(Vec::new()),
+            Err(_) => Err(()),
+        }
+    };
     let close_before = |bars: &[Bar], before: i64| bars.iter().rev().find(|bar| bar.ts < before).copied();
     let daily = Timeframe::days(1);
-    let by_day = || -> Option<f64> {
+    let by_day = || -> Result<Option<f64>, ()> {
         let since = midnight(roll - chrono::Duration::days(14));
-        let older = inner.bars(&contract(root, older), daily, Some(since)).ok()?;
-        let newer = inner.bars(&contract(root, newer), daily, Some(since)).ok()?;
-        let day = older.iter().rev().filter(|bar| bar.ts < midnight(roll)).find(|bar| newer.iter().any(|n| n.ts == bar.ts))?;
-        let then = newer.iter().find(|n| n.ts == day.ts)?;
-        Some(then.close - day.close)
+        let (older, newer) = (read(older, daily, since)?, read(newer, daily, since)?);
+        let day = older.iter().rev().filter(|bar| bar.ts < midnight(roll)).find(|bar| newer.iter().any(|n| n.ts == bar.ts));
+        Ok(day.and_then(|day| newer.iter().find(|n| n.ts == day.ts).map(|then| then.close - day.close)))
     };
-    let by_bar = || -> Option<f64> {
+    let by_bar = || -> Result<Option<f64>, ()> {
         let at = cut(root, roll, timeframe);
         let since = at - 7 * 86_400;
-        let older = inner.bars(&contract(root, older), timeframe, Some(since)).ok()?;
-        let last = close_before(&older, at)?;
-        let newer = inner.bars(&contract(root, newer), timeframe, Some(since)).ok()?;
-        let then = close_before(&newer, last.ts + 1)?;
-        Some(then.close - last.close)
+        let (older, newer) = (read(older, timeframe, since)?, read(newer, timeframe, since)?);
+        let Some(last) = close_before(&older, at) else { return Ok(None) };
+        Ok(close_before(&newer, last.ts + 1).map(|then| then.close - last.close))
+    };
+    let rounded = |gap: f64| match crate::specs::tick(root) {
+        Some(tick) if tick > 0.0 => (gap / tick).round() * tick,
+        _ => gap,
     };
     // Daily first even when an hourly gap is known: one measured on hourly
     // bars while the daily ones could not be read gives way to the daily
     // one as soon as they can, for the series and its ladders alike.
-    let (gap, on) = match inner.serves(daily).then(by_day).flatten() {
-        Some(gap) => (gap, None),
-        None => match known(Some(timeframe)) {
-            Some(gap) => return Some(gap),
-            None => (by_bar()?, Some(timeframe)),
-        },
-    };
-    let gap = match crate::specs::tick(root) {
-        Some(tick) if tick > 0.0 => (gap / tick).round() * tick,
-        _ => gap,
-    };
-    GAPS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key(on), gap);
-    Some(gap)
+    let by_day = inner.serves(daily).then(by_day);
+    if let Some(Ok(Some(gap))) = by_day {
+        let gap = rounded(gap);
+        keep(None, Some(gap));
+        return Gap::Measured(gap);
+    }
+    if let Some(kept) = known(Some(timeframe)) {
+        return Gap::of(kept);
+    }
+    match (by_day, by_bar()) {
+        (_, Ok(Some(gap))) => {
+            let gap = rounded(gap);
+            keep(Some(timeframe), Some(gap));
+            Gap::Measured(gap)
+        }
+        // Every month read, and no time they both traded: never measured.
+        (None | Some(Ok(None)), Ok(None)) => {
+            keep(Some(timeframe), None);
+            Gap::Unmeasurable
+        }
+        _ => Gap::Unknown,
+    }
 }
 
 /// What each span is moved by, in its order: nothing for the front month,
 /// and for each before it the gaps at every roll after it. As traded,
 /// nothing for any. A roll with no gap to be had is joined as it is, and
-/// goes in `unjoined`.
+/// one whose months could not be read to measure it goes in `unjoined`.
 fn offsets(inner: &dyn Provider, root: &str, months: &[(Month, NaiveDate)], adjustment: Adjustment, timeframe: Timeframe, unjoined: &mut Vec<Month>) -> Vec<f64> {
     let mut offsets = Vec::with_capacity(months.len());
     let mut total = 0.0;
@@ -482,13 +522,18 @@ fn offsets(inner: &dyn Provider, root: &str, months: &[(Month, NaiveDate)], adju
         if at > 0 && adjustment == Adjustment::BackAdjusted {
             let (newer, roll) = months[at - 1];
             match gap(inner, root, *month, newer, roll, timeframe) {
-                Some(gap) => total += gap,
-                None => {
+                Gap::Measured(gap) => total += gap,
+                Gap::Unmeasurable => say_once(
+                    format!("gap {root} {month:?}"),
+                    inner.label(),
+                    format!("{root}: no price of {} and {} at the same time before the roll, so they are joined without adjusting", contract(root, *month), contract(root, newer)),
+                ),
+                Gap::Unknown => {
                     unjoined.push(*month);
                     say_once(
-                        format!("gap {root} {month:?}"),
+                        format!("gap unknown {root} {month:?}"),
                         inner.label(),
-                        format!("{root}: no price of {} and {} on the same day before the roll, so they are joined without adjusting", contract(root, *month), contract(root, newer)),
+                        format!("{root}: {} or {} could not be read to measure the roll, so they are joined without adjusting until they can be", contract(root, *month), contract(root, newer)),
                     )
                 }
             }
@@ -562,7 +607,7 @@ fn stitched(inner: &dyn Provider, spelled: &Spelled, timeframe: Timeframe, since
 
 /// A stitched series, as [`DEGRADED`] knows it: the feed, the spelling and
 /// the timeframe.
-type Series = (&'static str, String, Timeframe);
+type Series = (String, String, Timeframe);
 
 /// The series last stitched short of what they should be. Drawn again
 /// whole the next time they are asked for, as though nothing were cached:
@@ -572,6 +617,13 @@ static DEGRADED: Mutex<Option<HashSet<Series>>> = Mutex::new(None);
 
 fn degraded(series: &Series) -> bool {
     DEGRADED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|degraded| degraded.contains(series))
+}
+
+/// Whether feed `provider`'s `symbol` at `timeframe` was last stitched short
+/// of what it should be: what was drawn is shown, and not to be kept, so a
+/// restart reads it whole too.
+pub fn drawn_short(provider: &str, symbol: &str, timeframe: Timeframe) -> bool {
+    degraded(&(provider.to_string(), symbol.to_string(), timeframe))
 }
 
 fn note_degraded(series: Series, short: bool) {
@@ -597,7 +649,7 @@ struct Followed {
 }
 
 static FOLLOWED: Mutex<Vec<Followed>> = Mutex::new(Vec::new());
-type Listener = Box<dyn Fn() + Send + Sync>;
+type Listener = Box<dyn Fn() -> bool + Send + Sync>;
 static ROLLED: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
 static CHECKING: std::sync::Once = std::sync::Once::new();
 
@@ -635,8 +687,9 @@ fn follow(inner: Arc<dyn Provider>, spelled: Spelled, subscription: Box<dyn Subs
 /// Be told when a stitched root followed live has rolled: its feed's front
 /// month is no longer the one it is drawn up to. The chart's symbol names
 /// that month, so whoever hears this routes it again, to a series, a stream
-/// and ladders of the month that is front now. Called from any thread.
-pub fn on_rolled(listener: impl Fn() + Send + Sync + 'static) {
+/// and ladders of the month that is front now. Called from any thread, for
+/// as long as it says it is still listening.
+pub fn on_rolled(listener: impl Fn() -> bool + Send + Sync + 'static) {
     ROLLED.lock().unwrap_or_else(|e| e.into_inner()).push(Box::new(listener));
 }
 
@@ -661,9 +714,7 @@ pub fn check_rolls() -> bool {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|followed| !rolled.iter().any(|(root, front)| *root == followed.root && *front == followed.front));
-    for listener in ROLLED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-        listener();
-    }
+    ROLLED.lock().unwrap_or_else(|e| e.into_inner()).retain(|listener| listener());
     true
 }
 
@@ -671,6 +722,25 @@ pub fn check_rolls() -> bool {
 fn front_now(inner: &dyn Provider, root: &str) -> Option<Month> {
     let front = inner.charted_contract(&root_instrument(root))?;
     contracts::parse(&front, contracts::today()).filter(|(of, _)| of == root).map(|(_, month)| month)
+}
+
+/// Where a stitched symbol's months change between `from` and `to`, oldest
+/// first, on minute bars: where to split a request for its ladders so that
+/// each is of one month and moved by one offset. None for any other symbol.
+pub fn roll_cuts(symbol: &str, from: i64, to: i64) -> Vec<i64> {
+    let Some(spelled) = Spelled::parse(symbol) else { return Vec::new() };
+    let mut cuts = Vec::new();
+    for (_, starts) in schedule(&spelled.root, spelled.front).take(600) {
+        let at = cut(&spelled.root, starts, Timeframe::minutes(1));
+        if at <= from {
+            break;
+        }
+        if at < to {
+            cuts.push(at);
+        }
+    }
+    cuts.reverse();
+    cuts
 }
 
 /// The contract a stitched symbol is drawn up to, `ESZ26`, as the feed was
@@ -766,7 +836,7 @@ impl Provider for Continuous {
     /// bars it gets disagree with it.
     fn bars(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
         let Some(spelled) = Spelled::parse(symbol) else { return self.inner.bars(symbol, timeframe, since) };
-        let series = (self.inner.id(), symbol.to_string(), timeframe);
+        let series = (self.inner.id().to_string(), symbol.to_string(), timeframe);
         let since = since.filter(|_| !degraded(&series));
         let fetch = fetch_from(self.inner.as_ref(), &spelled.root, timeframe);
         let (bars, short) = stitched(self.inner.as_ref(), &spelled, timeframe, since, &fetch)?;
@@ -837,7 +907,7 @@ impl Stream for Continuous {
         let stream = self.inner.stream().ok_or_else(|| ProviderError::Unsupported("no stream".into()))?;
         let Some((spelled, front)) = Continuous::front_of(symbol) else { return stream.subscribe(symbol, timeframe, since, sink) };
         let inner = self.inner.clone();
-        let series = (self.inner.id(), symbol.to_string(), timeframe);
+        let series = (self.inner.id().to_string(), symbol.to_string(), timeframe);
         let following = spelled.clone();
         let stitching: Sink = Box::new(move |update| match update {
             Update::Snapshot(bars) => {
@@ -963,7 +1033,9 @@ impl Ladders for Continuous {
             }
         }
         // Ladders are kept once read, so a span is not moved by a guess: with
-        // a gap missing nothing is kept, and the next chart asks again.
+        // a gap that could not be measured just now nothing is kept, and the
+        // next chart asks again. Asked a span at a time, as [`roll_cuts`]
+        // splits a request, only the spans before that roll wait.
         let mut unjoined = Vec::new();
         let offsets = offsets(self.inner.as_ref(), root, &drawn, spelled.adjustment, Timeframe::days(1), &mut unjoined);
         if let Some(month) = unjoined.first() {
