@@ -57,6 +57,25 @@ pub fn shown() -> bool {
     true
 }
 
+/// A profile's rows at the strength they are designed at, as every profile
+/// was drawn before it could be faded.
+pub fn opaque() -> f64 {
+    1.0
+}
+
+pub fn is_opaque(opacity: &f64) -> bool {
+    *opacity == 1.0
+}
+
+/// A stored opacity as one a profile can be drawn at: inside nothing to
+/// all, and as designed for anything that is not a number.
+pub fn drawn_opacity(opacity: f64) -> f64 {
+    match opacity.is_finite() {
+        true => opacity.clamp(0.0, 1.0),
+        false => 1.0,
+    }
+}
+
 /// How much of the room a profile has its longest row may reach: of its
 /// period's width, or of the empty space past the last bar when it is drawn
 /// there. What every profile was drawn at before it could be chosen, so one
@@ -263,28 +282,40 @@ impl Profile {
 /// The floor keeps a motionless period from collapsing to a single block; the
 /// ceiling keeps a profile from becoming a smear of hairlines on a chart only
 /// a few hundred pixels tall.
+///
+/// The ceiling is also what an automatic profile drawn from ladders stops
+/// at, where its rows are otherwise a tick each: past it, a period's rows
+/// are made 2, 5 or 10 ticks tall. Measured on an ES-like month at 1h and
+/// 2m (`crates/omacharts-chart/examples/profile_bench.rs`), a row costs about
+/// a microsecond to paint and nothing worth counting to compute, so the
+/// ceiling is set by the screen, not the clock: 800 rows down a profile as
+/// tall as a 1440-pixel display are still nearly two pixels each, and keep
+/// a tick a row on ES up to a 200-point day. At 600 a day like that would
+/// be drawn at 2 ticks, which is the blockiness this is here to remove.
 const MIN_ROWS: usize = 4;
 const MAX_ROWS: usize = 800;
 
-/// How many rows the typical period should get when the count is automatic.
+/// How many rows the typical period should get when the count is automatic
+/// and its rows are estimated from the bars.
 ///
 /// Not a target to hit exactly — the row height is snapped to a round price
 /// step and the count falls out of that, so the realised count lands anywhere
-/// from about a hundred to this. It is a ceiling the snapping stays under.
+/// from about two hundred to this. It is a ceiling the snapping stays under.
 ///
 /// Set where it is because of what it has to beat. Forty-eight rows across an
 /// Apple session is nine cents a row, which hides exactly the shelf a profile
 /// is read for; a nickel a row is the increment the stock actually trades on,
 /// and that comes out near a hundred and sixty. Raised from 250 when that
-/// read as blocky: a bar's volume is spread over every row it covers, so finer
-/// rows draw a smoother curve rather than a noisier one.
-const TARGET_ROWS: f64 = 400.0;
+/// read as blocky, and from 400 when an ES session still did, at about 140
+/// rows where one a tick is 236: a bar's volume is spread over every row it
+/// covers, so finer rows draw a smoother curve rather than a noisier one.
+const TARGET_ROWS: f64 = 600.0;
 
 /// The fewest rows an automatic period is drawn with before its rows are
 /// split. The step is the chart's, so a period far quieter than the typical
 /// one — this month two days in, against whole months — would be a handful
-/// of blocks.
-const SMOOTH_ROWS: f64 = 40.0;
+/// of blocks. Raised with [`TARGET_ROWS`], from 40.
+const SMOOTH_ROWS: f64 = 60.0;
 
 /// One profile per period, with each period whose start is in `merged` folded
 /// into the one before it: a composite, profiled as a single period.
@@ -343,7 +374,15 @@ pub fn compute_with(
     // quiet session is drawn as a short profile next to a busy one rather than
     // being stretched to the same height. Comparing two sessions is most of
     // what a volume profile is for.
-    let step = rows.is_none().then(|| auto_step(bars, &periods, kind));
+    //
+    // With what traded at each price, the step is the contract's own tick,
+    // a price to a row; estimated, a round step near [`TARGET_ROWS`]. Either
+    // way a period too quiet for it is split finer, and one too wide for
+    // [`MAX_ROWS`] made coarser, on the same grid.
+    let step = rows.is_none().then(|| match at_price {
+        Some(at) if at.tick_size > 0.0 && at.tick_size.is_finite() => (at.tick_size, at.tick_size),
+        _ => auto_step(bars, &periods, kind),
+    });
 
     let grid = match step {
         // A row a fraction of the contract's tick would hold every price or
@@ -489,12 +528,10 @@ fn span(bars: &[Bar]) -> f64 {
 /// across an Apple session is nine cents a row, which hides exactly the shelf
 /// a profile is read for.
 ///
-/// The widest period has a say as well as the typical one. The step is one
-/// step for the whole chart, but the row count is capped per period, so a
-/// period that moved much further than the median would run out of rows and
-/// be drawn across a fraction of its own range — a sliver, with everything
-/// above it clamped into the top row. Picking a step that fits the widest
-/// period inside [`MAX_ROWS`] is what keeps every period whole.
+/// The widest period has no say. It used to: a period that moved much
+/// further than the median would run out of rows, so the step was made to
+/// fit it, and one wild session coarsened every other on the chart. Now
+/// that period alone is drawn coarser, by [`coarsened`], on the same grid.
 fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKind>) -> (f64, f64) {
     let price = bars[bars.len() / 2].close.abs().max(f64::MIN_POSITIVE);
     let tick = 10f64.powi(-(price_decimals(0.0, price, kind) as i32));
@@ -508,7 +545,6 @@ fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKi
     }
     spans.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let typical = spans[spans.len() / 2];
-    let widest = *spans.last().unwrap_or(&typical);
 
     // 1, 2 and 5 ticks, then the same at every power of ten — the increments
     // an exchange and a trader both think in.
@@ -517,12 +553,34 @@ fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKi
         for base in [1.0, 2.0, 5.0] {
             multiple = base * 10f64.powi(decade);
             let step = multiple * tick;
-            if typical / step <= TARGET_ROWS && widest / step <= MAX_ROWS as f64 {
+            if typical / step <= TARGET_ROWS {
                 return (step, tick);
             }
         }
     }
     (multiple * tick, tick)
+}
+
+/// The chart's step, made coarser for a period too wide to be drawn whole
+/// at it inside [`MAX_ROWS`]: by 2, 5 or 10 and on, so every row edge is
+/// still on the chart's grid — and with ladders, on the contract's prices.
+///
+/// Without it the period would run out of rows and be drawn across a
+/// fraction of its own range, a sliver with everything above it clamped
+/// into the top row.
+fn coarsened(step: f64, span: f64) -> f64 {
+    if !(span > 0.0 && step > 0.0) || span / step <= MAX_ROWS as f64 {
+        return step;
+    }
+    for decade in 0..12 {
+        for base in [2.0, 5.0, 10.0] {
+            let coarse = step * base * 10f64.powi(decade);
+            if span / coarse <= MAX_ROWS as f64 {
+                return coarse;
+            }
+        }
+    }
+    step
 }
 
 /// The chart's step, split for a period too quiet to be drawn smoothly at it:
@@ -575,7 +633,7 @@ fn one(
         // low happened to fall. A row that runs from 182.35 to 182.40 is one
         // you can find on the axis; the same row starting at 182.3617 is not.
         Grid::Step { step, tick } => {
-            let step = smoothed(step, tick, high - low);
+            let step = coarsened(smoothed(step, tick, high - low), high - low);
             let base = (low / step).floor() * step;
             let rows = ((high - base) / step).ceil().max(1.0);
             let rows = if rows.is_finite() { rows as usize } else { MIN_ROWS };
@@ -684,7 +742,9 @@ fn one_exact(
     }
     let step = match grid {
         Grid::Rows(rows) => on_ticks((high - low) / rows as f64, tick),
-        Grid::Step { step, .. } => smoothed_ticks(on_ticks(step, tick), tick, high - low),
+        // Whole ticks either way: coarsened by 2, 5 and 10 from a whole
+        // number of ticks is still a whole number of them.
+        Grid::Step { step, .. } => coarsened(smoothed_ticks(on_ticks(step, tick), tick, high - low), high - low),
     };
     // Rows of whole ticks start on a whole multiple of the step, and a
     // price on a boundary is the row above it.
@@ -978,8 +1038,10 @@ mod tests {
         format!("{profiles:?}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
     }
 
-    /// The estimate from bar ranges, held to what it computed before volume at
-    /// price existed: a chart without ladders draws exactly what it drew.
+    /// The estimate from bar ranges, held to what it computes: a chart
+    /// without ladders draws exactly what it drew, until the rows are chosen
+    /// again on purpose. Last moved when [`TARGET_ROWS`] went from 400 to
+    /// 600, which changed the two automatic cases on a busy session.
     #[test]
     fn without_ladders_the_profile_is_what_it_always_was() {
         let mut bars = session(0, 333.0, 8.0);
@@ -995,7 +1057,7 @@ mod tests {
         assert_eq!(prints, GOLDEN, "{prints:?}");
     }
 
-    const GOLDEN: [u64; 4] = [17829156222254821403, 1918181280838795739, 7844774359875511761, 10693579781058083716];
+    const GOLDEN: [u64; 4] = [3880260519079001309, 1918181280838795739, 7844774359875511761, 17172638958208028019];
 
     fn row_height(p: &Profile) -> f64 {
         p.rows[0].high - p.rows[0].low
@@ -1060,6 +1122,66 @@ mod tests {
         let bars = session(0, 333.0, 8.0);
         let fixed = &compute(&bars, Reset::Session, 0, Some(182), 0.7, Some(InstrumentKind::Equity), &[])[0];
         assert_eq!(fixed.rows.len(), 182);
+    }
+
+    /// What traded at every tick a run of bars covers: ten contracts a
+    /// price, so every price has a row's worth.
+    fn every_tick_of(run: &[Bar], tick: f64) -> Option<Ladder> {
+        let low = run.iter().fold(f64::MAX, |a, b| a.min(b.low));
+        let high = run.iter().fold(f64::MIN, |a, b| a.max(b.high));
+        let low_tick = (low / tick).floor() as i32;
+        let count = ((high / tick).ceil() as i32 - low_tick + 1).max(1) as usize;
+        let level = crate::ladders::Level { at_bid: 5, at_ask: 5, ..Default::default() };
+        Some(Ladder { low_tick, levels: vec![level; count], sides: Default::default() })
+    }
+
+    fn with_ladders(bars: &[Bar], rows: Option<usize>, tick: f64) -> Vec<Profile> {
+        let of = |run: &[Bar]| every_tick_of(run, tick);
+        let at = AtPrice { tick_size: tick, of: &of };
+        let kind = Some(InstrumentKind::FutureRoot);
+        compute_with(bars, Reset::Session, 0, rows, 0.7, kind, &[], Some(&at), Method::Total, false)
+    }
+
+    /// From what traded at each price, an automatic profile is a price to a
+    /// row: a 59-point ES session is 236 rows a tick tall, not the 140-odd
+    /// a round step near a target count made of it.
+    #[test]
+    fn with_ladders_automatic_rows_are_a_tick_each() {
+        let bars = session(0, 7_575.0, 59.0);
+        let profile = &with_ladders(&bars, None, 0.25)[0];
+        assert!((row_height(profile) - 0.25).abs() < 1e-9, "{}", row_height(profile));
+        assert!((230..=245).contains(&profile.rows.len()), "{} rows", profile.rows.len());
+    }
+
+    /// A period too wide for a tick a row inside [`MAX_ROWS`] is drawn at 2,
+    /// 5 or 10 ticks, whole and on the same prices, and alone: the sessions
+    /// beside it keep their tick a row.
+    #[test]
+    fn with_ladders_a_period_past_the_cap_alone_is_coarser() {
+        let mut bars = session(0, 7_575.0, 60.0);
+        bars.extend(session(1, 7_575.0, 300.0));
+        bars.extend(session(2, 7_575.0, 80.0));
+        let profiles = with_ladders(&bars, None, 0.25);
+        assert_eq!(profiles.len(), 3);
+        let (calm, wild, after) = (&profiles[0], &profiles[1], &profiles[2]);
+        assert!((row_height(calm) - 0.25).abs() < 1e-9, "{}", row_height(calm));
+        assert!((row_height(after) - 0.25).abs() < 1e-9, "{}", row_height(after));
+        assert!(wild.rows.len() <= MAX_ROWS, "{} rows", wild.rows.len());
+        assert!((row_height(wild) - 0.5).abs() < 1e-9, "a 1,224-tick day at {}", row_height(wild));
+        let covered = wild.rows.last().unwrap().high - wild.rows[0].low;
+        assert!(covered >= 300.0 * 1.02 - 0.5, "drawn whole: {covered}");
+    }
+
+    /// A row count somebody chose is the count, with ladders as without.
+    #[test]
+    fn with_ladders_a_chosen_row_count_is_still_obeyed() {
+        let bars = session(0, 7_575.0, 59.0);
+        let fixed = &with_ladders(&bars, Some(60), 0.25)[0];
+        // Rows of whole ticks: 60 asked across 241 ticks is 5 ticks a row.
+        assert!((row_height(fixed) - 1.25).abs() < 1e-9, "{}", row_height(fixed));
+        assert!((48..=50).contains(&fixed.rows.len()), "{}", fixed.rows.len());
+        let estimated = &compute(&bars, Reset::Session, 0, Some(60), 0.7, Some(InstrumentKind::FutureRoot), &[])[0];
+        assert_eq!(estimated.rows.len(), 60);
     }
 
     #[test]

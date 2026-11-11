@@ -1751,7 +1751,8 @@ impl State {
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
-        };
+        }
+        .with_edge_only(drawing.style(&self.configs).edge_only);
         // Measured here, for every caller, because the words are part of
         // the drawing and not only part of the picture of it: a label is
         // what the pointer takes hold of when it sits clear of the stroke,
@@ -7223,6 +7224,16 @@ fn signal_colour(state: &State, drawn: &Drawn) -> String {
     state.theme.companion_or(chosen, &drawn.color)
 }
 
+/// The pattern of a strip's second line, if somebody set it apart from the
+/// first's.
+fn signal_style(drawn: &Drawn) -> Option<LineStyle> {
+    match &drawn.indicator.params {
+        omacharts_engine::Params::Stochastic { d_style, .. } => *d_style,
+        omacharts_engine::Params::Macd { signal_style, .. } => *signal_style,
+        _ => None,
+    }
+}
+
 /// The part of a per-bar series that is on screen.
 fn on_screen<T>(series: &[T], first: usize, visible: usize) -> &[T] {
     &series[first.min(series.len())..(first + visible).min(series.len())]
@@ -7508,6 +7519,7 @@ fn draw_pane(
     }
     stroke_pane_line(cr, stroke, &drawn.color, values, columns, &strip);
     if let Some((signal, colour)) = &signal {
+        let stroke = indicators::Stroke::new(stroke.width, signal_style(drawn).unwrap_or(stroke.style));
         stroke_pane_line(cr, stroke, colour, on_screen(signal, first, visible), columns, &strip);
     }
     if lit {
@@ -9264,14 +9276,23 @@ fn draw_drawing(
             // width *past* the tip — a stub poking out of the arrowhead,
             // and the thicker the line the worse it looks.
             cr.set_line_join(cairo::LineJoin::Round);
+            // One path through every leg, so a dash runs on round a
+            // zig-zag's corner rather than starting again at each one.
+            // Round-capped, as the line is: a dot is a cap on its own.
+            cr.set_dash(&style.line_style.round_dashes(style.width), 0.0);
             let legs = projected.segments();
             let last = legs.len().saturating_sub(1);
             for (n, (a, b)) in legs.iter().enumerate() {
                 let (from, to) = headless_leg(*a, *b, style, n == 0, n == last);
-                cr.move_to(from.0, from.1);
+                if n == 0 {
+                    cr.move_to(from.0, from.1);
+                }
                 cr.line_to(to.0, to.1);
             }
             let _ = cr.stroke();
+            // A head is solid whatever the line is: a dashed arrowhead
+            // is not one.
+            cr.set_dash(&[], 0.0);
             if let (Some(first), Some((a, b))) = (legs.first(), legs.last()) {
                 if style.arrow.at_end() {
                     arrowhead(cr, *a, *b, style.width, style.head);
@@ -9299,6 +9320,9 @@ fn draw_drawing(
                 let half = width / 2.0;
                 colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                 cr.set_line_width(width);
+                // Square ends on whole pixels, as the edge is: a hairline's
+                // dots are single pixels, not smudged discs.
+                set_edge_pattern(cr, style.line_style, width, x.round() + half);
                 cr.rectangle(
                     x.round() + half,
                     y.round() + half,
@@ -9306,6 +9330,7 @@ fn draw_drawing(
                     (h.round() - width).max(1.0),
                 );
                 let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
             }
         }
         // The same fill under the same edge as a box, in an ellipse drawn
@@ -9340,8 +9365,10 @@ fn draw_drawing(
                 let width = style.width.max(1.0);
                 colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                 cr.set_line_width(width);
+                set_edge_pattern(cr, style.line_style, width, 0.0);
                 ellipse(cr, width / 2.0);
                 let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
             }
         }
         // Nothing but the words, which the label pass below draws for every
@@ -9378,6 +9405,18 @@ fn draw_drawing(
         }
         draw_grips(cr, state, projected, drawing, lit, &colour);
     }
+}
+
+/// An edge's pattern: butt-capped, and scaled to the edge's width as a
+/// line's is.
+///
+/// `start` is where along x the path begins, drawn rightwards: the pattern
+/// is moved by its fraction of a pixel, so on an edge set on the pixel grid
+/// every dash and every dot begins and ends on a whole pixel rather than
+/// half across one, at one pixel to the point and at two.
+fn set_edge_pattern(cr: &cairo::Context, pattern: drawings::LineStyle, width: f64, start: f64) {
+    cr.set_line_cap(cairo::LineCap::Butt);
+    cr.set_dash(&pattern.dashes(width), start.rem_euclid(1.0));
 }
 
 /// The squares at a selected drawing's grips, the one under the hand lit.
@@ -9947,6 +9986,12 @@ fn draw_profiles(
         } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
         _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
+    let (outline_style, poc_style, opacity) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile { outline_style, poc_style, opacity, .. } => {
+            (*outline_style, *poc_style, omacharts_engine::indicators::profile::drawn_opacity(*opacity))
+        }
+        _ => (LineStyle::Solid, LineStyle::Solid, 1.0),
+    };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
     let look = selection::placed_look(state, drawn);
@@ -9962,42 +10007,66 @@ fn draw_profiles(
         match style {
             omacharts_engine::indicators::profile::Style::Filled => {
                 let (area_low, area_high) = profile.value_area_bounds();
-                for row in &profile.rows {
-                    let Some(ink) = inks.iter().find(|ink| ink.side.length(row.volume) > 0.0) else {
-                        continue;
-                    };
-                    let (from, to) = area.row(row.volume.abs() / profile.max_volume);
-                    let top = to_y(row.high);
-                    let height = (to_y(row.low) - top).max(1.0);
-                    let alpha = match method {
-                        Method::Total if row.low >= area_low && row.high <= area_high => 0.30,
-                        Method::Total => 0.14,
-                        Method::Delta => DELTA_ROW_ALPHA,
-                    };
-                    colors::set_source_alpha(cr, &ink.fill, alpha);
-                    cr.rectangle(from, top, to - from, height);
-                    let _ = cr.fill();
+                let alpha_of = |row: &omacharts_engine::indicators::ProfileRow| match method {
+                    Method::Total if row.low >= area_low && row.high <= area_high => 0.30,
+                    Method::Total => 0.14,
+                    Method::Delta => DELTA_ROW_ALPHA,
+                };
+                let strengths: &[f64] = match method {
+                    Method::Total => &[0.30, 0.14],
+                    Method::Delta => &[DELTA_ROW_ALPHA],
+                };
+                // One path and one fill for every row of an ink at a
+                // strength, rather than a fill a row: a tick a row is
+                // hundreds of rows a period, and a fill is most of what a
+                // row costs. The rows of one pass are side by side, never
+                // over each other, so they composite as they did one by one.
+                for (at, ink) in inks.iter().enumerate() {
+                    for &strength in strengths {
+                        let mut any = false;
+                        for row in &profile.rows {
+                            let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
+                            if !mine || alpha_of(row) != strength {
+                                continue;
+                            }
+                            let (from, to) = area.row(row.volume.abs() / profile.max_volume);
+                            let top = to_y(row.high);
+                            let height = (to_y(row.low) - top).max(1.0);
+                            cr.rectangle(from, top, to - from, height);
+                            any = true;
+                        }
+                        if any {
+                            // The background as designed, faded by its transparency.
+                            colors::set_source_alpha(cr, &ink.fill, strength * opacity);
+                            let _ = cr.fill();
+                        }
+                    }
                 }
                 if edged {
                     cr.set_line_width(outline_width.max(0.5));
                     cr.set_line_join(cairo::LineJoin::Miter);
+                    set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
                     for ink in &inks {
                         colors::set_source_alpha(cr, &ink.edge, drawings::PROFILE_EDGE_ALPHA);
                         selection::profile_path(cr, &area, profile, to_y, ink.side);
                         let _ = cr.stroke();
                     }
+                    cr.set_dash(&[], 0.0);
                 }
             }
             // Only the shape the rows make, so the candles under it stay
-            // as plain as they are without it.
+            // as plain as they are without it. With no rows to fade, the
+            // transparency fades the outline, which is all there is.
             omacharts_engine::indicators::profile::Style::Outline => {
                 cr.set_line_width(outline_width.max(0.5));
                 cr.set_line_join(cairo::LineJoin::Miter);
+                set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
                 for ink in &inks {
-                    colors::set_source_alpha(cr, &ink.edge, 0.75);
+                    colors::set_source_alpha(cr, &ink.edge, 0.75 * opacity);
                     selection::profile_path(cr, &area, profile, to_y, ink.side);
                     let _ = cr.stroke();
                 }
+                cr.set_dash(&[], 0.0);
             }
         }
 
@@ -10010,9 +10079,12 @@ fn draw_profiles(
             let (from, to) = area.row(1.0);
             colors::set_source_alpha(cr, &poc, 0.9);
             cr.set_line_width(poc_width.max(0.5));
-            cr.move_to(from, y);
-            cr.line_to(to, y);
+            let (left, right) = (from.min(to), from.max(to));
+            set_edge_pattern(cr, poc_style, poc_width.max(0.5), left);
+            cr.move_to(left, y);
+            cr.line_to(right, y);
             let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
         }
 
         if state.picked == Some(drawn.indicator.id) {
@@ -10051,15 +10123,26 @@ fn draw_profile_drawing(
         Shape::Filled => {
             let fill = style.fill.hex(&state.theme);
             let (area_low, area_high) = profile.value_area_bounds();
-            for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
-                let (from, to) = area.row(row.volume / profile.max_volume);
-                let top = to_y(row.high);
-                let height = (to_y(row.low) - top).max(1.0);
-                let inside = row.low >= area_low && row.high <= area_high;
-                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                colors::set_source_alpha(cr, &fill, alpha * opacity);
-                cr.rectangle(from, top, to - from, height);
-                let _ = cr.fill();
+            // The value area's rows in one fill and the rest in another, as
+            // the study's are: a fill a row is most of what a row costs.
+            for in_area in [true, false] {
+                let mut any = false;
+                for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
+                    let inside = row.low >= area_low && row.high <= area_high;
+                    if inside != in_area {
+                        continue;
+                    }
+                    let (from, to) = area.row(row.volume / profile.max_volume);
+                    let top = to_y(row.high);
+                    let height = (to_y(row.low) - top).max(1.0);
+                    cr.rectangle(from, top, to - from, height);
+                    any = true;
+                }
+                if any {
+                    let alpha = if in_area { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
+                    colors::set_source_alpha(cr, &fill, alpha * opacity);
+                    let _ = cr.fill();
+                }
             }
             // An edge the drawing can go without: off, the rows are all of it.
             let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
@@ -10072,6 +10155,7 @@ fn draw_profile_drawing(
         }
     }
     cr.set_line_join(cairo::LineJoin::Miter);
+    set_edge_pattern(cr, style.line_style, style.width.max(0.5), 0.0);
     selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
     let _ = cr.stroke();
 
@@ -10079,9 +10163,12 @@ fn draw_profile_drawing(
     colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
     cr.set_line_width(look.poc_width.max(0.5));
     let (from, to) = area.row(1.0);
-    cr.move_to(from, y);
-    cr.line_to(to, y);
+    let (left, right) = (from.min(to), from.max(to));
+    set_edge_pattern(cr, look.poc_style, look.poc_width.max(0.5), left);
+    cr.move_to(left, y);
+    cr.line_to(right, y);
     let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
 }
 
 /// A Fibonacci retracement: a level across its span at each ratio it
@@ -14274,6 +14361,179 @@ mod drawing_tests {
         );
         assert_ne!(inside, outside, "the box painted nothing");
         assert_ne!(inside, solid, "the box is opaque");
+    }
+
+    /// The chart at `scale` pixels to the point, as rows of pixels.
+    fn shot_at(state: &State, (w, h): (f64, f64), scale: f64) -> (Vec<u8>, usize) {
+        let mut surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, (w * scale) as i32, (h * scale) as i32).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            cr.scale(scale, scale);
+            draw(&cr, w, h, state);
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        (surface.data().unwrap().to_vec(), stride)
+    }
+
+    /// A box with a look of its own, from (200, 150) to (500, 250).
+    fn styled_box(state: &mut State, (w, h): (f64, f64), style: drawings::Style) {
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        let mut drawing = Drawing::new(DrawingKind::Rect, a, b);
+        drawing.config = None;
+        drawing.style = Some(style);
+        state.drawings = vec![drawing];
+    }
+
+    /// A dashed or dotted edge is crisp at one pixel to the point and at
+    /// two: along the top of a box every pixel of the edge is either the
+    /// solid edge's or no edge's, with nothing smudged between, the edge is
+    /// as many rows as its width, and the dashes and gaps are the pattern's
+    /// lengths, scaled with the width.
+    #[test]
+    fn a_patterned_edge_is_crisp_at_both_scales() {
+        let size = (800.0, 400.0);
+        for scale in [1.0, 2.0] {
+            for (pattern, on, off) in [(drawings::LineStyle::Dashed, 3.0, 3.0), (drawings::LineStyle::Dotted, 1.0, 2.0)] {
+                let mut state = charted(400);
+                let base = drawings::Style::rect(drawings::Preset::Blue);
+                styled_box(&mut state, size, drawings::Style { border: false, ..base.clone() });
+                let (bare, stride) = shot_at(&state, size, scale);
+                styled_box(&mut state, size, base.clone());
+                let (solid, _) = shot_at(&state, size, scale);
+                styled_box(&mut state, size, drawings::Style { line_style: pattern, ..base.clone() });
+                let (patterned, _) = shot_at(&state, size, scale);
+                let pixel = |data: &[u8], x: usize, y: usize| -> [u8; 4] {
+                    let i = y * stride + x * 4;
+                    [data[i], data[i + 1], data[i + 2], data[i + 3]]
+                };
+                // The top edge, clear of its corners.
+                let (x0, x1) = ((260.0 * scale) as usize, (440.0 * scale) as usize);
+                let rows: Vec<usize> = (0..(200.0 * scale) as usize)
+                    .filter(|&y| (x0..x1).any(|x| pixel(&solid, x, y) != pixel(&bare, x, y)))
+                    .collect();
+                assert_eq!(rows.len(), scale as usize, "{pattern:?} at {scale}x: the edge is {} rows", rows.len());
+                let y = rows[0];
+                let mut runs: Vec<(bool, usize)> = Vec::new();
+                for x in x0..x1 {
+                    let (now, edge, none) = (pixel(&patterned, x, y), pixel(&solid, x, y), pixel(&bare, x, y));
+                    assert!(now == edge || now == none, "{pattern:?} at {scale}x: a smudged pixel at {x}: {now:?}");
+                    for other in &rows {
+                        assert_eq!(pixel(&patterned, x, *other) == pixel(&solid, x, *other), now == edge, "rows agree");
+                    }
+                    match runs.last_mut() {
+                        Some((drawn, length)) if *drawn == (now == edge) => *length += 1,
+                        _ => runs.push((now == edge, 1)),
+                    }
+                }
+                // The first and last runs are cut by where we looked.
+                for (drawn, length) in &runs[1..runs.len() - 1] {
+                    let wanted = (if *drawn { on } else { off }) * scale;
+                    assert_eq!(*length as f64, wanted, "{pattern:?} at {scale}x: {runs:?}");
+                }
+            }
+        }
+    }
+
+    /// The pattern follows the width: a two-pixel dashed edge's dashes are
+    /// twice a hairline's.
+    #[test]
+    fn a_pattern_is_scaled_with_the_width() {
+        assert_eq!(drawings::LineStyle::Dashed.dashes(2.0), vec![6.0, 6.0]);
+        assert_eq!(drawings::LineStyle::Dotted.dashes(2.0), vec![2.0, 4.0]);
+        assert_eq!(drawings::LineStyle::Dashed.round_dashes(2.0), vec![4.0, 8.0]);
+        assert_eq!(drawings::LineStyle::Dotted.round_dashes(2.0), vec![0.0, 4.0]);
+        assert!(drawings::LineStyle::Solid.dashes(3.0).is_empty());
+    }
+
+    /// A dashed line and a dotted zig-zag are drawn with gaps in them, and
+    /// a solid one without.
+    #[test]
+    fn a_line_and_a_zigzag_are_drawn_in_their_pattern() {
+        let size = (800.0, 400.0);
+        let mut state = charted(400);
+        let a = state.locate(size.0, size.1, 150.0, 200.0).unwrap();
+        let b = state.locate(size.0, size.1, 650.0, 200.0).unwrap();
+        let horizontal = |pattern| {
+            let mut drawing = Drawing::new(DrawingKind::Line, a, Anchor { price: a.price, ..b });
+            drawing.config = None;
+            drawing.style = Some(drawings::Style { line_style: pattern, width: 2.0, ..drawings::Style::line(drawings::Preset::Blue) });
+            drawing
+        };
+        state.drawings = Vec::new();
+        let (bare, stride) = shot_at(&state, size, 1.0);
+        let mut inked = |pattern| {
+            state.drawings = vec![horizontal(pattern)];
+            let (data, _) = shot_at(&state, size, 1.0);
+            (300..500).filter(|x| (199..=201).any(|y: usize| data[y * stride + x * 4..][..4] != bare[y * stride + x * 4..][..4])).count()
+        };
+        let solid = inked(drawings::LineStyle::Solid);
+        let dashed = inked(drawings::LineStyle::Dashed);
+        let dotted = inked(drawings::LineStyle::Dotted);
+        assert!(solid >= 198, "solid runs the whole way: {solid}");
+        assert!(dashed < solid * 3 / 4 && dashed > solid / 4, "dashed has gaps: {dashed} of {solid}");
+        assert!(dotted < solid * 4 / 5 && dotted > solid / 4, "dotted has gaps: {dotted} of {solid}");
+
+        // A zig-zag's legs are one path, so its pattern runs round the
+        // corners; dotted, it is still dots, not a line.
+        let mut zig = Drawing::new(DrawingKind::Zigzag, a, b);
+        zig.points = vec![a, state.locate(size.0, size.1, 400.0, 120.0).unwrap(), b];
+        zig.config = None;
+        zig.style = Some(drawings::Style { line_style: drawings::LineStyle::Dotted, ..drawings::Style::line(drawings::Preset::Amber) });
+        let mut solid_zig = zig.clone();
+        solid_zig.style = Some(drawings::Style::line(drawings::Preset::Amber));
+        state.drawings = vec![solid_zig];
+        let (solid, _) = shot_at(&state, size, 2.0);
+        state.drawings = vec![zig];
+        let (dotted, _) = shot_at(&state, size, 2.0);
+        state.drawings = Vec::new();
+        let (bare, _) = shot_at(&state, size, 2.0);
+        let differs = |data: &[u8]| data.chunks(4).zip(bare.chunks(4)).filter(|(p, q)| p != q).count();
+        assert!(differs(&dotted) > 0 && differs(&dotted) < differs(&solid) * 3 / 4, "{} of {}", differs(&dotted), differs(&solid));
+    }
+
+    /// A large box selected by its border alone gives a click inside it to
+    /// what is under it — another drawing there, or the chart — and is
+    /// still taken on its edge; off, it takes the click as it always did.
+    #[test]
+    fn a_box_selected_by_its_border_lets_the_inside_through() {
+        let size = (800.0, 400.0);
+        let (w, h) = size;
+        let mut state = charted(400);
+        let a = state.locate(w, h, 100.0, 60.0).unwrap();
+        let b = state.locate(w, h, 700.0, 340.0).unwrap();
+        let line_from = state.locate(w, h, 300.0, 200.0).unwrap();
+        let line_to = state.locate(w, h, 500.0, 200.0).unwrap();
+        let mut line = Drawing::new(DrawingKind::Line, line_from, line_to);
+        line.id = 1;
+        let mut region = Drawing::new(DrawingKind::Rect, a, b);
+        region.id = 2;
+        region.config = None;
+        region.style = Some(drawings::Style { edge_only: true, ..drawings::Style::rect(drawings::Preset::Teal) });
+        // The box on top.
+        state.drawings = vec![line.clone(), region.clone()];
+        let projected = {
+            let (first, visible) = state.slice();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            state.project(&plan, &scale, &region)
+        };
+        let (left, top, _, _) = projected.bounds();
+
+        assert_eq!(state.drawing_at(w, h, 400.0, 200.0), Some((0, Grip::Body)), "the line inside is the one taken");
+        assert_eq!(state.drawing_at(w, h, 250.0, 280.0), None, "an empty inside is the chart's");
+        assert_eq!(state.drawing_at(w, h, left + 1.0, 200.0), Some((1, Grip::Body)), "the edge is the box's");
+        assert_eq!(state.drawing_at(w, h, 400.0, top - 2.0), Some((1, Grip::Body)), "either side of it");
+        // A marquee dragged inside it takes what is in there, not the box.
+        assert_eq!(state.drawings_in(w, h, (280.0, 180.0, 240.0, 40.0)), vec![0]);
+        // Even with no border drawn, the edge is still where it ends.
+        state.drawings[1].style.as_mut().unwrap().border = false;
+        assert_eq!(state.drawing_at(w, h, left + 1.0, 200.0), Some((1, Grip::Body)), "a hidden border still takes");
+
+        state.drawings[1].style.as_mut().unwrap().edge_only = false;
+        assert_eq!(state.drawing_at(w, h, 250.0, 280.0), Some((1, Grip::Body)), "off, the inside is the box's");
     }
 
     /// An anchored VWAP is the engine's line from the bar it is anchored to,

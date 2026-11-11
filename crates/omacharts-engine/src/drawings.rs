@@ -85,12 +85,25 @@ impl Preset {
     }
 }
 
-/// How much of the colour a rectangle's fill gets, over whatever is under it.
+/// How much of the colour a rectangle's or an ellipse's fill gets, over
+/// whatever is under it, unless somebody chose another.
 ///
-/// The alpha the VWAP bands already shade with. At 0.12 the faintest tint on
-/// any theme drops to the grid's floor; at 0.20 the candle bodies under it
-/// start losing a third of their contrast. Nothing a drawing paints is opaque.
-pub const FILL_ALPHA: f64 = 0.16;
+/// It was [`FIRST_FILL_ALPHA`], the alpha the VWAP bands shade with, and a
+/// region laid over a session read as a heavy, muddy block that washed the
+/// bars out: on a dark theme a sixth of a saturated colour is most of what
+/// separates a candle from the ground. At this strength the bars and the
+/// lines under a box keep nearly all of their contrast on every theme, and
+/// the region is still a region: its faintest tint, over every theme and
+/// colour, still makes the 1.08:1 against the ground that the chart's own
+/// grid makes, and the border is a clearer step up from its own fill than
+/// it was. Any lower and the faintest pair, Carbon's Down, is fainter than
+/// the grid. Nothing a drawing paints is opaque.
+pub const FILL_ALPHA: f64 = 0.13;
+
+/// The fill as it first shipped. Kept to recognise a stored configuration
+/// nobody changed, so it can be read as today's, and for a line's style,
+/// which carries a fill it never paints.
+pub const FIRST_FILL_ALPHA: f64 = 0.16;
 
 /// How much of the colour a rectangle's border gets.
 ///
@@ -1080,9 +1093,21 @@ pub struct Style {
     /// The shape of the arrowhead, where there is one.
     #[serde(default)]
     pub head: ArrowHead,
+    /// How a line, or a shape's edge, is drawn: solid, dashed or dotted.
+    /// Left out of what is stored while it is solid, so a drawing written
+    /// before it could be chosen reads back the same.
+    #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+    pub line_style: LineStyle,
     /// Whether a rectangle has an edge at all.
     #[serde(default = "Style::default_border")]
     pub border: bool,
+    /// Whether a box or an ellipse is taken hold of by its edge alone, so
+    /// what is inside it — the crosshair, a pan, another drawing, a new one
+    /// being placed — belongs to the chart under it. For a large region
+    /// laid over the bars, which would otherwise swallow every click made
+    /// in it. The edge is still there to take when it is not drawn.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub edge_only: bool,
     /// What a rectangle is filled with.
     #[serde(default = "Style::default_fill")]
     pub fill: Paint,
@@ -1433,6 +1458,10 @@ pub struct ProfileLook {
     /// own `width`.
     #[serde(default = "ProfileLook::poc_default")]
     pub poc_width: f64,
+    /// The point of control's pattern. The outline's is the drawing's own
+    /// `line_style`.
+    #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+    pub poc_style: LineStyle,
 }
 
 impl ProfileLook {
@@ -1459,6 +1488,7 @@ impl Default for ProfileLook {
             rows: None,
             opacity: 1.0,
             poc_width: DEFAULT_WIDTH,
+            poc_style: LineStyle::Solid,
         }
     }
 }
@@ -1551,9 +1581,14 @@ impl Style {
             width: DEFAULT_WIDTH,
             arrow: Arrow::None,
             head: ArrowHead::Filled,
+            line_style: LineStyle::Solid,
             border: true,
+            edge_only: false,
             fill: Paint::preset(preset),
-            alpha: FILL_ALPHA,
+            // A line fills nothing. Kept at the strength a box was first
+            // filled at, so a line's configuration nobody touched still
+            // reads as the one that shipped.
+            alpha: FIRST_FILL_ALPHA,
             text: TextStyle::of(preset),
             profile: ProfileLook::default(),
             vwap: VwapLook::default(),
@@ -1570,7 +1605,9 @@ impl Style {
             width: BORDER_WIDTH,
             arrow: Arrow::None,
             head: ArrowHead::Filled,
+            line_style: LineStyle::Solid,
             border: true,
+            edge_only: false,
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
             text: TextStyle::of(preset),
@@ -1789,8 +1826,9 @@ impl Style {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Configurations {
     pub line: Vec<Style>,
+    #[serde(deserialize_with = "renewed_fills")]
     pub rect: Vec<Style>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "renewed_fills")]
     pub ellipse: Vec<Style>,
     #[serde(default)]
     pub text: Vec<Style>,
@@ -1825,6 +1863,22 @@ fn renewed_profiles<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
         let n = at as u8 + 1;
         if *style == Style::profile_as_first_shipped(n) {
             *style = Style::profile_configuration(n);
+        }
+    }
+    Ok(stored)
+}
+
+/// Stored box and ellipse configurations, with every one still as it first
+/// shipped — filled at [`FIRST_FILL_ALPHA`] — read as it ships now, at
+/// [`FILL_ALPHA`]. The two kinds start from the same nine looks, so one test
+/// serves both. One somebody changed is theirs and is kept exactly, its
+/// fill's strength included: only the default moved.
+fn renewed_fills<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Style>, D::Error> {
+    let mut stored = Vec::<Style>::deserialize(deserializer)?;
+    for (style, preset) in stored.iter_mut().zip(Preset::ALL) {
+        let first = Style { alpha: FIRST_FILL_ALPHA, ..Style::rect(preset) };
+        if *style == first {
+            *style = Style::rect(preset);
         }
     }
     Ok(stored)
@@ -2485,11 +2539,22 @@ pub struct Projected {
     /// only one that knows whether its price scale is linear: on a log
     /// scale the levels are not evenly spaced between the anchors.
     pub levels: Vec<f64>,
+    /// Whether only the edge of a box or an ellipse is something to take
+    /// hold of, its inside being the chart's: [`Style::edge_only`].
+    pub edge_only: bool,
 }
 
 impl Projected {
     pub fn new(kind: Kind, from: (f64, f64), to: (f64, f64)) -> Projected {
-        Projected { kind, from, to, corners: Vec::new(), words: None, levels: Vec::new() }
+        Projected { kind, from, to, corners: Vec::new(), words: None, levels: Vec::new(), edge_only: false }
+    }
+
+    /// The same projection, taken hold of by its edge alone when `on` and
+    /// it is a box or an ellipse. Every other kind is a line, or is read
+    /// off the bars, and is all edge already.
+    pub fn with_edge_only(self, on: bool) -> Projected {
+        let edge_only = on && matches!(self.kind, Kind::Rect | Kind::Ellipse);
+        Projected { edge_only, ..self }
     }
 
     /// A retracement's projection: its two ends, and its levels' heights.
@@ -2510,7 +2575,7 @@ impl Projected {
     pub fn through(kind: Kind, corners: Vec<(f64, f64)>) -> Projected {
         let from = corners.first().copied().unwrap_or((0.0, 0.0));
         let to = corners.last().copied().unwrap_or(from);
-        Projected { kind, from, to, corners, words: None, levels: Vec::new() }
+        Projected { kind, from, to, corners, words: None, levels: Vec::new(), edge_only: false }
     }
 
     /// The same projection, told where its words landed.
@@ -2625,8 +2690,14 @@ impl Projected {
         // the words are inside the shape, but on a line they can sit well
         // clear of the stroke and used to be the one part of a drawing you
         // could not take hold of.
-        if self.words.is_some_and(|box_| within(box_, (x, y), reach)) {
+        //
+        // Not on a figure taken by its edge alone: its words are inside
+        // it, and inside it is the chart's.
+        if !self.edge_only && self.words.is_some_and(|box_| within(box_, (x, y), reach)) {
             return true;
+        }
+        if self.edge_only {
+            return self.on_edge(x, y, reach);
         }
         match self.kind {
             // Every kind that is a stroke is picked the same way: near the
@@ -2664,6 +2735,29 @@ impl Projected {
         }
     }
 
+    /// Whether the pointer is within `reach` of a box's or an ellipse's
+    /// outline, either side of it: the band a figure taken by its edge
+    /// alone is taken by. Drawn or not, since a border turned off is still
+    /// where the figure ends. A figure too small to have an inside past the
+    /// reach is all edge.
+    fn on_edge(&self, x: f64, y: f64, reach: f64) -> bool {
+        let (left, top, w, h) = self.bounds();
+        match self.kind {
+            Kind::Ellipse => {
+                inside_ellipse((x, y), (left, top, w, h), reach)
+                    && !inside_ellipse((x, y), (left, top, w, h), -reach)
+            }
+            _ => {
+                let outer = within((left, top, w, h), (x, y), reach);
+                let inner = w > 2.0 * reach
+                    && h > 2.0 * reach
+                    && (left + reach < x && x < left + w - reach)
+                    && (top + reach < y && y < top + h - reach);
+                outer && !inner
+            }
+        }
+    }
+
     /// Whether any of the drawing lies inside a box: the box a hand drags
     /// out to select what it touches. A line counts when the segment
     /// crosses the box, not when its own bounding box does, so a long
@@ -2673,6 +2767,17 @@ impl Projected {
         let overlaps = |(l, t, w, h): (f64, f64, f64, f64)| {
             l <= right && l + w >= left && t <= bottom && t + h >= top
         };
+        // A figure taken by its edge alone is not taken by a box dragged
+        // wholly inside it, which is a hand selecting what is in there.
+        if self.edge_only {
+            let (l, t, w, h) = self.bounds();
+            let corners = [(left, top), (right, top), (left, bottom), (right, bottom)];
+            let inside = match self.kind {
+                Kind::Ellipse => corners.iter().all(|at| inside_ellipse(*at, (l, t, w, h), 0.0)),
+                _ => l < left && right < l + w && t < top && bottom < t + h,
+            };
+            return overlaps((l, t, w, h)) && !inside;
+        }
         // A box dragged over a drawing's label takes the drawing, for the
         // same reason clicking the label does.
         if self.words.is_some_and(overlaps) {
@@ -4324,5 +4429,113 @@ mod edge_grip_tests {
         }
         // Other kinds are as they were.
         assert_eq!(read.of(Kind::Rect, 1), &Style::rect(Preset::Up));
+    }
+
+    /// A style written before line styles and edge-only picking existed
+    /// reads back solid, bordered and taken anywhere; and one that leaves
+    /// them so writes nothing for them, so it reads the same in a build
+    /// from before them.
+    #[test]
+    fn line_style_and_edge_only_default_to_what_there_was() {
+        let mut stored: serde_json::Value = serde_json::to_value(Style::rect(Preset::Blue)).unwrap();
+        let fields = stored.as_object_mut().unwrap();
+        assert!(!fields.contains_key("line_style") && !fields.contains_key("edge_only"), "{fields:?}");
+        fields.remove("border");
+        let style: Style = serde_json::from_value(stored).unwrap();
+        assert_eq!(style.line_style, LineStyle::Solid);
+        assert!(style.border && !style.edge_only);
+
+        let chosen = Style { line_style: LineStyle::Dotted, edge_only: true, border: false, ..Style::rect(Preset::Blue) };
+        let back: Style = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+        assert_eq!(back, chosen);
+
+        let look = serde_json::to_string(&ProfileLook::default()).unwrap();
+        assert!(!look.contains("poc_style"), "{look}");
+        let look: ProfileLook = serde_json::from_str(&look).unwrap();
+        assert_eq!(look.poc_style, LineStyle::Solid);
+    }
+
+    /// A box's and an ellipse's fill is lighter than it first shipped, its
+    /// colour and border the same; a stored configuration nobody changed
+    /// takes the new fill, and one somebody did, or a drawing's own style,
+    /// keeps the opacity it was given.
+    #[test]
+    fn the_default_fill_is_lighter_and_a_chosen_one_is_kept() {
+        const { assert!(FILL_ALPHA < FIRST_FILL_ALPHA) };
+        for preset in Preset::ALL {
+            let style = Style::rect(preset);
+            assert_eq!(style.alpha, FILL_ALPHA);
+            assert_eq!(style.fill, Paint::preset(preset), "the colour is not moved");
+            assert!(style.border && style.colour == Paint::preset(preset) && style.width == BORDER_WIDTH, "nor the border");
+        }
+
+        let first = |preset| Style { alpha: FIRST_FILL_ALPHA, ..Style::rect(preset) };
+        let mut stored = Configurations {
+            rect: Preset::ALL.into_iter().map(first).collect(),
+            ellipse: Preset::ALL.into_iter().map(first).collect(),
+            ..Configurations::default()
+        };
+        stored.rect[2] = Style { alpha: 0.4, ..first(Preset::ALL[2]) };
+        stored.ellipse[4] = Style { alpha: FIRST_FILL_ALPHA, width: 3.0, ..first(Preset::ALL[4]) };
+        let read: Configurations = serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
+        for n in 1..=CONFIGURATIONS {
+            let rect = read.of(Kind::Rect, n).alpha;
+            let ellipse = read.of(Kind::Ellipse, n).alpha;
+            assert_eq!(rect, if n == 3 { 0.4 } else { FILL_ALPHA }, "box {n}");
+            assert_eq!(ellipse, if n == 5 { FIRST_FILL_ALPHA } else { FILL_ALPHA }, "ellipse {n}");
+        }
+
+        let mut own = Drawing::new(Kind::Rect, Anchor::new(0, 1.0), Anchor::new(60, 2.0));
+        own.config = None;
+        own.style = Some(first(Preset::Blue));
+        let drawing: Drawing = serde_json::from_str(&serde_json::to_string(&own).unwrap()).unwrap();
+        assert_eq!(drawing.style.unwrap().alpha, FIRST_FILL_ALPHA, "an explicit opacity is the user's");
+    }
+
+    fn large_box(kind: Kind) -> Projected {
+        Projected::new(kind, (100.0, 100.0), (500.0, 400.0))
+    }
+
+    /// Taken by its edge alone, a large box or ellipse lets a click inside
+    /// it through to the chart and is still taken on its outline, within
+    /// the usual reach; off, it is taken anywhere, as it always was.
+    #[test]
+    fn a_figure_taken_by_its_edge_alone_is_the_charts_inside() {
+        for kind in [Kind::Rect, Kind::Ellipse] {
+            let anywhere = large_box(kind);
+            let edge = large_box(kind).with_edge_only(true);
+            assert_eq!(anywhere.hit(300.0, 250.0), Some(Grip::Body), "{kind:?} off is unchanged");
+            assert_eq!(edge.hit(300.0, 250.0), None, "{kind:?}: inside is the chart's");
+            assert!(!edge.near(300.0, 250.0, PICK_REACH), "{kind:?}: not even near");
+            // On its outline, either side of it, inside the reach: a box's
+            // top edge, an ellipse's upper left, clear of the grips.
+            let (x, y) = match kind {
+                Kind::Rect => (220.0, 100.0),
+                _ => (300.0 - 200.0 * 0.6, 250.0 - 150.0 * 0.8),
+            };
+            for dy in [-(PICK_REACH - 2.0), 0.0, PICK_REACH - 2.0] {
+                assert_eq!(edge.hit(x, y + dy), Some(Grip::Body), "{kind:?} at {dy}");
+            }
+            assert_eq!(edge.hit(x, y + PICK_REACH + 4.0), None, "{kind:?}: past the reach inside");
+            assert_eq!(edge.hit(x, y - PICK_REACH - 4.0), None, "{kind:?}: past it outside");
+            // Its grips are still its grips.
+            assert!(edge.hit(500.0, 400.0).is_some());
+        }
+        // A line has no inside to give away.
+        let line = Projected::new(Kind::Line, (0.0, 0.0), (100.0, 100.0)).with_edge_only(true);
+        assert!(!line.edge_only);
+    }
+
+    /// A box dragged out wholly inside an edge-only figure is a hand
+    /// selecting what is in there, not the figure; one across its edge
+    /// takes it.
+    #[test]
+    fn a_selection_inside_an_edge_only_figure_leaves_it_out() {
+        for kind in [Kind::Rect, Kind::Ellipse] {
+            let edge = large_box(kind).with_edge_only(true);
+            assert!(!edge.touches((250.0, 200.0, 100.0, 80.0)), "{kind:?}");
+            assert!(large_box(kind).touches((250.0, 200.0, 100.0, 80.0)), "{kind:?} off");
+            assert!(edge.touches((50.0, 200.0, 100.0, 80.0)), "{kind:?} across its edge");
+        }
     }
 }
