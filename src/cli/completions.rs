@@ -143,7 +143,7 @@ fn fish() -> String {
 /// The man page, in roff.
 pub fn man() -> String {
     let mut out = format!(
-        ".TH OMACHARTS 1 \"\" \"omacharts {}\" \"User Commands\"\n\
+        ".TH OMACHARTS 1 \"\" \"{}\" \"User Commands\"\n\
          .SH NAME\nomacharts \\- fast, beautiful charting software for Omarchy\n\
          .SH SYNOPSIS\n.B omacharts\n[\\fISYMBOL\\fR]\n.br\n.B omacharts\n\
          \\fICOMMAND\\fR \\fISUBCOMMAND\\fR [\\fIARGUMENTS\\fR]\n\
@@ -151,7 +151,7 @@ pub fn man() -> String {
          changing anything takes effect in a window that is already open,\n\
          straight away.\n.PP\nWith nothing running, the same commands work against the stored\n\
          data, so this is usable over ssh and out of a script.\n",
-        env!("CARGO_PKG_VERSION")
+        crate::launch::version_line()
     );
     out.push_str(".SH OPTIONS\n");
     for option in LAUNCH {

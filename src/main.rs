@@ -14,7 +14,7 @@ use omacharts::store::Store;
 use omacharts::ui::window::NotShown;
 use omacharts::ui::Window;
 
-const APP_ID: &str = "com.jorgemanrubia.Omacharts";
+use omacharts::APP_ID;
 
 fn main() -> glib::ExitCode {
     let code = run();
@@ -546,7 +546,7 @@ fn peel_off(args: &[String]) -> Option<glib::ExitCode> {
             Some(glib::ExitCode::SUCCESS)
         }
         Some("--version" | "-V") => {
-            println!("omacharts {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", omacharts::launch::version_line());
             Some(glib::ExitCode::SUCCESS)
         }
         // An unknown option is a mistake worth reporting. Anything else is a

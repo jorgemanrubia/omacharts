@@ -20,7 +20,7 @@ mod launch;
 fn main() {
     let installed = launch::Version::running();
     if std::env::var_os(launch::PROBE_ENV).is_some() {
-        println!("omacharts {installed}");
+        println!("{}", launch::version_line());
         return;
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/usr/bin/omacharts"));

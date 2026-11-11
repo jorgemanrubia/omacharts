@@ -57,7 +57,7 @@ fn build(only: Option<&str>) -> Command {
     let alone = only.filter(|named| SURFACE.iter().chain(spec::HIDDEN).any(|noun| noun.name == *named));
     let mut app = Command::new("omacharts")
         .about(ABOUT)
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(crate::launch::VERSION)
         .after_help(AFTER)
         .subcommand_required(false)
         .arg_required_else_help(false)
@@ -196,7 +196,7 @@ fn json_flag() -> Arg {
 /// is the failure the human text cannot avoid.
 pub fn surface_json() -> String {
     let mut out = String::from("{\"version\":");
-    out.push_str(&json_str(env!("CARGO_PKG_VERSION")));
+    out.push_str(&json_str(crate::launch::VERSION));
     out.push_str(",\"selector\":");
     out.push_str(&json_str(spec::SELECTOR));
     out.push_str(",\"launch\":[");

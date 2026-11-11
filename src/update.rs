@@ -86,8 +86,16 @@ const RESTARTING: &str = "OMACHARTS_RESTARTING";
 /// The setting behind Preferences → Update automatically.
 pub const SETTING: &str = "update_automatically";
 
-/// How often a release is asked for, across launches as well as within one.
-pub const CADENCE: Duration = Duration::from_secs(6 * 60 * 60);
+/// How often a window that stays open asks for a release. A launch asks
+/// whenever the last check was, once its first frame is up, so a release is
+/// seen at the next launch or within the hour, whichever comes first.
+pub const CADENCE: Duration = Duration::from_secs(60 * 60);
+
+/// How long a download that failed for a reason that may pass — a binary
+/// that did not answer, a first checksum mismatch, a link that dropped —
+/// waits before it is tried again. Each try is the whole download, so not at
+/// every launch, nor every hour.
+pub const BACKOFF: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// The release asset this machine downloads: the binary, gzipped, under a
 /// name with no version in it so the URL can be written from the tag alone.
@@ -705,6 +713,8 @@ struct Found {
 }
 
 const CHECKED: &str = ".checked";
+/// Its modification time is the last download that failed for now.
+const HELD: &str = ".held";
 const INCOMING: &str = ".incoming-";
 
 impl Shelf {
@@ -795,11 +805,16 @@ impl Shelf {
         fs::metadata(self.root.join(CHECKED)).and_then(|meta| meta.modified()).ok()
     }
 
-    /// Is a check due, `CADENCE` after the last one?
-    pub fn check_due(&self, now: SystemTime) -> bool {
-        self.last_checked()
-            .and_then(|at| now.duration_since(at).ok())
-            .is_none_or(|since| since >= CADENCE)
+    /// Is a check due? At a launch, always; in a window that stays open,
+    /// [`CADENCE`] after the last one. Either way not while a download that
+    /// failed for now is waiting out its [`BACKOFF`].
+    pub fn check_due(&self, now: SystemTime, at_launch: bool) -> bool {
+        let since = |at: Option<SystemTime>| at.and_then(|at| now.duration_since(at).ok());
+        let held = fs::metadata(self.root.join(HELD)).and_then(|meta| meta.modified()).ok();
+        if since(held).is_some_and(|since| since < BACKOFF) {
+            return false;
+        }
+        at_launch || since(self.last_checked()).is_none_or(|since| since >= CADENCE)
     }
 
     /// Remove every download, every mark and the time of the last check, so
@@ -853,8 +868,26 @@ impl Shelf {
         }
     }
 
+    /// A download failed for now: the next is [`BACKOFF`] away.
+    fn hold_off(&self) {
+        self.note_checked();
+        let _ = fs::File::create(self.root.join(HELD));
+    }
+
     /// Download, verify and put `version` in place, or leave nothing behind.
+    ///
+    /// One at a time in a process: the folder a download is written to is
+    /// named for the version and the process, so a second download of the
+    /// same version here — the About dialog's beside the window's own —
+    /// would take the first one's apart. The second waits, and finds the
+    /// version in place.
     fn install(&self, source: &dyn Source, version: Version, asset: &str) -> Result<(), Failure> {
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = self.root.join(version.to_string());
+        if target.join(BINARY).is_file() && !target.join(BAD).exists() {
+            return Ok(());
+        }
         let incoming = self.root.join(format!("{INCOMING}{version}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&incoming);
         fs::create_dir_all(&incoming).map_err(Failure::Disk)?;
@@ -1118,7 +1151,7 @@ impl GitHub {
         let agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_global(Some(Duration::from_secs(15 * 60)))
-            .user_agent(concat!("omacharts/", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("omacharts/{}", crate::launch::VERSION))
             .build()
             .into();
         GitHub { base: base.trim_end_matches('/').to_string(), agent }
@@ -1218,7 +1251,7 @@ pub fn check(
     let before = installed();
     shelf.tidy(before, alive);
     // Noted only once a check has its answer, so one that fails is asked
-    // again at the next launch rather than six hours on.
+    // again at the next launch, or the next hour.
     let latest = source.latest()?;
 
     let ready = shelf.newest_ready();
@@ -1248,7 +1281,7 @@ pub fn check(
         // tried again at the next check; a second is what was published.
         Err(failure @ Failure::Mismatch { .. }) if !mismatched.exists() => {
             let _ = fs::write(&mismatched, b"");
-            shelf.note_checked();
+            shelf.hold_off();
             return Err(failure);
         }
         // Not what was published, or cannot run here: never again, until a
@@ -1258,14 +1291,15 @@ pub fn check(
             return Err(failure);
         }
         // A binary that would not answer this time, a full disk, a link
-        // that dropped: tried again at the next check, six hours on, not at
-        // every launch — each try is the whole download again.
+        // that dropped: tried again once the backoff is over, not at every
+        // launch or every hour — each try is the whole download again.
         Err(failure) => {
-            shelf.note_checked();
+            shelf.hold_off();
             return Err(failure);
         }
     }
     shelf.note_checked();
+    let _ = fs::remove_file(shelf.root.join(HELD));
 
     let after = installed();
     shelf.tidy(after, alive);
@@ -1281,6 +1315,50 @@ pub fn check(
 pub fn on_the_shelf(shelf: &Shelf, running: Version, installed: Version) -> Option<Version> {
     shelf.tidy(installed, alive);
     shelf.newest_ready().filter(|ready| *ready > running && *ready > installed)
+}
+
+/// What the About dialog offers, once it has looked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Offer {
+    /// Nothing: up to date, or a release whose binary is not up yet.
+    Nothing,
+    /// A newer release, not downloaded: "Update" gets it.
+    Update(Version),
+    /// A newer version downloaded: "Restart to update" brings it.
+    Restart(Version),
+}
+
+/// Somebody opened the About dialog: what to offer them. A version already
+/// downloaded is offered without asking anybody. Otherwise `source` is
+/// asked, without downloading — that is the dialog's button to do — and
+/// the answer counts as a check, so the window does not ask again for an
+/// hour.
+pub fn look(source: &dyn Source, shelf: &Shelf, running: Version, installed: &dyn Fn() -> Version) -> Result<Offer, Failure> {
+    if let Some(version) = on_the_shelf(shelf, running, installed()) {
+        return Ok(Offer::Restart(version));
+    }
+    Ok(match check(source, shelf, running, installed, false)? {
+        Checked::Available { latest } => Offer::Update(latest),
+        checked => match checked.restart_brings(running, installed()) {
+            Some(version) => Offer::Restart(version),
+            None => Offer::Nothing,
+        },
+    })
+}
+
+/// "Update" in the About dialog: download what [`look`] found, as the
+/// window's own check would, and say what a restart brings. Nothing, when
+/// pacman got there first.
+pub fn fetch(source: &dyn Source, shelf: &Shelf, running: Version, installed: &dyn Fn() -> Version) -> Result<Option<Version>, Failure> {
+    let checked = check(source, shelf, running, installed, true)?;
+    Ok(checked.restart_brings(running, installed()))
+}
+
+/// The process the About dialog may check from: an installed omacharts, as
+/// the window's own check, and neither switched off for this launch nor
+/// running as root. `None` shows the version and asks nothing.
+pub fn checks_here() -> Option<&'static Origin> {
+    origin().filter(|_| !updates_off() && !as_root())
 }
 
 #[cfg(test)]
@@ -1371,7 +1449,7 @@ mod tests {
             .flatten()
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != CHECKED)
+            .filter(|name| name != CHECKED && name != HELD)
             .collect();
         names.sort();
         names
@@ -1479,7 +1557,7 @@ mod tests {
         assert!(matches!(failed, Failure::Mismatch { .. }), "{failed}");
         assert!(!shelf.root.join("0.2.15").exists(), "nothing kept: {:?}", on_shelf(&shelf));
         assert!(shelf.root.join(".mismatched-0.2.15").exists());
-        assert!(!shelf.check_due(SystemTime::now()), "the next try waits for the next check");
+        assert!(!shelf.check_due(SystemTime::now(), true), "the next try waits out the backoff, even at a launch");
         // Twice is what was published.
         let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
         assert!(matches!(failed, Failure::Mismatch { .. }), "{failed}");
@@ -1542,12 +1620,13 @@ mod tests {
         let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
         assert!(matches!(failed, Failure::NotNow(_)), "{failed}");
         assert!(on_shelf(&shelf).is_empty(), "nothing kept, nothing marked: {:?}", on_shelf(&shelf));
-        assert!(!shelf.check_due(SystemTime::now()), "tried again at the next check, not at every launch");
+        assert!(!shelf.check_due(SystemTime::now(), true), "tried again after the backoff, not at every launch");
 
         let fine = Fake::releasing("0.2.15");
         let checked = check(&fine, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap();
         assert_eq!(checked, Checked::Ready { version: v("0.2.15"), latest: v("0.2.15") });
-        assert!(!shelf.check_due(SystemTime::now()));
+        assert!(!shelf.check_due(SystemTime::now(), false));
+        assert!(shelf.check_due(SystemTime::now(), true), "a good download ends the backoff");
     }
 
     #[test]
@@ -1575,7 +1654,7 @@ mod tests {
         fake.assets.remove(&asset());
         let failed = check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true).unwrap_err();
         assert!(matches!(failed, Failure::Network(_)), "{failed}");
-        assert!(!shelf.check_due(SystemTime::now()), "not the whole download again at the next launch");
+        assert!(!shelf.check_due(SystemTime::now(), true), "not the whole download again at the next launch");
         assert!(!shelf.root.join("0.2.15").join(BAD).exists(), "a failed download is not a bad version");
     }
 
@@ -1657,7 +1736,7 @@ mod tests {
             assert_eq!(checked.restart_brings(v("0.2.14"), v("0.2.14")), None);
         }
         assert!(fake.opened.borrow().is_empty());
-        assert!(shelf.check_due(SystemTime::now()), "not counted as a check");
+        assert!(shelf.check_due(SystemTime::now(), false), "not counted as a check");
         assert!(on_shelf(&shelf).is_empty());
     }
 
@@ -1666,13 +1745,13 @@ mod tests {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         let _ = check(&Offline, &shelf, v("0.2.14"), &|| v("0.2.14"), true);
-        assert!(shelf.check_due(SystemTime::now()), "offline");
+        assert!(shelf.check_due(SystemTime::now(), false), "offline");
         fs::write(scratch.0.join("versions"), b"").unwrap();
         let _ = check(&Fake::releasing("0.2.15"), &shelf, v("0.2.14"), &|| v("0.2.14"), true);
         fs::remove_file(scratch.0.join("versions")).unwrap();
-        assert!(shelf.check_due(SystemTime::now()), "a download that could not be saved");
+        assert!(shelf.check_due(SystemTime::now(), false), "a download that could not be saved");
         check(&Fake::releasing("0.2.15"), &shelf, v("0.2.14"), &|| v("0.2.14"), false).unwrap();
-        assert!(!shelf.check_due(SystemTime::now()), "an answer");
+        assert!(!shelf.check_due(SystemTime::now(), false), "an answer");
     }
 
     #[test]
@@ -2178,7 +2257,7 @@ mod tests {
         shelf.note_checked();
         shelf.reset(v("0.2.14"), false).unwrap();
         assert_eq!(on_shelf(&shelf), ["0.2.15"]);
-        assert!(shelf.check_due(SystemTime::now()));
+        assert!(shelf.check_due(SystemTime::now(), false));
         // Not newer than installed: nothing needs it.
         shelf.reset(v("0.2.15"), false).unwrap();
         assert!(on_shelf(&shelf).is_empty());
@@ -2612,14 +2691,86 @@ mod tests {
     }
 
     #[test]
-    fn a_check_is_due_six_hours_after_the_last() {
+    fn a_check_is_due_at_every_launch_and_hourly_while_open() {
         let scratch = Scratch::new();
         let shelf = scratch.shelf();
         let now = SystemTime::now();
-        assert!(shelf.check_due(now), "never checked");
+        assert!(shelf.check_due(now, false), "never checked");
         shelf.note_checked();
-        assert!(!shelf.check_due(now + Duration::from_secs(60)));
-        assert!(shelf.check_due(now + CADENCE + Duration::from_secs(60)));
+        assert!(shelf.check_due(now + Duration::from_secs(60), true), "a launch asks whenever the last check was");
+        assert!(!shelf.check_due(now + Duration::from_secs(60), false));
+        assert!(shelf.check_due(now + CADENCE + Duration::from_secs(60), false));
+        assert_eq!(CADENCE, Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn a_download_that_failed_for_now_waits_out_the_backoff_at_launches_and_hourly_checks_alike() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let fake = Fake::with_binary("0.2.15", b"#!/bin/sh\nexit 3\n");
+        assert!(matches!(check(&fake, &shelf, v("0.2.14"), &|| v("0.2.14"), true), Err(Failure::NotNow(_))));
+        let now = SystemTime::now();
+        for at_launch in [true, false] {
+            assert!(!shelf.check_due(now, at_launch), "at launch: {at_launch}");
+            assert!(!shelf.check_due(now + CADENCE + Duration::from_secs(60), at_launch), "an hour on, at launch: {at_launch}");
+            assert!(shelf.check_due(now + BACKOFF + Duration::from_secs(60), at_launch), "after the backoff, at launch: {at_launch}");
+        }
+        // And `update reset` forgets it.
+        shelf.reset(v("0.2.14"), false).unwrap();
+        assert!(shelf.check_due(now, true));
+    }
+
+    #[test]
+    fn the_about_dialog_offers_a_download_already_made_without_asking_anybody() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        shelve(&shelf, "0.2.15");
+        assert_eq!(look(&Offline, &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Offer::Restart(v("0.2.15")));
+        assert!(shelf.last_checked().is_none(), "nobody was asked");
+    }
+
+    #[test]
+    fn the_about_dialog_offers_a_newer_release_without_downloading_it_and_counts_as_a_check() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let fake = Fake::releasing("0.2.15");
+        assert_eq!(look(&fake, &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Offer::Update(v("0.2.15")));
+        assert!(fake.opened.borrow().is_empty(), "nothing downloaded");
+        assert!(!shelf.check_due(SystemTime::now(), false), "the window does not ask again within the hour");
+
+        // "Update" downloads it the way the window's own check does.
+        assert_eq!(fetch(&fake, &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Some(v("0.2.15")));
+        assert_eq!(on_shelf(&shelf), ["0.2.15"]);
+        assert_eq!(look(&Offline, &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Offer::Restart(v("0.2.15")));
+        // Asked again, the version is there: nothing is downloaded twice.
+        let again = Fake::releasing("0.2.15");
+        assert_eq!(fetch(&again, &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Some(v("0.2.15")));
+        assert!(again.opened.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_about_dialog_offers_nothing_when_up_to_date_being_published_or_offline() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        assert_eq!(look(&Fake::releasing("0.2.14"), &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Offer::Nothing);
+        let mut publishing = Fake::releasing("0.2.15");
+        publishing.assets.clear();
+        assert_eq!(look(&publishing, &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Offer::Nothing);
+        assert!(matches!(look(&Offline, &shelf, v("0.2.14"), &|| v("0.2.14")), Err(Failure::Network(_))));
+        // A version marked bad is not offered again either.
+        shelf.mark_bad(v("0.2.16"), "no");
+        assert_eq!(look(&Fake::releasing("0.2.16"), &shelf, v("0.2.14"), &|| v("0.2.14")).unwrap(), Offer::Nothing);
+    }
+
+    #[test]
+    fn a_second_download_of_the_same_version_in_this_process_waits_and_finds_it_in_place() {
+        let scratch = Scratch::new();
+        let shelf = scratch.shelf();
+        let fake = Fake::releasing("0.2.15");
+        shelf.install(&fake, v("0.2.15"), &asset()).unwrap();
+        let opened = fake.opened.borrow().len();
+        shelf.install(&fake, v("0.2.15"), &asset()).unwrap();
+        assert_eq!(fake.opened.borrow().len(), opened, "not fetched again");
     }
 
     #[test]
