@@ -118,7 +118,7 @@ The palette is the theme's named colours for indicators and drawings. An indicat
 
 An indicator added without a colour gets the next of Blue, Amber, Violet, Teal, Orange and Cyan not already on the chart. After six they repeat. Green and Rose are never given automatically, but you can pick them.
 
-**Neutral** is a very light tone of the theme's own hue on a dark theme and a very dark one on a light theme, well apart from the candles: close to the theme's text but never quite it, and tinted rather than white or black, a pale lavender on Tokyo Night and a cream on Gruvbox. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, or its background or accent when the text is a plain grey, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
+**Neutral** is near white on a dark theme and near black on a light theme, so it stands out from the candles at a glance. It is never quite the theme's text, and it keeps a hint of the theme's own hue rather than being a plain white or black: a lavender white on Tokyo Night, a cream on Gruvbox. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, or its background or accent when the text is a plain grey, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
 
 ### The palette picker
 

@@ -115,9 +115,9 @@ pub const SWATCH_NAMES: [&str; 8] = [
 pub const SWATCH_SEQUENCE: [&str; 6] =
     ["Blue", "Amber", "Violet", "Teal", "Orange", "Cyan"];
 
-/// The palette's one colour with no hue of its own to pick: a very light
-/// tone of the theme's own hue on a dark theme and a very dark one on a
-/// light theme, close to the text in weight but tinted, for an outline, a
+/// The palette's one colour with no hue of its own to pick: near white
+/// with a hint of the theme's own hue on a dark theme and near black with
+/// its tint on a light theme, never quite the text, for an outline, a
 /// profile or a line that should read plainly without taking a colour. It
 /// is not one of a theme's [`Swatch`]es, because nobody sets it: it is
 /// worked out from the theme each time it is asked for, so it follows the
@@ -130,15 +130,17 @@ pub const PALETTE_NAMES: [&str; 9] = [
     "Blue", "Amber", "Violet", "Teal", "Rose", "Green", "Orange", "Cyan", NEUTRAL,
 ];
 
-/// The OKLCh lightness of [`Theme::neutral`] on a dark theme: very light,
-/// well clear of the text of most themes and of every bar colour, short of
-/// white. Lighter than this and the sRGB gamut leaves too little chroma for
-/// the theme's tint: at 0.95 Tokyo Night's lavender is half gone.
-const NEUTRAL_LIGHT: f64 = 0.92;
+/// The OKLCh lightness of [`Theme::neutral`] on a dark theme: near white,
+/// clearly lighter than the text of most themes and than every bar colour
+/// at a glance. The sRGB gamut leaves only a little chroma up here, which
+/// [`Oklch::hex`] keeps, so it is still a hint of the theme's own hue
+/// rather than a plain white.
+const NEUTRAL_LIGHT: f64 = 0.97;
 
-/// Its lightness on a light theme: very dark, short of black, and darker
-/// than the text of every light theme but the near-black ones.
-const NEUTRAL_DARK: f64 = 0.24;
+/// Its lightness on a light theme: near black with the theme's tint, and
+/// clearly darker than the text of every light theme but the near-black
+/// ones.
+const NEUTRAL_DARK: f64 = 0.15;
 
 /// The least and the most of the theme's tint it carries, in OKLCh chroma:
 /// enough at the ends of the scale to read as the theme's own tone rather
@@ -164,8 +166,8 @@ const NEUTRAL_FROM_TEXT_STEP: f64 = 0.05;
 
 /// The lightest and the darkest the neutral goes when it steps past the
 /// text: beyond these there is no chroma left for the tint.
-const NEUTRAL_CEILING: f64 = 0.96;
-const NEUTRAL_FLOOR: f64 = 0.15;
+const NEUTRAL_CEILING: f64 = 0.985;
+const NEUTRAL_FLOOR: f64 = 0.12;
 
 /// The least a companion may be from what it accompanies, as `delta_e` sees
 /// it — the floor consecutive entries of the sequence are held to, and so
@@ -479,11 +481,11 @@ impl Theme {
         all
     }
 
-    /// The theme's neutral: a very light tone of its own hue on a dark
-    /// chart, a very dark one on a light chart.
+    /// The theme's neutral: near white with a hint of its own hue on a dark
+    /// chart, near black with its tint on a light chart.
     ///
     /// The hue and the tint come from the theme's text when it has any, so
-    /// Tokyo Night's is a pale lavender and Gruvbox's a cream; from its
+    /// Tokyo Night's is a lavender white and Gruvbox's a cream; from its
     /// background or panels when the text is a plain grey; and from its
     /// accent when the whole theme is grey, so no theme gets a white or a
     /// black that belongs to no theme. The tint is held to a narrow band
@@ -1907,11 +1909,11 @@ mod tests {
         let hex = neutral.resolve(&dark);
         assert_eq!(hex, dark.neutral());
         let (text, tone) = (Oklch::of("#a9b1d6").unwrap(), Oklch::of(&hex).unwrap());
-        assert!(tone.l > 0.85, "{hex} is not very light");
+        assert!(tone.l > 0.95, "{hex} is not near white");
         assert!(delta_e(&hex, "#1a1b26") >= 0.5, "{hex} does not stand out from the chart");
         assert!(delta_e(&hex, "#24283b") >= 0.5, "{hex} could be taken for the grid");
         assert!(delta_e(&hex, "#a9b1d6") >= NEUTRAL_FROM_TEXT, "{hex} is just the text colour");
-        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c >= NEUTRAL_MIN_CHROMA, "{hex} lost the theme's lavender");
+        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c >= NEAR_WHITE_TINT, "{hex} lost the theme's lavender");
 
         // Paper: a warm white with warm near-black text, so a very dark
         // warm tone, not the text and not a black.
@@ -1919,7 +1921,7 @@ mod tests {
         let hex = neutral.resolve(&light);
         assert_eq!(hex, light.neutral());
         let (ground, tone) = (Oklch::of(&light.ui.background).unwrap(), Oklch::of(&hex).unwrap());
-        assert!(tone.l < 0.4, "{hex} is not very dark");
+        assert!(tone.l < 0.2, "{hex} is not near black");
         assert!(delta_e(&hex, &light.ui.background) >= 0.5, "{hex} does not stand out from the chart");
         assert!(delta_e(&hex, &light.ui.grid) >= 0.5, "{hex} could be taken for the grid");
         assert!(delta_e(&hex, &light.ui.text) >= NEUTRAL_FROM_TEXT, "{hex} is just the text colour");
@@ -1928,6 +1930,11 @@ mod tests {
         // The same stored name is a different colour on each.
         assert_ne!(neutral.resolve(&dark), neutral.resolve(&light));
     }
+
+    /// The least tint a neutral near white keeps, in OKLCh chroma: the sRGB
+    /// gamut leaves little more than this at a lightness of 0.97 on a cool
+    /// hue, and it is still the theme's own hue rather than a plain white.
+    const NEAR_WHITE_TINT: f64 = 0.01;
 
     /// Text already as light as the neutral would be is not handed back as
     /// the neutral: it is a step lighter still, keeping its tint, and past
@@ -1940,7 +1947,7 @@ mod tests {
         let tone = Oklch::of(&hex).unwrap();
         assert!(delta_e(&hex, "#d4dbf2") >= NEUTRAL_FROM_TEXT, "{hex}");
         assert!(tone.l > text.l, "{hex} is not lighter than the text");
-        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c > 0.015, "{hex} lost the tint");
+        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c >= NEAR_WHITE_TINT, "{hex} lost the tint");
 
         let theme = grounded(Mode::Dark, "#1e1e2e", "#eef1fc", "#2b2c3d");
         let (hex, text) = (theme.neutral(), Oklch::of("#eef1fc").unwrap());
@@ -1950,19 +1957,23 @@ mod tests {
         assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c > 0.03, "{hex} lost the tint");
     }
 
-    /// Lighter on a dark theme and darker on a light one than it first
-    /// shipped, so a neutral line stands further from every bar colour:
-    /// the same hue as before, and as much of the tint as the gamut leaves
-    /// that near white.
+    /// Clearly lighter on a dark theme and clearly darker on a light one
+    /// than it was, near white and near black, so a neutral line stands out
+    /// from every bar colour at a glance: the same hue as before, with as
+    /// much of the tint as the gamut leaves that close to white.
     #[test]
     fn the_neutral_is_further_from_the_chart_than_it_was() {
         let dark = grounded(Mode::Dark, "#1a1b26", "#a9b1d6", "#24283b");
-        let tone = Oklch::of(&dark.neutral()).unwrap();
-        assert!(tone.l > 0.89 + 0.02, "{} is no lighter than it was", dark.neutral());
-        assert!(hue_gap(tone.h, Oklch::of("#d1d9fb").unwrap().h) < 3.0, "{} moved hue", dark.neutral());
+        let (hex, tone) = (dark.neutral(), Oklch::of(&dark.neutral()).unwrap());
+        for before in ["#d1d9fb", "#dde3fd"] {
+            let was = Oklch::of(before).unwrap();
+            assert!(tone.l >= was.l + 0.04, "{hex} is not clearly lighter than {before}");
+            assert!(hue_gap(tone.h, was.h) < 5.0, "{hex} moved hue from {before}");
+        }
+        assert!(tone.c >= NEAR_WHITE_TINT, "{hex} is a plain white");
         let light = paper();
         let tone = Oklch::of(&light.neutral()).unwrap();
-        assert!(tone.l < 0.32 - 0.05, "{} is no darker than it was", light.neutral());
+        assert!(tone.l <= 0.24 - 0.06, "{} is not clearly darker than it was", light.neutral());
     }
 
     /// A theme that is grey all through, black and white, takes its tint
@@ -1977,7 +1988,7 @@ mod tests {
         let tone = Oklch::of(&hex).unwrap();
         assert!(tone.l > 0.85 && delta_e(&hex, "#ffffff") >= NEUTRAL_FROM_TEXT, "{hex}");
         assert!(delta_e(&hex, "#191919") >= 0.5, "{hex} reads as a grid line");
-        assert!(hue_gap(tone.h, accent.h) < 10.0 && tone.c > 0.03, "{hex} is a plain grey");
+        assert!(hue_gap(tone.h, accent.h) < 10.0 && tone.c >= NEAR_WHITE_TINT, "{hex} is a plain grey");
 
         let white = grounded(Mode::Light, "#ffffff", "#000000", "#ececec");
         let hex = white.neutral();
