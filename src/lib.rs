@@ -28,3 +28,6 @@ pub mod trading;
 pub mod update;
 pub mod zoom;
 pub mod ui;
+
+/// The application id: the session bus name, the desktop file and the icon.
+pub const APP_ID: &str = "com.jorgemanrubia.Omacharts";
