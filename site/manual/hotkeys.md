@@ -201,6 +201,7 @@ A click elsewhere keeps what was typed.
 | <kbd>Esc</kbd> | Closes the dialog, Preferences or Chart settings. Where a page is open over another, goes back a page first | [The window](/manual/window/) |
 | <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the sections of Chart settings, and between **General** and **Text** in a drawing's properties | [Chart settings](/manual/chart-settings/), [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | In a drawing's properties, applies configuration N | [Drawings](/manual/drawings/) |
+| <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | In Preferences › Market data, moves the focused data feed up or down the order | [Market data feeds](/manual/market-data/) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Change resolution**, sets the resolution, or closes it | [Charts](/manual/charts/#choosing-a-resolution) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Go to**, goes to what you typed, or closes it | [Charts](/manual/charts/#go-to) |
 | <kbd>Space</kbd> / <kbd>↓</kbd> | In **Go to**, drops the list under the box. <kbd>Space</kbd> only while the box is empty | [Charts](/manual/charts/#go-to) |

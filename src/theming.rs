@@ -1594,6 +1594,14 @@ button.trading-toggle {
    it, so a header is no longer the tallest row in a rail of one-line rows. */
 .section-fold { min-height: 0; min-width: 0; padding: 2px 4px; }
 
+/* A data feed's place in the order, its number, which gives way to the
+   handle under the pointer. Faded in rather
+   than swapped, so the row does not flicker as the pointer crosses it. */
+.feed-rank > label { font-weight: 600; transition: opacity 120ms; }
+.feed-rank > image { opacity: 0; transition: opacity 120ms; }
+row:hover .feed-rank > image { opacity: 0.55; }
+row:hover .feed-rank > label { opacity: 0; }
+
 /* The lists put in order by dragging one entry onto another — a chart's
    indicators and header, the chartbook tabs. The frame GTK draws round the
    entry under the pointer says onto this; the drop puts the dragged one

@@ -5,7 +5,9 @@ section: configuration
 nav_order: 26
 ---
 
-A feed is where charts, the sidebar and the Omarchy plugin get their prices. One feed serves the whole app. Choose it in Preferences › Market data › **Data feed**, and every open chart switches to it.
+A feed is where charts, the sidebar and the Omarchy plugin get their prices. Preferences › Market data › **Data feeds** lists the feeds you have added, numbered in the order they are tried. A chart comes from the first feed that has its symbol and is signed in.
+
+To change the order, point at a feed's number and drag the row by the handle that takes its place, or press <kbd>Alt</kbd>+<kbd>↑</kbd> or <kbd>Alt</kbd>+<kbd>↓</kbd> on the row. Open charts follow the new order at once. `omacharts provider order` does the same from a terminal ([Market data](/manual/cli/#market-data)).
 
 ## Yahoo Finance
 

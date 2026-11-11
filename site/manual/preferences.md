@@ -87,7 +87,7 @@ crop: 436,176,1688,1588   (the whole window, 12px layout margin)
 
 | Group › row | Does | Chapter |
 |---|---|---|
-| **Data feeds** | The feeds charts get their prices from, in the order they are tried. Each chart comes from the first feed that has its symbol and is signed in. With more than one, drag a feed by its handle to change the order; **Remove** takes one off, except the last. | [Market data feeds](/manual/market-data/) |
+| **Data feeds** | The feeds charts get their prices from, numbered in the order they are tried. Each chart comes from the first feed that has its symbol and is signed in. With more than one, drag a feed by the handle that replaces its number under the pointer, or press <kbd>Alt</kbd>+<kbd>↑</kbd> or <kbd>Alt</kbd>+<kbd>↓</kbd>, to change the order; **Remove** takes one off, except the last. | [Market data feeds](/manual/market-data/) |
 | Data feeds › **Sign in…** / **Sign out** | On the row of a feed that needs an account. | [Market data feeds](/manual/market-data/) |
 | Data feeds › **Add a data feed…** | Adds a feed that is not in the list yet. | [Market data feeds](/manual/market-data/) |
 | Storage › **Cached data**, **Clear** | How much downloaded price data is kept, and a button to delete it all. | [Where your data lives](/manual/your-data/) |
