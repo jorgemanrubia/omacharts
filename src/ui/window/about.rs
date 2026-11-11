@@ -58,6 +58,8 @@ impl About {
     /// `update` downloads the version offered, and `restart` quits into
     /// the one downloaded.
     pub fn new(update: impl Fn(&Rc<About>, Version) + 'static, restart: impl Fn() + 'static) -> Rc<About> {
+        #[cfg(test)]
+        BUILT.with(|built| built.set(built.get() + 1));
         let icon = gtk::Image::from_icon_name(crate::APP_ID);
         icon.set_pixel_size(128);
         icon.add_css_class("icon-dropshadow");
@@ -222,7 +224,17 @@ impl About {
 
 /// What the tests read back.
 #[cfg(test)]
+thread_local! {
+    /// How many dialogs this thread has built: none until somebody asks.
+    static BUILT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
 impl About {
+    pub fn built() -> usize {
+        BUILT.with(Cell::get)
+    }
+
     pub fn shows(&self) -> Shows {
         self.shows.get()
     }
@@ -505,6 +517,23 @@ mod tests {
             assert_eq!(action.as_deref(), Some("win.about"));
             assert!(window.window.lookup_action("about").is_some());
             assert!(crate::ui::shortcuts::accel("win.about").is_none(), "no key, so not on the shortcuts sheet");
+        });
+    }
+
+    #[test]
+    fn no_dialog_is_built_until_about_is_asked_for() {
+        crate::ui::on_gtk(|| {
+            let before = About::built();
+            let store = Rc::new(crate::store::Store::memory().expect("a store"));
+            let window = crate::ui::window::trade::tests::bare_window(&store);
+            assert_eq!(About::built(), before, "building the window builds no dialog");
+            assert!(window.about().is_none());
+
+            gtk::prelude::WidgetExt::activate_action(&window.window, "win.about", None).expect("the action");
+            assert_eq!(About::built(), before + 1, "the action builds it");
+            let about = window.about().expect("the dialog");
+            about.dialog.force_close();
+            assert!(window.about().is_none(), "closing lets it go");
         });
     }
 }
