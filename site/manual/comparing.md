@@ -39,7 +39,7 @@ To hold the base still, right-click the bar to measure from and choose **Compare
 
 ## The legend and the crosshair
 
-Under the chart's header, the legend lists the chart's own symbol and each market with its change, best first. Hover the chart and the legend reads the bar under the pointer, re-ranked, with a dot on each line at that bar. With the pointer off the chart, it reads the last bar on screen. The crosshair's price label is in percent.
+Under the chart's header, the legend lists the chart's own symbol and then each market in the order you added it, with its change. Hover the chart and the legend reads the bar under the pointer, its rows staying where they are, with a dot on each line at that bar. With the pointer off the chart, it reads the last bar on screen. The crosshair's price label is in percent.
 
 ## Markets with different hours
 

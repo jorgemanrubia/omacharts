@@ -22,7 +22,7 @@
 pub mod bench;
 mod compare;
 mod selection;
-pub use compare::{CompareLine, Comparing, Readout};
+pub use compare::{CompareLine, Comparing, Reading, Readout};
 pub use selection::ProfileSpot;
 
 use std::borrow::Cow;

@@ -57,8 +57,9 @@ pub struct Reading {
     pub change: Option<f64>,
 }
 
-/// Every market's change at one bar, highest first: the hovered bar, or the
-/// last on screen with nothing hovered.
+/// Every market's change at one bar, the chart's own first and the rest in
+/// the order they are compared in: the hovered bar, or the last on screen
+/// with nothing hovered.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readout {
     pub readings: Vec<Reading>,
@@ -141,8 +142,9 @@ impl Overlay {
         (low, high)
     }
 
-    /// Each market's change at bar `at`, highest first, those with none
-    /// last in the order they are compared in.
+    /// Each market's change at bar `at`: the chart's own symbol first, then
+    /// the markets in the order they are compared in, whatever their
+    /// changes, so the legend's rows stay where they are.
     fn readings(&self, bars: &[Bar], based: &Based, at: usize) -> Vec<Reading> {
         let own = bars.get(at).map(|bar| based.rebase.change_at(bar.close));
         let mut readings = vec![Reading { line: None, change: own }];
@@ -150,12 +152,6 @@ impl Overlay {
             let change = self.placed(based, line, at).map(|price| based.rebase.change_at(price));
             readings.push(Reading { line: Some(line), change });
         }
-        readings.sort_by(|a, b| match (a.change, b.change) {
-            (Some(a), Some(b)) => b.total_cmp(&a),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        });
         readings
     }
 
@@ -536,19 +532,26 @@ mod tests {
     }
 
     #[test]
-    fn the_legend_ranks_the_markets_by_their_change_and_puts_the_missing_last() {
+    fn the_legend_reads_the_markets_in_the_order_they_are_compared_wherever_they_rank() {
+        // The chart rises; the other falls then outruns it, so the ranking
+        // flips between bar 1 and bar 2 and the order must not.
         let main: Vec<Bar> = (0..3).map(|d| bar(d * DAY, 100.0 + d as f64)).collect();
-        let other: Vec<Bar> = vec![bar(0, 10.0), bar(2 * DAY, 20.0)];
+        let other: Vec<Bar> = vec![bar(0, 10.0), bar(DAY, 9.0), bar(2 * DAY, 20.0)];
         let mut overlay = overlay(&main, other, false, None);
         overlay.spec.lines.push(CompareLine { label: "NQ".into(), color: "#00ff00".into(), bars: Rc::new(Vec::new()) });
         overlay.realign(&main, Timeframe::days(1));
         let based = overlay.based(&main, 0).unwrap();
-        let readings = overlay.readings(&main, &based, 2);
-        let order: Vec<Option<usize>> = readings.iter().map(|r| r.line).collect();
-        assert_eq!(order, vec![Some(0), None, Some(1)]);
-        assert!((readings[0].change.unwrap() - 1.0).abs() < 1e-9);
-        assert!((readings[1].change.unwrap() - 0.02).abs() < 1e-9);
-        assert_eq!(readings[2].change, None, "still loading");
+        for at in [1, 2] {
+            let readings = overlay.readings(&main, &based, at);
+            let order: Vec<Option<usize>> = readings.iter().map(|r| r.line).collect();
+            assert_eq!(order, vec![None, Some(0), Some(1)], "at bar {at}");
+        }
+        let early = overlay.readings(&main, &based, 1);
+        assert!(early[1].change.unwrap() < early[0].change.unwrap(), "behind the chart at bar 1");
+        let late = overlay.readings(&main, &based, 2);
+        assert!((late[0].change.unwrap() - 0.02).abs() < 1e-9);
+        assert!((late[1].change.unwrap() - 1.0).abs() < 1e-9, "ahead of it at bar 2");
+        assert_eq!(late[2].change, None, "still loading");
     }
 
     #[test]

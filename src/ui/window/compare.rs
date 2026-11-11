@@ -315,7 +315,9 @@ impl Window {
         legend.set_visible(true);
     }
 
-    /// The legend in the order and with the changes the chart reads.
+    /// The changes the chart reads, each into its market's row. The rows
+    /// stay in the order they were laid out in, the chart's own first and
+    /// the markets as they are compared, however the changes rank.
     fn show_compare_readout(&self, id: u32, readout: &Readout) {
         let Some(pane) = self.pane(id) else { return };
         let legend = &pane.compare_legend;
@@ -326,15 +328,12 @@ impl Window {
             rows.push(row);
         }
         let compared = pane.compared.borrow();
-        let mut before: Option<gtk::Widget> = None;
         for reading in &readout.readings {
             let name = match reading.line {
                 None => OWN_ROW.to_string(),
                 Some(line) => row_name(line),
             };
             let Some(row) = rows.iter().find(|row| row.widget_name() == name) else { continue };
-            legend.reorder_child_after(row, before.as_ref());
-            before = Some(row.clone());
             let Some(value) = row.last_child().and_then(|last| match reading.line {
                 // The market's own rows end with their close button.
                 Some(_) => last.prev_sibling(),
@@ -645,6 +644,54 @@ mod tests {
             assert!(!window.comparisons_rerouted(&pane));
             window.set_continuous(Adjustment::AsTraded);
             assert_eq!(key().as_deref(), Some("months:ES~ESZ26~as-traded"), "joined as the chart now is");
+            window.window.close();
+        });
+    }
+
+    /// The legend's rows stay put as the pointer moves: the chart's own
+    /// first, then the markets in the order they were compared in, however
+    /// their changes rank at the bar read. Only the values change.
+    #[test]
+    fn the_legend_keeps_its_order_wherever_the_markets_rank() {
+        use crate::ui::chart::Reading;
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "compare", "add", "QQQ", "GLD", "BTC-USD"]);
+            let pane = window.focused_pane();
+            let laid_out = legend_rows(&pane);
+            assert_eq!(laid_out, [OWN_ROW, "compare-0", "compare-1", "compare-2"]);
+            let value = |name: &str| -> String {
+                let mut child = pane.compare_legend.first_child();
+                while let Some(row) = child {
+                    if row.widget_name() == name {
+                        let last = row.last_child().unwrap();
+                        let label = if name == OWN_ROW { last } else { last.prev_sibling().unwrap() };
+                        return label.downcast::<gtk::Label>().unwrap().text().to_string();
+                    }
+                    child = row.next_sibling();
+                }
+                panic!("no row {name}")
+            };
+            // Two bars where every market ranks differently.
+            for changes in [[0.088, 0.176, -0.007, -0.052], [-0.03, 0.01, 0.12, 0.05]] {
+                // Handed over ranked, as a chart once did: the rows must not
+                // follow.
+                let mut readings: Vec<Reading> = std::iter::once(None)
+                    .chain((0..3).map(Some))
+                    .zip(changes)
+                    .map(|(line, change)| Reading { line, change: Some(change) })
+                    .collect();
+                readings.sort_by(|a, b| b.change.unwrap().total_cmp(&a.change.unwrap()));
+                let readout = Readout { readings, step: 0.01 };
+                window.show_compare_readout(pane.id, &readout);
+                assert_eq!(legend_rows(&pane), laid_out, "the rows moved for {changes:?}");
+                let pending = pane.compared.borrow()[0].phase != Phase::Shown;
+                if !pending {
+                    assert_eq!(value("compare-0"), readout.text(changes[1]));
+                }
+                assert_eq!(value(OWN_ROW), readout.text(changes[0]));
+            }
             window.window.close();
         });
     }
