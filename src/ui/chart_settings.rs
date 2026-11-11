@@ -197,7 +197,7 @@ pub fn follow(window: &Rc<Window>) {
     let Some(shown) = current() else { return };
     let pane = window.focused_pane();
     if shown.chart == *pane.uid.borrow() {
-        shown.title.set_subtitle(&window.focused_name());
+        shown.title.set_subtitle(&window.focused_label());
         return;
     }
     take_pending(&shown.pending);
@@ -252,7 +252,7 @@ fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
     let (scope, rule) = crate::ui::scope_rule::Scope::new(window, window.is_split());
     let every = preferences::visual_sections(&scope);
     let sidebar = preferences::Sections::new("Chart settings", [&own, &every], &rule);
-    let title = adw::WindowTitle::new("Chart settings", &window.focused_name());
+    let title = adw::WindowTitle::new("Chart settings", &window.focused_label());
     sidebar.header.set_title_widget(Some(&title));
     sidebar.split.set_min_sidebar_width(200.0);
     frame.set_content(Some(&sidebar.split));

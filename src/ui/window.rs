@@ -5186,13 +5186,16 @@ impl Window {
     pub fn focused_name(&self) -> String {
         let pane = self.focused_pane();
         let at = self.layout.borrow().leaves().iter().position(|leaf| *leaf == pane.id).unwrap_or(0);
+        format!("pos:{at} {}", self.focused_label()).trim_end().to_string()
+    }
+
+    /// The focused chart as a person names it: "NVDA 1D", empty while it
+    /// shows nothing. No position: that is for commands, not for the eye.
+    pub fn focused_label(&self) -> String {
+        let pane = self.focused_pane();
         match pane.instrument.borrow().as_ref() {
-            Some(instrument) => format!(
-                "pos:{at} {} {}",
-                instrument.display_symbol(),
-                pane.timeframe.get().label()
-            ),
-            None => format!("pos:{at}"),
+            Some(instrument) => format!("{} {}", instrument.display_symbol(), pane.timeframe.get().label()),
+            None => String::new(),
         }
     }
 
