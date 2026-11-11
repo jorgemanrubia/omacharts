@@ -1266,6 +1266,19 @@ pub const SURFACE: &[Noun] = &[
                 writes: false,
                 workspace: false,
             },
+            Verb {
+                name: "order",
+                about: "Put the data feeds in this order: a chart comes from the first that has its symbol",
+                args: &[Arg::any(
+                    "NAME",
+                    "the feeds, first to last; any left out keep their order behind them. Omit to read the order",
+                )],
+                flags: &[],
+                example: "omacharts provider order yahoo",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
         ],
     },
     Noun {

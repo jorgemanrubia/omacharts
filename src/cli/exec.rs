@@ -185,6 +185,15 @@ pub fn dispatch(
         ("provider", "status") => provider_status(store, live, json),
         ("provider", "login") => provider_login(store, m, json),
         ("provider", "logout") => provider_logout(store, m, json),
+        ("provider", "order") => {
+            let outcome = provider_order(store, m, json);
+            if outcome.is_ok()
+                && let Some(live) = live
+            {
+                live.adopt_feed();
+            }
+            outcome
+        }
         ("provider", "setup") => {
             let outcome = provider_setup(store, m, json);
             if outcome.is_ok()
@@ -5155,6 +5164,44 @@ fn provider_setup(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
     )
 }
 
+/// Put the feeds named first, in the order given, with the others behind
+/// them as they were, as dragging them in Preferences does; with none
+/// named, say the order. Only the feeds already on it: adding one is
+/// Preferences' business, since a feed may need signing in or setting up
+/// first.
+fn provider_order(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let order = crate::feeds::stored_order(store);
+    let named: Vec<String> = m.get_many::<String>("NAME").map(|names| names.cloned().collect()).unwrap_or_default();
+    let mut top: Vec<String> = Vec::new();
+    for name in &named {
+        let feed = providers::listed(name)
+            .ok_or_else(|| Fault::not_found(format!("no such data feed: {name:?}; the feeds are {}", feed_names())))?;
+        if !order.iter().any(|id| id.eq_ignore_ascii_case(feed.id)) {
+            return Err(Fault::refused(format!(
+                "{} is not one of the data feeds; the feeds are {}",
+                feed.id,
+                order.join(", ")
+            )));
+        }
+        if top.iter().any(|id| id == feed.id) {
+            return Err(Fault::usage(format!("{name:?} is named twice")));
+        }
+        top.push(feed.id.to_string());
+    }
+    if !top.is_empty() {
+        let rest: Vec<String> =
+            order.into_iter().filter(|id| !top.iter().any(|named| named.eq_ignore_ascii_case(id))).collect();
+        top.extend(rest);
+        crate::feeds::save_order(store, &top);
+    }
+    let order = crate::feeds::stored_order(store);
+    said(
+        as_json,
+        json!({"order": order}),
+        format!("the data feeds, top first: {}", order.join(", ")),
+    )
+}
+
 /// The feed a command named, or the one in use.
 fn named_or_chosen(
     store: &Store,
@@ -6633,6 +6680,30 @@ mod tests {
             super::super::EXIT_USAGE
         );
         assert_eq!(run("section order Default Nope", &store).code, super::super::EXIT_NOT_FOUND);
+    }
+
+    /// The feeds named go first, the rest keep their order behind them, and
+    /// with none named the order is read back; a feed not on the order is
+    /// not added by ordering it.
+    #[test]
+    fn the_feeds_are_put_in_order_and_those_left_out_follow() {
+        let store = Store::memory().unwrap();
+        assert_eq!(json_of(&run("provider order --json", &store))["order"], json!(["yahoo"]));
+        crate::feeds::add_feed(&store, "rithmic");
+        crate::feeds::add_feed(&store, "tos");
+        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
+
+        let out = run("provider order yahoo", &store);
+        assert_eq!(out.out, "the data feeds, top first: yahoo, rithmic, tos\n", "{}", out.err);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["yahoo", "rithmic", "tos"]);
+        assert_eq!(run("provider order TOS rithmic", &store).code, 0);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "rithmic", "yahoo"]);
+
+        assert_eq!(run("provider order tos tos", &store).code, EXIT_USAGE);
+        assert_eq!(run("provider order nope", &store).code, crate::cli::EXIT_NOT_FOUND);
+        crate::feeds::remove_feed(&store, "rithmic");
+        assert_eq!(run("provider order rithmic", &store).code, crate::cli::EXIT_REFUSED);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "yahoo"], "nothing added or moved");
     }
 
     /// Dragging a symbol between sections, from a terminal.

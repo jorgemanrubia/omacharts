@@ -1295,6 +1295,21 @@ tos      thinkorswim · US listings, from your thinkorswim account · live, as e
   [exit 0]
 ```
 
+The feeds are tried in an order, and a chart comes from the first that has
+its symbol. `provider order` sets it, as dragging the rows in Preferences
+does: the feeds named go first, in the order given, and the rest keep theirs
+behind them. With no names it says the order.
+
+```
+$ omacharts provider order yahoo
+the data feeds, top first: yahoo, tos
+  [exit 0]
+```
+
+Only a feed already on the list can be ordered; one that is not is refused
+with exit 5, because adding a feed may mean signing in or setting it up, which
+Preferences does. A window that is open charts from the new order at once.
+
 ## Choosing the days a chart shows
 
 ```
@@ -1741,7 +1756,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `chartbook` | saved arrangements of charts |
 | `chart` | the charts inside a chartbook |
 | `template` | chart templates: named sets of indicators that charts share |
-| `provider` | the data feed, and signing in to one that needs it |
+| `provider` | the data feeds, their order, and signing in to one that needs it |
 | `config` | stored preferences |
 | `cache` | the cached market data |
 | `backup` | copies of your settings, and putting one back |

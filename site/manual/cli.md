@@ -279,7 +279,7 @@ codes](#exit-codes).
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
 | `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `look`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
-| `provider` | The data feed, and signing in to one | [Market data](#market-data) |
+| `provider` | The data feeds, their order, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars`, `config grid` and `config price-line` under [Charts](#config-bars) |
 | `cache` | The downloaded prices | [Your data](#cache) |
 | `backup` | Copies of your settings, and putting one back | [Your data](#backup) |
@@ -1545,6 +1545,26 @@ no saved thinkorswim session to forget
 
 Both take a feed's name and default to the feed in use. `provider logout
 yahoo` is refused with exit 5; Yahoo has no sign-in.
+
+### `provider order`
+
+`provider order` puts the data feeds in the order they are tried, as dragging
+them in Preferences does. Name the feeds first to last; any left out keep
+their order behind them. With no names it prints the order.
+
+```
+$ omacharts provider order
+the data feeds, top first: tos, yahoo
+  [exit 0]
+
+$ omacharts provider order yahoo
+the data feeds, top first: yahoo, tos
+  [exit 0]
+```
+
+Only feeds already on the list can be ordered. Naming one that is not is
+refused with exit 5; add it in Preferences first. A name that is no feed
+exits 3, and a feed named twice exits 2.
 
 ### `provider list` and `provider status`
 
