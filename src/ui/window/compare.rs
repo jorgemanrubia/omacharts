@@ -92,13 +92,20 @@ impl Window {
             let instrument = self.index.find(&comparison.symbol, comparison.suffix.as_deref());
             let routed = instrument.as_ref().and_then(|instrument| self.route_compared(pane, instrument));
             let (Some(instrument), Some(routed)) = (instrument.clone(), routed) else {
+                // Not named by the curated half the window opens on is not
+                // yet "not on any feed": the whole catalogue looks again
+                // when it lands.
+                let phase = match instrument.is_none() && !self.index.complete() {
+                    true => Phase::Loading,
+                    false => Phase::Unserved,
+                };
                 loaded.push(Loaded {
                     comparison: comparison.clone(),
                     instrument,
                     key: None,
                     timeframe,
                     bars: Rc::new(Vec::new()),
-                    phase: Phase::Unserved,
+                    phase,
                 });
                 continue;
             };
@@ -327,6 +334,7 @@ impl Window {
         let unpin = gtk::Button::from_icon_name("window-close-symbolic");
         unpin.add_css_class("flat");
         unpin.add_css_class("legend-button");
+        unpin.add_css_class("compare-unpin");
         unpin.set_tooltip_text(Some("Compare from the left edge"));
         let this = self.clone();
         let owner = pane.clone();
@@ -748,9 +756,44 @@ mod tests {
             assert!(words.starts_with("From ") && words.contains("Jan 2026"), "{words}");
 
             let unpin = pin.last_child().unwrap().downcast::<gtk::Button>().unwrap();
+            assert!(unpin.has_css_class("compare-unpin"), "seen without a hover, unlike a market's close button");
             unpin.emit_clicked();
             assert_eq!(pane.compare.borrow().from, None, "measured from the left edge again");
             assert_eq!(legend_rows(&pane), ["compare-0", "compare-1"]);
+            window.window.close();
+        });
+    }
+
+    /// A market compared that the curated half cannot name, as when the
+    /// window has just opened, waits for the whole catalogue rather than
+    /// saying it is on no feed, and is charted once the catalogue lands,
+    /// through the feed a chart of it would use.
+    #[test]
+    fn a_market_the_curated_half_cannot_name_is_compared_once_the_catalogue_lands() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            assert!(!window.index.complete(), "the window opens on the curated half");
+            assert!(window.index.find("BIT", None).is_none(), "BIT is in the listings, not the curated half");
+            let pane = window.focused_pane();
+            window.edit_compare(true, |compare| {
+                compare.add(Comparison::new("QQQ", None));
+                compare.add(Comparison::new("BIT", None));
+            });
+            let phases = |pane: &ChartPane| pane.compared.borrow().iter().map(|l| l.phase).collect::<Vec<_>>();
+            assert_eq!(phases(&pane)[1], Phase::Loading, "waiting on the catalogue, not on no feed");
+            assert!(pane.compared.borrow()[1].instrument.is_none());
+
+            window.index.replace(crate::inventory::everything());
+            window.resolve_pending();
+            let compared = pane.compared.borrow();
+            let bit = &compared[1];
+            assert_eq!(bit.instrument.as_ref().map(|i| i.symbol.as_str()), Some("BIT"));
+            let own = window.route(bit.instrument.as_ref().unwrap()).map(|routed| routed.key());
+            assert_eq!(bit.key, own, "the feed a chart of BIT would use");
+            assert!(bit.key.is_some());
+            assert_ne!(bit.phase, Phase::Unserved);
+            drop(compared);
             window.window.close();
         });
     }

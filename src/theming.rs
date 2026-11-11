@@ -1194,12 +1194,17 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 .legend-row:hover .legend-button { opacity: 0.55; }
 .legend-button:hover { opacity: 1; }
 
-/* Markets compared on the chart, best first: the symbol, then its change
-   in figures that keep their width as they move under the pointer. */
+/* Markets compared on the chart, in the order they were added: the
+   symbol, then its change in figures that keep their width as they move
+   under the pointer. */
 .compare-legend { margin-bottom: 2px; }
 .compare-symbol { font-size: 0.78em; font-weight: 600; opacity: 0.85; }
 .compare-value { font-size: 0.78em; font-feature-settings: 'tnum'; opacity: 0.85; }
 .compare-pin { font-size: 0.78em; opacity: 0.6; }
+/* The way back from a pinned base is always there, quietly: it is the
+   only sign the pin can be taken off. */
+.legend-button.compare-unpin { opacity: 0.55; }
+.legend-button.compare-unpin:hover { opacity: 1; }
 /* Asked for and not answered yet, or answered with a failure. */
 .legend-row.compare-pending { opacity: 0.45; transition: opacity 160ms ease-out; }
 

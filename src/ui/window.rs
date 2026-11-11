@@ -6554,6 +6554,18 @@ impl Window {
                 charted = true;
             }
         }
+        // A market compared that the curated half could not name, BIT
+        // beside SPY, is looked up again in the whole catalogue.
+        let comparing: Vec<Rc<ChartPane>> = self
+            .panes
+            .borrow()
+            .iter()
+            .filter(|pane| pane.compared.borrow().iter().any(|loaded| loaded.instrument.is_none()))
+            .cloned()
+            .collect();
+        for pane in comparing {
+            self.load_comparisons(&pane);
+        }
         if charted {
             self.sync_header();
             self.rebuild_indicator_legend();
