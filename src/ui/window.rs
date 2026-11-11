@@ -63,6 +63,11 @@ use trade::Trade;
 /// cost of the `coverage` queries it takes to find out there is nothing to do.
 const BACKFILL_POLL_SECONDS: u32 = 60;
 
+/// How far before its first bar a stitched chart scrolled back reads at a
+/// time: a quarter's month and some, intraday; five years, daily.
+const OLDER_INTRADAY_DAYS: i64 = 100;
+const OLDER_DAILY_DAYS: i64 = 5 * 365;
+
 /// Most batches of closes one rail refresh sends: two hundred rows at
 /// Yahoo's twenty a request. Not a budget — the loader paces them like any
 /// other work nobody is waiting on — but a list longer than this is split,
@@ -4783,6 +4788,11 @@ impl Window {
         let scaler = self.clone();
         pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
 
+        // Scrolled back toward its first bar, a stitched root brings the
+        // months before it.
+        let filler = self.clone();
+        pane.view.set_history_handler(move |first| filler.fill_older(id, first));
+
         // Dragging a pane's edge changes the indicator, not just the drawing,
         // so the new height is stored the way any other setting of its would be.
         let resizer = self.clone();
@@ -4912,6 +4922,77 @@ impl Window {
 
     fn pane(&self, id: u32) -> Option<Rc<ChartPane>> {
         self.panes.borrow().iter().find(|p| p.id == id).cloned()
+    }
+
+    /// Bring the bars before `first`, chart `id`'s first bar, now that its
+    /// view has come near it: for a stitched root, whose first load reaches
+    /// back only so far, the stretch before it, read off the window's thread
+    /// and stitched as the chart's own are, moved by every roll after it.
+    /// A feed with nothing older brings nothing, and is not asked again
+    /// until the chart has another first bar. The bars come in before the
+    /// ones shown, which stay where they are, and are kept with them.
+    fn fill_older(self: &Rc<Self>, id: u32, first: i64) {
+        let Some(pane) = self.pane(id) else { return };
+        let Some(key) = pane.served.borrow().clone() else { return };
+        let Some((_, symbol)) = key.split_once(':') else { return };
+        if omacharts_engine::continuous::Spelled::parse(symbol).is_none() {
+            return;
+        }
+        let Some(feed) = self.feed_of(&key) else { return };
+        let native = pane.timeframe.get().native();
+        let reach = match native.is_intraday() {
+            true => OLDER_INTRADAY_DAYS * 86_400,
+            false => OLDER_DAILY_DAYS * 86_400,
+        };
+        let (provider, symbol) = (feed.provider.clone(), symbol.to_string());
+        let (sender, older) = async_channel::bounded(1);
+        let read = std::thread::Builder::new().name("omacharts older bars".into()).spawn(move || {
+            let _ = sender.send_blocking(provider.bars_between(&symbol, native, first.saturating_sub(reach), first));
+        });
+        if read.is_err() {
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(Ok(older)) = older.recv().await else { return };
+            this.take_older(&key, native, first, older);
+        });
+    }
+
+    /// Put `older`, bars from before `first`, under the series `key` at
+    /// `native` and on every chart of it.
+    fn take_older(self: &Rc<Self>, key: &str, native: Timeframe, first: i64, older: Vec<omacharts_engine::Bar>) {
+        let older: Vec<_> = older.into_iter().filter(|bar| bar.ts < first).collect();
+        if older.is_empty() {
+            return;
+        }
+        let Some(feed) = self.feed_of(key) else { return };
+        if !crate::loader::drawn_short(key, native) {
+            self.store.merge_bars(key, native, &older);
+        }
+        let series = Series { key: key.to_string(), native };
+        if let Some(live) = feed.live.as_ref()
+            && let Some(bars) = live.with_bars(&series, |bars| bars.to_vec())
+        {
+            if bars.first().is_some_and(|bar| bar.ts == first) {
+                let mut joined = older;
+                joined.extend(bars);
+                if let Some(change) = live.merged(&series, joined) {
+                    self.apply_live_change(live, change);
+                }
+            }
+            return;
+        }
+        let bars = self.store.load_bars(key, native);
+        let panes: Vec<_> = self.panes.borrow().clone();
+        for pane in panes {
+            if pane.served.borrow().as_deref() != Some(key) || pane.timeframe.get().native() != native {
+                continue;
+            }
+            let instrument = pane.instrument.borrow().clone();
+            let Some(instrument) = instrument else { continue };
+            self.paint(&pane, key, &instrument, pane.timeframe.get(), bars.clone());
+        }
     }
 
     /// Make `id` the chart the keyboard and the menus act on.
@@ -8750,6 +8831,7 @@ impl Window {
                 self.store.coverage(&key, tf).is_some()
             });
         }
+        let load = omacharts_engine::progress::name(&symbol, native);
         match &feed.live {
             // The subscription is the fetch: its snapshot is the history, and
             // nothing on a streamed path asks for bars it is about to be
@@ -8771,6 +8853,7 @@ impl Window {
                 .loader
                 .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
         }
+        pane.follow_load(load);
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
         }

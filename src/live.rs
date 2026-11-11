@@ -291,7 +291,11 @@ impl Live {
                 let _ = nudge.try_send(());
             }
         });
-        stream.subscribe(symbol, series.native, since, sink).map_err(|error| FetchFailure::from(&error))
+        // The first snapshot is a load a chart may be waiting on: whatever
+        // the feed can say of how far it has got is heard under its name.
+        let load = omacharts_engine::progress::begin(&omacharts_engine::progress::name(symbol, series.native));
+        omacharts_engine::progress::within(Some(load), || stream.subscribe(symbol, series.native, since, sink))
+            .map_err(|error| FetchFailure::from(&error))
     }
 
     /// Chart `pane` stopped showing whatever it watched. True when a series

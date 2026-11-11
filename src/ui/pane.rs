@@ -120,6 +120,9 @@ type TitleHandler = Rc<dyn Fn(String)>;
 pub struct ChartPane {
     pub id: u32,
     pub view: Rc<ChartView>,
+    /// The load its Loading… waits on, by the name it reports how far it
+    /// has got under: see [`ChartPane::follow_load`].
+    load: RefCell<Option<String>>,
     /// What goes in the layout: the chart, its legend, and the focus ring.
     pub root: gtk::Box,
     /// The symbol, over the top left of the chart. A button: clicking the
@@ -335,6 +338,41 @@ pub struct ChartPane {
 }
 
 impl ChartPane {
+    /// How often a chart waiting on a load reads how far it has got: often
+    /// enough to move smoothly, and never more than ten times a second.
+    const LOAD_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+    /// Show how far the load named `name` has got under the chart's
+    /// Loading…, for as long as the chart is loading and this is still the
+    /// load it waits on. Read off a number the load's own thread writes,
+    /// never waiting on it; a load that says nothing shows nothing.
+    pub fn follow_load(self: &Rc<Self>, name: String) {
+        *self.load.borrow_mut() = Some(name.clone());
+        self.view.set_progress(None);
+        if !self.view.loading() {
+            return;
+        }
+        let pane = Rc::downgrade(self);
+        gtk::glib::timeout_add_local(Self::LOAD_POLL, move || {
+            let Some(pane) = pane.upgrade() else { return gtk::glib::ControlFlow::Break };
+            let current = pane.load.borrow().as_deref() == Some(name.as_str());
+            if current && pane.view.loading() {
+                // Nothing read, for a moment while another load starts or
+                // ends, is not a load that stopped saying: the bar stays.
+                if let Some(fraction) = omacharts_engine::progress::of(&name) {
+                    pane.view.set_progress(Some(fraction));
+                }
+                return gtk::glib::ControlFlow::Continue;
+            }
+            if current {
+                *pane.load.borrow_mut() = None;
+                pane.view.set_progress(None);
+                omacharts_engine::progress::end(&name);
+            }
+            gtk::glib::ControlFlow::Break
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u32,
@@ -733,6 +771,7 @@ impl ChartPane {
         let pane = Rc::new(ChartPane {
             id,
             view,
+            load: RefCell::new(None),
             root,
             symbol_button,
             strip,

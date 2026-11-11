@@ -353,20 +353,41 @@ fn step_of(timeframe: Timeframe) -> Result<i64, ProviderError> {
     }
 }
 
-/// Intraday bars of the file `stem`, from `since` on, folded from its
-/// trades.
-fn intraday(opened: &Opened, stem: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+/// The records of bars of `step` seconds from the one `since` falls in to
+/// the one before `until`, each bar whole: found by their times, so only
+/// that part of the file is ever read.
+fn window(scid: &sierra::Scid, step: i64, since: Option<i64>, until: Option<i64>) -> &[sierra::Record] {
+    let from = since.map_or(i64::MIN, |since| since.div_euclid(step) * step);
+    match until {
+        Some(until) => scid.between(from, until.div_euclid(step) * step + if until.rem_euclid(step) == 0 { 0 } else { step }),
+        None if since.is_some() => scid.from(from),
+        None => scid.records(),
+    }
+}
+
+/// Intraday bars of the file `stem`, from `since` on, and starting before
+/// `until` when there is one, folded from its trades.
+fn intraday(opened: &Opened, stem: &str, timeframe: Timeframe, since: Option<i64>, until: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
     let step = step_of(timeframe)?;
     let path = opened.scid_path(stem).ok_or(ProviderError::NotFound)?;
     let scid = mapped(&path)?;
     let scid = scid.lock().unwrap_or_else(|e| e.into_inner());
-    // From the start of the bar `since` falls in, so that bar is whole.
-    let records = match since {
-        Some(since) => scid.from(since.div_euclid(step) * step),
-        None => scid.records(),
+    let records = window(&scid, step, since, until);
+    let mut bars: Vec<Bar> = folded(records, step, multiplier(opened, stem));
+    if let Some(until) = until {
+        bars.retain(|bar| bar.ts < until);
+    }
+    Ok(bars)
+}
+
+/// `records` folded into bars of `step` seconds, saying how far through
+/// they are to a load that is measured.
+fn folded(records: &[sierra::Record], step: i64, multiplier: f64) -> Vec<Bar> {
+    let bars = match crate::progress::measuring() {
+        true => sierra::fold::bars_reporting(records, step, multiplier, crate::progress::advance),
+        false => sierra::fold::bars(records, step, multiplier),
     };
-    let multiplier = multiplier(opened, stem);
-    Ok(sierra::fold::bars(records, step, multiplier).iter().map(bar_of).collect())
+    bars.iter().map(bar_of).collect()
 }
 
 /// Daily bars of `stem`, Sierra Chart's own, stamped at midnight UTC of
@@ -374,6 +395,7 @@ fn intraday(opened: &Opened, stem: &str, timeframe: Timeframe, since: Option<i64
 fn daily(opened: &Opened, stem: &str, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
     let path = opened.dly_path(stem).ok_or(ProviderError::NotFound)?;
     let days = sierra::dly::read(&path).map_err(read_failed)?;
+    crate::progress::advance(1.0);
     let multiplier = multiplier(opened, stem);
     let from = since.unwrap_or(i64::MIN);
     Ok(days
@@ -447,7 +469,31 @@ impl Provider for Sierra {
         let stem = stem_for(&opened, symbol).ok_or(ProviderError::NotFound)?;
         match timeframe.unit {
             Unit::Day if timeframe.count == 1 => daily(&opened, &opened.daily_stem(&stem), since),
-            _ => intraday(&opened, &stem, timeframe, since),
+            _ => intraday(&opened, &stem, timeframe, since, None),
+        }
+    }
+
+    /// The first trade in the file `symbol` is charted from.
+    fn earliest(&self, symbol: &str) -> Option<i64> {
+        let opened = opened()?;
+        let path = opened.scid_path(&stem_for(&opened, symbol)?)?;
+        let scid = mapped(&path).ok()?;
+        let scid = scid.lock().unwrap_or_else(|e| e.into_inner());
+        scid.records().first().map(sierra::Record::unix_seconds)
+    }
+
+    /// Only the part of a month's file between the two: by its times, never
+    /// read through to.
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        let opened = opened().ok_or_else(not_set_up)?;
+        let stem = stem_for(&opened, symbol).ok_or(ProviderError::NotFound)?;
+        match timeframe.unit {
+            Unit::Day if timeframe.count == 1 => {
+                let mut bars = daily(&opened, &opened.daily_stem(&stem), Some(since))?;
+                bars.retain(|bar| bar.ts < until);
+                Ok(bars)
+            }
+            _ => intraday(&opened, &stem, timeframe, Some(since), Some(until)),
         }
     }
 
@@ -602,7 +648,7 @@ fn lost(error: &ProviderError) -> Update {
 
 /// Follow `symbol` at `timeframe`: a snapshot from the file, then each
 /// flush Sierra Chart makes to it, until `stop`.
-fn follow(symbol: String, timeframe: Timeframe, since: Option<i64>, sink: Sink, stop: Arc<AtomicBool>, wake: Arc<Mutex<Option<sierra::StopHandle>>>) {
+fn follow(symbol: String, timeframe: Timeframe, since: Option<i64>, sink: Sink, stop: Arc<AtomicBool>, wake: Arc<Mutex<Option<sierra::StopHandle>>>, mut progress: Option<crate::progress::Part>) {
     let say = |update: Update| {
         if !stop.load(Ordering::Acquire) {
             sink(update);
@@ -616,20 +662,14 @@ fn follow(symbol: String, timeframe: Timeframe, since: Option<i64>, sink: Sink, 
         let Some(path) = opened.scid_path(&stem) else { return say(lost(&ProviderError::NotFound)) };
         // The snapshot, and where in the file it ends: folded under the
         // file's lock, so every record is either in it or the tail's.
-        let snapshot = mapped(&path).and_then(|scid| {
+        let snapshot = crate::progress::within(progress.take(), || mapped(&path).and_then(|scid| {
             let scid = scid.lock().unwrap_or_else(|e| e.into_inner());
             let bars = match &buckets {
                 Buckets::Days(_) => daily(&opened, &opened.daily_stem(&stem), held)?,
-                Buckets::Every(step) => {
-                    let records = match held {
-                        Some(since) => scid.from(since.div_euclid(*step) * step),
-                        None => scid.records(),
-                    };
-                    sierra::fold::bars(records, *step, multiplier(&opened, &stem)).iter().map(bar_of).collect()
-                }
+                Buckets::Every(step) => folded(window(&scid, *step, held, None), *step, multiplier(&opened, &stem)),
             };
             Ok((bars, scid.len()))
-        });
+        }));
         let (bars, position) = match snapshot {
             Ok(snapshot) => snapshot,
             Err(error) => return say(lost(&error)),
@@ -696,9 +736,12 @@ impl Stream for Sierra {
         let wake = Arc::new(Mutex::new(None));
         let symbol = symbol.to_string();
         let (stopping, waking) = (stop.clone(), wake.clone());
+        // The first snapshot is the load a chart waits on, and says how far
+        // it has got; the stitch over it, in the sink, says the rest.
+        let progress = crate::progress::current();
         std::thread::Builder::new()
             .name("omacharts sierra stream".into())
-            .spawn(move || follow(symbol, timeframe, since, sink, stopping, waking))
+            .spawn(move || follow(symbol, timeframe, since, sink, stopping, waking, progress))
             .map_err(|error| ProviderError::Network(error.to_string()))?;
         Ok(Box::new(Following { stop, wake }))
     }
@@ -828,6 +871,44 @@ mod tests {
             crate::continuous::Source::Stitched,
             "every month from its own files"
         );
+    }
+
+    /// A month's span is read by its times: the records of its whole bars
+    /// between the two and no others, wherever they are in the file.
+    #[test]
+    fn a_span_of_a_month_reads_only_its_records() {
+        let folder = Folder::new("span");
+        let path = folder.0.join("Data").join("ESH26_FUT_CME.scid");
+        let start = 1_770_000_000 - 1_770_000_000 % 3_600;
+        let mut bytes = vec![0u8; sierra::scid::HEADER_SIZE];
+        bytes[0..4].copy_from_slice(b"SCID");
+        bytes[4..8].copy_from_slice(&(sierra::scid::HEADER_SIZE as u32).to_le_bytes());
+        bytes[8..12].copy_from_slice(&(sierra::scid::RECORD_SIZE as u32).to_le_bytes());
+        // A trade a minute for twenty days.
+        for minute in 0..20 * 24 * 60 {
+            let record = sierra::Record {
+                datetime: sierra::sc_from_unix_micros((start + minute * 60) * 1_000_000),
+                close: 6_000.0,
+                trades: 1,
+                volume: 1,
+                ..Default::default()
+            };
+            bytes.extend_from_slice(&record.datetime.to_le_bytes());
+            for price in [record.open, record.high, record.low, record.close] {
+                bytes.extend_from_slice(&price.to_le_bytes());
+            }
+            for count in [record.trades, record.volume, record.bid_volume, record.ask_volume] {
+                bytes.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let scid = sierra::Scid::open(&path).unwrap();
+        let (since, until) = (start + 5 * 86_400 + 1_800, start + 7 * 86_400 + 1_800);
+        let read = window(&scid, 3_600, Some(since), Some(until));
+        assert_eq!(read.first().unwrap().unix_seconds(), start + 5 * 86_400, "from the start of the bar it falls in");
+        assert_eq!(read.last().unwrap().unix_seconds(), start + 7 * 86_400 + 3_600 - 60, "to the end of the bar it falls in");
+        assert_eq!(read.len(), (2 * 24 + 1) * 60, "a record outside the span read");
+        assert_eq!(window(&scid, 3_600, Some(since), None).len(), (15 * 24) * 60);
     }
 
     /// A one-digit year means the same year typed as a contract and named

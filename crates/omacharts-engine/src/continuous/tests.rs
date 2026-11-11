@@ -48,7 +48,7 @@ impl Feed {
 
 fn continuous(months: Months) -> Feed {
     let months = Arc::new(months);
-    Feed { stitched: Continuous { inner: months.clone() }, months }
+    Feed { stitched: Continuous::shared(months.clone()), months }
 }
 
 /// Every bar once, in order, and every one at the price of the month front
@@ -205,9 +205,13 @@ fn a_stream_is_the_front_month_live_behind_the_months_before_it() {
         .subscribe(&symbol, Timeframe::days(1), None, Box::new(move |update| into.lock().unwrap().push(update)))
         .unwrap();
     let heard = heard.lock().unwrap();
-    let Update::Snapshot(snapshot) = &heard[0] else { panic!("a snapshot first") };
-    assert_eq!(snapshot, &feed.bars(&symbol, Timeframe::days(1), None).unwrap());
-    let Update::Bar(bar) = &heard[1] else { panic!("then the live bar") };
+    let whole = feed.bars(&symbol, Timeframe::days(1), None).unwrap();
+    let Update::Snapshot(first) = &heard[0] else { panic!("a snapshot first") };
+    let roll = cut("ES", contracts::rule_of("ES").roll(month(3)).unwrap(), Timeframe::days(1));
+    assert_eq!(first, &whole.iter().filter(|bar| bar.ts >= roll).copied().collect::<Vec<_>>(), "the front month at once");
+    let Update::Snapshot(snapshot) = &heard[1] else { panic!("then the months before it") };
+    assert_eq!(snapshot, &whole);
+    let Update::Bar(bar) = &heard[2] else { panic!("then the live bar") };
     assert_eq!(bar.close, series(4, Timeframe::days(1), None).last().unwrap().close + 0.25, "live, unmoved");
     assert!(feed.asked_for("ESZ26"), "the front month is the one followed");
 }
@@ -426,4 +430,264 @@ fn what_was_drawn_short_is_known_until_it_is_drawn_whole() {
     *feed.months.unreadable.lock().unwrap() = Vec::new();
     feed.bars(&symbol, daily, Some(last())).unwrap();
     assert!(!drawn_short("months-short", &symbol, daily));
+}
+
+/// A read: the contract, the timeframe, from, to when it was asked by time,
+/// and how many bars it held.
+type Asked = (String, Timeframe, i64, Option<i64>, usize);
+
+/// Years of ES, every quarter's month, as a folder of a hundred contract
+/// files has them: each from half a year before it is front to a week after
+/// its roll, the front month from `front_from`, and each quarter ten points
+/// above the one before it. What it was asked, by month and by time.
+struct Years {
+    front: Month,
+    front_from: i64,
+    read: Mutex<Vec<Asked>>,
+    /// How far an hourly chart's load had got at each read, halfway
+    /// through it, as a feed that measures what it reads says.
+    progress: Mutex<Vec<f64>>,
+}
+
+impl Years {
+    fn new(front_from: i64) -> Arc<Years> {
+        Arc::new(Years { front: Month::of('Z', 2026).unwrap(), front_from, read: Mutex::new(Vec::new()), progress: Mutex::new(Vec::new()) })
+    }
+
+    fn spelled(&self) -> String {
+        Spelled { root: "ES".into(), front: self.front, adjustment: Adjustment::BackAdjusted }.to_string()
+    }
+
+    fn quarter(month: Month) -> f64 {
+        f64::from(month.year * 4 + month.month as i32 / 3)
+    }
+
+    /// The bars `month` holds at `timeframe`.
+    fn held(&self, month: Month, timeframe: Timeframe) -> Vec<Bar> {
+        let rule = contracts::rule_of("ES");
+        let (Some(into), Some(out)) = (rule.roll(previous(&rule, month)), rule.roll(month)) else { return Vec::new() };
+        let from = match month == self.front {
+            true => self.front_from,
+            false => midnight(into) - 180 * 86_400,
+        };
+        let to = (midnight(out) + 7 * 86_400).min(now());
+        let step = match timeframe.unit {
+            Unit::Day => 86_400,
+            _ => timeframe.seconds(),
+        };
+        let first = from.div_euclid(step) * step;
+        (first..to)
+            .step_by(step as usize)
+            .map(|ts| {
+                let close = 3_000.0 + (ts / 3_600) as f64 / 24.0 / 10.0 + 10.0 * (Years::quarter(month) - 8_000.0);
+                Bar { ts, open: close, high: close + 1.0, low: close - 1.0, close, volume: 1.0 }
+            })
+            .collect()
+    }
+
+    fn month_of(symbol: &str) -> Option<Month> {
+        let (root, month) = contracts::parse(symbol, contracts::today())?;
+        (root == "ES" && month <= Month::of('Z', 2026).unwrap() && month.year >= 1990).then_some(month)
+    }
+
+    /// A read says it is half done, notes how far an hourly chart's load
+    /// has got, and is done.
+    fn report(&self) {
+        crate::progress::advance(0.5);
+        if let Some(now) = crate::progress::of(&crate::progress::name(&self.spelled(), Timeframe::hours(1))) {
+            self.progress.lock().unwrap().push(now);
+        }
+        crate::progress::advance(1.0);
+    }
+
+    /// The bars read of `symbol` at `timeframe`, however they were asked for.
+    fn bars_read(&self, symbol: &str, timeframe: Timeframe) -> usize {
+        self.read.lock().unwrap().iter().filter(|read| read.0 == symbol && read.1 == timeframe).map(|read| read.4).sum()
+    }
+
+    /// The months anything was read of at `timeframe`.
+    fn months_read(&self, timeframe: Timeframe) -> Vec<String> {
+        let mut months: Vec<String> =
+            self.read.lock().unwrap().iter().filter(|read| read.1 == timeframe && read.4 > 0).map(|read| read.0.clone()).collect();
+        months.sort();
+        months.dedup();
+        months
+    }
+}
+
+impl Provider for Years {
+    fn id(&self) -> &'static str {
+        "years"
+    }
+    fn label(&self) -> &'static str {
+        "Years"
+    }
+    fn delay_minutes(&self, _: InstrumentKind) -> u32 {
+        0
+    }
+    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+        Some(instrument.symbol.clone())
+    }
+    fn charted_contract(&self, _: &Instrument) -> Option<String> {
+        Some(contract("ES", self.front))
+    }
+    fn capabilities(&self) -> &'static [Capability] {
+        &[]
+    }
+    fn continuity(&self) -> Continuity {
+        Continuity::PER_CONTRACT
+    }
+    fn bars(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+        let month = Years::month_of(symbol).ok_or(ProviderError::NotFound)?;
+        let bars: Vec<Bar> = self.held(month, timeframe).into_iter().filter(|bar| since.is_none_or(|since| bar.ts >= since)).collect();
+        self.read.lock().unwrap().push((symbol.to_string(), timeframe, since.unwrap_or(i64::MIN), None, bars.len()));
+        self.report();
+        Ok(bars)
+    }
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        let month = Years::month_of(symbol).ok_or(ProviderError::NotFound)?;
+        let bars: Vec<Bar> = self.held(month, timeframe).into_iter().filter(|bar| bar.ts >= since && bar.ts < until).collect();
+        self.read.lock().unwrap().push((symbol.to_string(), timeframe, since, Some(until), bars.len()));
+        self.report();
+        Ok(bars)
+    }
+    fn earliest(&self, symbol: &str) -> Option<i64> {
+        let month = Years::month_of(symbol)?;
+        self.held(month, Timeframe::hours(1)).first().map(|bar| bar.ts)
+    }
+    fn serves(&self, _: Timeframe) -> bool {
+        true
+    }
+}
+
+/// The months whose spans reach into the time from `since` on.
+fn spans_since(front: Month, since: i64, timeframe: Timeframe) -> Vec<String> {
+    let mut months = Vec::new();
+    for (month, starts) in schedule("ES", front) {
+        months.push(contract("ES", month));
+        if cut("ES", starts, timeframe) <= since {
+            break;
+        }
+    }
+    months.sort();
+    months
+}
+
+/// An hourly chart of a root with years of months on disk reads as far back
+/// as its front month's own history, the months over that and no others,
+/// and of each only its span: what made a hundred files of trades a wait of
+/// minutes and tens of gigabytes.
+#[test]
+fn an_hourly_chart_reads_only_the_months_its_front_month_s_history_spans() {
+    let hourly = Timeframe::hours(1);
+    let front_from = now() - 200 * 86_400;
+    let years = Years::new(front_from);
+    let feed = Continuous::shared(years.clone());
+    let started = std::time::Instant::now();
+    let bars = feed.bars(&years.spelled(), hourly, None).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+
+    assert_eq!(bars.first().unwrap().ts, front_from.div_euclid(3_600) * 3_600, "as far back as the front month's history");
+    assert_eq!(years.months_read(hourly), spans_since(years.front, front_from, hourly), "a month outside the window read");
+    let read: usize = years.months_read(hourly).iter().map(|month| years.bars_read(month, hourly)).sum();
+    assert!(read <= bars.len() + 24 * 8, "{read} bars read for {} drawn", bars.len());
+    assert!(years.months_read(Timeframe::days(1)).len() <= 6, "the gaps are measured on the days around the rolls alone");
+}
+
+/// A load stitched of many months says how far it has got as it reads
+/// them, never less than it said before, and all of it once it is read. A
+/// load nobody measures says nothing.
+#[test]
+fn a_stitched_load_s_progress_only_grows_across_its_months() {
+    let hourly = Timeframe::hours(1);
+    let years = Years::new(now() - 200 * 86_400);
+    let feed = Continuous::shared(years.clone());
+    let name = crate::progress::name(&years.spelled(), hourly);
+    let load = crate::progress::begin(&name);
+    crate::progress::within(Some(load), || feed.bars(&years.spelled(), hourly, None).unwrap());
+
+    let seen = years.progress.lock().unwrap().clone();
+    assert!(seen.len() >= 3, "{seen:?}");
+    assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "went back: {seen:?}");
+    assert!(seen[0] < 0.3, "the front month is read first, and says so: {seen:?}");
+    assert_eq!(crate::progress::tests::settled(&name), 1.0);
+    crate::progress::end(&name);
+
+    let quiet = Years::new(now() - 200 * 86_400);
+    Continuous::shared(quiet.clone()).bars(&quiet.spelled(), hourly, None).unwrap();
+    assert!(quiet.progress.lock().unwrap().is_empty());
+}
+
+/// A daily chart goes back twenty years, not to the oldest month on disk,
+/// and draws each month from its own daily bars.
+#[test]
+fn a_daily_chart_reaches_back_twenty_years() {
+    let daily = Timeframe::days(1);
+    let years = Years::new(now() - 200 * 86_400);
+    let feed = Continuous::shared(years.clone());
+    let started = std::time::Instant::now();
+    let bars = feed.bars(&years.spelled(), daily, None).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    let reach = midnight(contracts::today() - chrono::Duration::days(DAILY_YEARS * 365 + DAILY_YEARS / 4));
+    assert!(bars.first().unwrap().ts >= reach);
+    assert!(bars.first().unwrap().ts < reach + 120 * 86_400, "short of twenty years");
+    assert!(years.months_read(daily).len() <= (DAILY_YEARS as usize + 1) * 4, "{} months read", years.months_read(daily).len());
+    assert!(years.months_read(Timeframe::hours(1)).is_empty(), "a daily chart read intraday bars");
+}
+
+/// A second chart of the root, and the other adjustment, read nothing of
+/// the expired months again: only the front month, which trades on.
+#[test]
+fn a_second_load_reads_no_expired_month_again() {
+    let hourly = Timeframe::hours(1);
+    let years = Years::new(now() - 200 * 86_400);
+    let feed = Continuous::shared(years.clone());
+    let first = feed.bars(&years.spelled(), hourly, None).unwrap();
+    years.read.lock().unwrap().clear();
+
+    let again = feed.bars(&years.spelled(), hourly, None).unwrap();
+    assert_eq!(again, first);
+    let traded = Spelled { adjustment: Adjustment::AsTraded, ..Spelled::parse(&years.spelled()).unwrap() }.to_string();
+    feed.bars(&traded, hourly, None).unwrap();
+    assert_eq!(years.months_read(hourly), vec![contract("ES", years.front)], "an expired month read again");
+}
+
+/// Scrolled back across rolls, the months before the chart's first bar are
+/// read, only them and only over their spans, and moved as a chart drawn
+/// that far back to begin with moves them.
+#[test]
+fn scrolling_back_reads_the_older_months_once_moved_by_every_roll_after_them() {
+    let hourly = Timeframe::hours(1);
+    let years = Years::new(now() - 120 * 86_400);
+    let feed = Continuous::shared(years.clone());
+    let shown = feed.bars(&years.spelled(), hourly, None).unwrap();
+    let mut chart = shown.clone();
+    let shown_months = years.months_read(hourly);
+
+    // Three steps back, of four months each: across three rolls and more.
+    for _ in 0..3 {
+        let first = chart.first().unwrap().ts;
+        let older = feed.bars_between(&years.spelled(), hourly, first - 120 * 86_400, first).unwrap();
+        assert!(older.last().unwrap().ts < first && !older.is_empty());
+        chart.splice(0..0, older);
+    }
+    let reached = chart.first().unwrap().ts;
+    let fresh = Continuous::shared(Years::new(now() - 120 * 86_400));
+    let whole = fresh.bars(&years.spelled(), hourly, Some(reached)).unwrap();
+    assert_eq!(chart, whole, "scrolled back is what a chart drawn from there is");
+
+    // Of every expired month, no time read twice.
+    for month in years.months_read(hourly).iter().filter(|month| **month != contract("ES", years.front)) {
+        let mut spans: Vec<(i64, i64)> = years
+            .read
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|read| read.0 == *month && read.1 == hourly && read.4 > 0)
+            .map(|read| (read.2, read.3.unwrap()))
+            .collect();
+        spans.sort();
+        assert!(spans.windows(2).all(|pair| pair[0].1 <= pair[1].0), "{month} read twice: {spans:?}");
+    }
+    assert!(spans_since(years.front, reached, hourly).len() >= shown_months.len() + 3, "not across three rolls");
 }

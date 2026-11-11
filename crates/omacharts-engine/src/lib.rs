@@ -20,6 +20,7 @@ pub mod log;
 pub mod measurement;
 pub mod omarchy;
 pub mod palette;
+pub mod progress;
 pub mod provider;
 pub mod refresh;
 pub mod session;

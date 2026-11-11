@@ -927,7 +927,12 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
     // one asks from a few bars before where it ends.
     let since = coverage.map(|c| c.last_ts - OVERLAP * native.seconds());
 
-    match provider.bars(&request.symbol, native, since) {
+    // How far it has got is heard under its name while it runs.
+    let name = omacharts_engine::progress::name(&request.symbol, native);
+    let load = omacharts_engine::progress::begin(&name);
+    let fetched = omacharts_engine::progress::within(Some(load), || provider.bars(&request.symbol, native, since));
+    omacharts_engine::progress::end(&name);
+    match fetched {
         Ok(fresh) if fresh.is_empty() => {
             // Nothing new, which is still an answer. Recording that we asked
             // is what stops a chart on a timer asking again on every tick for

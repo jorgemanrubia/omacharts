@@ -74,6 +74,35 @@ pub fn bars_with(records: &[Record], multiplier: f64, bucket: impl Fn(i64) -> i6
     run(records, multiplier, &ByFunction(bucket), PARALLEL_THRESHOLD)
 }
 
+/// How many records [`bars_reporting`] folds between one report and the next.
+pub const REPORT_EVERY: usize = 8_000_000;
+
+/// [`bars`], saying after each [`REPORT_EVERY`] records how far through it
+/// is, from 0 to 1: the same bars, each piece folded as [`bars`] folds it.
+pub fn bars_reporting(records: &[Record], step_seconds: i64, multiplier: f64, mut report: impl FnMut(f64)) -> Vec<Bar> {
+    if records.len() <= REPORT_EVERY {
+        let bars = bars(records, step_seconds, multiplier);
+        report(1.0);
+        return bars;
+    }
+    let mut out: Vec<Bar> = Vec::new();
+    let mut done = 0;
+    for piece in records.chunks(REPORT_EVERY) {
+        let folded = bars(piece, step_seconds, multiplier);
+        let mut rest = folded.as_slice();
+        if let (Some(last), Some(first)) = (out.last_mut(), rest.first())
+            && last.start == first.start
+        {
+            last.merge(first);
+            rest = &rest[1..];
+        }
+        out.extend_from_slice(rest);
+        done += piece.len();
+        report(done as f64 / records.len() as f64);
+    }
+    out
+}
+
 /// [`bars`] on one thread, whatever the size.
 pub fn bars_serial(records: &[Record], step_seconds: i64, multiplier: f64) -> Vec<Bar> {
     assert!(step_seconds > 0, "a bar is at least a second wide");
@@ -296,6 +325,18 @@ mod tests {
         let by_fn = bars_with(&records, 0.01, day);
         let by_fn_serial = fold(&records, Scaler::new(0.01), &ByFunction(day));
         assert_eq!(by_fn, by_fn_serial);
+    }
+
+    /// Folded in reported pieces, the bars are the same bars, and how far
+    /// through it is only grows, to the whole.
+    #[test]
+    fn a_fold_that_reports_folds_the_same_bars() {
+        let records = synthetic(REPORT_EVERY * 2 + 1_234);
+        let mut said = Vec::new();
+        let reported = bars_reporting(&records, 60, 0.25, |fraction| said.push(fraction));
+        assert_eq!(reported, bars(&records, 60, 0.25));
+        assert_eq!(said.len(), 3);
+        assert!(said.windows(2).all(|pair| pair[0] < pair[1]) && said[2] == 1.0, "{said:?}");
     }
 
     #[test]
