@@ -449,6 +449,12 @@ impl Provider for Yahoo {
         CAPABILITIES
     }
 
+    /// Yahoo's `ES=F` is its own continuous series of a root, the front month as
+    /// it traded: nothing to stitch and nothing to choose.
+    fn continuity(&self) -> crate::continuous::Continuity {
+        crate::continuous::Continuity::native(&[crate::continuous::Adjustment::AsTraded])
+    }
+
     /// One request for bars, made now.
     ///
     /// Blocks only for the network: the pacing before a request and the

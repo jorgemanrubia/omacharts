@@ -362,6 +362,7 @@ pub fn new_pane(
             "bar_style": defaults.bar_style.key(),
             "colouring": defaults.colouring.key(),
             "session": defaults.session.key(),
+            "continuous": defaults.continuous.key(),
             "show_grid": defaults.show_grid,
             // Focus, which is where the window starts a new chartbook's
             // chart: it takes a click in the rail while it is focused.

@@ -24,8 +24,11 @@
 //!
 //! A root is its front month, as for every feed: the contract the rule in
 //! [`crate::contracts`] says trades now, when Sierra Chart has its trades,
-//! and otherwise the soonest one it does have that has not expired. Not
-//! stitched: a long chart starts where that contract's file does.
+//! and otherwise the soonest one it does have that has not expired. A chart
+//! of the root is that month back to its roll and the months before it
+//! before that, each from its own files, stitched and back-adjusted or not
+//! by [`crate::continuous`]: this feed only serves each month, which is
+//! [`crate::continuous::Continuity::PER_CONTRACT`].
 //!
 //! What the files cannot say — which contracts a root lists and when each
 //! expires — is asked of Sierra Chart's DTC server, when it is listening:
@@ -434,6 +437,11 @@ impl Provider for Sierra {
         CAPABILITIES
     }
 
+    /// Every month has its own files, read as `ESZ26` like any contract.
+    fn continuity(&self) -> crate::continuous::Continuity {
+        crate::continuous::Continuity::PER_CONTRACT
+    }
+
     fn bars(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
         let opened = opened().ok_or_else(not_set_up)?;
         let stem = stem_for(&opened, symbol).ok_or(ProviderError::NotFound)?;
@@ -801,6 +809,25 @@ mod tests {
         assert_eq!(stem_for(&folder.opened(), "ESH7").as_deref(), Some("ESH7.CME"));
         folder.scid("ESH27_FUT_CME", 5, 60);
         assert_eq!(stem_for(&folder.opened(), "ESH7").as_deref(), Some("ESH27_FUT_CME"));
+    }
+
+    /// The months a stitched root is read from are asked for as `ESZ25`,
+    /// and found in either spelling, the old month's file Sierra Chart's
+    /// own and the new one's Rithmic's, or the other way about.
+    #[test]
+    fn the_months_a_root_is_stitched_from_are_found_in_either_spelling() {
+        let folder = Folder::new("stitched-styles");
+        folder.scid("ESZ25_FUT_CME", 40, 600).scid("ESH6.CME", 40, 300).scid("ESM26_FUT_CME", 40, 200).scid("ESZ6.CME", 40, 1);
+        let opened = folder.opened();
+        for (asked, stem) in [("ESZ25", "ESZ25_FUT_CME"), ("ESH26", "ESH6.CME"), ("ESM26", "ESM26_FUT_CME"), ("ESZ26", "ESZ6.CME")] {
+            assert_eq!(stem_for(&opened, asked).as_deref(), Some(stem), "{asked}");
+        }
+        assert_eq!(stem_for(&opened, "ESU26"), None, "a month with no file is missing, for the month after to stand in");
+        assert_eq!(
+            crate::continuous::source(&Sierra),
+            crate::continuous::Source::Stitched,
+            "every month from its own files"
+        );
     }
 
     /// A one-digit year means the same year typed as a contract and named

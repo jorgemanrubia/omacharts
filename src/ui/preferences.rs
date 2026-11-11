@@ -708,6 +708,25 @@ fn build_charts_page(context: &Rc<Context>) {
     }
     hours.add(&session);
 
+    let continuous = adw::ComboRow::new();
+    continuous.set_title("Continuous futures");
+    {
+        use omacharts_engine::continuous::Adjustment;
+        let joins: Vec<String> = Adjustment::ALL.iter().map(|a| a.label().to_string()).collect();
+        continuous.set_model(Some(&string_list(&joins)));
+        continuous.set_selected(Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0) as u32);
+        let changed = changed.clone();
+        continuous.connect_selected_notify(move |row| {
+            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
+            changed(&|d| d.continuous = chosen);
+        });
+    }
+    // Only where some feed has a choice to make: the default of nothing is
+    // no row.
+    if omacharts_engine::continuous::any_offered() {
+        hours.add(&continuous);
+    }
+
     let switch = |title: &str, on: bool, set: fn(&mut ChartDefaults, bool)| {
         let row = adw::SwitchRow::new();
         row.set_title(title);

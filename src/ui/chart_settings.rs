@@ -746,14 +746,31 @@ fn session_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     row.set_model(Some(&gtk::StringList::new(&names)));
     row.set_selected(Session::ALL.iter().position(|s| *s == session).unwrap_or(0) as u32);
 
-    let window = window.clone();
+    let for_hours = window.clone();
     row.connect_selected_notify(move |row| {
         let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
-        window.set_session(chosen);
-        window.refresh();
+        for_hours.set_session(chosen);
+        for_hours.refresh();
     });
-
     group.add(&row);
+
+    // Only on a root whose feed can join its months either way: anything
+    // else has nothing to choose, and no row.
+    if window.offers_continuous() {
+        use omacharts_engine::continuous::Adjustment;
+        let names: Vec<&str> = Adjustment::ALL.iter().map(|a| a.label()).collect();
+        let joined = adw::ComboRow::new();
+        joined.set_title("Continuous futures");
+        joined.set_model(Some(&gtk::StringList::new(&names)));
+        let now = window.continuous();
+        joined.set_selected(Adjustment::ALL.iter().position(|a| *a == now).unwrap_or(0) as u32);
+        let window = window.clone();
+        joined.connect_selected_notify(move |row| {
+            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
+            window.set_continuous(chosen);
+        });
+        group.add(&joined);
+    }
     group
 }
 

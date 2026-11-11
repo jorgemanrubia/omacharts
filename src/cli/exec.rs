@@ -1578,6 +1578,13 @@ fn chart_set(
                 .ok_or_else(|| Fault::usage(format!("{text:?} is not a session")))?,
         ),
     };
+    let continuous = match arg(m, "continuous") {
+        None => None,
+        Some(text) => Some(
+            omacharts_engine::continuous::Adjustment::from_key(text)
+                .ok_or_else(|| Fault::usage(format!("{text:?} is not back-adjusted or as-traded")))?,
+        ),
+    };
     let mode = match arg(m, "link") {
         None => None,
         Some(text) => Some(link_mode(text)?),
@@ -1692,6 +1699,10 @@ fn chart_set(
     if let Some(session) = session {
         chart["session"] = json!(session.key());
         changed.push(format!("session {}", session.key()));
+    }
+    if let Some(continuous) = continuous {
+        chart["continuous"] = json!(continuous.key());
+        changed.push(format!("continuous futures {}", continuous.key()));
     }
     if let Some(mode) = mode {
         chart["link"] = json!(mode.key());
@@ -4309,6 +4320,9 @@ fn pane_json(pane: &Value) -> String {
         "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
         "swapped": stored_look(pane).swapped,
         "session": pane["session"],
+        // Missing from a chart stored before there was a choice, which is
+        // drawn as the default says.
+        "continuous": pane["continuous"].as_str().map_or_else(|| json!(null), |join| json!(join)),
         "grid": pane["show_grid"],
         // Missing from a chart stored before it was remembered, and every one
         // of those was fitting itself.
@@ -5425,6 +5439,13 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         store.set_setting(key, &thickness.to_string());
         let text = format!("new charts draw OHLC bars {thickness}px wide");
         return said(as_json, json!({"key": key, "value": thickness.to_string()}), text);
+    }
+    if key == crate::chart_defaults::SETTING_CONTINUOUS {
+        let join = omacharts_engine::continuous::Adjustment::from_key(value)
+            .ok_or_else(|| Fault::usage(format!("{value:?} is not back-adjusted or as-traded")))?;
+        store.set_setting(key, join.key());
+        let text = format!("new charts join a futures root's months {}", join.label().to_lowercase());
+        return said(as_json, json!({"key": key, "value": join.key()}), text);
     }
     if key == crate::templates::SETTING {
         return Err(Fault::usage(

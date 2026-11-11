@@ -943,12 +943,39 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
                 store.drop_series(&request.key, native);
                 return Outcome::StartOver;
             }
+            if drawn_short(&request.key, native) {
+                // A stitched root short of a month or a gap just now: shown,
+                // and not kept, so that the next load, after a restart too,
+                // reads it whole.
+                store.drop_series(&request.key, native);
+                let key = request.key.clone();
+                return Outcome::Done(Response::Bars { key, timeframe: native, bars: upserted(cached, &fresh) });
+            }
             let merged = store.merge_bars(&request.key, native, &fresh);
             let key = request.key.clone();
             Outcome::Done(Response::Bars { key, timeframe: native, bars: merged })
         }
         Err(error) => Outcome::Failed { error, bars: cached },
     }
+}
+
+/// Whether the series kept under `key`, `provider:symbol`, was last drawn
+/// short of what it should be: a stitched root with a month that could not
+/// be read, or a roll that could not be measured, just now. It is not kept.
+pub(crate) fn drawn_short(key: &str, timeframe: Timeframe) -> bool {
+    key.split_once(':').is_some_and(|(provider, symbol)| omacharts_engine::continuous::drawn_short(provider, symbol, timeframe))
+}
+
+/// `bars` with `fresh` over them, by time: what the store would merge, in
+/// memory alone.
+fn upserted(mut bars: Vec<Bar>, fresh: &[Bar]) -> Vec<Bar> {
+    for bar in fresh {
+        match bars.binary_search_by_key(&bar.ts, |b| b.ts) {
+            Ok(at) => bars[at] = *bar,
+            Err(at) => bars.insert(at, *bar),
+        }
+    }
+    bars
 }
 
 /// Send one batch of closes and store what came back.
@@ -1166,6 +1193,40 @@ mod tests {
         // 300 is the newest cached bar and may have been forming, so its
         // disagreement is expected and ignored.
         assert!(overlap_agrees(&cached, &fresh));
+    }
+
+    /// A stitched root loaded while one of its months cannot be read is
+    /// shown short and not kept: after a restart, with every month readable,
+    /// the load reads it whole and the chart is the proper stitch, not the
+    /// short one topped up.
+    #[test]
+    fn a_stitched_root_drawn_short_is_drawn_whole_after_a_restart() {
+        use omacharts_engine::continuous::{fake::Months, Adjustment, Continuous, Spelled};
+        let months = Arc::new(Months { id: "months-restart", ..Months::all() });
+        let stitched = Continuous::shared(months.clone());
+        let daily = Timeframe::days(1);
+        let symbol = Spelled { root: "ES".into(), front: omacharts_engine::continuous::fake::month(4), adjustment: Adjustment::AsTraded }.to_string();
+        let request = Request { speculative: false, key: format!("months-restart:{symbol}"), symbol: symbol.clone(), timeframe: daily };
+        let loaded = |provider: &dyn Provider| match attempt(&request, provider) {
+            Outcome::Done(Response::Bars { bars, .. }) => bars,
+            _ => panic!("not loaded"),
+        };
+        Store::open().unwrap().drop_series(&request.key, daily);
+
+        *months.unreadable.lock().unwrap() = vec![1];
+        let short = loaded(&stitched);
+        assert!(!short.is_empty(), "shown");
+        assert!(Store::open().unwrap().coverage(&request.key, daily).is_none(), "the short stitch kept");
+
+        // A restart: the store is all that is left.
+        Months::restart();
+        *months.unreadable.lock().unwrap() = Vec::new();
+        let after = loaded(&stitched);
+        let whole = stitched.bars(&symbol, daily, None).unwrap();
+        assert_ne!(short, whole);
+        assert_eq!(after, whole, "the short stitch survived the restart");
+        assert_eq!(Store::open().unwrap().load_bars(&request.key, daily), whole, "the whole stitch kept");
+        Store::open().unwrap().drop_series(&request.key, daily);
     }
 
     #[test]

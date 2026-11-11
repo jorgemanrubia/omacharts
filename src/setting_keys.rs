@@ -98,6 +98,7 @@ const SHARED: &[&str] = &[
     "watchlist_link_",
     "bar_style",
     "chart_session",
+    "chart_continuous",
     "show_grid",
     "chart_log_scale",
     "chart_shows_drawings",

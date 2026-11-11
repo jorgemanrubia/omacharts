@@ -555,7 +555,9 @@ impl Live {
             .borrow()
             .iter()
             .map(|(series, entry)| Report {
-                symbol: entry.symbol.clone(),
+                // A stitched root as the chart names it, not as its feed
+                // is asked for it.
+                symbol: omacharts_engine::continuous::shown(&entry.symbol).to_string(),
                 native: series.native,
                 charts: entry.watchers.len(),
                 bars: entry.bars.as_ref().map(Vec::len).unwrap_or(0),
@@ -612,11 +614,22 @@ impl Writer {
                             for bar in snapshot {
                                 upsert(&mut fresh, bar);
                             }
-                            let bars = store.merge_bars(&series.key, series.native, &fresh);
+                            // A stitched root drawn short just now is not
+                            // kept, as the loader keeps none: what is kept
+                            // of it goes, and it is read whole next time.
+                            let bars = match crate::loader::drawn_short(&series.key, series.native) {
+                                true => {
+                                    store.drop_series(&series.key, series.native);
+                                    fresh
+                                }
+                                false => store.merge_bars(&series.key, series.native, &fresh),
+                            };
                             Written::Merged { series, bars }
                         }
                         Job::Write { series, bars } => {
-                            store.merge_bars(&series.key, series.native, &bars);
+                            if !crate::loader::drawn_short(&series.key, series.native) {
+                                store.merge_bars(&series.key, series.native, &bars);
+                            }
                             Written::Flushed { series }
                         }
                         Job::Sync(done) => {
