@@ -2598,6 +2598,8 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
         "arrow": style.arrow.key(),
         "head": style.head.key(),
         "border": style.border,
+        "line_style": style.line_style.label().to_lowercase(),
+        "select_by_border": style.edge_only,
         "fill": style.fill.spell(),
         "alpha": style.alpha,
         "text_color": style.text.colour.spell(),
@@ -2615,6 +2617,7 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "value_area": style.profile.value_area,
             "transparency": 1.0 - style.profile.opacity,
             "poc_width": style.profile.poc_width,
+            "poc_style": style.profile.poc_style.label().to_lowercase(),
         });
     }
     // And only an anchored VWAP has these.
@@ -2709,14 +2712,15 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                     format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
                 }
             };
-            format!("{}, {}px{arrow}", style.colour.spell(), style.width)
+            format!("{}, {}px{}{arrow}", style.colour.spell(), style.width, pattern_words(style.line_style))
         }
         Kind::Rect | Kind::Ellipse => {
             let edge = match style.border {
-                true => format!(", edge {} {}px", style.colour.spell(), style.width),
+                true => format!(", edge {} {}px{}", style.colour.spell(), style.width, pattern_words(style.line_style)),
                 false => ", no edge".to_string(),
             };
-            format!("fill {} at {:.2}{edge}", style.fill.spell(), style.alpha)
+            let held = if style.edge_only { ", selected by its border" } else { "" };
+            format!("fill {} at {:.2}{edge}{held}", style.fill.spell(), style.alpha)
         }
         Kind::Text => describe_text_style(style),
         Kind::Profile => {
@@ -2762,6 +2766,14 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
             };
             format!("{}, {width}, {levels}, {labels}", style.colour.spell())
         }
+    }
+}
+
+/// A pattern in a look said in words: nothing for solid.
+fn pattern_words(pattern: LineStyle) -> String {
+    match pattern {
+        LineStyle::Solid => String::new(),
+        other => format!(" {}", other.label().to_lowercase()),
     }
 }
 
@@ -2820,6 +2832,13 @@ struct StyleEdits {
     level_style: Option<LineStyle>,
     fib_labels: Option<bool>,
     price_labels: Option<bool>,
+    /// The pattern a line, a box's or an ellipse's edge, or a profile's
+    /// outline is drawn in.
+    line_style: Option<LineStyle>,
+    /// Whether a box or an ellipse is taken by its edge alone.
+    edge_only: Option<bool>,
+    /// A volume profile's point of control's pattern.
+    poc_style: Option<LineStyle>,
 }
 
 impl StyleEdits {
@@ -2950,6 +2969,9 @@ impl StyleEdits {
             Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
         };
         Ok(StyleEdits {
+            line_style: pattern("line-style")?,
+            edge_only: switch("select-by-border")?,
+            poc_style: pattern("poc-style")?,
             levels,
             level,
             level_colour,
@@ -3018,6 +3040,9 @@ impl StyleEdits {
             && !self.edits_a_level()
             && self.fib_labels.is_none()
             && self.price_labels.is_none()
+            && self.line_style.is_none()
+            && self.edge_only.is_none()
+            && self.poc_style.is_none()
     }
 
     /// Whether anything is said about the look of a retracement's level, as
@@ -3075,6 +3100,31 @@ impl StyleEdits {
                 "--level says which level the --level-* flags change; give one of them too".into(),
             ));
         }
+        use omacharts_engine::DrawingKind as K;
+        let stroked = matches!(kind, K::Line | K::Horizontal | K::Arrow | K::Zigzag | K::Rect | K::Ellipse | K::Profile);
+        if self.line_style.is_some() && !stroked {
+            let instead = match kind {
+                K::Vwap => "; its line's is --style",
+                K::Fib => "; its levels' is --level-style",
+                _ => "",
+            };
+            return Err(Fault::usage(format!(
+                "--line-style is a line's, a box's or an ellipse's edge, or a profile's outline; a {} has none{instead}",
+                kind.label().to_lowercase()
+            )));
+        }
+        if self.edge_only.is_some() && !matches!(kind, K::Rect | K::Ellipse) {
+            return Err(Fault::usage(format!(
+                "--select-by-border is a rectangle's or an ellipse's; a {} is taken by what is drawn already",
+                kind.label().to_lowercase()
+            )));
+        }
+        if self.poc_style.is_some() && kind != K::Profile {
+            return Err(Fault::usage(format!(
+                "--poc-style is a volume profile's; a {} has no point of control",
+                kind.label().to_lowercase()
+            )));
+        }
         Ok(())
     }
 
@@ -3122,6 +3172,15 @@ impl StyleEdits {
         }
         if let Some(border) = self.border {
             style.border = border;
+        }
+        if let Some(pattern) = self.line_style {
+            style.line_style = pattern;
+        }
+        if let Some(on) = self.edge_only {
+            style.edge_only = on;
+        }
+        if let Some(pattern) = self.poc_style {
+            style.profile.poc_style = pattern;
         }
         if let Some(fill) = &self.fill {
             style.fill = fill.clone();
@@ -3457,6 +3516,12 @@ struct Edits {
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
     poc_width: Option<f64>,
+    outline_style: Option<LineStyle>,
+    poc_style: Option<LineStyle>,
+    signal_style: Option<LineStyle>,
+    d_style: Option<LineStyle>,
+    /// How far a volume profile fades, 0 as designed.
+    transparency: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     /// `Some(None)` puts volume back on the chart's own colouring, and a
@@ -3495,6 +3560,18 @@ fn time_of_day(m: &clap::ArgMatches, id: &str) -> Result<Option<u32>, Fault> {
         Some(text) => omacharts_engine::clock::parse_time(text).map(Some).ok_or_else(|| {
             Fault::usage(format!("--{id} takes a time of day such as 9am, 09:30 or 2130, not {text:?}"))
         }),
+    }
+}
+
+/// A line's pattern as `--style` and its kin are given it.
+fn line_style(m: &clap::ArgMatches, id: &str) -> Result<Option<LineStyle>, Fault> {
+    match arg(m, id) {
+        None => Ok(None),
+        Some(text) => LineStyle::ALL
+            .into_iter()
+            .find(|s| serde_json::to_value(s).ok().as_ref().and_then(Value::as_str) == Some(text.as_str()))
+            .map(Some)
+            .ok_or_else(|| Fault::usage(format!("--{id} is solid, dashed or dotted, not {text:?}"))),
     }
 }
 
@@ -3572,6 +3649,11 @@ impl Edits {
             outline_color: colour(m, "outline-color")?,
             outline_width: bounded(m, "outline-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
             poc_width: bounded(m, "poc-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
+            outline_style: line_style(m, "outline-style")?,
+            poc_style: line_style(m, "poc-style")?,
+            signal_style: line_style(m, "signal-style")?,
+            d_style: line_style(m, "d-style")?,
+            transparency: bounded(m, "transparency", 0.0, 1.0)?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -3699,6 +3781,11 @@ impl Edits {
             && self.outline_color.is_none()
             && self.outline_width.is_none()
             && self.poc_width.is_none()
+            && self.outline_style.is_none()
+            && self.poc_style.is_none()
+            && self.signal_style.is_none()
+            && self.d_style.is_none()
+            && self.transparency.is_none()
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
@@ -3799,6 +3886,18 @@ impl Edits {
                 false => return Err(refuse("%D line")),
             }
         }
+        if let Some(pattern) = self.signal_style {
+            match kind == IndicatorKind::Macd {
+                true => params["signal_style"] = to_value(&pattern)?,
+                false => return Err(refuse("signal line")),
+            }
+        }
+        if let Some(pattern) = self.d_style {
+            match kind == IndicatorKind::Stochastic {
+                true => params["d_style"] = to_value(&pattern)?,
+                false => return Err(refuse("%D line")),
+            }
+        }
         if let Some(anchor) = self.anchor {
             match (params.get("reset").is_some(), anchor) {
                 (false, _) => return Err(refuse("anchor")),
@@ -3888,6 +3987,23 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["outline_color"] = to_value(colour)?,
                 false => return Err(refuse("outline")),
+            }
+        }
+        for (pattern, key, what) in [
+            (self.outline_style, "outline_style", "outline"),
+            (self.poc_style, "poc_style", "point of control"),
+        ] {
+            if let Some(pattern) = pattern {
+                match kind == IndicatorKind::VolumeProfile {
+                    true => params[key] = to_value(&pattern)?,
+                    false => return Err(refuse(what)),
+                }
+            }
+        }
+        if let Some(clear) = self.transparency {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["opacity"] = json!(1.0 - clear),
+                false => return Err(refuse("transparency")),
             }
         }
         for (width, key, what) in [
@@ -8777,6 +8893,95 @@ mod tests {
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// A line's, a box's and an ellipse's pattern, a box taken by its edge
+    /// alone, and a profile drawing's outline and point of control patterns
+    /// are set from a command, read back, and refused on what has none.
+    #[test]
+    fn line_styles_and_select_by_border_are_set_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let add = |words: &str| {
+            let out = run(&format!("chart drawing add {words} --book Macro --from 2026-10-01,100 --to 2026-10-14,200"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        };
+        add("line --line-style dashed");
+        add("rect --border off --line-style dotted --select-by-border on");
+        add("ellipse --line-style dashed");
+        add("profile --line-style dotted --poc-style dashed");
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let style = |n: usize| listed["drawings"][n]["style"].clone();
+        assert_eq!(style(0)["line_style"], "dashed");
+        assert_eq!(style(0)["select_by_border"], false, "off unless set");
+        assert_eq!(style(1)["line_style"], "dotted");
+        assert_eq!(style(1)["border"], false);
+        assert_eq!(style(1)["select_by_border"], true);
+        assert_eq!(style(2)["line_style"], "dashed");
+        assert_eq!(style(3)["line_style"], "dotted");
+        assert_eq!(style(3)["profile"]["poc_style"], "dashed");
+
+        let id = listed["drawings"][1]["id"].as_i64().unwrap();
+        let set = run(&format!("chart drawing set --book Macro --id {id} --select-by-border off --line-style solid"), &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(listed["drawings"][1]["style"]["select_by_border"], false);
+        assert_eq!(listed["drawings"][1]["style"]["line_style"], "solid");
+
+        for bad in [
+            "text --line-style dashed",
+            "line --select-by-border on",
+            "rect --poc-style dotted",
+            "line --line-style wavy",
+        ] {
+            let out = run(&format!("chart drawing add {bad} --book Macro --from 2026-10-01,100 --to 2026-10-14,200"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
+
+        let configured = run("chart drawing configure rect --config 4 --select-by-border on --line-style dashed", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
+        let configs = run("chart drawing configs rect", &store);
+        assert!(configs.out.contains("selected by its border"), "{}", configs.out);
+    }
+
+    /// A volume profile's outline and point of control patterns and its
+    /// transparency, and the MACD's signal and the stochastic's %D patterns,
+    /// are set from a command, and refused by every other indicator.
+    #[test]
+    fn indicator_line_styles_and_a_profile_s_transparency_are_set_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        for kind in ["volume_profile", "macd", "stochastic", "rsi"] {
+            let out = run(&format!("chart indicator add {kind} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{kind}: {}", out.err);
+        }
+        for words in [
+            "volume_profile --outline-style dotted --poc-style dashed --transparency 0.3",
+            "macd --signal-style dashed",
+            "stochastic --d-style dotted",
+        ] {
+            let out = run(&format!("chart indicator set {words} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        }
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        let params = |n: usize| listed["indicators"][n]["params"].clone();
+        assert_eq!(params(0)["outline_style"], "dotted");
+        assert_eq!(params(0)["poc_style"], "dashed");
+        assert!((params(0)["opacity"].as_f64().unwrap() - 0.7).abs() < 1e-9, "{}", params(0));
+        assert_eq!(params(1)["signal_style"], "dashed");
+        assert_eq!(params(2)["d_style"], "dotted");
+
+        for bad in [
+            "rsi --signal-style dashed",
+            "rsi --d-style dashed",
+            "macd --outline-style dotted",
+            "rsi --transparency 0.5",
+            "volume_profile --transparency 1.5",
+            "macd --signal-style wavy",
+        ] {
+            let out = run(&format!("chart indicator set {bad} --book Macro"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
     }
 
     /// A retracement spans two anchors, takes which levels it draws, each

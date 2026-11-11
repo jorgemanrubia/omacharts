@@ -206,7 +206,9 @@ to that chart, `--show-drawings off` keeps it clear of what others drew — and
 both are on unless somebody turned one off. Anchors are a moment and a price. A drawing follows one of nine
 configurations — `--config N`, shipped as the nine theme presets in order, 1
 being the up colour and 2 the down colour — or gets a look of its own from
-`--color`, `--width`, `--arrow`, `--head`, `--fill`, `--alpha`, `--border`. Prefer a
+`--color`, `--width`, `--line-style solid|dashed|dotted`, `--arrow`, `--head`,
+`--fill`, `--alpha`, `--border`, and `--select-by-border on` for a box or an
+ellipse taken by its edge alone, its inside left to the chart. Prefer a
 configuration or a preset name to a hex, so the drawing keeps following the
 desktop theme:
 
@@ -245,10 +247,13 @@ matter.
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is
-its outline, `--fill` its background, `--width` the outline's thickness, and
-`--poc-color`, `--poc-width`, `--profile-style filled|outline`, `--align
+its outline, `--fill` its background, `--width` the outline's thickness,
+`--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
+`--profile-style filled|outline`, `--align
 left|right`, `--value-area` and `--transparency` the rest. The study takes
-`--outline-color`, `--outline-width` and `--poc-width` the same way. It takes no `--text`. The study's own profiles are read and merged with
+`--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
+`--poc-style` and `--transparency` (0 to 1) the same way; a MACD's signal line
+takes `--signal-style` and a stochastic's %D `--d-style`. It takes no `--text`. The study's own profiles are read and merged with
 `chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds
 the one starting there into the one before it — read again after each merge,

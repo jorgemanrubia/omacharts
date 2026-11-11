@@ -114,13 +114,13 @@ Every indicator the app has, with every parameter it exposes:
 | `sma`, `ema` | `--period` |
 | `bollinger` | `--period`, `--deviations`, `--bands` (`1` or `none`), `--band-alpha` |
 | `rsi` | `--period`, `--overbought`, `--oversold`, `--height` |
-| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
+| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--signal-style`, `--height` |
 | `atr` | `--period`, `--height` |
-| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
+| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color`, `--d-style` |
 | `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
 Anything that draws a line also takes `--color`, `--width` and `--style`, and
 everything takes `--visible`.
@@ -757,9 +757,10 @@ refused rather than written down invisible.
 **A drawing follows a configuration, or has a look of its own.** Each kind
 has nine configurations, 1 to 9; a drawing that follows one looks like it and
 changes with it. `--config N` puts a drawing on configuration N. Any property
-given by hand — `--color`, `--width`, `--arrow` and `--head` (filled, open
-or barb) for a line; `--fill`,
-`--alpha`, `--border`, `--width`, `--color` for a box's edge — takes the
+given by hand — `--color`, `--width`, `--line-style`, `--arrow` and `--head`
+(filled, open or barb) for a line; `--fill`,
+`--alpha`, `--border`, `--width`, `--color`, `--line-style` for a box's edge,
+and `--select-by-border on` to take it by its edge alone — takes the
 drawing off its configuration and gives it that look, which no later change
 to the configuration touches. The configurations themselves:
 
@@ -772,8 +773,8 @@ omacharts chart drawing reset-configs rect
 **A volume profile drawing** (`profile`, or `vp`) reads only the times of its
 anchors: its height is the prices its bars reached. `--color` is its outline
 and `--fill` its background, `--border on|off` whether filled rows have it,
-`--width` its thickness;
-`--poc-color`, `--poc-width`, `--profile-style`, `--align`, `--value-area` and
+`--width` its thickness and `--line-style` its pattern;
+`--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area` and
 `--transparency` are the rest. It is never moved whole, only
 re-spanned, and it takes no words.
 

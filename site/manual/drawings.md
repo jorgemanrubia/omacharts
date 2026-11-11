@@ -132,6 +132,8 @@ changing the symbol or resolution clears it.
 
 Whatever you do to a selection is done to every drawing in it. Configurations and the properties need the selected drawings to be of one kind.
 
+A rectangle or circle with **Select by border only** on is picked up by its edge alone, whether or not a border is drawn. A click inside it selects the drawing under it, or reaches the chart, and a <kbd>Shift</kbd> + drag inside it selects what it touches without the rectangle or circle.
+
 ## The drawing's menu
 
 Right-click a drawing for its menu. It acts on the selected drawings. A right-click on empty chart opens the chart's own menu, which has **Paste** and **Remove all drawings** ([Charts](/manual/charts/)).
@@ -191,13 +193,15 @@ crop: 840,220,880,1160
 | Row | Kinds | Does |
 |---|---|---|
 | **Colour** | Line, level, arrow, zig-zag | One of the [nine presets](#colours), or **Custom…** for a hex colour |
+| **Line style** | Line, level, arrow, zig-zag | **Solid**, **Dashed**, **Dotted**. The dashes and dots grow with the thickness. An arrowhead is always solid |
 | **Thickness** | Line, level, arrow, zig-zag | 0.5 to 12 px, by halves |
 | **Arrow** | Line, level, arrow, zig-zag | **None**, **At the end**, **At the start**, **Both ends**, each drawn as it would look |
 | **Arrowhead** | Line, level, arrow, zig-zag | **Filled**, **Open**, **Barb**. Greyed while there is no arrow |
 | **Background** | Rectangle, circle | The fill's colour |
 | **Transparency** | Rectangle, circle | How much of the candles shows through the fill, 0 to 100% |
 | **Border** | Rectangle, circle | Whether it has an edge |
-| **Border thickness**, **Border colour** | Rectangle, circle | The edge, while there is one |
+| **Border thickness**, **Border colour**, **Border style** | Rectangle, circle | The edge, shown while there is one. **Border style** is Solid, Dashed or Dotted |
+| **Select by border only** | Rectangle, circle | Off by default. On, only the edge selects it, whether or not a border is drawn, and a click or a <kbd>Shift</kbd> + drag inside it reaches the chart and the drawings under it |
 
 <!-- regenerate:
 theme: tokyo-night
@@ -229,7 +233,7 @@ As shipped, the nine configurations are the nine [colours](#colours) in order, 1
 |---|---|
 | Line, horizontal line | 1.5 px, no arrow |
 | Arrow, zig-zag | 1.5 px, an open head at the end |
-| Rectangle, circle | Filled at 16% of the colour, with a 1 px edge of it |
+| Rectangle, circle | Filled at 13% of the colour, with a 1 px edge of it |
 | Text | The colour, nothing else |
 | Volume profile | See [Volume profiles](#volume-profiles) |
 | Anchored VWAP | 1.5 px, no bands |
@@ -261,12 +265,14 @@ It is drawn under the bars, as the study's profiles are, so the candles stay on 
 
 | Property | Does |
 |---|---|
-| **Outline** | Whether filled rows have an edge round them. Off by default; always on for an outline. Off, the outline's colour and thickness are greyed |
+| **Outline** | Whether filled rows have an edge round them. Off by default; always on, and greyed, for an outline. The outline's colour, style and thickness show while it is on |
 | **Outline colour** | The edge round the rows |
+| **Outline style** | Solid, Dashed or Dotted. Solid by default |
 | **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
 | **Background** | The rows |
 | **Transparency** | Fades the outline and the background together. 0% is the look as configured |
 | **Point of control** | The line across the busiest price |
+| **Point of control style** | Solid, Dashed or Dotted. Solid by default |
 | **Point of control thickness** | The point of control, 1.5 px |
 | **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
 | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |

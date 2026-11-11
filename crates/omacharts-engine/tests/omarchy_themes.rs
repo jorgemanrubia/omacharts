@@ -727,6 +727,23 @@ fn every_shipped_theme_has_a_neutral_of_its_own() {
     assert!(latte.l < 0.4 && (250.0..300.0).contains(&latte.h), "catppuccin-latte's neutral is not a dark blue-grey: {latte:?}");
 }
 
+/// A neutral line drawn over the bars is its own line on every shipped
+/// theme: clear of the up candle and the down candle, so it is never taken
+/// for either. The doji's colour is left out: on a theme whose text is near
+/// white, as Vantablack's, it is a near-white too, and a neutral could only
+/// be far from it by being dim.
+#[test]
+fn every_shipped_theme_has_a_neutral_apart_from_its_bars() {
+    for (name, theme) in fixtures() {
+        let neutral = theme.neutral();
+        let bars = theme_bars(&theme);
+        for (what, hex) in [("up", &bars.up), ("down", &bars.down)] {
+            let d = delta_e(&neutral, hex);
+            assert!(d >= 0.10, "{name}: the neutral {neutral} reads as the {what} candle {hex} ({d:.3})");
+        }
+    }
+}
+
 /// The last price on every shipped theme is its own colour: light on a
 /// dark chart and readable on a light one, and round the wheel from both
 /// candles, so its line is never taken for one.

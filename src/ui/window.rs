@@ -2770,8 +2770,8 @@ mod outside_change_tests {
     }
 
     /// A volume profile's settings draw its point of control behind a switch
-    /// that is on to begin with; off greys its colour and thickness and
-    /// stops it being drawn, whatever the method.
+    /// that is on to begin with; off hides its colour, style and thickness
+    /// and stops it being drawn, whatever the method.
     #[test]
     fn a_profile_s_point_of_control_is_switched_from_its_settings() {
         crate::ui::on_gtk(|| {
@@ -2788,24 +2788,181 @@ mod outside_change_tests {
             let label = crate::ui::chart_settings::PROFILE_POC_LABEL;
             let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
             let colour = || titled::<adw::ActionRow>(&window, "Point of control").pop().expect("its colour");
+            let pattern = || titled::<adw::ActionRow>(&window, "Point of control style").pop().expect("its style");
             let width = || titled::<adw::SpinRow>(&window, "Point of control thickness").pop().expect("its thickness");
             let drawn = || {
                 let stored = window.indicators();
                 let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
                 matches!(params, omacharts_engine::indicators::Params::VolumeProfile { poc: true, .. })
             };
+            let shown = || {
+                [colour().upcast::<gtk::Widget>(), pattern().upcast(), width().upcast()]
+                    .map(|row| row.property::<bool>("visible"))
+            };
             assert!(switch().is_active() && drawn(), "on to begin with");
-            assert!(colour().is_sensitive() && width().is_sensitive());
+            assert_eq!(shown(), [true; 3]);
             assert_eq!(switch().next_sibling().as_ref(), Some(colour().upcast_ref()), "above its colour");
+            assert_eq!(colour().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its colour");
 
             for method in ["total", "delta"] {
                 command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
                 switch().set_active(false);
                 assert!(!drawn(), "off on {method}");
-                assert!(!colour().is_sensitive() && !width().is_sensitive(), "greyed on {method}");
+                assert_eq!(shown(), [false; 3], "hidden on {method}");
                 switch().set_active(true);
                 assert!(drawn(), "on again on {method}");
-                assert!(colour().is_sensitive() && width().is_sensitive());
+                assert_eq!(shown(), [true; 3]);
+            }
+        });
+    }
+
+    /// A volume profile's outline switch comes back the moment its style is
+    /// filled again, without the panel being opened again, and the outline's
+    /// colour and style rows come and go with it.
+    #[test]
+    fn a_profile_s_outline_switch_follows_its_style_at_once() {
+        use omacharts_engine::indicators::profile::Style as ProfileStyle;
+        use omacharts_engine::indicators::{LineStyle, Params};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            let params = || window.indicators().into_iter().find(|i| i.id == profile).expect("the profile").params;
+            let switch = || titled::<adw::SwitchRow>(&window, "Outline").pop().expect("the outline switch");
+            let style = || {
+                titled::<adw::ComboRow>(&window, crate::ui::chart_settings::PROFILE_STYLE_LABEL).pop().expect("the style")
+            };
+            let colour = || titled::<adw::ActionRow>(&window, "Outline colour").pop().expect("its colour");
+            let pattern = || titled::<adw::ActionRow>(&window, "Outline style").pop().expect("its style");
+            let shown = || [colour().property::<bool>("visible"), pattern().property::<bool>("visible")];
+
+            assert!(matches!(params(), Params::VolumeProfile { style: ProfileStyle::Filled, outline: false, .. }));
+            assert!(!switch().is_active() && switch().is_sensitive(), "off and free over filled rows");
+            assert_eq!(shown(), [false; 2]);
+            assert_eq!(colour().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its colour");
+
+            let outline = ProfileStyle::ALL.iter().position(|s| *s == ProfileStyle::Outline).unwrap() as u32;
+            let filled = ProfileStyle::ALL.iter().position(|s| *s == ProfileStyle::Filled).unwrap() as u32;
+            style().set_selected(outline);
+            assert!(switch().is_active() && !switch().is_sensitive(), "on and greyed: the outline is all there is");
+            assert_eq!(shown(), [true; 2]);
+            assert!(
+                matches!(params(), Params::VolumeProfile { style: ProfileStyle::Outline, outline: false, .. }),
+                "following the style is not choosing an outline: {:?}",
+                params()
+            );
+
+            style().set_selected(filled);
+            assert!(switch().is_sensitive(), "free again at once");
+            assert!(!switch().is_active(), "back to what it was set to");
+            assert_eq!(shown(), [false; 2]);
+
+            switch().set_active(true);
+            assert!(matches!(params(), Params::VolumeProfile { outline: true, .. }));
+            assert_eq!(shown(), [true; 2]);
+            style().set_selected(outline);
+            style().set_selected(filled);
+            assert!(switch().is_active() && switch().is_sensitive(), "an outline chosen stays chosen");
+            assert_eq!(shown(), [true; 2]);
+
+            command(&window, &["chart", "indicator", "set", "volume_profile", "--outline-style", "dotted"]);
+            assert!(matches!(params(), Params::VolumeProfile { outline_style: LineStyle::Dotted, .. }), "{:?}", params());
+            command(&window, &["chart", "indicator", "set", "volume_profile", "--poc-style", "dashed"]);
+            assert!(matches!(params(), Params::VolumeProfile { poc_style: LineStyle::Dashed, .. }), "{:?}", params());
+        });
+    }
+
+    /// A volume profile's Transparency, under its background, starts at
+    /// none, and reaches the profile from its slider and from a command.
+    #[test]
+    fn a_profile_s_transparency_is_set_from_its_slider_and_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "volume_profile"]);
+            let profile = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::VolumeProfile)
+                .map(|i| i.id)
+                .expect("a volume profile added");
+            let opacity = || {
+                let stored = window.indicators();
+                match &stored.iter().find(|i| i.id == profile).expect("the profile").params {
+                    omacharts_engine::indicators::Params::VolumeProfile { opacity, .. } => {
+                        omacharts_engine::indicators::profile::drawn_opacity(*opacity)
+                    }
+                    other => panic!("{other:?}"),
+                }
+            };
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            let row = || {
+                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::PROFILE_TRANSPARENCY_LABEL)
+                    .pop()
+                    .expect("a Transparency row")
+            };
+            let above = row().prev_sibling().and_then(|w| w.downcast::<adw::ActionRow>().ok());
+            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Background"), "Transparency is not under Background");
+            let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
+            assert_eq!(slider(row()).value(), 0.0);
+            assert_eq!(opacity(), 1.0);
+
+            slider(row()).set_value(40.0);
+            assert!((opacity() - 0.6).abs() < 1e-9, "the slider did not reach the profile: {}", opacity());
+
+            command(&window, &["chart", "indicator", "set", "volume_profile", "--transparency", "0.75"]);
+            assert!((opacity() - 0.25).abs() < 1e-9);
+        });
+    }
+
+    /// A box's border rows — thickness, colour and style, the style right
+    /// under the colour — come and go with its Border switch, and its
+    /// "Select by border only" switch, off to begin with, is kept; an ellipse
+    /// has the same rows.
+    #[test]
+    fn a_box_s_border_rows_follow_its_switch_and_it_can_be_taken_by_its_edge() {
+        use omacharts_engine::drawings::{Kind, LineStyle};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            for kind in [Kind::Rect, Kind::Ellipse] {
+                crate::ui::drawing_settings::present_configurations(&window, &store, kind);
+                let first = titled::<adw::ActionRow>(&window, "Configuration 1").pop().expect("the first configuration");
+                first.emit_by_name::<()>("activated", &[]);
+                let stored = || window.drawing_configurations().of(kind, 1).clone();
+                let border = || titled::<adw::SwitchRow>(&window, "Border").pop().expect("the border switch");
+                let edge_only =
+                    || titled::<adw::SwitchRow>(&window, "Select by border only").pop().expect("the edge-only switch");
+                let colour = || titled::<adw::ActionRow>(&window, "Border colour").pop().expect("its colour");
+                let pattern = || titled::<adw::ActionRow>(&window, "Border style").pop().expect("its style");
+                let width = || titled::<adw::ActionRow>(&window, "Border thickness").pop().expect("its thickness");
+                let shown = || {
+                    [colour(), pattern(), width()].map(|row| row.property::<bool>("visible"))
+                };
+                assert!(border().is_active() && stored().border, "{kind:?} has a border to begin with");
+                assert_eq!(shown(), [true; 3], "{kind:?}");
+                assert_eq!(colour().next_sibling().as_ref(), Some(pattern().upcast_ref()), "the style under the colour");
+                assert_eq!(stored().line_style, LineStyle::Solid);
+
+                border().set_active(false);
+                assert!(!stored().border);
+                assert_eq!(shown(), [false; 3], "{kind:?}: hidden with the border");
+                border().set_active(true);
+                assert_eq!(shown(), [true; 3], "{kind:?}: back with it");
+
+                assert!(!edge_only().is_active() && !stored().edge_only, "{kind:?}: off to begin with");
+                edge_only().set_active(true);
+                assert!(stored().edge_only, "{kind:?}: the switch reached the configuration");
+                border().set_active(false);
+                assert!(edge_only().property::<bool>("visible"), "{kind:?}: kept with no border drawn");
+                assert!(stored().edge_only);
             }
         });
     }

@@ -561,14 +561,15 @@ fn describe(kind: Kind, style: &Style) -> String {
                     format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
                 }
             };
-            format!("{}, {}px{arrow}", name_of(&style.colour), style.width)
+            format!("{}, {}px{}{arrow}", name_of(&style.colour), style.width, pattern_words(style.line_style))
         }
         Kind::Rect | Kind::Ellipse => {
             let edge = match style.border {
-                true => format!(", edge {} {}px", name_of(&style.colour), style.width),
+                true => format!(", edge {} {}px{}", name_of(&style.colour), style.width, pattern_words(style.line_style)),
                 false => ", no edge".to_string(),
             };
-            format!("{} at {:.0}%{edge}", name_of(&style.fill), style.alpha * 100.0)
+            let held = if style.edge_only { ", by its edge" } else { "" };
+            format!("{} at {:.0}%{edge}{held}", name_of(&style.fill), style.alpha * 100.0)
         }
         // A text configuration is its three text properties and nothing
         // else, so they are what the row says. The face is named only when
@@ -606,6 +607,15 @@ fn describe(kind: Kind, style: &Style) -> String {
             vwap_bands(style)
         ),
         Kind::Fib => fib_summary(style),
+    }
+}
+
+/// A pattern in a summary: nothing for solid, which is what a line is
+/// unless it says otherwise.
+fn pattern_words(pattern: LineStyle) -> String {
+    match pattern {
+        LineStyle::Solid => String::new(),
+        other => format!(" {}", other.label().to_lowercase()),
     }
 }
 
@@ -724,17 +734,39 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
 
     match kind {
         Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
-            // Colour.
+            // Colour, and the pattern drawn in it, which is the colour's
+            // own business: the samples are in it.
+            let ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
             let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
+                let ink = ink.clone();
                 move |paint| {
                     style.borrow_mut().colour = paint;
+                    ink.repaint();
                     emit();
                 }
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let (row, show) = pattern_row(&ink, "Line style", style.borrow().line_style, &showing, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |pattern| {
+                    style.borrow_mut().line_style = pattern;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| {
+                show(s.line_style);
+                ink.repaint();
+            }));
 
             // Thickness.
             let (row, show) = width_row("Thickness", style.borrow().width, {
@@ -820,16 +852,40 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             edge.set_sensitive(filled(&style.borrow()));
             group.add(&edge);
 
+            let outline_ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
             let (outline_row, show) = paint_row(&theme, "Outline colour", &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
+                let ink = outline_ink.clone();
                 move |paint| {
                     style.borrow_mut().colour = paint;
+                    ink.repaint();
                     emit();
                 }
             });
             group.add(&outline_row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let (pattern_row_, show) = pattern_row(&outline_ink, "Outline style", style.borrow().line_style, &showing, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |pattern| {
+                    style.borrow_mut().line_style = pattern;
+                    emit();
+                }
+            });
+            group.add(&pattern_row_);
+            {
+                let ink = outline_ink.clone();
+                shows.push(Rc::new(move |s: &Style| {
+                    show(s.line_style);
+                    ink.repaint();
+                }));
+            }
 
             let (thickness_row, show) = width_row("Outline thickness", style.borrow().width, {
                 let style = style.clone();
@@ -842,36 +898,50 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&thickness_row);
             shows.push(Rc::new(move |s: &Style| show(s.width)));
 
-            // The outline's own rows wait for there to be an outline.
+            // The outline's own rows are there while there is an outline.
             let outlined = move |s: &Style| s.border || !filled(s);
-            for row in [outline_row.clone().upcast::<gtk::Widget>(), thickness_row.clone().upcast()] {
-                row.set_sensitive(outlined(&style.borrow()));
+            let outline_rows: Rc<[gtk::Widget]> =
+                Rc::new([outline_row.upcast(), pattern_row_.upcast(), thickness_row.upcast()]);
+            for row in outline_rows.iter() {
+                row.set_visible(outlined(&style.borrow()));
             }
             {
                 let style = style.clone();
                 let emit = emit.clone();
                 let showing = showing.clone();
-                let rows = [outline_row.clone().upcast::<gtk::Widget>(), thickness_row.clone().upcast()];
+                let rows = outline_rows.clone();
                 edge.connect_active_notify(move |row| {
+                    for widget in rows.iter() {
+                        widget.set_visible(row.is_active());
+                    }
                     if showing.get() || !filled(&style.borrow()) {
                         return;
-                    }
-                    for widget in &rows {
-                        widget.set_sensitive(row.is_active());
                     }
                     style.borrow_mut().border = row.is_active();
                     emit();
                 });
             }
-            {
-                let rows = [outline_row.upcast::<gtk::Widget>(), thickness_row.upcast()];
-                shows.push(Rc::new(move |s: &Style| {
+            // The switch and the rows under it follow the style, the moment
+            // it is picked as well as when a style is shown: on and greyed
+            // while the outline is all there is, back to what it was set to
+            // when the rows are filled again.
+            let follow_shape: Rc<dyn Fn(&Style)> = {
+                let edge = edge.clone();
+                let showing = showing.clone();
+                let rows = outline_rows.clone();
+                Rc::new(move |s: &Style| {
+                    let was = showing.replace(true);
                     edge.set_active(outlined(s));
+                    showing.set(was);
                     edge.set_sensitive(filled(s));
-                    for widget in &rows {
-                        widget.set_sensitive(outlined(s));
+                    for widget in rows.iter() {
+                        widget.set_visible(outlined(s));
                     }
-                }));
+                })
+            };
+            {
+                let follow_shape = follow_shape.clone();
+                shows.push(Rc::new(move |s: &Style| follow_shape(s)));
             }
 
             let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
@@ -909,16 +979,37 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&fade);
             shows.push(Rc::new(move |s: &Style| scale.set_value((1.0 - s.profile.opacity) * 100.0)));
 
+            let poc_ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().profile.poc.hex(&theme))
+            };
             let (row, show) = paint_row(&theme, "Point of control", &style.borrow().profile.poc, {
                 let style = style.clone();
                 let emit = emit.clone();
+                let ink = poc_ink.clone();
                 move |paint| {
                     style.borrow_mut().profile.poc = paint;
+                    ink.repaint();
                     emit();
                 }
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.profile.poc)));
+
+            let (row, show) = pattern_row(&poc_ink, "Point of control style", style.borrow().profile.poc_style, &showing, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |pattern| {
+                    style.borrow_mut().profile.poc_style = pattern;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| {
+                show(s.profile.poc_style);
+                poc_ink.repaint();
+            }));
 
             let (row, show) = width_row("Point of control thickness", style.borrow().profile.poc_width, {
                 let style = style.clone();
@@ -939,8 +1030,11 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 {
                     let style = style.clone();
                     let emit = emit.clone();
+                    let follow_shape = follow_shape.clone();
                     move |at| {
                         style.borrow_mut().profile.shape = shapes[at];
+                        let now = style.borrow().clone();
+                        follow_shape(&now);
                         emit();
                     }
                 },
@@ -1169,22 +1263,40 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 }
             });
             group.add(&width_row);
+            let ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
             let (colour_row, show_colour) = paint_row(&theme, "Border colour", &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
+                let ink = ink.clone();
                 move |paint| {
                     style.borrow_mut().colour = paint;
+                    ink.repaint();
                     emit();
                 }
             });
             group.add(&colour_row);
-            // The edge's rows only mean something while there is an edge.
+            let (pattern_row, show_pattern) = pattern_row(&ink, "Border style", style.borrow().line_style, &showing, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |pattern| {
+                    style.borrow_mut().line_style = pattern;
+                    emit();
+                }
+            });
+            group.add(&pattern_row);
+            // The edge's rows are there while there is an edge, and gone
+            // with it: a thickness, a colour and a pattern for nothing
+            // drawn are rows to read past.
             let follow = {
-                let width_row = width_row.clone();
-                let colour_row = colour_row.clone();
+                let rows = [width_row.clone(), colour_row.clone(), pattern_row.clone()];
                 move |on: bool| {
-                    width_row.set_sensitive(on);
-                    colour_row.set_sensitive(on);
+                    for row in &rows {
+                        row.set_visible(on);
+                    }
                 }
             };
             follow(style.borrow().border);
@@ -1192,12 +1304,31 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 let follow = follow.clone();
                 border_row.connect_active_notify(move |row| follow(row.is_active()));
             }
+
+            // Whether the inside is the chart's. On whether or not the
+            // edge is drawn, since the edge is still where it is.
+            let edge_only = adw::SwitchRow::new();
+            edge_only.set_title("Select by border only");
+            edge_only.set_active(style.borrow().edge_only);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                edge_only.connect_active_notify(move |row| {
+                    style.borrow_mut().edge_only = row.is_active();
+                    emit();
+                });
+            }
+            group.add(&edge_only);
+
             let border_for_show = border_row.clone();
             shows.push(Rc::new(move |s: &Style| {
                 border_for_show.set_active(s.border);
                 show_width(s.width);
                 show_colour(&s.colour);
+                show_pattern(s.line_style);
+                ink.repaint();
                 follow(s.border);
+                edge_only.set_active(s.edge_only);
             }));
         }
         // A text drawing has no shape to edit, so its look *is* its text
@@ -1700,15 +1831,20 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
             cr.set_line_width(style.width.clamp(1.0, 2.0));
         }
     }
+    cr.set_line_cap(gtk::cairo::LineCap::Butt);
+    cr.set_dash(&style.line_style.dashes(cr.line_width()), 0.0);
     path(cr);
     let _ = cr.stroke();
     let poc = (y + 3.5 * row_h).round() + 0.5;
     colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
-    cr.set_line_width(style.profile.poc_width.clamp(1.0, 2.0));
+    let poc_w = style.profile.poc_width.clamp(1.0, 2.0);
+    cr.set_line_width(poc_w);
+    cr.set_dash(&style.profile.poc_style.dashes(poc_w), 0.0);
     let (left, width) = span(1.0);
     cr.move_to(left, poc);
     cr.line_to(left + width, poc);
     let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
 }
 
 /// A small anchored VWAP in a style's look: a dot on the bar it starts from
@@ -2182,6 +2318,28 @@ fn stroke_rows(
     rows
 }
 
+/// The pattern a line or an edge is drawn in, picked from drawn samples:
+/// the second of [`stroke_rows`], on its own, for a stroke whose thickness
+/// is a row of its own already.
+fn pattern_row(
+    ink: &Ink,
+    title: &str,
+    current: LineStyle,
+    showing: &Rc<Cell<bool>>,
+    on_pick: impl Fn(LineStyle) + Clone + 'static,
+) -> (adw::ActionRow, Rc<dyn Fn(LineStyle)>) {
+    let current = Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, current);
+    let (row, show) = stroke_rows(ink, current, showing, move |stroke: Stroke| on_pick(stroke.style))
+        .into_iter()
+        .nth(1)
+        .expect("a thickness row and a pattern row");
+    row.set_title(title);
+    row.add_css_class("line-style-row");
+    let show: Rc<dyn Fn(LineStyle)> =
+        Rc::new(move |pattern| show(Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, pattern)));
+    (row, show)
+}
+
 /// A row choosing one of a few named ways, and a way to show another.
 fn named_row(
     title: &str,
@@ -2405,8 +2563,10 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
         match kind {
             Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
                 colors::set_source(cr, &colour);
-                cr.set_line_width(style.width.clamp(1.0, 4.0));
+                let width = style.width.clamp(1.0, 4.0);
+                cr.set_line_width(width);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_dash(&style.line_style.round_dashes(width), 0.0);
                 let y = (h / 2.0).round() + 0.5;
                 cr.move_to(2.0, y);
                 cr.line_to(w - 2.0, y);
@@ -2419,6 +2579,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                 if style.border {
                     colors::set_source_alpha(cr, &colour, 0.8);
                     cr.set_line_width(1.0);
+                    cr.set_dash(&style.line_style.dashes(1.0), 0.0);
                     cr.rectangle(1.5, 1.5, w - 3.0, h - 3.0);
                     let _ = cr.stroke();
                 }
@@ -2437,6 +2598,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                 if style.border {
                     colors::set_source_alpha(cr, &colour, 0.8);
                     cr.set_line_width(1.0);
+                    cr.set_dash(&style.line_style.dashes(1.0), 0.0);
                     curve(cr, 1.5);
                     let _ = cr.stroke();
                 }
@@ -2532,11 +2694,13 @@ fn draw_preview_figure(
                 cr.set_line_width(line_w);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
                 cr.set_line_join(gtk::cairo::LineJoin::Round);
+                cr.set_dash(&style.line_style.round_dashes(line_w), 0.0);
                 cr.move_to(corners[0].0, corners[0].1);
                 for (cx, cy) in &corners[1..] {
                     cr.line_to(*cx, *cy);
                 }
                 let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
                 if style.arrow.at_end() {
                     head(cr, corners[2], corners[3], line_w, style.head);
                 }
@@ -2551,9 +2715,11 @@ fn draw_preview_figure(
             colors::set_source(cr, &colour);
             cr.set_line_width(line_w);
             cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_dash(&style.line_style.round_dashes(line_w), 0.0);
             cr.move_to(a.0, a.1);
             cr.line_to(b.0, b.1);
             let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
             if style.arrow.at_end() {
                 head(cr, a, b, line_w, style.head);
             }
@@ -2572,8 +2738,10 @@ fn draw_preview_figure(
                 if style.border {
                     colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                     cr.set_line_width(edge_w);
+                    cr.set_dash(&style.line_style.dashes(edge_w), 0.0);
                     cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
                     let _ = cr.stroke();
+                    cr.set_dash(&[], 0.0);
                 }
             } else {
                 let curve = |cr: &gtk::cairo::Context| {
@@ -2588,8 +2756,10 @@ fn draw_preview_figure(
                 if style.border {
                     colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                     cr.set_line_width(edge_w);
+                    cr.set_dash(&style.line_style.dashes(edge_w), 0.0);
                     curve(cr);
                     let _ = cr.stroke();
+                    cr.set_dash(&[], 0.0);
                 }
             }
             preview_text(cr, (x, y, rw, rh), kind, theme, style, text, scale);

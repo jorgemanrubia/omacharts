@@ -247,7 +247,7 @@ Each **Colour** row opens the theme's palette ([Themes and colours](/manual/them
 | **Thickness** | No line, 1, 1.5, 2.5, 4 px | 1.5 px |
 | **Line style** | Solid, Dashed, Dotted | Solid |
 
-A MACD's signal line and a stochastic's %D have a second colour row. Left alone, it is a contrasting colour from the theme.
+A MACD's signal line and a stochastic's %D have a second colour row, and a line style row under it. Left alone, the colour is a contrasting one from the theme and the line style is the first line's.
 
 ## Indicators on a chart on a template
 

@@ -547,8 +547,10 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--deviations F` | 0 to 50 | Bollinger |
 | `--fast N`, `--slow N`, `--signal N` | Bars | MACD |
 | `--signal-color C` | A colour | MACD |
+| `--signal-style S` | `solid`, `dashed`, `dotted`; the MACD line's when not given | MACD |
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
+| `--d-style S` | `solid`, `dashed`, `dotted`; %K's when not given | Stochastic |
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, cumulative delta; `never` only for cumulative delta |
 | `--cvd-style S` | `candles`, `line` | Cumulative delta |
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
@@ -561,6 +563,8 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
+| `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile |
+| `--transparency F` | 0 to 1; 0 when not given | Volume profile: how much of the chart shows through its rows, or through its outline in the outline style |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
@@ -917,6 +921,8 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--arrow WHERE` | `none`, `end`, `start`, `both` | Which ends have an arrowhead |
 | `--head SHAPE` | `filled`, `open`, `barb` | The arrowhead |
 | `--border B` | `on`, `off` | Whether a box or circle has an edge |
+| `--line-style S` | `solid`, `dashed`, `dotted` | How a line, an arrow, a zig-zag, a box's or circle's edge, or a volume profile's outline is drawn |
+| `--select-by-border B` | `on`, `off` | Whether a box or circle is selected by its edge alone, leaving a click inside it to the chart; off by default |
 | `--fill C` | A colour | A box's or circle's fill |
 | `--alpha F` | 0 to 1 | How much of the fill shows: 0 none, 1 solid |
 | `--text WORDS` | Words; `""` | The whole of a text drawing; a label on any other. The empty string removes a label. `**bold**`, `*italic*` and `***both***` are read as emphasis, `\*` as an asterisk |
@@ -930,6 +936,7 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
 | `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
 | `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
+| `--poc-style S` | `solid`, `dashed`, `dotted` | How a volume profile's point of control is drawn; `--line-style` is its outline's |
 | `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
 | `--style S` | `solid`, `dashed`, `dotted` | How an anchored VWAP's line is drawn |
 | `--bands LIST` | `1,2,3` or any of them; `none` | Which of an anchored VWAP's three bands are drawn, by place from the line out; none by default |

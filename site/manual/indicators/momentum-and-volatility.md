@@ -44,6 +44,7 @@ Its own strip. The gap between a fast and a slow exponential average of closes, 
 | **Slow length** | 26 | 2 to 200, above the fast length |
 | **Signal length** | 9 | 1 to 200 |
 | **Signal colour** | A contrasting colour from the theme | A palette name, or a custom colour |
+| **Signal line style** | The MACD line's | Solid, Dashed, Dotted |
 | **Pane height %** | 16% | 5 to 95% |
 
 Moving the fast length up to the slow one pushes the slow one along, and the other way round.
@@ -95,6 +96,7 @@ Its own strip. The slow stochastic. Where each close sits in the range of the la
 | **Overbought** | 80 | 0 to 100 |
 | **Oversold** | 20 | 0 to 100, below overbought |
 | **%D colour** | A contrasting colour from the theme | A palette name, or a custom colour |
+| **%D line style** | %K's | Solid, Dashed, Dotted |
 | **Pane height %** | 16% | 5 to 95% |
 
 <!-- regenerate:

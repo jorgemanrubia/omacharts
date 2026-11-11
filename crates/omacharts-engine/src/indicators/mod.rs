@@ -63,6 +63,28 @@ impl LineStyle {
             LineStyle::Dotted => vec![unit, unit * 2.0],
         }
     }
+
+    /// The same pattern for a line drawn with round caps, as a drawing's
+    /// strokes are. A round cap adds half the width to each end of a dash,
+    /// so every dash is a width shorter and every gap a width longer than
+    /// [`dashes`] says, to come out the same on screen; and a dot is a
+    /// dash of no length, a cap on its own, which is a round dot exactly
+    /// the line's width where a short butt-capped dash is a square.
+    ///
+    /// [`dashes`]: LineStyle::dashes
+    pub fn round_dashes(self, width: f64) -> Vec<f64> {
+        let unit = width.max(1.0);
+        match self {
+            LineStyle::Solid => Vec::new(),
+            LineStyle::Dashed => vec![unit * 2.0, unit * 4.0],
+            LineStyle::Dotted => vec![0.0, unit * 2.0],
+        }
+    }
+
+    /// The pattern a line has unless somebody chose another.
+    pub fn is_solid(&self) -> bool {
+        *self == LineStyle::Solid
+    }
 }
 
 /// A line's weight and pattern.
@@ -353,9 +375,12 @@ impl Kind {
                 style: profile::Style::Filled,
                 outline: false,
                 outline_color: None,
+                outline_style: LineStyle::Solid,
                 outline_width: 1.0,
                 poc_width: 1.0,
+                poc_style: LineStyle::Solid,
                 poc: true,
+                opacity: 1.0,
                 last_only: false,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
@@ -383,7 +408,7 @@ impl Kind {
             // Twelve, twenty-six and nine, which is what Appel published and
             // what `ta.macd` defaults to.
             Kind::Macd => {
-                Params::Macd { fast: 12, slow: 26, signal: 9, height: 0.16, signal_color: None }
+                Params::Macd { fast: 12, slow: 26, signal: 9, height: 0.16, signal_color: None, signal_style: None }
             }
             // TradingView's: fourteen bars, %K and %D each smoothed over three,
             // overbought at eighty and oversold at twenty.
@@ -395,6 +420,7 @@ impl Kind {
                 overbought: 80.0,
                 oversold: 20.0,
                 d_color: None,
+                d_style: None,
             },
             // The extended hours, set back: what most charts of a market with
             // a regular session want, and the one range that needs no clock.
@@ -465,16 +491,29 @@ pub enum Params {
         /// The outline's colour. Unset is the profile's own.
         #[serde(default)]
         outline_color: Option<ColorChoice>,
+        /// The outline's pattern. Missing, solid, as it always was.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        outline_style: LineStyle,
         /// The outline's thickness, in pixels.
         #[serde(default = "profile::hairline")]
         outline_width: f64,
         /// The point of control's thickness, in pixels.
         #[serde(default = "profile::hairline")]
         poc_width: f64,
+        /// The point of control's pattern. Missing, solid.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        poc_style: LineStyle,
         /// Whether the point of control is drawn. Missing, it is, as every
         /// profile drew it before it could be turned off.
         #[serde(default = "profile::shown")]
         poc: bool,
+        /// How much of the background shows, over the strength its rows are
+        /// drawn at: 1 is the look as designed, 0 nothing. On the outline
+        /// style, which has no rows, the outline. The Transparency row, the
+        /// other way up. Missing, the look as designed, as every profile was
+        /// drawn before it could be faded.
+        #[serde(default = "profile::opaque", skip_serializing_if = "profile::is_opaque")]
+        opacity: f64,
         /// Whether only the newest period's profile is drawn, the ones
         /// before it left out. Missing, every period is, as before it could
         /// be chosen.
@@ -570,6 +609,10 @@ pub enum Params {
         /// as a stochastic's %D is.
         #[serde(default)]
         signal_color: Option<ColorChoice>,
+        /// The signal line's pattern. Unset is the MACD line's own, which is
+        /// what it was drawn in before it could be set apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal_style: Option<LineStyle>,
     },
     Stochastic {
         /// Bars whose range the close is placed in: %K's length.
@@ -585,6 +628,10 @@ pub enum Params {
         /// two lines are told apart without anybody having to choose.
         #[serde(default)]
         d_color: Option<ColorChoice>,
+        /// The %D line's pattern. Unset is %K's own, as it was drawn before
+        /// it could be set apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        d_style: Option<LineStyle>,
     },
     SessionTimes {
         /// The stretches of each day it shades, each in its own colour,
@@ -1848,6 +1895,50 @@ mod tests {
         let Params::VolumeProfile { width, .. } = indicator.params else { unreachable!() };
         assert_eq!(width, profile::DEFAULT_WIDTH);
         assert_eq!(width, 0.4);
+    }
+
+    /// A profile, a MACD and a stochastic stored before their lines could be
+    /// patterned or the profile faded are drawn as they were — solid, the
+    /// second line as the first, the profile as designed — and write none of
+    /// it back until it is chosen.
+    #[test]
+    fn line_patterns_and_a_profile_s_opacity_default_to_what_there_was() {
+        let profile: Indicator = serde_json::from_str(
+            r#"{"id": 1, "kind": "volume_profile", "visible": true,
+                "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7}}"#,
+        )
+        .expect("an older profile");
+        let Params::VolumeProfile { outline_style, poc_style, opacity, .. } = &profile.params else { unreachable!() };
+        assert_eq!((*outline_style, *poc_style, *opacity), (LineStyle::Solid, LineStyle::Solid, 1.0));
+        let written = serde_json::to_value(&profile).unwrap();
+        for key in ["outline_style", "poc_style", "opacity"] {
+            assert!(written["params"].get(key).is_none(), "{key} written back: {written}");
+        }
+
+        let macd: Indicator = serde_json::from_str(
+            r#"{"id": 2, "kind": "macd", "visible": true,
+                "params": {"kind": "macd", "fast": 12, "slow": 26, "signal": 9, "height": 0.16}}"#,
+        )
+        .expect("an older MACD");
+        assert!(matches!(macd.params, Params::Macd { signal_style: None, .. }));
+        assert!(serde_json::to_value(&macd).unwrap()["params"].get("signal_style").is_none());
+
+        let stochastic: Indicator = serde_json::from_str(
+            r#"{"id": 3, "kind": "stochastic", "visible": true,
+                "params": {"kind": "stochastic", "period": 14, "k_smooth": 3, "d_period": 3,
+                           "height": 0.16, "overbought": 80, "oversold": 20}}"#,
+        )
+        .expect("an older stochastic");
+        assert!(matches!(stochastic.params, Params::Stochastic { d_style: None, .. }));
+        assert!(serde_json::to_value(&stochastic).unwrap()["params"].get("d_style").is_none());
+
+        let mut faded = profile.clone();
+        if let Params::VolumeProfile { opacity, outline_style, .. } = &mut faded.params {
+            *opacity = 0.4;
+            *outline_style = LineStyle::Dotted;
+        }
+        let back: Indicator = serde_json::from_value(serde_json::to_value(&faded).unwrap()).unwrap();
+        assert!(matches!(back.params, Params::VolumeProfile { opacity: 0.4, outline_style: LineStyle::Dotted, .. }));
     }
 
     /// A profile stored before it could measure anything else measures what

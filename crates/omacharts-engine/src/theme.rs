@@ -131,11 +131,14 @@ pub const PALETTE_NAMES: [&str; 9] = [
 ];
 
 /// The OKLCh lightness of [`Theme::neutral`] on a dark theme: very light,
-/// near the text of most themes, short of white.
-const NEUTRAL_LIGHT: f64 = 0.89;
+/// well clear of the text of most themes and of every bar colour, short of
+/// white. Lighter than this and the sRGB gamut leaves too little chroma for
+/// the theme's tint: at 0.95 Tokyo Night's lavender is half gone.
+const NEUTRAL_LIGHT: f64 = 0.92;
 
-/// Its lightness on a light theme: very dark, short of black.
-const NEUTRAL_DARK: f64 = 0.32;
+/// Its lightness on a light theme: very dark, short of black, and darker
+/// than the text of every light theme but the near-black ones.
+const NEUTRAL_DARK: f64 = 0.24;
 
 /// The least and the most of the theme's tint it carries, in OKLCh chroma:
 /// enough at the ends of the scale to read as the theme's own tone rather
@@ -154,9 +157,15 @@ const NEUTRAL_TINT: f64 = 0.004;
 /// so that it is never just the text colour over again.
 const NEUTRAL_FROM_TEXT: f64 = 0.04;
 
-/// How far from the text towards the chart it is moved, in OKLCh
-/// lightness, when the usual lightness would land on the text.
+/// How far from the text it is moved, in OKLCh lightness, when the usual
+/// lightness would land on the text: away from the chart while there is
+/// room, towards it past a near-white or near-black text.
 const NEUTRAL_FROM_TEXT_STEP: f64 = 0.05;
+
+/// The lightest and the darkest the neutral goes when it steps past the
+/// text: beyond these there is no chroma left for the tint.
+const NEUTRAL_CEILING: f64 = 0.96;
+const NEUTRAL_FLOOR: f64 = 0.15;
 
 /// The least a companion may be from what it accompanies, as `delta_e` sees
 /// it — the floor consecutive entries of the sequence are held to, and so
@@ -481,7 +490,8 @@ impl Theme {
     /// of chroma: a tone, not a colour. Whichever side of the background
     /// the text is on decides light or dark, and when that lightness would make it the text
     /// colour over again, as on a theme whose text is already that light,
-    /// it is the text's own lightness toned a step towards the chart.
+    /// it is the text's own lightness a step further from the chart, or a
+    /// step towards it when the text is too near white or black for that.
     pub fn neutral(&self) -> String {
         let (Some(ground), Some(text)) = (Oklch::of(&self.ui.background), Oklch::of(&self.ui.text)) else {
             return self.ui.text.clone();
@@ -502,8 +512,13 @@ impl Theme {
         if delta_e(&first, &self.ui.text) >= NEUTRAL_FROM_TEXT {
             return first;
         }
-        // Back from the text towards the chart, which keeps the tint: past
-        // a near-white text there is too little room left for any.
+        // Past the text, away from the chart, while that leaves room for
+        // the tint; back from it towards the chart past a near-white or a
+        // near-black text.
+        let away = if light { text.l + NEUTRAL_FROM_TEXT_STEP } else { text.l - NEUTRAL_FROM_TEXT_STEP };
+        if (NEUTRAL_FLOOR..=NEUTRAL_CEILING).contains(&away) {
+            return tone(away);
+        }
         tone(if light { text.l - NEUTRAL_FROM_TEXT_STEP } else { text.l + NEUTRAL_FROM_TEXT_STEP })
     }
 
@@ -1915,15 +1930,39 @@ mod tests {
     }
 
     /// Text already as light as the neutral would be is not handed back as
-    /// the neutral: it is toned a step towards the chart, keeping its tint.
+    /// the neutral: it is a step lighter still, keeping its tint, and past
+    /// a text so near white that there is no room above it, a step back
+    /// towards the chart.
     #[test]
-    fn a_neutral_that_would_be_the_text_is_toned_back_from_it() {
-        let theme = grounded(Mode::Dark, "#1e1e2e", "#cdd6f4", "#2b2c3d");
-        let (hex, text) = (theme.neutral(), Oklch::of("#cdd6f4").unwrap());
+    fn a_neutral_that_would_be_the_text_is_stepped_past_it() {
+        let theme = grounded(Mode::Dark, "#1e1e2e", "#d4dbf2", "#2b2c3d");
+        let (hex, text) = (theme.neutral(), Oklch::of("#d4dbf2").unwrap());
         let tone = Oklch::of(&hex).unwrap();
-        assert!(delta_e(&hex, "#cdd6f4") >= NEUTRAL_FROM_TEXT, "{hex}");
-        assert!(tone.l < text.l && tone.l > 0.8, "{hex} is not a light tone just under the text");
+        assert!(delta_e(&hex, "#d4dbf2") >= NEUTRAL_FROM_TEXT, "{hex}");
+        assert!(tone.l > text.l, "{hex} is not lighter than the text");
+        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c > 0.015, "{hex} lost the tint");
+
+        let theme = grounded(Mode::Dark, "#1e1e2e", "#eef1fc", "#2b2c3d");
+        let (hex, text) = (theme.neutral(), Oklch::of("#eef1fc").unwrap());
+        let tone = Oklch::of(&hex).unwrap();
+        assert!(delta_e(&hex, "#eef1fc") >= NEUTRAL_FROM_TEXT, "{hex}");
+        assert!(tone.l < text.l && tone.l > 0.85, "{hex} is not a light tone just under the text");
         assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c > 0.03, "{hex} lost the tint");
+    }
+
+    /// Lighter on a dark theme and darker on a light one than it first
+    /// shipped, so a neutral line stands further from every bar colour:
+    /// the same hue as before, and as much of the tint as the gamut leaves
+    /// that near white.
+    #[test]
+    fn the_neutral_is_further_from_the_chart_than_it_was() {
+        let dark = grounded(Mode::Dark, "#1a1b26", "#a9b1d6", "#24283b");
+        let tone = Oklch::of(&dark.neutral()).unwrap();
+        assert!(tone.l > 0.89 + 0.02, "{} is no lighter than it was", dark.neutral());
+        assert!(hue_gap(tone.h, Oklch::of("#d1d9fb").unwrap().h) < 3.0, "{} moved hue", dark.neutral());
+        let light = paper();
+        let tone = Oklch::of(&light.neutral()).unwrap();
+        assert!(tone.l < 0.32 - 0.05, "{} is no darker than it was", light.neutral());
     }
 
     /// A theme that is grey all through, black and white, takes its tint
