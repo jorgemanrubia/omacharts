@@ -60,9 +60,9 @@ thread_local! {
     static LINES_ACTION: RefCell<Option<gio::SimpleAction>> = const { RefCell::new(None) };
 }
 
-/// What the legend's row for the chart's own symbol is called among the
-/// rows, and each compared market's.
-const OWN_ROW: &str = "compare-own";
+/// What the legend's row saying where the lines are pinned is called, and
+/// each compared market's row.
+const PIN_ROW: &str = "compare-pin";
 fn row_name(line: usize) -> String {
     format!("compare-{line}")
 }
@@ -255,8 +255,11 @@ impl Window {
         self.rebuild_compare_legend(pane, &rows);
     }
 
-    /// One row for the chart's own symbol and one for each market: a dot in
-    /// its colour, its symbol, and its change, which the chart fills in.
+    /// One row for each market compared, in the order they were added: a
+    /// dot in its colour, its symbol, and its change, which the chart fills
+    /// in. The chart's own symbol is in the header and has no row. With the
+    /// base pinned, a last row says from when, with a way back to the left
+    /// edge.
     fn rebuild_compare_legend(self: &Rc<Self>, pane: &Rc<ChartPane>, rows: &[(String, String, Phase)]) {
         let legend = &pane.compare_legend;
         while let Some(child) = legend.first_child() {
@@ -267,13 +270,7 @@ impl Window {
             return;
         }
         let names = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
-        let theme = self.theming.borrow().theme();
-        let own = pane.instrument.borrow().as_ref().map(|i| i.display_symbol()).unwrap_or_default();
-        let mut all = vec![(OWN_ROW.to_string(), own, theme.ui.text.clone(), Phase::Shown, None)];
         for (line, (label, colour, phase)) in rows.iter().enumerate() {
-            all.push((row_name(line), label.clone(), colour.clone(), *phase, Some(line)));
-        }
-        for (name, label, colour, phase, line) in all {
             let dot = gtk::DrawingArea::new();
             dot.set_size_request(crate::ui::pane::LEGEND_DOT, crate::ui::pane::LEGEND_DOT);
             dot.set_valign(gtk::Align::Center);
@@ -283,36 +280,62 @@ impl Window {
                 cr.arc(width as f64 / 2.0, height as f64 / 2.0, 4.0, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
             });
-            let symbol = gtk::Label::new(Some(&label));
+            let symbol = gtk::Label::new(Some(label));
             symbol.add_css_class("compare-symbol");
             symbol.set_xalign(0.0);
             names.add_widget(&symbol);
-            let value = gtk::Label::new(trouble_words(phase));
+            let value = gtk::Label::new(trouble_words(*phase));
             value.add_css_class("compare-value");
             value.set_xalign(1.0);
             value.set_width_chars(7);
             let row = crate::ui::pane::legend_row(&dot, &symbol);
-            row.set_widget_name(&name);
+            row.set_widget_name(&row_name(line));
             row.append(&value);
-            if phase != Phase::Shown {
+            if *phase != Phase::Shown {
                 row.add_css_class("compare-pending");
             }
-            if let Some(line) = line {
-                let remove = gtk::Button::from_icon_name("window-close-symbolic");
-                remove.add_css_class("flat");
-                remove.add_css_class("legend-button");
-                remove.set_tooltip_text(Some("Stop comparing"));
-                let this = self.clone();
-                let owner = pane.clone();
-                remove.connect_clicked(move |_| {
-                    this.focus(owner.id);
-                    this.remove_comparison(line);
-                });
-                row.append(&remove);
-            }
+            let remove = gtk::Button::from_icon_name("window-close-symbolic");
+            remove.add_css_class("flat");
+            remove.add_css_class("legend-button");
+            remove.set_tooltip_text(Some("Stop comparing"));
+            let this = self.clone();
+            let owner = pane.clone();
+            remove.connect_clicked(move |_| {
+                this.focus(owner.id);
+                this.remove_comparison(line);
+            });
+            row.append(&remove);
             legend.append(&row);
         }
+        let pinned = pane.compare.borrow().from;
+        if let Some(from) = pinned {
+            legend.append(&self.pin_row(pane, from));
+        }
         legend.set_visible(true);
+    }
+
+    /// The legend's last row while the base is pinned: from when, and a
+    /// button that measures from the left edge again.
+    fn pin_row(self: &Rc<Self>, pane: &Rc<ChartPane>, from: i64) -> gtk::Box {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, crate::ui::pane::LEGEND_GAP);
+        row.add_css_class("legend-row");
+        row.set_widget_name(PIN_ROW);
+        let words = gtk::Label::new(Some(&format!("From {}", self.day_on(pane, from))));
+        words.add_css_class("compare-pin");
+        words.set_xalign(0.0);
+        row.append(&words);
+        let unpin = gtk::Button::from_icon_name("window-close-symbolic");
+        unpin.add_css_class("flat");
+        unpin.add_css_class("legend-button");
+        unpin.set_tooltip_text(Some("Compare from the left edge"));
+        let this = self.clone();
+        let owner = pane.clone();
+        unpin.connect_clicked(move |_| {
+            this.focus(owner.id);
+            this.set_compare_from(None);
+        });
+        row.append(&unpin);
+        row
     }
 
     /// The changes the chart reads, each into its market's row. The rows
@@ -329,20 +352,14 @@ impl Window {
         }
         let compared = pane.compared.borrow();
         for reading in &readout.readings {
-            let name = match reading.line {
-                None => OWN_ROW.to_string(),
-                Some(line) => row_name(line),
-            };
+            // The chart's own reading has no row: the header names it.
+            let Some(line) = reading.line else { continue };
+            let name = row_name(line);
             let Some(row) = rows.iter().find(|row| row.widget_name() == name) else { continue };
-            let Some(value) = row.last_child().and_then(|last| match reading.line {
-                // The market's own rows end with their close button.
-                Some(_) => last.prev_sibling(),
-                None => Some(last),
-            }) else {
-                continue;
-            };
+            // A market's row ends with its close button, after the value.
+            let Some(value) = row.last_child().and_then(|last| last.prev_sibling()) else { continue };
             let Ok(value) = value.downcast::<gtk::Label>() else { continue };
-            let phase = reading.line.and_then(|line| compared.get(line)).map_or(Phase::Shown, |l| l.phase);
+            let phase = compared.get(line).map_or(Phase::Shown, |l| l.phase);
             let text = match (reading.change, trouble_words(phase)) {
                 (_, Some(words)) => words.to_string(),
                 (Some(change), None) => readout.text(change),
@@ -433,7 +450,11 @@ impl Window {
     /// A bar's day in the focused chart's clock, `3 Nov 2025`, with its time
     /// for an intraday chart.
     pub fn day_of(&self, ts: i64) -> String {
-        let pane = self.focused_pane();
+        self.day_on(&self.focused_pane(), ts)
+    }
+
+    /// [`Window::day_of`] in `pane`'s clock and resolution.
+    fn day_on(&self, pane: &ChartPane, ts: i64) -> String {
         let zone = pane
             .instrument
             .borrow()
@@ -489,7 +510,12 @@ impl Window {
         section.append(Some("Compare with\u{2026}"), Some("chart.compare-with"));
         let compare = self.focused_pane().compare.borrow().clone();
         if compare.active() {
-            section.append(Some("Compare from here"), Some("chart.compare-from-here"));
+            // Only over a bar: the room past the last one is no moment to
+            // measure from, and pinned there every line would read from the
+            // latest bar, off to the right.
+            if MENU_AT.with(Cell::get).is_some() {
+                section.append(Some("Compare from here"), Some("chart.compare-from-here"));
+            }
             if compare.from.is_some() {
                 section.append(Some("Compare from left edge"), Some("chart.compare-from-left"));
             }
@@ -580,7 +606,7 @@ mod tests {
             assert!(pane.view.comparing(), "the chart is not drawing them");
             assert_eq!(pane.compared.borrow().len(), 2);
             assert!(pane.compare_legend.get_visible());
-            assert_eq!(legend_rows(&pane), [OWN_ROW, "compare-0", "compare-1"]);
+            assert_eq!(legend_rows(&pane), ["compare-0", "compare-1"], "the chart's own symbol is in the header");
 
             window.set_compare_lines_only(true);
             window.set_compare_from(Some(1_700_000_000));
@@ -660,13 +686,16 @@ mod tests {
             command(&window, &["chart", "compare", "add", "QQQ", "GLD", "BTC-USD"]);
             let pane = window.focused_pane();
             let laid_out = legend_rows(&pane);
-            assert_eq!(laid_out, [OWN_ROW, "compare-0", "compare-1", "compare-2"]);
+            assert_eq!(laid_out, ["compare-0", "compare-1", "compare-2"], "the markets alone, as added");
+            // As if every feed had answered, so the rows show their changes.
+            for loaded in pane.compared.borrow_mut().iter_mut() {
+                loaded.phase = Phase::Shown;
+            }
             let value = |name: &str| -> String {
                 let mut child = pane.compare_legend.first_child();
                 while let Some(row) = child {
                     if row.widget_name() == name {
-                        let last = row.last_child().unwrap();
-                        let label = if name == OWN_ROW { last } else { last.prev_sibling().unwrap() };
+                        let label = row.last_child().unwrap().prev_sibling().unwrap();
                         return label.downcast::<gtk::Label>().unwrap().text().to_string();
                     }
                     child = row.next_sibling();
@@ -686,12 +715,42 @@ mod tests {
                 let readout = Readout { readings, step: 0.01 };
                 window.show_compare_readout(pane.id, &readout);
                 assert_eq!(legend_rows(&pane), laid_out, "the rows moved for {changes:?}");
-                let pending = pane.compared.borrow()[0].phase != Phase::Shown;
-                if !pending {
-                    assert_eq!(value("compare-0"), readout.text(changes[1]));
+                for line in 0..3 {
+                    assert_eq!(value(&row_name(line)), readout.text(changes[line + 1]), "market {line}");
                 }
-                assert_eq!(value(OWN_ROW), readout.text(changes[0]));
             }
+            window.window.close();
+        });
+    }
+
+    /// A pinned base is said in the legend, under the markets, as the day it
+    /// is pinned to, and its button measures from the left edge again. A
+    /// base at the left edge says nothing. A pin kept from before is shown,
+    /// not cleared.
+    #[test]
+    fn a_pinned_base_is_shown_in_the_legend_and_cleared_from_it() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "compare", "add", "QQQ", "GLD"]);
+            let pane = window.focused_pane();
+            assert_eq!(legend_rows(&pane), ["compare-0", "compare-1"], "nothing pinned, nothing said");
+
+            // 8 Jan 2026, as the session opened in New York.
+            window.set_compare_from(Some(1_767_882_600));
+            window.window.close();
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            assert_eq!(pane.compare.borrow().from, Some(1_767_882_600), "a stored pin is kept");
+            assert_eq!(legend_rows(&pane), ["compare-0", "compare-1", PIN_ROW]);
+            let pin = pane.compare_legend.last_child().expect("the pin's row");
+            let words = pin.first_child().unwrap().downcast::<gtk::Label>().unwrap().text().to_string();
+            assert!(words.starts_with("From ") && words.contains("Jan 2026"), "{words}");
+
+            let unpin = pin.last_child().unwrap().downcast::<gtk::Button>().unwrap();
+            unpin.emit_clicked();
+            assert_eq!(pane.compare.borrow().from, None, "measured from the left edge again");
+            assert_eq!(legend_rows(&pane), ["compare-0", "compare-1"]);
             window.window.close();
         });
     }
@@ -740,6 +799,11 @@ mod tests {
             assert!(before.iter().any(|a| a == "chart.compare-with"));
             assert!(!before.iter().any(|a| a == "chart.compare-lines"), "nothing to draw as lines yet");
             window.add_comparison(window.index.find("GC", None).expect("gold"));
+            // Opened beside the last bar, there is no bar to measure from.
+            MENU_AT.with(|at| at.set(None));
+            assert!(!actions(&window).iter().any(|a| a == "chart.compare-from-here"), "nothing here to pin");
+            // Opened over a bar.
+            MENU_AT.with(|at| at.set(Some(1_700_000_000)));
             let after = actions(&window);
             assert!(after.iter().any(|a| a == "chart.compare-from-here"));
             assert!(after.iter().any(|a| a == "chart.compare-lines"));

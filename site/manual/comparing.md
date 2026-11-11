@@ -35,11 +35,11 @@ Hover a market's row in the legend and click its **×**, or remove it in [Chart 
 
 By default every line is 0% at the first bar on screen. Scrolling and zooming move that bar, so the lines always show performance over the stretch you are looking at.
 
-To hold the base still, right-click the bar to measure from and choose **Compare from here**. A dotted line marks it. **Compare from left edge** in the same menu lets the base follow the screen again. A market that had not started trading by the base bar starts at 0% where its data begins.
+To hold the base still, right-click the bar to measure from and choose **Compare from here**; the menu offers it only over a bar. A dotted line marks that bar, and the legend ends with the day it is pinned to, such as **From 8 Jan 2026**. Its **×**, or **Compare from left edge** in the same menu, lets the base follow the screen again. A market that had not started trading by the base bar starts at 0% where its data begins.
 
 ## The legend and the crosshair
 
-Under the chart's header, the legend lists the chart's own symbol and then each market in the order you added it, with its change. Hover the chart and the legend reads the bar under the pointer, its rows staying where they are, with a dot on each line at that bar. With the pointer off the chart, it reads the last bar on screen. The crosshair's price label is in percent.
+Under the chart's header, which names the chart's own symbol, the legend lists each market in the order you added it, with its change. Hover the chart and the legend reads the bar under the pointer, its rows staying where they are, with a dot on each line at that bar. With the pointer off the chart, it reads the last bar on screen. The crosshair's price label is in percent.
 
 ## Markets with different hours
 

@@ -1651,7 +1651,7 @@ pub const LEGEND_DOT: i32 = 12;
 /// same column when the data feed's dot leads it (the stylesheet's
 /// `.feed-part.lead`), so the symbol's first letter is the first letter of
 /// every name under it, and its dot stands over theirs.
-const LEGEND_GAP: i32 = 5;
+pub const LEGEND_GAP: i32 = 5;
 
 /// A row of the legend under the header: an indicator's dot and its name,
 /// the buttons that act on it appended after.

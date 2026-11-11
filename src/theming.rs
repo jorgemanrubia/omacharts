@@ -1199,6 +1199,7 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 .compare-legend { margin-bottom: 2px; }
 .compare-symbol { font-size: 0.78em; font-weight: 600; opacity: 0.85; }
 .compare-value { font-size: 0.78em; font-feature-settings: 'tnum'; opacity: 0.85; }
+.compare-pin { font-size: 0.78em; opacity: 0.6; }
 /* Asked for and not answered yet, or answered with a failure. */
 .legend-row.compare-pending { opacity: 0.45; transition: opacity 160ms ease-out; }
 

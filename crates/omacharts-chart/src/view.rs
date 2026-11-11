@@ -2603,6 +2603,17 @@ impl State {
     /// The view: the first bar in it, how many bars, and how many empty
     /// columns stand before the first. The room at either end is capped at
     /// one column short of the view, so a bar always stays on screen.
+    /// The bar `frac` of the way across the plot, `None` in the room open
+    /// before the first bar or past the last.
+    fn bar_at_fraction(&self, frac: f64) -> Option<usize> {
+        let (first, visible, lead) = self.view();
+        if visible == 0 {
+            return None;
+        }
+        let index = (first as f64 - lead as f64 + frac * self.columns() as f64).floor();
+        (index >= 0.0 && (index as usize) < self.bars.len()).then_some(index as usize)
+    }
+
     fn view(&self) -> (usize, usize, usize) {
         let columns = self.columns();
         if columns == 0 {
@@ -4570,18 +4581,14 @@ impl ChartView {
         *self.state.borrow().on_compare_readout.borrow_mut() = Some(Box::new(handler));
     }
 
-    /// The time of the bar at `x` of the chart, the nearest end's past
-    /// either end of the series: what "Compare from here" pins the base to.
+    /// The time of the bar at `x` of the chart: what "Compare from here"
+    /// pins the base to. `None` in the room before the first bar or past
+    /// the last, where there is no bar to measure from.
     pub fn bar_time_at(&self, x: f64) -> Option<i64> {
         let state = self.state.borrow();
-        let (first, visible, lead) = state.view();
-        if visible == 0 {
-            return None;
-        }
         let plot_w = (self.area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
-        let frac = ((x - PAD) / plot_w).clamp(0.0, 1.0);
-        let index = (first as f64 - lead as f64 + frac * state.columns() as f64).floor().max(0.0) as usize;
-        state.bars.get(index.min(state.bars.len().saturating_sub(1))).map(|bar| bar.ts)
+        let at = state.bar_at_fraction(((x - PAD) / plot_w).clamp(0.0, 1.0))?;
+        state.bars.get(at).map(|bar| bar.ts)
     }
 
     pub fn set_bars_hidden(&self, hidden: bool) {

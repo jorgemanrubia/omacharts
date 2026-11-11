@@ -494,6 +494,102 @@ mod tests {
 
     const DAY: i64 = 86_400;
 
+    /// A chart comparing two markets over `count` bars `step` apart: one
+    /// with all of its history, and one that begins `late` bars in. All
+    /// three rise at different rates, so a base anywhere but the first bar
+    /// on screen shows.
+    fn comparing_chart(count: usize, step: i64, timeframe: Timeframe, late: usize) -> State {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let series = |start: usize, from: f64, rate: f64| -> Vec<Bar> {
+            (start..count).map(|i| bar(i as i64 * step, from * rate.powi(i as i32))).collect()
+        };
+        state.bars = series(0, 100.0, 1.01);
+        state.timeframe = timeframe;
+        state.visible = 120;
+        let line = |label: &str, bars: Vec<Bar>| CompareLine { label: label.into(), color: "#ff0000".into(), bars: Rc::new(bars) };
+        let spec = Comparing {
+            lines: vec![line("QQQ", series(0, 50.0, 1.02)), line("BIT", series(late, 10.0, 1.03))],
+            from: None,
+            lines_only: false,
+            label: "SPY".into(),
+            color: "#ffffff".into(),
+        };
+        state.compare = Some(Box::new(Overlay::new(spec, &state.bars, timeframe, Rc::new(RefCell::new(None)))));
+        state
+    }
+
+    /// With nothing pinned, the chart and every market are 0% at the first
+    /// bar on screen, and a market that begins later is 0% at its first bar
+    /// in view. Read where the frame reads it, from the view as it stands.
+    fn assert_based_at_the_left_edge(state: &State, late: usize, what: &str) {
+        let (first, visible, _) = state.view();
+        let overlay = state.compare.as_deref().expect("comparing");
+        let based = overlay.based(&state.bars, first).expect("a base");
+        assert_eq!(based.index, first, "{what}: based at bar {} with {first} first on screen", based.index);
+        let zero = |change: Option<f64>, who: &str, at: usize| {
+            let change = change.unwrap_or_else(|| panic!("{what}: {who} reads nothing at bar {at}"));
+            assert!(change.abs() < 1e-9, "{what}: {who} is {:+.2}% at bar {at}, not 0%", change * 100.0);
+        };
+        let at_first = overlay.readings(&state.bars, &based, first);
+        zero(at_first[0].change, "the chart", first);
+        zero(at_first[1].change, "QQQ", first);
+        let begins = late.max(first);
+        if begins < first + visible {
+            zero(overlay.readings(&state.bars, &based, begins)[2].change, "BIT", begins);
+        }
+        let end = first + visible - 1;
+        let last = overlay.readings(&state.bars, &based, end);
+        assert!(last[0].change.unwrap() > 0.0, "{what}: the chart rose from the left edge");
+    }
+
+    /// The base follows the view as it is scrolled and zoomed, on weekly and
+    /// daily bars alike, and it is never the latest bar off to the right.
+    #[test]
+    fn with_nothing_pinned_every_line_starts_at_the_left_edge_however_the_view_moves() {
+        for (timeframe, step) in [(Timeframe::weeks(1), 7 * DAY), (Timeframe::days(1), DAY)] {
+            let late = 300;
+            let mut state = comparing_chart(800, step, timeframe, late);
+            let plot_w = 1000.0;
+            let name = |what: &str| format!("{timeframe:?} {what}");
+            assert_based_at_the_left_edge(&state, late, &name("at the end"));
+            state.pan_by(-400.0, plot_w);
+            let (first, visible, _) = state.view();
+            assert!(first < late && late < first + visible, "{timeframe:?}: BIT begins in view, at {first}..{}", first + visible);
+            assert_based_at_the_left_edge(&state, late, &name("scrolled back before BIT begins"));
+            state.zoom_time(2.0, 0.5, plot_w);
+            assert_based_at_the_left_edge(&state, late, &name("zoomed out"));
+            state.pan_by(-60.0, plot_w);
+            assert_based_at_the_left_edge(&state, late, &name("scrolled back again"));
+            state.zoom_time(0.5, 0.0, plot_w);
+            assert_based_at_the_left_edge(&state, late, &name("zoomed in"));
+            state.pan_by(150.0, plot_w);
+            assert_based_at_the_left_edge(&state, late, &name("scrolled forward"));
+            let (first, ..) = state.view();
+            assert!(first + 1 < state.bars.len(), "{timeframe:?}: the view left the end behind");
+        }
+    }
+
+    /// "Compare from here" finds a bar only over one: the room left open
+    /// past the last bar is none, so the base cannot be pinned to the
+    /// latest bar by a click beside it.
+    #[test]
+    fn the_room_past_the_last_bar_is_no_bar_to_compare_from() {
+        let mut state = comparing_chart(200, DAY, Timeframe::days(1), 0);
+        let (first, visible, _) = state.view();
+        let columns = state.columns() as f64;
+        let over = |state: &State, column: f64| state.bar_at_fraction((column + 0.5) / columns);
+        assert_eq!(over(&state, 0.0), Some(first));
+        assert_eq!(over(&state, (visible - 1) as f64), Some(first + visible - 1));
+        assert!(first + visible == state.bars.len() && (visible as f64) < columns, "room open past the end");
+        assert_eq!(over(&state, columns - 1.0), None, "the margin past the last bar");
+        state.pan_by(-500.0, 1000.0);
+        let (_, _, lead) = state.view();
+        assert!(lead > 0, "room open before the first bar");
+        assert_eq!(over(&state, 0.0), None, "the room before the first bar");
+    }
+
     #[test]
     fn the_fit_takes_in_a_line_that_ran_further_than_the_bars() {
         // The chart goes 100 → 110, the other market 50 → 100: doubled, so
