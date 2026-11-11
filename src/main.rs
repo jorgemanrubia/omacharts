@@ -14,9 +14,26 @@ use omacharts::store::Store;
 use omacharts::ui::window::NotShown;
 use omacharts::ui::Window;
 
-const APP_ID: &str = "com.jorgemanrubia.Omacharts";
+use omacharts::APP_ID;
 
 fn main() -> glib::ExitCode {
+    let code = run();
+    // On the way out, however it went: see `omacharts::update::settle`.
+    omacharts::update::settle();
+    code
+}
+
+fn run() -> glib::ExitCode {
+    // Before anything else: learn from the launcher what is installed, which
+    // is what the updater compares against. An app that is itself the
+    // installed command becomes a newer download here, with an exec, and
+    // nothing done above this line would survive it. See `omacharts::launch`.
+    omacharts::update::at_launch();
+    // Started by "Restart to update": the window it replaces is closing, and
+    // this has to wait for it to let go of the application id, or the launch
+    // would be handed to the window that is on its way out.
+    omacharts::update::wait_for_restart(app_is_running);
+
     omacharts::feeds::identify();
     let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
 
@@ -33,10 +50,17 @@ fn main() -> glib::ExitCode {
             peeled.args
         }
         Err(fault) => {
+            omacharts::update::not_a_window();
             eprintln!("omacharts: {}\n\n{}", fault.message, cli::usage());
             return glib::ExitCode::from(fault.code);
         }
     };
+    // A command, `--version`, `--help` or a mistyped option: never a window,
+    // so this launch says nothing about whether the version runs. A symbol
+    // or nothing at all might be, and is decided below.
+    if cli::is_command(&args) || args.get(1).is_some_and(|arg| arg.starts_with('-')) {
+        omacharts::update::not_a_window();
+    }
 
     // A few commands answer for the process they were typed in, and the bus is
     // never asked about them: handing `skill` to the window would report on
@@ -126,22 +150,65 @@ fn main() -> glib::ExitCode {
 
         let starting = window.borrow().is_none();
         if starting {
-            let store = match Store::open() {
-                Ok(store) => store,
+            // This process is the window: a downloaded version that ends
+            // from here until it has been up a few seconds did not run.
+            omacharts::update::window_starting();
+            // Not copied first, a version that never ran here leaves the
+            // settings alone this time, and tries again next launch.
+            let uncopied = omacharts::update::before_first_open(&settings_file()).err();
+            let opened = match uncopied.as_ref().map_or_else(Store::open, |_| Ok(Store::memory().expect("open database"))) {
+                // Written by a newer download that is gone or given up on,
+                // and nothing newer to start instead: put back the settings
+                // from before it, and say so once.
+                Err(omacharts::migrations::Error::FromTheFuture { .. })
+                    if !omacharts::update::restart_as_newer_for_a_newer_database() =>
+                {
+                    if let Some(said) = omacharts::update::roll_back_for_a_newer_database(&settings_file()) {
+                        eprintln!("omacharts: {said}");
+                    }
+                    Store::open()
+                }
+                Err(omacharts::migrations::Error::FromTheFuture { .. }) => return glib::ExitCode::SUCCESS,
+                opened => opened,
+            };
+            let store = match opened {
+                Ok(store) if let Some(why) = &uncopied => {
+                    omacharts::update::settings_unopened(None);
+                    eprintln!("omacharts: settings not copied before this version first opened them: {why}; carrying on without saving anything");
+                    log_words::say(log_words::trouble(
+                        "Settings",
+                        "Settings could not be copied before this version first opened them · nothing is saved this time",
+                        why,
+                    ));
+                    store
+                }
+                Ok(store) => {
+                    omacharts::update::opened(&settings_file());
+                    // A rollback this window did, or a command did with no
+                    // window to say it in: said once, here.
+                    if let Some(said) = omacharts::update::take_notice() {
+                        log_words::say(log_words::note("Settings", said));
+                    }
+                    store
+                }
                 // Written by a newer Omacharts than this one. The file is
                 // intact and it is theirs, so this is the one failure that
                 // must not be worked around: carrying on with an empty
                 // database would put a pristine watchlist on screen over the
                 // top of years of their own, and look exactly like having
-                // lost it.
+                // lost it. A newer download on the shelf most likely wrote
+                // it, and was started in this one's place above.
                 Err(error @ omacharts::migrations::Error::FromTheFuture { .. }) => {
-                    eprintln!("omacharts: {error}");
+                    eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
                     return glib::ExitCode::FAILURE;
                 }
                 // Anything else — unreadable, unwritable, corrupt — and an
                 // in-memory database at least puts a usable window on screen
                 // rather than nothing at all.
                 Err(error) => {
+                    // Not shown to run here, however long it is up; and
+                    // counted against it when its own migration failed.
+                    omacharts::update::settings_unopened(Some(&error));
                     eprintln!("omacharts: {error}; carrying on without saving anything");
                     log_words::say(log_words::trouble(
                         "Settings",
@@ -317,9 +384,55 @@ fn main() -> glib::ExitCode {
         code
     });
 
+    // With no display to open, GTK ends the process while registering,
+    // before anything of ours could say so: from ssh or a script that is
+    // not the version failing, so it must not count against it.
+    if !display_reachable() {
+        omacharts::update::not_a_window();
+    }
+    // Handed to a window another process keeps, this launch is not one, and
+    // being killed while it waits for the answer says nothing about it.
+    // Registering is the first thing running does anyway.
+    if app.register(gio::Cancellable::NONE).is_ok() && app.is_remote() {
+        omacharts::update::not_a_window();
+    }
+
     // The arguments as typed, launch options included: these travel to
     // whichever process holds the window, and the flag is answered there.
     app.run_with_args(&launch)
+}
+
+/// Could GDK open a display? What its backends try, asked without starting
+/// GTK: an X display named in `DISPLAY`, or a Wayland socket —
+/// `WAYLAND_DISPLAY`, or `wayland-0` when unset, in `XDG_RUNTIME_DIR` unless
+/// it is a path. An environment variable and a `stat` or two. Wrong the
+/// other way, it only means a launch that is not counted.
+fn display_reachable() -> bool {
+    reachable_with(|name| std::env::var_os(name), std::path::Path::new("/tmp/.X11-unix"))
+}
+
+/// [`display_reachable`], given the environment and where X keeps its
+/// sockets.
+fn reachable_with(var: impl Fn(&str) -> Option<std::ffi::OsString>, x11: &std::path::Path) -> bool {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    if let Some(display) = set("DISPLAY") {
+        // A local display, `:0` or `:0.0`, has its socket in /tmp/.X11-unix;
+        // one on another host, as ssh forwards it, is taken at its word. A
+        // local one whose socket is gone — a `DISPLAY` left over with
+        // Xwayland off — leaves Wayland to be asked, as GDK asks it.
+        let display = display.to_string_lossy();
+        let Some(number) = display.strip_prefix(':').or_else(|| display.strip_prefix("unix:")) else { return true };
+        let number = number.split('.').next().unwrap_or_default();
+        if x11.join(format!("X{number}")).exists() {
+            return true;
+        }
+    }
+    let socket = set("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into());
+    let socket = std::path::PathBuf::from(socket);
+    if socket.is_absolute() {
+        return socket.exists();
+    }
+    set("XDG_RUNTIME_DIR").is_some_and(|dir| std::path::Path::new(&dir).join(socket).exists())
 }
 
 /// Is a window already open?
@@ -378,13 +491,45 @@ impl cli::Caller for Typed<'_> {
 }
 
 fn open_store() -> Store {
-    match Store::open() {
-        Ok(store) => store,
+    if let Err(why) = omacharts::update::before_first_open(&settings_file()) {
+        // Never migrated without the copy to go back to; a command has no
+        // empty window to carry on in, so it stops, and nothing is changed.
+        eprintln!("omacharts: settings not copied before this version first opened them, so left alone: {why}");
+        omacharts::update::settle();
+        std::process::exit(cli::EXIT_ERROR as i32);
+    }
+    let opened = match Store::open() {
+        Err(omacharts::migrations::Error::FromTheFuture { .. }) => {
+            // A newer download most likely wrote it: become that, or if it
+            // is gone or given up on, put back the settings from before it.
+            omacharts::update::become_newer_for_a_newer_database();
+            if let Some(said) = omacharts::update::roll_back_for_a_newer_database(&settings_file()) {
+                eprintln!("omacharts: {said}");
+            }
+            Store::open()
+        }
+        opened => opened,
+    };
+    match opened {
+        Ok(store) => {
+            omacharts::update::opened(&settings_file());
+            store
+        }
         Err(error) => {
-            eprintln!("omacharts: {error}");
+            if matches!(error, omacharts::migrations::Error::FromTheFuture { .. }) {
+                eprintln!("omacharts: {error}; {}", omacharts::update::NEWER_DATABASE_HELP);
+            } else {
+                eprintln!("omacharts: {error}");
+            }
+            omacharts::update::settle();
             std::process::exit(cli::EXIT_ERROR as i32);
         }
     }
+}
+
+/// The settings file [`Store::open`] opens.
+fn settings_file() -> std::path::PathBuf {
+    omacharts::store::data_dir().join("omacharts.db")
 }
 
 fn report(outcome: cli::Outcome) -> glib::ExitCode {
@@ -401,7 +546,7 @@ fn peel_off(args: &[String]) -> Option<glib::ExitCode> {
             Some(glib::ExitCode::SUCCESS)
         }
         Some("--version" | "-V") => {
-            println!("omacharts {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", omacharts::launch::version_line());
             Some(glib::ExitCode::SUCCESS)
         }
         // An unknown option is a mistake worth reporting. Anything else is a
@@ -411,5 +556,48 @@ fn peel_off(args: &[String]) -> Option<glib::ExitCode> {
             Some(glib::ExitCode::FAILURE)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reachable_with;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omacharts-display-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("x11")).unwrap();
+        fs::create_dir_all(dir.join("run")).unwrap();
+        dir
+    }
+
+    fn reachable(dir: &std::path::Path, vars: &[(&str, &str)]) -> bool {
+        let vars: HashMap<String, OsString> = vars
+            .iter()
+            .map(|(name, value)| (name.to_string(), OsString::from(value.replace("{run}", &dir.join("run").to_string_lossy()))))
+            .collect();
+        reachable_with(|name| vars.get(name).cloned(), &dir.join("x11"))
+    }
+
+    #[test]
+    fn a_display_is_reachable_by_its_socket_and_a_stale_x_one_leaves_wayland_to_be_asked() {
+        let dir = scratch("reach");
+        fs::write(dir.join("run/wayland-1"), b"").unwrap();
+        // A stale `DISPLAY` beside a live Wayland socket: Wayland is reached.
+        assert!(reachable(&dir, &[("DISPLAY", ":0"), ("WAYLAND_DISPLAY", "wayland-1"), ("XDG_RUNTIME_DIR", "{run}")]));
+        // Stale, and nothing else: none.
+        assert!(!reachable(&dir, &[("DISPLAY", ":0"), ("XDG_RUNTIME_DIR", "{run}")]));
+        assert!(!reachable(&dir, &[("DISPLAY", ":0.0")]));
+        // A live X socket, a remote display, and a Wayland one alone.
+        fs::write(dir.join("x11/X0"), b"").unwrap();
+        assert!(reachable(&dir, &[("DISPLAY", ":0.0")]));
+        assert!(reachable(&dir, &[("DISPLAY", "localhost:10.0")]));
+        assert!(reachable(&dir, &[("WAYLAND_DISPLAY", "wayland-1"), ("XDG_RUNTIME_DIR", "{run}")]));
+        assert!(!reachable(&dir, &[("XDG_RUNTIME_DIR", "{run}")]), "no wayland-0 there");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -90,7 +90,7 @@ impl Window {
         let mut loaded = Vec::with_capacity(compare.symbols.len());
         for comparison in &compare.symbols {
             let instrument = self.index.find(&comparison.symbol, comparison.suffix.as_deref());
-            let routed = instrument.as_ref().and_then(|instrument| self.route(instrument));
+            let routed = instrument.as_ref().and_then(|instrument| self.route_compared(pane, instrument));
             let (Some(instrument), Some(routed)) = (instrument.clone(), routed) else {
                 loaded.push(Loaded {
                     comparison: comparison.clone(),
@@ -137,6 +137,31 @@ impl Window {
         }
         *pane.compared.borrow_mut() = loaded;
         self.apply_comparing(pane);
+    }
+
+    /// The feed that would chart a market `pane` compares, and the symbol it
+    /// is asked for there: a futures root joined at the rolls as the chart's
+    /// own would be, so ES compared beside SPY is the same series ES charted
+    /// on its own shows. See [`omacharts_engine::continuous::routed`].
+    fn route_compared(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Routed> {
+        let routed = self.route(instrument)?;
+        let symbol = omacharts_engine::continuous::routed(
+            routed.feed.provider.as_ref(),
+            instrument,
+            &routed.symbol,
+            pane.continuous.get(),
+        );
+        Some(Routed { symbol, ..routed })
+    }
+
+    /// Whether any market `pane` compares would now be asked for under
+    /// another key than its bars were: a stitched root that rolled, or a
+    /// feed that came or went. Such a chart fetches its comparisons again.
+    pub(super) fn comparisons_rerouted(&self, pane: &ChartPane) -> bool {
+        pane.compared.borrow().iter().any(|loaded| {
+            let now = loaded.instrument.as_ref().and_then(|instrument| self.route_compared(pane, instrument));
+            now.map(|routed| routed.key()) != loaded.key
+        })
     }
 
     /// Bars that arrived for `key`, onto every chart comparing that market at
@@ -592,6 +617,34 @@ mod tests {
             let book = window.capture_book("Main".into());
             let json = serde_json::to_value(&book.panes[0]).expect("a chart as JSON");
             assert!(json.get("compare").is_none(), "an empty comparison is written down: {json}");
+            window.window.close();
+        });
+    }
+
+    /// A futures root compared is asked for joined at the rolls as the
+    /// chart says, the series ES charted on its own is, and follows the
+    /// chart when it is joined the other way.
+    #[test]
+    fn a_compared_root_is_the_series_its_own_chart_would_be() {
+        use omacharts_engine::continuous::{fake::Months, Adjustment, Continuous};
+        use std::sync::Arc;
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let store = Rc::new(Store::memory().expect("a store"));
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let feed: Arc<dyn omacharts_engine::Provider> = Arc::new(Continuous::new(Box::new(Months::all())));
+            let window = Window::build_with(&app, store.clone(), vec![feed]);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES");
+            let september = es.in_month(omacharts_engine::contracts::Month::new(2026, 9).unwrap()).unwrap();
+            window.show_in(&pane, september);
+            window.add_comparison(es.clone());
+            let key = || pane.compared.borrow()[0].key.clone();
+            assert_eq!(key().as_deref(), Some("months:ES~ESZ26~back-adjusted"));
+            assert_eq!(pane.compare.borrow().symbols[0].spelled(), "ES", "written down as the root");
+            assert!(!window.comparisons_rerouted(&pane));
+            window.set_continuous(Adjustment::AsTraded);
+            assert_eq!(key().as_deref(), Some("months:ES~ESZ26~as-traded"), "joined as the chart now is");
             window.window.close();
         });
     }

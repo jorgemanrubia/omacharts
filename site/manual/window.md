@@ -70,7 +70,7 @@ The blank space in the window's corner is the window's handle. Drag it to move t
 
 ## The focused chart
 
-One chart at a time is the focused one. It has a thin ring in the accent colour when the chartbook has more than one chart. Keys and the menus act on it. Clicking anywhere on a chart, with any button, focuses it and gives it the keyboard. <kbd>Alt</kbd> + an arrow moves the focus to the chart in that direction ([Splitting and arranging charts](/manual/layouts/#focusing-a-chart)). Only the focused chart shows its resolution strip and its indicator legend.
+One chart at a time is the focused one. It has a thin ring in the accent colour when the chartbook has more than one chart. Keys and the menus act on it. Clicking anywhere on a chart, with any button, focuses it and gives it the keyboard. <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves the focus to the previous or next chart, row by row, and <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> to the chart above or below ([Splitting and arranging charts](/manual/layouts/#focusing-a-chart)). Only the focused chart shows its resolution strip and its indicator legend.
 
 <kbd>Esc</kbd> puts down a drawing tool in hand, clears a selection and gives the keyboard back to the focused chart from wherever it is. In a dialog it closes the dialog ([Dialogs](#dialogs)).
 
@@ -83,9 +83,9 @@ state:
   (the corner state above, sidebar open)
   key F10
 capture: bin/headless-window shot /tmp/menu.png
-crop: 1052,0,1508,290   (from the focused chart's border; the menu sits against the window's right edge, so it ends there)
+crop: 1052,0,1508,390   (from the focused chart's border; the menu sits against the window's right edge, so it ends there)
 -->
-![The main menu open under the window's corner, with New chartbook, Preferences and Keyboard Shortcuts](/assets/manual/window/main-menu.png)
+![The main menu open under the window's corner, with New chartbook, Preferences, Log and Keyboard Shortcuts, and About Omacharts below a line](/assets/manual/window/main-menu.png)
 
 | Item | Key | Does |
 |---|---|---|
@@ -93,6 +93,13 @@ crop: 1052,0,1508,290   (from the focused chart's border; the menu sits against 
 | **Preferences** | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Opens Preferences. See [Preferences](/manual/preferences/). |
 | **Log** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> | Opens the [Log](#the-log). |
 | **Keyboard Shortcuts** | <kbd>?</kbd> | Opens the Keyboard shortcuts sheet. |
+| **About Omacharts** | | Shows the version and a link to omacharts.org, and checks for a newer release ([About Omacharts](#about-omacharts)). |
+
+### About Omacharts
+
+**About Omacharts** shows the app's version, the same one `omacharts --version` prints. Click the version to copy it. **omacharts.org** opens the website in your browser.
+
+While it is open it asks GitHub for a newer release, with a spinner beside the version until the answer comes. When there is one, **Update** downloads it, and once it is ready **Restart to update** starts it, as the [update notice](/manual/installing/#updates) does. A release already downloaded shows **Restart to update** straight away. Up to date, or offline, it shows the version and nothing more. A build from a working tree, a launch with `OMACHARTS_NO_UPDATE=1`, and Omacharts run as root show the version without asking.
 
 ## The Log
 

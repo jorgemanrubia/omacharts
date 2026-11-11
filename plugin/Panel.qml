@@ -79,6 +79,25 @@ Panel {
   readonly property color muted: palette.muted
   readonly property color hover: palette.hover
 
+  // Every price is as wide as the widest, so every row's sparkline starts in
+  // the same place. Left to its own width, a price of 17.42 pulls its line
+  // further right than one of 81,373.44. The font is read so the widths are
+  // measured again when it changes: advanceWidth() alone is not a dependency.
+  FontMetrics {
+    id: priceMetrics
+    font.family: root.fontFamily
+    font.pixelSize: Style.space(13)
+  }
+  readonly property real priceWidth: {
+    var _ = priceMetrics.font
+    var widest = 0
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].header) continue
+      widest = Math.max(widest, priceMetrics.advanceWidth(Model.formatPrice(rows[i].last, rows[i].kind)))
+    }
+    return Math.ceil(widest)
+  }
+
   function colorFor(change) {
     return palette[Model.direction(change)]
   }
@@ -384,6 +403,8 @@ Panel {
               }
 
               Text {
+                Layout.preferredWidth: root.priceWidth
+                horizontalAlignment: Text.AlignRight
                 text: Model.formatPrice(modelData.last, modelData.kind)
                 font.family: root.fontFamily
                 font.pixelSize: Style.space(13)

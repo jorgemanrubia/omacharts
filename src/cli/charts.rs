@@ -362,12 +362,14 @@ pub fn new_pane(
             "bar_style": defaults.bar_style.key(),
             "colouring": defaults.colouring.key(),
             "session": defaults.session.key(),
+            "continuous": defaults.continuous.key(),
             "show_grid": defaults.show_grid,
             // Focus, which is where the window starts a new chartbook's
             // chart: it takes a click in the rail while it is focused.
             "link": LinkMode::default().key(),
             "shows_drawings": defaults.shows_drawings,
             "sends_drawings": defaults.sends_drawings,
+            "shows_legend": defaults.shows_legend,
         // What the chart is called among the drawings it makes, so it can
         // take them back if it stops sending.
         "drawing_uid": gtk::glib::uuid_string_random().to_string(),

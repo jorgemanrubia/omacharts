@@ -23,6 +23,11 @@ pub mod setting_keys;
 pub mod store;
 pub mod templates;
 pub mod theming;
+pub mod launch;
 pub mod trading;
+pub mod update;
 pub mod zoom;
 pub mod ui;
+
+/// The application id: the session bus name, the desktop file and the icon.
+pub const APP_ID: &str = "com.jorgemanrubia.Omacharts";

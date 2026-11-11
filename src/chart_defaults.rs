@@ -5,12 +5,16 @@
 //! two of what you were looking at is the point of splitting.
 
 use omacharts_engine::theme::StoredColouring;
+use omacharts_engine::continuous::Adjustment;
 use omacharts_engine::{BarColouring, BarStyle, Session};
 
 use crate::store::Store;
 
 pub const SETTING_BAR_STYLE: &str = "bar_style";
 pub const SETTING_SESSION: &str = "chart_session";
+/// How a futures root's months are joined at the rolls, on a feed that
+/// stitches them: back-adjusted or as traded.
+pub const SETTING_CONTINUOUS: &str = "chart_continuous";
 pub const SETTING_SHOW_GRID: &str = "show_grid";
 /// The two switches worn over the colouring: up and down exchanged, and a
 /// rise drawn as an outline. Beside `bar_scheme` rather than part of it, so
@@ -24,6 +28,8 @@ pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THIC
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
+/// Whether a chart draws its indicator legend at all.
+pub const SETTING_SHOWS_LEGEND: &str = "chart_shows_legend";
 /// The chart template a new chart opens with, by id, or [`NO_TEMPLATE`].
 pub const SETTING_TEMPLATE: &str = "chart_template";
 /// How "no template" is written down, so that it reads as a choice rather
@@ -41,10 +47,15 @@ pub struct ChartDefaults {
     /// How many pixels wide an OHLC bar is drawn.
     pub ohlc_thickness: u8,
     pub session: Session,
+    /// How a root's months are joined, on a feed that stitches them.
+    pub continuous: Adjustment,
     pub show_grid: bool,
     pub log_scale: bool,
     pub shows_drawings: bool,
     pub sends_drawings: bool,
+    /// Whether the chart draws its indicator legend. Each indicator's own
+    /// `in_legend` still decides whether it is named while this is on.
+    pub shows_legend: bool,
     /// The chart template it shows, if any. See [`crate::templates`].
     pub template: Option<u32>,
 }
@@ -59,10 +70,12 @@ impl Default for ChartDefaults {
             hollow_up: false,
             ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             session: Session::default(),
+            continuous: Adjustment::default(),
             show_grid: false,
             log_scale: false,
             shows_drawings: true,
             sends_drawings: true,
+            shows_legend: true,
             template: None,
         }
     }
@@ -109,10 +122,15 @@ impl ChartDefaults {
                 .setting(SETTING_SESSION)
                 .and_then(|key| Session::from_key(&key))
                 .unwrap_or(fallback.session),
+            continuous: store
+                .setting(SETTING_CONTINUOUS)
+                .and_then(|key| Adjustment::from_key(&key))
+                .unwrap_or(fallback.continuous),
             show_grid: store.setting_bool(SETTING_SHOW_GRID, fallback.show_grid),
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
             shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
             sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
+            shows_legend: store.setting_bool(SETTING_SHOWS_LEGEND, fallback.shows_legend),
             template: store.setting(SETTING_TEMPLATE).and_then(|id| id.parse().ok()),
         }
     }
@@ -124,10 +142,12 @@ impl ChartDefaults {
         store.set_setting_bool(SETTING_HOLLOW_UP, self.hollow_up);
         store.set_setting(SETTING_OHLC_THICKNESS, &self.ohlc_thickness.to_string());
         store.set_setting(SETTING_SESSION, self.session.key());
+        store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
         store.set_setting_bool(SETTING_SHOW_GRID, self.show_grid);
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
         store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
         store.set_setting_bool(SETTING_SENDS_DRAWINGS, self.sends_drawings);
+        store.set_setting_bool(SETTING_SHOWS_LEGEND, self.shows_legend);
         let template = self.template.map(|id| id.to_string());
         store.set_setting(SETTING_TEMPLATE, template.as_deref().unwrap_or(NO_TEMPLATE));
     }
@@ -150,6 +170,7 @@ mod tests {
         assert!(!fresh.swapped && !fresh.hollow_up && !fresh.show_grid);
         assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
         assert!(fresh.shows_drawings && fresh.sends_drawings);
+        assert!(fresh.shows_legend, "the legend is shown unless somebody turns it off");
 
         let chosen = ChartDefaults {
             bar_style: BarStyle::Ohlc,
@@ -158,10 +179,12 @@ mod tests {
             hollow_up: true,
             ohlc_thickness: 3,
             session: Session::ALL[Session::ALL.len() - 1],
+            continuous: Adjustment::AsTraded,
             show_grid: true,
             log_scale: true,
             shows_drawings: false,
             sends_drawings: false,
+            shows_legend: false,
             template: None,
         };
         chosen.save(&store);

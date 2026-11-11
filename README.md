@@ -7,7 +7,7 @@
 Fast, beautiful charting software for [Omarchy](https://omarchy.org).
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=uetKLwfoUrM">
+  <a href="https://www.youtube.com/watch?v=B2wG-i3FWjc">
     <img src="assets/examples/video-poster.jpg" width="100%" alt="Watch Omacharts on YouTube">
   </a>
 </p>
@@ -90,6 +90,9 @@ curl -fLo /tmp/omacharts.pkg.tar.zst \
   https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-$(uname -m).pkg.tar.zst \
   && sudo pacman -U /tmp/omacharts.pkg.tar.zst
 ```
+
+Either way, the app keeps itself current between packages: it downloads each
+new release in the background, without `sudo`, and offers to restart into it.
 
 ### From source
 

@@ -31,7 +31,7 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
-    // The broker logins — names, user IDs, systems, gateways — and which
+    // The trading service logins — names, user IDs, systems, gateways — and which
     // one market data comes through belong to the machine they were typed
     // on. Their passwords are in the keyring, never a setting.
     (crate::trading::LOGINS, Kind::Local),
@@ -45,6 +45,9 @@ const KEYS: &[(&str, Kind)] = &[
     // Which experiments are switched on: a machine's, switched on there
     // from its command line, never carried to another by a restore.
     (crate::features::PREFIX, Kind::Local),
+    // Whether this machine downloads releases: about its install, which
+    // another machine's settings know nothing of.
+    (crate::update::SETTING, Kind::Local),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),
@@ -57,6 +60,9 @@ const KEYS: &[(&str, Kind)] = &[
     // Whether the panel's Orders tab was left on the open orders or all.
     ("orders_filter", Kind::Bookkeeping),
     ("show_drawing_tools", Kind::Bookkeeping),
+    // That new charts were taken off the "Default" template seeding put
+    // them on: the app's note, done once.
+    (crate::templates::UNSEEDED, Kind::Bookkeeping),
 ];
 
 /// Every key the app writes that is shared, named so the test below can tell
@@ -80,6 +86,10 @@ const SHARED: &[&str] = &[
     // Which side of a chart the orders' labels sit at: how somebody reads
     // their charts, wherever they trade from.
     "order_labels",
+    // Whether the charts write P&L as money or in R, and what 1R is worth:
+    // how somebody reads their risk, wherever they trade from.
+    "pnl_display",
+    "pnl_r_amount",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",
@@ -88,10 +98,12 @@ const SHARED: &[&str] = &[
     "watchlist_link_",
     "bar_style",
     "chart_session",
+    "chart_continuous",
     "show_grid",
     "chart_log_scale",
     "chart_shows_drawings",
     "chart_sends_drawings",
+    "chart_shows_legend",
     "chart_template",
     "chart_templates",
     "chart_header",

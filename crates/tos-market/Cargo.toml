@@ -10,4 +10,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# The system's root certificates, as rithmic-rs uses: the same store a
+# browser on this machine trusts.
+tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }

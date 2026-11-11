@@ -99,6 +99,54 @@ struct FakeFill {
     server_id: String,
 }
 
+/// What becomes of an OCO pair submitted, besides being taken or rejected
+/// whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pairs {
+    /// Taken or rejected whole, and said at once.
+    Answered,
+    /// Lost on the way: never taken, never answered.
+    Lost,
+    /// Taken, both working and each knowing the other, with no word said
+    /// of either: the answer lost on the way back.
+    TakenSilently,
+    /// One of the two, `_1` (0) or `_2` (1), rejected with the words, the
+    /// other taken alone, linked to nothing.
+    OneRejected(usize, String),
+    /// Taken with no word said, as [`Pairs::TakenSilently`], and the one
+    /// at `_1` (0) or `_2` (1) filled whole at its price at once, the
+    /// other cancelled by it, with no word said of that either.
+    FilledSilently(usize),
+}
+
+/// How the fake answers a cancel, besides cancelling what it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cancels {
+    /// The order it names cancelled, or said not to be working or found.
+    Answered,
+    /// An order named by its ClientOrderID alone is not found, though the
+    /// server holds it: a server that knows its orders only by its own ids.
+    ClientIdUnknown,
+    /// Every cancel of an order it holds refused, with the words.
+    Refused(String),
+    /// A cancel of either of an OCO pair it holds refused, with the
+    /// words; any other order cancelled as it would be.
+    RefusedInPairs(String),
+    /// A cancel of a limit it holds never answered, the order left
+    /// working: a target stuck at the exchange. Any other order cancelled
+    /// as it would be.
+    LimitsUnanswered,
+    /// A cancel of a stop it holds not answered, the stop left working, as
+    /// one that reaches the exchange as the stop is hit: what becomes of it
+    /// is the test's to say, by [`Fake::fill`]. Any other order cancelled
+    /// as it would be.
+    StopsUnanswered,
+    /// A cancel of any order it holds working not answered, the order left
+    /// working: the test fills it, [`Fake::fill`], or cancels it,
+    /// [`Fake::cancel`].
+    Unanswered,
+}
+
 /// The fake's world, which the builder sets up and the connections change.
 #[derive(Clone, Debug)]
 struct World {
@@ -108,17 +156,33 @@ struct World {
     orders: Vec<FakeOrder>,
     fills: Vec<FakeFill>,
     definitions: Vec<Value>,
-    /// Answer a definition for any symbol, with a tick of 0.25 and real
-    /// prices, rather than nothing as Sierra does.
+    /// Answer a definition for any symbol spelled as the service it is on
+    /// spells one, with a tick of 0.25 and real prices, rather than nothing
+    /// as Sierra does.
     define_anything: bool,
+    /// Know contracts only by Rithmic's spelling, as Sierra does with
+    /// Rithmic as its trading service: see [`Builder::rithmic_symbols`].
+    rithmic: bool,
     refuse: Option<String>,
     trading: bool,
     /// Say OCO orders are supported, and take a pair.
     oco: bool,
     reject: Option<String>,
+    /// Reject every OCO pair with this, single orders still taken.
+    reject_pairs: Option<String>,
+    /// What becomes of the next OCO pairs: see [`Pairs`].
+    pairs: Pairs,
+    /// How cancels are answered: see [`Cancels`].
+    cancels: Cancels,
     filling: Fills,
     market_price: f64,
     silent: bool,
+    /// Hold back the position updates of [`Fake::fill`]: see
+    /// [`Fake::hold_positions`].
+    holding_positions: bool,
+    held_positions: Vec<Message>,
+    /// A kind of request left unanswered: see [`Fake::set_unanswered`].
+    unanswered: Option<u16>,
     flatten: bool,
     bars: HashMap<String, Vec<Value>>,
     history_reject: Option<String>,
@@ -136,13 +200,20 @@ impl Default for World {
             fills: Vec::new(),
             definitions: Vec::new(),
             define_anything: true,
+            rithmic: false,
             refuse: None,
             trading: true,
             oco: true,
             reject: None,
+            reject_pairs: None,
+            pairs: Pairs::Answered,
+            cancels: Cancels::Answered,
             filling: Fills::Never,
             market_price: 100.0,
             silent: false,
+            holding_positions: false,
+            held_positions: Vec::new(),
+            unanswered: None,
             flatten: true,
             bars: HashMap::new(),
             history_reject: None,
@@ -239,26 +310,26 @@ impl Builder {
     /// A contract: Sierra's name for it, its root, its tick, its tick's
     /// worth, its expiry and the multiplier its prices travel with.
     pub fn definition(mut self, symbol: &str, underlying: &str, tick: f64, worth: f64, expiration: i64, multiplier: f64) -> Builder {
-        self.world.definitions.push(json!({
-            "SecurityType": 1,
-            "Symbol": symbol,
-            "UnderlyingSymbol": underlying,
-            "ExchangeSymbol": symbol.split('_').next().unwrap_or(symbol),
-            "Description": format!("{underlying} future"),
-            "MinPriceIncrement": tick,
-            "CurrencyValuePerIncrement": worth,
-            "PriceDisplayFormat": 2,
-            "SecurityExpirationDate": expiration,
-            "DisplayPriceMultiplier": multiplier,
-            "Currency": "USD",
-        }));
+        self.world.definitions.push(definition(symbol, underlying, tick, worth, expiration, multiplier));
         self
     }
 
     /// Answer nothing for a contract with no [`Builder::definition`], as
-    /// Sierra does, rather than a definition with real prices.
+    /// Sierra does, rather than a definition with real prices; nothing, too,
+    /// for a name spelled as the other service spells one, rather than a
+    /// refusal.
     pub fn unknown_contracts_unanswered(mut self) -> Builder {
         self.world.define_anything = false;
+        self
+    }
+
+    /// Know contracts by Rithmic's spelling alone, as Sierra does with
+    /// Rithmic as its trading service: `ESZ6.CME`, `CLZ6.NYMEX`, the year
+    /// one digit but NG's two, `NGZ26.NYMEX`. The test gives the world's
+    /// positions, orders and fills in that spelling; a definition asked for
+    /// in any other is refused, and so is an order, a pair or a flatten.
+    pub fn rithmic_symbols(mut self) -> Builder {
+        self.world.rithmic = true;
         self
     }
 
@@ -404,9 +475,37 @@ impl Fake {
         lock(&self.shared.world).silent = silent;
     }
 
+    /// Put Sierra on Rithmic from now on, or back on its own service: see
+    /// [`Builder::rithmic_symbols`]. What it holds keeps its spelling.
+    pub fn set_rithmic_symbols(&self, rithmic: bool) {
+        lock(&self.shared.world).rithmic = rithmic;
+    }
+
     /// Reject every order placed from now on with `text`, or none.
     pub fn set_reject_orders(&self, text: Option<&str>) {
         lock(&self.shared.world).reject = text.map(str::to_string);
+    }
+
+    /// Reject every OCO pair submitted from now on with `text`, or none,
+    /// single orders still taken.
+    pub fn set_reject_pairs(&self, text: Option<&str>) {
+        lock(&self.shared.world).reject_pairs = text.map(str::to_string);
+    }
+
+    /// What becomes of the OCO pairs submitted from now on.
+    pub fn set_pairs(&self, pairs: Pairs) {
+        lock(&self.shared.world).pairs = pairs;
+    }
+
+    /// How cancels are answered from now on.
+    pub fn set_cancels(&self, cancels: Cancels) {
+        lock(&self.shared.world).cancels = cancels;
+    }
+
+    /// Whether a flatten is taken from now on, or refused as one with no
+    /// position to flatten whatever is held.
+    pub fn set_flatten(&self, taken: bool) {
+        lock(&self.shared.world).flatten = taken;
     }
 
     /// How orders placed from now on fill.
@@ -422,10 +521,27 @@ impl Fake {
         world.positions.push(FakePosition { account: account.into(), symbol: symbol.into(), qty, avg, open_pnl: None });
     }
 
+    /// Know a contract from now on, as [`Builder::definition`] does,
+    /// telling nobody: a definition Sierra was silent on until now.
+    pub fn define(&self, symbol: &str, underlying: &str, tick: f64, worth: f64, expiration: i64, multiplier: f64) {
+        lock(&self.shared.world).definitions.push(definition(symbol, underlying, tick, worth, expiration, multiplier));
+    }
+
+    /// Leave every request of `kind` unanswered from now on, or answer it
+    /// again: a resync that never finishes, with `CURRENT_POSITIONS_REQUEST`.
+    pub fn set_unanswered(&self, kind: Option<u16>) {
+        lock(&self.shared.world).unanswered = kind;
+    }
+
     /// Forget order `id`, telling nobody: an order that finished while a
     /// session was away.
     pub fn forget_order(&self, id: &str) {
         lock(&self.shared.world).orders.retain(|order| order.server_id != id && order.client_id != id);
+    }
+
+    /// Every order the server holds still working, as the server sees it.
+    pub fn working(&self) -> Vec<FakeOrder> {
+        lock(&self.shared.world).orders.iter().filter(|order| order.working()).cloned().collect()
     }
 
     /// The order `id` names, by server or client id.
@@ -433,12 +549,49 @@ impl Fake {
         lock(&self.shared.world).orders.iter().find(|order| order.server_id == id || order.client_id == id).cloned()
     }
 
-    /// Fill `qty` of order `id` at `price`, and tell every connection.
+    /// Fill `qty` of order `id` at `price`, and tell every connection: of
+    /// the position after it too, unless [`Fake::hold_positions`] holds
+    /// that back.
     pub fn fill(&self, id: &str, qty: u32, price: f64) {
         let pushes = {
             let mut world = lock(&self.shared.world);
-            match world.orders.iter().position(|order| order.server_id == id || order.client_id == id) {
+            let pushes = match world.orders.iter().position(|order| order.server_id == id || order.client_id == id) {
                 Some(at) => fill(&mut world, at, qty, price),
+                None => Vec::new(),
+            };
+            if !world.holding_positions {
+                pushes
+            } else {
+                let (held, told): (Vec<Message>, Vec<Message>) = pushes.into_iter().partition(|message| message.kind() == wire::POSITION_UPDATE);
+                world.held_positions.extend(held);
+                told
+            }
+        };
+        self.shared.push(&pushes);
+    }
+
+    /// Hold back, or not, the position update of each [`Fake::fill`] from
+    /// now on, as a position update slow to follow its fill's order
+    /// update: told only once [`Fake::release_positions`] says.
+    pub fn hold_positions(&self, holding: bool) {
+        lock(&self.shared.world).holding_positions = holding;
+    }
+
+    /// Tell every connection the position updates held back, in turn.
+    pub fn release_positions(&self) {
+        let held = std::mem::take(&mut lock(&self.shared.world).held_positions);
+        self.shared.push(&held);
+    }
+
+    /// Cancel order `id`, working, and tell every connection.
+    pub fn cancel(&self, id: &str) {
+        let pushes = {
+            let mut world = lock(&self.shared.world);
+            match world.orders.iter_mut().find(|order| (order.server_id == id || order.client_id == id) && order.working()) {
+                Some(order) => {
+                    order.status = wire::ORDER_STATUS_CANCELED;
+                    vec![order_message(order, wire::ORDER_CANCELED, "")]
+                }
                 None => Vec::new(),
             }
         };
@@ -481,8 +634,11 @@ impl Shared {
         }
         let writers = lock(&self.writers).clone();
         for writer in writers {
+            // All of them in one go, so that no answer is told in among
+            // them, as a server tells what it tells in turn.
+            let mut writer = lock(&writer);
             for message in messages {
-                let _ = lock(&writer).write_all(&message.frame());
+                let _ = writer.write_all(&message.frame());
             }
         }
     }
@@ -599,6 +755,7 @@ fn serve(shared: &Arc<Shared>, mut stream: TcpStream) -> io::Result<()> {
                     let _ = stream.shutdown(Shutdown::Both);
                     return Ok(());
                 }
+                kind if lock(&shared.world).unanswered == Some(kind) => {}
                 _ => {
                     let (replies, pushes) = answer(&mut lock(&shared.world), &message);
                     send(&writer, &replies)?;
@@ -716,6 +873,20 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
         wire::SECURITY_DEFINITION_FOR_SYMBOL_REQUEST => {
             let symbol = message.text_or_empty("Symbol");
             let known = world.definitions.iter().find(|definition| definition["Symbol"] == symbol.as_str()).cloned();
+            // A contract in the other service's spelling is none the server
+            // knows: on Rithmic, `ESZ26_FUT_CME`; on Sierra's own, `ESZ6.CME`.
+            let foreign = match world.rithmic {
+                true => !rithmic_spelling(&symbol),
+                false => symbol.contains('.'),
+            };
+            // Refused at once; or, as Sierra does, unanswered with
+            // [`Builder::unknown_contracts_unanswered`].
+            if known.is_none() && foreign {
+                if world.define_anything {
+                    replies.push(Message::new(wire::SECURITY_DEFINITION_REJECT, json!({ "RequestID": id, "RejectText": format!("Symbol {symbol} not found") })));
+                }
+                return (replies, pushes);
+            }
             let definition = known.or_else(|| {
                 world.define_anything.then(|| {
                     json!({ "SecurityType": 1, "Symbol": symbol, "MinPriceIncrement": 0.25, "CurrencyValuePerIncrement": 12.5, "DisplayPriceMultiplier": 1 })
@@ -775,6 +946,43 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
         _ => {}
     }
     (replies, pushes)
+}
+
+/// A contract's definition, as [`Builder::definition`] takes it.
+fn definition(symbol: &str, underlying: &str, tick: f64, worth: f64, expiration: i64, multiplier: f64) -> Value {
+    json!({
+        "SecurityType": 1,
+        "Symbol": symbol,
+        "UnderlyingSymbol": underlying,
+        "ExchangeSymbol": symbol.split(['_', '.']).next().unwrap_or(symbol),
+        "Description": format!("{underlying} future"),
+        "MinPriceIncrement": tick,
+        "CurrencyValuePerIncrement": worth,
+        "PriceDisplayFormat": 2,
+        "SecurityExpirationDate": expiration,
+        "DisplayPriceMultiplier": multiplier,
+        "Currency": "USD",
+    })
+}
+
+/// Whether `symbol` is spelled as Rithmic spells a contract: the root, a
+/// month letter and the year's last digit, its last two for NG, then a dot
+/// and the exchange.
+pub fn rithmic_spelling(symbol: &str) -> bool {
+    let Some((code, exchange)) = symbol.split_once('.') else { return false };
+    if exchange.is_empty() || !exchange.bytes().all(|b| b.is_ascii_uppercase()) {
+        return false;
+    }
+    let year = code.bytes().rev().take_while(u8::is_ascii_digit).count();
+    let Some((month_at, month)) = code.char_indices().nth_back(year) else { return false };
+    let root = &code[..month_at];
+    let digits = if root == "NG" { 2 } else { 1 };
+    year == digits && "FGHJKMNQUVXZ".contains(month) && !root.is_empty() && root.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// What a server on Rithmic says of an order for a contract misspelled.
+fn misspelled(world: &World, symbol: &str) -> Option<String> {
+    (world.rithmic && !rithmic_spelling(symbol)).then(|| format!("Symbol {symbol} is not valid"))
 }
 
 fn side_code(side: Side) -> i64 {
@@ -866,10 +1074,55 @@ fn submitted(world: &mut World, message: &Message, leg: &str) -> FakeOrder {
 /// or both rejected, each with its own update, as DTC asks. They rest
 /// until [`Fake::fill`], however orders are set to fill.
 fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
+    match world.pairs.clone() {
+        Pairs::Answered => {}
+        Pairs::Lost => return Vec::new(),
+        Pairs::TakenSilently => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+            for (at, order) in pair.iter_mut().enumerate() {
+                order.status = wire::ORDER_STATUS_OPEN;
+                order.oco = Some(ids[1 - at].clone());
+            }
+            world.orders.extend(pair);
+            return Vec::new();
+        }
+        Pairs::FilledSilently(leg) => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+            for (at, order) in pair.iter_mut().enumerate() {
+                order.status = wire::ORDER_STATUS_OPEN;
+                order.oco = Some(ids[1 - at].clone());
+            }
+            let (qty, price) = (pair[leg].qty, pair[leg].price1);
+            world.orders.extend(pair);
+            let at = world.orders.len() - 2 + leg;
+            let _unsaid = fill(world, at, qty, price);
+            return Vec::new();
+        }
+        Pairs::OneRejected(leg, text) => {
+            let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+            let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
+            for (at, order) in pair.iter_mut().enumerate() {
+                match at == leg {
+                    true => {
+                        order.status = wire::ORDER_STATUS_REJECTED;
+                        pushes.push(order_message(order, wire::NEW_ORDER_REJECTED, &text));
+                    }
+                    false => {
+                        order.status = wire::ORDER_STATUS_OPEN;
+                        pushes.push(order_message(order, wire::NEW_ORDER_ACCEPTED, ""));
+                    }
+                }
+            }
+            world.orders.extend(pair);
+            return pushes;
+        }
+    }
     let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
     let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
-    let refused = match (&world.reject, world.oco) {
-        (Some(text), _) => Some(text.clone()),
+    let refused = match (world.reject.clone().or(world.reject_pairs.clone()).or_else(|| misspelled(world, &pair[0].symbol)), world.oco) {
+        (Some(text), _) => Some(text),
         (None, false) => Some("OCO orders are not supported".to_string()),
         (None, true) if !world.accounts.contains(&pair[0].account) => Some("Trade account not found".to_string()),
         (None, true) => None,
@@ -893,7 +1146,7 @@ fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
 fn place(world: &mut World, message: &Message) -> Vec<Message> {
     let mut order = submitted(world, message, "");
     let mut pushes = vec![order_message(&order, 3, "")];
-    if let Some(text) = world.reject.clone() {
+    if let Some(text) = world.reject.clone().or_else(|| misspelled(world, &order.symbol)) {
         order.status = wire::ORDER_STATUS_REJECTED;
         pushes.push(order_message(&order, wire::NEW_ORDER_REJECTED, &text));
         world.orders.push(order);
@@ -999,6 +1252,36 @@ fn named<'a>(world: &'a mut World, message: &Message) -> Option<&'a mut FakeOrde
 }
 
 fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
+    match world.cancels.clone() {
+        Cancels::Answered => {}
+        Cancels::ClientIdUnknown if message.text("ServerOrderID").is_none() => return vec![not_found(message)],
+        Cancels::ClientIdUnknown => {}
+        Cancels::Refused(text) => {
+            if let Some(order) = named(world, message) {
+                return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+        Cancels::RefusedInPairs(text) => {
+            if let Some(order) = named(world, message).filter(|order| order.oco.is_some()) {
+                return vec![order_message(order, wire::ORDER_CANCEL_REJECTED, &text)];
+            }
+        }
+        Cancels::LimitsUnanswered => {
+            if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Limit) {
+                return Vec::new();
+            }
+        }
+        Cancels::StopsUnanswered => {
+            if named(world, message).is_some_and(|order| order.working() && order.kind == OrderKind::Stop) {
+                return Vec::new();
+            }
+        }
+        Cancels::Unanswered => {
+            if named(world, message).is_some_and(|order| order.working()) {
+                return Vec::new();
+            }
+        }
+    }
     match named(world, message) {
         Some(order) if order.working() => {
             order.status = wire::ORDER_STATUS_CANCELED;
@@ -1013,14 +1296,19 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
             pushes
         }
         Some(order) => vec![order_message(order, wire::ORDER_CANCEL_REJECTED, "Order is not working")],
-        None => vec![Message::new(
-            wire::ORDER_UPDATE,
-            json!({
-                "ServerOrderID": message.text_or_empty("ServerOrderID"), "ClientOrderID": message.text_or_empty("ClientOrderID"),
-                "OrderUpdateReason": wire::ORDER_CANCEL_REJECTED, "InfoText": "Order not found",
-            }),
-        )],
+        None => vec![not_found(message)],
     }
+}
+
+/// A cancel's refusal for an order the server does not hold.
+fn not_found(message: &Message) -> Message {
+    Message::new(
+        wire::ORDER_UPDATE,
+        json!({
+            "ServerOrderID": message.text_or_empty("ServerOrderID"), "ClientOrderID": message.text_or_empty("ClientOrderID"),
+            "OrderUpdateReason": wire::ORDER_CANCEL_REJECTED, "InfoText": "Order not found",
+        }),
+    )
 }
 
 fn replace(world: &mut World, message: &Message) -> Vec<Message> {
@@ -1066,6 +1354,12 @@ fn flatten(world: &mut World, message: &Message) -> Vec<Message> {
         avg_fill_price: None,
         oco: None,
     };
+    if let Some(text) = misspelled(world, &order.symbol) {
+        order.status = wire::ORDER_STATUS_REJECTED;
+        let pushes = vec![order_message(&order, wire::NEW_ORDER_REJECTED, &text)];
+        world.orders.push(order);
+        return pushes;
+    }
     if !world.flatten || held == 0 {
         order.status = wire::ORDER_STATUS_REJECTED;
         let pushes = vec![order_message(&order, wire::NEW_ORDER_REJECTED, "No position to flatten")];

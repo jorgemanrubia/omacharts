@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Fails if any BINARY given links the system's OpenSSL.
+#
+#     bin/check-links target/release/omacharts ...
+#
+# A binary that links libssl links the soname its build machine had, and an
+# installed system with another OpenSSL cannot start it at all. Every TLS
+# connection goes through rustls, so nothing should; this catches a new
+# dependency that quietly brings native-tls back.
+#
+# Only the binary's own NEEDED entries, as readelf reports them: GTK's stack
+# links crypto libraries of its own (GnuTLS among them), and those come with
+# the packages that ship them, whatever version is installed.
+set -euo pipefail
+
+[ $# -gt 0 ] || { echo "usage: bin/check-links BINARY..." >&2; exit 2; }
+
+status=0
+for binary in "$@"; do
+  needed=$(readelf -d -- "$binary" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+  if openssl=$(grep -E '^lib(ssl|crypto)\.so' <<<"$needed"); then
+    echo "$binary links the system's OpenSSL: $(tr '\n' ' ' <<<"$openssl")" >&2
+    echo "Find what brought it in with: cargo tree -i openssl-sys" >&2
+    status=1
+  else
+    echo "$binary links no OpenSSL."
+  fi
+done
+exit $status

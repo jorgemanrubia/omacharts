@@ -92,3 +92,53 @@ jobs:
             cat perf.txt 2>/dev/null || echo 'The comparison produced no table; see the log.'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Launch to first frame, which the table above cannot see: it is the app's
+  # binary, the dynamic loader and GTK, and on a branch that touches the
+  # launch path, whatever runs before `main` hands over.
+  startup:
+    name: Startup against the merge base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install GTK and a compositor to time it in
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev sway wtype grim dbus
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The app's own binaries in release, which neither the CI job's
+          # debug build nor the perf example looks like.
+          shared-key: startup
+          cache-directories: ~/startup-target
+      - name: Compare
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || inputs.base }}
+          # A runner has no GPU and no login session: wlroots draws in
+          # software, and the session's runtime directory is made here.
+          WLR_RENDERER: pixman
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -o pipefail
+          export PERF_TARGETS="$HOME/startup-target"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/runtime"
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          base="$BASE"
+          if [ -z "$base" ]; then
+            git fetch --no-tags origin main
+            base=$(git merge-base HEAD FETCH_HEAD)
+          fi
+          bin/startup-compare "$base" | tee startup.txt
+      - name: Put the numbers in the summary
+        if: always()
+        run: |
+          {
+            echo '### Startup against the merge base'
+            echo
+            echo '```'
+            cat startup.txt 2>/dev/null || echo 'The comparison produced no table; see the log.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

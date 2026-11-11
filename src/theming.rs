@@ -997,6 +997,12 @@ button.trading-toggle {
   border-radius: 6px;
 }
 
+/* The box naming a new watchlist is the row it will become: edge to edge
+   across it, its text where a list's name starts (the row's own 8px and the
+   12 a list row's name stands in by). */
+.navigation-sidebar > row.new-list { padding: 0; }
+.navigation-sidebar > row.new-list entry { padding-left: 20px; }
+
 /* The chart's symbol, in the accent, filled. Adwaita marks it with a tenth
    of the foreground and lays its keyboard-focus ring on top, the accent at
    half strength: on a dark theme that is a grey-blue frame round a row

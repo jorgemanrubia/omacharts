@@ -2,7 +2,7 @@
 //! and the orders of the day, with "Cancel all · Lucid" for the default
 //! account.
 //!
-//! Only ever built once a broker login exists, and only the first time it
+//! Only ever built once a trading service login exists, and only the first time it
 //! is shown: a window with no login has no panel, no divider for it and no
 //! button to open it. Drawn again from the window's [`View`] whenever a
 //! session pushes something, never on a timer.
@@ -25,7 +25,7 @@ pub const ORDERS_FILTER: &str = "orders_filter";
 /// Which of the day's orders the Orders tab shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OrdersFilter {
-    /// Still to fill or be cancelled: pending at the broker, working,
+    /// Still to fill or be cancelled: pending at the trading service, working,
     /// part filled. The same orders Cancel all would cancel.
     Open,
     /// Every order of the day, whatever became of it.
@@ -104,7 +104,7 @@ pub struct TradingPanel {
     drawn: RefCell<Option<(Vec<Order>, Vec<String>)>>,
 }
 
-/// How many places a price is written to: its tick's, when the broker said
+/// How many places a price is written to: its tick's, when the trading service said
 /// it, else two.
 pub fn decimals_of(tick: Option<f64>) -> usize {
     tick.map(|tick| omacharts_engine::on_tick(0.0, tick).1).unwrap_or(2)
@@ -318,6 +318,25 @@ impl TradingPanel {
         self.stack.set_visible_child_name(name);
     }
 
+    /// Every word the Accounts and the Positions tabs show, for the tests.
+    #[cfg(test)]
+    pub fn accounts_and_positions(&self) -> Vec<String> {
+        fn under(widget: &gtk::Widget, found: &mut Vec<String>) {
+            let mut next = widget.first_child();
+            while let Some(child) = next {
+                if let Some(label) = child.downcast_ref::<gtk::Label>() {
+                    found.push(label.label().to_string());
+                }
+                under(&child, found);
+                next = child.next_sibling();
+            }
+        }
+        let mut found = Vec::new();
+        under(self.accounts.upcast_ref(), &mut found);
+        under(self.positions.upcast_ref(), &mut found);
+        found
+    }
+
     /// The filter the Orders tab shows by.
     pub fn filter(&self) -> OrdersFilter {
         self.filter.get()
@@ -501,7 +520,7 @@ impl TradingPanel {
                     cell(&price_text(order.average_fill(), order.tick), true),
                 ];
                 // Pending is faint here as it is on the chart: asked, and
-                // not yet the broker's.
+                // not yet the trading service's.
                 if order.status == Stage::Pending {
                     for label in &labels {
                         label.add_css_class("dim-label");
@@ -554,7 +573,7 @@ mod tests {
         assert_eq!(price_text(Some(7_612.25), Some(0.25)), "7,612.25");
     }
 
-    /// Open is what Cancel all would cancel: pending at the broker
+    /// Open is what Cancel all would cancel: pending at the trading service
     /// counts, and nothing that is over does.
     #[test]
     fn open_orders_are_the_ones_still_to_fill_or_be_cancelled() {

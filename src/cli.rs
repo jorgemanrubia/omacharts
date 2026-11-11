@@ -274,6 +274,9 @@ pub trait Live {
     /// Zoom every chart at the sensitivity the settings now name. Nothing to
     /// do without a window.
     fn adopt_zoom(&self) {}
+    /// Write every chart's P&L as the settings now say, money or R.
+    /// Nothing to do without a window.
+    fn adopt_pnl(&self) {}
     /// Put in or take out what the feature flags now switch, in place.
     /// Nothing to do without a window.
     fn adopt_features(&self) {}
@@ -1076,6 +1079,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_zoom(&self) {
         crate::ui::Window::adopt_zoom(self);
+    }
+
+    fn adopt_pnl(&self) {
+        crate::ui::Window::adopt_pnl_display(self);
     }
 
     fn adopt_features(&self) {

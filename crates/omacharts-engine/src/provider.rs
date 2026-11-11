@@ -408,6 +408,14 @@ pub trait Ladders: Send + Sync {
     /// further back than this.
     fn history_days(&self) -> u32;
 
+    /// The contract `symbol` is served from now, when a root is served as
+    /// its front month and that month rolls: the ladders of one month are
+    /// not another's, so what is kept is kept by contract. `None` for a feed
+    /// whose symbol is the contract.
+    fn contract(&self, _symbol: &str) -> Option<String> {
+        None
+    }
+
     /// The minutes of `symbol` opening in `from..to`, unix seconds, oldest
     /// first, priced in whole ticks of `tick_size`. One request, made now,
     /// on the caller's thread, which is never the one drawing the window.
@@ -437,6 +445,41 @@ pub trait Provider: Send + Sync {
     /// This instrument in the provider's own symbology, if it serves it.
     fn symbol_for(&self, instrument: &Instrument) -> Option<String>;
 
+    /// Could this feed chart `instrument` at all, whatever it holds of it
+    /// right now? What a chart may be pointed at: a feed of files on this
+    /// machine is a feed of every future, and says so of a future whose
+    /// files are not there rather than dropping out of the choice.
+    fn could_serve(&self, instrument: &Instrument) -> bool {
+        self.symbol_for(instrument).is_some()
+    }
+
+    /// The dated contract a chart of `instrument` from here draws, in the
+    /// exchange's spelling, `MESZ6`, whatever this provider calls it: a
+    /// dated contract is itself, and a root is `None` unless the provider
+    /// charts it as the one month it says, since a continuous series may be
+    /// another month's or back-adjusted. Never waits.
+    fn charted_contract(&self, instrument: &Instrument) -> Option<String> {
+        instrument.is_contract().then(|| instrument.symbol.clone())
+    }
+
+    /// How it serves a futures root over time: its own continuous series,
+    /// each month's own bars for the engine to stitch, or the front month
+    /// alone, the default. See [`crate::continuous`], which holds the rule
+    /// for a feed that does both.
+    fn continuity(&self) -> crate::continuous::Continuity {
+        crate::continuous::Continuity::FRONT_MONTH
+    }
+
+    /// `symbol`, a root in this feed's spelling, as its own continuous
+    /// series in `adjustment`: asked only of a feed whose
+    /// [`Self::continuity`] lists both adjustments of its own series, which
+    /// is how such a feed says which of the two a chart wants. Itself by
+    /// default.
+    fn adjusted(&self, symbol: &str, adjustment: crate::continuous::Adjustment) -> String {
+        let _ = adjustment;
+        symbol.to_string()
+    }
+
     /// Natively served timeframes. Derived ones are folded by the caller.
     fn capabilities(&self) -> &'static [Capability];
 
@@ -459,6 +502,24 @@ pub trait Provider: Send + Sync {
         timeframe: Timeframe,
         since: Option<i64>,
     ) -> Result<Vec<Bar>, ProviderError>;
+
+    /// The bars of [`Self::bars`] from `since` and starting before `until`:
+    /// one span of a contract, for a stitch that needs nothing after it. A
+    /// feed that can read only that part of what it holds says so here, as
+    /// Sierra Chart's does of its files; the rest read from `since` on and
+    /// leave out what is past `until`.
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        let mut bars = self.bars(symbol, timeframe, Some(since))?;
+        bars.retain(|bar| bar.ts < until);
+        Ok(bars)
+    }
+
+    /// When the history this feed holds of `symbol` starts, where it can say
+    /// so without reading it: the first trade in a file of them. `None`
+    /// where it cannot.
+    fn earliest(&self, _symbol: &str) -> Option<i64> {
+        None
+    }
 
     /// The dated contracts of the futures root `root` this provider lists,
     /// each as its symbol in the exchange's spelling and the day it stops

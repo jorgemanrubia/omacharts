@@ -61,8 +61,25 @@ pub fn order_words(side: Side, kind: OrderKind) -> String {
 /// lasts only while the app runs.
 pub fn linked_text(holder: Holder) -> &'static str {
     match holder {
-        Holder::Broker => "Linked · whichever fills first cancels the other",
+        Holder::TradingService => "Linked · whichever fills first cancels the other",
         Holder::App => "Linked by Omacharts while it runs · whichever fills first cancels the other",
+    }
+}
+
+/// The exit cancelled to form a pair, sent again for what is held rather
+/// than what it had left: "Stop placed again for 2, what is held, not 1".
+pub fn again_text(kind: OrderKind, had: u32, sent: u32) -> String {
+    let what = if kind == OrderKind::Stop { "Stop" } else { "Target" };
+    format!("{what} placed again for {sent}, what is held, not {had}")
+}
+
+/// An exit that went with the one cancelled to form a pair, being its
+/// pair: "Target at 7,650.00 cancelled with the stop it was paired with".
+pub fn went_with_text(kind: OrderKind, price: &str) -> String {
+    let (what, with) = if kind == OrderKind::Stop { ("Stop", "target") } else { ("Target", "stop") };
+    match price.is_empty() {
+        true => format!("{what} cancelled with the {with} it was paired with"),
+        false => format!("{what} at {price} cancelled with the {with} it was paired with"),
     }
 }
 
@@ -87,7 +104,7 @@ pub fn order_text(side: Side, kind: OrderKind, qty: u32, contract: &str, price: 
 
 /// What the Log says when an order placed or cancelled here moves on:
 /// working, filled (or part of it), cancelled or rejected, each only once
-/// the broker has said so. Nothing for a step that is none of them. The
+/// the trading service has said so. Nothing for a step that is none of them. The
 /// account is the entry's source, so it is not said again here.
 pub fn outcome_text(order: &Order, before: Stage, decimals: usize) -> Option<String> {
     if before == order.status.stage {
@@ -120,11 +137,11 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize) -> Option<Str
     }
 }
 
-/// What the Log says of an order the broker's refreshed book has never
+/// What the Log says of an order the trading service's refreshed book has never
 /// heard of, sent before a drop: "Not placed · Buy Limit 1 ESZ6 never
-/// reached the broker".
+/// reached the trading service".
 pub fn never_placed_text(order: &OrderRequest) -> String {
-    format!("Not placed · {} {} {} never reached the broker", order_words(order.side, order.kind), order.qty, order.contract)
+    format!("Not placed · {} {} {} never reached the trading service", order_words(order.side, order.kind), order.qty, order.contract)
 }
 
 /// Money as a P&L reads: "+$125.00", "-$3.94", "+12.50 EUR".

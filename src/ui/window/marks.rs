@@ -19,7 +19,7 @@ use crate::trading::{self, Holder, OrderKind, Side};
 /// speak of.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderMark {
-    /// The broker's id for it, which a drag or its × hands back.
+    /// The trading service's id for it, which a drag or its × hands back.
     pub basket: String,
     pub side: Side,
     pub kind: OrderKind,
@@ -46,8 +46,8 @@ pub struct OrderMark {
 }
 
 /// How an exit is linked with the other, which the line joining them says:
-/// solid where the broker holds it, dashed where the app does, which lasts
-/// only while it runs, and faint until the broker has confirmed either.
+/// solid where the trading service holds it, dashed where the app does, which lasts
+/// only while it runs, and faint until the trading service has confirmed either.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkMark {
     pub holder: Holder,
@@ -55,7 +55,7 @@ pub struct LinkMark {
 }
 
 /// The position held, at its average price: a heavier line, in the profit
-/// or loss colour once the broker's P&L has come and in the long or short
+/// or loss colour once the trading service's P&L has come and in the long or short
 /// colour until then, its chip filled once there is money to say.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMark {
@@ -82,6 +82,8 @@ pub struct PositionMark {
     /// so a dragged exit can say what it would realise.
     pub point: Option<f64>,
     pub currency: Option<String>,
+    /// Whether that is written as money or in R.
+    pub pnl: trading::chart_pnl::ChartPnl,
     /// The colours money gained and lost are written in.
     pub profit: String,
     pub loss: String,
@@ -262,6 +264,23 @@ pub struct TradeRules {
     /// The day's lowest and highest prices the exchange takes an order at,
     /// as far as they are known.
     limits: (Option<f64>, Option<f64>),
+    /// The market a drag is judged against, as an order from the chart is.
+    market: Market,
+}
+
+/// What the market is, to judge an order by: the chart's own last price,
+/// a price the chart does not draw, or nothing known. The same answer
+/// judges the order placed and the drag in hand, so they never disagree.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Market {
+    /// The chart's own last trade, as it moves: what it charts is what is
+    /// traded, or the other size of it in the same month.
+    #[default]
+    Chart,
+    /// The last trade of the contract traded, which the chart does not draw.
+    At(f64),
+    /// No price of the contract traded is known: nothing can be judged.
+    Unknown,
 }
 
 /// What of the position a drag needs to say what an exit would realise.
@@ -271,6 +290,7 @@ struct Held {
     net: i32,
     point: Option<f64>,
     currency: Option<String>,
+    pnl: trading::chart_pnl::ChartPnl,
     profit: String,
     loss: String,
 }
@@ -283,6 +303,7 @@ impl TradeRules {
                 net: held.net,
                 point: held.point,
                 currency: held.currency.clone(),
+                pnl: held.pnl,
                 profit: held.profit.clone(),
                 loss: held.loss.clone(),
             }),
@@ -291,6 +312,32 @@ impl TradeRules {
                 .map(|order| (format!("{ORDER}{}", order.basket), order.side, order.kind, order.qty))
                 .collect(),
             limits,
+            market: Market::Chart,
+        }
+    }
+
+    /// Judged against `market` rather than the chart's own last price.
+    pub fn judged_by(mut self, market: Market) -> TradeRules {
+        self.market = market;
+        self
+    }
+
+    /// Whether a working order of `side` and `kind` may be dragged to `at`
+    /// with the chart's last price at `chart`: what a drag's preview says.
+    #[cfg(test)]
+    pub(super) fn allows(&self, side: Side, kind: OrderKind, at: f64, chart: Option<f64>) -> bool {
+        let mut rules = self.clone();
+        let mark = format!("{ORDER}probe");
+        rules.orders = vec![(mark.clone(), side, kind, 1)];
+        rules.allowed(&MarkDrag { mark: &mark, tab: None, from: at, at, last: chart, tick: None, places: 2 })
+    }
+
+    /// The last price a drag is judged against, if any is known.
+    fn last(&self, drag: &MarkDrag) -> Option<f64> {
+        match self.market {
+            Market::Chart => drag.last,
+            Market::At(price) => Some(price),
+            Market::Unknown => None,
         }
     }
 
@@ -327,7 +374,7 @@ impl TradeRules {
 
 impl MarkRules for TradeRules {
     fn allowed(&self, drag: &MarkDrag) -> bool {
-        let Some(last) = drag.last else { return false };
+        let Some(last) = self.last(drag) else { return false };
         if trading::past_limit(drag.at, self.limits).is_some() {
             return false;
         }
@@ -347,14 +394,14 @@ impl MarkRules for TradeRules {
                 Some(limit) => trading::past_limit_preview(&grouped_decimals(limit, drag.places)),
                 None => {
                     let kind = self.dragged(drag).map_or(OrderKind::Limit, |(kind, _)| kind);
-                    trading::refused_text(kind, drag.at, drag.last.unwrap_or(drag.at))
+                    trading::refused_text(kind, drag.at, self.last(drag).unwrap_or(drag.at))
                 }
             };
             return MarkPreview { text, colour: None };
         }
         if let Some((pnl, held)) = self.pnl(drag) {
             let colour = if pnl < 0.0 { held.loss.clone() } else { held.profit.clone() };
-            return MarkPreview { text: trading::pnl_text(pnl, held.currency.as_deref()), colour: Some(colour) };
+            return MarkPreview { text: held.pnl.text(pnl, held.currency.as_deref()), colour: Some(colour) };
         }
         let ticks = drag.tick.map(|tick| trading::ticks_between(drag.from, drag.at, tick));
         MarkPreview { text: trading::preview_text(&grouped_decimals(drag.at, drag.places), ticks), colour: None }
@@ -390,7 +437,7 @@ impl MarksSeen for omacharts_chart::ChartView {
 
     fn mark_links(&self) -> Vec<Option<LinkMark>> {
         let link = |link: MarkLink| LinkMark {
-            holder: if link.dashed { Holder::App } else { Holder::Broker },
+            holder: if link.dashed { Holder::App } else { Holder::TradingService },
             pending: link.pending,
         };
         self.price_marks().iter().filter(|mark| mark.id.starts_with(ORDER)).map(|mark| mark.link.map(link)).collect()
@@ -445,6 +492,7 @@ mod tests {
             dim: false,
             point: Some(50.0),
             currency: Some("USD".into()),
+            pnl: trading::chart_pnl::ChartPnl::Money,
             profit: "#00aa00".into(),
             loss: "#aa0000".into(),
         };
@@ -525,6 +573,18 @@ mod tests {
         assert_eq!(said(&rules, Some("limit"), 4990.0).0, "+400.00 EUR");
     }
 
+    /// Shown in R, an exit in hand says what it would realise in R, in the
+    /// same profit and loss colours.
+    #[test]
+    fn a_dragged_exit_says_it_in_r_when_r_is_shown() {
+        let (mut position, orders) = long();
+        position.pnl = trading::chart_pnl::ChartPnl::R(500.0);
+        let rules = TradeRules::new(Some(&position), &orders, (None, None));
+        assert_eq!(said(&rules, Some("limit"), 5010.0), ("+1.00R".into(), Some("#00aa00".to_string())));
+        assert_eq!(said(&rules, Some("stop"), 4995.0), ("-0.50R".into(), Some("#aa0000".to_string())));
+        assert_eq!(said(&rules, Some("stop"), 5000.0), ("+0.00R".into(), Some("#00aa00".to_string())));
+    }
+
     /// What an order in hand may do: an exit goes only on its own side of
     /// the market, a moved order keeps its own side and kind, and nothing
     /// goes past the day's limits, whose preview says so. With no market
@@ -544,6 +604,13 @@ mod tests {
         assert!(!rules.allowed(&stray), "no such order");
         let blind = MarkDrag { last: None, ..drag(Some("limit"), 5010.0) };
         assert!(!rules.allowed(&blind), "no market");
+        // Judged as the order would be: by the price of what is traded when
+        // the chart does not draw it, and by nothing when none is known.
+        let elsewhere = rules.clone().judged_by(Market::At(5020.0));
+        assert!(!allowed(&elsewhere, Some("limit"), 5010.0), "a target below the market traded");
+        assert!(allowed(&elsewhere, Some("stop"), 5010.0));
+        let unknown = rules.clone().judged_by(Market::Unknown);
+        assert!(!allowed(&unknown, Some("limit"), 5010.0) && !allowed(&unknown, Some("stop"), 5000.0));
 
         let rules = TradeRules::new(Some(&position), &orders, (Some(4995.0), Some(5015.0)));
         assert!(allowed(&rules, Some("limit"), 5010.0), "a target inside the limits");

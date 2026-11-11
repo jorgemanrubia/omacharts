@@ -60,7 +60,15 @@ impl Over {
 /// The content of the window `from` is in, which the frame hangs from. Not
 /// `from` itself: a rail that has only just been asked to show is not laid
 /// out yet, and the frame is placed against whatever it hangs from.
+///
+/// Inside a dialog, the dialog's own content: a frame hung behind a modal
+/// dialog is drawn but never given the keyboard.
 fn window_content(from: &impl IsA<gtk::Widget>) -> gtk::Widget {
+    let from = from.as_ref();
+    let dialog = from.downcast_ref::<adw::Dialog>().cloned().or_else(|| from.ancestor(adw::Dialog::static_type()).and_downcast());
+    if let Some(content) = dialog.and_then(|dialog| dialog.child()) {
+        return content;
+    }
     from.root()
         .and_downcast::<adw::ApplicationWindow>()
         .and_then(|window| window.content())
@@ -83,6 +91,10 @@ pub struct PickFrame {
     /// "→ Semis · Memory": what a pick changes when it is not a chart. On a
     /// bare frame, the line under the title.
     target: gtk::Label,
+    /// A plain line between the box and the list, for what the list is
+    /// short of: "No trading service is signed in". Apart from the list, so
+    /// every row of it is still a row to pick.
+    note: gtk::Label,
     /// The charts' shades, and the pane wearing the wide ring, while open.
     shade: RefCell<Option<(Vec<gtk::Widget>, gtk::Widget)>>,
     /// Where the keyboard was before the frame opened, to hand it back to.
@@ -135,8 +147,20 @@ impl PickFrame {
         scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
         scroller.set_propagate_natural_height(true);
 
+        let note = gtk::Label::new(None);
+        note.add_css_class("pick-note");
+        note.add_css_class("dim-label");
+        note.set_xalign(0.0);
+        note.set_wrap(true);
+        note.set_margin_start(12);
+        note.set_margin_end(12);
+        note.set_margin_top(6);
+        note.set_margin_bottom(6);
+        note.set_visible(false);
+
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.append(&query);
+        content.append(&note);
         content.append(&scroller);
 
         let popover = gtk::Popover::new();
@@ -153,6 +177,7 @@ impl PickFrame {
             content,
             query,
             target,
+            note,
             shade: RefCell::new(None),
             back: RefCell::new(None),
             catcher: RefCell::new(None),
@@ -165,6 +190,18 @@ impl PickFrame {
         });
         frame.wire();
         frame
+    }
+
+    /// Say `text` between the box and the list, or nothing with `None`.
+    pub fn set_note(&self, text: Option<&str>) {
+        self.note.set_label(text.unwrap_or_default());
+        self.note.set_visible(text.is_some());
+    }
+
+    /// What the line between the box and the list says, while it shows.
+    #[cfg(test)]
+    pub fn note(&self) -> Option<String> {
+        self.note.get_visible().then(|| self.note.label().to_string())
     }
 
     fn wire(self: &Rc<Self>) {

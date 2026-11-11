@@ -66,7 +66,7 @@ pub enum Part {
     Feed,
     /// The account's P&L for the day, closed and open: "P&L +$1,250.00".
     /// Nothing at all unless the chart has an account to trade on, or
-    /// while its broker has not said.
+    /// while its trading service has not said.
     DayPnl,
     /// Buy and Sell, at the market, for the chart's quantity: what Ctrl+B
     /// and Ctrl+S do. Nothing at all unless the chart has an account to
@@ -75,6 +75,10 @@ pub enum Part {
     /// How many an order from the chart is for, "Qty 2". Nothing at all
     /// unless the chart has an account to trade on.
     Size,
+    /// The position the chart trades, its size signed and its open P&L in
+    /// brackets: "+2 (+$125.00)", "-1 (-0.50R)". Nothing at all
+    /// unless the chart's account holds a position in what it trades.
+    Position,
     /// The preset resolutions as a row of buttons, on the focused chart only.
     Stripe,
     /// The chart title, given in its menu, its settings or with
@@ -91,7 +95,7 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ALL: [Part; 14] = [
+    pub const ALL: [Part; 15] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
@@ -102,6 +106,7 @@ impl Part {
         Part::DayPnl,
         Part::Trade,
         Part::Size,
+        Part::Position,
         Part::Stripe,
         Part::Settings,
         Part::Maximize,
@@ -109,12 +114,14 @@ impl Part {
     ];
 
     /// The section it is in until somebody places it, or `None` for a part
-    /// that is only there once somebody adds it. The account and the feed
-    /// are at home on the left because they cost nothing: with one account
-    /// or one feed each draws nothing and takes no room. The day's P&L,
-    /// Buy, Sell and the quantity lead the corner, ahead of the three
-    /// controls that always stood in it, in the order they stood; without
-    /// an account to trade on, they draw nothing either. The chart's title
+    /// that is only there once somebody adds it. The day's move follows the
+    /// resolution, the last word of the line saying what the chart is of.
+    /// The feed is at home on the left because it costs nothing: with one feed it draws nothing and
+    /// takes no room. The account, the day's P&L, Buy, Sell, the quantity
+    /// and the position held lead the corner, the account first, saying what the rest
+    /// trade on, ahead of the three controls that always stood in it, in
+    /// the order they stood; with one account the account draws nothing,
+    /// and without an account to trade on, none of them does. The chart's title
     /// has the center, where the resolutions stripe stood before there were
     /// titles: the resolution beside the symbol already offers every one.
     pub fn home(self) -> Option<Section> {
@@ -122,13 +129,14 @@ impl Part {
             Part::Title => Some(Section::Center),
             Part::Symbol => Some(Section::Left),
             Part::Resolution => Some(Section::Left),
-            Part::Change => None,
+            Part::Change => Some(Section::Left),
             Part::Template => None,
-            Part::Account => Some(Section::Left),
+            Part::Account => Some(Section::Right),
             Part::Feed => Some(Section::Left),
             Part::DayPnl => Some(Section::Right),
             Part::Trade => Some(Section::Right),
             Part::Size => Some(Section::Right),
+            Part::Position => Some(Section::Right),
             Part::Stripe => None,
             Part::Settings => Some(Section::Right),
             Part::Maximize => Some(Section::Right),
@@ -139,7 +147,7 @@ impl Part {
     /// Is it one of trading's: shown, offered and typed only while
     /// trading is switched on ([`crate::features`]).
     pub fn trades(self) -> bool {
-        matches!(self, Part::Account | Part::DayPnl | Part::Trade | Part::Size)
+        matches!(self, Part::Account | Part::DayPnl | Part::Trade | Part::Size | Part::Position)
     }
 
     /// Can it be shown, offered and typed, with trading switched on or not?
@@ -164,6 +172,7 @@ impl Part {
             Part::DayPnl => "day_pnl",
             Part::Trade => "trade",
             Part::Size => "size",
+            Part::Position => "position",
             Part::Stripe => "stripe",
             Part::Title => "title",
             Part::Settings => "settings",
@@ -188,6 +197,7 @@ impl Part {
             Part::DayPnl => "P&L",
             Part::Trade => "Buy Sell",
             Part::Size => "Quantity",
+            Part::Position => "Current position",
             Part::Stripe => "Resolutions stripe",
             Part::Title => "Chart title",
             Part::Settings => "Chart settings",
@@ -353,6 +363,36 @@ const BEFORE_TITLES: [(&str, &str); 3] = [
     (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
 ];
 
+/// The header that shipped while the account ended the left, as
+/// Preferences wrote it out: read as [`Header::standard`] too, so a header
+/// that was only ever the standard one gets the account at the head of the
+/// right, ahead of the P&L.
+const BEFORE_ACCOUNT_MOVED: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution,account"),
+    (CENTER_SETTING, "title"),
+    (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
+];
+
+/// The header that shipped before the day's move was in it, as
+/// Preferences wrote it out: read as [`Header::standard`] too, so a header
+/// that was only ever the standard one gets the move after the resolution.
+/// A left of anybody's own was written without it, and is kept so.
+const BEFORE_CHANGE: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution"),
+    (CENTER_SETTING, "title"),
+    (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
+];
+
+/// The header that shipped before the position held was in it, as
+/// Preferences wrote it out: read as [`Header::standard`] too, so a header
+/// that was only ever the standard one gets the position after the
+/// quantity. One of anybody's own is kept without it.
+const BEFORE_POSITION: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution,change"),
+    (CENTER_SETTING, "title"),
+    (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
+];
+
 /// Whether what is stored is `old`, a standard header of an earlier build:
 /// some section written, and every written one as it shipped.
 fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
@@ -372,7 +412,10 @@ fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
 pub fn load(store: &Store) -> Header {
     let pnl_moved = BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
         && store.setting(SETTING).is_some();
-    if pnl_moved || stored_as(store, &BEFORE_TITLES) {
+    if pnl_moved || stored_as(store, &BEFORE_TITLES) || stored_as(store, &BEFORE_ACCOUNT_MOVED)
+        || stored_as(store, &BEFORE_CHANGE)
+        || stored_as(store, &BEFORE_POSITION)
+    {
         return Header::standard();
     }
     let mut header = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
@@ -382,6 +425,19 @@ pub fn load(store: &Store) -> Header {
         parts.retain(|part| !placed.contains(part));
         placed.extend(parts.iter().copied());
         *header.section_mut(section) = parts;
+    }
+    // A left written before the account moved to the right said where the
+    // account was, or that it was not wanted: the standard right does not
+    // bring it back.
+    if store.setting(SETTING).is_some() && store.setting(RIGHT_SETTING).is_none() {
+        header.right.retain(|part| *part != Part::Account);
+    }
+    // And the other way: a right written with the left never stored is
+    // beside the standard left, which held the account when the right did
+    // not. Every header written since writes the left too, so the account
+    // was shown, and stays: where the standard has it now, leading the right.
+    if store.setting(SETTING).is_none() && store.setting(RIGHT_SETTING).is_some() && !placed.contains(&Part::Account) {
+        header.right.insert(0, Part::Account);
     }
     header
 }
@@ -403,6 +459,22 @@ pub fn save(store: &Store, header: &Header) {
 /// A day's move as the header writes it: `+1.25%`.
 pub fn change_text(change_pct: f64) -> String {
     format!("{change_pct:+.2}%")
+}
+
+/// The colour a day's move is written in: the theme's own up and down,
+/// its palette's green and rose unless somebody set its candles by hand,
+/// turned round only on a chart whose rises are red. Not the chart's bar
+/// colouring: Monochrome candles still have a green rise here. A move of
+/// exactly nothing has none, and is written in the header's own text.
+pub fn change_colour(theme: &omacharts_engine::Theme, swapped: bool, change: f64) -> Option<String> {
+    use omacharts_engine::Direction;
+    let bars = omacharts_engine::theme::theme_bars(theme);
+    let (up, down) = if swapped { (bars.down, bars.up) } else { (bars.up, bars.down) };
+    match Direction::of_change(change) {
+        Direction::Up => Some(up),
+        Direction::Down => Some(down),
+        Direction::Flat => None,
+    }
 }
 
 #[cfg(test)]
@@ -435,20 +507,118 @@ mod tests {
     }
 
     /// Out of the box the left is the data feed's dot and then the line
-    /// every chart always had; the center the chart's title, and the right
+    /// every chart always had, ending on the day's move; the center the chart's title, and the right
     /// the day's P&L, Buy, Sell and the quantity ahead of the three
     /// controls that always stood in its corner, in their order. The
     /// stripe is only there once somebody adds it.
     #[test]
     fn the_standard_header_is_the_line_the_title_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
         assert_eq!(header.center, vec![Part::Title]);
         assert!(!header.contains(Part::Stripe));
         assert_eq!(
             header.right,
-            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
         );
+    }
+
+    /// A header saved as the one that shipped with the account at the end
+    /// of the left is the standard one now, the account leading the right;
+    /// one that differs from it in anything is kept as it was saved.
+    #[test]
+    fn the_old_standard_header_moves_the_account_to_the_right() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_ACCOUNT_MOVED {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        assert_eq!(load(&store).right[0], Part::Account);
+        store.set_setting(SETTING, "symbol,feed,resolution,account");
+        let kept = load(&store);
+        assert_eq!(kept.left, vec![Part::Symbol, Part::Feed, Part::Resolution, Part::Account]);
+        assert_eq!(kept.right, vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+        store.set_setting(SETTING, "feed,symbol,resolution,account");
+        store.set_setting(RIGHT_SETTING, "trade,day_pnl,size,settings,maximize,link");
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account], "a right of its own");
+    }
+
+    /// A right of somebody's own stored with no left, from when the
+    /// standard left held the account: the account is still in the header,
+    /// leading the right as the standard has it now, and never twice.
+    #[test]
+    fn a_right_stored_alone_keeps_the_account() {
+        let store = Store::memory().unwrap();
+        store.set_setting(RIGHT_SETTING, "trade,size,settings,link");
+        let header = load(&store);
+        assert_eq!(header.left, standard(Section::Left));
+        assert_eq!(header.right, vec![Part::Account, Part::Trade, Part::Size, Part::Settings, Part::Link]);
+        store.set_setting(RIGHT_SETTING, "trade,account,link");
+        assert_eq!(load(&store).right, vec![Part::Trade, Part::Account, Part::Link], "where it was put");
+        store.set_setting(CENTER_SETTING, "title,account");
+        store.set_setting(RIGHT_SETTING, "trade,link");
+        assert_eq!(load(&store).right, vec![Part::Trade, Part::Link], "in the center already");
+        // Written whole, as every header is now, it is as it was written.
+        save(&store, &Header { left: vec![Part::Symbol], center: Vec::new(), right: vec![Part::Link] });
+        assert_eq!(load(&store).right, vec![Part::Link]);
+    }
+
+    /// A header saved as the one that shipped before the day's move was in
+    /// it is the standard one now, the move after the resolution, whether
+    /// all of it was written down or some; a left of anybody's own, or a
+    /// header that differs in anything, is kept as it was saved, without it.
+    #[test]
+    fn the_old_standard_header_gains_the_day_s_move() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_CHANGE {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
+        store.remove_setting(CENTER_SETTING);
+        assert_eq!(load(&store), Header::standard());
+
+        store.set_setting(SETTING, "symbol,resolution");
+        assert_eq!(load(&store).left, vec![Part::Symbol, Part::Resolution], "a left of its own");
+        assert!(!load(&store).contains(Part::Change));
+
+        store.set_setting(SETTING, "feed,symbol,resolution");
+        store.set_setting(RIGHT_SETTING, "settings,maximize,link");
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution], "a right of its own");
+        assert!(!load(&store).contains(Part::Change));
+    }
+
+    /// A header saved as the one that shipped before the position held was
+    /// in it is the standard one now, the position after the quantity and
+    /// ahead of the controls, whether all of it was written down or some; a
+    /// header of anybody's own is kept as it was saved, without it.
+    #[test]
+    fn the_old_standard_header_gains_the_current_position() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_POSITION {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        assert_eq!(
+            load(&store).right,
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
+        );
+        store.remove_setting(CENTER_SETTING);
+        assert_eq!(load(&store), Header::standard());
+
+        store.set_setting(RIGHT_SETTING, "day_pnl,account,trade,size,settings,maximize,link");
+        let kept = load(&store);
+        assert_eq!(kept.right, vec![Part::DayPnl, Part::Account, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+        assert!(!kept.contains(Part::Position), "a right of its own");
+
+        store.set_setting(RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link");
+        store.set_setting(SETTING, "symbol,resolution");
+        assert!(!load(&store).contains(Part::Position), "a left of its own");
+
+        // Typed and named like the other parts.
+        assert_eq!(parse_for("position,size", true), Ok(vec![Part::Position, Part::Size]));
+        assert!(parse_for("position", false).is_err(), "a trading part with trading off");
+        assert_eq!(Part::Position.label(), "Current position");
     }
 
     /// A header saved as the one that shipped with the P&L at the end of
@@ -499,7 +669,7 @@ mod tests {
             Header {
                 left: vec![Part::Change, Part::Symbol, Part::Account],
                 center: vec![Part::Title],
-                right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link],
+                right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link],
             }
         );
         store.set_setting(SETTING, "none");
@@ -512,7 +682,7 @@ mod tests {
     /// shown once, in the first of them.
     #[test]
     fn a_part_is_in_the_header_once() {
-        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
         let mut header = Header::standard();
         header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
         assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: vec![Part::Title], right: corner.clone() });
@@ -547,11 +717,11 @@ mod tests {
         assert_eq!(Part::every_shown(true), Part::ALL.to_vec());
 
         let mut header = Header::standard();
-        assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution]);
+        assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
         header.set_shown(Section::Left, vec![Part::Symbol, Part::Feed], false);
-        assert_eq!(header.left, vec![Part::Symbol, Part::Feed, Part::Account]);
+        assert_eq!(header.left, vec![Part::Symbol, Part::Feed]);
         header.set_shown(Section::Right, vec![Part::Link], false);
-        assert_eq!(header.right, vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link]);
+        assert_eq!(header.right, vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link]);
     }
 
     /// The corner's controls are parts like the others: typed by name,
@@ -577,6 +747,20 @@ mod tests {
         let store = Store::memory().unwrap();
         store.set_setting(SETTING, "volume,change,symbol");
         assert_eq!(load(&store).left, vec![Part::Change, Part::Symbol]);
+    }
+
+    /// Green up and red down, from the palette, whatever the chart's own
+    /// bar colouring; red up turns them round; nothing at all is the text.
+    #[test]
+    fn a_change_is_coloured_from_the_palette() {
+        let theme = omacharts_engine::theme::builtin_themes().remove(0);
+        let green = theme.swatch("Green").unwrap().hex.clone();
+        let rose = theme.swatch("Rose").unwrap().hex.clone();
+        assert_eq!(change_colour(&theme, false, 0.01), Some(green.clone()), "a cent up");
+        assert_eq!(change_colour(&theme, false, -0.01), Some(rose.clone()), "a cent down");
+        assert_eq!(change_colour(&theme, false, 0.0), None);
+        assert_eq!(change_colour(&theme, true, 1.0), Some(rose));
+        assert_eq!(change_colour(&theme, true, -1.0), Some(green));
     }
 
     #[test]

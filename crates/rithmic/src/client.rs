@@ -1486,6 +1486,47 @@ pub(crate) mod tests {
         assert_ne!(config.app_version, env!("CARGO_PKG_VERSION"));
     }
 
+    /// A plant dials its gateway over rustls, with the system's roots and
+    /// ring as the provider: what reaches the socket is a TLS ClientHello
+    /// naming the gateway's host. The gateway here is a local socket that
+    /// reads the hello and hangs up, so the dial fails, and nothing is ever
+    /// sent anywhere but this machine.
+    #[test]
+    fn a_plant_dials_over_tls() {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        let gateway = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("the plant to dial");
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut hello = vec![0; 2048];
+            let read = socket.read(&mut hello).expect("a ClientHello");
+            hello.truncate(read);
+            hello
+        });
+
+        crate::connection::tls();
+        let credentials = Credentials {
+            user: "someone".into(),
+            password: "secret".into(),
+            system: crate::TEST_SYSTEM.into(),
+            url: format!("wss://localhost:{port}"),
+        };
+        let config = config(App { name: "test", version: "0" }, &credentials).expect("a config");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dialled = runtime.block_on(RithmicTickerPlant::connect(&config, ConnectStrategy::Simple));
+        assert!(dialled.is_err(), "a gateway that hangs up cannot be signed in to");
+
+        let hello = gateway.join().unwrap();
+        // A TLS handshake record carrying a ClientHello.
+        assert!(hello.len() > 5, "{hello:?}");
+        assert_eq!(hello[0], 0x16, "not a TLS handshake: {hello:?}");
+        assert_eq!(hello[5], 0x01, "not a ClientHello: {hello:?}");
+        assert!(hello.windows(9).any(|w| w == b"localhost"), "no server name in the hello");
+    }
+
     #[test]
     fn dates_go_both_ways() {
         assert_eq!(civil(0), (1970, 1, 1));

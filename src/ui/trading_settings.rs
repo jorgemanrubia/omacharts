@@ -1,14 +1,14 @@
-//! Preferences → Trading: three sections. "Trading accounts" lists the
-//! broker logins, each a row with its accounts under it, edited the way the
+//! Preferences → Trading: three sections. "Trading services" lists the
+//! trading service logins, each a row with its accounts under it, edited the way the
 //! Data page edits its data feeds; "Order entry" holds what every chart's
-//! orders follow; "Chart" how the orders are drawn on a chart. The last two
+//! orders follow; "Chart" how the orders and P&L are drawn on a chart. The last two
 //! are there with no login too, to be set before the first one.
 //!
 //! With no login, the accounts' section is its heading and a button. "Add a
-//! trading account…" offers every broker in the registry, and opens that broker's own login
-//! dialog, with a Name field; the first login added whose broker has a data
+//! trading account…" offers every trading service in the registry, and opens that trading service's own login
+//! dialog, with a Name field; the first login added whose trading service has a data
 //! feed also adds that feed as the first data feed, through it.
-//! Each login says how it stands — live, not signed in, or the broker's own
+//! Each login says how it stands — live, not signed in, or the trading service's own
 //! words for a refusal — and which one is the data login; its accounts are
 //! the ones its last sign-in listed, cached, so the page draws without
 //! connecting.
@@ -36,7 +36,7 @@ fn feed_label(login: &Login) -> &'static str {
     trading::data_feed_of(login).map_or("broker", |feed| feed.label)
 }
 
-/// The keyring a broker keeps its passwords in.
+/// The keyring a trading service keeps its passwords in.
 struct Keyring(Option<&'static dyn Secrets>);
 
 impl Secrets for Keyring {
@@ -52,17 +52,18 @@ impl Secrets for Keyring {
     }
 }
 
-/// The keyring `broker`'s passwords go in: what the Data page keeps a
-/// broker's data login in while trading is switched off.
-pub(crate) fn keyring(broker: &str) -> impl Secrets {
-    Keyring(trading::broker_for(broker).and_then(|broker| broker.keyring()))
+/// The keyring `service`'s passwords go in: what the Data page keeps a
+/// trading service's data login in while trading is switched off.
+pub(crate) fn keyring(service: &str) -> impl Secrets {
+    Keyring(trading::service_for(service).and_then(|service| service.keyring()))
 }
 
-/// Ask for a login of the broker `broker` over `anchor` — a new one, or
-/// `known` again — in the broker's own dialog.
-fn ask(anchor: &gtk::Widget, broker: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
-    if let Some(dialog) = sign_in_dialogs::login_dialog(broker) {
-        dialog(anchor, known, Box::new(signed));
+/// Ask for a login of the trading service `service` over `anchor` — a new one, or
+/// `known` again — in the trading service's own dialog.
+fn ask(anchor: &gtk::Widget, panel: &Panel, service: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
+    if let Some(dialog) = sign_in_dialogs::login_dialog(service) {
+        let taken = trading::names_taken(&panel.store, known.map(|login| login.id.as_str()));
+        dialog(anchor, known, &taken, Box::new(signed));
     }
 }
 
@@ -80,7 +81,7 @@ pub fn order_labels(store: &Store) -> LabelSide {
 pub struct Panel {
     store: Rc<Store>,
     desk: Rc<Desk>,
-    /// Where passwords go instead of each broker's own keyring: a list in
+    /// Where passwords go instead of each trading service's own keyring: a list in
     /// memory, under test.
     secrets: Option<Rc<dyn Secrets>>,
     /// Has the window chart from the data feeds now stored and redraw its
@@ -93,6 +94,8 @@ pub struct Panel {
     edit_sizes: RefCell<Option<EditSizes>>,
     /// Puts every chart's labels where the setting now says.
     labels_moved: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Writes every chart's P&L as the settings now say, money or R.
+    pnl_changed: RefCell<Option<Rc<dyn Fn()>>>,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The latest word from a sign-in, by login, until the next one.
     notes: RefCell<HashMap<String, String>>,
@@ -124,6 +127,7 @@ impl Panel {
             page,
             edit_sizes: RefCell::new(None),
             labels_moved: RefCell::new(None),
+            pnl_changed: RefCell::new(None),
             groups: RefCell::new(Vec::new()),
             notes: RefCell::new(HashMap::new()),
             redraw: RefCell::new(None),
@@ -156,16 +160,22 @@ impl Panel {
         *self.labels_moved.borrow_mut() = Some(moved);
     }
 
+    /// What changing how P&L is shown, or what 1R is worth, does to the
+    /// charts.
+    pub fn set_pnl_changed(&self, changed: Rc<dyn Fn()>) {
+        *self.pnl_changed.borrow_mut() = Some(changed);
+    }
+
     /// The Data page's redraw, for when a login changes what it says.
     pub fn redraw_data_page(&self, redraw: Rc<dyn Fn()>) {
         *self.data_page.borrow_mut() = Some(redraw);
     }
 
-    /// Where the passwords of `broker`'s logins go.
-    fn secrets(&self, broker: &str) -> Rc<dyn Secrets> {
+    /// Where the passwords of `service`'s logins go.
+    fn secrets(&self, service: &str) -> Rc<dyn Secrets> {
         match &self.secrets {
             Some(secrets) => secrets.clone(),
-            None => Rc::new(Keyring(trading::broker_for(broker).and_then(|broker| broker.keyring()))),
+            None => Rc::new(Keyring(trading::service_for(service).and_then(|service| service.keyring()))),
         }
     }
 
@@ -179,13 +189,14 @@ impl Panel {
     }
 }
 
-/// Open the login dialog for a new login of `broker` over `anchor`; what
-/// the Data page's "Add a data feed…" does for a broker connection's feed
+/// Open the login dialog for a new login of `service` over `anchor`; what
+/// the Data page's "Add a data feed…" does for a trading service connection's feed
 /// too.
-pub fn add_broker(panel: &Rc<Panel>, broker: &str, anchor: &gtk::Widget) {
+pub fn add_service(panel: &Rc<Panel>, service: &str, anchor: &gtk::Widget) {
+    let asked = panel;
     let panel = panel.clone();
-    ask(anchor, broker, None, move |typed| {
-        match trading::add_login(&panel.store, panel.secrets(&typed.broker).as_ref(), &typed) {
+    ask(anchor, asked, service, None, move |typed| {
+        match trading::add_login(&panel.store, panel.secrets(&typed.service).as_ref(), &typed) {
             Ok(id) => {
                 panel.changed();
                 sign_in(&panel, &id);
@@ -208,7 +219,7 @@ fn rebuild(panel: &Rc<Panel>) {
     let default = trading::default_account(&accounts, panel.store.setting(trading::DEFAULT_ACCOUNT).as_deref())
         .map(Account::key);
     let accounts_group = adw::PreferencesGroup::new();
-    accounts_group.set_title("Trading accounts");
+    accounts_group.set_title("Trading services");
     for login in &logins {
         let theirs: Vec<&Account> = accounts.iter().filter(|account| account.login == login.id).collect();
         let is_data = data.as_deref() == Some(login.id.as_str());
@@ -238,7 +249,7 @@ fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
         },
     };
     let mut words: Vec<String> =
-        panel.desk.broker_for(login).and_then(|broker| broker.signs_in_to(login)).into_iter().collect();
+        panel.desk.service_for(login).and_then(|service| service.signs_in_to(login)).into_iter().collect();
     words.push(standing);
     if data {
         words.push("data".into());
@@ -369,7 +380,8 @@ fn order_entry_group(edit: EditSizes) -> adw::PreferencesGroup {
     group
 }
 
-/// How the orders are drawn on a chart: which side their labels sit at.
+/// How the orders are drawn on a chart: which side their labels sit at,
+/// and whether the P&L on them and in the header is money or R.
 fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
@@ -391,27 +403,95 @@ fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
         }
     });
     group.add(&row);
+    let amount = r_amount_row(panel);
+    group.add(&pnl_display_row(panel, &amount));
+    group.add(&amount);
     group
 }
 
-/// "Add a trading account…", last in the accounts' section.
+/// "Show P&L as": Money, as the account's books say it, or Risk (R). The
+/// row for what 1R is worth is under it while R is chosen, and only then.
+fn pnl_display_row(panel: &Rc<Panel>, amount: &adw::SpinRow) -> adw::ComboRow {
+    use trading::chart_pnl::{self, Display};
+    let row = adw::ComboRow::new();
+    row.set_title("Show P&L as");
+    let names: Vec<&str> = Display::ALL.iter().map(|display| display.label()).collect();
+    row.set_model(Some(&gtk::StringList::new(&names)));
+    let current = chart_pnl::display(&panel.store);
+    row.set_selected(Display::ALL.iter().position(|display| *display == current).unwrap_or(0) as u32);
+    amount.set_visible(current == Display::Risk);
+    let weak = Rc::downgrade(panel);
+    let amount = amount.downgrade();
+    row.connect_selected_notify(move |row| {
+        let (Some(panel), Some(display)) = (weak.upgrade(), Display::ALL.get(row.selected() as usize)) else { return };
+        if let Some(amount) = amount.upgrade() {
+            amount.set_visible(*display == Display::Risk);
+        }
+        if *display == chart_pnl::display(&panel.store) {
+            return;
+        }
+        chart_pnl::save_display(&panel.store, *display);
+        if let Some(changed) = panel.pnl_changed.borrow().clone() {
+            changed();
+        }
+    });
+    row
+}
+
+/// The least and the most 1R can be worth: a cent, and past any account.
+const R_MIN: f64 = 0.01;
+const R_MAX: f64 = 1_000_000_000.0;
+
+/// The money 1R is worth, in the account's currency: never blank, never
+/// nought or less. What is typed is marked the moment it is not a positive
+/// number, and put back to the figure in force when it is let go.
+fn r_amount_row(panel: &Rc<Panel>) -> adw::SpinRow {
+    use trading::chart_pnl;
+    let row = adw::SpinRow::with_range(R_MIN, R_MAX, 50.0);
+    row.set_title("Value of 1R");
+    row.set_digits(2);
+    row.set_numeric(true);
+    row.set_update_policy(gtk::SpinButtonUpdatePolicy::IfValid);
+    row.set_value(chart_pnl::r_amount(&panel.store));
+    // As it is typed: marked while it would be refused, so nobody is
+    // surprised when it goes back.
+    row.connect_changed(|row| match chart_pnl::parse_amount(&row.text().replace(',', ".")) {
+        Ok(amount) if (R_MIN..=R_MAX).contains(&amount) => row.remove_css_class("error"),
+        _ => row.add_css_class("error"),
+    });
+    let weak = Rc::downgrade(panel);
+    row.connect_value_notify(move |row| {
+        let Some(panel) = weak.upgrade() else { return };
+        let amount = row.value();
+        if chart_pnl::parse_amount(&chart_pnl::amount_text(amount)).is_err() || amount == chart_pnl::r_amount(&panel.store) {
+            return;
+        }
+        chart_pnl::save_amount(&panel.store, amount);
+        if let Some(changed) = panel.pnl_changed.borrow().clone() {
+            changed();
+        }
+    });
+    row
+}
+
+/// "Add a trading service…", last in the accounts' section.
 fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
     let add = gtk::MenuButton::new();
-    add.set_label("Add a trading account…");
+    add.set_label("Add a trading service…");
     add.set_halign(gtk::Align::Start);
     // Under the logins' list, apart from it, as under the Data page's.
     add.set_margin_top(12);
     let items = panel
         .desk
-        .brokers()
+        .services()
         .iter()
-        .map(|broker| {
+        .map(|service| {
             let anchor = add.downgrade();
             let panel = panel.clone();
-            let id = broker.id();
-            crate::ui::menus::Item::new(broker.label(), move || {
+            let id = service.id();
+            crate::ui::menus::Item::new(service.label(), move || {
                 if let Some(anchor) = anchor.upgrade() {
-                    add_broker(&panel, id, anchor.upcast_ref());
+                    add_service(&panel, id, anchor.upcast_ref());
                 }
             })
         })
@@ -421,13 +501,14 @@ fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
 }
 
 /// The dialog again, prefilled, for a login with no password to sign in
-/// with or one the broker refused.
+/// with or one the trading service refused.
 fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    let asked = panel;
     let panel = panel.clone();
     let id = id.to_string();
-    let secrets = panel.secrets(&login.broker);
-    ask(anchor, &login.broker, Some(&login), move |typed| {
+    let secrets = panel.secrets(&login.service);
+    ask(anchor, asked, &login.service, Some(&login), move |typed| {
         if let Err(error) = trading::retype_login(&panel.store, secrets.as_ref(), &id, &typed) {
             panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
         }
@@ -440,7 +521,7 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    match trading::sign_out_login(&panel.store, panel.secrets(&login.broker).as_ref(), id) {
+    match trading::sign_out_login(&panel.store, panel.secrets(&login.service).as_ref(), id) {
         Ok(_) => log_words::say(log_words::signed_out(&login.name)),
         Err(error) => {
             eprintln!("omacharts: {error}");
@@ -505,9 +586,9 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.broker).as_ref(), id, feed_too) {
+    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.service).as_ref(), id, feed_too) {
         eprintln!("omacharts: {error}");
-        log_words::say(log_words::trouble(&login.name, "Login not removed completely", &error));
+        log_words::say(log_words::trouble(&login.name, "Trading service not removed completely", &error));
     }
     panel.changed();
 }
@@ -518,8 +599,8 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
 fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
     let Some(login) = logins.iter().find(|login| login.id == id) else { return };
-    if panel.desk.broker_for(login).is_none() {
-        panel.notes.borrow_mut().insert(id.to_string(), format!("no broker called {} in this build", login.broker));
+    if panel.desk.service_for(login).is_none() {
+        panel.notes.borrow_mut().insert(id.to_string(), format!("no trading service called {} in this build", login.service));
         return rebuild(panel);
     }
     panel.notes.borrow_mut().remove(id);
@@ -532,7 +613,7 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::fake::{FakeBroker, Kept};
+    use crate::trading::fake::{FakeService, Kept};
     use crate::trading::Registry;
     use crate::trading::Typed;
 
@@ -612,7 +693,7 @@ mod tests {
 
     fn typed(name: &str) -> Typed {
         Typed {
-            broker: "rithmic".into(),
+            service: "rithmic".into(),
             name: name.into(),
             user: format!("{name}-user"),
             password: "PLANTED-PASSWORD".into(),
@@ -626,14 +707,14 @@ mod tests {
     fn nothing_configured_is_a_heading_a_button_and_the_settings() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
-            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
             rebuild(&panel);
             let words = page_words(&panel);
-            assert!(words.iter().any(|w| w == "Trading accounts"), "{words:?}");
-            assert!(words.iter().any(|w| w == "Add a trading account…"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Trading services"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Add a trading service…"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
             let titles: Vec<String> = panel.groups.borrow().iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading accounts", "Order entry", "Chart"]);
+            assert_eq!(titles, ["Trading services", "Order entry", "Chart"]);
             assert!(words.iter().any(|w| w == "Edit quantities…"), "{words:?}");
         });
     }
@@ -644,7 +725,7 @@ mod tests {
     fn the_order_labels_are_left_until_moved_and_moving_them_is_kept() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
-            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
             let told = Rc::new(std::cell::Cell::new(0));
             let counted = told.clone();
             panel.set_labels_moved(Rc::new(move || counted.set(counted.get() + 1)));
@@ -679,6 +760,107 @@ mod tests {
         });
     }
 
+    /// The Chart group's rows, under whatever they are wrapped in.
+    fn chart_rows<T: IsA<gtk::Widget>>(panel: &Panel) -> Vec<T> {
+        fn under<T: IsA<gtk::Widget>>(widget: &gtk::Widget, found: &mut Vec<T>) {
+            let mut next = widget.first_child();
+            while let Some(child) = next {
+                match child.clone().downcast::<T>() {
+                    Ok(row) => found.push(row),
+                    Err(_) => under(&child, found),
+                }
+                next = child.next_sibling();
+            }
+        }
+        let group = panel.groups.borrow().iter().find(|group| group.title() == "Chart").cloned().unwrap();
+        let mut found = Vec::new();
+        under(group.upcast_ref(), &mut found);
+        found
+    }
+
+    /// "Show P&L as" is Money, with no row for 1R, until somebody picks
+    /// Risk (R): that is kept, the charts are told, and the row for what 1R
+    /// is worth comes in under it at 500. Money again takes the row away.
+    #[test]
+    fn showing_pnl_in_r_is_chosen_under_the_order_labels() {
+        crate::ui::on_gtk(|| {
+            use crate::trading::chart_pnl::{self, ChartPnl, Display};
+            let store = Rc::new(Store::memory().unwrap());
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
+            let told = Rc::new(std::cell::Cell::new(0));
+            let counted = told.clone();
+            panel.set_pnl_changed(Rc::new(move || counted.set(counted.get() + 1)));
+            let combos = chart_rows::<adw::ComboRow>(&panel);
+            let titles: Vec<String> = combos.iter().map(|row| row.title().to_string()).collect();
+            assert_eq!(titles, ["Order labels", "Show P&L as"]);
+            let display = combos[1].clone();
+            let amount = chart_rows::<adw::SpinRow>(&panel).pop().expect("the row for 1R");
+            assert_eq!(amount.title(), "Value of 1R");
+            for row in [display.upcast_ref::<adw::ActionRow>(), amount.upcast_ref()] {
+                assert!(row.subtitle().is_none_or(|s| s.is_empty()), "no hint under {}", row.title());
+            }
+            assert_eq!(display.selected(), 0, "Money");
+            assert!(!amount.is_visible(), "a value of 1R with money shown");
+
+            display.set_selected(1);
+            assert_eq!(chart_pnl::display(&store), Display::Risk);
+            assert_eq!(told.get(), 1, "the charts are told");
+            assert!(amount.is_visible());
+            assert_eq!(amount.value(), 500.0);
+
+            rebuild(&panel);
+            let display = chart_rows::<adw::ComboRow>(&panel)[1].clone();
+            let amount = chart_rows::<adw::SpinRow>(&panel).pop().unwrap();
+            assert_eq!(display.selected(), 1, "kept");
+            assert!(amount.is_visible(), "the row for 1R drawn again with R kept");
+            assert_eq!(told.get(), 1, "drawing the page again changes nothing");
+
+            display.set_selected(0);
+            assert_eq!(chart_pnl::load(&store), ChartPnl::Money);
+            assert!(!amount.is_visible());
+            assert_eq!(told.get(), 2);
+        });
+    }
+
+    /// What 1R is worth takes a positive number and nothing else: blank,
+    /// nought, below nought and words are marked as they are typed and put
+    /// back to the figure in force, which is all that is kept.
+    #[test]
+    fn what_1r_is_worth_refuses_blank_and_what_is_not_a_positive_number() {
+        crate::ui::on_gtk(|| {
+            use crate::trading::chart_pnl::{self, ChartPnl, Display};
+            let store = Rc::new(Store::memory().unwrap());
+            chart_pnl::save_display(&store, Display::Risk);
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeService::default())]))));
+            let told = Rc::new(std::cell::Cell::new(0));
+            let counted = told.clone();
+            panel.set_pnl_changed(Rc::new(move || counted.set(counted.get() + 1)));
+            let amount = chart_rows::<adw::SpinRow>(&panel).pop().unwrap();
+            assert!(amount.is_visible());
+            assert!(!amount.has_css_class("error"));
+
+            for refused in ["", "0", "-250", "abc"] {
+                amount.set_text(refused);
+                assert!(amount.has_css_class("error"), "{refused:?} not marked as it is typed");
+                amount.update();
+                assert_eq!(amount.value(), 500.0, "{refused:?} taken");
+                assert!(!amount.text().is_empty(), "left blank after {refused:?}");
+                assert!(chart_pnl::parse_amount(&amount.text()).is_ok(), "{:?} after {refused:?}", amount.text());
+                assert!(!amount.has_css_class("error"), "still marked once {refused:?} was put back");
+            }
+            assert_eq!(store.setting(chart_pnl::R_AMOUNT), None, "nothing kept");
+            assert_eq!(told.get(), 0);
+
+            amount.set_text("250");
+            assert!(!amount.has_css_class("error"));
+            amount.update();
+            assert_eq!(chart_pnl::load(&store), ChartPnl::R(250.0));
+            assert_eq!(told.get(), 1);
+            rebuild(&panel);
+            assert_eq!(chart_rows::<adw::SpinRow>(&panel).pop().unwrap().value(), 250.0, "kept");
+        });
+    }
+
     /// Two logins with their accounts: each says how it stands, the data
     /// login says so and the other offers to be it, and every account but
     /// the default offers to become it.
@@ -710,8 +892,8 @@ mod tests {
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading accounts", "Order entry", "Chart"]);
-            assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading account…"));
+            assert_eq!(titles, ["Trading services", "Order entry", "Chart"]);
+            assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading service…"));
             assert!(words_under(groups[1].upcast_ref()).iter().any(|w| w == "Edit quantities…"));
             let rows = login_rows(&panel);
             assert_eq!(rows.len(), 2, "two logins");
@@ -736,24 +918,24 @@ mod tests {
         });
     }
 
-    /// A broker with no data feed, which nothing above the seam names, is
-    /// offered by "Add a trading account…" because the registry lists it,
+    /// A trading service with no data feed, which nothing above the seam names, is
+    /// offered by "Add a trading service…" because the registry lists it,
     /// signs in from this page, lists its accounts here, and trades: a market order
     /// fills, with its fill, and is held on the desk's book. Its login is
     /// never the data login, and the data feeds are left as they were.
     #[test]
-    fn a_second_broker_signs_in_and_trades_without_being_named() {
+    fn a_second_service_signs_in_and_trades_without_being_named() {
         crate::ui::on_gtk(|| {
             crate::features::force(crate::features::Feature::Trading, true);
             let store = Rc::new(Store::memory().unwrap());
             let desk = Rc::new(Desk::new(trading::registry()));
-            let fake = desk.brokers().get("fake").expect("the fake broker is in the registry");
+            let fake = desk.services().get("fake").expect("the fake trading service is in the registry");
             let panel = panel(&store, desk.clone());
             rebuild(&panel);
             assert!(page_words(&panel).iter().any(|w| w == fake.label()), "not offered: {:?}", page_words(&panel));
 
             let typed = Typed {
-                broker: fake.id().into(),
+                service: fake.id().into(),
                 name: "Practice".into(),
                 user: "me".into(),
                 password: "PLANTED-PASSWORD".into(),
@@ -798,7 +980,7 @@ mod tests {
     }
 
     /// Signing in is in the Log under the login's name, and a user ID never
-    /// is: not from the login, and not from a broker repeating it back.
+    /// is: not from the login, and not from a trading service repeating it back.
     #[test]
     fn the_log_names_a_login_and_never_its_user_id() {
         crate::ui::on_gtk(|| {
@@ -808,7 +990,7 @@ mod tests {
             let desk = Rc::new(Desk::new(trading::registry()));
             let panel = panel(&store, desk.clone());
             let typed = Typed {
-                broker: "fake".into(),
+                service: "fake".into(),
                 name: "Practice".into(),
                 user: USER.into(),
                 password: "PLANTED-PASSWORD".into(),
@@ -820,7 +1002,7 @@ mod tests {
             sign_in(&panel, &id);
             signed_in(&store, &desk, &id);
             assert!(desk.live(&id));
-            // A broker that says the user ID back in its refusal.
+            // A trading service that says the user ID back in its refusal.
             log_words::say(log_words::signed_in("Practice", Err(&format!("user {USER} is locked"))));
             sign_out(&panel, &id);
 

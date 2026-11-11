@@ -150,10 +150,14 @@ EOF
   (
     unset WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK
     export XDG_RUNTIME_DIR="$dir"
-    export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=gles2
+    export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER="${WLR_RENDERER:-gles2}"
     exec sway -c "$dir/sway.conf"
   ) > "$dir/sway.log" 2>&1 < /dev/null &
-  remember $! sway
+  local sway=$!
+  remember "$sway" sway
+  # From here on a start that fails takes down what it started, rather than
+  # leaving a compositor and a bus behind with nobody holding their session.
+  trap 'abandon "$dir"' EXIT
 
   local socket="" found _
   for _ in $(seq 1 100); do
@@ -161,9 +165,34 @@ EOF
       [ -S "$found" ] && socket="$found"
     done
     [ -n "$socket" ] && break
+    kill -0 "$sway" 2>/dev/null || break
     sleep 0.1
   done
-  [ -n "$socket" ] || { sed -n '$p' "$dir/sway.log" >&2; die "sway did not start; see $dir/sway.log"; }
+  [ -n "$socket" ] || { tail -n 5 "$dir/sway.log" >&2; die "sway did not start (the end of its log is above)"; }
+
+  # The socket exists a moment before sway answers on it, and a query sent
+  # in that moment gets "Unable to receive IPC response" and no JSON. So
+  # sway is asked until it describes its headless output, up to ten seconds,
+  # and that answer is what the pointer's extent is read from.
+  local layout=""
+  for _ in $(seq 1 100); do
+    layout="$(swaymsg -s "$socket" -r -t get_outputs 2>/dev/null | python3 -c '
+import json, sys
+try:
+    outputs = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+for output in outputs:
+    if output.get("name") == "HEADLESS-1" and output.get("rect", {}).get("width"):
+        print("%dx%d" % (output["rect"]["width"], output["rect"]["height"]))
+        break
+else:
+    sys.exit(1)' 2>/dev/null)" && break
+    layout=""
+    kill -0 "$sway" 2>/dev/null || break
+    sleep 0.1
+  done
+  [ -n "$layout" ] || { tail -n 5 "$dir/sway.log" >&2; die "sway started but did not answer on its socket for ten seconds (the end of its log is above)"; }
 
   # Its own bus, not just its own profile. A command is handed to whatever
   # owns the application id on the session bus, so a test run that keeps the
@@ -181,13 +210,6 @@ GDK_BACKEND=wayland
 GTK_A11Y=none
 EOF
   remember "$(cat "$dir/bus-pid")" dbus-daemon
-
-  local layout
-  layout="$(OMACHARTS_WINDOW="$dir" "$self" tree | python3 -c '
-import json, sys
-for output in json.load(sys.stdin)["nodes"]:
-    if output["name"] == "HEADLESS-1":
-        print("%dx%d" % (output["rect"]["width"], output["rect"]["height"]))')"
   echo "VIRTUAL_POINTER_EXTENT=$layout" >> "$dir/env"
 
   # Two input devices nothing is ever sent through. A seat with no keyboard
@@ -203,7 +225,14 @@ for output in json.load(sys.stdin)["nodes"]:
   remember $! python3
   sleep 0.5
 
+  trap - EXIT
   echo "export OMACHARTS_WINDOW=$dir"
+}
+
+# A start that failed part-way: stops whatever it had started, so nothing
+# outlives a session no caller was ever told about.
+abandon() {
+  ( OMACHARTS_WINDOW="$1" stop ) 2>/dev/null || true
 }
 
 # wtype keeps its virtual keyboard only while it runs, and its longest sleep

@@ -92,6 +92,7 @@ A swatch opens the colour chooser. The colour applies as you pick it. **Rename**
 | Other | **Grid lines** | The chart's gridlines. |
 | Other | **Axes** | The axis rules. |
 | Other | **Crosshair** | The crosshair. |
+| Other | **Last price** | The last price's tag and its dashed line across the chart. Until set, a pale tint of the palette's Cyan on a dark theme and a deeper one that reads on a light theme, or the first of Amber, Teal, Blue and Violet when Cyan is near a candle's colour. |
 | Other | **Accent** | A selected row, a switch that is on, the button a dialog suggests. |
 
 Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Vivid, soft, quiet or monochrome bars, hollow rises, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
@@ -117,6 +118,8 @@ The palette is the theme's named colours for indicators and drawings. An indicat
 
 An indicator added without a colour gets the next of Blue, Amber, Violet, Teal, Orange and Cyan not already on the chart. After six they repeat. Green and Rose are never given automatically, but you can pick them.
 
+**Neutral** is a very light tone of the theme's own hue on a dark theme and a very dark one on a light theme: close to the theme's text, never quite it, and tinted rather than white or black, a pale lavender on Tokyo Night and a cream on Gruvbox. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, or its background or accent when the text is a plain grey, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
+
 ### The palette picker
 
 A colour button in the indicator and drawing dialogs opens the theme's palette first.
@@ -128,14 +131,14 @@ state:
   move 1270 790
   omacharts chart set --symbol NVDA --resolution 1D
   omacharts chart indicator add sma --period 50 --color Amber
-  key ctrl+i
-  click 480 456          # the SMA 50 row
-  click 849 392          # its Colour swatch
+  key ctrl+i              # twice: a fresh window swallows its first chord
+  click 503 291          # the SMA 50 row
+  click 849 315          # its Colour swatch
   move 1270 790
 capture: bin/headless-window shot /tmp/picker.png
-crop: 750,656,1206,520   (the Line group and the palette, 16px layout margin round both)
+crop: 751,500,1206,600   (the Line group and the palette, 16px layout margin round both)
 -->
-{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row, with the colour in use ringed and Custom… below" caption="The palette picker." %}
+{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row: nine colours in three rows, Neutral last, the colour in use ringed and Custom… below" caption="The palette picker." %}
 
 | Choice | When the theme changes |
 |---|---|

@@ -50,9 +50,9 @@ pub use fold::Bar;
 pub use install::{Install, Problem, candidates};
 pub use scid::{Record, Scid, sc_from_unix_micros, unix_micros_from_sc};
 pub use settings::{Scale, SymbolSettings};
-pub use symbols::{Contract, Entry, FileSymbol, Intraday, Listing, parse};
+pub use symbols::{Contract, Entry, FileSymbol, Intraday, Listing, Style, parse};
 pub use tail::{Appended, StopHandle, Tail};
-pub use time::{civil_from_unix_seconds, unix_seconds_from_civil};
+pub use time::{civil_from_unix_seconds, exchange_year, unix_seconds_from_civil};
 
 #[cfg(test)]
 pub(crate) mod testing {

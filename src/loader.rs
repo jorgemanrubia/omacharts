@@ -901,10 +901,11 @@ enum Outcome {
     /// The provider said no. `bars` is what the cache holds, for the window
     /// if this turns out to be the final answer.
     Failed { error: ProviderError, bars: Vec<Bar> },
-    /// The cached history had been adjusted out from under us and has been
-    /// dropped. The same request, sent again, now asks for everything — and
-    /// is sent again by the queue, which keeps it the provider's gap away
-    /// from this one like any other request.
+    /// The cached history had been adjusted out from under us, or no longer
+    /// joins what the provider serves, and has been dropped. The same
+    /// request, sent again, now asks for everything — and is sent again by
+    /// the queue, which keeps it the provider's gap away from this one like
+    /// any other request.
     StartOver,
 }
 
@@ -926,7 +927,12 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
     // one asks from a few bars before where it ends.
     let since = coverage.map(|c| c.last_ts - OVERLAP * native.seconds());
 
-    match provider.bars(&request.symbol, native, since) {
+    // How far it has got is heard under its name while it runs.
+    let name = omacharts_engine::progress::name(&request.symbol, native);
+    let load = omacharts_engine::progress::begin(&name);
+    let fetched = omacharts_engine::progress::within(Some(load), || provider.bars(&request.symbol, native, since));
+    omacharts_engine::progress::end(&name);
+    match fetched {
         Ok(fresh) if fresh.is_empty() => {
             // Nothing new, which is still an answer. Recording that we asked
             // is what stops a chart on a timer asking again on every tick for
@@ -936,11 +942,19 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
             Outcome::Done(Response::Bars { key, timeframe: native, bars: cached })
         }
         Ok(fresh) => {
-            // If the overlap disagrees, the cached history was adjusted out
-            // from under us and cannot be trusted. Start over.
+            // If the overlap disagrees or is missing, the cached history
+            // cannot be trusted. Start over.
             if !cached.is_empty() && !overlap_agrees(&cached, &fresh) {
                 store.drop_series(&request.key, native);
                 return Outcome::StartOver;
+            }
+            if drawn_short(&request.key, native) {
+                // A stitched root short of a month or a gap just now: shown,
+                // and not kept, so that the next load, after a restart too,
+                // reads it whole.
+                store.drop_series(&request.key, native);
+                let key = request.key.clone();
+                return Outcome::Done(Response::Bars { key, timeframe: native, bars: upserted(cached, &fresh) });
             }
             let merged = store.merge_bars(&request.key, native, &fresh);
             let key = request.key.clone();
@@ -948,6 +962,25 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
         }
         Err(error) => Outcome::Failed { error, bars: cached },
     }
+}
+
+/// Whether the series kept under `key`, `provider:symbol`, was last drawn
+/// short of what it should be: a stitched root with a month that could not
+/// be read, or a roll that could not be measured, just now. It is not kept.
+pub(crate) fn drawn_short(key: &str, timeframe: Timeframe) -> bool {
+    key.split_once(':').is_some_and(|(provider, symbol)| omacharts_engine::continuous::drawn_short(provider, symbol, timeframe))
+}
+
+/// `bars` with `fresh` over them, by time: what the store would merge, in
+/// memory alone.
+fn upserted(mut bars: Vec<Bar>, fresh: &[Bar]) -> Vec<Bar> {
+    for bar in fresh {
+        match bars.binary_search_by_key(&bar.ts, |b| b.ts) {
+            Ok(at) => bars[at] = *bar,
+            Err(at) => bars.insert(at, *bar),
+        }
+    }
+    bars
 }
 
 /// Send one batch of closes and store what came back.
@@ -1120,25 +1153,26 @@ fn failed(request: &Request, bars: Vec<Bar>, failure: FetchFailure) -> Response 
 /// Do the bars we already had still match what the provider just sent for the
 /// same timestamps?
 ///
-/// Only completed bars count. The newest cached bar may have been forming when
-/// we stored it, so it is expected to differ and is excluded.
+/// The answer has to share at least one bar with the cache. A tail fetch asks
+/// from before the newest cached bar, so an answer that shares none started
+/// after the cache, and what happened in between is unknown.
+///
+/// The newest cached bar counts as shared but its prices are not compared: it
+/// may have been forming when we stored it, so they are expected to differ.
 fn overlap_agrees(cached: &[Bar], fresh: &[Bar]) -> bool {
-    let newest_complete = cached.last().map(|b| b.ts).unwrap_or(i64::MIN);
-    let mut compared = 0;
+    let forming = cached.last().map(|b| b.ts).unwrap_or(i64::MIN);
+    let mut shared = false;
     for bar in fresh {
-        if bar.ts >= newest_complete {
-            continue;
-        }
         if let Ok(at) = cached.binary_search_by_key(&bar.ts, |b| b.ts) {
-            compared += 1;
-            if !close(cached[at].close, bar.close) || !close(cached[at].open, bar.open) {
+            shared = true;
+            if bar.ts < forming
+                && (!close(cached[at].close, bar.close) || !close(cached[at].open, bar.open))
+            {
                 return false;
             }
         }
     }
-    // No shared completed bars means nothing to contradict.
-    let _ = compared;
-    true
+    shared
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -1166,6 +1200,40 @@ mod tests {
         assert!(overlap_agrees(&cached, &fresh));
     }
 
+    /// A stitched root loaded while one of its months cannot be read is
+    /// shown short and not kept: after a restart, with every month readable,
+    /// the load reads it whole and the chart is the proper stitch, not the
+    /// short one topped up.
+    #[test]
+    fn a_stitched_root_drawn_short_is_drawn_whole_after_a_restart() {
+        use omacharts_engine::continuous::{fake::Months, Adjustment, Continuous, Spelled};
+        let months = Arc::new(Months { id: "months-restart", ..Months::all() });
+        let stitched = Continuous::shared(months.clone());
+        let daily = Timeframe::days(1);
+        let symbol = Spelled { root: "ES".into(), front: omacharts_engine::continuous::fake::month(4), adjustment: Adjustment::AsTraded }.to_string();
+        let request = Request { speculative: false, key: format!("months-restart:{symbol}"), symbol: symbol.clone(), timeframe: daily };
+        let loaded = |provider: &dyn Provider| match attempt(&request, provider) {
+            Outcome::Done(Response::Bars { bars, .. }) => bars,
+            _ => panic!("not loaded"),
+        };
+        Store::open().unwrap().drop_series(&request.key, daily);
+
+        *months.unreadable.lock().unwrap() = vec![1];
+        let short = loaded(&stitched);
+        assert!(!short.is_empty(), "shown");
+        assert!(Store::open().unwrap().coverage(&request.key, daily).is_none(), "the short stitch kept");
+
+        // A restart: the store is all that is left.
+        Months::restart();
+        *months.unreadable.lock().unwrap() = Vec::new();
+        let after = loaded(&stitched);
+        let whole = stitched.bars(&symbol, daily, None).unwrap();
+        assert_ne!(short, whole);
+        assert_eq!(after, whole, "the short stitch survived the restart");
+        assert_eq!(Store::open().unwrap().load_bars(&request.key, daily), whole, "the whole stitch kept");
+        Store::open().unwrap().drop_series(&request.key, daily);
+    }
+
     #[test]
     fn a_split_adjusted_history_disagrees() {
         let cached = vec![bar(100, 100.0), bar(200, 110.0), bar(300, 120.0)];
@@ -1182,9 +1250,18 @@ mod tests {
     }
 
     #[test]
-    fn no_shared_history_is_not_a_disagreement() {
-        let cached = vec![bar(100, 10.0)];
+    fn an_answer_that_starts_after_the_cache_disagrees() {
+        let cached = vec![bar(100, 10.0), bar(200, 11.0)];
         let fresh = vec![bar(500, 50.0), bar(600, 60.0)];
+        assert!(!overlap_agrees(&cached, &fresh));
+    }
+
+    #[test]
+    fn sharing_only_the_forming_bar_agrees() {
+        // The newest cached bar opened the session, so it is the only one
+        // the overlap sends back.
+        let cached = vec![bar(100, 10.0), bar(200, 11.0)];
+        let fresh = vec![bar(200, 11.5), bar(300, 12.0)];
         assert!(overlap_agrees(&cached, &fresh));
     }
 

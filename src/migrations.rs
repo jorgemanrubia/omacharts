@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(data.as_deref(), Some("18f"));
         let logins: Vec<crate::trading::Login> = serde_json::from_str(&logins.unwrap()).unwrap();
         assert_eq!(logins.len(), 2);
-        assert_eq!((logins[0].id.as_str(), logins[0].name.as_str(), logins[0].broker.as_str()), ("1", "Lucid", "rithmic"));
+        assert_eq!((logins[0].id.as_str(), logins[0].name.as_str(), logins[0].service.as_str()), ("1", "Lucid", "rithmic"));
         assert_eq!((logins[0].user.as_str(), logins[0].value("system"), logins[0].value("gateway")), ("trader", Some("LucidTrading"), Some("wss://x")));
         assert!(!logins[0].signed_out);
         assert_eq!((logins[1].id.as_str(), logins[1].signed_out), ("18f", true));

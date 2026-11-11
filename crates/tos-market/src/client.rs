@@ -880,6 +880,37 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The gateway is dialled over rustls, with the system's roots and ring
+    /// as the provider: what reaches the socket is a TLS ClientHello naming
+    /// the gateway's host. The gateway here is a local socket that reads the
+    /// hello and hangs up, which is a gateway not answering.
+    #[test]
+    fn the_gateway_is_dialled_over_tls() {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().unwrap().port();
+        let gateway = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("the client to dial");
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut hello = vec![0; 2048];
+            let read = socket.read(&mut hello).expect("a ClientHello");
+            hello.truncate(read);
+            hello
+        });
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dialled = open(&format!("wss://localhost:{port}"));
+        assert!(matches!(dialled, Err(Error::Unreachable(_))), "{:?}", dialled.err());
+
+        let hello = gateway.join().unwrap();
+        assert!(hello.len() > 5, "{hello:?}");
+        assert_eq!(hello[0], 0x16, "not a TLS handshake: {hello:?}");
+        assert_eq!(hello[5], 0x01, "not a ClientHello: {hello:?}");
+        assert!(hello.windows(9).any(|w| w == b"localhost"), "no server name in the hello");
+    }
+
     /// Controllable wire: counts writes, and fails them on demand.
     #[derive(Default)]
     struct TestWire {

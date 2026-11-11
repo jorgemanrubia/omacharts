@@ -36,7 +36,7 @@ sections. Each row has:
 |---|---|
 | Ticker and name | The symbol, and the instrument's name under it, cut short when long. |
 | Sparkline | The last 30 daily closes, in the colour of today's move. |
-| Price | The last price, with as many decimals as the instrument needs (two for a stock, five for most currency pairs). A dash until there is one. |
+| Price | The last price, with as many decimals as the instrument needs (two for a stock, five for most currency pairs) and its thousands marked (`81,373.44`). A dash until there is one. |
 | Change | The move since the previous close as a percentage, on a pill in the up or down colour. |
 
 Colours come from the desktop theme, even when the window is on another

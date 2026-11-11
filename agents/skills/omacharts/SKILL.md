@@ -137,9 +137,8 @@ omacharts template indicator set Momentum rsi --period 21
 ```
 
 **Shade the sessions.** Session Times is one indicator holding ranges, each
-shaded behind the bars. New charts get it from the "Default" template with
-the extended hours set back, so changing it there changes every chart on
-it. Add London and a custom lunch hour, then recolour the second range:
+shaded behind the bars. The "Default" template holds it with the extended
+hours set back, so changing it there changes every chart on it. Add London and a custom lunch hour, then recolour the second range:
 
 ```
 omacharts template indicator set Default session_times --add-range london

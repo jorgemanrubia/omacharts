@@ -51,7 +51,7 @@ pub use marks::{AnyPrice, AxisChip, LabelSide, MarkDrag, MarkEvent, MarkLink, Ma
 pub use view::bench;
 pub use view::{CompareLine, Comparing, Readout};
 pub use view::{
-    clamp_thickness, volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover,
+    clamp_thickness, delta_colours, volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover,
     IndicatorEvent, ProfileSpot, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS, POINTER_LAYER,
     PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS,
 };

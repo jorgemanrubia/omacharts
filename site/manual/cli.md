@@ -408,6 +408,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
 | `--indicators on` or `off` | Draws the chart's indicators, or hides them all | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
+| `--legend on` or `off` | Shows the indicator legend, or none of it | [The legend](/manual/indicators/#the-legend) |
 | `--link MODE` | `focus`, `follow`, `pinned` | [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist) |
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
@@ -520,7 +521,7 @@ other states leave them as they are. `config set hollow_up off` and
 charts open with, and remembers nothing to go back to.
 
 The chart defaults (`bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`, `chart_session`, `show_grid`,
-`chart_log_scale`, `chart_header`, `timeframes`) are set with `config set`;
+`chart_log_scale`, `chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
 see [Settings](#settings).
 
 ## Indicators
@@ -548,9 +549,12 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--signal-color C` | A colour | MACD |
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
-| `--anchor P` | `session`, `week`, `month`, `quarter`, `year` | VWAP, volume profile |
+| `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, cumulative delta; `never` only for cumulative delta |
+| `--cvd-style S` | `candles`, `line` | Cumulative delta |
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
+| `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control |
+| `--last-only B` | `on`, `off` | Volume profile: whether it draws only its newest period |
 | `--poc-color C` | A colour | Volume profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
 | `--align A` | `left`, `right` | Volume profile |
@@ -558,10 +562,10 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | `chart` to follow the chart's colouring, or `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` for one of its own | Volume ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
-| `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
+| `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
 | `--band-alpha F` | 0 to 1; 0.16 when not given | VWAP, Bollinger |
 | `--add-range`, `--remove-range`, `--range`, `--name`, `--from`, `--to`, `--zone`, `--shade-alpha` | See [Session Times](#session-times) | Session Times |
@@ -572,7 +576,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--legend B` | `on`, `off`; `on` for a new indicator, `off` for Session Times | Any. Whether the chart's legend names it. It is drawn either way |
 
 A colour is a palette name (`Blue`, `Amber`, `Violet`, `Teal`, `Rose`,
-`Green`, `Orange`, `Cyan`, capitals ignored) or `#rrggbb`. A palette name follows
+`Green`, `Orange`, `Cyan`, `Neutral`, capitals ignored) or `#rrggbb`. A palette name follows
 the theme; a hex does not.
 
 Volume and a volume profile are bars, not lines, so `--width` and `--style`
@@ -873,7 +877,7 @@ returns its measurements. A window must be open; otherwise it exits 6.
 
 ```
 $ omacharts chart measure --from 2026-09-01,650 --to 2026-10-15,700
-+7.69% +50.00; 31 bars, 44d on pos:0 SPY 1D in "Chartbook 1"
++7.69% +50.00; 31 bars, 6w 2d on pos:0 SPY 1D in "Chartbook 1"
   [exit 0]
 ```
 
@@ -1620,7 +1624,7 @@ same.
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution` | Charts › Header › Left | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Charts › Header › Left | [Charts](/manual/charts/) |
 | `chart_header_center` | the same | `title` | Charts › Header › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |

@@ -206,7 +206,8 @@ impl Store {
     /// month is a few hundred kilobytes rather than a month of decoded
     /// minutes. A day with minutes sealed live and not yet folded into its
     /// row comes whole, its tail applied. The floor is the first minute
-    /// stored for `key` at all: the provider's history goes no further.
+    /// stored for `key` at all, or the start of the span known whole it is
+    /// in: the provider's history goes no further.
     pub fn load_ladder_held(&self, key: &str, days: &Days, from_day: i64, to_day: i64) -> Held {
         let mut held = Held::new(0.0);
         let tailed: Vec<i64> = self
@@ -250,7 +251,14 @@ impl Store {
                 |r| r.get(0),
             )
             .ok()
-            .flatten();
+            .flatten()
+            // From where the span it is in was known: nothing traded between
+            // there and the first minute, so a period from before the first
+            // trade — the bar it falls in, say — is known whole all the same.
+            .map(|floor| {
+                let known = spans(&self.conn, key, floor, floor).unwrap_or_default();
+                known.iter().find(|(a, b)| (*a..*b).contains(&floor)).map_or(floor, |(a, _)| (*a).min(floor))
+            });
         held.floor = floor.unwrap_or(i64::MAX);
         held.floor_day = match floor {
             Some(floor) => {
@@ -265,6 +273,33 @@ impl Store {
     /// One trading day of `key`, minutes and all, its tail applied.
     pub fn load_ladder_day(&self, key: &str, day: i64) -> Option<Day> {
         read_day(&self.conn, key, day).ok().flatten()
+    }
+
+    /// Let go of what is stored for root `key` other than under `keep`, the
+    /// month it is read from now: the months it rolled from, never read
+    /// again, and what was kept under the root alone before a root was
+    /// kept by its month. Whether anything went.
+    pub fn forget_other_months(&self, key: &str, keep: &[String]) -> rusqlite::Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        // `key@…` is every key from `key@` up to, not including, `keyA`,
+        // 'A' following '@': a range the primary keys answer.
+        let (low, high) = (format!("{key}@"), format!("{key}A"));
+        let kept = vec!["?"; keep.len().max(1)].join(", ");
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&key, &low, &high];
+        let nothing = String::new();
+        match keep.is_empty() {
+            true => values.push(&nothing),
+            false => values.extend(keep.iter().map(|kept| kept as &dyn rusqlite::ToSql)),
+        }
+        let mut gone = 0;
+        for table in ["ladder_days", "ladder_tail", "ladder_coverage"] {
+            gone += tx.execute(
+                &format!("DELETE FROM {table} WHERE (key = ?1 OR (key >= ?2 AND key < ?3)) AND key NOT IN ({kept})"),
+                values.as_slice(),
+            )?;
+        }
+        tx.commit()?;
+        Ok(gone > 0)
     }
 
     /// Every day stored for `key`, as `(day, minutes)`, oldest first.
@@ -499,6 +534,25 @@ mod tests {
         assert_totals_exact(&back);
     }
 
+    /// The provider asked from the first bar's open, whose first trade came
+    /// minutes later: the ladders are known from where they were asked, so a
+    /// period from that open is drawn from them, not estimated.
+    #[test]
+    fn the_floor_is_where_the_span_known_whole_begins() {
+        let store = Store::memory().unwrap();
+        let days = Days::fixed(0);
+        let minutes = [minute(1_080, 30_000, 2, 1), minute(1_140, 30_001, 1, 1)];
+        store.save_ladder_history(KEY, TICK, &days, 0, 3_600, &minutes).unwrap();
+        let held = store.load_ladder_held(KEY, &days, 0, 1);
+        assert_eq!(held.floor, 0, "not the first trade's minute, 1080");
+        assert_eq!(held.between(0, 3_600).map(|l| l.sides.volume()), Some(5));
+
+        // Minutes sealed live with nothing known before them start where they do.
+        let live = Store::memory().unwrap();
+        live.append_ladder_minute(KEY, TICK, 0, &minute(600, 30_000, 1, 1), None).unwrap();
+        assert_eq!(live.load_ladder_held(KEY, &days, 0, 1).floor, 600);
+    }
+
     /// A disconnect is a hole the loader fills, and the provider's minutes
     /// for it replace the partial ones the feed built either side.
     #[test]
@@ -586,6 +640,26 @@ mod tests {
         assert_eq!(compacted, live);
         assert_eq!(compacted.days[0].minutes.len(), 1440);
         assert_totals_exact(&compacted);
+    }
+
+    /// A root kept by the month it is read from lets the months it rolled
+    /// from go, and what was kept under the root alone, and nothing else.
+    #[test]
+    fn a_root_lets_the_months_it_rolled_from_go() {
+        let store = Store::memory().unwrap();
+        let days = Days::fixed(0);
+        let mut series = Series::new(TICK);
+        series.insert(&days, minute(60, 30_000, 9, 9));
+        let keys = ["sierra:ES", "sierra:ES@ESZ26", "sierra:ES@ESH27", "sierra:ESM27", "sierra:ESX"];
+        for key in keys {
+            store.save_ladder_days(key, TICK, &series.days).unwrap();
+            store.cover_ladders(key, 0, 120).unwrap();
+        }
+        assert!(store.forget_other_months("sierra:ES", &["sierra:ES@ESH27".into()]).unwrap());
+        let kept: Vec<&str> = keys.into_iter().filter(|key| !store.ladder_days(key).is_empty()).collect();
+        assert_eq!(kept, ["sierra:ES@ESH27", "sierra:ESM27", "sierra:ESX"], "another symbol's keys are its own");
+        assert!(store.ladder_coverage("sierra:ES@ESZ26").is_empty());
+        assert!(!store.forget_other_months("sierra:ES", &["sierra:ES@ESH27".into()]).unwrap(), "once");
     }
 
     #[test]
