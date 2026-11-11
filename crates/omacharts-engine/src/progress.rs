@@ -121,8 +121,20 @@ pub fn measuring() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// What a load under `name` says, read again while another test's
+    /// load starting or ending holds the loads for a moment.
+    pub(crate) fn settled(name: &str) -> f64 {
+        for _ in 0..100_000 {
+            if let Some(fraction) = of(name) {
+                return fraction;
+            }
+            std::thread::yield_now();
+        }
+        panic!("{name} says nothing");
+    }
 
     #[test]
     fn a_load_nothing_reports_on_is_unmeasured() {
@@ -142,11 +154,11 @@ mod tests {
                 part(f64::from(month) / 4.0, 0.25, || {
                     for step in 1..=4 {
                         advance(f64::from(step) / 4.0);
-                        seen.push(of("parts|1h").unwrap());
+                        seen.push(settled("parts|1h"));
                     }
                     // A piece read again says less, and is not heard.
                     advance(0.1);
-                    seen.push(of("parts|1h").unwrap());
+                    seen.push(settled("parts|1h"));
                 });
             }
         });
@@ -174,7 +186,7 @@ mod tests {
             }
         }
         worker.join().unwrap();
-        assert_eq!(of("threads|1h"), Some(1.0));
+        assert_eq!(settled("threads|1h"), 1.0);
         end("threads|1h");
     }
 }

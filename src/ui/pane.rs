@@ -357,7 +357,11 @@ impl ChartPane {
             let Some(pane) = pane.upgrade() else { return gtk::glib::ControlFlow::Break };
             let current = pane.load.borrow().as_deref() == Some(name.as_str());
             if current && pane.view.loading() {
-                pane.view.set_progress(omacharts_engine::progress::of(&name));
+                // Nothing read, for a moment while another load starts or
+                // ends, is not a load that stopped saying: the bar stays.
+                if let Some(fraction) = omacharts_engine::progress::of(&name) {
+                    pane.view.set_progress(Some(fraction));
+                }
                 return gtk::glib::ControlFlow::Continue;
             }
             if current {

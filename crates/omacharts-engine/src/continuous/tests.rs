@@ -610,7 +610,7 @@ fn a_stitched_load_s_progress_only_grows_across_its_months() {
     assert!(seen.len() >= 3, "{seen:?}");
     assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "went back: {seen:?}");
     assert!(seen[0] < 0.3, "the front month is read first, and says so: {seen:?}");
-    assert_eq!(crate::progress::of(&name), Some(1.0));
+    assert_eq!(crate::progress::tests::settled(&name), 1.0);
     crate::progress::end(&name);
 
     let quiet = Years::new(now() - 200 * 86_400);
