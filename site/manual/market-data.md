@@ -5,7 +5,9 @@ section: configuration
 nav_order: 26
 ---
 
-A feed is where charts, the sidebar and the Omarchy plugin get their prices. One feed serves the whole app. Choose it in Preferences › Data › **Data feed**, and every open chart switches to it.
+A feed is where charts, the sidebar and the Omarchy plugin get their prices. Preferences › Market data › **Data feeds** lists the feeds you have added, numbered in the order they are tried. A chart comes from the first feed that has its symbol and is signed in.
+
+To change the order, point at a feed's number and drag the row by the handle that takes its place, or press <kbd>Alt</kbd>+<kbd>↑</kbd> or <kbd>Alt</kbd>+<kbd>↓</kbd> on the row. Open charts follow the new order at once. `omacharts provider order` does the same from a terminal ([Market data](/manual/cli/#market-data)).
 
 ## Yahoo Finance
 
@@ -22,7 +24,7 @@ Experimental. A change on Schwab's side can stop the feed working until Omachart
 
 thinkorswim shows live prices from your Schwab account. It needs Chromium, Chrome, Brave or Edge on this machine.
 
-It carries US stocks and ETFs, some indexes, and futures (`ES` is charted as `/ES`), but not currencies, crypto or listings abroad. A chart of one of those says *No data feed in Preferences → Data charts this symbol.* Intraday resolutions reach about twenty sessions back, daily bars as far as the account has.
+It carries US stocks and ETFs, some indexes, and futures (`ES` is charted as `/ES`), but not currencies, crypto or listings abroad. A chart of one of those says *No data feed in Preferences → Market data charts this symbol.* Intraday resolutions reach about twenty sessions back, daily bars as far as the account has.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -33,11 +35,11 @@ state:
 capture: bin/headless-window shot /tmp/unserved.png
 crop: 450,721,1100,140
 -->
-![A chart's message: No data feed in Preferences → Data charts this symbol.](/assets/manual/market-data/cannot-chart.png)
+![A chart's message: No data feed in Preferences → Market data charts this symbol.](/assets/manual/market-data/cannot-chart.png)
 
 ### Signing in
 
-In Preferences › Data, tick **thinkorswim** and press **Sign in…** in the group below. A browser window opens at thinkorswim, where you type your password and one-time code. Omacharts reads prices only and cannot place an order.
+In Preferences › Market data, tick **thinkorswim** and press **Sign in…** in the group below. A browser window opens at thinkorswim, where you type your password and one-time code. Omacharts reads prices only and cannot place an order.
 
 The row reports what the browser is doing, then becomes **Sign out**. Without one of those browsers the button is greyed out and says what to install.
 
@@ -52,7 +54,7 @@ state:
 capture: bin/headless-window shot /tmp/tos.png
 crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/market-data/data-feed-thinkorswim.png" alt="Preferences on Data with thinkorswim chosen and a Sign in… button below" caption="Preferences › Data with thinkorswim chosen and nobody signed in." %}
+{% include figure.html src="/assets/manual/market-data/data-feed-thinkorswim.png" alt="Preferences on Market data with thinkorswim chosen and a Sign in… button below" caption="Preferences › Market data with thinkorswim chosen and nobody signed in." %}
 
 Until someone signs in, a chart on thinkorswim says *This data feed is not signed in.* and points to Preferences.
 
@@ -66,7 +68,7 @@ state:
 capture: bin/headless-window shot /tmp/not-signed-in.png
 crop: 440,721,1180,140
 -->
-![A chart's message: This data feed is not signed in. Open Preferences → Data.](/assets/manual/market-data/not-signed-in.png)
+![A chart's message: This data feed is not signed in. Open Preferences → Market data.](/assets/manual/market-data/not-signed-in.png)
 
 ### Expired sessions
 

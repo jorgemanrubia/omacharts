@@ -1815,10 +1815,11 @@ impl Window {
         // chart's series does.
         pane.view.set_mark_tick(target.tick);
         let key = target.account.key();
-        let theme = self.theming.borrow().theme();
-        // The theme's trading colours, with only the chart's up and down
-        // switch turning profit and loss round; never its candles' colours.
-        let look = omacharts_engine::theme_trading(&theme, pane.swapped.get());
+        // The trading colours on the theme and bars this chart wears, with
+        // profit and loss in the bars' own up and down: red-up bars turn
+        // them round.
+        let worn = self.look_of(pane);
+        let look = omacharts_engine::theme_trading(&self.theme_of(&worn), self.theming.borrow().trading_look(), &worn.bars);
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();
@@ -2168,70 +2169,42 @@ pub(super) mod tests {
     }
 
     /// Every trading setting is in Preferences with no login, ready for
-    /// the first: the Theme page's Trading colours and lines on a theme of
-    /// one's own, the header's P&L, Buy Sell and Quantity in its Right, and
-    /// the Trading page's own groups.
+    /// the first: the Trading page's colours and lines of orders and
+    /// positions, the header's P&L, Buy Sell and Quantity in its picture on
+    /// Overlays, and the Trading page's own groups.
     #[test]
     fn preferences_show_every_trading_setting_without_a_login() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             assert!(!window.trading.borrow().trades());
-            {
-                let mut theming = window.theming.borrow_mut();
-                let mine = theming.theme().duplicate("custom-mine", "Mine");
-                store.save_theme(&mine);
-                theming.reload_custom(&store);
-                theming.select_theme("custom-mine", &store);
+            let words = preferences_words(&window);
+            for group in ["Orders and positions", "Header", "Order entry"] {
+                assert!(words.groups.iter().any(|title| title == group), "no {group} group in {:?}", words.groups);
             }
-            window.open_preferences_at(None);
-            let dialog = window.window.visible_dialog().expect("the preferences");
-            let widgets = |root: gtk::Widget| {
-                let (mut found, mut stack) = (Vec::new(), vec![root]);
-                while let Some(widget) = stack.pop() {
-                    let mut child = widget.first_child();
-                    while let Some(next) = child {
-                        child = next.next_sibling();
-                        stack.push(next);
-                    }
-                    found.push(widget);
-                }
-                found
-            };
-            let sidebar = widgets(dialog.clone().upcast())
-                .into_iter()
-                .find_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
-                .expect("the sidebar");
-            // Each section is put in the dialog when it is picked.
-            let (mut groups, mut rows) = (Vec::new(), Vec::new());
-            let mut index = 0;
-            while let Some(section) = sidebar.row_at_index(index) {
-                sidebar.select_row(Some(&section));
-                for widget in widgets(dialog.clone().upcast()) {
-                    if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
-                        groups.push(group.title().to_string());
-                    }
-                    if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
-                        rows.push(row.title().to_string());
-                    }
-                }
-                index += 1;
+            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "Order labels"] {
+                assert!(words.rows.iter().any(|title| title == row), "no {row} row in {:?}", words.rows);
             }
-            for group in ["Trading", "Right", "Order entry", "Chart"] {
-                assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
+            for part in ["P&L", "Buy Sell", "Quantity"] {
+                assert!(words.parts.iter().any(|name| name == part), "no {part} in the header's {:?}", words.parts);
             }
-            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Order labels"] {
-                assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
-            }
-            dialog.force_close();
         });
     }
 
-    /// The sidebar's sections, every group's title and every row's title in
-    /// the Preferences `window` opens.
-    fn preferences_words(window: &Rc<Window>) -> (Vec<String>, Vec<String>, Vec<String>) {
+    /// What the Preferences a window opens say: the sidebar's sections,
+    /// every group's and every row's title, and the parts the header's
+    /// picture shows or offers.
+    struct PreferencesWords {
+        sections: Vec<String>,
+        groups: Vec<String>,
+        rows: Vec<String>,
+        parts: Vec<String>,
+    }
+
+    /// The words of the Preferences `window` opens, closed again after.
+    fn preferences_words(window: &Rc<Window>) -> PreferencesWords {
         window.open_preferences_at(None);
-        let dialog = window.window.visible_dialog().expect("the preferences");
+        let dialog = preferences_of(window);
         let widgets = |root: gtk::Widget| {
             let (mut found, mut stack) = (Vec::new(), vec![root]);
             while let Some(widget) = stack.pop() {
@@ -2244,31 +2217,40 @@ pub(super) mod tests {
             }
             found
         };
-        let sidebar = widgets(dialog.clone().upcast())
+        // The sidebar is two lists, the app's sections and the charts'.
+        let lists: Vec<gtk::ListBox> = widgets(dialog.clone().upcast())
             .into_iter()
-            .find_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
-            .expect("the sidebar");
-        let (mut sections, mut groups, mut rows) = (Vec::new(), Vec::new(), Vec::new());
-        let mut index = 0;
-        while let Some(section) = sidebar.row_at_index(index) {
+            .filter_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
+            .collect();
+        assert!(!lists.is_empty(), "no sidebar");
+        let mut words = PreferencesWords { sections: Vec::new(), groups: Vec::new(), rows: Vec::new(), parts: Vec::new() };
+        let sections = lists.iter().flat_map(|list| (0..).map_while(|index| list.row_at_index(index)).map(move |row| (list, row)));
+        for (sidebar, section) in sections {
             for widget in widgets(section.clone().upcast()) {
                 if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-                    sections.push(label.label().to_string());
+                    words.sections.push(label.label().to_string());
                 }
             }
             sidebar.select_row(Some(&section));
             for widget in widgets(dialog.clone().upcast()) {
                 if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
-                    groups.push(group.title().to_string());
+                    words.groups.push(group.title().to_string());
                 }
                 if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
-                    rows.push(row.title().to_string());
+                    words.rows.push(row.title().to_string());
+                }
+                // A part in the picture is named by its tooltip, one under
+                // it, waiting to be put in, by its caption.
+                if widget.has_css_class("header-chip") {
+                    words.parts.extend(widget.tooltip_text().map(|name| name.to_string()));
+                }
+                if let Some(name) = widget.downcast_ref::<gtk::Label>().filter(|label| label.has_css_class("spare-name")) {
+                    words.parts.push(name.label().to_string());
                 }
             }
-            index += 1;
         }
-        dialog.force_close();
-        (sections, groups, rows)
+        dialog.close();
+        words
     }
 
     /// Trading switched off, as it ships, is the app before trading even
@@ -2284,13 +2266,6 @@ pub(super) mod tests {
             let kept = Kept::default();
             let id = trading::add_login(&store, &kept, &typed()).expect("a login");
             let window = bare_window(&store);
-            {
-                let mut theming = window.theming.borrow_mut();
-                let mine = theming.theme().duplicate("custom-mine", "Mine");
-                store.save_theme(&mine);
-                theming.reload_custom(&store);
-                theming.select_theme("custom-mine", &store);
-            }
             let off = |window: &Rc<Window>| {
                 !window.trading.borrow().trades()
                     && window.trade.toggle.borrow().is_none()
@@ -2302,14 +2277,18 @@ pub(super) mod tests {
             };
             assert!(off(&window), "trading built with the flag off");
             assert!(window.order_section(10.0).is_none(), "orders in the chart menu");
-            let (sections, groups, rows) = preferences_words(&window);
-            assert_eq!(sections, ["General", "Charts", "Theme", "Data"]);
-            for group in ["Trading", "Trading services", "Order entry"] {
-                assert!(!groups.iter().any(|title| title == group), "a {group} group in {groups:?}");
+            let words = preferences_words(&window);
+            assert!(!words.sections.iter().any(|section| section == "Trading"), "a Trading section in {:?}", words.sections);
+            for group in ["Orders and positions", "Trading services", "Order entry"] {
+                assert!(!words.groups.iter().any(|title| title == group), "a {group} group in {:?}", words.groups);
             }
-            for row in ["Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Account", "Order labels"] {
-                assert!(!rows.iter().any(|title| title == row), "a {row} row in {rows:?}");
+            for row in ["Profit", "Loss", "Order labels"] {
+                assert!(!words.rows.iter().any(|title| title == row), "a {row} row in {:?}", words.rows);
             }
+            for part in ["P&L", "Buy Sell", "Quantity", "Account"] {
+                assert!(!words.parts.iter().any(|name| name == part), "{part} in the header's {:?}", words.parts);
+            }
+            assert!(words.parts.iter().any(|name| name == "Symbol"), "no header picture to look in");
 
             let charts = |window: &Rc<Window>| {
                 window.panes.borrow().iter().map(|pane| (pane.id, pane.instrument.borrow().clone())).collect::<Vec<_>>()
@@ -2324,8 +2303,8 @@ pub(super) mod tests {
             assert!(window.desk.opening(&id) || window.desk.live(&id), "the saved login is not signing in");
             assert_eq!(charts(&window), before, "the charts were rebuilt");
             assert_eq!(window.focused_pane().id, focused);
-            let (sections, _, _) = preferences_words(&window);
-            assert_eq!(sections.last().map(String::as_str), Some("Trading"));
+            let sections = preferences_words(&window).sections;
+            assert!(sections.iter().any(|section| section == "Trading"), "no Trading section in {sections:?}");
 
             crate::features::set(&store, crate::features::Feature::Trading, false);
             window.adopt_features();
@@ -2497,7 +2476,7 @@ pub(super) mod tests {
     /// into the chart's settings: the chart's menu, only then.
     #[test]
     fn the_chart_menu_opens_the_settings_only_when_the_gear_is_gone() {
-        use crate::header::{Part, Section};
+        use crate::header::Part;
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
@@ -2506,9 +2485,9 @@ pub(super) mod tests {
             };
             assert!(!settings(&window), "offered twice: the gear is in the header");
             let mut header = crate::header::load(&store);
-            header.set(Section::Right, vec![Part::Maximize, Part::Link]);
+            header.remove(Part::Settings);
             crate::header::save(&store, &header);
-            window.apply_header();
+            window.adopt_look();
             assert!(settings(&window));
         });
     }
@@ -3458,6 +3437,31 @@ pub(super) mod tests {
         });
     }
 
+    /// Profit and loss on a chart wear that chart's bars: one with red-up
+    /// bars of its own shows a gain in its own up colour, not in every
+    /// chart's.
+    #[test]
+    fn a_charts_own_bars_colour_its_profit_and_loss() {
+        crate::ui::on_gtk(|| {
+            use crate::chart_look::LookEdit;
+            use omacharts_engine::BarLook;
+            let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
+            *session.market.lock().unwrap() = Some(7_622.25);
+            window.mark_to_market();
+            let held = || {
+                let marks = pane.view.price_marks();
+                marks.into_iter().find(|mark| mark.id == super::super::marks::POSITION).map(|mark| mark.colour)
+            };
+            let theme = window.theme_of(&window.look_of(&pane));
+            assert_eq!(held(), Some(BarLook::default().scheme(&theme).up), "a gain in every chart's up");
+
+            let red_up = BarLook::red_up();
+            window.change_look(LookEdit::Colour(omacharts_engine::Direction::Up, red_up.up.clone()), false);
+            window.change_look(LookEdit::Colour(omacharts_engine::Direction::Down, red_up.down.clone()), false);
+            assert_eq!(held(), Some(red_up.scheme(&theme).up), "a gain in the chart's own up");
+        });
+    }
+
     /// Shown in R, every P&L on the chart is in R: the header's day, the
     /// position's open P&L on its line, an exit's on its mark and the
     /// Current position part, in the same profit and loss colours. The
@@ -3681,6 +3685,14 @@ pub(super) mod tests {
         });
     }
 
+    /// The Preferences window open over `window`.
+    fn preferences_of(window: &Rc<Window>) -> adw::Window {
+        crate::ui::form_window::over(&window.window)
+            .into_iter()
+            .find(|form| form.title().as_deref() == Some("Preferences"))
+            .expect("the preferences")
+    }
+
     /// The titles of every preferences group under `widget`.
     fn group_titles(widget: &gtk::Widget) -> Vec<String> {
         let mut found = Vec::new();
@@ -3695,34 +3707,33 @@ pub(super) mod tests {
         found
     }
 
-    /// The Theme page of a theme of one's own has its Trading group with
-    /// or without a login, and keeps it while one is added and removed.
+    /// The Trading page has its colours and lines of orders and positions
+    /// with or without a login, and keeps them last while one is added and
+    /// removed.
     #[test]
-    fn the_theme_page_has_its_trading_group_with_or_without_a_login() {
+    fn the_trading_page_has_its_look_with_or_without_a_login() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            let mut mine = omacharts_engine::theme::builtin_themes().remove(0);
-            mine.id = "custom-test".into();
-            mine.name = "Mine".into();
-            mine.source = omacharts_engine::Source::Custom;
-            store.save_theme(&mine);
-            store.set_setting(crate::theming::SETTING_THEME, "custom-test");
             let window = window(&store);
-            crate::ui::preferences::open_next_at_theme();
-            window.open_preferences_at(None);
-            let dialog = window.window.visible_dialog().expect("the preferences");
-            let titles = || group_titles(dialog.upcast_ref());
-            assert!(titles().iter().any(|title| title == "Bars"), "an editable theme: {:?}", titles());
-            assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with no login");
+            window.open_preferences_at(Some(crate::ui::preferences::TRADING));
+            let dialog = preferences_of(&window);
+            // Below the accounts, which are drawn again as a login comes and goes.
+            let below = || {
+                let titles = group_titles(dialog.upcast_ref());
+                let at = |name: &str| titles.iter().position(|title| title == name);
+                matches!((at("Trading services"), at("Orders and positions")), (Some(a), Some(b)) if a < b)
+            };
+            assert!(below(), "no look with no login: {:?}", group_titles(dialog.upcast_ref()));
 
             let kept = Kept::default();
             let id = trading::add_login(&store, &kept, &typed()).expect("a login");
             window.desk.tell();
-            assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with a login");
+            assert!(below(), "no look with a login: {:?}", group_titles(dialog.upcast_ref()));
 
             trading::remove_login(&store, &kept, &id, true).expect("removed");
             window.desk.tell();
-            assert!(titles().iter().any(|title| title == "Trading"), "Trading gone with the last login");
+            assert!(below(), "the look gone with the last login: {:?}", group_titles(dialog.upcast_ref()));
+            dialog.close();
         });
     }
 
@@ -4354,7 +4365,7 @@ pub(super) mod tests {
         });
     }
 
-    /// Sierra Chart added on the Data page and set up there: the chart of
+    /// Sierra Chart added on the Market data page and set up there: the chart of
     /// ES is on it at once.
     #[test]
     fn sierra_added_on_the_data_page_takes_the_chart_at_once() {
@@ -4872,23 +4883,26 @@ pub(super) mod tests {
         found
     }
 
-    /// The titles of the chart settings' pages, and whether a Trading
-    /// symbol row is among their rows, the dialog closed after.
+    /// The chart settings' sections down the sidebar, by their ids, and
+    /// whether a Trading symbol row is among their rows, the dialog closed
+    /// after.
     fn chart_settings_offer(window: &Rc<Window>) -> (Vec<String>, bool) {
         crate::ui::chart_settings::ChartSettings::present(window);
-        let dialog = window.window.visible_dialog().expect("the chart's settings");
+        let dialog = crate::ui::form_window::open(crate::ui::chart_settings::KIND).expect("the chart's settings");
         let widgets = widgets_under(dialog.clone().upcast());
-        let pages: Vec<String> = widgets
+        let sections: Vec<String> = widgets
             .iter()
-            .filter_map(|widget| widget.downcast_ref::<adw::PreferencesPage>().map(|page| page.title().to_string()))
+            .filter_map(|widget| widget.downcast_ref::<gtk::ListBoxRow>())
+            .filter(|row| row.parent().is_some_and(|list| list.has_css_class("navigation-sidebar")))
+            .map(|row| row.widget_name().to_string())
             .collect();
         let row = widgets.iter().any(|widget| {
             widget
                 .downcast_ref::<adw::ActionRow>()
                 .is_some_and(|row| row.title() == crate::ui::chart_settings::TRADING_SYMBOL_LABEL)
         });
-        dialog.force_close();
-        (pages, row)
+        dialog.close();
+        (sections, row)
     }
 
     /// The trading symbol is picked over the chart settings it is asked
@@ -4902,7 +4916,11 @@ pub(super) mod tests {
             let pane = window.focused_pane();
             window.show_in(&pane, window.index.find("ES", None).expect("ES"));
             crate::ui::chart_settings::ChartSettings::present(&window);
-            let dialog = window.window.visible_dialog().expect("the chart's settings");
+            let dialog = crate::ui::form_window::open(crate::ui::chart_settings::KIND).expect("the chart's settings");
+            // A popup hangs only from a window the compositor has shown and
+            // given the keyboard, as a click on its row would have.
+            dialog.present();
+            assert!(settle(&window, || dialog.is_active()), "the chart's settings never took the keyboard");
             window.find_trading_symbol(pane.id);
             let frame = window.search.frame();
             let parent = frame.popover.parent().expect("hung from something");
@@ -4910,7 +4928,7 @@ pub(super) mod tests {
             frame.entry.set_text("MES");
             assert!(settle(&window, || window.search.listed().first().map(String::as_str) == Some("MES")), "{:?}", window.search.listed());
             frame.popover.popdown();
-            dialog.force_close();
+            dialog.close();
         });
     }
 
@@ -4975,8 +4993,8 @@ pub(super) mod tests {
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
-            let (pages, row) = chart_settings_offer(&window);
-            assert!(pages.contains(&"Trading".to_string()) && row, "{pages:?}");
+            let (sections, row) = chart_settings_offer(&window);
+            assert!(sections.contains(&"trading".to_string()) && row, "{sections:?}");
             let mes = window.index.find("MES", None).expect("MES in the curated half");
             window.set_trading_symbol(pane.id, Some(mes));
             window.save_workspace();
@@ -4988,8 +5006,8 @@ pub(super) mod tests {
             assert_eq!(pane.trading_symbol.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("MES"));
             assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
             assert_eq!(pane.traded().map(|i| i.symbol), Some("ES".into()));
-            let (pages, row) = chart_settings_offer(&off);
-            assert!(!pages.contains(&"Trading".to_string()) && !row, "{pages:?}");
+            let (sections, row) = chart_settings_offer(&off);
+            assert!(!sections.contains(&"trading".to_string()) && !row, "{sections:?}");
             off.save_workspace();
 
             let on = self::window(&store);

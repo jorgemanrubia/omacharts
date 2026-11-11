@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
-use omacharts_engine::{Bar, Configurations, Drawing, Indicator, Theme, Timeframe};
+use omacharts_engine::{Bar, Configurations, Drawing, Indicator, Timeframe};
 
 /// Where the drawing configurations live, as one JSON value.
 pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
@@ -280,12 +280,12 @@ impl Store {
 
     // -- settings ----------------------------------------------------------
 
+    /// The statement is prepared once per connection and kept: a launch reads
+    /// a dozen rows for the bars' look alone, and preparing the same SQL for
+    /// each was most of what loading the theme cost.
     pub fn setting(&self, key: &str) -> Option<String> {
-        self.conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
-            .optional()
-            .ok()
-            .flatten()
+        let mut stmt = self.conn.prepare_cached("SELECT value FROM settings WHERE key = ?1").ok()?;
+        stmt.query_row(params![key], |r| r.get(0)).optional().ok().flatten()
     }
 
     /// Whether a setting has been written at all, without reading it.
@@ -1183,48 +1183,6 @@ impl Store {
             self.set_setting(SETTING_DRAWING_CONFIGURATIONS, &json);
         }
     }
-
-    // -- saved themes ------------------------------------------------------
-
-    pub fn custom_themes(&self) -> Vec<Theme> {
-        self.json_rows("SELECT json FROM custom_themes ORDER BY id")
-    }
-
-    pub fn save_theme(&self, theme: &Theme) {
-        if let Ok(json) = serde_json::to_string(theme) {
-            let _ = self.conn.execute(
-                "INSERT INTO custom_themes (id, json) VALUES (?1, ?2)
-                 ON CONFLICT(id) DO UPDATE SET json = excluded.json",
-                params![theme.id, json],
-            );
-        }
-    }
-
-    pub fn delete_theme(&self, id: &str) {
-        let _ = self.conn.execute("DELETE FROM custom_themes WHERE id = ?1", params![id]);
-    }
-
-    /// A bar scheme somebody saved before candle colours belonged to themes,
-    /// by id. Read once, to carry the colours of the one in use into a theme.
-    pub fn legacy_bar_scheme(&self, id: &str) -> Option<omacharts_engine::BarScheme> {
-        self.json_rows::<omacharts_engine::BarScheme>("SELECT json FROM custom_bar_schemes")
-            .into_iter()
-            .find(|scheme| scheme.id == id)
-    }
-
-    /// A row of JSON that fails to parse is skipped rather than fatal: a theme
-    /// saved by a newer version must not stop the app opening.
-    fn json_rows<T: serde::de::DeserializeOwned>(&self, sql: &str) -> Vec<T> {
-        let Ok(mut stmt) = self.conn.prepare(sql) else {
-            return Vec::new();
-        };
-        let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
-            return Vec::new();
-        };
-        rows.filter_map(Result::ok)
-            .filter_map(|json| serde_json::from_str(&json).ok())
-            .collect()
-    }
 }
 
 /// An identifier as SQL, for a table or column name read out of the schema.
@@ -1415,7 +1373,7 @@ mod tests {
     fn clearing_market_data_keeps_settings_and_themes() {
         let store = Store::memory().unwrap();
         store.set_setting("theme", "midnight");
-        store.save_theme(&omacharts_engine::theme::builtin_themes()[0].duplicate("mine", "Mine"));
+        store.conn.execute("INSERT INTO custom_themes (id, json) VALUES ('mine', '{}')", []).unwrap();
         store.write_bars("k", Timeframe::days(1), &[bar(100, 1.0)]);
         assert!(store.cache_bytes() > 0);
 
@@ -1424,7 +1382,8 @@ mod tests {
         assert_eq!(store.cache_bytes(), 0);
         assert_eq!(store.cached_series(), 0);
         assert_eq!(store.setting("theme").as_deref(), Some("midnight"));
-        assert_eq!(store.custom_themes().len(), 1);
+        let themes: i64 = store.conn.query_row("SELECT COUNT(*) FROM custom_themes", [], |r| r.get(0)).unwrap();
+        assert_eq!(themes, 1);
     }
 
     #[test]
@@ -2161,16 +2120,6 @@ mod tests {
         assert!(store.setting_bool("auto", true));
         store.set_setting_bool("auto", false);
         assert!(!store.setting_bool("auto", true));
-    }
-
-    #[test]
-    fn saved_themes_round_trip_and_delete() {
-        let store = Store::memory().unwrap();
-        let mine = omacharts_engine::theme::builtin_themes()[0].duplicate("mine", "Mine");
-        store.save_theme(&mine);
-        assert_eq!(store.custom_themes(), vec![mine.clone()]);
-        store.delete_theme("mine");
-        assert!(store.custom_themes().is_empty());
     }
 
     #[test]

@@ -108,7 +108,7 @@ From anywhere:
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> | Shows or hides the gridlines | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Hides every drawing, or shows them again | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides every indicator, or shows them again | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
-| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides the bars, or shows them again in the style they had | [Hiding the bars](/manual/charts/#hiding-the-bars) |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides the focused chart's bars, or shows them again | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | <kbd>F2</kbd> | With no drawing selected, edits the chart title: in the header when it shows the chart title, otherwise in the **Chart title** dialog. With a drawing selected, F2 is the drawing's (below) | [Chart titles](/manual/charts/#chart-titles) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Chart template N, in the order they are listed | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No chart template | [Chart templates](/manual/chart-templates/) |
@@ -198,9 +198,10 @@ A click elsewhere keeps what was typed.
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes the dialog with the button in its corner: **Create** in New chartbook, **Add** for an indicator, **Done** in a drawing's properties and in a tool's configurations. In the symbol search and the list of indicators, takes the highlighted row. In **Go to**, goes to what you typed, from anywhere in the card | [The window](/manual/window/) |
 | <kbd>Enter</kbd> | In a search box, takes the highlighted row | [The window](/manual/window/) |
 | <kbd>↑</kbd> <kbd>↓</kbd> | In a search box, moves the highlight while the keyboard stays in the box | [Symbols](/manual/symbols/) |
-| <kbd>Esc</kbd> | Closes the dialog. In Preferences, goes back a page first | [The window](/manual/window/) |
-| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Switches pages: **Chart** and **Indicators** in Chart settings, **General** and **Text** in a drawing's properties | [Chart settings](/manual/chart-settings/), [Drawings](/manual/drawings/) |
+| <kbd>Esc</kbd> | Closes the dialog, Preferences or Chart settings. Where a page is open over another, goes back a page first | [The window](/manual/window/) |
+| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the sections of Chart settings, and between **General** and **Text** in a drawing's properties | [Chart settings](/manual/chart-settings/), [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | In a drawing's properties, applies configuration N | [Drawings](/manual/drawings/) |
+| <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | In Preferences › Market data, moves the focused data feed up or down the order | [Market data feeds](/manual/market-data/) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Change resolution**, sets the resolution, or closes it | [Charts](/manual/charts/#choosing-a-resolution) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Go to**, goes to what you typed, or closes it | [Charts](/manual/charts/#go-to) |
 | <kbd>Space</kbd> / <kbd>↓</kbd> | In **Go to**, drops the list under the box. <kbd>Space</kbd> only while the box is empty | [Charts](/manual/charts/#go-to) |
@@ -233,7 +234,7 @@ On a chart:
 | Click the symbol in the header | The symbol search | [Symbols](/manual/symbols/) |
 | Click the resolution in the header | The list of resolutions | [Charts](/manual/charts/) |
 | Click the chart title in the header | Edits the chart title in place | [Chart titles](/manual/charts/#chart-titles) |
-| Right-click the header | **Edit header…** | [Charts](/manual/charts/#the-header) |
+| Right-click the header | **Edit header…**. An empty header has nothing to right-click: edit it in Preferences › Overlays | [Charts](/manual/charts/#the-header) |
 | Right-click the resolution strip | **Edit resolutions…**, **Edit header…** | [Charts](/manual/charts/) |
 | Double-click an indicator's name in the legend | Its settings. The eye, gear and bin beside it hide it, open its settings, or remove it | [Indicators](/manual/indicators/) |
 | The gear, top-right | Chart settings | [Chart settings](/manual/chart-settings/) |

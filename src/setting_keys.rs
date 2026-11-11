@@ -70,11 +70,9 @@ const KEYS: &[(&str, Kind)] = &[
 #[cfg(test)]
 const SHARED: &[&str] = &[
     "theme",
-    "bar_scheme",
-    "swap_colours",
-    "hollow_up",
-    "ohlc_thickness",
-    "coloured_bar_scheme",
+    // How orders and positions are drawn: a trader's colours, the same on
+    // every machine they trade from.
+    "trading_look",
     "workspace",
     "timeframes",
     "indicators",
@@ -92,14 +90,24 @@ const SHARED: &[&str] = &[
     "pnl_r_amount",
     "sync_crosshair",
     "drawing_configurations",
-    "screenshot_save_file",
     "watchlist_columns",
     "watchlist_sort_",
     "watchlist_link_",
     "bar_style",
+    "bar_up",
+    "bar_down",
+    "bar_line_low",
+    "bar_line_high",
+    "bar_up_hollow",
+    "bar_down_hollow",
+    "bar_up_border",
+    "bar_down_border",
+    "bar_up_thickness",
+    "bar_down_thickness",
     "chart_session",
     "chart_continuous",
     "show_grid",
+    "price_line",
     "chart_log_scale",
     "chart_shows_drawings",
     "chart_sends_drawings",
@@ -107,8 +115,6 @@ const SHARED: &[&str] = &[
     "chart_template",
     "chart_templates",
     "chart_header",
-    "chart_header_center",
-    "chart_header_right",
     "chartbook_templates",
     "chart_time_zone",
     "time_format",
@@ -168,7 +174,7 @@ mod tests {
             ("sort_setting(", "watchlist_sort_"),
             ("cooldown_key(", "cooldown."),
         ];
-        let passed_along = ["key", "&key", "&self", "KEY"];
+        let passed_along = ["key", "&key", "&self", "KEY", "switch.key()"];
 
         let mut unclassified = Vec::new();
         for text in &sources {

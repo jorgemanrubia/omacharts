@@ -1,8 +1,55 @@
 //! Controls the settings pages share, so a question asked on two pages is
 //! answered with the same widget on both.
 
+use std::rc::Rc;
+
 use adw::prelude::*;
 use gtk::glib;
+use omacharts_engine::Session;
+
+/// Which hours a chart shows: the Hours row, its two choices as words.
+///
+/// Both are in view rather than behind a dropdown, since the whole answer
+/// fits on the row: the one picked reads, the other fades, and one click
+/// changes it. The buttons are one group, so showing a session is
+/// `set_active` on its button, and a pick is one turning active.
+pub(crate) struct Hours {
+    /// The row, ready to be added to a group. It holds the buttons.
+    pub row: adw::ActionRow,
+    pub buttons: Vec<(Session, gtk::ToggleButton)>,
+}
+
+impl Hours {
+    pub(crate) fn new() -> Hours {
+        let row = adw::ActionRow::new();
+        row.set_title("Hours");
+        let words = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        words.add_css_class("words");
+        words.set_valign(gtk::Align::Center);
+        let mut buttons: Vec<(Session, gtk::ToggleButton)> = Vec::new();
+        for (at, session) in Session::ALL.into_iter().enumerate() {
+            if at > 0 {
+                let dot = gtk::Label::new(Some("·"));
+                dot.add_css_class("dot");
+                words.append(&dot);
+            }
+            // The row is titled Hours, so each word leaves "hours" out.
+            let word = match session {
+                Session::Extended => "Extended",
+                Session::Regular => "Regular",
+            };
+            let button = gtk::ToggleButton::with_label(word);
+            button.add_css_class("flat");
+            if let Some((_, first)) = buttons.first() {
+                button.set_group(Some(first));
+            }
+            words.append(&button);
+            buttons.push((session, button));
+        }
+        row.add_suffix(&words);
+        Hours { row, buttons }
+    }
+}
 
 /// A number with two ends: a slider to aim with, and a box to say it in.
 ///
@@ -258,6 +305,78 @@ pub fn time_row(
     });
     row.add_controller(focus);
     row
+}
+
+
+/// What a [`picture_factory`] row holds beside its picture.
+pub(crate) enum Pictured {
+    /// The picture alone.
+    Alone,
+    /// The row's word after it, then the chevron a dropdown's face wears.
+    Face(Rc<[String]>),
+    /// The row's word after it, then the tick the menu puts on the answer
+    /// picked.
+    Listed(Rc<[String]>),
+}
+
+/// A list factory whose every row is a picture `size` big, drawn by
+/// `paint` given the row's position, with what `pictured` says beside it.
+/// Each picture is handed to `drawn` once, as it is made, so a change of
+/// what they show can ask them all to draw again.
+pub(crate) fn picture_factory(
+    size: (i32, i32),
+    pictured: Pictured,
+    paint: impl Fn(&gtk::cairo::Context, usize, f64, f64) + Clone + 'static,
+    drawn: impl Fn(&gtk::DrawingArea) + 'static,
+) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    let words = match &pictured {
+        Pictured::Alone => None,
+        Pictured::Face(words) | Pictured::Listed(words) => Some(words.clone()),
+    };
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let picture = gtk::DrawingArea::new();
+        picture.set_content_width(size.0);
+        picture.set_content_height(size.1);
+        picture.set_valign(gtk::Align::Center);
+        drawn(&picture);
+        let end = match pictured {
+            Pictured::Alone => {
+                item.set_child(Some(&picture));
+                return;
+            }
+            Pictured::Face(_) => gtk::Image::from_icon_name("pan-down-symbolic"),
+            Pictured::Listed(_) => {
+                let tick = gtk::Image::from_icon_name("object-select-symbolic");
+                tick.add_css_class("tick");
+                tick
+            }
+        };
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_hexpand(matches!(pictured, Pictured::Listed(_)));
+        let inside = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        inside.append(&picture);
+        inside.append(&label);
+        inside.append(&end);
+        item.set_child(Some(&inside));
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let Some(child) = item.child() else { return };
+        let Some(picture) = child.clone().downcast::<gtk::DrawingArea>().ok().or_else(|| child.first_child().and_downcast())
+        else {
+            return;
+        };
+        let position = item.position() as usize;
+        let paint = paint.clone();
+        picture.set_draw_func(move |_, cr, w, h| paint(cr, position, f64::from(w), f64::from(h)));
+        if let (Some(words), Some(label)) = (&words, picture.next_sibling().and_downcast::<gtk::Label>()) {
+            label.set_text(words.get(position).map_or("", String::as_str));
+        }
+    });
+    factory
 }
 
 #[cfg(test)]

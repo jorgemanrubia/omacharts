@@ -46,62 +46,8 @@ fn ask_template_name(
     done: impl Fn(&str) + 'static,
 ) {
     let templates = window.book_templates();
-    let name = adw::EntryRow::new();
-    name.set_title("Name");
-    name.set_text(initial);
-    let rows = adw::PreferencesGroup::new();
-    rows.add(&name);
-
-    let dialog = adw::AlertDialog::new(Some(heading), None);
-    dialog.set_extra_child(Some(&rows));
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("ok", verb);
-    dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("ok"));
-    dialog.set_close_response("cancel");
-
-    let refused = Rc::new(move |text: &str| refused_name(&templates, text, except));
-    dialog.set_response_enabled("ok", refused(initial).is_none());
-    let gate = dialog.clone();
-    let checks = refused.clone();
-    name.connect_changed(move |field| {
-        let text = field.text();
-        let why = checks(&text);
-        gate.set_response_enabled("ok", why.is_none());
-        // Red only for a name that cannot be had: a blank box is not a
-        // mistake yet.
-        match why.filter(|_| !text.trim().is_empty()) {
-            Some(why) => {
-                field.add_css_class("error");
-                field.set_tooltip_text(Some(&why));
-            }
-            None => {
-                field.remove_css_class("error");
-                field.set_tooltip_text(None);
-            }
-        }
-    });
-    let finish = dialog.clone();
-    let checks = refused.clone();
-    name.connect_entry_activated(move |field| {
-        if checks(&field.text()).is_none() {
-            finish.emit_by_name::<()>("response", &[&"ok"]);
-            finish.close();
-        }
-    });
-
-    let field = name.clone();
-    let answered = std::cell::Cell::new(false);
-    dialog.connect_response(None, move |_, response| {
-        let typed = field.text();
-        if response != "ok" || refused(&typed).is_some() || answered.replace(true) {
-            return;
-        }
-        done(typed.trim());
-    });
-
-    dialog.present(Some(anchor));
-    name.grab_focus();
+    let refused = move |text: &str| refused_name(&templates, text, except);
+    crate::ui::preferences::ask_for_text(anchor, heading, "Name", initial, verb, refused, move |name| done(&name));
 }
 
 /// The chartbook templates, each with a rename and a delete.
@@ -208,7 +154,7 @@ fn confirm_delete(
              indicators, and stop changing with the template."
         ),
     };
-    let dialog = adw::AlertDialog::new(Some("Delete Chartbook Template?"), Some(&body));
+    let dialog = crate::ui::dialogs::card("Delete Chartbook Template?", Some(&body), None);
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("delete", "Delete");
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);

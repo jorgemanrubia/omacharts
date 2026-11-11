@@ -1,51 +1,26 @@
-//! What a chart's header shows: the line at its top-left, the row centred
-//! across its top, the corner at its top-right, and in what order.
+//! What a chart's header shows across its top, and where.
 //!
-//! One for the whole app, every chart in every chartbook showing the same
-//! header, so that changing it changes all of them at once. Each part is in
-//! the header once, in one section of the three. Until somebody chooses, each
-//! is where [`Part::home`] puts it, which is how every chart looked before
-//! there was a choice.
+//! Two rows, each with a left, a centre and a right, as a desktop bar has:
+//! every part of the header, the symbol, the trading controls and the
+//! chart's own buttons alike, goes in one of the six, in an order. One header
+//! for the whole app, every chart in every chartbook showing the same unless
+//! it wears a look of its own ([`crate::chart_look`]), so that changing it
+//! changes all of them at once.
 
 use crate::store::Store;
 
-/// What the header shows on the left: the line it always had, so a header
-/// stored before there were sections is read as this one.
+/// The header every chart shows, as [`spell`] writes it. A plain list with
+/// no zones is how the left was written before there were zones.
 pub const SETTING: &str = "chart_header";
-/// What the header shows centred across the chart's top.
+/// What the header showed centred across the chart's top, and in its
+/// top-right corner, when it had three sections stored apart. Read only to
+/// bring a header written then forward, while [`SETTING`] has no zones.
 pub const CENTER_SETTING: &str = "chart_header_center";
-/// What the header shows in the chart's top-right corner.
 pub const RIGHT_SETTING: &str = "chart_header_right";
 
-/// Where on a chart's top a part is shown.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Section {
-    Left,
-    Center,
-    Right,
-}
-
-impl Section {
-    pub const ALL: [Section; 3] = [Section::Left, Section::Center, Section::Right];
-
-    /// The setting it is stored in.
-    pub fn setting(self) -> &'static str {
-        match self {
-            Section::Left => SETTING,
-            Section::Center => CENTER_SETTING,
-            Section::Right => RIGHT_SETTING,
-        }
-    }
-
-    /// How the preferences name it.
-    pub fn title(self) -> &'static str {
-        match self {
-            Section::Left => "Left",
-            Section::Center => "Center",
-            Section::Right => "Right",
-        }
-    }
-}
+/// The switch the resolution strip had before it was a part of the header.
+/// Read only to bring a header written then forward.
+const OLD_STRIP_SETTING: &str = "resolution_strip";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {
@@ -53,9 +28,20 @@ pub enum Part {
     Resolution,
     /// The day's move, as a percentage, in the chart's own up and down colours.
     Change,
+    /// The last price, as the rail has it.
+    Last,
     /// The name of the chart template the chart is on; nothing when it is on
     /// none.
     Template,
+    /// A window pulled off another, dimmed, on a chart whose look differs
+    /// from every chart's; nothing on one that looks like every other.
+    Look,
+    /// The instrument's full name, faded.
+    Name,
+    /// The chart title, given in its menu, its settings or with
+    /// `chart set --title`. Clicked, it is edited where it stands. On a chart
+    /// with none it is blank until the pointer is on it.
+    Title,
     /// Which trading account the chart is on. Nothing at all while there
     /// is at most one account to be on.
     Account,
@@ -79,27 +65,26 @@ pub enum Part {
     /// brackets: "+2 (+$125.00)", "-1 (-0.50R)". Nothing at all
     /// unless the chart's account holds a position in what it trades.
     Position,
-    /// The preset resolutions as a row of buttons, on the focused chart only.
-    Stripe,
-    /// The chart title, given in its menu, its settings or with
-    /// `chart set --title`. Clicked, it is edited where it stands. On a chart
-    /// with none it is blank until the pointer is on it.
-    Title,
+    /// The preset resolutions as buttons. On the focused chart only.
+    Strip,
     /// The gear that opens the chart's settings.
     Settings,
-    /// The corner that grows the chart to fill the window, with a second
-    /// chart on screen.
+    /// The corner that fills the window with the chart. Only when there is
+    /// another chart to maximize away from.
     Maximize,
-    /// The chain that says what the watchlist does to the chart.
+    /// The chain that says how the chart follows the rail.
     Link,
 }
 
 impl Part {
-    pub const ALL: [Part; 15] = [
+    pub const ALL: [Part; 18] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
+        Part::Last,
         Part::Template,
+        Part::Look,
+        Part::Name,
         Part::Title,
         Part::Account,
         Part::Feed,
@@ -107,40 +92,78 @@ impl Part {
         Part::Trade,
         Part::Size,
         Part::Position,
-        Part::Stripe,
+        Part::Strip,
         Part::Settings,
         Part::Maximize,
         Part::Link,
     ];
 
-    /// The section it is in until somebody places it, or `None` for a part
-    /// that is only there once somebody adds it. The day's move follows the
-    /// resolution, the last word of the line saying what the chart is of.
-    /// The feed is at home on the left because it costs nothing: with one feed it draws nothing and
-    /// takes no room. The account, the day's P&L, Buy, Sell, the quantity
-    /// and the position held lead the corner, the account first, saying what the rest
-    /// trade on, ahead of the three controls that always stood in it, in
-    /// the order they stood; with one account the account draws nothing,
-    /// and without an account to trade on, none of them does. The chart's title
-    /// has the center, where the resolutions stripe stood before there were
-    /// titles: the resolution beside the symbol already offers every one.
-    pub fn home(self) -> Option<Section> {
+    /// How it is written down and typed.
+    pub fn key(self) -> &'static str {
         match self {
-            Part::Title => Some(Section::Center),
-            Part::Symbol => Some(Section::Left),
-            Part::Resolution => Some(Section::Left),
-            Part::Change => Some(Section::Left),
-            Part::Template => None,
-            Part::Account => Some(Section::Right),
-            Part::Feed => Some(Section::Left),
-            Part::DayPnl => Some(Section::Right),
-            Part::Trade => Some(Section::Right),
-            Part::Size => Some(Section::Right),
-            Part::Position => Some(Section::Right),
-            Part::Stripe => None,
-            Part::Settings => Some(Section::Right),
-            Part::Maximize => Some(Section::Right),
-            Part::Link => Some(Section::Right),
+            Part::Symbol => "symbol",
+            Part::Resolution => "resolution",
+            Part::Change => "change",
+            Part::Last => "last",
+            Part::Template => "template",
+            Part::Look => "look",
+            Part::Name => "name",
+            Part::Title => "title",
+            Part::Account => "account",
+            Part::Feed => "feed",
+            Part::DayPnl => "day_pnl",
+            Part::Trade => "trade",
+            Part::Size => "size",
+            Part::Position => "position",
+            Part::Strip => "strip",
+            Part::Settings => "settings",
+            Part::Maximize => "maximize",
+            Part::Link => "link",
+        }
+    }
+
+    /// Any way it has been written: the strip was the `stripe` too.
+    pub fn from_key(key: &str) -> Option<Part> {
+        match key {
+            "stripe" => Some(Part::Strip),
+            key => Part::ALL.into_iter().find(|part| part.key() == key),
+        }
+    }
+
+    /// How a list of them names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Part::Symbol => "Symbol",
+            Part::Resolution => "Resolution",
+            Part::Change => "Daily change",
+            Part::Last => "Last price",
+            Part::Template => "Chart template",
+            Part::Look => "Local visuals",
+            Part::Name => "Name",
+            Part::Title => "Chart title",
+            Part::Account => "Account",
+            Part::Feed => "Data feed",
+            Part::DayPnl => "P&L",
+            Part::Trade => "Buy Sell",
+            Part::Size => "Quantity",
+            Part::Position => "Current position",
+            Part::Strip => "Resolution strip",
+            Part::Settings => "Chart settings",
+            Part::Maximize => "Maximize",
+            Part::Link => "Link mode",
+        }
+    }
+
+    /// Where it goes when it is put back without being placed: the words on
+    /// the left, the title and the strip in the middle, trading's controls
+    /// and the chart's buttons on the right.
+    pub fn home(self) -> Zone {
+        match self {
+            Part::Title | Part::Strip => Zone::Center,
+            Part::DayPnl | Part::Trade | Part::Size | Part::Position | Part::Settings | Part::Maximize | Part::Link => {
+                Zone::Right
+            }
+            _ => Zone::Left,
         }
     }
 
@@ -150,180 +173,293 @@ impl Part {
         matches!(self, Part::Account | Part::DayPnl | Part::Trade | Part::Size | Part::Position)
     }
 
-    /// Can it be shown, offered and typed, with trading switched on or not?
-    pub fn shown(self, trading: bool) -> bool {
-        trading || !self.trades()
+    /// Can it be shown, offered and typed, as trading is switched now?
+    pub fn shown(self) -> bool {
+        crate::features::trading() || !self.trades()
     }
 
     /// Every part that can be, in [`Part::ALL`]'s order.
-    pub fn every_shown(trading: bool) -> Vec<Part> {
-        Part::ALL.into_iter().filter(|part| part.shown(trading)).collect()
+    pub fn every_shown() -> Vec<Part> {
+        Part::ALL.into_iter().filter(|part| part.shown()).collect()
     }
+}
 
-    /// How it is written down and typed.
+/// One of the header's six places.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Zone {
+    Left,
+    Center,
+    Right,
+    Left2,
+    Center2,
+    Right2,
+}
+
+impl Zone {
+    pub const ALL: [Zone; 6] = [Zone::Left, Zone::Center, Zone::Right, Zone::Left2, Zone::Center2, Zone::Right2];
+
     pub fn key(self) -> &'static str {
         match self {
-            Part::Symbol => "symbol",
-            Part::Resolution => "resolution",
-            Part::Change => "change",
-            Part::Template => "template",
-            Part::Account => "account",
-            Part::Feed => "feed",
-            Part::DayPnl => "day_pnl",
-            Part::Trade => "trade",
-            Part::Size => "size",
-            Part::Position => "position",
-            Part::Stripe => "stripe",
-            Part::Title => "title",
-            Part::Settings => "settings",
-            Part::Maximize => "maximize",
-            Part::Link => "link",
+            Zone::Left => "left",
+            Zone::Center => "center",
+            Zone::Right => "right",
+            Zone::Left2 => "left2",
+            Zone::Center2 => "center2",
+            Zone::Right2 => "right2",
         }
     }
 
-    pub fn from_key(key: &str) -> Option<Part> {
-        Part::ALL.into_iter().find(|part| part.key() == key)
+    pub fn from_key(key: &str) -> Option<Zone> {
+        Zone::ALL.into_iter().find(|zone| zone.key() == key)
     }
 
-    /// How a list of them names it.
-    pub fn label(self) -> &'static str {
+    /// 0 for the first row, 1 for the second.
+    pub fn row(self) -> usize {
+        self.index() / 3
+    }
+
+    /// The same place on the first row.
+    pub fn first_row(self) -> Zone {
         match self {
-            Part::Symbol => "Symbol",
-            Part::Resolution => "Resolution",
-            Part::Change => "Daily change",
-            Part::Template => "Chart template",
-            Part::Account => "Account",
-            Part::Feed => "Data feed",
-            Part::DayPnl => "P&L",
-            Part::Trade => "Buy Sell",
-            Part::Size => "Quantity",
-            Part::Position => "Current position",
-            Part::Stripe => "Resolutions stripe",
-            Part::Title => "Chart title",
-            Part::Settings => "Chart settings",
-            Part::Maximize => "Maximize",
-            Part::Link => "Watchlist link",
+            Zone::Left2 => Zone::Left,
+            Zone::Center2 => Zone::Center,
+            Zone::Right2 => Zone::Right,
+            zone => zone,
         }
+    }
+
+    /// Where it is in [`Zone::ALL`], which lists the zones as they are
+    /// declared.
+    fn index(self) -> usize {
+        self as usize
     }
 }
 
-/// The whole header: what each section shows, in order.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Header {
-    pub left: Vec<Part>,
-    pub center: Vec<Part>,
-    pub right: Vec<Part>,
+/// Which parts the header shows, in which zone, in what order.
+///
+/// Every way of building one goes through [`Layout::settle`], so two things
+/// always hold: no part is in it twice, and a place on the second row is
+/// empty whenever the place above it shows nothing — a part under nothing
+/// would only be a first-row part pushed down for no reason. "Shows" counts
+/// only parts that can be shown: with trading off, its parts are kept where
+/// they were but hold nothing up.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Layout {
+    zones: [Vec<Part>; 6],
 }
 
-impl Header {
-    /// What a chart shows when nobody has chosen.
-    pub fn standard() -> Header {
-        Header {
-            left: standard(Section::Left),
-            center: standard(Section::Center),
-            right: standard(Section::Right),
-        }
+impl Layout {
+    /// What a chart shows when nobody has chosen: on the left the data
+    /// feed's dot, the symbol, its resolution and the day's move; the
+    /// chart's title across the middle; on the right the account, the day's
+    /// P&L, Buy, Sell, the quantity and the position held, then the chart's
+    /// buttons. Trading's parts and the dot draw nothing until there is
+    /// something for them to say.
+    pub fn standard() -> Layout {
+        let mut layout = Layout::default();
+        layout.zones[Zone::Left.index()] = vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change];
+        layout.zones[Zone::Center.index()] = vec![Part::Title];
+        layout.zones[Zone::Right.index()] =
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
+        layout
     }
 
-    pub fn section(&self, section: Section) -> &[Part] {
-        match section {
-            Section::Left => &self.left,
-            Section::Center => &self.center,
-            Section::Right => &self.right,
-        }
+    pub fn zone(&self, zone: Zone) -> &[Part] {
+        &self.zones[zone.index()]
     }
 
-    fn section_mut(&mut self, section: Section) -> &mut Vec<Part> {
-        match section {
-            Section::Left => &mut self.left,
-            Section::Center => &mut self.center,
-            Section::Right => &mut self.right,
-        }
+    /// What `zone` shows of the parts that can be.
+    pub fn shown(&self, zone: Zone) -> Vec<Part> {
+        self.zone(zone).iter().copied().filter(|part| part.shown()).collect()
+    }
+
+    /// The header as it can be seen: without trading's parts while it is
+    /// off. What a header is printed as, so that what is printed can be
+    /// typed back.
+    pub fn seen(&self) -> Layout {
+        let mut seen = Layout { zones: std::array::from_fn(|at| self.shown(Zone::ALL[at])) };
+        seen.settle();
+        seen
     }
 
     pub fn contains(&self, part: Part) -> bool {
-        Section::ALL.into_iter().any(|section| self.section(section).contains(&part))
+        self.zone_of(part).is_some()
     }
 
-    /// Put `parts` in `section`, taking each out of the others: a part is
-    /// in the header once, wherever it was put last.
-    /// [`Header::set`] for somebody who sees only the parts that can be
-    /// shown: the ones they cannot see stay in `section` where they were,
-    /// so switching trading on finds its parts where they were left.
-    pub fn set_shown(&mut self, section: Section, parts: Vec<Part>, trading: bool) {
-        let mut kept = parts;
-        for (at, part) in self.section(section).to_vec().into_iter().enumerate() {
-            if !part.shown(trading) && !kept.contains(&part) {
-                kept.insert(at.min(kept.len()), part);
+    pub fn zone_of(&self, part: Part) -> Option<Zone> {
+        Zone::ALL.into_iter().find(|zone| self.zone(*zone).contains(&part))
+    }
+
+    /// Whether the second row shows anything.
+    pub fn second_row(&self) -> bool {
+        Zone::ALL[3..].iter().any(|zone| self.shows_other_than(*zone, None))
+    }
+
+    /// Whether `zone` can take `part`: any place on the first row, one on
+    /// the second only while the place above it shows something besides
+    /// `part`. Taken from the only place above it, `part` would leave that
+    /// place empty, and [`Layout::settle`] would move it straight back up.
+    pub fn takes(&self, zone: Zone, part: Part) -> bool {
+        zone.row() == 0 || self.shows_other_than(zone.first_row(), Some(part))
+    }
+
+    fn shows_other_than(&self, zone: Zone, part: Option<Part>) -> bool {
+        self.zone(zone).iter().any(|p| Some(*p) != part && p.shown())
+    }
+
+    /// Take `part` out, wherever it is.
+    pub fn remove(&mut self, part: Part) {
+        self.take(part);
+        self.settle();
+    }
+
+    /// Put `part` in `zone` at `at`, from wherever it was. Past the end puts
+    /// it last.
+    pub fn place(&mut self, part: Part, zone: Zone, at: usize) {
+        self.take(part);
+        let list = &mut self.zones[zone.index()];
+        list.insert(at.min(list.len()), part);
+        self.settle();
+    }
+
+    /// Put `part` at the end of its home zone, if it is not shown already.
+    pub fn add(&mut self, part: Part) {
+        if !self.contains(part) {
+            let at = self.zone(part.home()).len();
+            self.place(part, part.home(), at);
+        }
+    }
+
+    /// Put back, where `old` had them, the parts it holds that cannot be
+    /// shown with trading off and this one lacks: a header typed or arranged
+    /// while trading is off is typed over what anybody can see, and keeps
+    /// trading's parts for when it is on.
+    pub fn keep_hidden(&mut self, old: &Layout) {
+        for zone in Zone::ALL {
+            for (at, part) in old.zone(zone).iter().copied().enumerate() {
+                if !part.shown() && !self.contains(part) {
+                    let list = &mut self.zones[zone.index()];
+                    list.insert(at.min(list.len()), part);
+                }
             }
         }
-        self.set(section, kept);
+        self.settle();
     }
 
-    /// What `section` shows of the parts that can be.
-    pub fn shown(&self, section: Section, trading: bool) -> Vec<Part> {
-        self.section(section).iter().copied().filter(|part| part.shown(trading)).collect()
-    }
-
-    pub fn set(&mut self, section: Section, parts: Vec<Part>) {
-        for other in Section::ALL.into_iter().filter(|other| *other != section) {
-            self.section_mut(other).retain(|part| !parts.contains(part));
-        }
-        *self.section_mut(section) = parts;
-    }
-}
-
-/// What `section` shows when nobody has chosen: the parts at home in it, in
-/// the order [`Part::ALL`] lists them, except that the data feed leads the
-/// left, its dot standing over the legend's dots.
-pub fn standard(section: Section) -> Vec<Part> {
-    let mut parts: Vec<Part> = Part::ALL.into_iter().filter(|part| part.home() == Some(section)).collect();
-    if let Some(at) = parts.iter().position(|part| *part == Part::Feed) {
-        let feed = parts.remove(at);
-        parts.insert(0, feed);
-    }
-    parts
-}
-
-/// The parts named in `keys`, in order, skipping any this build does not
-/// know — a header written by a newer build keeps what this one can show
-/// rather than losing the whole arrangement it was stored in.
-pub fn from_keys<S: AsRef<str>>(keys: &[S]) -> Vec<Part> {
-    let mut parts: Vec<Part> = Vec::new();
-    for part in keys.iter().filter_map(|key| Part::from_key(key.as_ref())) {
-        if !parts.contains(&part) {
-            parts.push(part);
+    /// Take `part` out of whichever zone holds it, leaving the settling to
+    /// the caller.
+    fn take(&mut self, part: Part) {
+        for zone in &mut self.zones {
+            zone.retain(|p| *p != part);
         }
     }
-    parts
+
+    fn settle(&mut self) {
+        let mut seen = Vec::new();
+        for zone in &mut self.zones {
+            zone.retain(|part| match seen.contains(part) {
+                true => false,
+                false => {
+                    seen.push(*part);
+                    true
+                }
+            });
+        }
+        for zone in Zone::ALL[3..].iter().copied() {
+            if !self.shows_other_than(zone.first_row(), None) {
+                let parts = std::mem::take(&mut self.zones[zone.index()]);
+                self.zones[zone.first_row().index()].extend(parts);
+            }
+        }
+    }
+
+    /// The header as it was written before it had zones: `left` on the first
+    /// row's left, the name on a row of its own under it, where it used to
+    /// sit; the middle and the right as they were stored apart, or as they
+    /// ship. `strip` is whether the strip's old switch was on.
+    fn from_sections(left: &[Part], center: Option<Vec<Part>>, right: Option<Vec<Part>>, strip: bool) -> Layout {
+        let mut layout = Layout::standard();
+        if let Some(center) = center {
+            layout.zones[Zone::Center.index()] = center;
+        }
+        if let Some(right) = right {
+            layout.zones[Zone::Right.index()] = right;
+        }
+        layout.zones[Zone::Left.index()].clear();
+        // The left is what was stored first, and wins a part named twice.
+        for part in left {
+            let zone = if *part == Part::Name { Zone::Left2 } else { Zone::Left };
+            layout.take(*part);
+            layout.zones[zone.index()].push(*part);
+        }
+        if !strip {
+            layout.take(Part::Strip);
+        }
+        layout.settle();
+        layout
+    }
 }
 
-pub fn keys(parts: &[Part]) -> Vec<String> {
-    parts.iter().map(|part| part.key().to_string()).collect()
-}
-
-/// `symbol,resolution,change`, as typed; `none` for an empty section.
+/// The header as typed: `left=symbol,resolution center=strip right=settings`,
+/// any of the six zones, each at most once, the rest empty; `none` for a
+/// header with nothing in it.
 ///
-/// Refuses a name it does not know and a part named twice, rather than
-/// dropping either: a header that came out different from the one typed would
-/// look as though the command worked.
-pub fn parse(text: &str) -> Result<Vec<Part>, String> {
-    parse_for(text, crate::features::trading())
+/// A plain list with no zones, `symbol,resolution,change`, is the way the
+/// left was written before there were zones, and still means what it did:
+/// those on the left, the name under them, the rest as it ships.
+///
+/// Refuses a name it does not know and a part or zone named twice, rather
+/// than dropping either: a header that came out different from the one typed
+/// would look as though the command worked. With trading switched off, its
+/// parts are not parts of a header at all.
+pub fn parse(text: &str) -> Result<Layout, String> {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("none") {
+        return Ok(Layout::default());
+    }
+    if !text.contains('=') {
+        return Ok(Layout::from_sections(&parse_list(text)?, None, None, true));
+    }
+    let mut named: Vec<Part> = Vec::new();
+    let mut layout = Layout::default();
+    let mut zones_named: Vec<Zone> = Vec::new();
+    for field in text.split_whitespace() {
+        let (zone, list) = field.split_once('=').ok_or_else(|| format!("{field:?} names no zone; write it as left={field}"))?;
+        let zone = zone.trim().to_lowercase();
+        let zone = Zone::from_key(&zone).ok_or_else(|| {
+            format!("{zone:?} is not a place in the header; try {}", Zone::ALL.map(Zone::key).join(", "))
+        })?;
+        if zones_named.contains(&zone) {
+            return Err(format!("{} is named twice", zone.key()));
+        }
+        zones_named.push(zone);
+        for part in parse_list(list)? {
+            if named.contains(&part) {
+                return Err(format!("{} is named twice", part.key()));
+            }
+            named.push(part);
+            layout.zones[zone.index()].push(part);
+        }
+    }
+    layout.settle();
+    Ok(layout)
 }
 
-/// [`parse`], knowing only the parts that can be shown with trading on or
-/// off: switched off, trading's are not parts of a header at all.
-pub fn parse_for(text: &str, trading: bool) -> Result<Vec<Part>, String> {
+/// `symbol,resolution,change`, as typed: one zone's parts, or none.
+///
+/// Refuses a name it does not know, or that is one of trading's while it is
+/// switched off, and a part named twice.
+pub fn parse_list(text: &str) -> Result<Vec<Part>, String> {
     let text = text.trim();
     if text.is_empty() || text.eq_ignore_ascii_case("none") {
         return Ok(Vec::new());
     }
     let mut parts = Vec::new();
-    for key in text.split(',').map(|key| key.trim().to_lowercase()) {
-        let Some(part) = Part::from_key(&key).filter(|part| part.shown(trading)) else {
+    for key in text.split(',').map(|key| key.trim().to_lowercase()).filter(|key| !key.is_empty()) {
+        let Some(part) = Part::from_key(&key).filter(|part| part.shown()) else {
             return Err(format!(
                 "{key:?} is not part of a header; try {}",
-                Part::every_shown(trading).into_iter().map(Part::key).collect::<Vec<_>>().join(", ")
+                Part::every_shown().into_iter().map(Part::key).collect::<Vec<_>>().join(", ")
             ));
         };
         if parts.contains(&part) {
@@ -334,126 +470,133 @@ pub fn parse_for(text: &str, trading: bool) -> Result<Vec<Part>, String> {
     Ok(parts)
 }
 
-/// The way [`parse`] reads it.
-pub fn spell(parts: &[Part]) -> String {
-    match parts.is_empty() {
+/// The way [`parse`] reads it: the zones with something in them, in order.
+pub fn spell(layout: &Layout) -> String {
+    let fields: Vec<String> = Zone::ALL
+        .into_iter()
+        .filter(|zone| !layout.zone(*zone).is_empty())
+        .map(|zone| {
+            let keys: Vec<&str> = layout.zone(zone).iter().map(|part| part.key()).collect();
+            format!("{}={}", zone.key(), keys.join(","))
+        })
+        .collect();
+    match fields.is_empty() {
         true => "none".to_string(),
-        false => keys(parts).join(","),
+        false => fields.join(" "),
     }
 }
 
-/// The header that shipped while the day's P&L ended the left, as
-/// Preferences wrote it out once anybody touched it or restored it: read as
-/// [`Header::standard`], so a header that was only ever the standard one
-/// follows the standard to the P&L's place on the right.
-const BEFORE_PNL_MOVED: [(&str, &str); 3] = [
-    (SETTING, "feed,symbol,resolution,account,day_pnl"),
-    (CENTER_SETTING, "stripe"),
-    (RIGHT_SETTING, "trade,size,settings,maximize,link"),
-];
-
-/// The header that shipped before charts had titles, with the resolutions
-/// stripe in the center, as Preferences wrote it out once anybody touched it
-/// or restored it: read as [`Header::standard`] too, so a header that was
-/// only ever the standard one gets the title where the stripe was. One that
-/// differs from it in anything is somebody's, and kept.
-const BEFORE_TITLES: [(&str, &str); 3] = [
-    (SETTING, "feed,symbol,resolution,account"),
-    (CENTER_SETTING, "stripe"),
-    (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
-];
-
-/// The header that shipped while the account ended the left, as
-/// Preferences wrote it out: read as [`Header::standard`] too, so a header
-/// that was only ever the standard one gets the account at the head of the
-/// right, ahead of the P&L.
-const BEFORE_ACCOUNT_MOVED: [(&str, &str); 3] = [
-    (SETTING, "feed,symbol,resolution,account"),
-    (CENTER_SETTING, "title"),
-    (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
-];
-
-/// The header that shipped before the day's move was in it, as
-/// Preferences wrote it out: read as [`Header::standard`] too, so a header
-/// that was only ever the standard one gets the move after the resolution.
-/// A left of anybody's own was written without it, and is kept so.
-const BEFORE_CHANGE: [(&str, &str); 3] = [
-    (SETTING, "feed,symbol,resolution"),
-    (CENTER_SETTING, "title"),
-    (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
-];
-
-/// The header that shipped before the position held was in it, as
-/// Preferences wrote it out: read as [`Header::standard`] too, so a header
-/// that was only ever the standard one gets the position after the
-/// quantity. One of anybody's own is kept without it.
-const BEFORE_POSITION: [(&str, &str); 3] = [
-    (SETTING, "feed,symbol,resolution,change"),
-    (CENTER_SETTING, "title"),
-    (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
-];
-
-/// Whether what is stored is `old`, a standard header of an earlier build:
-/// some section written, and every written one as it shipped.
-fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
-    old.iter().any(|(key, _)| store.setting(key).is_some())
-        && old.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
+/// The parts named in `list`, in order, skipping any this build does not
+/// know and any named twice — a header written by a newer build keeps what
+/// this one can show rather than losing the whole arrangement.
+fn lenient(list: &str) -> Vec<Part> {
+    let mut parts: Vec<Part> = Vec::new();
+    for part in list.split(',').filter_map(|key| Part::from_key(&key.trim().to_lowercase())) {
+        if !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    parts
 }
+
+/// A header as [`spell`] writes it, read leniently where [`parse`] is
+/// strict: a part or a zone only a newer build knows is left out rather than
+/// costing the whole header, since a newer build may have written it. A
+/// plain list is the left from before zones, the rest as it ships; `strip`
+/// whether the strip's old switch was on.
+pub fn read(text: &str, strip: bool) -> Layout {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("none") {
+        return Layout::default();
+    }
+    if !text.contains('=') {
+        return Layout::from_sections(&lenient(text), None, None, strip);
+    }
+    let mut layout = Layout::default();
+    for (zone, list) in text.split_whitespace().filter_map(|field| field.split_once('=')) {
+        if let Some(zone) = Zone::from_key(&zone.trim().to_lowercase()) {
+            layout.zones[zone.index()].extend(lenient(list));
+        }
+    }
+    layout.settle();
+    layout
+}
+
+/// The standard headers of builds that kept three sections apart, as
+/// Preferences wrote them out once anybody touched it or restored it: the
+/// one with the day's P&L ending the left, the one with the strip in the
+/// center before charts had titles, the one with the account ending the
+/// left, the one before the day's move, and the one before the position
+/// held. Read as [`Layout::standard`], so a header that was only ever the
+/// standard one follows the standard. One that differs from them in anything
+/// is somebody's, and kept.
+const OLD_STANDARDS: [[(&str, &str); 3]; 5] = [
+    [
+        (SETTING, "feed,symbol,resolution,account,day_pnl"),
+        (CENTER_SETTING, "stripe"),
+        (RIGHT_SETTING, "trade,size,settings,maximize,link"),
+    ],
+    [
+        (SETTING, "feed,symbol,resolution,account"),
+        (CENTER_SETTING, "stripe"),
+        (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
+    ],
+    [
+        (SETTING, "feed,symbol,resolution,account"),
+        (CENTER_SETTING, "title"),
+        (RIGHT_SETTING, "day_pnl,trade,size,settings,maximize,link"),
+    ],
+    [
+        (SETTING, "feed,symbol,resolution"),
+        (CENTER_SETTING, "title"),
+        (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
+    ],
+    [
+        (SETTING, "feed,symbol,resolution,change"),
+        (CENTER_SETTING, "title"),
+        (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
+    ],
+];
+
+/// The standard header as the one setting spelled it before the position
+/// held was in it: read as [`Layout::standard`], so a header only ever
+/// restored to the standard gains the position after the quantity.
+const BEFORE_POSITION: &str =
+    "left=feed,symbol,resolution,change center=title right=account,day_pnl,trade,size,settings,maximize,link";
 
 /// The header every chart shows.
-///
-/// Read leniently, where [`parse`] is strict: a part only a newer build knows
-/// is left out rather than costing the whole line, since the settings may
-/// have been written by one. A section never stored is its standard one,
-/// which is what keeps a header stored before there were sections as it was:
-/// its line is the left, the stripe stays in the center, and the controls
-/// stay in the corner. A part stored in two sections is in the first of
-/// them, the left being the section that was always there.
-pub fn load(store: &Store) -> Header {
-    let pnl_moved = BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
-        && store.setting(SETTING).is_some();
-    if pnl_moved || stored_as(store, &BEFORE_TITLES) || stored_as(store, &BEFORE_ACCOUNT_MOVED)
-        || stored_as(store, &BEFORE_CHANGE)
-        || stored_as(store, &BEFORE_POSITION)
-    {
-        return Header::standard();
+pub fn load(store: &Store) -> Layout {
+    let strip = store.setting_bool(OLD_STRIP_SETTING, true);
+    let Some(text) = store.setting(SETTING) else {
+        return Layout::standard();
+    };
+    // `none` was the left alone while the other two were stored apart; with
+    // neither left, it is a header with nothing in it.
+    let apart = store.has_setting(CENTER_SETTING) || store.has_setting(RIGHT_SETTING);
+    if text.trim() == BEFORE_POSITION {
+        return Layout::standard();
     }
-    let mut header = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
-    let mut placed: Vec<Part> = Vec::new();
-    for section in Section::ALL {
-        let mut parts = load_section(store, section);
-        parts.retain(|part| !placed.contains(part));
-        placed.extend(parts.iter().copied());
-        *header.section_mut(section) = parts;
+    if text.contains('=') || (!apart && text.trim().eq_ignore_ascii_case("none")) {
+        return read(&text, strip);
     }
-    // A left written before the account moved to the right said where the
-    // account was, or that it was not wanted: the standard right does not
-    // bring it back.
-    if store.setting(SETTING).is_some() && store.setting(RIGHT_SETTING).is_none() {
-        header.right.retain(|part| *part != Part::Account);
+    // Written as sections kept apart: a section never stored is as it ships.
+    let old_standard = OLD_STANDARDS.iter().any(|old| {
+        old.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
+    });
+    if old_standard {
+        return Layout::standard();
     }
-    // And the other way: a right written with the left never stored is
-    // beside the standard left, which held the account when the right did
-    // not. Every header written since writes the left too, so the account
-    // was shown, and stays: where the standard has it now, leading the right.
-    if store.setting(SETTING).is_none() && store.setting(RIGHT_SETTING).is_some() && !placed.contains(&Part::Account) {
-        header.right.insert(0, Part::Account);
-    }
-    header
+    // A section stored as `none` names no part, so it reads as empty.
+    let section = |key: &str| store.setting(key).map(|text| lenient(&text));
+    Layout::from_sections(&lenient(&text), section(CENTER_SETTING), section(RIGHT_SETTING), strip)
 }
 
-fn load_section(store: &Store, section: Section) -> Vec<Part> {
-    match store.setting(section.setting()) {
-        None => standard(section),
-        Some(text) if text.trim().eq_ignore_ascii_case("none") => Vec::new(),
-        Some(text) => from_keys(&text.split(',').map(str::trim).collect::<Vec<_>>()),
-    }
-}
-
-pub fn save(store: &Store, header: &Header) {
-    store.set_setting(SETTING, &spell(&header.left));
-    store.set_setting(CENTER_SETTING, &spell(&header.center));
-    store.set_setting(RIGHT_SETTING, &spell(&header.right));
+/// Every chart's header, in the one setting: the sections a header was
+/// once stored in apart are forgotten, having been brought forward.
+pub fn save(store: &Store, layout: &Layout) {
+    store.set_setting(SETTING, &spell(layout));
+    store.remove_setting(CENTER_SETTING);
+    store.remove_setting(RIGHT_SETTING);
 }
 
 /// A day's move as the header writes it: `+1.25%`.
@@ -461,247 +604,235 @@ pub fn change_text(change_pct: f64) -> String {
     format!("{change_pct:+.2}%")
 }
 
-/// The colour a day's move is written in: the theme's own up and down,
-/// its palette's green and rose unless somebody set its candles by hand,
-/// turned round only on a chart whose rises are red. Not the chart's bar
-/// colouring: Monochrome candles still have a green rise here. A move of
-/// exactly nothing has none, and is written in the header's own text.
-pub fn change_colour(theme: &omacharts_engine::Theme, swapped: bool, change: f64) -> Option<String> {
+/// The colour a day's move is written in: `scheme`'s rise or fall, the
+/// chart's look turned only as a red-up chart turns it, so Monochrome or
+/// Quiet candles still have a coloured rise here. A move of exactly
+/// nothing has none, and is written in the header's own text.
+pub fn change_colour(scheme: &omacharts_engine::BarScheme, change: f64) -> Option<String> {
     use omacharts_engine::Direction;
-    let bars = omacharts_engine::theme::theme_bars(theme);
-    let (up, down) = if swapped { (bars.down, bars.up) } else { (bars.up, bars.down) };
     match Direction::of_change(change) {
-        Direction::Up => Some(up),
-        Direction::Down => Some(down),
         Direction::Flat => None,
+        direction => Some(scheme.outline(direction).to_string()),
+    }
+}
+
+/// `words` as markup, in `colour` when there is one: how the header writes
+/// a move.
+pub fn change_markup(words: &str, colour: Option<&str>) -> String {
+    let words = gtk::glib::markup_escape_text(words);
+    match colour {
+        Some(colour) => format!("<span foreground=\"{}\">{words}</span>", gtk::glib::markup_escape_text(colour)),
+        None => words.to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::{force, Feature};
+
+    /// `text` as typed with trading on, so every part is one.
+    fn layout(text: &str) -> Layout {
+        force(Feature::Trading, true);
+        parse(text).unwrap()
+    }
+
+    #[test]
+    fn a_zone_is_where_it_stands_in_all() {
+        for (at, zone) in Zone::ALL.into_iter().enumerate() {
+            assert_eq!(zone.index(), at, "{zone:?}");
+        }
+    }
 
     #[test]
     fn a_header_is_typed_and_written_the_same_way() {
-        let parts = parse("Symbol, change,template").unwrap();
-        assert_eq!(parts, vec![Part::Symbol, Part::Change, Part::Template]);
-        assert_eq!(spell(&parts), "symbol,change,template");
-        assert_eq!(parse("stripe").unwrap(), vec![Part::Stripe]);
-        assert_eq!(parse("none").unwrap(), Vec::new());
-        assert_eq!(spell(&[]), "none");
-        assert!(parse("symbol,price").is_err());
+        let typed = "left=Symbol,change center=strip right=settings,link left2=NAME";
+        let header = layout(typed);
+        assert_eq!(header.zone(Zone::Left), [Part::Symbol, Part::Change]);
+        assert_eq!(header.zone(Zone::Left2), [Part::Name]);
+        assert_eq!(spell(&header), "left=symbol,change center=strip right=settings,link left2=name");
+        assert_eq!(layout(&spell(&header)), header);
+        assert_eq!(layout("none"), Layout::default());
+        assert_eq!(spell(&Layout::default()), "none");
+        assert_eq!(
+            spell(&Layout::standard()),
+            "left=feed,symbol,resolution,change center=title right=account,day_pnl,trade,size,position,settings,maximize,link"
+        );
+        assert_eq!(layout("left=stripe").zone(Zone::Left), [Part::Strip], "the strip's old name");
+    }
+
+    #[test]
+    fn what_is_not_a_header_is_refused() {
+        force(Feature::Trading, true);
+        assert!(parse("left=symbol,price").is_err());
+        assert!(parse("left=symbol right=symbol").is_err());
+        assert!(parse("left=symbol left=change").is_err());
+        assert!(parse("top=symbol").is_err());
+        assert!(parse("left=symbol change").is_err());
         assert!(parse("symbol,symbol").is_err());
+    }
+
+    /// A list with no zones is the left, as it was before there were zones:
+    /// the name under it, the rest as it ships.
+    #[test]
+    fn a_plain_list_is_the_left() {
+        let header = layout("symbol,change,name");
+        assert_eq!(header.zone(Zone::Left), [Part::Symbol, Part::Change]);
+        assert_eq!(header.zone(Zone::Left2), [Part::Name]);
+        assert_eq!(header.zone(Zone::Center), Layout::standard().zone(Zone::Center));
+        assert_eq!(header.zone(Zone::Right), Layout::standard().zone(Zone::Right));
+    }
+
+    /// A place on the second row holds something only under a place that
+    /// shows something: emptied above, it moves up, and under an empty
+    /// place it takes nothing.
+    #[test]
+    fn a_second_row_place_under_an_empty_one_moves_up() {
+        let header = layout("left2=name right2=change");
+        assert_eq!(header.zone(Zone::Left), [Part::Name]);
+        assert_eq!(header.zone(Zone::Right), [Part::Change]);
+        assert!(!header.second_row());
+
+        let mut header = layout("left=symbol right=settings,link left2=name right2=change");
+        assert!(header.takes(Zone::Right2, Part::Symbol));
+        assert!(!header.takes(Zone::Center2, Part::Title), "nothing in the centre above");
+        assert!(!header.takes(Zone::Left2, Part::Symbol), "the left above would be empty");
+        assert!(header.takes(Zone::Center, Part::Symbol));
+        header.remove(Part::Symbol);
+        assert_eq!(header.zone(Zone::Left), [Part::Name]);
+        assert!(header.zone(Zone::Left2).is_empty());
+        assert_eq!(header.zone(Zone::Right2), [Part::Change], "the right above still shows something");
+        header.remove(Part::Settings);
+        header.remove(Part::Link);
+        assert_eq!(header.zone(Zone::Right), [Part::Change]);
+        assert!(!header.second_row());
+        header.place(Part::Title, Zone::Center2, 0);
+        assert_eq!(header.zone(Zone::Center), [Part::Title], "placed under nothing, it lands above");
+    }
+
+    /// With trading off its parts hold nothing up: a place that holds only
+    /// them is empty to the place under it, though they stay in it.
+    #[test]
+    fn trading_s_hidden_parts_hold_no_row_up() {
+        use crate::features::reset;
+        let typed = "left=symbol right=account,trade right2=name";
+        force(Feature::Trading, true);
+        let header = layout(typed);
+        assert_eq!(header.zone(Zone::Right2), [Part::Name]);
+        assert!(header.takes(Zone::Right2, Part::Symbol));
+        force(Feature::Trading, false);
+        assert!(!header.takes(Zone::Right2, Part::Symbol));
+        let header = read(typed, true);
+        assert_eq!(header.zone(Zone::Right), [Part::Account, Part::Trade, Part::Name]);
+        assert!(!header.second_row());
+        let header = read("left=symbol left2=trade", true);
+        assert!(!header.second_row(), "only a hidden part under it");
+        reset();
+    }
+
+    #[test]
+    fn a_part_moves_rather_than_doubling() {
+        let mut header = Layout::standard();
+        header.place(Part::Title, Zone::Right, 0);
+        assert!(header.zone(Zone::Center).is_empty());
+        assert_eq!(header.zone(Zone::Right)[0], Part::Title);
+        header.place(Part::Name, Zone::Left2, 9);
+        assert_eq!(header.zone(Zone::Left2), [Part::Name]);
+        header.add(Part::Name);
+        assert_eq!(header.zone_of(Part::Name), Some(Zone::Left2));
+        header.add(Part::Strip);
+        assert_eq!(header.zone(Zone::Center), [Part::Strip]);
+        assert!(header.takes(Zone::Left2, Part::Symbol));
+        assert!(!layout("left=symbol").takes(Zone::Left2, Part::Symbol));
     }
 
     #[test]
     fn what_is_saved_is_what_every_chart_shows() {
         let store = Store::memory().unwrap();
-        assert_eq!(load(&store), Header::standard());
-        let header =
-            Header { left: vec![Part::Change, Part::Symbol], center: vec![Part::Stripe], right: vec![Part::Settings] };
+        assert_eq!(load(&store), Layout::standard());
+        let header = layout("left=change,symbol right=link");
         save(&store, &header);
         assert_eq!(load(&store), header);
-        let empty = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
-        save(&store, &empty);
-        assert_eq!(load(&store), empty);
+        save(&store, &Layout::default());
+        assert_eq!(load(&store), Layout::default());
     }
 
-    /// Out of the box the left is the data feed's dot and then the line
-    /// every chart always had, ending on the day's move; the center the chart's title, and the right
-    /// the day's P&L, Buy, Sell and the quantity ahead of the three
-    /// controls that always stood in its corner, in their order. The
-    /// stripe is only there once somebody adds it.
+    /// The standard header as the one setting spelled it before the
+    /// position held was in it is the standard one now, the position after
+    /// the quantity; one of anybody's own is kept as it was saved, without it.
     #[test]
-    fn the_standard_header_is_the_line_the_title_and_the_corner() {
-        let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
-        assert_eq!(header.center, vec![Part::Title]);
-        assert!(!header.contains(Part::Stripe));
-        assert_eq!(
-            header.right,
-            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
-        );
-    }
-
-    /// A header saved as the one that shipped with the account at the end
-    /// of the left is the standard one now, the account leading the right;
-    /// one that differs from it in anything is kept as it was saved.
-    #[test]
-    fn the_old_standard_header_moves_the_account_to_the_right() {
+    fn the_standard_header_from_before_the_position_gains_it() {
         let store = Store::memory().unwrap();
-        for (key, value) in BEFORE_ACCOUNT_MOVED {
-            store.set_setting(key, value);
-        }
-        assert_eq!(load(&store), Header::standard());
-        assert_eq!(load(&store).right[0], Part::Account);
-        store.set_setting(SETTING, "symbol,feed,resolution,account");
-        let kept = load(&store);
-        assert_eq!(kept.left, vec![Part::Symbol, Part::Feed, Part::Resolution, Part::Account]);
-        assert_eq!(kept.right, vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-        store.set_setting(SETTING, "feed,symbol,resolution,account");
-        store.set_setting(RIGHT_SETTING, "trade,day_pnl,size,settings,maximize,link");
-        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account], "a right of its own");
-    }
-
-    /// A right of somebody's own stored with no left, from when the
-    /// standard left held the account: the account is still in the header,
-    /// leading the right as the standard has it now, and never twice.
-    #[test]
-    fn a_right_stored_alone_keeps_the_account() {
-        let store = Store::memory().unwrap();
-        store.set_setting(RIGHT_SETTING, "trade,size,settings,link");
-        let header = load(&store);
-        assert_eq!(header.left, standard(Section::Left));
-        assert_eq!(header.right, vec![Part::Account, Part::Trade, Part::Size, Part::Settings, Part::Link]);
-        store.set_setting(RIGHT_SETTING, "trade,account,link");
-        assert_eq!(load(&store).right, vec![Part::Trade, Part::Account, Part::Link], "where it was put");
-        store.set_setting(CENTER_SETTING, "title,account");
-        store.set_setting(RIGHT_SETTING, "trade,link");
-        assert_eq!(load(&store).right, vec![Part::Trade, Part::Link], "in the center already");
-        // Written whole, as every header is now, it is as it was written.
-        save(&store, &Header { left: vec![Part::Symbol], center: Vec::new(), right: vec![Part::Link] });
-        assert_eq!(load(&store).right, vec![Part::Link]);
-    }
-
-    /// A header saved as the one that shipped before the day's move was in
-    /// it is the standard one now, the move after the resolution, whether
-    /// all of it was written down or some; a left of anybody's own, or a
-    /// header that differs in anything, is kept as it was saved, without it.
-    #[test]
-    fn the_old_standard_header_gains_the_day_s_move() {
-        let store = Store::memory().unwrap();
-        for (key, value) in BEFORE_CHANGE {
-            store.set_setting(key, value);
-        }
-        assert_eq!(load(&store), Header::standard());
-        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
-        store.remove_setting(CENTER_SETTING);
-        assert_eq!(load(&store), Header::standard());
-
-        store.set_setting(SETTING, "symbol,resolution");
-        assert_eq!(load(&store).left, vec![Part::Symbol, Part::Resolution], "a left of its own");
-        assert!(!load(&store).contains(Part::Change));
-
-        store.set_setting(SETTING, "feed,symbol,resolution");
-        store.set_setting(RIGHT_SETTING, "settings,maximize,link");
-        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution], "a right of its own");
-        assert!(!load(&store).contains(Part::Change));
-    }
-
-    /// A header saved as the one that shipped before the position held was
-    /// in it is the standard one now, the position after the quantity and
-    /// ahead of the controls, whether all of it was written down or some; a
-    /// header of anybody's own is kept as it was saved, without it.
-    #[test]
-    fn the_old_standard_header_gains_the_current_position() {
-        let store = Store::memory().unwrap();
-        for (key, value) in BEFORE_POSITION {
-            store.set_setting(key, value);
-        }
-        assert_eq!(load(&store), Header::standard());
-        assert_eq!(
-            load(&store).right,
-            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
-        );
-        store.remove_setting(CENTER_SETTING);
-        assert_eq!(load(&store), Header::standard());
-
-        store.set_setting(RIGHT_SETTING, "day_pnl,account,trade,size,settings,maximize,link");
-        let kept = load(&store);
-        assert_eq!(kept.right, vec![Part::DayPnl, Part::Account, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
-        assert!(!kept.contains(Part::Position), "a right of its own");
-
-        store.set_setting(RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link");
-        store.set_setting(SETTING, "symbol,resolution");
-        assert!(!load(&store).contains(Part::Position), "a left of its own");
-
-        // Typed and named like the other parts.
-        assert_eq!(parse_for("position,size", true), Ok(vec![Part::Position, Part::Size]));
-        assert!(parse_for("position", false).is_err(), "a trading part with trading off");
+        store.set_setting(SETTING, BEFORE_POSITION);
+        assert_eq!(load(&store), Layout::standard());
+        assert!(load(&store).zone(Zone::Right).contains(&Part::Position));
+        store.set_setting(SETTING, "left=symbol right=account,trade,size,link");
+        assert!(!load(&store).contains(Part::Position), "a header of its own");
         assert_eq!(Part::Position.label(), "Current position");
+        assert_eq!(Part::from_key("position"), Some(Part::Position));
     }
 
-    /// A header saved as the one that shipped with the P&L at the end of
-    /// the left is the standard one now, P&L on the right; one that differs
-    /// from it in anything is kept as it was saved.
+    /// A header stored before zones keeps what it showed: its line on the
+    /// left, the sections stored apart in the middle and on the right, and
+    /// the strip's old switch.
     #[test]
-    fn the_old_standard_header_follows_the_p_l_to_the_right() {
+    fn an_old_header_comes_forward() {
         let store = Store::memory().unwrap();
-        for (key, value) in BEFORE_PNL_MOVED {
-            store.set_setting(key, value);
-        }
-        assert_eq!(load(&store), Header::standard());
-        store.remove_setting(CENTER_SETTING);
-        assert_eq!(load(&store), Header::standard());
-        store.set_setting(CENTER_SETTING, "none");
-        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
-        assert_eq!(load(&store).center, Vec::new());
-    }
+        store.set_setting(SETTING, "symbol,change,name");
+        let header = load(&store);
+        assert_eq!(header.zone(Zone::Left), [Part::Symbol, Part::Change]);
+        assert_eq!(header.zone(Zone::Left2), [Part::Name]);
+        assert_eq!(header.zone(Zone::Right), Layout::standard().zone(Zone::Right));
 
-    /// A header saved as the one that shipped before there were titles,
-    /// the stripe in the center, is the standard one now, the title where
-    /// the stripe was, whether all of it was written down or some; one that
-    /// differs from it in anything is kept as it was saved, stripe and all.
-    #[test]
-    fn the_old_standard_header_gives_the_center_to_the_title() {
-        let store = Store::memory().unwrap();
-        for (key, value) in BEFORE_TITLES {
-            store.set_setting(key, value);
-        }
-        assert_eq!(load(&store), Header::standard());
-        store.remove_setting(SETTING);
-        assert_eq!(load(&store), Header::standard());
-        store.set_setting(SETTING, "symbol,resolution");
-        let kept = load(&store);
-        assert_eq!(kept.left, vec![Part::Symbol, Part::Resolution]);
-        assert_eq!(kept.center, vec![Part::Stripe]);
-        assert!(!kept.contains(Part::Title));
-    }
-
-    /// A header stored before there were sections keeps its line on the
-    /// left, and has the standard center and the controls in the corner.
-    #[test]
-    fn a_header_stored_before_sections_is_unchanged() {
-        let store = Store::memory().unwrap();
-        store.set_setting(SETTING, "change,symbol,account");
-        assert_eq!(
-            load(&store),
-            Header {
-                left: vec![Part::Change, Part::Symbol, Part::Account],
-                center: vec![Part::Title],
-                right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link],
-            }
-        );
-        store.set_setting(SETTING, "none");
-        assert_eq!(load(&store).left, Vec::new());
-        assert_eq!(load(&store).center, vec![Part::Title]);
-    }
-
-    /// Placing a part in one section takes it out of the others; and a
-    /// part stored in two, which only a hand-written setting can do, is
-    /// shown once, in the first of them.
-    #[test]
-    fn a_part_is_in_the_header_once() {
-        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
-        let mut header = Header::standard();
-        header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
-        assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: vec![Part::Title], right: corner.clone() });
-        header.set(Section::Center, vec![Part::Symbol]);
-        assert_eq!(header, Header { left: vec![Part::Stripe], center: vec![Part::Symbol], right: corner.clone() });
-        header.set(Section::Right, vec![Part::Stripe, Part::Settings]);
-        assert_eq!(
-            header,
-            Header { left: Vec::new(), center: vec![Part::Symbol], right: vec![Part::Stripe, Part::Settings] }
-        );
-
-        let store = Store::memory().unwrap();
-        store.set_setting(SETTING, "symbol,stripe");
         store.set_setting(CENTER_SETTING, "stripe,change,settings");
         store.set_setting(RIGHT_SETTING, "settings,change,link");
-        assert_eq!(
-            load(&store),
-            Header { left: vec![Part::Symbol, Part::Stripe], center: vec![Part::Change, Part::Settings], right: vec![Part::Link] }
-        );
+        let header = load(&store);
+        assert_eq!(header.zone(Zone::Center), [Part::Strip, Part::Settings], "the left wins a part named twice");
+        assert_eq!(header.zone(Zone::Right), [Part::Link]);
+
+        store.set_setting_bool(OLD_STRIP_SETTING, false);
+        assert!(!load(&store).contains(Part::Strip));
+        store.set_setting(SETTING, "none");
+        assert!(load(&store).zone(Zone::Left).is_empty());
+        assert_eq!(load(&store).zone(Zone::Right), [Part::Link], "the left alone was none");
+
+        // Saved once, the header is the one setting, and the sections are
+        // forgotten.
+        save(&store, &load(&store));
+        assert!(!store.has_setting(CENTER_SETTING) && !store.has_setting(RIGHT_SETTING));
+        save(&store, &Layout::default());
+        assert_eq!(load(&store), Layout::default());
+    }
+
+    /// The standard header a build with sections kept apart wrote out is
+    /// the standard one now; one that differs from it in anything is kept.
+    #[test]
+    fn an_old_standard_header_is_the_standard() {
+        let store = Store::memory().unwrap();
+        for old in OLD_STANDARDS {
+            for (key, value) in old {
+                store.set_setting(key, value);
+            }
+            assert_eq!(load(&store), Layout::standard());
+        }
+        store.set_setting(CENTER_SETTING, "stripe");
+        store.set_setting(SETTING, "symbol,resolution");
+        let kept = load(&store);
+        assert_eq!(kept.zone(Zone::Left), [Part::Symbol, Part::Resolution]);
+        assert_eq!(kept.zone(Zone::Center), [Part::Strip]);
+    }
+
+    /// A newer build's part or zone is dropped, not the header: the rest
+    /// still shows.
+    #[test]
+    fn what_this_build_does_not_know_is_left_out() {
+        let store = Store::memory().unwrap();
+        store.set_setting(SETTING, "left=volume,change,symbol,change top=link right=link");
+        let header = load(&store);
+        assert_eq!(header.zone(Zone::Left), [Part::Change, Part::Symbol]);
+        assert_eq!(header.zone(Zone::Right), [Part::Link]);
+        store.set_setting(SETTING, "volume,change");
+        assert_eq!(load(&store).zone(Zone::Left), [Part::Change]);
     }
 
     /// With trading off its parts are no header's: not typed, not
@@ -709,58 +840,35 @@ mod tests {
     /// change to the parts that are shown.
     #[test]
     fn trading_s_parts_are_kept_out_of_sight_while_it_is_off() {
-        assert!(parse_for("symbol,trade", false).is_err());
-        let refused = parse_for("banana", false).unwrap_err();
+        force(Feature::Trading, true);
+        assert!(parse_list("symbol,trade").is_ok());
+        assert_eq!(Part::every_shown(), Part::ALL.to_vec());
+        force(Feature::Trading, false);
+        assert!(parse_list("symbol,trade").is_err());
+        let refused = parse_list("banana").unwrap_err();
         assert!(!refused.contains("day_pnl") && refused.contains("symbol"), "{refused}");
-        assert!(parse_for("symbol,trade", true).is_ok());
-        assert!(Part::every_shown(false).iter().all(|part| !part.trades()));
-        assert_eq!(Part::every_shown(true), Part::ALL.to_vec());
+        assert!(parse("left=account").is_err());
+        assert!(Part::every_shown().iter().all(|part| !part.trades()));
 
-        let mut header = Header::standard();
-        assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
-        header.set_shown(Section::Left, vec![Part::Symbol, Part::Feed], false);
-        assert_eq!(header.left, vec![Part::Symbol, Part::Feed]);
-        header.set_shown(Section::Right, vec![Part::Link], false);
-        assert_eq!(header.right, vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link]);
+        let header = Layout::standard();
+        assert_eq!(header.shown(Zone::Left), [Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
+        let mut typed = parse("left=symbol,feed right=link").unwrap();
+        typed.keep_hidden(&header);
+        assert_eq!(typed.zone(Zone::Left), [Part::Symbol, Part::Feed]);
+        assert_eq!(typed.zone(Zone::Right), [Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link]);
+        assert!(typed.zone(Zone::Center).is_empty());
+        assert_eq!(spell(&typed.seen()), "left=symbol,feed right=link");
     }
 
-    /// The corner's controls are parts like the others: typed by name,
-    /// placed in any section, and taken out.
+    /// A rise in the scheme's up colour and a fall in its down; nothing at
+    /// all is the text.
     #[test]
-    fn the_corner_s_controls_are_parts() {
-        crate::features::force(crate::features::Feature::Trading, true);
-        assert_eq!(parse("settings,maximize,link").unwrap(), vec![Part::Settings, Part::Maximize, Part::Link]);
-        assert_eq!(parse("feed,account").unwrap(), vec![Part::Feed, Part::Account]);
-        let store = Store::memory().unwrap();
-        store.set_setting(RIGHT_SETTING, "none");
-        store.set_setting(SETTING, "settings,symbol");
-        let header = load(&store);
-        assert_eq!(header.right, Vec::new());
-        assert_eq!(header.left, vec![Part::Settings, Part::Symbol]);
-        assert!(!header.contains(Part::Maximize));
-    }
-
-    /// A newer build's part is dropped, not the header: the rest still shows.
-    #[test]
-    fn a_part_this_build_does_not_know_is_left_out() {
-        assert_eq!(from_keys(&["symbol", "volume", "symbol", "change"]), vec![Part::Symbol, Part::Change]);
-        let store = Store::memory().unwrap();
-        store.set_setting(SETTING, "volume,change,symbol");
-        assert_eq!(load(&store).left, vec![Part::Change, Part::Symbol]);
-    }
-
-    /// Green up and red down, from the palette, whatever the chart's own
-    /// bar colouring; red up turns them round; nothing at all is the text.
-    #[test]
-    fn a_change_is_coloured_from_the_palette() {
+    fn a_change_is_coloured_from_the_scheme() {
         let theme = omacharts_engine::theme::builtin_themes().remove(0);
-        let green = theme.swatch("Green").unwrap().hex.clone();
-        let rose = theme.swatch("Rose").unwrap().hex.clone();
-        assert_eq!(change_colour(&theme, false, 0.01), Some(green.clone()), "a cent up");
-        assert_eq!(change_colour(&theme, false, -0.01), Some(rose.clone()), "a cent down");
-        assert_eq!(change_colour(&theme, false, 0.0), None);
-        assert_eq!(change_colour(&theme, true, 1.0), Some(rose));
-        assert_eq!(change_colour(&theme, true, -1.0), Some(green));
+        let scheme = omacharts_engine::theme_bars(&theme);
+        assert_eq!(change_colour(&scheme, 0.01), Some(scheme.up.clone()), "a cent up");
+        assert_eq!(change_colour(&scheme, -0.01), Some(scheme.down.clone()), "a cent down");
+        assert_eq!(change_colour(&scheme, 0.0), None);
     }
 
     #[test]

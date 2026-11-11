@@ -49,7 +49,7 @@ crop: 980,230,600,1140
 
 ### In Preferences
 
-Preferences › Data › **Backups**:
+Preferences › General › **Preference backups**:
 
 | Control | Does |
 |---|---|
@@ -65,7 +65,7 @@ A restore takes effect at once, even in an open window. The charts, the sidebar 
 
 | To move | Do |
 |---|---|
-| Everything | On the other machine, Preferences › Data › **Restore… › Choose a File…** and pick a copy of `omacharts.db` or any file from `backups/`. |
+| Everything | On the other machine, Preferences › General › **Restore… › Choose a File…** and pick a copy of `omacharts.db` or any file from `backups/`. |
 | Everything, before the first launch | Put `omacharts.db` in `~/.local/share/omacharts/` on a machine that has never run Omacharts. |
 | Watchlists only | Export them on this machine and import them on the other with the CLI. Importing adds to that machine's lists rather than replacing them ([Watchlists and sections in the CLI](/manual/cli/#watchlists-and-sections)). |
 
@@ -75,7 +75,7 @@ None of these carries the thinkorswim session. Sign in again on the other machin
 
 Downloaded prices are kept on this machine, up to a limit. Past it the oldest are dropped, and at once when you lower the limit.
 
-Preferences › Data › **Storage**:
+Preferences › Market data › **Storage**:
 
 | Control | Does |
 |---|---|
@@ -90,7 +90,7 @@ Quit Omacharts, then delete what you want gone:
 | To forget | Delete |
 |---|---|
 | Everything you made, the downloaded prices and the backups | `~/.local/share/omacharts/` |
-| Only the downloaded prices | Preferences › Data › Storage › **Clear**, or `market.db` with the app closed |
+| Only the downloaded prices | Preferences › Market data › Storage › **Clear**, or `market.db` with the app closed |
 | The thinkorswim session and browser profile | `~/.config/omacharts/` |
 | The Omarchy plugin | Preferences › General › **Show in the Omarchy bar**, off |
 

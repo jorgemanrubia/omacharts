@@ -1,51 +1,185 @@
-//! Choosing a theme and a bar scheme, and making the whole app wear them.
+//! Choosing a theme and how candles look, and making the whole app wear them.
 //!
 //! On Omarchy the desktop theme is the default for both, and it is followed
 //! live: the palette is re-read on a timer and the app repaints when it
-//! changes. Everything is overridable in settings, and a custom theme is just
-//! a palette somebody saved.
+//! changes. Any other Omarchy theme can be picked instead, and then stays put
+//! whatever the desktop does; a machine without Omarchy picks from a few of
+//! Omarchy's palettes built into the binary.
 //!
 //! "The whole app" is meant literally. The theme's colours are pushed into
 //! libadwaita's own named colours, so headers, popovers, lists, dialogs and
 //! the chart all come from one palette rather than the chart being a themed
 //! island in a default-grey window.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use std::fmt::Write as _;
 
 use omacharts_engine::frame::{GUTTER_WIDTH, RING_WIDTH};
 use omacharts_engine::theme::{
-    builtin_themes, BarColouring, BarScheme, Mode, Theme, FALLBACK_THEME_ID, OMARCHY_ID,
-    THEME_BARS_ID,
+    parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Body, Mode, Theme,
+    Thickness, TradingLook, FALLBACK_THEME_ID, OMARCHY_ID,
 };
 use omacharts_engine::Ink;
-use omacharts_engine::omarchy;
+use omacharts_engine::omarchy::{self, Palette};
 
+use crate::chart_look::ChartLook;
 use crate::store::{home, Store};
 use crate::ui::colors;
 
 pub const SETTING_THEME: &str = "theme";
-pub const SETTING_BARS: &str = "bar_scheme";
+
+/// What the theme that follows the desktop is called on the command line:
+/// the word every other setting on this platform uses, rather than its
+/// stored id.
+pub const SYSTEM_THEME: &str = "system";
+
+/// A theme's id as the command line says it.
+pub fn spell_theme(id: &str) -> &str {
+    match id == OMARCHY_ID {
+        true => SYSTEM_THEME,
+        false => id,
+    }
+}
+
+/// The id a theme typed on the command line is stored by: [`spell_theme`]
+/// the other way round.
+pub fn theme_id(word: &str) -> &str {
+    match word.eq_ignore_ascii_case(SYSTEM_THEME) {
+        true => OMARCHY_ID,
+        false => word,
+    }
+}
+/// The answers a candle's look is made of. The window and `config bars`
+/// both write these, so there is no second spelling to drift.
+pub const SETTING_BAR_UP: &str = "bar_up";
+pub const SETTING_BAR_DOWN: &str = "bar_down";
+/// A line's two shades: at its lowest close on screen, and at its highest.
+const SETTING_BAR_LINE_LOW: &str = "bar_line_low";
+const SETTING_BAR_LINE_HIGH: &str = "bar_line_high";
+/// A body is stored as two switches, hollow and bordered, so the hollow
+/// one an older version wrote still reads. Hollow wins where both are on,
+/// which only a hand-edited row can make.
+const SETTING_BAR_UP_HOLLOW: &str = "bar_up_hollow";
+const SETTING_BAR_DOWN_HOLLOW: &str = "bar_down_hollow";
+const SETTING_BAR_UP_BORDER: &str = "bar_up_border";
+const SETTING_BAR_DOWN_BORDER: &str = "bar_down_border";
+/// How many pixels wide each direction's OHLC bars are drawn.
+const SETTING_BAR_UP_THICKNESS: &str = "bar_up_thickness";
+const SETTING_BAR_DOWN_THICKNESS: &str = "bar_down_thickness";
+/// Where an older version stored one thickness for both directions, read
+/// until the bars are next changed, which writes the two above instead.
+const LEGACY_OHLC_THICKNESS: &str = "ohlc_thickness";
+/// Where an older version stored a named bar scheme, and the two switches
+/// it wore over any scheme: up and down exchanged, and a rise drawn
+/// hollow. Read while the rows above are unwritten, so an upgrade keeps
+/// the bars somebody chose.
+const LEGACY_BAR_SCHEME: &str = "bar_scheme";
+const LEGACY_SWAP_COLOURS: &str = "swap_colours";
+const LEGACY_HOLLOW_UP: &str = "hollow_up";
+/// How orders and positions are drawn, as a [`TradingLook`] in JSON: one
+/// for every theme, since a theme is Omarchy's and not ours to edit.
+pub const SETTING_TRADING_LOOK: &str = "trading_look";
+
+/// How orders and positions are drawn, as stored. Unset or unreadable, every
+/// slot follows the theme.
+pub fn trading_look(store: &Store) -> TradingLook {
+    store.setting(SETTING_TRADING_LOOK).and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+}
+
+/// How candles look, as stored.
+pub fn bar_look(store: &Store) -> BarLook {
+    let legacy = legacy_bar_look(store);
+    let colour = |key: &str, fallback: omacharts_engine::ColorChoice| {
+        store.setting(key).and_then(|text| parse_bar_colour(&text)).unwrap_or(fallback)
+    };
+    let body = |hollow: &str, border: &str, fallback: Body| {
+        match (store.setting_bool(hollow, fallback == Body::Hollow), store.setting_bool(border, false)) {
+            (true, _) => Body::Hollow,
+            (false, true) => Body::Bordered,
+            (false, false) => Body::Filled,
+        }
+    };
+    let px = |key: &str| store.setting(key).and_then(|text| Thickness::parse(&text));
+    let one = px(LEGACY_OHLC_THICKNESS).unwrap_or(legacy.up_thickness);
+    BarLook {
+        up: colour(SETTING_BAR_UP, legacy.up),
+        down: colour(SETTING_BAR_DOWN, legacy.down),
+        up_body: body(SETTING_BAR_UP_HOLLOW, SETTING_BAR_UP_BORDER, legacy.up_body),
+        down_body: body(SETTING_BAR_DOWN_HOLLOW, SETTING_BAR_DOWN_BORDER, legacy.down_body),
+        line_low: colour(SETTING_BAR_LINE_LOW, legacy.line_low),
+        line_high: colour(SETTING_BAR_LINE_HIGH, legacy.line_high),
+        up_thickness: px(SETTING_BAR_UP_THICKNESS).unwrap_or(one),
+        down_thickness: px(SETTING_BAR_DOWN_THICKNESS).unwrap_or(one),
+    }
+}
+
+/// Write them all, so what is stored is what is on screen whatever an older
+/// version left behind.
+pub fn save_bar_look(store: &Store, look: &BarLook) {
+    store.set_setting(SETTING_BAR_UP, &spell_bar_colour(&look.up));
+    store.set_setting(SETTING_BAR_DOWN, &spell_bar_colour(&look.down));
+    store.set_setting(SETTING_BAR_LINE_LOW, &spell_bar_colour(&look.line_low));
+    store.set_setting(SETTING_BAR_LINE_HIGH, &spell_bar_colour(&look.line_high));
+    store.set_setting_bool(SETTING_BAR_UP_HOLLOW, look.up_body == Body::Hollow);
+    store.set_setting_bool(SETTING_BAR_DOWN_HOLLOW, look.down_body == Body::Hollow);
+    store.set_setting_bool(SETTING_BAR_UP_BORDER, look.up_body == Body::Bordered);
+    store.set_setting_bool(SETTING_BAR_DOWN_BORDER, look.down_body == Body::Bordered);
+    store.set_setting(SETTING_BAR_UP_THICKNESS, look.up_thickness.key());
+    store.set_setting(SETTING_BAR_DOWN_THICKNESS, look.down_thickness.key());
+    store.remove_setting(LEGACY_OHLC_THICKNESS);
+}
+
+/// The look an older version's named scheme stood for, with its switches
+/// worn over it the way that version wore them: a switch and a scheme
+/// saying the same thing say it once. A scheme somebody made themselves is
+/// not carried over: those were copies with colour pickers, and the
+/// default is a better guess than a half-read one.
+fn legacy_bar_look(store: &Store) -> BarLook {
+    use omacharts_engine::theme::{GRAPHITE, SAND, SILVER, SLATE};
+    let swatches = |up: &str, down: &str| BarLook {
+        up: omacharts_engine::ColorChoice::swatch(up),
+        down: omacharts_engine::ColorChoice::swatch(down),
+        ..BarLook::default()
+    };
+    let (mut look, swapped, hollow_up) = match store.setting(LEGACY_BAR_SCHEME).as_deref() {
+        Some("theme-red-up") => (BarLook::default(), true, false),
+        Some("theme-hollow" | "hollow") => (BarLook::default(), false, true),
+        Some("theme-mono" | "monochrome") => (BarLook::monochrome(), false, false),
+        Some("theme-soft") => (swatches(SLATE, SAND), false, false),
+        Some("theme-quiet") => (swatches(SILVER, GRAPHITE), false, false),
+        Some("accessible") => (swatches("Blue", "Orange"), false, false),
+        _ => (BarLook::default(), false, false),
+    };
+    if swapped || store.setting_bool(LEGACY_SWAP_COLOURS, false) {
+        std::mem::swap(&mut look.up, &mut look.down);
+    }
+    if hollow_up || store.setting_bool(LEGACY_HOLLOW_UP, false) {
+        look.up_body = Body::Hollow;
+    }
+    look
+}
 
 pub struct Theming {
     home: PathBuf,
     /// Rebuilt from the desktop whenever its fingerprint moves.
     omarchy: Option<Theme>,
     omarchy_fingerprint: Option<String>,
-    builtin_themes: Vec<Theme>,
-    /// Every Omarchy theme installed, each fixed rather than following.
-    installed_themes: Vec<Theme>,
-    custom_themes: Vec<Theme>,
+    /// Every other theme on offer, each fixed at its palette: the machine's
+    /// Omarchy themes, or the bundled ones where there are none. Derived
+    /// as they are worn or listed.
+    named: Vec<Palette>,
     theme_id: String,
-    scheme_id: String,
-    /// The two switches new charts wear over the scheme, up and down
-    /// swapped and a hollow rise: the defaults the preferences hold, which
-    /// the watchlist, the stylesheet and the bar widget follow, since they
-    /// have no chart of their own to follow.
-    swapped: bool,
-    hollow_up: bool,
+    bars: BarLook,
+    trading: TradingLook,
     provider: Option<gtk::CssProvider>,
+    /// The themes charts have worn since the window opened, each given its
+    /// colours under its class by `scoped` ([`Theming::cover`]). Only
+    /// grows: a theme no chart wears any more costs a few lines, and keeps
+    /// the sheet from being reloaded as charts change theme back and forth.
+    worn: BTreeSet<String>,
+    scoped: Option<gtk::CssProvider>,
 }
 
 impl Theming {
@@ -58,114 +192,75 @@ impl Theming {
         // install already matches everything else on screen.
         let default_theme = if omarchy.is_some() { OMARCHY_ID } else { FALLBACK_THEME_ID };
 
-        // The scheme id is kept as written, since an id from before colours
-        // lived in themes names a custom scheme to carry over; the switches
-        // it implies are read off the same read, not three more.
-        let scheme_id = store.setting(SETTING_BARS);
-        let look = crate::chart_defaults::stored_colouring_of(store, scheme_id.as_deref());
-        let theming = Theming {
+        Theming {
             theme_id: store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string()),
-            scheme_id: scheme_id.unwrap_or_else(|| THEME_BARS_ID.to_string()),
-            swapped: look.swapped,
-            hollow_up: look.hollow_up,
+            bars: bar_look(store),
+            trading: trading_look(store),
+            named: named_themes(&home),
             omarchy,
             omarchy_fingerprint,
-            builtin_themes: builtin_themes(),
-            installed_themes: omarchy::installed(&home),
-            custom_themes: store.custom_themes(),
             home,
             provider: None,
-        };
-        theming
-    }
-
-    /// Bar schemes used to carry colours of their own; now a theme does. A
-    /// scheme in use whose colours are not the theme's — the blue and orange
-    /// one, the classic pair, one somebody made — becomes a copy of the theme
-    /// wearing them, so nobody opens the app to different candles. Once: the
-    /// setting then names a colouring, and this finds nothing to do.
-    ///
-    /// Run by the window as it opens, not by every reader: a command that only
-    /// asks for colours should not write a theme.
-    pub fn carry_over_candle_colours(&mut self, store: &Store) {
-        let Some(bars) = legacy_bar_colours(&self.scheme_id)
-            .or_else(|| store.legacy_bar_scheme(&self.scheme_id))
-        else {
-            return;
-        };
-        self.adopt_legacy_colours(bars, store);
-    }
-
-    /// `bars`, from before candle colours belonged to themes, as a theme
-    /// wearing them. A scheme with no up body was the hollow look, which is
-    /// a switch of the chart's now, worn over the theme's own colours.
-    fn adopt_legacy_colours(&mut self, bars: BarScheme, store: &Store) {
-        let base = self.theme();
-        let name = format!("{} with {}", base.name, bars.name);
-        let id = format!("custom-{}", self.scheme_id);
-        let hollow = bars.up_fill.len() == 9 && bars.up_fill.ends_with("00");
-        let mut theme = base.duplicate(id.clone(), name);
-        theme.bars = Some(omacharts_engine::BarScheme { mono: String::new(), ..bars });
-        store.save_theme(&theme);
-        self.custom_themes = store.custom_themes();
-        self.select_theme(&id, store);
-        self.select_bar_scheme(BarColouring::Vivid.key(), store);
-        if hollow {
-            self.hollow_up = true;
-            store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, true);
+            worn: BTreeSet::new(),
+            scoped: None,
         }
     }
 
-    pub fn omarchy_available(&self) -> bool {
-        self.omarchy.is_some()
-    }
-
-    /// Every theme on offer: the desktop's, then ours, then every Omarchy
-    /// theme installed, then the user's.
+    /// Every theme on offer: the one following the desktop, then the fixed
+    /// ones.
     pub fn themes(&self) -> Vec<&Theme> {
-        self.omarchy
-            .iter()
-            .chain(self.builtin_themes.iter())
-            .chain(self.installed_themes.iter())
-            .chain(self.custom_themes.iter())
-            .collect()
+        self.omarchy.iter().chain(self.named.iter().map(Palette::theme)).collect()
     }
 
-    /// Every bar scheme on offer. The first is built from the active theme, so
-    /// candles match the desktop without the user choosing anything.
-    /// The active theme, owned.
+    /// The theme following the desktop, while there is a desktop to follow.
+    pub fn desktop(&self) -> Option<&Theme> {
+        self.omarchy.as_ref()
+    }
+
+    /// The fixed themes on offer.
+    pub fn named(&self) -> Vec<Theme> {
+        self.named.iter().map(|p| p.theme().clone()).collect()
+    }
+
+    /// The active theme, owned, wearing the trading look.
     ///
-    /// A theme can vanish — Omarchy uninstalled, a custom one deleted from
-    /// another window — so this falls back rather than refusing to draw.
+    /// A theme can vanish — Omarchy uninstalled, a theme removed from it, or
+    /// a name stored by an older version — so this falls back rather than
+    /// refusing to draw.
     pub fn theme(&self) -> Theme {
-        let themes = self.themes();
-        themes
-            .iter()
-            .find(|t| t.id == self.theme_id)
-            .or_else(|| themes.first())
-            .map(|t| (*t).clone())
-            .unwrap_or_else(|| self.builtin_themes[0].clone())
+        self.resolve(None)
     }
 
-    /// What new charts paint their bars in, and what the watchlist and the
-    /// bar widget say up and down in: which palette, Vivid, Soft, Quiet or
-    /// Monochrome.
-    pub fn colouring(&self) -> omacharts_engine::BarColouring {
-        omacharts_engine::BarColouring::from_key(&self.scheme_id).unwrap_or_default()
+    /// The theme `look` is drawn on: its own, or the window's. A chart's
+    /// theme that has vanished falls back to the window's.
+    pub fn theme_of(&self, look: &ChartLook) -> Theme {
+        self.resolve(look.theme.as_deref())
     }
 
-    /// Whether new charts wear their colouring the other way round, up and
-    /// down exchanged.
-    pub fn swapped(&self) -> bool {
-        self.swapped
+    fn resolve(&self, id: Option<&str>) -> Theme {
+        id.and_then(|id| self.find(id))
+            .or_else(|| self.find(&self.theme_id))
+            .or(self.omarchy.as_ref())
+            .or_else(|| self.named.first().map(Palette::theme))
+            .cloned()
+            .unwrap_or_else(|| omarchy::bundled().swap_remove(0).into_theme())
     }
 
+    /// The theme on offer called `id`, deriving that one and no other.
+    fn find(&self, id: &str) -> Option<&Theme> {
+        self.omarchy
+            .as_ref()
+            .filter(|t| t.id == id)
+            .or_else(|| self.named.iter().find(|p| p.id() == id).map(Palette::theme))
+    }
+
+    /// The candles' colours on the active theme.
     pub fn bar_scheme(&self) -> BarScheme {
-        self.bar_scheme_for(&self.theme())
+        self.bars.scheme(&self.theme())
     }
 
-    fn bar_scheme_for(&self, theme: &Theme) -> BarScheme {
-        BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme).worn(self.swapped, self.hollow_up)
+    pub fn bar_look(&self) -> &BarLook {
+        &self.bars
     }
 
     /// The ink the bar widget writes in.
@@ -179,46 +274,36 @@ impl Theming {
     /// stands in.
     pub fn bar_widget_ink(&self) -> Ink {
         let theme = self.omarchy.clone().unwrap_or_else(|| self.theme());
-        theme.ink(&self.bar_scheme_for(&theme))
+        theme.ink(&self.bars.scheme(&theme))
     }
 
-    pub fn theme_id(&self) -> &str {
-        &self.theme_id
+    /// How orders and positions are drawn as somebody set it: what an edit
+    /// starts from, since a slot left unset keeps following the theme.
+    pub fn trading_look(&self) -> &TradingLook {
+        &self.trading
     }
 
-    pub fn scheme_id(&self) -> &str {
-        &self.scheme_id
+    pub fn set_trading_look(&mut self, look: TradingLook, store: &Store) {
+        if let Ok(json) = serde_json::to_string(&look) {
+            store.set_setting(SETTING_TRADING_LOOK, &json);
+        }
+        self.trading = look;
     }
 
-    pub fn select_theme(&mut self, id: &str, store: &Store) {
-        self.theme_id = id.to_string();
-        store.set_setting(SETTING_THEME, id);
-    }
-
-    pub fn select_bar_scheme(&mut self, id: &str, store: &Store) {
-        self.scheme_id = id.to_string();
-        store.set_setting(SETTING_BARS, id);
-    }
-
-    pub fn reload_custom(&mut self, store: &Store) {
-        self.custom_themes = store.custom_themes();
-    }
-
-    /// Re-read which theme and bar scheme are chosen, for a choice made
+    /// Re-read which theme and bars are chosen, for a choice made
     /// outside this process.
     ///
     /// A command from a terminal writes the setting and nothing else; the
     /// window is still wearing whatever it started in, and would write its own
     /// choice back over the new one the next time anything touched it.
-    pub fn reload_selection(&mut self, store: &Store) {
+    /// Whether any of it changed, which the stylesheet wears.
+    pub fn reload_selection(&mut self, store: &Store) -> bool {
         let default_theme = if self.omarchy.is_some() { OMARCHY_ID } else { FALLBACK_THEME_ID };
-        self.theme_id = store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string());
-        self.scheme_id =
-            store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string());
-        let look = crate::chart_defaults::stored_colouring(store);
-        self.swapped = look.swapped;
-        self.hollow_up = look.hollow_up;
-        self.reload_custom(store);
+        let theme_id = store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string());
+        let (bars, trading) = (bar_look(store), trading_look(store));
+        let changed = (&theme_id, &bars, &trading) != (&self.theme_id, &self.bars, &self.trading);
+        (self.theme_id, self.bars, self.trading) = (theme_id, bars, trading);
+        changed
     }
 
     /// Re-read the desktop palette. `true` when something moved and the app
@@ -233,10 +318,14 @@ impl Theming {
         }
         self.omarchy_fingerprint = fingerprint;
         self.omarchy = omarchy::current(&self.home);
+        // A theme installed or removed shows the next time this is asked,
+        // which is when somebody switches themes and is looking.
+        self.named = named_themes(&self.home);
         true
     }
 
-    /// Push the active theme into libadwaita's named colours.
+    /// Push the active theme into libadwaita's named colours, and the
+    /// themes charts wear under their classes, on the bars as they are now.
     pub fn apply(&mut self) {
         let theme = self.theme();
 
@@ -246,43 +335,78 @@ impl Theming {
         });
 
         let mut css = stylesheet(&theme, &self.bar_scheme());
-        css.push_str(&trading_css(&theme, self.swapped()));
-        let provider = self.provider.get_or_insert_with(|| {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gtk::gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    // Above the platform stylesheet, so our named colours win.
-                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
-                );
-            }
-            provider
-        });
-        provider.load_from_data(&css);
+        css.push_str(&trading_css(&theme, &self.trading, &self.bars));
+        // Above the platform stylesheet, so our named colours win.
+        provider(&mut self.provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1).load_from_data(&css);
+        self.load_scoped();
+    }
+
+    /// Give a chart wearing theme `id` that theme's colours under its
+    /// class: the sheet is reloaded only the first time a chart wears it.
+    pub fn cover(&mut self, id: &str) {
+        if !self.worn.contains(id) {
+            self.worn.insert(id.to_string());
+            self.load_scoped();
+        }
+    }
+
+    /// The worn themes' colours, apart from the window's sheet so a chart
+    /// changing theme reloads only these few lines. One above it, so under
+    /// a chart's class its theme wins, as it did when both were one sheet
+    /// and this came last.
+    fn load_scoped(&mut self) {
+        let css = scoped_stylesheet(self.worn.iter().filter_map(|id| self.find(id)), &self.bars);
+        provider(&mut self.scoped, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 2).load_from_data(&css);
     }
 }
 
-/// The two fixed schemes whose colours were not the theme's, as they shipped.
-fn legacy_bar_colours(id: &str) -> Option<BarScheme> {
-    let (name, up, down) = match id {
-        "classic" => ("Classic", "#3fb950", "#f85149"),
-        "accessible" => ("Blue / Orange", "#4493f8", "#ff9b50"),
-        _ => return None,
-    };
-    Some(BarScheme {
-        id: id.to_string(),
-        name: name.to_string(),
-        source: omacharts_engine::theme::Source::Custom,
-        up: up.to_string(),
-        up_fill: up.to_string(),
-        down: down.to_string(),
-        down_fill: down.to_string(),
-        volume_up: up.to_string(),
-        volume_down: down.to_string(),
-        neutral: "#8b949e".to_string(),
-        mono: String::new(),
+/// The provider in `slot`, added to the display at `priority` the first
+/// time it is asked for.
+fn provider(slot: &mut Option<gtk::CssProvider>, priority: u32) -> &gtk::CssProvider {
+    slot.get_or_insert_with(|| {
+        let provider = gtk::CssProvider::new();
+        popovers_without_arrows();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &provider, priority);
+        }
+        provider
     })
+}
+
+/// Every popover opens without an arrow: a menu opens at the pointer and
+/// has nothing to point at, and one popover with an arrow beside one
+/// without reads as two apps. GTK sizes the arrow in code, not CSS, so it
+/// is turned off as each popover is realized, before it is measured. That
+/// reaches the popovers inside library widgets too (a combo row's list, a
+/// menu button's menu), which no call where a popover is built could.
+fn popovers_without_arrows() {
+    use gtk::glib::{self, gobject_ffi::{GSignalInvocationHint, GValue, g_signal_add_emission_hook, g_signal_lookup}};
+    use gtk::prelude::*;
+    use gtk::glib::translate::IntoGlib;
+
+    unsafe extern "C" fn realized(
+        _hint: *mut GSignalInvocationHint,
+        _count: u32,
+        params: *const GValue,
+        _data: glib::ffi::gpointer,
+    ) -> glib::ffi::gboolean {
+        // The first parameter of a signal is the instance it was emitted on.
+        let instance = unsafe { &*params.cast::<glib::Value>() };
+        if let Ok(popover) = instance.get::<gtk::Popover>() {
+            popover.set_has_arrow(false);
+        }
+        // Stay installed.
+        glib::ffi::GTRUE
+    }
+
+    // A signal exists once its class does, and the first theme is applied
+    // before any widget has been built. Once, whoever applies a theme.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let Some(_class) = glib::Class::<gtk::Popover>::from_type(gtk::Popover::static_type()) else { return };
+    ONCE.call_once(|| unsafe {
+        let realize = g_signal_lookup(c"realize".as_ptr(), gtk::Popover::static_type().into_glib());
+        g_signal_add_emission_hook(realize, 0, Some(realized), std::ptr::null_mut(), None);
+    });
 }
 
 /// How far in from its left edge the window's corner starts its buttons:
@@ -298,9 +422,10 @@ pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
 
 /// The trading look's colours as named colours, and the classes a signed
 /// P&L, a side and a position are written in with them: the one pair for
-/// money, the other for a side, as the chart's marks wear them.
-pub fn trading_css(theme: &Theme, swapped: bool) -> String {
-    let look = omacharts_engine::theme_trading(theme, swapped);
+/// money, the other for a side, as the chart's marks wear them, on bars
+/// that look like `bars`.
+pub fn trading_css(theme: &Theme, trading: &TradingLook, bars: &BarLook) -> String {
+    let look = omacharts_engine::theme_trading(theme, trading, bars);
     format!(
         "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
          @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
@@ -312,17 +437,29 @@ pub fn trading_css(theme: &Theme, swapped: bool) -> String {
     )
 }
 
-/// The app's CSS: libadwaita's named colours, redefined from the theme, plus
-/// the few classes we add ourselves.
-pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
+/// The fixed themes on offer: this machine's Omarchy themes, or where it has
+/// none, the ones built in.
+fn named_themes(home: &std::path::Path) -> Vec<Palette> {
+    let installed = omarchy::installed(home);
+    match installed.is_empty() {
+        true => omarchy::bundled(),
+        false => installed,
+    }
+}
+
+/// The colours a theme hands the window, by libadwaita's names and our own.
+///
+/// One list. The window gets it as named colours and as properties at its
+/// root; a chart on a theme of its own gets it again as properties under
+/// its class ([`scoped_stylesheet`]). The rules read the properties
+/// ([`read_as_properties`]), so either answer reaches them.
+fn named_colours(theme: &Theme, scheme: &BarScheme) -> Vec<(&'static str, String)> {
     let ui = &theme.ui;
     let accent_fg = colors::readable_on(&ui.accent);
     let frame = theme.frame(scheme);
 
-    let mut css = String::with_capacity(2048);
-    let mut define = |name: &str, value: &str| {
-        css.push_str(&format!("@define-color {name} {value};\n"));
-    };
+    let mut colours = Vec::with_capacity(32);
+    let mut define = |name: &'static str, value: &str| colours.push((name, value.to_string()));
 
     // Windows and views. `view_bg_color` is the chart's own ground, so lists
     // and the chart agree.
@@ -357,7 +494,7 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("accent_fg_color", accent_fg);
     define("accent_color", &ui.accent);
 
-    // Rising and falling text follows the bar scheme, so a watchlist agrees
+    // Rising and falling text follows the bars, so a watchlist agrees
     // with the candles beside it.
     define("omacharts_up", &scheme.up);
     define("omacharts_down", &scheme.down);
@@ -379,7 +516,56 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("omacharts_focus", &frame.focus);
     // The chart's price-axis rule, for the corner that stands on it.
     define("omacharts_axis", &ui.axis);
+    colours
+}
 
+/// `window_bg_color` as a custom property: `--window-bg-color`, the name
+/// libadwaita's own rules read.
+fn property(name: &str) -> String {
+    format!("--{}", name.replace('_', "-"))
+}
+
+/// The class a chart wearing theme `id` carries, under which
+/// [`scoped_stylesheet`] gives that theme's colours.
+pub fn theme_class(id: &str) -> String {
+    let slug: String = id.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    format!("theme-{slug}")
+}
+
+/// Every theme's colours under its [`theme_class`], so a chart can wear a
+/// theme the window does not: its header, legend and controls take the
+/// chart's theme the way its canvas does. Custom properties inherit, and
+/// libadwaita's rules and ours read them, so one block per theme is all.
+pub fn scoped_stylesheet<'a>(themes: impl IntoIterator<Item = &'a Theme>, bars: &BarLook) -> String {
+    let mut css = String::new();
+    for theme in themes {
+        let _ = write!(css, ".{} {{", theme_class(&theme.id));
+        for (name, value) in named_colours(theme, &bars.scheme(theme)) {
+            let _ = write!(css, " {}: {value};", property(name));
+        }
+        css.push_str(" }\n");
+    }
+    css
+}
+
+/// The window's stylesheet, on `theme` with `scheme`'s candles.
+pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
+    let colours = named_colours(theme, scheme);
+    let mut css = String::with_capacity(2048);
+    // Named colours too, for libadwaita's rules that read a name rather
+    // than its property.
+    for (name, value) in &colours {
+        let _ = writeln!(css, "@define-color {name} {value};");
+    }
+    css.push_str(":root {");
+    for (name, value) in &colours {
+        let _ = write!(css, " {}: {value};", property(name));
+    }
+    css.push_str(" }\n");
+
+    // Everything after the root block is rules, whoever adds them, and
+    // reads the colours as properties.
+    let rules_from = css.len();
     css.push_str(
         "
 .change-up { color: @omacharts_up; }
@@ -404,6 +590,10 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    crosshair moves. */
 .readout { font-size: 0.85em; }
 .readout-symbol { font-size: 1.05em; font-weight: 700; }
+/* The instrument's name under the header: the symbol says which, this says
+   what, so it stays out of the way. Indented to the symbol's own text, past
+   the button's padding. */
+.legend-name { font-size: 0.85em; opacity: 0.55; margin: 0 0 2px 5px; }
 .delay-chip {
   font-size: 0.75em;
   padding: 1px 6px;
@@ -411,6 +601,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   background: alpha(@card_fg_color, 0.08);
   opacity: 0.75;
 }
+
+/* The Look part's mark, with the room the words beside it keep. */
+.look-mark { margin: 0 5px; }
 
 /* Timeframe buttons: flat strip, the active one filled. */
 .timeframe-strip { padding: 2px; }
@@ -439,12 +632,206 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 
 .swatch-button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; }
 
+/* Windows that hold settings or a form (Preferences, and any form big
+   enough to get a window of its own): rows on the page's own ground with
+   a hairline between them, rather than libadwaita's rounded cards. A card says this is an object;
+   a list of settings is not a pile of objects, and a card round every pair
+   of rows is what made the window look busy and dated. */
+.form-window list.boxed-list {
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+.form-window list.boxed-list > row {
+  background: none;
+  border-radius: 0;
+  border-bottom: 1px solid alpha(@window_fg_color, 0.08);
+}
+.form-window list.boxed-list > row:last-child { border-bottom: none; }
+/* No margin under a page's last group: it is scrolled content, so a page
+   whose rows fit scrolled by however much of it did not. */
+.form-window preferencespage > scrolledwindow > viewport > clamp > box { margin-bottom: 0; }
+/* The group's title and description start where the rows' text does. */
+.form-window preferencesgroup > box > box.header {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.form-window list.boxed-list > row.activatable:hover {
+  background: alpha(@window_fg_color, 0.04);
+}
+/* Group titles as small labels, so the settings are what the eye lands on. */
+.form-window preferencesgroup > box > box.header label.heading {
+  font-size: 0.75em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+/* A row's action is a word in the accent colour, not a grey slab. Opted
+   into, so a choice or a control that only happens to carry words keeps
+   its own look. */
+.form-window row button.action-word {
+  background: none;
+  box-shadow: none;
+  color: @accent_color;
+  font-weight: normal;
+  padding: 4px 10px;
+}
+.form-window row button.action-word:hover {
+  background: alpha(@accent_color, 0.12);
+}
+.form-window row button.action-word.destructive-action { color: @destructive_color; }
+.form-window row button.action-word.destructive-action:hover {
+  background: alpha(@destructive_color, 0.12);
+}
+/* A colour is its dot, its name and a chevron, as quiet as a dropdown's
+   value until pointed at; a bar's body and thickness beside it, their
+   picture, their word and a chevron. */
+menubutton.colour-chip > button,
+dropdown.bar-choice > button {
+  background: none;
+  border-radius: 6px;
+  padding: 0 6px;
+  min-height: 26px;
+  font-weight: normal;
+  color: alpha(@window_fg_color, 0.60);
+}
+menubutton.colour-chip > button:hover,
+menubutton.colour-chip > button:checked,
+dropdown.bar-choice > button:hover,
+dropdown.bar-choice > button:checked {
+  background: alpha(@window_fg_color, 0.08);
+  color: @window_fg_color;
+}
+menubutton.colour-chip image,
+dropdown.bar-choice > button image { -gtk-icon-size: 10px; min-width: 10px; min-height: 10px; }
+/* In the list, only the answer picked shows its tick. */
+popover.menu listview > row:not(:selected) image.tick { opacity: 0; }
+/* The Bars card's head: its styles as tabs, a size up from the rows they
+   decide, the one in use underlined in the accent and the others dimmed,
+   as every tab is. On the row's bottom edge, so the underline sits on the
+   hairline under it. */
+row.bars-head { padding: 6px 12px 0; }
+row.bars-head button {
+  min-height: 0;
+  padding: 8px 2px 9px;
+  margin-left: 22px;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  box-shadow: none;
+  background: none;
+  font-size: 15px;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.60);
+}
+row.bars-head button:hover { color: @window_fg_color; }
+row.bars-head button:checked { color: @window_fg_color; border-bottom-color: @accent_color; }
+/* The header as a picture of a chart's top: on the charts' own ground, its
+   parts lit on hover, and the parts it does not show waiting underneath,
+   drawn the same way. While a part is dragged the empty places that would
+   take it say their names, and the one it would land in turns to the
+   accent; no boxes. One that would not stays shut. */
+.header-card {
+  background-color: @view_bg_color;
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  border-radius: 12px;
+}
+.header-card .header-zone { border-radius: 8px; }
+/* The picture is a chart's top at a settings column's width, a fraction of
+   a chart's, so its parts are drawn small enough to keep their places
+   apart; the ones waiting underneath match them. */
+.header-card .header-zone, .header-card .header-spare { font-size: 0.8em; }
+.header-card .timeframe-strip button { min-width: 22px; min-height: 20px; padding: 0 4px; }
+.header-card .trade-button { min-height: 20px; padding: 0 6px; }
+.header-card.dragging .header-zone:not(.shut) { min-width: 72px; }
+.header-card .zone-name {
+  font-size: 0.75em;
+  letter-spacing: 0.08em;
+  color: alpha(@window_fg_color, 0.35);
+}
+.header-card .header-zone.drop-over .zone-name { color: @accent_color; }
+.header-card .header-chip { border-radius: 6px; }
+.header-card .header-chip:hover { background: alpha(@window_fg_color, 0.06); }
+.header-card .lifted { opacity: 0.25; }
+.header-card .header-icon { min-width: 20px; min-height: 20px; color: alpha(@window_fg_color, 0.6); -gtk-icon-size: 13px; }
+.header-card .header-spare {
+  border: 1px solid alpha(@window_fg_color, 0.14);
+  border-radius: 8px;
+  padding: 0 4px;
+  min-height: 26px;
+}
+.header-card .header-spare:hover {
+  border-color: alpha(@window_fg_color, 0.3);
+  background: alpha(@window_fg_color, 0.04);
+}
+/* A part's name in small caps, set apart from the picture beside it, which
+   is often words too. Dropped onto the picture's baseline by a fixed nudge,
+   the same on every card: an icon has no baseline to align to. */
+.header-card .spare-name {
+  font-size: 0.64em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: alpha(@window_fg_color, 0.5);
+  margin: 4px 4px 0 0;
+}
+.header-card .header-spares.drop-over { background: alpha(@window_fg_color, 0.04); }
+/* The sidebar sits on the charts' own ground, a step darker than the page. */
+.form-window .sidebar-pane { background-color: @view_bg_color; }
+/* The two theme cards, and the catalogue's tiles. */
+.preferences-window button.theme-card {
+  padding: 10px;
+  border-radius: 12px;
+  background: alpha(@window_fg_color, 0.04);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.08);
+}
+.preferences-window button.theme-card:hover { background: alpha(@window_fg_color, 0.07); }
+.preferences-window button.theme-card.selected,
+.preferences-window button.theme-tile.selected {
+  background: alpha(@accent_color, 0.10);
+  box-shadow: inset 0 0 0 2px @accent_color;
+}
+.preferences-window .theme-card .card-dot {
+  min-width: 16px;
+  min-height: 16px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.35);
+}
+.preferences-window .theme-card.selected .card-dot { box-shadow: inset 0 0 0 5px @accent_color; }
+.preferences-window .theme-card label,
+.preferences-window .theme-tile label { font-weight: normal; }
+.preferences-window .theme-card label.title { font-weight: 600; }
+.preferences-window .theme-card .detail,
+.preferences-window .theme-catalogue .detail { font-size: 0.9em; opacity: 0.6; }
+.preferences-window .theme-preview { border-radius: 8px; }
+.preferences-window .theme-card grid .theme-preview { border-radius: 5px; }
+.preferences-window button.theme-tile { padding: 6px; border-radius: 10px; }
+/* The scope rule over the visual sections, in Preferences and in a chart's
+   settings alike, a size under the other rules so its four words keep some
+   air. The choice is two of its words; the picked one reads, the other
+   fades, and Local, once picked, is in the accent, since it is the
+   exception to every other page. */
+.scope-rule label { font-size: 0.68rem; }
+.scope-rule button {
+  min-height: 0;
+  min-width: 0;
+  padding: 2px 3px;
+  border-radius: 5px;
+}
+.scope-rule button label { opacity: 0.45; }
+.scope-rule button:checked { background: none; }
+.scope-rule button:checked label { opacity: 1; color: @window_fg_color; }
+.scope-rule button.scope-local:checked label { color: @accent_color; }
+.scope-rule button:hover { background: alpha(@window_fg_color, 0.06); }
+/* The reset after LOCAL: as quiet as the words beside it until pointed at. */
+.scope-rule button.scope-reset { padding: 1px; color: alpha(@window_fg_color, 0.55); }
+.scope-rule button.scope-reset:hover { color: @accent_color; }
+
 /* Menus and popovers are one surface. A right-click menu and the link
    popover open beside each other often enough that two looks for one kind
    of thing read as two apps. The window's own ground, a hairline edge, a
-   soft shadow, and no arrow — that one is set where each popover is built,
-   since GTK sizes the arrow in code — because a menu opens at the pointer
-   and has nothing to point at. */
+   soft shadow, and no arrow (`popovers_without_arrows`, since GTK sizes
+   the arrow in code). */
 popover.menu > contents,
 popover.background > contents {
   background-color: @popover_bg_color;
@@ -488,6 +875,153 @@ popover.menu radio:checked { color: @accent_color; }
 popover.menu radio { border: none; padding: 2px; }
 popover.menu radio:checked { -gtk-icon-source: -gtk-icontheme('object-select-symbolic'); }
 popover.menu radio:not(:checked) { -gtk-icon-source: none; }
+/* A dropdown's list is the same menu: its rows are menu rows, and the one
+   picked carries the same tick. Only the hover fills a row: the picked one
+   is the list's selection, and filling it too would say it twice. */
+popover.menu listview > row {
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+popover.menu listview > row:selected { background: none; }
+popover.menu listview > row:hover { background-color: alpha(@accent_color, 0.22); }
+popover.menu listview > row image { color: @accent_color; }
+
+/* Every control speaks quietly, in one voice: what is picked reads, what is
+   not fades, and the accent marks the choice. A control that shouts (a
+   bright slab of a switch, a filled pill of a tab) pulls the eye off the
+   setting it changes. Some selectors reach into libadwaita's own widgets
+   (a combo row's list, a view switcher's box, a switch's glyphs), checked
+   against libadwaita 1.10.
+   A dropdown is its value and a chevron, a step dimmer than the title, so
+   the row reads as a setting rather than a field to fill in. */
+row.combo listview.inline,
+row.combo .dropdown-arrow { color: alpha(@window_fg_color, 0.60); }
+row.combo:hover listview.inline,
+row.combo:hover .dropdown-arrow { color: @window_fg_color; }
+/* A switch is the accent only when on. Off, its track is bright enough
+   to read as a control on the row rather than a smudge beside it. */
+switch {
+  min-width: 0;
+  min-height: 0;
+  padding: 3px;
+  border: none;
+  border-radius: 99px;
+  box-shadow: none;
+  background-color: alpha(@window_fg_color, 0.22);
+}
+switch:hover { background-color: alpha(@window_fg_color, 0.28); }
+switch:checked { background-color: @accent_bg_color; }
+switch > slider {
+  min-width: 16px;
+  min-height: 16px;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  box-shadow: none;
+  background-color: @window_fg_color;
+}
+switch:checked > slider { background-color: @view_bg_color; }
+/* Its on and off glyphs stay hidden, and take no room: GTK sizes a switch
+   by the larger of them and its knob. */
+switch > image { color: transparent; -gtk-icon-size: 1px; }
+/* A menu of actions behind a word (Add a data feed…, Save as…) is that
+   word in the accent, as a row's action is, its chevron saying it opens. */
+menubutton > button.text-button {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  box-shadow: none;
+  background: none;
+  font-weight: normal;
+  color: @accent_color;
+}
+menubutton > button.text-button:hover,
+menubutton > button.text-button:checked { background-color: alpha(@accent_color, 0.12); }
+/* Tabs are words: the one shown reads, underlined in the accent, the
+   others fade. Both kinds of switcher give every tab the widest one's
+   width, so the underline is the word's (and its icon's), to hug it. */
+stackswitcher.linked > button,
+viewswitcher button {
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.38);
+}
+stackswitcher.linked > button > label,
+viewswitcher button > stack > box.wide {
+  padding: 3px 1px;
+  border-bottom: 2px solid transparent;
+}
+stackswitcher.linked > button:hover,
+viewswitcher button:hover { color: alpha(@window_fg_color, 0.60); }
+stackswitcher.linked > button:checked,
+viewswitcher button:checked { color: @window_fg_color; }
+stackswitcher.linked > button:checked > label,
+viewswitcher button:checked > stack > box.wide { border-bottom-color: @accent_color; }
+/* A choice of two or three, all in view (see `controls::Hours`): the same
+   words as the tabs, a size down, without the underline. */
+.words { border-spacing: 2px; }
+.words button {
+  min-height: 26px;
+  min-width: 0;
+  padding: 0 6px;
+  border-radius: 5px;
+  color: alpha(@window_fg_color, 0.38);
+}
+.words button:hover { background-color: alpha(@window_fg_color, 0.08); }
+.words button:checked { background: none; color: @window_fg_color; font-weight: 600; }
+.words button:checked:hover { background-color: alpha(@window_fg_color, 0.08); }
+.words label.dot { color: alpha(@window_fg_color, 0.38); }
+/* A setting's slider is a hairline: a 2px rail, the accent up to a small
+   knob, a tick where it started, and its value after it in a dropdown's
+   dim. The trough is the knob's height so all three centre on the rail;
+   the tick is GTK's own mark, set over the trough rather than beside it,
+   and drawn before it, so the knob covers it. */
+scale.hairline { padding: 4px 0; }
+scale.hairline > trough {
+  min-width: 150px;
+  min-height: 10px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+  background: linear-gradient(alpha(@window_fg_color, 0.22), alpha(@window_fg_color, 0.22)) center / 100% 2px no-repeat;
+}
+scale.hairline > trough > highlight {
+  min-height: 0;
+  margin: 4px 0;
+  border: none;
+  border-radius: 1px;
+  background: @accent_color;
+}
+scale.hairline > trough > slider {
+  min-width: 10px;
+  min-height: 10px;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  box-shadow: none;
+  background: @window_fg_color;
+}
+scale.hairline:focus-visible > trough > slider { outline: 2px solid alpha(@accent_color, 0.5); outline-offset: 1px; }
+scale.hairline > marks.top { margin: 0 0 -10px; }
+scale.hairline > marks > mark > indicator {
+  min-width: 1px;
+  min-height: 10px;
+  background-color: alpha(@window_fg_color, 0.30);
+}
+scale.hairline > value {
+  min-width: 36px;
+  margin: 0 0 0 10px;
+  color: alpha(@window_fg_color, 0.60);
+  font-variant-numeric: tabular-nums;
+}
 
 /* A picker over a chart (see `pick_frame`) is the same surface with no title
    bar: the search box is its top edge, on a hairline, and the chart it will
@@ -665,6 +1199,43 @@ entry.range-date > image:hover { opacity: 0.9; }
 .range-chip.inert, .range-chip.inert:hover { opacity: 0.5; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
 .range-caret { font-size: 0.8em; opacity: 0.5; }
 .range-auto { font-family: sans-serif; font-weight: 400; font-size: 0.9em; opacity: 0.55; }
+/* A question is a small card on the menus' surface: the title and the line
+   under it centred (see `dialogs::card`), the answers under them as
+   words, and only the answer that does something stands out: filled in the
+   accent, or, when it takes something away, red on a red tint, as
+   libadwaita draws a destructive button. Two equal slabs across the bottom
+   made Cancel look like as much of a decision as Delete. */
+dialog.alert.floating sheet {
+  background-color: @popover_bg_color;
+  border-radius: 10px;
+  outline: none;
+  box-shadow: 0 0 0 1px alpha(@window_fg_color, 0.10), 0 14px 40px alpha(black, 0.45);
+}
+dialog.alert .message-area { padding: 20px 24px 0; }
+dialog.alert .message-area > .child { padding-left: 0; padding-right: 0; margin-top: 0; }
+dialog.alert .card-title { font-weight: 600; font-size: 1.05em; }
+dialog.alert .card-body { font-size: 0.9em; color: alpha(@popover_fg_color, 0.65); }
+/* `dialogs::card` holds the row centred at its own width. */
+dialog.alert .response-area {
+  padding: 16px 16px 14px 16px;
+  border-spacing: 6px;
+}
+dialog.alert .response-area > button {
+  min-height: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+  font-weight: normal;
+  color: alpha(@popover_fg_color, 0.7);
+}
+dialog.alert .response-area > button:hover { background: alpha(@popover_fg_color, 0.07); color: @popover_fg_color; }
+dialog.alert .response-area > button.suggested-action,
+dialog.alert .response-area > button.destructive-action { font-weight: 600; }
+dialog.alert .response-area > button.suggested-action { background: @accent_bg_color; color: @accent_fg_color; }
+dialog.alert .response-area > button.destructive-action { background: alpha(@destructive_color, 0.15); color: @destructive_color; }
+dialog.alert .response-area > button.suggested-action:hover { background: alpha(@accent_bg_color, 0.85); }
+dialog.alert .response-area > button.destructive-action:hover { background: alpha(@destructive_color, 0.22); }
 
 /* The link toggle is a glyph, not a button: no frame, no fill, not even when
    it is on — a chart that follows the rail says so by the icon being there at
@@ -1023,6 +1594,14 @@ button.trading-toggle {
    it, so a header is no longer the tallest row in a rail of one-line rows. */
 .section-fold { min-height: 0; min-width: 0; padding: 2px 4px; }
 
+/* A data feed's place in the order, its number, which gives way to the
+   handle under the pointer. Faded in rather
+   than swapped, so the row does not flicker as the pointer crosses it. */
+.feed-rank > label { font-weight: 600; transition: opacity 120ms; }
+.feed-rank > image { opacity: 0; transition: opacity 120ms; }
+row:hover .feed-rank > image { opacity: 0.55; }
+row:hover .feed-rank > label { opacity: 0; }
+
 /* The lists put in order by dragging one entry onto another — a chart's
    indicators and header, the chartbook tabs. The frame GTK draws round the
    entry under the pointer says onto this; the drop puts the dragged one
@@ -1281,13 +1860,19 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
    nothing to be told apart from. */
 .chart-pane {{
   background-color: @view_bg_color;
+  /* Text inherits the colour its parent worked out, so a chart on a theme
+     of its own says its own again. */
+  color: @view_fg_color;
   border: {ring}px solid transparent;
 }}
 .chart-split .chart-pane.focused {{ border-color: @omacharts_focus; }}
 /* While a picker is open every chart fades, and the one it will change
    wears the ring twice as wide: a second ring inside the border, as an
-   outline, so nothing inside the pane moves. */
-.chart-split .chart-pane.picked {{
+   outline, so nothing inside the pane moves. A settings window under LOCAL
+   rings the chart its rows change the same way, without the fade. Two classes,
+   so a picker closing does not take LOCAL's ring with it. */
+.chart-split .chart-pane.picked,
+.chart-split .chart-pane.local-target {{
   border-color: @omacharts_focus;
   outline: {ring}px solid @omacharts_focus;
   outline-offset: -{double}px;
@@ -1307,24 +1892,56 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
         ring = RING_WIDTH,
         double = 2 * RING_WIDTH,
     );
+    let rules = read_as_properties(&css[rules_from..], &colours);
+    css.truncate(rules_from);
+    css.push_str(&rules);
     css
+}
+
+/// `rules` with every one of `colours` read as its property rather than by
+/// name: `@view_bg_color` becomes `var(--view-bg-color)`. A name is fixed
+/// for the whole window and a property can be set again under a chart, so
+/// this is what lets a chart on a theme of its own reach every rule. The
+/// rules are written with names, as libadwaita's guide writes them.
+fn read_as_properties(rules: &str, colours: &[(&'static str, String)]) -> String {
+    let mut out = String::with_capacity(rules.len() + rules.len() / 8);
+    let mut rest = rules;
+    while let Some(at) = rest.find('@') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 1..];
+        let end = tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(tail.len());
+        let name = &tail[..end];
+        match colours.iter().any(|(known, _)| *known == name) {
+            true => {
+                let _ = write!(out, "var({})", property(name));
+            }
+            false => {
+                out.push('@');
+                out.push_str(name);
+            }
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omacharts_engine::theme::builtin_themes;
 
     /// A signed P&L is written in the trading look's profit and loss, which
-    /// the switch turns round and the colouring does not.
+    /// red up turns round with the bars.
     #[test]
     fn profit_and_loss_are_named_colours_from_the_trading_look() {
         let theme = &builtin_themes()[0];
-        let bars = omacharts_engine::theme::theme_bars(theme);
-        let css = trading_css(theme, false);
+        let bars = BarLook::default().scheme(theme);
+        let css = trading_css(theme, &TradingLook::default(), &BarLook::default());
         assert!(css.contains(&format!("@define-color omacharts_profit {};", bars.up)), "{css}");
         assert!(css.contains(&format!("@define-color omacharts_loss {};", bars.down)), "{css}");
         assert!(css.contains(".pnl-gain { color: @omacharts_profit; }"));
-        let red_up = trading_css(theme, true);
+        let red_up = trading_css(theme, &TradingLook::default(), &BarLook::red_up());
         assert!(red_up.contains(&format!("@define-color omacharts_profit {};", bars.down)), "{red_up}");
         // A side and a position are the theme's Blue and Amber, never money's
         // colours, so the header's Buy and Sell match the chart's entries.
@@ -1357,7 +1974,7 @@ mod tests {
         assert!(css.contains("@define-color omacharts_down "));
         // The marks on the heading row are the headings' own colour rather
         // than a colour of their own.
-        assert!(css.contains(".column-drop { border-radius: 1px; background: alpha(@window_fg_color"));
+        assert!(css.contains(".column-drop { border-radius: 1px; background: alpha(var(--window-fg-color)"));
         // The headings carry the drop tick alone; a frame as well is noise.
         assert!(css.contains(".column-headings:drop(active)"));
         assert!(css.contains(".symbol-row:drop(active)"));
@@ -1386,9 +2003,34 @@ mod tests {
         assert!(css.contains(&format!("min-width: {GUTTER_WIDTH}px;")));
         assert!(css.contains(&format!("border: {RING_WIDTH}px solid transparent;")));
         // Only a split shows focus; a lone chart has nothing to be told from.
-        assert!(css.contains(".chart-split .chart-pane.focused { border-color: @omacharts_focus; }"));
+        assert!(css.contains(".chart-split .chart-pane.focused { border-color: var(--omacharts-focus); }"));
         // And the wide handle's two hairlines are gone.
         assert!(css.contains("box-shadow: none;"));
+    }
+
+    /// The rules read the colours as properties, which the window sets at
+    /// the root and a chart on a theme of its own sets again under its
+    /// class: so its header and controls wear its theme, not the window's.
+    #[test]
+    fn a_chart_on_another_theme_gets_that_themes_colours_under_its_class() {
+        let themes = builtin_themes();
+        let (window, other) = (&themes[0], &themes[1]);
+        let css = stylesheet(window, &omacharts_engine::theme::theme_bars(window));
+        assert!(css.contains(&format!(":root {{ --window-bg-color: {};", window.ui.surface)));
+        let rules = &css[css.find(" }\n").expect("the root block")..];
+        assert!(!rules.contains("@window_fg_color"), "a rule reads a named colour, which no chart can change");
+        assert!(rules.contains(".change-up { color: var(--omacharts-up); }"));
+        // A colour libadwaita works out for itself stays a name, and a name
+        // that starts like one of ours is not taken for it.
+        assert!(rules.contains("@destructive_color"));
+        assert!(rules.contains("var(--omacharts-gutter-hover)"));
+
+        let scoped = scoped_stylesheet(&themes, &BarLook::default());
+        let class = theme_class(&other.id);
+        let block = scoped.lines().find(|line| line.starts_with(&format!(".{class} {{"))).expect("a block for the theme");
+        assert!(block.contains(&format!("--view-bg-color: {};", other.ui.background)), "{block}");
+        assert!(block.contains(&format!("--accent-color: {};", other.ui.accent)), "{block}");
+        assert_eq!(scoped.lines().count(), themes.len());
     }
 
     /// A menu and a popover are one surface, and a menu row is a rail row.
@@ -1408,14 +2050,40 @@ mod tests {
     }
 
     #[test]
-    fn omarchy_is_the_default_when_present_and_midnight_when_not() {
+    fn omarchy_is_the_default_when_present_and_tokyo_night_when_not() {
         // Exercised through Theming::load against a store with no settings,
         // which is the only place the choice is made.
         let store = Store::memory().unwrap();
         let theming = Theming::load(&store);
         let expected = if omarchy::available(&home()) { OMARCHY_ID } else { FALLBACK_THEME_ID };
-        assert_eq!(theming.theme_id(), expected);
-        assert_eq!(theming.scheme_id(), THEME_BARS_ID);
+        assert_eq!(theming.theme().id, expected);
+        assert_eq!(theming.bar_look(), &BarLook::default());
+    }
+
+    /// The trading look is a setting of its own, worn by whichever theme
+    /// is chosen, and read again when a command changes it under a window.
+    #[test]
+    fn the_trading_look_is_stored_and_worn_by_the_theme() {
+        use omacharts_engine::indicators::LineStyle;
+        let store = Store::memory().unwrap();
+        let mut theming = Theming::load(&store);
+
+        let look = TradingLook {
+            buy: Some(omacharts_engine::ColorChoice::Fixed { hex: "#123456".into() }),
+            stop: Some(LineStyle::Solid),
+            ..TradingLook::default()
+        };
+        theming.set_trading_look(look.clone(), &store);
+        assert_eq!(trading_look(&store), look);
+        let worn = omacharts_engine::theme_trading(&theming.theme(), theming.trading_look(), theming.bar_look());
+        assert_eq!((worn.buy.as_str(), worn.stop), ("#123456", LineStyle::Solid));
+
+        store.set_setting(SETTING_TRADING_LOOK, "{}");
+        theming.reload_selection(&store);
+        assert_eq!(theming.trading_look(), &TradingLook::default());
+        // Nonsense written by hand follows the theme rather than failing.
+        store.set_setting(SETTING_TRADING_LOOK, "not json");
+        assert_eq!(trading_look(&store), TradingLook::default());
     }
 
     #[test]
@@ -1427,83 +2095,94 @@ mod tests {
     }
 
     #[test]
-    fn a_scheme_with_colours_of_its_own_becomes_a_theme_wearing_them() {
+    fn the_bars_an_older_version_stored_are_the_bars_this_one_draws() {
         let store = Store::memory().unwrap();
-        store.set_setting(SETTING_BARS, "accessible");
-        let mut theming = Theming::load(&store);
-        theming.carry_over_candle_colours(&store);
-        let theme = theming.theme();
-        assert_eq!(theme.source, omacharts_engine::theme::Source::Custom);
-        assert!(theme.name.ends_with("with Blue / Orange"), "{}", theme.name);
-        assert_eq!(theming.bar_scheme().up, "#4493f8");
-        assert_eq!(theming.scheme_id(), THEME_BARS_ID);
-        // And only once: loading again finds a colouring, not a scheme.
-        let mut again = Theming::load(&store);
-        again.carry_over_candle_colours(&store);
-        assert_eq!(again.theme().id, theme.id);
-        assert_eq!(store.custom_themes().len(), 1);
+        store.set_setting(LEGACY_BAR_SCHEME, "hollow");
+        assert_eq!(bar_look(&store), BarLook { up_body: Body::Hollow, ..BarLook::default() });
+
+        // Once anything is written in the new terms, those win.
+        store.set_setting_bool(SETTING_BAR_UP_HOLLOW, false);
+        assert_eq!(bar_look(&store), BarLook::default());
+
+        store.set_setting(LEGACY_BAR_SCHEME, "theme-red-up");
+        assert_eq!(bar_look(&store).up, BarLook::red_up().up);
     }
 
+    /// Every scheme v0.2.20 could have stored, with its two switches, comes
+    /// back as the bars it drew.
     #[test]
-    fn schemes_written_before_colourings_come_back_painted_the_same_way() {
-        let store = Store::memory().unwrap();
-        for (stored, read, hollow) in [
-            ("hollow", THEME_BARS_ID, true),
-            ("theme-hollow", THEME_BARS_ID, true),
-            ("monochrome", omacharts_engine::theme::THEME_MONO_ID, false),
-            ("no-such-scheme", THEME_BARS_ID, false),
-        ] {
-            store.set_setting(SETTING_BARS, stored);
-            let scheme = Theming::load(&store).bar_scheme();
-            assert_eq!((scheme.id.as_str(), scheme.is_hollow_up()), (read, hollow), "{stored}");
+    fn every_scheme_an_older_version_stored_is_carried_over() {
+        use omacharts_engine::theme::{GRAPHITE, SAND, SILVER, SLATE};
+        let pair = |up: &str, down: &str| BarLook {
+            up: omacharts_engine::ColorChoice::swatch(up),
+            down: omacharts_engine::ColorChoice::swatch(down),
+            ..BarLook::default()
+        };
+        let hollow = |look: BarLook| BarLook { up_body: Body::Hollow, ..look };
+        let cases = [
+            (Some("theme"), false, false, BarLook::default()),
+            (Some("theme-red-up"), false, false, BarLook::red_up()),
+            (Some("theme-hollow"), false, false, hollow(BarLook::default())),
+            (Some("hollow"), false, false, hollow(BarLook::default())),
+            (Some("theme-mono"), false, false, BarLook::monochrome()),
+            (Some("monochrome"), false, false, BarLook::monochrome()),
+            (Some("theme-soft"), false, false, pair(SLATE, SAND)),
+            (Some("theme-quiet"), false, false, pair(SILVER, GRAPHITE)),
+            (Some("accessible"), false, false, pair("Blue", "Orange")),
+            (Some("theme"), true, false, BarLook::red_up()),
+            (Some("theme-soft"), true, false, pair(SAND, SLATE)),
+            (Some("theme-quiet"), false, true, hollow(pair(SILVER, GRAPHITE))),
+            (None, true, true, hollow(BarLook::red_up())),
+            // A switch and a scheme that say the same thing say it once.
+            (Some("theme-red-up"), true, false, BarLook::red_up()),
+        ];
+        for (scheme, swapped, hollow_up, bars) in cases {
+            let store = Store::memory().unwrap();
+            if let Some(scheme) = scheme {
+                store.set_setting(LEGACY_BAR_SCHEME, scheme);
+            }
+            store.set_setting_bool(LEGACY_SWAP_COLOURS, swapped);
+            store.set_setting_bool(LEGACY_HOLLOW_UP, hollow_up);
+            assert_eq!(crate::chart_look::ChartLook::global(&store).bars, bars, "{scheme:?} swapped {swapped} hollow {hollow_up}");
         }
     }
 
-    /// A custom scheme from before colours lived in themes becomes a theme
-    /// wearing them; one whose up body was transparent was the hollow look,
-    /// which comes back as the switch.
     #[test]
-    fn a_legacy_scheme_with_no_up_body_carries_over_as_a_hollow_rise() {
+    fn the_bars_round_trip_through_the_store() {
         let store = Store::memory().unwrap();
-        let mut bars = legacy_bar_colours("classic").unwrap();
-        bars.up_fill = "#3fb95000".to_string();
-        store.set_setting(SETTING_BARS, "classic");
-        let mut theming = Theming::load(&store);
-        theming.adopt_legacy_colours(bars, &store);
-        assert_eq!(theming.scheme_id(), THEME_BARS_ID);
-        assert_eq!(theming.colouring(), BarColouring::Vivid);
-        assert!(theming.bar_scheme().is_hollow_up());
-        assert!(crate::chart_defaults::stored_colouring(&store).hollow_up);
+        let look = BarLook {
+            up: parse_bar_colour("foreground").unwrap(),
+            down: parse_bar_colour("#123456").unwrap(),
+            up_body: Body::Hollow,
+            down_body: Body::Bordered,
+            line_low: parse_bar_colour("amber").unwrap(),
+            line_high: parse_bar_colour("#abcdef").unwrap(),
+            up_thickness: Thickness::One,
+            down_thickness: Thickness::OneAndAHalf,
+        };
+        save_bar_look(&store, &look);
+        assert_eq!(bar_look(&store), look);
+        // And nonsense typed into the row falls back rather than failing.
+        store.set_setting(SETTING_BAR_DOWN, "chartreuse");
+        assert_eq!(bar_look(&store).down, BarLook::default().down);
+        store.set_setting(SETTING_BAR_UP_THICKNESS, "4");
+        assert_eq!(bar_look(&store).up_thickness, Thickness::Three, "4, which an older build offered, is 3");
+        store.set_setting(SETTING_BAR_UP_THICKNESS, "thick");
+        assert_eq!(bar_look(&store).up_thickness, Thickness::default());
     }
 
-    /// The turned-round scheme an older version wrote, and the switch that
-    /// replaced it, both paint the theme's colours the other way round; the
-    /// hollow switch leaves a rise with no body.
+    /// One thickness for both directions, as an older version stored it,
+    /// is both directions' until the bars are next changed, which writes
+    /// each its own and drops the old row.
     #[test]
-    fn the_switches_are_worn_by_the_default_scheme() {
+    fn one_thickness_an_older_version_stored_is_both_directions() {
         let store = Store::memory().unwrap();
-        let plain = Theming::load(&store);
-        assert!(!plain.swapped());
-        let (up, down) = (plain.bar_scheme().up, plain.bar_scheme().down);
-
-        store.set_setting(SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
-        let older = Theming::load(&store);
-        assert!(older.swapped());
-        assert_eq!(older.colouring(), BarColouring::Vivid);
-        assert_eq!((&older.bar_scheme().id, &older.bar_scheme().up, &older.bar_scheme().down), (&THEME_BARS_ID.to_string(), &down, &up));
-
-        store.set_setting(SETTING_BARS, THEME_BARS_ID);
-        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
-        store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, true);
-        let mut switched = Theming::load(&store);
-        assert_eq!((&switched.bar_scheme().up, &switched.bar_scheme().down), (&down, &up));
-        assert!(switched.bar_scheme().is_hollow_up());
-        // And read again when a command changes it under a window.
-        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, false);
-        store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, false);
-        switched.reload_selection(&store);
-        assert!(!switched.swapped());
-        assert_eq!(switched.bar_scheme().up, up);
-        assert!(!switched.bar_scheme().is_hollow_up());
+        store.set_setting(LEGACY_OHLC_THICKNESS, "3");
+        let look = bar_look(&store);
+        assert_eq!((look.up_thickness, look.down_thickness), (Thickness::Three, Thickness::Three));
+        save_bar_look(&store, &BarLook { down_thickness: Thickness::One, ..look });
+        assert!(!store.has_setting(LEGACY_OHLC_THICKNESS));
+        let look = bar_look(&store);
+        assert_eq!((look.up_thickness, look.down_thickness), (Thickness::Three, Thickness::One));
     }
 }

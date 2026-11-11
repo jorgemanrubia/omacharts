@@ -140,7 +140,7 @@ impl Column {
     }
 
     /// What the column is called where there is room to say it in full.
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Column::Symbol => "Symbol",
             Column::Last => "Last price",
@@ -156,21 +156,6 @@ impl Column {
             Column::Change => 9,
             Column::ChangePct => 7,
         }
-    }
-}
-
-impl crate::ui::part_list::Part for Column {
-    fn every() -> Vec<Self> {
-        Column::ALL.to_vec()
-    }
-    fn key(self) -> &'static str {
-        Column::key(self)
-    }
-    fn label(self) -> &'static str {
-        Column::label(self)
-    }
-    fn fixed(self) -> bool {
-        self == Column::Symbol
     }
 }
 
@@ -2036,8 +2021,7 @@ impl Watchlist {
         self.column_header.add_controller(menu);
     }
 
-    /// The columns, as a list to add to, take from and drag into order, in
-    /// the shape the preferences edit the charts' header in.
+    /// The columns, as a list to add to, take from and drag into order.
     pub fn edit_columns(self: &Rc<Self>) {
         let dialog = adw::Dialog::new();
         dialog.set_title("Watchlist Columns");
@@ -2870,7 +2854,7 @@ impl Watchlist {
             n => format!("Delete \u{201c}{name}\u{201d} and the {n} symbols in it?"),
         };
 
-        let dialog = adw::AlertDialog::new(Some("Delete watchlist"), Some(&body));
+        let dialog = crate::ui::dialogs::card("Delete watchlist", Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("delete", "Delete");
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
@@ -2972,7 +2956,6 @@ impl Watchlist {
         entry.set_placeholder_text(Some("Section name"));
 
         let popover = gtk::Popover::new();
-        popover.set_has_arrow(false);
         popover.set_child(Some(&entry));
         popover.set_parent(anchor);
 
@@ -3024,7 +3007,7 @@ impl Watchlist {
             n => format!("Remove “{name}” and the {n} symbols in it?"),
         };
 
-        let dialog = adw::AlertDialog::new(Some("Remove section"), Some(&body));
+        let dialog = crate::ui::dialogs::card("Remove section", Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("remove", "Remove");
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
@@ -3215,7 +3198,7 @@ fn write_cell(
 /// The engine owns the rule so the rail and the chart cannot give the same
 /// price two ways. There is no gridline here, so only the instrument has an
 /// opinion.
-fn decimals_for(price: f64, kind: omacharts_engine::InstrumentKind) -> usize {
+pub(crate) fn decimals_for(price: f64, kind: omacharts_engine::InstrumentKind) -> usize {
     omacharts_engine::price_decimals(0.0, price, Some(kind))
 }
 
@@ -3226,7 +3209,6 @@ fn decimals_for(price: f64, kind: omacharts_engine::InstrumentKind) -> usize {
 fn popup_menu(model: &gio::Menu, over: &impl IsA<gtk::Widget>, x: f64, y: f64) {
     let popover = gtk::PopoverMenu::from_model(Some(model));
     popover.set_parent(over);
-    popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
     popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
     // Clicking an item closes the popover and *then* activates its action, so

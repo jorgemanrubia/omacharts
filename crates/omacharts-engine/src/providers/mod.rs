@@ -114,7 +114,7 @@ impl Listed {
     }
 }
 
-/// How a feed is signed in to, which decides what the Data page and
+/// How a feed is signed in to, which decides what the Market data page and
 /// `provider login` do about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum How {
@@ -452,7 +452,7 @@ pub fn adopt_serving() -> bool {
 pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED, rithmic::LISTED, sierra::LISTED];
 
 /// Feeds that exist only to prove the boundary holds: found by [`listed`],
-/// and so routed to and drawn on the Data page once an order names one, but
+/// and so routed to and drawn on the Market data page once an order names one, but
 /// never offered. Built only into tests.
 #[cfg(any(test, feature = "fakes"))]
 const FAKES: &[Listed] = &[fake::LISTED];

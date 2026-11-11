@@ -29,10 +29,10 @@ crop: none (resized to 2000 wide)
 | Part | Where | What it is |
 |---|---|---|
 | The chart | Everything not taken by the sidebar, the tools or the strip | One or more charts, split as you arranged them. See [Charts](/manual/charts/) and [Splitting and arranging charts](/manual/layouts/). |
-| The header | Top-left of each chart | The chart's symbol and resolution, its chart title centred across the top, and optionally the day's change and its chart template. Click the chart title to [edit it](/manual/charts/#chart-titles); click the symbol to open the [symbol search](/manual/symbols/); click the resolution for the list of [resolutions](/manual/charts/#resolutions). What it shows is [one setting for every chart](/manual/charts/#the-header). |
+| The header | Across the top of each chart | The chart's symbol and resolution on the left, its chart title centred across the top, and optionally the day's change, the last price, its chart template and its name. Click the chart title to [edit it](/manual/charts/#chart-titles); click the symbol to open the [symbol search](/manual/symbols/); click the resolution for the list of [resolutions](/manual/charts/#resolutions). What it shows, and where, is [one setting for every chart](/manual/charts/#the-header). |
 | The indicator legend | Under the header, on the focused chart only | One row per indicator. See [Indicators](/manual/indicators/). |
-| The resolution strip | Left out unless the header puts it in. Shown on the focused chart only | The preset resolutions as buttons. Hidden when the chart is too narrow for it. The resolution in the header offers the same list. |
-| The chart's corner | Top-right of each chart, beside the price axis | The gear (**Chart settings**), the **Maximize** button and the link button. See [The corners](#the-corners). |
+| The resolution strip | Left out unless the header puts it in. Shown on the focused chart only | The preset resolutions as buttons. Hidden when the chart is too narrow for it. The resolution in the header offers the same list. Part of the header, so it can be moved or taken off. |
+| The chart's corner | Top-right of each chart, beside the price axis, out of the box | The gear (**Chart settings**), the **Maximize** button and the link button. Part of the header, so each can be moved or taken off. See [The corners](#the-corners). |
 | The window's corner | Top-right of the window | The watchlist toggle and the main menu. |
 | The sidebar | Right edge | The open chartbook's watchlist. See [Watchlists](/manual/watchlists/). |
 | The drawing tools | Left edge | One column of tools. See [Drawings](/manual/drawings/). |
@@ -144,11 +144,11 @@ crop: 490,68,1580,1304   (the whole dialog, 16px layout margin above and below, 
 
 | Key or gesture | In a dialog |
 |---|---|
-| <kbd>Esc</kbd> | Closes it. In a dialog with several pages, such as Preferences, goes back a page first. In a search box, closes the dialog rather than clearing the box. |
+| <kbd>Esc</kbd> | Closes it, and Preferences and Chart settings too. Where a page is open over another, such as an indicator's settings in Chart settings, goes back a page first. In a search box, closes the dialog rather than clearing the box. |
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes a dialog that makes something (**New chartbook**, adding an indicator, a drawing's **Properties**) from wherever the keyboard is in it. The button it stands for says so in its tooltip. Plain <kbd>Enter</kbd> takes the highlighted row of a list instead. |
 | A click outside | Closes the pickers: the symbol search, **Change resolution**, **Go to**, **Add an indicator** and the Keyboard shortcuts sheet. A dialog you fill in stays open. |
 | Typing | Goes to the search box. Every picker opens with the keyboard in its box. |
-| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the tabs of a dialog that has them (**Chart settings** and a drawing's **Properties**), wrapping at either end. |
+| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the sections of **Chart settings** and the tabs of a drawing's **Properties**, wrapping at either end. |
 
 ## Quitting
 

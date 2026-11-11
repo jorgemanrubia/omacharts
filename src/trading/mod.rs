@@ -13,7 +13,7 @@
 //!   the order plant once it signs in. They are cached in [`ACCOUNTS`] as
 //!   bookkeeping, never in a backup, so the settings page and the header
 //!   draw without connecting and account numbers stay on this machine.
-//! - **A data feed** is a row on the Data page. Exactly one login is the
+//! - **A data feed** is a row on the Market data page. Exactly one login is the
 //!   data login, [`DATA_LOGIN`], the first added whose trading service has a data
 //!   feed, unless somebody picks another: that feed signs in through it, and
 //!   the others sign in for orders and P&L only. Several logins streaming quotes could count

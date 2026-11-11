@@ -5,7 +5,7 @@
 //! It is found by [`crate::providers::listed`] and never offered, and only
 //! in a build with the `fakes` feature, which is a test build: the tests
 //! that route a chart to it and draw its row and open its dialog on the
-//! Data page do so through the same code every real feed goes through, and the
+//! Market data page do so through the same code every real feed goes through, and the
 //! day one of them needs a line naming this feed, the boundary has a hole.
 //!
 //! Its bars and its stream are [`Synthetic`]'s. What is signed in is held in

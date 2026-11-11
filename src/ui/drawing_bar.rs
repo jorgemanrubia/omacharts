@@ -191,7 +191,6 @@ impl DrawingBar {
             menu.append_item(&item);
             let popover = gtk::PopoverMenu::from_model(Some(&menu));
             popover.set_parent(&button);
-            popover.set_has_arrow(false);
             let right = gtk::GestureClick::new();
             right.set_button(gtk::gdk::BUTTON_SECONDARY);
             let popover_for_click = popover.clone();

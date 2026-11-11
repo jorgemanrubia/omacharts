@@ -1,8 +1,9 @@
 //! Settings that belong to the chart rather than the app.
 //!
 //! Reached from the gear beside the legend, because that is where you are
-//! looking when you want them. Two pages: how the bars are read and scaled,
-//! and what is drawn on top of them.
+//! looking when you want them. Sections down a sidebar, in a window of their
+//! own: how the bars are read and scaled, and what is drawn on top of them.
+//! An indicator's own settings are a page pushed over the list.
 
 mod time;
 
@@ -15,23 +16,72 @@ use omacharts_engine::indicators::{
     MIN_PANE_SHARE,
 };
 use omacharts_engine::indicators::cvd::Style;
-use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle, DELTA_COLOURINGS};
+use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle};
 use omacharts_engine::theme::ColorChoice;
-use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
+use omacharts_engine::{Indicator, Session};
 
+use crate::chart_defaults::{ChartDefaults, ChartSetting};
 use crate::ui::colors;
 use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::drop_line;
+use crate::ui::form_window;
+use crate::ui::pick_frame::{Over, PickFrame};
+use crate::ui::preferences;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
 
-/// Where the dialog should land when it opens.
+/// Where the window should land when it opens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Focus {
     Chart,
     Indicators,
     Indicator(u32),
+    /// An indicator just put on the chart from the picker, waiting for Add.
+    /// `true` when the window was opened for it, and so closes with it.
+    Adding(u32, bool),
+}
+
+/// The one window of this kind, for `form_window`.
+pub(crate) const KIND: &str = "chart-settings";
+
+thread_local! {
+    /// What the open window is showing, so that asking again finds it and a
+    /// focus moving to another chart can rebuild it for that one.
+    static SHOWN: RefCell<Option<Shown>> = const { RefCell::new(None) };
+    /// The template editor's page stack while one is open, so an indicator
+    /// picked for a template is set up over its list.
+    static EDITOR: RefCell<Option<(adw::NavigationView, Pending)>> = const { RefCell::new(None) };
+}
+
+/// The open window and the parts of it that change after it is built.
+#[derive(Clone)]
+struct Shown {
+    window: adw::Window,
+    /// The chart it describes, which is the focused one, by the name a
+    /// chart keeps through a rebuild of the arrangement: a command rebuilds
+    /// every chart, and the rows follow it on their own (`watch_chart`)
+    /// rather than the window starting over and closing the page it is on.
+    chart: String,
+    /// The sidebar's header, which names that chart under its title.
+    title: adw::WindowTitle,
+    sidebar: preferences::Sections,
+    /// Every section's page stack, in sidebar order.
+    views: Vec<adw::NavigationView>,
+    list: IndicatorList,
+    /// What takes an indicator that is still waiting for Add back off its
+    /// chart, for every way of leaving the page that is not Add.
+    pending: Pending,
+}
+
+/// Run once, then gone.
+type Pending = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
+
+fn take_pending(pending: &Pending) {
+    let undo = pending.borrow_mut().take();
+    if let Some(undo) = undo {
+        undo();
+    }
 }
 
 pub struct ChartSettings;
@@ -52,256 +102,400 @@ impl ChartSettings {
         ChartSettings::open(window, Focus::Indicator(id));
     }
 
+    /// A window of its own, like Preferences, rather than a sheet over the
+    /// charts: everything here changes the chart behind it as it is changed,
+    /// so the chart has to stay in sight and in reach.
+    ///
+    /// It describes the focused chart, and follows the focus: click another
+    /// chart while it is open and it rebuilds for that one, naming it under
+    /// the title. Every edit goes through the window's own setters, which
+    /// all act on the focused chart, as do the chart menu's ticks — so a
+    /// window that stayed with the chart it was opened for would be the one
+    /// thing in the app answering about a different chart from the rest.
     fn open(window: &Rc<Window>, focus: Focus) {
-        let dialog = adw::PreferencesDialog::new();
-        dialog.set_title("Chart");
-        dialog.set_content_width(560);
-        // Most of the window's height, like the preferences: the indicator
-        // list and an indicator's own page are long, and every row that fits
-        // is a scroll saved. The width stays the column the rows sit in.
-        dialog.set_content_height((window.window.height() * 85 / 100).max(620));
-
-        let chart_page = adw::PreferencesPage::new();
-        chart_page.set_title("Chart");
-        chart_page.set_icon_name(Some("preferences-system-symbolic"));
-        chart_page.add(&title_group(window));
-        chart_page.add(&bars_group(window));
-        chart_page.add(&scales_group(window));
-        chart_page.add(&session_group(window));
-        chart_page.add(&drawings_group(window));
-        chart_page.add(&defaults_group(window, &dialog));
-        dialog.add(&chart_page);
-
-        let indicators_page = adw::PreferencesPage::new();
-        indicators_page.set_title("Indicators");
-        indicators_page.set_icon_name(Some("view-list-symbolic"));
-        dialog.add(&indicators_page);
-
-        let mut pages = vec![chart_page.clone(), indicators_page.clone()];
-        if crate::features::trading() {
-            let trading_page = trading_page(window);
-            dialog.add(&trading_page);
-            pages.push(trading_page);
+        // One open for another window is that window's, and goes with it.
+        let theirs = current().filter(|shown| shown.window.transient_for().as_ref() != Some(window.window.upcast_ref()));
+        if let Some(theirs) = theirs {
+            theirs.window.close();
         }
-
-        {
-            // Alt and an arrow between the pages, and the keyboard goes with
-            // it. The pages are named here rather than asked of the dialog: a
-            // preferences dialog keeps them in a view stack of its own, and
-            // the ones it was given are the ones it has.
-            let dialog_for_tabs = dialog.clone();
-            crate::ui::dialogs::step_tabs_with_alt(&dialog, move |forward| {
-                let shown = dialog_for_tabs.visible_page();
-                let at = pages
-                    .iter()
-                    .position(|page| shown.as_ref() == Some(page.upcast_ref()))
-                    .unwrap_or(0) as u32;
-                let next = crate::ui::dialogs::step_round(at, pages.len() as u32, forward);
-                let Some(page) = pages.get(next as usize) else { return };
-                dialog_for_tabs.set_visible_page(page);
-                // On the next turn of the loop: the page being moved to has
-                // not been laid out and has nothing to give the focus to
-                // until it has.
-                let page = page.clone();
-                glib::idle_add_local_once(move || {
-                    page.child_focus(gtk::DirectionType::TabForward);
+        let shown = match current() {
+            Some(shown) => {
+                follow(window);
+                current().unwrap_or(shown)
+            }
+            None => {
+                let frame = form_window::new(&window.window, KIND, "Chart settings", (760, 640));
+                let shown = build(window, &frame);
+                frame.connect_close_request(|_| {
+                    if let Some(shown) = SHOWN.with(|open| open.borrow_mut().take()) {
+                        take_pending(&shown.pending);
+                    }
+                    glib::Propagation::Proceed
                 });
-            });
-        }
+                // Alt and an arrow from one section to the next, and the
+                // keyboard goes with it.
+                dialogs::step_tabs_with_alt(&frame, |forward| {
+                    let Some(shown) = current() else { return };
+                    let at = shown.sidebar.selected() as u32;
+                    let next = dialogs::step_round(at, shown.views.len() as u32, forward);
+                    shown.sidebar.select(next as usize);
+                    let Some(view) = shown.views.get(next as usize).cloned() else { return };
+                    glib::idle_add_local_once(move || {
+                        view.child_focus(gtk::DirectionType::TabForward);
+                    });
+                });
+                shown
+            }
+        };
 
         let owner = Owner::chart(window);
-        // Above the list, because it decides what the list is: the chart's
-        // own, or a template's shown here and changed elsewhere.
-        let templates = adw::PreferencesGroup::new();
-        indicators_page.add(&templates);
-        let list = IndicatorList::new(&indicators_page, "On the chart");
-        // Wired once here rather than on every rebuild: the button outlives
-        // the rows, and reconnecting it each time would stack up handlers.
-        let owner_for_add = owner.clone();
-        let refresh_for_add = Refresh::rebuilding(&owner, &dialog, &list);
-        list.add.connect_clicked(move |_| {
-            pick_indicator(&owner_for_add, &refresh_for_add);
-        });
-        rebuild_indicators(&owner, &dialog, &list);
-        template_rows(window, &dialog, &templates, &Refresh::rebuilding(&owner, &dialog, &list));
-        {
-            // A command can add, change or take away an indicator while the
-            // list is open, and the list reads it again.
-            let owner = Rc::downgrade(&owner);
-            let dialog_weak = dialog.downgrade();
-            let list = list.clone();
-            window.watch_chart(move || {
-                let (Some(owner), Some(dialog)) = (owner.upgrade(), dialog_weak.upgrade()) else {
-                    return false;
-                };
-                if dialog.root().is_none() {
-                    return false;
-                }
-                rebuild_indicators(&owner, &dialog, &list);
-                true
-            });
-        }
-
-        dialog.present(Some(&window.window));
+        let indicators = shown.views[1].clone();
         match focus {
-            Focus::Chart => {}
-            Focus::Indicators => dialog.set_visible_page(&indicators_page),
+            Focus::Chart => shown.sidebar.select(0),
+            Focus::Indicators => {
+                shown.sidebar.select(1);
+                take_pending(&shown.pending);
+                indicators.pop_to_tag(preferences::ROOT);
+            }
             // One indicator of a template is the template's to change, so the
             // gear on such a chart lands on the list that says so.
-            Focus::Indicator(id) => {
-                dialog.set_visible_page(&indicators_page);
-                open_indicator_panel_for(
-                    &owner,
-                    &Refresh::rebuilding(&owner, &dialog, &list),
-                    id,
-                    Panel::Subpage(dialog.clone()),
-                );
+            Focus::Indicator(id) | Focus::Adding(id, ..) => {
+                shown.sidebar.select(1);
+                take_pending(&shown.pending);
+                indicators.pop_to_tag(preferences::ROOT);
+                let refresh = Refresh::rebuilding(&owner, &indicators, &shown.list);
+                refresh.run();
+                let panel = match focus {
+                    Focus::Adding(_, close_after) => Panel::Add {
+                        view: indicators.clone(),
+                        pending: shown.pending.clone(),
+                        close_after,
+                    },
+                    _ => Panel::Subpage(indicators.clone()),
+                };
+                open_indicator_panel_for(&owner, &refresh, id, panel);
             }
         }
+        shown.window.present();
     }
+}
+
+/// The open window, if there is one.
+fn current() -> Option<Shown> {
+    SHOWN.with(|open| open.borrow().clone()).filter(|shown| shown.window.is_visible())
+}
+
+/// Keep the open window on the focused chart: named under its title, and
+/// rebuilt when the focus has moved to another chart.
+///
+/// Called by the window whenever the focus moves or the focused chart is
+/// given something else to show. A pushed page goes with a rebuild — its
+/// rows edit an indicator by id, and the next chart's indicator with that id
+/// is a different one — and an indicator still waiting for Add comes back
+/// off the chart it was put on, as closing the page would have taken it.
+pub fn follow(window: &Rc<Window>) {
+    let Some(shown) = current() else { return };
+    let pane = window.focused_pane();
+    if shown.chart == *pane.uid.borrow() {
+        shown.title.set_subtitle(&window.focused_label());
+        return;
+    }
+    take_pending(&shown.pending);
+    let at = shown.sidebar.selected();
+    let rebuilt = build(window, &shown.window);
+    rebuilt.sidebar.select(at.min(rebuilt.views.len() - 1));
+}
+
+/// Fill `frame` with the focused chart's settings, and remember it.
+///
+/// Built whole, sidebar and all, each time the chart it describes changes:
+/// every row is read from the chart as it is built, and a row that had to be
+/// told about another chart would be a second way of building it.
+fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
+    let owner = Owner::chart(window);
+    let indicators_page = adw::PreferencesPage::new();
+    let indicators = preferences::section_view(&indicators_page, "Indicators");
+    // Above the list, because it decides what the list is: the chart's
+    // own, or a template's shown here and changed elsewhere.
+    let templates = adw::PreferencesGroup::new();
+    indicators_page.add(&templates);
+    let list = IndicatorList::new(&indicators_page, "On the chart");
+    let rows = {
+        let list = Refresh::rebuilding(&owner, &indicators, &list);
+        ChartRows::new(window, || false, move || list.run())
+    };
+    rows.template.set_title("Chart template");
+    templates.add(&rows.template);
+    templates.add(&rows.legend);
+
+    let chart_page = adw::PreferencesPage::new();
+    chart_page.add(&title_group(window));
+    chart_page.add(&bars_group(window));
+    chart_page.add(&scales_group(window, &rows.log));
+    chart_page.add(&session_group(window, &rows));
+    chart_page.add(&drawings_group(&rows));
+    chart_page.add(&defaults_group(window, frame));
+
+    let mut own: Vec<preferences::Section> = vec![
+        ("chart", "Chart", "preferences-system-symbolic", preferences::section_view(&chart_page, "Chart")),
+        ("indicators", "Indicators", "view-list-symbolic", indicators.clone()),
+    ];
+    // What this chart trades is this chart's, so it sits with the chart's
+    // own sections, above the rule.
+    if crate::features::trading() {
+        own.push(("trading", "Trading", TRADING_ICON, preferences::section_view(&trading_page(window), "Trading")));
+    }
+    // Under the rule saying which charts they change: in a split this
+    // chart, which is the one in sight, on one chart every chart. A scope
+    // of this window's own, made again for each chart it shows, so it
+    // starts there whatever Preferences has picked.
+    let (scope, rule) = crate::ui::scope_rule::Scope::new(window, window.is_split());
+    let every = preferences::visual_sections(&scope);
+    let sidebar = preferences::Sections::new("Chart settings", [&own, &every], &rule);
+    let title = adw::WindowTitle::new("Chart settings", &window.focused_label());
+    sidebar.header.set_title_widget(Some(&title));
+    sidebar.split.set_min_sidebar_width(200.0);
+    frame.set_content(Some(&sidebar.split));
+
+    let views: Vec<adw::NavigationView> = own.into_iter().chain(every).map(|(.., view)| view).collect();
+    // Wired once here rather than on every rebuild: the button outlives
+    // the rows, and reconnecting it each time would stack up handlers.
+    let owner_for_add = owner.clone();
+    let refresh_for_add = Refresh::rebuilding(&owner, &views[1], &list);
+    list.add.connect_clicked(move |_| {
+        pick_indicator(&owner_for_add, &refresh_for_add);
+    });
+    rebuild_indicators(&owner, &views[1], &list);
+    {
+        // A command can add, change or take away an indicator while the
+        // list is open, and the list reads it again. Until the next build,
+        // which takes this list off the window and so ends the watch.
+        let owner = Rc::downgrade(&owner);
+        let view = views[1].downgrade();
+        let list = list.clone();
+        window.watch_chart(move || {
+            let (Some(owner), Some(view)) = (owner.upgrade(), view.upgrade()) else { return false };
+            if list.group.root().is_none() {
+                return false;
+            }
+            if list.listed.borrow().as_ref() != Some(&Listed::now(&owner)) {
+                rebuild_indicators(&owner, &view, &list);
+            }
+            true
+        });
+    }
+
+    let shown = Shown {
+        window: frame.clone(),
+        chart: window.focused_pane().uid.borrow().clone(),
+        title,
+        sidebar,
+        views,
+        list,
+        pending: Rc::new(RefCell::new(None)),
+    };
+    SHOWN.with(|open| *open.borrow_mut() = Some(shown.clone()));
+    shown
 }
 
 /// A chart template's indicators, in an editor of their own.
 ///
 /// The same list and panels as a chart's Indicators page, over the template
 /// rather than the chart: every change is made to the template and drawn at
-/// once on every chart using it.
+/// once on every chart using it. A window of its own, like the chart's
+/// settings, so the charts it changes stay in sight.
 pub struct TemplateEditor;
 
 impl TemplateEditor {
     /// `closed` runs when it goes, for whatever opened it to read the
-    /// template again.
+    /// template again. `over` is anything in the window it opens from.
     pub fn present(
         window: &Rc<Window>,
         template: u32,
         over: &impl IsA<gtk::Widget>,
         closed: impl Fn() + 'static,
     ) {
+        const EDITOR_KIND: &str = "template-editor";
+        if let Some(open) = form_window::open(EDITOR_KIND) {
+            open.close();
+        }
         let name = window
             .templates()
             .into_iter()
             .find(|t| t.id == template)
             .map(|t| t.name)
             .unwrap_or_default();
-        let dialog = adw::PreferencesDialog::new();
-        dialog.set_title(&name);
-        dialog.set_content_width(560);
-        dialog.set_content_height((window.window.height() * 85 / 100).max(620));
+        let parent = over
+            .as_ref()
+            .root()
+            .and_downcast::<gtk::Window>()
+            .unwrap_or_else(|| window.window.clone().upcast());
+        let frame = form_window::new(&parent, EDITOR_KIND, &name, (560, 640));
 
         let page = adw::PreferencesPage::new();
-        page.set_title("Indicators");
-        page.set_icon_name(Some("view-list-symbolic"));
-        dialog.add(&page);
+        let view = preferences::section_view(&page, &name);
+        frame.set_content(Some(&view));
 
         let owner = Owner::template(window, template);
         let list = IndicatorList::new(&page, "Indicators in the template");
         let owner_for_add = owner.clone();
-        let refresh_for_add = Refresh::rebuilding(&owner, &dialog, &list);
+        let refresh_for_add = Refresh::rebuilding(&owner, &view, &list);
         list.add.connect_clicked(move |_| {
             pick_indicator(&owner_for_add, &refresh_for_add);
         });
-        rebuild_indicators(&owner, &dialog, &list);
-        dialog.connect_closed(move |_| closed());
-        dialog.present(Some(over));
+        rebuild_indicators(&owner, &view, &list);
+        let pending: Pending = Rc::new(RefCell::new(None));
+        EDITOR.with(|editor| *editor.borrow_mut() = Some((view.clone(), pending.clone())));
+        frame.connect_close_request(move |_| {
+            take_pending(&pending);
+            EDITOR.with(|editor| editor.borrow_mut().take());
+            closed();
+            glib::Propagation::Proceed
+        });
+        frame.present();
     }
 }
 
-/// A way to rebuild something, held by what it rebuilds and let go of later.
-type Again = RefCell<Option<Rc<dyn Fn()>>>;
+/// The switches of [`ChartRows`]: each one's title, what it reads off the
+/// settings, and the change it makes.
+type Switch = (&'static str, fn(&ChartDefaults) -> bool, fn(bool) -> ChartSetting);
 
-/// Which template the chart is on, and a way into the one it is on.
+const SWITCHES: [Switch; 4] = [
+    ("Logarithmic scale", |settings| settings.log_scale, ChartSetting::LogScale),
+    ("Show drawings from other charts", |settings| settings.shows_drawings, ChartSetting::ShowsDrawings),
+    ("Send drawings to other charts", |settings| settings.sends_drawings, ChartSetting::SendsDrawings),
+    (LEGEND_LABEL, |settings| settings.shows_legend, ChartSetting::Legend),
+];
+
+/// The rows a chart's settings and Preferences › Charts both show, each
+/// placed by the caller in a group of its own: the hours, how a futures
+/// root's months are joined, the switches, and the template.
 ///
-/// Rebuilt whole after every choice, because a choice can be refused — the
-/// question about replacing the chart's own indicators can be answered with
-/// Cancel — and the rows have to say what the chart is on, not what was
-/// clicked.
-fn template_rows(
-    window: &Rc<Window>,
-    dialog: &adw::PreferencesDialog,
-    group: &adw::PreferencesGroup,
-    list: &Refresh,
-) {
-    let rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
-    // Holds the function that rebuilds these rows, which the rows themselves
-    // call; let go when the dialog closes, or the two would keep each other.
-    let rebuild: Rc<Again> = Rc::new(RefCell::new(None));
-    let fill = {
-        let window = window.clone();
-        let group = group.clone();
-        let list = list.clone();
-        let rebuild = rebuild.clone();
-        move || {
-            for row in rows.borrow_mut().drain(..) {
-                group.remove(&row);
-            }
-            let templates = window.templates();
-            let current = window.focused_template();
+/// A change goes through [`Window::change_chart_setting`]: to the focused
+/// chart, or while `every()` to every chart and the defaults. The rows read
+/// again once it is settled, so a template change declined shows the old
+/// one, and `settled` runs after them. Only a person's change is one: the
+/// rows announce their value as they are set, too.
+pub(crate) struct ChartRows {
+    pub session: adw::ActionRow,
+    pub continuous: adw::ComboRow,
+    pub log: adw::SwitchRow,
+    pub shows: adw::SwitchRow,
+    pub sends: adw::SwitchRow,
+    pub legend: adw::SwitchRow,
+    /// "None" first, then every template.
+    pub template: adw::ComboRow,
+    /// Reads every row again: what `every()` names may have changed, or
+    /// the list of templates.
+    pub show: Rc<dyn Fn()>,
+}
 
-            let choice = adw::ComboRow::new();
-            choice.set_title("Chart template");
-            let mut names = vec!["None".to_string()];
-            names.extend(templates.iter().map(|t| t.name.clone()));
-            let model = gtk::StringList::new(&[]);
-            for name in &names {
-                model.append(name);
-            }
-            choice.set_model(Some(&model));
-            let at = current
-                .and_then(|id| templates.iter().position(|t| t.id == id))
-                .map(|at| at + 1)
-                .unwrap_or(0);
-            choice.set_selected(at as u32);
-            {
-                let window = window.clone();
-                let list = list.clone();
-                let rebuild = rebuild.clone();
-                let ids: Vec<u32> = templates.iter().map(|t| t.id).collect();
-                choice.connect_selected_notify(move |row| {
-                    let chosen = match row.selected() as usize {
-                        0 => None,
-                        at => ids.get(at - 1).copied(),
-                    };
-                    if chosen == window.focused_template() {
-                        return;
+impl ChartRows {
+    pub(crate) fn new(window: &Rc<Window>, every: impl Fn() -> bool + 'static, settled: impl Fn() + 'static) -> ChartRows {
+        use omacharts_engine::continuous::Adjustment;
+        let choice = |title: &str, names: Vec<&str>| {
+            let row = adw::ComboRow::new();
+            row.set_title(title);
+            row.set_model(Some(&gtk::StringList::new(&names)));
+            row
+        };
+        let hours = controls::Hours::new();
+        let continuous = choice("Continuous futures", Adjustment::ALL.iter().map(|a| a.label()).collect());
+        let template = choice("Template", Vec::new());
+        let switches = SWITCHES.map(|(title, ..)| {
+            let row = adw::SwitchRow::new();
+            row.set_title(title);
+            row
+        });
+
+        let every: Rc<dyn Fn() -> bool> = Rc::new(every);
+        // The template ids beside the row, since the list changes on the
+        // Templates page.
+        let ids: Rc<RefCell<Vec<u32>>> = Rc::default();
+        let showing = Rc::new(std::cell::Cell::new(false));
+        // Weakly: every row's handler holds this, and the rows go with
+        // whatever window shows them.
+        let show: Rc<dyn Fn()> = {
+            let (window, every, ids, showing) = (window.clone(), every.clone(), ids.clone(), showing.clone());
+            let (continuous, template) = (continuous.downgrade(), template.downgrade());
+            let sessions: Vec<_> = hours.buttons.iter().map(|(session, button)| (*session, button.downgrade())).collect();
+            let switches = switches.each_ref().map(|row| row.downgrade());
+            Rc::new(move || {
+                let (Some(continuous), Some(template)) = (continuous.upgrade(), template.upgrade()) else {
+                    return;
+                };
+                let current = match every() {
+                    true => ChartDefaults::load(window.store()),
+                    false => window.focused_settings(),
+                };
+                let templates = window.templates();
+                *ids.borrow_mut() = templates.iter().map(|t| t.id).collect();
+                showing.set(true);
+                if let Some(button) = sessions.iter().find(|(s, _)| *s == current.session).and_then(|(_, b)| b.upgrade()) {
+                    button.set_active(true);
+                }
+                continuous.set_selected(Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0) as u32);
+                for (row, (_, on, _)) in switches.iter().zip(SWITCHES) {
+                    if let Some(row) = row.upgrade() {
+                        row.set_active(on(&current));
                     }
-                    let list = list.clone();
-                    let rebuild = rebuild.clone();
-                    // Off the row's own signal: the rows are rebuilt by what
-                    // this does, and this row is one of them.
-                    let window = window.clone();
-                    glib::idle_add_local_once(move || {
-                        window.choose_template(chosen, move || {
-                            list.run();
-                            let again = rebuild.borrow().clone();
-                            if let Some(rebuild) = again {
-                                rebuild();
-                            }
-                        });
-                    });
-                });
-            }
-            group.add(&choice);
-            rows.borrow_mut().push(choice.upcast());
+                }
+                let names: Vec<&str> = std::iter::once("None").chain(templates.iter().map(|t| t.name.as_str())).collect();
+                template.set_model(Some(&gtk::StringList::new(&names)));
+                let at = current.template.and_then(|id| templates.iter().position(|t| t.id == id)).map_or(0, |at| at + 1);
+                template.set_selected(at as u32);
+                showing.set(false);
+            })
+        };
+        show();
 
-            let legend = adw::SwitchRow::new();
-            legend.set_title(LEGEND_LABEL);
-            legend.set_active(window.shows_legend());
-            {
-                let window = window.clone();
-                legend.connect_active_notify(move |row| window.set_shows_legend(row.is_active()));
-            }
-            group.add(&legend);
-            rows.borrow_mut().push(legend.upcast());
-            // No way into a second editor for the template: the list below
-            // is the template's while the chart is on one, and says so.
+        let change: Rc<dyn Fn(ChartSetting)> = {
+            let (window, show, settled) = (window.clone(), show.clone(), Rc::new(settled));
+            Rc::new(move |setting| {
+                if showing.get() {
+                    return;
+                }
+                let (show, settled) = (show.clone(), settled.clone());
+                window.change_chart_setting(setting, every(), move || {
+                    show();
+                    settled();
+                });
+            })
+        };
+        for (chosen, button) in &hours.buttons {
+            let (change, chosen) = (change.clone(), *chosen);
+            // The one turning off is not a pick: the one turning on is.
+            button.connect_toggled(move |button| {
+                if button.is_active() {
+                    change(ChartSetting::Session(chosen));
+                }
+            });
         }
-    };
-    let fill: Rc<dyn Fn()> = Rc::new(fill);
-    *rebuild.borrow_mut() = Some(fill.clone());
-    dialog.connect_closed(move |_| {
-        rebuild.borrow_mut().take();
-    });
-    fill();
+        {
+            let change = change.clone();
+            continuous.connect_selected_notify(move |row| {
+                let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
+                change(ChartSetting::Continuous(chosen));
+            });
+        }
+        for (row, (_, _, setting)) in switches.iter().zip(SWITCHES) {
+            let change = change.clone();
+            row.connect_active_notify(move |row| change(setting(row.is_active())));
+        }
+        template.connect_selected_notify(move |row| {
+            let chosen = match row.selected() as usize {
+                0 => None,
+                at => match ids.borrow().get(at - 1) {
+                    Some(id) => Some(*id),
+                    None => return,
+                },
+            };
+            change(ChartSetting::Template(chosen));
+        });
+
+        let [log, shows, sends, legend] = switches;
+        ChartRows { session: hours.row, continuous, log, shows, sends, legend, template, show }
+    }
 }
 
 /// The row a chart's title is typed into.
@@ -313,16 +507,14 @@ pub const LEGEND_LABEL: &str = "Show legend for indicators";
 
 pub const TRADING_SYMBOL_LABEL: &str = "Trading symbol";
 
-/// The Trading tab's icon: orders going out and fills coming back, apart
-/// from the lists the other tabs wear.
-pub const TRADING_ICON: &str = "network-transmit-receive-symbolic";
+/// The Trading section's icon: orders going out and fills coming back,
+/// apart from the lists the other sections wear.
+const TRADING_ICON: &str = "network-transmit-receive-symbolic";
 
 /// What the chart trades, when trading is on: none, its own symbol, until
 /// one is picked, MES for a chart of ES. Its data stays what it charts.
 fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
-    page.set_title("Trading");
-    page.set_icon_name(Some(TRADING_ICON));
     let group = adw::PreferencesGroup::new();
     let row = adw::ActionRow::new();
     row.set_title(TRADING_SYMBOL_LABEL);
@@ -406,154 +598,40 @@ fn title_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
+/// Whether this chart draws its bars. How they are drawn is every chart's,
+/// under Appearance; hiding them is this chart's, for one that is all
+/// indicators.
 fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
-
-    // The styles, then None: hiding the bars keeps the style they had, and
-    // the colouring row keeps describing it, greyed until they are back.
-    let mut names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.label()).collect();
-    names.push(crate::ui::window::NO_BARS_LABEL);
-    let hidden_at = BarStyle::ALL.len() as u32;
-    let row = adw::ComboRow::new();
-    row.set_title("Style");
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(match window.bars_hidden() {
-        true => hidden_at,
-        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
-    });
-
-    let colouring = adw::ComboRow::new();
-    colouring.set_title("Colouring");
-    fill_colourings(&colouring, window.bar_colouring());
-    colouring.set_sensitive(!window.bars_hidden());
-
-    // The two switches worn over the colouring. Greyed with it while the
-    // bars are hidden; the hollow rise also on OHLC bars, which have no
-    // body to leave open, and the swap on a colouring that paints the same
-    // either way.
-    let hollow = adw::SwitchRow::new();
-    hollow.set_title(HOLLOW_LABEL);
-    hollow.set_active(window.bars_hollow_up());
-    let swapped = adw::SwitchRow::new();
-    swapped.set_title(SWAP_LABEL);
-    swapped.set_active(window.bars_swapped());
-    let theme = window.theme();
-    let shown = !window.bars_hidden();
-    hollow.set_sensitive(shown && hollow_applies(window.bar_style()));
-    swapped.set_sensitive(shown && two_toned(&theme, window.bar_colouring()));
-
-    // Set while the rows are being brought up to date with a chart changed
+    // Set while the row is being brought up to date with a chart changed
     // from elsewhere, so that reading the change is not taken for making it.
     let syncing = Rc::new(std::cell::Cell::new(false));
 
-    // How thick OHLC bars are drawn, offered only while they are.
-    let thickness = {
-        let window = window.clone();
-        let syncing = syncing.clone();
-        controls::bounded_row(
-            THICKNESS_LABEL,
-            None,
-            f64::from(window.ohlc_thickness()),
-            f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
-            f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
-            1.0,
-            0,
-            move |px| {
-                let px = px.round() as u8;
-                if !syncing.get() && px != window.ohlc_thickness() {
-                    window.set_ohlc_thickness(px);
-                }
-            },
-        )
-    };
-    thickness.row.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
-
-    let window_for_style = window.clone();
-    let colouring_for_style = colouring.clone();
-    let hollow_for_style = hollow.clone();
-    let swapped_for_style = swapped.clone();
-    let syncing_for_style = syncing.clone();
-    let thickness_for_style = thickness.row.clone();
-    row.connect_selected_notify(move |row| {
-        if syncing_for_style.get() {
-            return;
-        }
-        let ohlc = BarStyle::ALL.get(row.selected() as usize) == Some(&BarStyle::Ohlc);
-        thickness_for_style.set_visible(ohlc);
-        if row.selected() == hidden_at {
-            window_for_style.set_bars_hidden(true);
-            colouring_for_style.set_sensitive(false);
-            hollow_for_style.set_sensitive(false);
-            swapped_for_style.set_sensitive(false);
-        } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
-            window_for_style.set_bar_style(style);
-            colouring_for_style.set_sensitive(true);
-            hollow_for_style.set_sensitive(hollow_applies(style));
-            let theme = window_for_style.theme();
-            swapped_for_style.set_sensitive(two_toned(&theme, window_for_style.bar_colouring()));
+    let row = adw::SwitchRow::new();
+    row.set_title("Show bars");
+    row.set_active(!window.bars_hidden());
+    let shown = window.clone();
+    let quiet = syncing.clone();
+    row.connect_active_notify(move |row| {
+        if !quiet.get() {
+            shown.set_bars_hidden(!row.is_active());
         }
     });
     group.add(&row);
-    group.add(&thickness.row);
 
-    let window_for_colouring = window.clone();
-    let swapped_for_colouring = swapped.clone();
-    let syncing_for_colouring = syncing.clone();
-    colouring.connect_selected_notify(move |row| {
-        if filling_colourings(row) || syncing_for_colouring.get() {
-            return;
-        }
-        let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
-            return;
-        };
-        if chosen != window_for_colouring.bar_colouring() {
-            window_for_colouring.set_bar_colouring(chosen);
-        }
-        let theme = window_for_colouring.theme();
-        swapped_for_colouring.set_sensitive(two_toned(&theme, chosen));
-    });
-    group.add(&colouring);
-
-    let window_for_hollow = window.clone();
-    let syncing_for_hollow = syncing.clone();
-    hollow.connect_active_notify(move |row| {
-        if !syncing_for_hollow.get() && row.is_active() != window_for_hollow.bars_hollow_up() {
-            window_for_hollow.set_bars_hollow_up(row.is_active());
-        }
-    });
-    group.add(&hollow);
-
-    let window_for_swapped = window.clone();
-    let syncing_for_swapped = syncing.clone();
-    swapped.connect_active_notify(move |row| {
-        if !syncing_for_swapped.get() && row.is_active() != window_for_swapped.bars_swapped() {
-            window_for_swapped.set_bars_swapped(row.is_active());
-        }
-    });
-    group.add(&swapped);
-
-    // A command, or a theme, can change the chart while this is open; the
-    // rows read it again rather than go on describing what it was. Weakly,
-    // so the window does not keep a closed dialog's rows alive.
+    // A command can change the chart while this is open; the row reads it
+    // again rather than go on describing what it was. Weakly, so the window
+    // does not keep a closed dialog's rows alive.
     let weak = Rc::downgrade(window);
-    let rows = (row.downgrade(), colouring.downgrade(), hollow.downgrade(), swapped.downgrade());
-    let thickness = (thickness.row.downgrade(), thickness.adjustment.clone());
+    let shown = row.downgrade();
     window.watch_chart(move || {
-        let (Some(window), Some(row), Some(colouring), Some(hollow), Some(swapped)) =
-            (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade(), rows.2.upgrade(), rows.3.upgrade())
-        else {
-            return false;
-        };
+        let (Some(window), Some(row)) = (weak.upgrade(), shown.upgrade()) else { return false };
         if row.root().is_none() {
             return false;
         }
         syncing.set(true);
-        sync_bars(&window, &row, &colouring, &hollow, &swapped, hidden_at);
-        if let Some(shown) = thickness.0.upgrade() {
-            shown.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
-            thickness.1.set_value(f64::from(window.ohlc_thickness()));
-        }
+        row.set_active(!window.bars_hidden());
         syncing.set(false);
         true
     });
@@ -561,81 +639,20 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
-/// Bring the Bars rows to what the focused chart is wearing now.
-fn sync_bars(
-    window: &Rc<Window>,
-    row: &adw::ComboRow,
-    colouring: &adw::ComboRow,
-    hollow: &adw::SwitchRow,
-    swapped: &adw::SwitchRow,
-    hidden_at: u32,
-) {
-    let hidden = window.bars_hidden();
-    row.set_selected(match hidden {
-        true => hidden_at,
-        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
-    });
-    let current = window.bar_colouring();
-    colouring.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
-    colouring.set_sensitive(!hidden);
-    hollow.set_active(window.bars_hollow_up());
-    swapped.set_active(window.bars_swapped());
-    hollow.set_sensitive(!hidden && hollow_applies(window.bar_style()));
-    swapped.set_sensitive(!hidden && two_toned(&window.theme(), current));
-}
-
-/// What the two switches over the colouring are called, in a chart's
-/// settings and in the preferences alike.
-pub const HOLLOW_LABEL: &str = "Hollow up bars";
-pub const SWAP_LABEL: &str = "Swap up and down colours";
-/// The row for how many pixels wide OHLC bars are drawn.
-pub const THICKNESS_LABEL: &str = "Thickness";
-
-/// Whether turning `colouring` round would change what it paints, which is
-/// when the switch for it is offered. Monochrome paints a rise and a fall
-/// alike, so there is nothing to turn round.
-pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring) -> bool {
-    colouring.scheme(theme).is_two_toned()
-}
-
-/// Whether a hollow rise would show on a bar of `style`: a candle has a
-/// body to leave open, an OHLC bar does not.
-pub fn hollow_applies(style: BarStyle) -> bool {
-    style == BarStyle::Candles
-}
-
-/// Offer the four palettes, with `current` selected.
-///
-/// A new model selects its first entry on the way in, which the row's own
-/// handler would take for a choice; [`filling_colourings`] tells it not to.
-pub fn fill_colourings(row: &adw::ComboRow, current: BarColouring) {
-    let names: Vec<&str> = BarColouring::ALL.iter().map(|c| c.label()).collect();
-    row.set_widget_name(FILLING);
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
-    row.set_widget_name("");
-}
-
-const FILLING: &str = "filling-colourings";
-
-/// Whether the row is being refilled rather than chosen from.
-pub fn filling_colourings(row: &adw::ComboRow) -> bool {
-    row.widget_name() == FILLING
-}
-
 /// The way back to what a new chart opens with, for a chart that has wandered.
-fn defaults_group(window: &Rc<Window>, dialog: &adw::PreferencesDialog) -> adw::PreferencesGroup {
+fn defaults_group(window: &Rc<Window>, frame: &adw::Window) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     let row = adw::ActionRow::new();
     row.set_title("Reset to defaults");
     let button = gtk::Button::with_label("Reset");
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     let window = window.clone();
-    let dialog = dialog.clone();
+    let frame = frame.clone();
     button.connect_clicked(move |_| {
         // Every row above was read off the chart as it was; reopening is how
         // they come to read it as it is, once it is settled.
-        dialog.close();
+        frame.close();
         let again = window.clone();
         window.reset_chart_to_defaults(move || again.open_chart_settings());
     });
@@ -654,69 +671,53 @@ fn defaults_group(window: &Rc<Window>, dialog: &adw::PreferencesDialog) -> adw::
 /// nobody opens unless they already suspect it is there. That menu stays as it
 /// was: these rows drive the same window actions, so the tick in the menu and
 /// the switch here cannot come to different conclusions.
-fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+fn scales_group(window: &Rc<Window>, log: &adw::SwitchRow) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Scales");
 
-    let auto = adw::ActionRow::new();
-    auto.set_title("Auto scale price");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.focused_pane().view.price_auto());
+    let switch = |title: &str, on: bool| {
+        let row = adw::SwitchRow::new();
+        row.set_title(title);
+        row.set_active(on);
+        group.add(&row);
+        row
+    };
+
+    let auto = switch("Auto scale price", window.focused_pane().view.price_auto());
     let window_for_auto = window.clone();
-    switch.connect_state_set(move |_, on| {
+    auto.connect_active_notify(move |row| {
         // The action toggles rather than taking a value, so it is activated
         // only when the chart is not already the way the switch now reads.
         //
         // Spelled out through WidgetExt because an application window is an
         // action group in its own right, and that one holds the window's own
         // actions — it knows nothing of the "chart." group inserted on it.
-        if window_for_auto.focused_pane().view.price_auto() != on {
+        if window_for_auto.focused_pane().view.price_auto() != row.is_active() {
             let _ = gtk::prelude::WidgetExt::activate_action(
                 &window_for_auto.window,
                 "chart.auto-scale",
                 None,
             );
         }
-        glib::Propagation::Proceed
     });
-    auto.add_suffix(&switch);
-    auto.set_activatable_widget(Some(&switch));
-    group.add(&auto);
 
-    let log = adw::ActionRow::new();
-    log.set_title("Logarithmic scale");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.log_scale());
-    let window_for_log = window.clone();
-    switch.connect_state_set(move |_, on| {
-        if window_for_log.log_scale() != on {
-            window_for_log.set_log_scale(on);
+    group.add(log);
+
+    // The lines every chart's Overlays switches, for this chart alone.
+    let worn = window.look(false);
+    for (title, drawn, edit) in crate::ui::overlays::LINES {
+        let row = switch(title, drawn(&worn));
+        if matches!(edit(true), crate::chart_look::LookEdit::PriceLine(_)) {
+            row.set_subtitle("The price stays on the axis either way");
         }
-        glib::Propagation::Proceed
-    });
-    log.add_suffix(&switch);
-    log.set_activatable_widget(Some(&switch));
-    group.add(&log);
-
-    let grid = adw::ActionRow::new();
-    grid.set_title("Gridlines");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.show_grid());
-    let window_for_grid = window.clone();
-    switch.connect_state_set(move |_, on| {
-        window_for_grid.set_show_grid(on);
-        glib::Propagation::Proceed
-    });
-    grid.add_suffix(&switch);
-    grid.set_activatable_widget(Some(&switch));
-    group.add(&grid);
+        let window = window.clone();
+        row.connect_active_notify(move |row| window.change_worn_look(edit(row.is_active())));
+    }
 
     let reset = adw::ActionRow::new();
     reset.set_title("Reset chart");
     let button = gtk::Button::with_label("Reset");
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     button.set_tooltip_text(Some(&shortcuts::tooltip("Reset chart", "chart.reset-view")));
     let window_for_reset = window.clone();
@@ -734,42 +735,14 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
-fn session_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+fn session_group(window: &Rc<Window>, rows: &ChartRows) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Session");
-
-    let names: Vec<&str> = Session::ALL.iter().map(|s| s.label()).collect();
-    let session = window.session();
-
-    let row = adw::ComboRow::new();
-    row.set_title("Hours");
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(Session::ALL.iter().position(|s| *s == session).unwrap_or(0) as u32);
-
-    let for_hours = window.clone();
-    row.connect_selected_notify(move |row| {
-        let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
-        for_hours.set_session(chosen);
-        for_hours.refresh();
-    });
-    group.add(&row);
-
+    group.add(&rows.session);
     // Only on a root whose feed can join its months either way: anything
     // else has nothing to choose, and no row.
     if window.offers_continuous() {
-        use omacharts_engine::continuous::Adjustment;
-        let names: Vec<&str> = Adjustment::ALL.iter().map(|a| a.label()).collect();
-        let joined = adw::ComboRow::new();
-        joined.set_title("Continuous futures");
-        joined.set_model(Some(&gtk::StringList::new(&names)));
-        let now = window.continuous();
-        joined.set_selected(Adjustment::ALL.iter().position(|a| *a == now).unwrap_or(0) as u32);
-        let window = window.clone();
-        joined.connect_selected_notify(move |row| {
-            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
-            window.set_continuous(chosen);
-        });
-        group.add(&joined);
+        group.add(&rows.continuous);
     }
     group
 }
@@ -791,30 +764,11 @@ fn session_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 /// They are independent on purpose. A chart that shows but does not send is
 /// a reference view; one that sends but does not show is rarer and still
 /// coherent, and neither needs explaining in terms of the other.
-fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+fn drawings_group(rows: &ChartRows) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Drawings");
-
-    let pane = window.focused_pane();
-
-    let shows = adw::SwitchRow::new();
-    shows.set_title("Show drawings from other charts");
-    shows.set_active(pane.shows_drawings.get());
-    {
-        let window = window.clone();
-        shows.connect_active_notify(move |row| window.set_shows_drawings(row.is_active()));
-    }
-    group.add(&shows);
-
-    let sends = adw::SwitchRow::new();
-    sends.set_title("Send drawings to other charts");
-    sends.set_active(pane.sends_drawings.get());
-    {
-        let window = window.clone();
-        sends.connect_active_notify(move |row| window.set_sends_drawings(row.is_active()));
-    }
-    group.add(&sends);
-
+    group.add(&rows.shows);
+    group.add(&rows.sends);
     group
 }
 
@@ -886,10 +840,6 @@ impl Owner {
         self.indicators().iter().map(|i| i.id).max().unwrap_or(0) + 1
     }
 
-    fn theme(&self) -> omacharts_engine::Theme {
-        self.app.theme()
-    }
-
     /// Whether a cumulative delta on the chart in front of whoever is
     /// editing is estimated because its feed has no bid and ask volume.
     /// Never for a template, which is on charts of every feed.
@@ -897,10 +847,15 @@ impl Owner {
         self.template.is_none() && !self.app.focused_pane_has_ladders()
     }
 
-    /// The focused chart's, for a template too: it is the chart in front of
-    /// whoever is editing, and a template has no bars of its own.
+    /// The focused chart's theme and candles, for a template too: it is
+    /// the chart in front of whoever is editing, and a template has no
+    /// bars of its own.
+    fn theme(&self) -> omacharts_engine::Theme {
+        self.app.focused_pane().view.theme()
+    }
+
     fn bar_scheme(&self) -> omacharts_engine::BarScheme {
-        self.app.bar_scheme()
+        self.app.focused_pane().view.scheme()
     }
 
     /// How many rows a profile is drawing. A template draws nothing of its
@@ -923,6 +878,9 @@ impl Owner {
 pub struct IndicatorList {
     group: adw::PreferencesGroup,
     rows: Rc<RefCell<Vec<gtk::Widget>>>,
+    /// What the rows show, so a change elsewhere that leaves it as it was,
+    /// as most look edits do, does not build them again.
+    listed: Rc<RefCell<Option<Listed>>>,
     /// The + in the group's header. Kept so the hotkey can hang the picker off
     /// the same button the pointer would have used: a popover that appears
     /// somewhere else depending on how you asked for it is two features.
@@ -942,7 +900,7 @@ impl IndicatorList {
         add.set_valign(gtk::Align::Center);
         group.set_header_suffix(Some(&add));
 
-        IndicatorList { group, rows: Rc::new(RefCell::new(Vec::new())), add }
+        IndicatorList { group, rows: Rc::default(), listed: Rc::default(), add }
     }
 
     fn clear(&self) {
@@ -954,6 +912,23 @@ impl IndicatorList {
     fn push(&self, row: &impl IsA<gtk::Widget>) {
         self.group.add(row);
         self.rows.borrow_mut().push(row.clone().upcast());
+    }
+}
+
+/// What an [`IndicatorList`] shows: the template it goes through, the
+/// indicators and the colour each is drawn in.
+#[derive(PartialEq)]
+struct Listed {
+    through: Option<String>,
+    indicators: Vec<Indicator>,
+    colours: Vec<String>,
+}
+
+impl Listed {
+    fn now(owner: &Owner) -> Listed {
+        let indicators = owner.indicators();
+        let colours = omacharts_engine::palette_colors(&indicators, &owner.theme());
+        Listed { through: owner.through_template(), indicators, colours }
     }
 }
 
@@ -1008,15 +983,11 @@ impl Refresh {
         Refresh(Rc::new(|| {}))
     }
 
-    fn rebuilding(
-        owner: &Rc<Owner>,
-        dialog: &adw::PreferencesDialog,
-        list: &IndicatorList,
-    ) -> Refresh {
+    fn rebuilding(owner: &Rc<Owner>, view: &adw::NavigationView, list: &IndicatorList) -> Refresh {
         let owner = owner.clone();
-        let dialog = dialog.clone();
+        let view = view.clone();
         let list = list.clone();
-        Refresh(Rc::new(move || rebuild_indicators(&owner, &dialog, &list)))
+        Refresh(Rc::new(move || rebuild_indicators(&owner, &view, &list)))
     }
 
     fn run(&self) {
@@ -1030,42 +1001,46 @@ impl Refresh {
 /// turn it off or take it away. Everything else lives on its own panel, because
 /// a column of expanders holding every parameter of every indicator is a shape
 /// you cannot read.
-fn rebuild_indicators(
-    owner: &Rc<Owner>,
-    dialog: &adw::PreferencesDialog,
-    list: &IndicatorList,
-) {
+fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &IndicatorList) {
     list.clear();
-    let indicators = owner.indicators();
-    let refresh = Refresh::rebuilding(owner, dialog, list);
+    let listed = Listed::now(owner);
+    let (through, indicators) = (&listed.through, &listed.indicators);
+    let refresh = Refresh::rebuilding(owner, view, list);
 
     // On a template, what is being edited is the template, and the page says
     // so before anything is changed: a change here reaches every chart on it.
-    let through = owner.through_template();
-    let description = match (&through, owner.template.is_some(), indicators.is_empty()) {
+    let description = match (through, owner.template.is_some(), indicators.is_empty()) {
         // The heading names the template; this says only what that means.
         (Some(_), _, _) => Some("A change here reaches every chart that uses it.".to_string()),
         (None, true, _) => None,
         (None, false, true) => Some("Nothing yet.".to_string()),
         (None, false, false) => Some(
-            "Drag to reorder. Colours come from the theme."
+            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
                 .to_string(),
         ),
     };
     list.group.set_description(description.as_deref());
-    list.group.set_title(match (&through, owner.template) {
+    list.group.set_title(match (through, owner.template) {
         (Some(name), _) => format!("On the {name} template"),
         (None, Some(_)) => "Indicators in the template".to_string(),
         (None, None) => "On the chart".to_string(),
     }
     .as_str());
 
-    // The price is not a row: every strip sits below it, so the list shows
-    // only what can be changed. If where a strip sits becomes a setting, the
-    // price comes back as a row strips are dropped across (see
-    // `indicators::cross_price`).
-    for indicator in &indicators {
-        list.push(&indicator_row(owner, dialog, &refresh, &indicators, indicator));
+    // The price plot is a row of the list because strips can be stacked above it
+    // as well as below, and a list showing only the strips could not say which
+    // side of the price each one is on. A chart with no strips has no stack to
+    // describe, so it is left out there.
+    let stacked = indicators.iter().any(|i| i.kind.in_own_pane());
+    let price_at = if stacked { price_row_at(indicators) } else { usize::MAX };
+    for (at, (indicator, colour)) in indicators.iter().zip(&listed.colours).enumerate() {
+        if at == price_at {
+            list.push(&price_row(owner, &refresh));
+        }
+        list.push(&indicator_row(owner, view, &refresh, indicator, colour.clone()));
+    }
+    if price_at == indicators.len() {
+        list.push(&price_row(owner, &refresh));
     }
 
     if indicators.is_empty() {
@@ -1080,18 +1055,76 @@ fn rebuild_indicators(
         });
         list.push(&empty);
     }
+    *list.listed.borrow_mut() = Some(listed);
+}
+
+/// Where the price plot sits in the list: above the first strip that is below
+/// it, and at the end when every strip is above it.
+///
+/// The strips above the price are listed before the strips below it, which is
+/// what every way of reordering them maintains — so one boundary is enough to
+/// place the price among them.
+fn price_row_at(indicators: &[Indicator]) -> usize {
+    indicators
+        .iter()
+        .position(|i| i.kind.in_own_pane() && !i.above_price)
+        .unwrap_or(indicators.len())
+}
+
+/// The price plot's own line in the list.
+///
+/// Not a thing you can configure or remove — it is the chart — so it carries
+/// nothing but its name. It is a place to drop a strip on, which is how a strip
+/// is moved across the price from here.
+fn price_row(owner: &Rc<Owner>, refresh: &Refresh) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title("Price");
+    row.set_subtitle("Candles, and everything drawn over them");
+    // No handle and no dot. Every other row wears both, so their absence is
+    // what says this row is the chart itself rather than another indicator —
+    // and a mark here would read as the handle it is not.
+    row.add_css_class("dim-label");
+
+    let moving = |value: &glib::Value| value.get::<String>().ok()?.parse::<u32>().ok();
+    let watched = owner.clone();
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    let target = drop_line::target(
+        &row,
+        // A strip from above the price becomes the first below it, and one
+        // from below the last above it: the line goes on the far side.
+        move |value| {
+            let id = moving(value)?;
+            let all = watched.indicators();
+            let strip = all.iter().find(|i| i.id == id && i.kind.in_own_pane())?;
+            Some(if strip.above_price { drop_line::Edge::After } else { drop_line::Edge::Before })
+        },
+        move |value| {
+            let Some(moving) = moving(value) else { return false };
+            let mut all = owner.indicators();
+            // Dropped on the price: the strip changes sides, which is the one
+            // thing dropping it on another row cannot say.
+            if !indicators::cross_price(&mut all, moving) {
+                return false;
+            }
+            owner.set_indicators(all);
+            refresh.run();
+            true
+        },
+    );
+    row.add_controller(target);
+    row
 }
 
 /// One line in the list: what it is, whether it is drawn, and a way in.
 fn indicator_row(
     owner: &Rc<Owner>,
-    dialog: &adw::PreferencesDialog,
+    view: &adw::NavigationView,
     refresh: &Refresh,
-    all: &[Indicator],
     indicator: &Indicator,
+    colour: String,
 ) -> adw::ActionRow {
     let id = indicator.id;
-    let colour = drawn_colour(owner, all, id);
     let row = adw::ActionRow::new();
     row.set_title(&indicator.label());
     row.set_subtitle(indicator.kind.name());
@@ -1149,13 +1182,13 @@ fn indicator_row(
 
     let owner_for_open = owner.clone();
     let refresh_for_open = refresh.clone();
-    let dialog_for_open = dialog.clone();
+    let view_for_open = view.clone();
     row.connect_activated(move |_| {
         open_indicator_panel_for(
             &owner_for_open,
             &refresh_for_open,
             id,
-            Panel::Subpage(dialog_for_open.clone()),
+            Panel::Subpage(view_for_open.clone()),
         );
     });
     row
@@ -1207,7 +1240,18 @@ fn wire_reorder(owner: &Rc<Owner>, refresh: &Refresh, row: &adw::ActionRow, id: 
             // Taken out before the destination is used, so dropping downwards
             // lands after the row you dropped on and upwards lands in its place —
             // which is what the pointer was over either way.
-            let dragged = indicators.remove(from);
+            // A strip dropped next to a strip on the other side of the price has
+            // crossed it: the row it was dropped on says which side that is. Read
+            // before the drag is lifted out, because that shifts everything after
+            // it — the row dropped on included.
+            let landing = indicators
+                .get(to)
+                .filter(|onto| onto.kind.in_own_pane())
+                .map(|onto| onto.above_price);
+            let mut dragged = indicators.remove(from);
+            if let (true, Some(side)) = (dragged.kind.in_own_pane(), landing) {
+                dragged.above_price = side;
+            }
             indicators.insert(to, dragged);
             owner.set_indicators(indicators);
             refresh.run();
@@ -1217,25 +1261,26 @@ fn wire_reorder(owner: &Rc<Owner>, refresh: &Refresh, row: &adw::ActionRow, id: 
     row.add_controller(target);
 }
 
-/// Where an indicator's settings are shown.
+/// Where an indicator's settings are shown: always a page pushed over the
+/// list, in a settings window.
 enum Panel {
-    /// Pushed over the list it was opened from, with a Done button.
-    Subpage(adw::PreferencesDialog),
-    /// A dialog of its own, with one button that adds the indicator. Used by
-    /// the add path, which can start from the chart with no settings window
-    /// open at all, so there is nothing to push a page onto. With the
-    /// template the chart was on before the indicator went onto it, to go
-    /// back onto if it is never added.
-    Add(Option<u32>),
+    /// Its settings, with the back button: they apply as they are changed.
+    Subpage(adw::NavigationView),
+    /// An indicator just picked, with Cancel and Add where the back button
+    /// would be. `pending` takes it back off unless Add is how the page goes;
+    /// `close_after` closes the window with it, when the window was opened
+    /// for nothing else.
+    Add { view: adw::NavigationView, pending: Pending, close_after: bool },
 }
 
 /// One indicator's settings.
 ///
 /// Changes apply as you make them, on the chart, whichever way this was
 /// opened: you are looking at the thing you are configuring. For the add path
-/// that means the indicator is already drawn while you set it up, and
-/// dismissing the dialog takes it back off again — the Add button is how you
-/// say you meant it.
+/// that means the indicator is already drawn while you set it up, and leaving
+/// the page any other way — Cancel, Escape, the window closing, the focus
+/// moving to another chart — takes it back off again. The Add button is how
+/// you say you meant it.
 fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel: Panel) {
     let indicators = owner.indicators();
     let Some(indicator) = indicators.iter().find(|i| i.id == id).cloned() else {
@@ -1277,46 +1322,76 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&page));
+    let subpage = adw::NavigationPage::new(&toolbar, &indicator.label());
 
     match panel {
         // Nothing packed: an AdwHeaderBar inside a navigation page draws its
         // own back button, and settings here apply as you change them, so a
         // Done beside it would be the same action offered twice.
-        Panel::Subpage(dialog) => {
-            let subpage = adw::NavigationPage::new(&toolbar, &indicator.label());
-            dialog.push_subpage(&subpage);
+        Panel::Subpage(view) => {
+            view.push(&subpage);
             focus_first_parameter(&page);
         }
-        Panel::Add(was_on) => {
-            let modal = adw::Dialog::new();
-            modal.set_title(&indicator.label());
-            modal.set_content_width(560);
-            modal.set_content_height((owner.window.height() * 85 / 100).max(620));
-            modal.set_child(Some(&toolbar));
-
-            // Cancel on the left, the suggested action on the right, and the
-            // dialog's own close button turned off — the arrangement GNOME
-            // uses for anything that creates something. A bare close button
-            // next to Add says nothing about what closing would do.
+        Panel::Add { view, pending, close_after } => {
+            // Cancel on the left, the suggested action on the right, and
+            // neither the back button nor the window's own close button — the
+            // arrangement GNOME uses for anything that creates something. A
+            // bare close button next to Add says nothing about what closing
+            // would do.
+            header.set_show_back_button(false);
             header.set_show_start_title_buttons(false);
             header.set_show_end_title_buttons(false);
 
-            let added = Rc::new(std::cell::Cell::new(false));
+            // Every way off the page but Add: the indicator comes back off
+            // what it was put on, the chart or the template, even once the
+            // focus has left that chart.
+            let pane = owner.app.focused_pane();
+            let owner_for_undo = owner.clone();
+            let refresh_for_undo = refresh.clone();
+            *pending.borrow_mut() = Some(Box::new(move || {
+                let owner = owner_for_undo;
+                let focused = Rc::ptr_eq(&owner.app.focused_pane(), &pane);
+                if owner.template.is_none() && !focused {
+                    owner.app.take_indicator_off(&pane, id);
+                } else {
+                    let kept: Vec<Indicator> = owner.indicators().into_iter().filter(|i| i.id != id).collect();
+                    owner.set_indicators(kept);
+                }
+                refresh_for_undo.run();
+            }));
+
+            // Done with the page: the window too when it was opened for it,
+            // since the hand that asked for an indicator was on the chart.
+            let leave: Rc<dyn Fn()> = {
+                let view = view.clone();
+                let subpage = subpage.clone();
+                Rc::new(move || {
+                    if close_after {
+                        if let Some(window) = view.root().and_downcast::<gtk::Window>() {
+                            window.close();
+                        }
+                    } else if view.visible_page().as_ref() == Some(&subpage) {
+                        view.pop();
+                    }
+                })
+            };
 
             let cancel = gtk::Button::with_label("Cancel");
-            let modal_for_cancel = modal.clone();
+            let pending_for_cancel = pending.clone();
+            let leave_on_cancel = leave.clone();
             cancel.connect_clicked(move |_| {
-                modal_for_cancel.close();
+                take_pending(&pending_for_cancel);
+                leave_on_cancel();
             });
             header.pack_start(&cancel);
 
             let add = gtk::Button::with_label("Add");
             add.add_css_class("suggested-action");
-            let added_on_click = added.clone();
-            let modal_for_add = modal.clone();
+            let pending_for_add = pending.clone();
+            let leave_on_add = leave.clone();
             add.connect_clicked(move |_| {
-                added_on_click.set(true);
-                modal_for_add.close();
+                pending_for_add.borrow_mut().take();
+                leave_on_add();
             });
             add.set_tooltip_text(Some(&format!("Add ({})", dialogs::commit_label())));
             header.pack_end(&add);
@@ -1325,30 +1400,25 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
             // is one path by which an indicator is kept and one place to look
             // when it is not.
             let add_on_key = add.clone();
-            dialogs::commit_on_ctrl_enter(&modal, move || add_on_key.emit_clicked());
+            dialogs::commit_on_ctrl_enter(&subpage, move || add_on_key.emit_clicked());
 
-            // Closed any other way — Escape, the close button, clicking out —
-            // means it was never added, so it comes back off the chart.
-            let owner_for_close = owner.clone();
-            let refresh_for_close = refresh.clone();
-            modal.connect_closed(move |_| {
-                if added.get() {
+            // Popped by Escape or a swipe: not added. Once, and then the
+            // handler goes, or every indicator added would leave one behind.
+            let watched = subpage.clone();
+            let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+            let handler_inside = handler.clone();
+            let watching = view.connect_popped(move |view, popped| {
+                if popped != &watched {
                     return;
                 }
-                let back = was_on.filter(|template| {
-                    owner_for_close.app.templates().iter().any(|t| t.id == *template)
-                });
-                if back.is_some() {
-                    owner_for_close.app.set_template(back);
-                } else {
-                    let kept: Vec<Indicator> =
-                        owner_for_close.indicators().into_iter().filter(|i| i.id != id).collect();
-                    owner_for_close.set_indicators(kept);
+                take_pending(&pending);
+                if let Some(id) = handler_inside.borrow_mut().take() {
+                    view.disconnect(id);
                 }
-                refresh_for_close.run();
             });
+            *handler.borrow_mut() = Some(watching);
 
-            modal.present(Some(&owner.window));
+            view.push(&subpage);
             focus_first_parameter(&page);
         }
     }
@@ -1441,7 +1511,7 @@ fn appearance_group(
     // does: unset is the next colour along from the first line's, so the two
     // never come out the same.
     // A cumulative delta's line is drawn only as a line: as candles it is
-    // in its colouring, and these rows would change nothing on screen.
+    // in the look's colours, and these rows would change nothing on screen.
     if let Params::Cvd { style, .. } = &indicator.params {
         let is_line = |params: &Params| matches!(params, Params::Cvd { style: Style::Line, .. });
         group.set_visible(*style == Style::Line);
@@ -1653,6 +1723,7 @@ fn colour_row(
     row.set_title(title);
 
     let default = gtk::Button::with_label("Reset");
+    default.add_css_class("action-word");
     default.add_css_class("flat");
     default.add_css_class("subtle-link");
     default.set_valign(gtk::Align::Center);
@@ -1752,7 +1823,7 @@ fn parameters_group(
         Params::Volume { height, .. } => {
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Cvd { reset, style, height, colouring } => {
+        Params::Cvd { reset, style, height } => {
             // Said once, here, rather than on the chart: the legend's ≈ is
             // the mark there.
             if owner.estimates_delta() {
@@ -1776,7 +1847,6 @@ fn parameters_group(
             let app = owner.app.clone();
             style_row.connect_selected_notify(move |_| app.chart_changed_elsewhere());
             group.add(&style_row);
-            group.add(&colouring_row(owner, refresh, id, *colouring));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::Rsi { period, height, overbought, oversold } => {
@@ -1865,7 +1935,7 @@ fn parameters_group(
             ));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::VolumeProfile { reset, rows, value_area, method, colouring, last_only, .. } => {
+        Params::VolumeProfile { reset, rows, value_area, method, last_only, .. } => {
             group.add(&reset_row(owner, refresh, id, *reset));
             // The newest period alone, on either method and either edge.
             let last_row = adw::SwitchRow::new();
@@ -1899,9 +1969,6 @@ fn parameters_group(
                 },
             );
             group.add(&method_row);
-            let colouring_row = colouring_row(owner, refresh, id, *colouring);
-            colouring_row.set_visible(has_colouring(*method));
-            group.add(&colouring_row);
             for row in rows_rows(owner, refresh, id, *rows) {
                 group.add(&row);
             }
@@ -1924,11 +1991,9 @@ fn parameters_group(
             area_row.set_sensitive(has_value_area(*method));
             method_row.connect_selected_notify({
                 let area_row = area_row.clone();
-                let colouring_row = colouring_row.clone();
                 move |row| {
                     let method = Method::ALL.get(row.selected() as usize).copied().unwrap_or_default();
                     area_row.set_sensitive(has_value_area(method));
-                    colouring_row.set_visible(has_colouring(method));
                 }
             });
             group.add(&area_row);
@@ -2001,13 +2066,13 @@ fn volume_colours(
     group
 }
 
-/// The volume pane's palette, its opacity and its two colours, as it is
+/// The volume pane's colouring, its opacity and its two colours, as it is
 /// painted now.
 fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
     let id = indicator.id;
     let (up, down) =
         crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
-    let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
+    let Params::Volume { up_color, down_color, .. } = &indicator.params else {
         return Vec::new();
     };
     let opacity = percent_row(
@@ -2024,10 +2089,6 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
             }
         },
     );
-    // The one a delta profile offers. Its Default is what volume always
-    // followed, the chart's own colouring, and Monochrome, which a delta is
-    // not offered, stays on offer to a volume pane already painted in it.
-    let choice = colouring_row(owner, refresh, id, *colouring);
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
     let up_row = colour_row(
@@ -2058,37 +2119,11 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
         },
         id,
     );
-    vec![choice.upcast(), opacity.upcast(), up_row.upcast(), down_row.upcast()]
+    vec![opacity.upcast(), up_row.upcast(), down_row.upcast()]
 }
 
 /// The volume row that says how solid its bars are.
 pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
-
-/// The colouring row a volume pane, a delta volume profile and a
-/// cumulative delta share: **Default** first, then the colourings that tell
-/// a rise from a fall, [`DELTA_COLOURINGS`]. Default is the colouring
-/// chosen in Preferences for a delta, and the chart's own for volume, which
-/// is what it always followed. A colouring outside those three that an
-/// indicator already has — a volume pane painted Monochrome before — is
-/// offered last, so the row shows what is drawn.
-fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
-    let mut offered: Vec<BarColouring> = DELTA_COLOURINGS.to_vec();
-    if let Some(kept) = current.filter(|c| !offered.contains(c)) {
-        offered.push(kept);
-    }
-    let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
-    names.extend(offered.iter().map(|c| c.label()));
-    let at = current.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-    choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, at, move |indicator, at| {
-        let chosen = at.checked_sub(1).and_then(|at| offered.get(at).copied());
-        match &mut indicator.params {
-            Params::Volume { colouring, .. }
-            | Params::VolumeProfile { colouring, .. }
-            | Params::Cvd { colouring, .. } => *colouring = chosen,
-            _ => {}
-        }
-    })
-}
 
 /// The cumulative delta row that picks candles or a line.
 const CVD_STYLE_LABEL: &str = "Style";
@@ -2114,20 +2149,6 @@ pub const PROFILE_LAST_ONLY_LABEL: &str = "Only show in last period";
 /// The volume profile switch that draws its point of control or leaves it
 /// out.
 pub const PROFILE_POC_LABEL: &str = "Show point of control";
-
-/// The volume profile row that says how a delta's two sides are painted.
-const PROFILE_COLOURING_LABEL: &str = "Colouring";
-
-/// What a delta profile's colouring row offers first: the colouring chosen
-/// on the Defaults page of Preferences, whatever that is.
-const PROFILE_FOLLOWS_DEFAULTS: &str = "Default";
-
-/// Whether a volume profile measuring by `method` is painted in a colouring:
-/// a delta is, bought and sold as rising and falling bars; a total is in
-/// the profile's own colour.
-fn has_colouring(method: Method) -> bool {
-    method == Method::Delta
-}
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape, side and width.
@@ -2983,18 +3004,124 @@ fn update(owner: &Rc<Owner>, id: u32, change: impl Fn(&mut Indicator)) {
     owner.set_indicators(indicators);
 }
 
-/// Pick the kind of indicator to add.
-///
-/// A dialog rather than a popover hanging off whatever was clicked. It is
-/// reached from a button in the settings and from a key on the chart, and the
-/// key has nothing to point at — a picker that lands in the top-left corner
-/// when summoned by Ctrl+Shift+I and under a button otherwise is two features
-/// wearing one name. The symbol search, which has exactly the same two ways
-/// in, has always been a dialog for the same reason.
-pub fn add_indicator(window: &Rc<Window>) {
-    pick_indicator(&Owner::chart(window), &Refresh::none());
+/// Ctrl+Shift+I on a chart: the indicator picker over the chart it adds to,
+/// in the symbol picker's frame, that chart dimmed and named.
+pub fn add_indicator_over(window: &Rc<Window>, over: Over) {
+    let picker = INDICATOR_PICKER.with(|picker| {
+        picker
+            .get_or_init(|| {
+                let frame = PickFrame::new("Indicator");
+                let shown: Rc<RefCell<Vec<Kind>>> = Rc::new(RefCell::new(Vec::new()));
+                let (list, kinds) = (frame.list.clone(), shown.clone());
+                frame.entry.connect_search_changed(move |entry| fill_kinds(&list, &kinds, &entry.text(), 0, None));
+                (frame, shown)
+            })
+            .clone()
+    });
+    let (frame, shown) = picker;
+    frame.entry.set_text("");
+    fill_kinds(&frame.list, &shown, "", 0, None);
+    let owner = Owner::chart(window);
+    frame.open(&over, move |at| {
+        if let Some(kind) = shown.borrow().get(at).copied() {
+            add_kind(&owner, &Refresh::none(), kind);
+        }
+    });
 }
 
+type IndicatorPicker = (Rc<PickFrame>, Rc<RefCell<Vec<Kind>>>);
+
+thread_local! {
+    /// Built once, the first time it is asked for, like the symbol picker.
+    static INDICATOR_PICKER: OnceCell<IndicatorPicker> = const { OnceCell::new() };
+}
+
+/// The kinds matching `query`, one row each: the name, and the short name
+/// a legend writes it as. `pad` is the rows' height above and below, which
+/// the picker over a chart leaves to its stylesheet.
+fn fill_kinds(
+    rows: &gtk::ListBox,
+    shown: &RefCell<Vec<Kind>>,
+    query: &str,
+    pad: i32,
+    grouped: Option<&std::cell::Cell<bool>>,
+) {
+    while let Some(child) = rows.first_child() {
+        rows.remove(&child);
+    }
+    let browsing = query.trim().is_empty();
+    if let Some(grouped) = grouped {
+        grouped.set(browsing);
+    }
+    let kinds = match browsing && grouped.is_some() {
+        true => indicators::Category::ALL.iter().flat_map(|c| c.kinds()).collect(),
+        false => indicators::search(query),
+    };
+    // Filled before the rows, which a header function reads.
+    *shown.borrow_mut() = kinds.clone();
+    for kind in &kinds {
+        let name = gtk::Label::new(Some(kind.name()));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row_box.set_margin_top(pad);
+        row_box.set_margin_bottom(pad);
+        if pad > 0 {
+            row_box.set_margin_start(10);
+            row_box.set_margin_end(10);
+        }
+        row_box.append(&name);
+        // The chip is the short name the chart will show; where that is the
+        // name itself, it would be saying it twice.
+        if !kind.short_name().eq_ignore_ascii_case(kind.name()) {
+            let short = gtk::Label::new(Some(kind.short_name()));
+            short.add_css_class("symbol-kind");
+            short.set_valign(gtk::Align::Center);
+            row_box.append(&short);
+        }
+
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&row_box));
+        rows.append(&row);
+    }
+    rows.invalidate_headers();
+    if let Some(first) = rows.row_at_index(0) {
+        rows.select_row(Some(&first));
+    }
+}
+
+/// Put one of `kind` on what `owner` names and go straight to its settings:
+/// picking the kind and setting it up are two steps, and the second is where
+/// you say whether you meant it. For a chart, in its settings window, opened
+/// for it if it was not open already; for a template, in its editor.
+fn add_kind(owner: &Rc<Owner>, refresh: &Refresh, kind: Kind) {
+    let id = owner.next_indicator_id();
+    // On a template it goes onto the template, like every other change
+    // made here, so if it is not added after all it simply comes off again.
+    let mut indicators = owner.indicators();
+    indicators.push(Indicator::new(id, kind));
+    owner.set_indicators(indicators);
+    refresh.run();
+    match owner.template {
+        None => {
+            let opened_for_it = current().is_none();
+            ChartSettings::open(&owner.app, Focus::Adding(id, opened_for_it));
+        }
+        Some(_) => {
+            let Some((view, pending)) = EDITOR.with(|editor| editor.borrow().clone()) else { return };
+            take_pending(&pending);
+            let panel = Panel::Add { view, pending, close_after: false };
+            open_indicator_panel_for(owner, refresh, id, panel);
+        }
+    }
+}
+
+/// Pick the kind of indicator to add, from a settings window's own +.
+///
+/// A dialog over that window: it is where the keyboard is, and a picker in
+/// the window behind it would be one the keys never reach. From the chart,
+/// the same list opens over the chart instead (`add_indicator_over`).
 fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     let entry = gtk::SearchEntry::new();
     entry.set_placeholder_text(Some("Indicator"));
@@ -3064,47 +3191,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
         let rows = rows.clone();
         let shown = shown.clone();
         let grouped = grouped.clone();
-        move |query: &str| {
-            while let Some(child) = rows.first_child() {
-                rows.remove(&child);
-            }
-            let browsing = query.trim().is_empty();
-            grouped.set(browsing);
-            let kinds = match browsing {
-                true => indicators::Category::ALL.iter().flat_map(|c| c.kinds()).collect(),
-                false => indicators::search(query),
-            };
-            // Filled before the rows, which the header function reads.
-            *shown.borrow_mut() = kinds.clone();
-            for kind in &kinds {
-                let name = gtk::Label::new(Some(kind.name()));
-                name.set_xalign(0.0);
-                name.set_hexpand(true);
-
-                let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-                row_box.set_margin_top(7);
-                row_box.set_margin_bottom(7);
-                row_box.set_margin_start(10);
-                row_box.set_margin_end(10);
-                row_box.append(&name);
-                // The chip is the short name the chart will show; where that
-                // is the name itself, it would be saying it twice.
-                if !kind.short_name().eq_ignore_ascii_case(kind.name()) {
-                    let short = gtk::Label::new(Some(kind.short_name()));
-                    short.add_css_class("symbol-kind");
-                    short.set_valign(gtk::Align::Center);
-                    row_box.append(&short);
-                }
-
-                let row = gtk::ListBoxRow::new();
-                row.set_child(Some(&row_box));
-                rows.append(&row);
-            }
-            rows.invalidate_headers();
-            if let Some(first) = rows.row_at_index(0) {
-                rows.select_row(Some(&first));
-            }
-        }
+        move |query: &str| fill_kinds(&rows, &shown, query, 7, Some(&grouped))
     };
     fill("");
 
@@ -3142,19 +3229,8 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     rows.connect_row_activated(move |_, row| {
         let at = row.index().max(0) as usize;
         let Some(kind) = shown.borrow().get(at).copied() else { return };
-        let id = owner_for_pick.next_indicator_id();
-        // On a template it goes onto the template, like every other change
-        // made here, so there is no template to go back onto if it is not
-        // added after all: it simply comes off again.
-        let was_on = None;
-        let mut indicators = owner_for_pick.indicators();
-        indicators.push(Indicator::new(id, kind));
-        owner_for_pick.set_indicators(indicators);
-        refresh_for_pick.run();
         dialog_for_pick.close();
-        // Straight into its settings: picking the kind and setting it up are
-        // two steps, and the second is where you say whether you meant it.
-        open_indicator_panel_for(&owner_for_pick, &refresh_for_pick, id, Panel::Add(was_on));
+        add_kind(&owner_for_pick, &refresh_for_pick, kind);
     });
 
     // What Enter does in the box, from anywhere in the dialog — including the
@@ -3171,7 +3247,14 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     dialogs::close_on_search_escape(&entry, &dialog);
     dialogs::close_on_click_outside(&dialog);
 
-    dialog.present(Some(&owner.window));
+    let over: Option<gtk::Widget> = match owner.template {
+        Some(_) => form_window::open("template-editor").map(|w| w.upcast()),
+        None => current().map(|shown| shown.window.upcast()),
+    };
+    match over {
+        Some(over) => dialog.present(Some(&over)),
+        None => dialog.present(Some(&owner.window)),
+    }
     entry.grab_focus();
 }
 
@@ -3194,19 +3277,6 @@ mod tests {
         assert_eq!(Method::ALL[0], Method::default());
         assert!(has_value_area(Method::Total));
         assert!(!has_value_area(Method::Delta));
-    }
-
-    /// A delta offers the colourings that tell a rise from a fall, by the
-    /// names a chart's own colouring row gives them, after the default;
-    /// a total offers none.
-    #[test]
-    fn a_delta_profile_offers_the_two_toned_colourings_after_the_default() {
-        let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label()).collect();
-        assert_eq!(names, ["Vivid", "Soft", "Quiet"]);
-        assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label() == *name)));
-        assert_eq!(PROFILE_FOLLOWS_DEFAULTS, "Default");
-        assert!(has_colouring(Method::Delta));
-        assert!(!has_colouring(Method::Total));
     }
 
     #[test]

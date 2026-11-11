@@ -9,7 +9,7 @@ omacharts features enable sierra     # the data feed
 omacharts features enable trading    # and, with both on, the broker
 ```
 
-With `sierra` off nothing of it exists: no feed on the Data page or in
+With `sierra` off nothing of it exists: no feed on the Market data page or in
 `provider list`, no `provider setup sierra`, no folder looked for, no file
 watched and no connection made. The user manual says nothing about it until
 it is no longer experimental; this file is where it is described.
@@ -23,7 +23,7 @@ nothing else, so a chart of a contract Sierra Chart has is on screen as fast
 as the disk gives up the part of the file it covers, and works whether or
 not Sierra Chart is running.
 
-- **Setup.** Preferences → Data → Add a data feed → Sierra Chart opens a
+- **Setup.** Preferences → Market data → Add a data feed → Sierra Chart opens a
   dialog asking for Sierra Chart's folder. It is filled in with the first
   one found on this machine (`~/Downloads/SierraChart`, `~/SierraChart`,
   any Wine prefix's `drive_c/SierraChart`, Bottles, `/opt/SierraChart`), a

@@ -122,19 +122,17 @@ pub fn drop_choice(
     }
     anchor.as_ref().insert_action_group(prefix, Some(&group));
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
-    popover.set_has_arrow(false);
     popover.set_position(gtk::PositionType::Bottom);
     popover.set_parent(anchor);
     popover
 }
 
-/// Put `menu` on `button` the way every menu in the app is put there: no
-/// arrow, dropped below. For a button that builds its model as it opens,
+/// Put `menu` on `button` the way every menu in the app is put there:
+/// dropped below. For a button that builds its model as it opens,
 /// call it from there; a new model is a new popover, dressed afresh.
 pub fn set_model(button: &gtk::MenuButton, menu: &impl IsA<gio::MenuModel>) {
     button.set_menu_model(Some(menu));
     if let Some(popover) = button.popover() {
-        popover.set_has_arrow(false);
         popover.set_position(gtk::PositionType::Bottom);
     }
 }

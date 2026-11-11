@@ -39,9 +39,6 @@ pub const RECENT_EVERY_HOURS: i64 = 2;
 /// With the recent ones, never more than twenty files.
 pub const KEEP_DAYS: i64 = 8;
 
-/// The most that can be kept at once, which is what the preferences quote.
-pub const MOST_KEPT: i64 = RECENT_HOURS / RECENT_EVERY_HOURS + KEEP_DAYS;
-
 /// How often the window takes one, if anything changed.
 ///
 /// An hour, so that every two-hour slot of the last day has one to keep if

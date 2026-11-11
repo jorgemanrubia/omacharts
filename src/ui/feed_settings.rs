@@ -60,6 +60,9 @@ struct Panel {
     page: adw::PreferencesPage,
     /// The feeds, rebuilt whenever one changes.
     group: RefCell<Option<adw::PreferencesGroup>>,
+    /// Each feed's row in `group`, so a row moved from the keyboard keeps
+    /// the focus once the group is drawn again.
+    rows: RefCell<Vec<(&'static str, adw::ActionRow)>>,
     /// The artwork and notices the feeds set up have to show, under the
     /// feeds.
     credits: RefCell<Vec<adw::PreferencesGroup>>,
@@ -104,6 +107,7 @@ impl Panel {
             on_change,
             page,
             group: RefCell::new(None),
+            rows: RefCell::new(Vec::new()),
             credits: RefCell::new(Vec::new()),
             after,
             signing_in: Cell::new(None),
@@ -178,14 +182,14 @@ fn set_up(panel: &Panel) -> Vec<&'static Listed> {
 fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Data feeds");
-    group.set_description(Some(
-        "Symbols use the first data feed that offers them.",
-    ));
 
     let added = panel.added();
-    for (at, feed) in added.iter().enumerate() {
-        group.add(&feed_row(panel, feed, at, added.len() > 1));
+    let rows: Vec<(&'static str, adw::ActionRow)> =
+        added.iter().enumerate().map(|(at, feed)| (feed.id, feed_row(panel, feed, at, added.len() > 1))).collect();
+    for (_, row) in &rows {
+        group.add(row);
     }
+    *panel.rows.borrow_mut() = rows;
 
     let missing: Vec<&'static Listed> =
         providers::offered().filter(|feed| !added.iter().any(|known| known.id == feed.id)).collect();
@@ -244,18 +248,16 @@ fn trades(feed: &'static Listed) -> bool {
 }
 
 /// A feed's row. `others` is whether any other feed is on the list:
-/// the last one left offers no Remove, and has nothing to be dragged past.
+/// the last one left has no order to number, offers no Remove, and has
+/// nothing to be dragged past.
 fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(feed.label);
     row.set_use_markup(false);
     row.set_subtitle(&subtitle(panel, feed));
     row.set_subtitle_lines(0);
-
     if others {
-        let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
-        handle.add_css_class("dim-label");
-        row.add_prefix(&handle);
+        row.add_prefix(&rank(at));
     }
 
     // A word, not a warning: the feed works, and rests on a web session
@@ -289,6 +291,7 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
 
     if others {
         let remove = gtk::Button::with_label("Remove");
+        remove.add_css_class("action-word");
         remove.add_css_class("flat");
         remove.set_valign(gtk::Align::Center);
         let panel_for_remove = panel.clone();
@@ -311,6 +314,7 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
         Access::Expired(_) | Access::Missing => verbs.start,
     };
     let button = gtk::Button::with_label(label);
+    button.add_css_class("action-word");
     button.set_valign(gtk::Align::Center);
     let panel = panel.clone();
     if access.ready() {
@@ -341,6 +345,25 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     Some(button)
 }
 
+/// A feed's place in the order, as a number from 1 at the top, since the
+/// order is the setting. Under the pointer the number gives way to the
+/// handle the row is dragged by (the `feed-rank` rules in
+/// [`crate::theming`]).
+fn rank(at: usize) -> gtk::Overlay {
+    let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+    let number = gtk::Label::new(Some(&(at + 1).to_string()));
+    number.add_css_class("numeric");
+    // The feed tried first reads as the one in charge; the rest are faded.
+    if at > 0 {
+        number.add_css_class("dim-label");
+    }
+    let rank = gtk::Overlay::new();
+    rank.set_child(Some(&handle));
+    rank.add_overlay(&number);
+    rank.add_css_class("feed-rank");
+    rank
+}
+
 /// What `feed`'s row offers and says, in the feed's words.
 fn verbs(feed: &'static Listed) -> Verbs {
     feed.setup.map_or(Verbs::SIGN_IN, |setup| setup.verbs())
@@ -348,8 +371,34 @@ fn verbs(feed: &'static Listed) -> Verbs {
 
 /// Dragged by id, because the rows are rebuilt under the drag. A drop is
 /// taken out of the order and put back at the place of the row it lands
-/// on, as the header's part list does.
+/// on, as the header's part list does. Alt+↑ and Alt+↓ move the row one
+/// place from the keyboard, from the row or anything on it.
 fn wire_reorder(panel: &Rc<Panel>, row: &adw::ActionRow, feed: &'static Listed, onto: usize) {
+    let keys = gtk::EventControllerKey::new();
+    let stepped = panel.clone();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        if state & gtk::accelerator_get_default_mod_mask() != gtk::gdk::ModifierType::ALT_MASK {
+            return glib::Propagation::Proceed;
+        }
+        let added = stepped.added();
+        let from = added.iter().position(|known| known.id == feed.id);
+        let to = match key {
+            gtk::gdk::Key::Up => from.and_then(|from| from.checked_sub(1)),
+            gtk::gdk::Key::Down => from.map(|from| from + 1),
+            _ => return glib::Propagation::Proceed,
+        };
+        let Some(order) = from.zip(to).and_then(|(from, to)| moved(&added, from, to)) else {
+            return glib::Propagation::Proceed;
+        };
+        stepped.reorder(order);
+        let rows = stepped.rows.borrow();
+        if let Some((_, row)) = rows.iter().find(|(id, _)| *id == feed.id) {
+            row.grab_focus();
+        }
+        glib::Propagation::Stop
+    });
+    row.add_controller(keys);
+
     let source = gtk::DragSource::new();
     source.set_actions(gtk::gdk::DragAction::MOVE);
     let payload = feed.id.to_string();
@@ -640,9 +689,9 @@ mod tests {
         });
     }
 
-    /// An added feed gets a row above Yahoo, with Remove, and
-    /// thinkorswim's says Experimental. The order written is the order
-    /// drawn, and moving one writes the new order.
+    /// An added feed gets a row above Yahoo, with Remove and its place in
+    /// the order, and thinkorswim's says Experimental. The order written is
+    /// the order drawn, and moving one writes the new order.
     #[test]
     fn the_order_is_stored_and_drawn() {
         crate::ui::on_gtk(|| {
@@ -660,6 +709,7 @@ mod tests {
             let tos_words = words_under(rows[1].upcast_ref());
             assert!(tos_words.iter().any(|w| w == "Experimental"), "{tos_words:?}");
             assert!(tos_words.iter().any(|w| w == "Remove"), "{tos_words:?}");
+            assert!(tos_words.iter().any(|w| w == "2"), "its place in the order: {tos_words:?}");
             let rithmic_words = words_under(rows[0].upcast_ref());
             assert!(!rithmic_words.iter().any(|w| w == "Experimental"), "{rithmic_words:?}");
 

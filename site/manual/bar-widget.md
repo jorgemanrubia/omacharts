@@ -40,8 +40,8 @@ sections. Each row has:
 | Change | The move since the previous close as a percentage, on a pill in the up or down colour. |
 
 Colours come from the desktop theme, even when the window is on another
-theme. Whether a rise is green or red follows the **Colouring** chosen in the
-window ([Colouring](/manual/charts/#colouring)). A theme switch recolours the
+theme. Whether a rise is green or red follows the bar colours chosen in the
+window ([Bars](/manual/themes/#bars)). A theme switch recolours the
 panel at once. A spinner beside the title turns while quotes
 refresh. If the last refresh failed, the error is written under the title and
 the last good quotes stay on screen. An empty list says *Nothing on the

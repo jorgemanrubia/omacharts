@@ -19,7 +19,7 @@ use crate::provider::ProviderError;
 use crate::providers::{Access, Field, How, Saved, SignIn, Verbs};
 
 /// What a chart says while no folder is set up.
-pub const NOT_SET_UP: &str = "Sierra Chart is not set up. Open Preferences → Data.";
+pub const NOT_SET_UP: &str = "Sierra Chart is not set up. Open Preferences → Market data.";
 
 /// The key the folder is kept under.
 pub const FOLDER: &str = "folder";

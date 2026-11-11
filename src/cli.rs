@@ -260,14 +260,13 @@ pub trait Live {
     fn reload_workspace(&self);
     /// Draw the rail again, after a command changed a watchlist.
     fn reload_watchlists(&self);
-    /// Re-read the theme and bar scheme, and repaint.
-    fn adopt_theming(&self);
+    /// Read every chart's look back from the settings — the theme, the
+    /// bars, the header, the lines — and wear it, if a command changed it.
+    /// Nothing to do without a window.
+    fn adopt_look(&self) {}
     /// Chart from the feed the settings now name, if it is not the one on
     /// screen. Nothing to do without a window.
     fn adopt_feed(&self) {}
-    /// Show the header the settings now name on every chart on screen.
-    /// Nothing to do without a window.
-    fn adopt_header(&self) {}
     /// Draw every chart on screen in the time zone and the time format the
     /// settings now name. Nothing to do without a window.
     fn adopt_clock(&self) {}
@@ -280,6 +279,9 @@ pub trait Live {
     /// Put in or take out what the feature flags now switch, in place.
     /// Nothing to do without a window.
     fn adopt_features(&self) {}
+    /// Write every chart's template name again, after one was renamed.
+    /// Nothing to do without a window.
+    fn adopt_template_names(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -1061,16 +1063,12 @@ impl Live for Rc<crate::ui::Window> {
         crate::ui::Window::reload_watchlists(self);
     }
 
-    fn adopt_theming(&self) {
-        crate::ui::Window::adopt_theming(self);
+    fn adopt_look(&self) {
+        crate::ui::Window::adopt_look(self);
     }
 
     fn adopt_feed(&self) {
         crate::ui::Window::adopt_feed(self);
-    }
-
-    fn adopt_header(&self) {
-        crate::ui::Window::apply_header(self);
     }
 
     fn adopt_clock(&self) {
@@ -1087,6 +1085,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_features(&self) {
         crate::ui::Window::adopt_features(self);
+    }
+
+    fn adopt_template_names(&self) {
+        crate::ui::Window::adopt_template_names(self);
     }
 
     fn screenshot(
@@ -1254,7 +1256,6 @@ mod tests {
         }
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
-        fn adopt_theming(&self) {}
         fn warm(&self, _instruments: &[Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<Listing>>) {}
         fn symbols(&self) -> Option<Rc<SearchIndex>> {
@@ -1367,7 +1368,7 @@ mod tests {
         }
 
         // The bar reads a rise the way the window does.
-        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
+        crate::theming::save_bar_look(&store, &omacharts_engine::BarLook::red_up());
         let red: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_eq!((&red["up"], &red["down"]), (&parsed["down"], &parsed["up"]));
         assert_eq!(
@@ -1376,15 +1377,20 @@ mod tests {
         );
     }
 
-    /// The scheme chosen in the window reaches the bar: somebody who reads a
-    /// rise as red reads it that way in the bar too, and still does when it
-    /// was an older version that wrote the choice down, as a scheme of its
-    /// own.
+    /// Any look chosen in the window reaches the bar, not only red up: a
+    /// pair picked because green and red are hard to tell apart is no help if
+    /// the bar still shows green and red.
     #[test]
-    fn the_payload_follows_whichever_bar_scheme_was_chosen() {
+    fn the_payload_follows_whichever_bar_look_was_chosen() {
+        use omacharts_engine::theme::ColorChoice;
         let store = Store::memory().unwrap();
         let theme: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
+        let look = omacharts_engine::BarLook {
+            up: ColorChoice::Fixed { hex: "#2f6fdb".to_string() },
+            down: ColorChoice::Fixed { hex: "#e66100".to_string() },
+            ..Default::default()
+        };
+        crate::theming::save_bar_look(&store, &look);
         let chosen: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_ne!(chosen["up"], theme["up"]);
         assert_ne!(chosen["down"], theme["down"]);
@@ -1393,29 +1399,33 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
-    /// Every palette on offer — vivid, soft, quiet and monochrome — reaches
-    /// the widget whole: the change text, the sparklines (which
-    /// are drawn in the same up and down) and the pill all come from the
-    /// chosen scheme's colours, by the same rules the chart applies to them.
+    /// Every look — the default, red up, monochrome and one of the user's
+    /// own colours — reaches the widget whole: the change text, the
+    /// sparklines (which are drawn in the same up and down) and the pill all
+    /// come from the chosen colours, by the same rules the chart applies to
+    /// them.
     #[test]
-    fn every_scheme_on_offer_reaches_the_widget() {
-        use omacharts_engine::{ink::legible, Tag};
+    fn every_bar_look_reaches_the_widget() {
+        use omacharts_engine::{ink::legible, theme::ColorChoice, BarLook, Tag};
         let store = Store::memory().unwrap();
-        let theming = crate::theming::Theming::load(&store);
-        let schemes = omacharts_engine::theme::bar_schemes(&theming.theme());
-        assert_eq!(schemes.len(), omacharts_engine::BarColouring::ALL.len());
-        for scheme in schemes {
-            store.set_setting(crate::theming::SETTING_BARS, &scheme.id);
+        let custom = BarLook {
+            up: ColorChoice::Fixed { hex: "#2f6fdb".to_string() },
+            down: ColorChoice::Fixed { hex: "#8b5a2b".to_string() },
+            ..Default::default()
+        };
+        for look in [BarLook::default(), BarLook::red_up(), BarLook::monochrome(), custom] {
+            crate::theming::save_bar_look(&store, &look);
             let sent: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
             let theme = crate::theming::Theming::load(&store);
+            let scheme = theme.bar_scheme();
             let ui = theme.theme().ui;
             let hover = sent["hover"].as_str().unwrap().to_string();
             let grounds = [ui.background.as_str(), ui.surface.as_str(), hover.as_str()];
             for (way, colour) in [("up", &scheme.up), ("down", &scheme.down)] {
-                assert_eq!(sent[way], legible(colour, &grounds).as_str(), "{}: {way}", scheme.id);
+                assert_eq!(sent[way], legible(colour, &grounds).as_str(), "{look:?}: {way}");
                 let tag = Tag::on(colour);
-                assert_eq!(sent["tags"][way]["fill"], tag.fill.as_str(), "{}: {way} pill", scheme.id);
-                assert_eq!(sent["tags"][way]["label"], tag.label.as_str(), "{}: {way} label", scheme.id);
+                assert_eq!(sent["tags"][way]["fill"], tag.fill.as_str(), "{look:?}: {way} pill");
+                assert_eq!(sent["tags"][way]["label"], tag.label.as_str(), "{look:?}: {way} label");
             }
         }
     }

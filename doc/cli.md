@@ -117,8 +117,8 @@ Every indicator the app has, with every parameter it exposes:
 | `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
 | `atr` | `--period`, `--height` |
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
-| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
-| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
+| `volume` | `--height`, `--opacity`, `--up-color`, `--down-color` |
+| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
@@ -141,7 +141,7 @@ omacharts chart profile merge --at 2026-10-28
 
 Colours come in two kinds, and the difference matters:
 
-- **A palette name** — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral —
+- **A palette name** — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Foreground —
   is re-resolved every time the desktop theme changes, so the indicator follows
   the theme.
 - **`#rrggbb`** is the exact colour you picked, and is never touched again.
@@ -228,30 +228,44 @@ which is the same setting `template default` writes.
 
 ## The header
 
-The line at a chart's top-left shows its data feed, symbol, resolution and the
-day's move — as a percentage, in the theme's green for a rise and red for a
-fall, swapped on a chart set to red up — and can also show the name of its
-chart template. It is one line for the whole
-app: every chart in every chartbook shows the same parts, in the order given,
-and a window that is open changes them all at once:
+The header runs across a chart's top in two rows, each with a left, a centre
+and a right. Every part of it goes in one of the six places: the symbol, the
+resolution, the day's move — as a percentage, in the chart's own colours for a
+rise and a fall, in the header's text when it has not moved — the last price,
+the name of its chart template, the instrument's full name, the chart title,
+the data feed's dot, the resolution strip, the gear, the maximize button and
+the link button. It is one header for the whole app: every chart in every
+chartbook shows the same parts in the same places, unless it wears a look of
+its own (`chart look --header`), and a window that is open changes them all
+at once:
 
 ```
-omacharts config set chart_header symbol,resolution,change
-omacharts config set chart_header template,symbol
+omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name
+omacharts config header left=symbol,resolution,last right=link
+omacharts config header
 ```
 
-`none` is a header with nothing in it. The day's move comes from the same
-cached quotes the watchlist shows, so it is as fresh as the sidebar and fetches
-nothing of its own.
+One place per argument, `left`, `center`, `right`, and `left2`, `center2`,
+`right2` on the second row; places left out are empty. A place on the second
+row under an empty one moves up into it. `none` is a header with nothing in
+it, and the
+command alone prints the header as it is. The same value, quoted, is
+`config set chart_header`, where a plain list such as `symbol,resolution,change`
+still means what it did before there were places: those on the first row's
+left, the name on the second.
 
-The row centred across the top is `chart_header_center`, and out of the box it
-holds `title`: the chart title, which is stored with each chart rather than
-for the app. `chart set --title` gives a chart its title and `--title ""` takes
-it away; a chart made by splitting another starts with none:
+The day's move and the last price come from the same cached quotes the
+watchlist shows, so they are as fresh as the sidebar and fetch nothing of
+their own.
+
+The centre of the first row, out of the box, holds `title`: the chart title,
+which is stored with each chart rather than for the app. `chart set --title`
+gives a chart its title and `--title ""` takes it away; a chart made by
+splitting another starts with none:
 
 ```
 omacharts chart set --title "Semis desk"
-omacharts config set chart_header_center title,stripe
+omacharts config header left=symbol,resolution center=title,strip right=settings,maximize,link
 ```
 
 ## The clock
@@ -373,8 +387,8 @@ or typing in the search — and a command names the charts it means.
 A pointer on one chart draws a quieter crosshair at the same moment and price
 on every other chart on screen of the same symbol, whatever their link mode or
 resolution. Charts of different symbols never share one. It is one setting
-for the whole app, on by default — Preferences › Charts › Other › Sync
-crosshair across charts, or the key `sync_crosshair`:
+for the whole app, on by default — Preferences › Overlays › Crosshair
+across Follow charts, or the key `sync_crosshair`:
 
 ```
 omacharts chart crosshair off
@@ -627,11 +641,15 @@ years in UTC, so `3M` is the calendar quarters.
 A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
-Besides what a chart shows, `chart set` carries how it shows it — `--title`, `--style`,
-`--thickness`, `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
-`--indicators`, `--legend` and `--drawings` — and those are stored with the chart,
-so a price axis held still with `--auto-scale off` is still held the next
-time the app opens.
+Besides what a chart shows, `chart set` carries how it shows it — `--title`,
+`--bars`, `--session`, `--auto-scale`, `--log-scale`,
+`--indicators`, `--legend` and `--drawings` — and those are stored with the
+chart, so a price axis held still with `--auto-scale off` is still held the
+next time the app opens. `--bars off` hides the chart's bars, for a chart that
+is all indicators. How bars are drawn, the header, the gridlines and the
+last-price line are the chart's look: every chart's, set with `config bars`,
+`config grid`, `config price-line` and `config set chart_header` (see
+Preferences), or its own, set with `chart look` (below).
 
 `--log-scale on` makes the price axis logarithmic: equal heights are equal
 percentage moves, which is what a chart of twenty years wants. Indicators in
@@ -897,7 +915,7 @@ press-and-drag) place a drawing — except the text tool, where one press puts
 the caret down and you type on the chart, and the anchored VWAP, which one
 click on a bar places; hold Ctrl while placing one or
 dragging a corner and the anchor snaps to the nearest open, high, low or
-close of the candle under it, and with a
+close of the candle under it (the close alone on a line chart), and with a
 tool in hand the crosshair snaps with it to show where — a click selects one (Shift+click or Ctrl+click adds or removes
 another, Shift+drag on empty chart takes everything the box touches, and
 Ctrl+A takes every drawing on the plot; what
@@ -938,6 +956,165 @@ not a forecast of exchange opening times. The ruler is not saved or shared.
 In the window, Alt+M or Measure in the drawing tools picks up the ruler: click,
 move, click; Escape clears it.
 
+## A chart's own look
+
+A chart's look is its theme, how its bars are drawn and coloured, its header, its
+gridlines and its last-price line. Every chart wears every chart's look until
+it is given its own. `chart look` gives the chart one: the first change
+copies every chart's look onto it and changes the copy, so a later
+`config bars` or `config grid` leaves it as it is. With no flags it says the
+look the chart wears, and `--follow` drops its own.
+
+```
+$ omacharts chart look
+pos:0 NVDA 1D in Macro follows all charts
+  [exit 0]
+
+$ omacharts chart look --style ohlc --grid off
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme window
+  [exit 0]
+
+$ omacharts chart look --theme catppuccin-latte
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme catppuccin-latte
+  [exit 0]
+
+$ omacharts chart look --follow
+pos:0 NVDA 1D in Macro now follows all charts
+  [exit 0]
+```
+
+`--theme` takes a theme `config theme` lists, or `window` for the window's,
+which a copy starts on and follows. `--style`, `--up`, `--down`, `--up-body`,
+`--down-body`, `--up-thickness`, `--down-thickness`, `--line-low` and `--line-high` take what `config bars` takes, `--header` what
+`config set chart_header` takes, and `--grid` and `--price-line` `on` or
+`off`. Colours are kept as the names
+given, so a chart's own look follows a change of theme as every chart's
+does. A split copies the chart's own look, and so does `chartbook duplicate`.
+A chart on a theme of its own draws its header, legend and buttons in it
+too; the rest of the window keeps the window's. In the window, choosing a
+style from a chart's Bar style menu gives that chart a look of its own.
+In `chart list --json`, each chart's `own_look` is `true` while it has a
+look of its own.
+
+## Price alerts
+
+An alert is a price on a symbol that you want to hear about. `alert add`
+arms one on the side of the last price it is on: over it, it waits for price
+to rise to it, and under it, for a fall. It goes off once, as a desktop
+notification, and stays in the list as gone off until `alert arm` arms it
+again. Without `--symbol` it is on the chart's symbol, like every chart verb.
+
+```
+omacharts alert add 200 --symbol AAPL --note breakout
+omacharts alert add 180 --below
+omacharts alert add --drawing 412
+omacharts alert list
+omacharts alert arm 3
+omacharts alert remove 3
+omacharts alert remove --fired
+```
+
+`--drawing` follows a shared horizontal line, trend line or arrow, by the id
+`chart drawing list` gives it: the level is where the line is now, a trend
+line carried on past its end, and moving the line moves the alert. Deleting
+the line deletes its alerts.
+
+A cache with no price for the symbol cannot say which side a level is on;
+`--above` or `--below` says it instead, and overrides the side whenever
+given.
+
+Alerts are checked in the window, whenever prices for their symbol arrive.
+A chart on screen keeps its symbol current, and a symbol with an armed alert
+is kept current with the sidebar's symbols, every quarter of an hour while
+its market trades. With no window open nothing is checked, and a level
+reached meanwhile goes off at the first refresh once the window is open. A
+wick that reached the level counts, once the bar it is in started after the
+alert was armed.
+
+## Marks a program shows on a chart
+
+A drawing is what you drew. A **mark** is a fact from somewhere else — a fill
+from a ledger, a stop from a broker, the stretch a position was held — handed
+to the window by a program and shown read-only: it cannot be selected,
+dragged or deleted on the chart, and the pointer over it shows what it says.
+Marks live in the window only, so they need one open, and a restart starts
+without them. `chart set --marks off` hides every mark on a chart without
+clearing any.
+
+```
+omacharts chart mark set marks.json --source backtest
+omacharts chart mark set - --source backtest --symbol BTC < fills.json
+omacharts chart mark list
+omacharts chart mark clear --source backtest
+omacharts chart mark select --source backtest --key trade:1
+omacharts chart mark select
+```
+
+`set` replaces everything that source shows on the symbol — the focused
+chart's, or the one `--symbol` names — and leaves other sources' marks alone.
+The file is a JSON array, one object per mark:
+
+```json
+[
+  {"shape": "point", "ts": 1761523200, "price": 115350, "glyph": "pill_above",
+   "tone": "down", "label": "T1 SHORT 115,350", "detail": "trade entry", "key": "trade:1"},
+  {"shape": "point", "ts": 1772409600, "glyph": "arrow_down", "tone": "down",
+   "detail": "2026-03-02 SELL 0.001 @ 69,120"},
+  {"shape": "span", "from": 1761523200, "to": 1789948800, "tone": "down", "label": "T1 SHORT · 329d"},
+  {"shape": "steps", "points": [[1761523200, 115350], [1772409600, 98297]], "tone": "accent"},
+  {"shape": "steps", "points": [[1761523200, 115350, 0.1], [1772409600, 98297, 0.8]],
+   "tone": "down", "title": "T1 · BTC short", "label": "+0.42R", "key": "trade:1"},
+  {"shape": "point", "ts": 1772409600, "price": 98297, "glyph": "dot", "quiet": true, "key": "trade:1"},
+  {"shape": "level", "price": 93976, "tone": "down", "label": "stop", "fit": true}
+]
+```
+
+- `point`: something on one bar, at `ts` (UTC seconds). `glyph` is
+  `arrow_up` or `arrow_down` (outside the bar, under the low or over the
+  high), `hollow_up` or `hollow_down` (the same, outlined), `dot` (at
+  `price`), or `pill_above` / `pill_below` (a dot at `price` with its
+  `label` on a pill). Points of one source and glyph on the same bar are
+  drawn as one at the resolution on screen, and the hover lists them.
+- `span`: a stretch of time shaded under the candles; no `to` runs it to
+  the right edge.
+- `steps`: a value that holds between changes, such as an average entry,
+  drawn as a stepped dashed line. A third number in a point weighs that
+  step, from 0 (a hairline) to 1 (heavy), up to 1.5; a weighted line is
+  solid, so an average can show how much rides on it. With `"glide": true`
+  each change is reached in a straight line from the one before, for a
+  value that drifts between changes; two points at the same `ts` still
+  jump. With no `to` it runs to the last bar, not on into the room past
+  it, unless `"past": 2` says how many bars further, for a value still
+  held that a line stopping at today leaves easy to miss. Its `label` sits small over the line's end, muted, or in
+  `label_tone` (`up` and `down` are the watchlist's gain and loss), after
+  a muted `lead` while the pointer is on it, with its `title` before
+  them, in place of the `detail`. `"ring": true` circles where it begins,
+  so a line a few bars old still says where it started. `"axis": true`
+  runs it on past the last bar to the price axis, with its last price in a
+  chip there and its label beside the axis: an open position's average.
+- `level`: a price from `from` to `to`, either end open; `dashed` if asked.
+- `axis`: a `price` marked on the price axis only, with no line across the
+  bars: its number in the mark's colour, a chip while the pointer is on it
+  or on a mark with the same `key`, and held at the edge with an arrow when
+  the price is off the plot. The grid label it would cover makes way, and
+  it steps clear of the last-price chip. With a `name` it shows the name in
+  a chip, always, in place of its number: `{"shape":"axis","price":81580,
+  "name":"Re-entry"}` names the trade whose average sits there.
+
+`tone` is `up`, `down`, `accent`, `muted`, `violet`, `amber`, `teal` or
+`maroon`: the theme's own swatches, so a mark reads on every theme.
+`maroon` is `down` a step toward amber, for a short that must not read as
+the candles' red. `fit` widens the price scale
+to take a level or a priced point in. A click on a mark
+with a `key` picks it: everything with its source and key stays lit, on
+every chart that shows it, until a click on nothing, Escape, or another
+pick lets go, and the key is handed to whoever installed a handler.
+`select` picks one by `--source` and `--key` the same way; with neither, it
+lets go. A `quiet` point is drawn
+only while the pointer is on a mark with the same source and key, such as
+the fills behind an average, kept off the bars until that trade is asked
+about.
+
 ## Taking a picture of a chart
 
 ```
@@ -962,12 +1139,14 @@ saved pos:0 NVDA 1h in "Macro" to ~/Pictures/Omacharts/NVDA-1h-20261004-143012.p
   [exit 0]
 ```
 
-Without `--output` the file goes to the folder in the settings, named after the
-symbol, the resolution and the time. `--output` naming a directory rather than
+Without `--output` the file goes where the desktop keeps screenshots, named
+after the symbol, the resolution and the time. `--output` naming a directory rather than
 a file puts it there under that same name.
 
-The window's own key copies the image to the clipboard every time. A command
-does not, unless you ask for it:
+The window's own key, Ctrl+O, does what Omarchy's Print key does: it copies
+the image to the clipboard, saves the file, and sends Omarchy's notification,
+which opens the editor when clicked or on Super+Alt+,. A command does not copy
+unless you ask for it:
 
 ```
 omacharts chart screenshot --clipboard
@@ -978,67 +1157,99 @@ fifty times on whatever you had copied. Note that a clipboard offer belongs to
 the process that made it — unless a clipboard manager is running to take a copy,
 what Omacharts puts there is gone when Omacharts quits.
 
-Two settings govern the file. `screenshot_folder` is where it goes; unset means
-`<Pictures>/Omacharts`, which is made the first time a screenshot needs it.
-`screenshot_save_file` is whether the window keeps one at all — turning it off
-leaves the keyboard copying to the clipboard and writing nothing. Neither
-setting touches a command: `chart screenshot` always writes a file.
+The folder is `OMARCHY_SCREENSHOT_DIR` when it is set, then the pictures
+directory itself on Omarchy, the same answer Omarchy's own screenshots get,
+and `<Pictures>/Omacharts` anywhere else. `config set screenshot_folder
+<path>` overrides all three, for the window and for commands alike.
 
 ## Preferences
 
 Settings are read and written by name — `config list` shows every one that has
 been written, and `config set` writes any of them.
 
-Three of them have a command of their own, because what the app does with them
-is more than storing a value. Bar colours is one:
+Some of them have a command of their own, because what the app does with
+them is more than storing a value. How bars look is one. Every chart
+draws its bars one way, candles, OHLC bars or a line through the closes,
+from one look, a colour and a body for each direction.
+`config bars` reads and sets it, and the window's Preferences › Appearance ›
+Bars is the same answers.
 
 ```
-$ omacharts config bars monochrome
-bars are monochrome; the colours are remembered
+$ omacharts config bars
+candles, up green filled 2px, down rose filled 2px, line blue to violet
   [exit 0]
 
-$ omacharts config bars vivid
-bars carry their direction in colour again, in the "theme" scheme
+$ omacharts config bars red-up --up-body hollow
+bars are now candles, up rose hollow 2px, down green filled 2px, line blue to violet
+  [exit 0]
+
+$ omacharts config bars --style ohlc
+bars are now ohlc, up rose hollow 2px, down green filled 2px, line blue to violet
   [exit 0]
 ```
 
-`config bars soft` and `config bars quiet` are the third and fourth
-answers: a slate and a sand from the theme's palette instead of its green and
-red, and two greys made from the theme's text, a rise the lighter, so the
-price sits back on the chart.
+`--style` is `candles`, `ohlc` or `line`. A line runs through the closes and
+nothing else, which is what a series that only has a close — a yield, a
+spread — reads best as. A line is shaded from `--line-low` at the lowest
+close on screen to `--line-high` at the highest, colours given as a
+direction's are: the theme's blue and violet until set.
 
-Two switches are worn over whichever palette is chosen rather than being
-palettes themselves. A rising candle drawn as an outline is `chart set
---hollow-up on` for one chart and `config set hollow_up on` for the charts
-made next. Up and down the other way round, red for a rise and green for a
-fall, the way charts are read in Taiwan, mainland China, Japan and Korea, is
-`chart set --swap-colours on` and `config set swap_colours on`. `config bars`
-says `vivid, hollow, swapped` with both on. `config bars coloured`, `config
-bars hollow` and `config bars red-up`, from when Hollow and Red up were
-colourings of their own, still work: `coloured` is `vivid`, and the other two
-are vivid bars with that switch on, on every chart.
+Each direction has a colour (`--up`, `--down`: a theme colour by name —
+green, rose, blue, amber, violet, teal, orange, cyan — `foreground` for
+the theme's text colour, `slate`, `sand`, `silver` or `graphite`, soft and
+quiet colours worked out from the theme, or a `#rrggbb` hex, which the theme
+leaves alone) and a
+body (`--up-body`, `--down-body`): `filled`, `bordered` (its wick and body
+edge in the theme's text colour, as TradingView draws one) or `hollow`,
+and a thickness for its OHLC bars (`--up-thickness`, `--down-thickness`):
+`1`, `1.5`, `2` or `3` pixels, `2` until set. `STATE` sets both colours at once: `coloured`, `red-up` (the theme's colours
+the other way round, red for a rise, the way charts are read in Taiwan,
+mainland China, Japan and Korea) or `monochrome`. A flag changes only its own
+answer, and wins over `STATE`. Stored as `bar_up`, `bar_down`,
+`bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border`,
+`bar_up_thickness`, `bar_down_thickness`, `bar_line_low` and `bar_line_high`.
 
-Bar colours belong to each chart, so `config bars` answers for every chart at
-once — the charts in every chartbook and the ones made next — the way Apply to
-all charts does in the preferences. One chart on its own is
-`chart set --colouring theme|theme-soft|theme-quiet|theme-mono`, and
-`theme-hollow` or `theme-red-up` from an earlier version is `theme` with the
-switch on for that chart. A volume pane follows the chart's colouring, swapped
-or not, unless given one of its own: `chart indicator set volume --colouring
-theme-soft`, which is painted its own way round whatever the chart's switch
-says, and `--colouring default` (or `chart`) to follow the chart again.
-Monochrome is refused for a volume pane, as for a delta. A hollow rise never
-reaches the volume: its bars are solid, with no body to leave open. They are
-the candles' own colours, drawn at `--opacity`, 0.2 to 1 and 0.85 unless set.
-
-`config set bar_scheme theme-mono` changes only what new charts open with, and
-does not remember the scheme that was in use.
+Volume bars are always solid, in the candles' colours, drawn at
+`--opacity`, 0.2 to 1 and 0.85 unless set. The look is every chart's, except on a chart with a look of
+its own (`chart look`).
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`,
-`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings`,
-`chart_sends_drawings` and `chart_shows_legend`. Changing
-one chart never changes them.
+show under Charts: `chart_session`, `chart_log_scale`,
+`chart_template`, `chart_shows_drawings`, `chart_sends_drawings` and
+`chart_shows_legend`. Changing one chart never changes them.
+
+The theme is another. `config theme` lists the themes, the one in use
+starred: `system`, which follows the desktop's Omarchy theme as it changes,
+then every Omarchy theme on the machine by its folder name, each fixed
+whatever the desktop does. Without Omarchy there is no `system`, and the
+list is the Omarchy themes built into the app, `tokyo-night` first and the
+default. A name that is not a theme is refused and changes nothing.
+
+```
+$ omacharts config theme gruvbox
+the theme is Gruvbox
+  [exit 0]
+
+$ omacharts config theme system
+the theme is Tokyo Night
+  [exit 0]
+```
+
+Gridlines and the dashed line across at the last price are the same on every
+chart, in every chartbook, except a chart with a look of its own (`chart
+look`), so they are set here rather than with `chart set`. The price itself
+stays on the axis either way. In the window, Ctrl+Shift+G turns the gridlines
+on and off on the look the focused chart wears: its own, or every chart's.
+
+```
+$ omacharts config grid off
+no gridlines on any chart
+  [exit 0]
+
+$ omacharts config price-line
+on
+  [exit 0]
+```
 
 ## Which data feed the charts come from
 
@@ -1083,6 +1294,21 @@ yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 m
 tos      thinkorswim · US listings, from your thinkorswim account · live, as each print arrives · experimental   (in use, not stored · not signed in)
   [exit 0]
 ```
+
+The feeds are tried in an order, and a chart comes from the first that has
+its symbol. `provider order` sets it, as dragging the rows in Preferences
+does: the feeds named go first, in the order given, and the rest keep theirs
+behind them. With no names it says the order.
+
+```
+$ omacharts provider order yahoo
+the data feeds, top first: yahoo, tos
+  [exit 0]
+```
+
+Only a feed already on the list can be ordered; one that is not is refused
+with exit 5, because adding a feed may mean signing in or setting it up, which
+Preferences does. A window that is open charts from the new order at once.
 
 ## Choosing the days a chart shows
 
@@ -1402,7 +1628,7 @@ once, in a window that is open too: the charts, sidebar and theme on screen beco
 the restored ones. What it replaced is backed up first, so restoring that undoes
 it. A backup written by a newer Omacharts is refused with nothing changed, and
 one from an older one is brought up to date as it is restored. Preferences ›
-Data › Backups does the same from the window.
+General › Preference backups does the same from the window.
 
 ## Teaching an agent about this app
 
@@ -1530,7 +1756,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `chartbook` | saved arrangements of charts |
 | `chart` | the charts inside a chartbook |
 | `template` | chart templates: named sets of indicators that charts share |
-| `provider` | the data feed, and signing in to one that needs it |
+| `provider` | the data feeds, their order, and signing in to one that needs it |
 | `config` | stored preferences |
 | `cache` | the cached market data |
 | `backup` | copies of your settings, and putting one back |

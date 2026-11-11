@@ -19,15 +19,16 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, PALETTE_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
+    ColorChoice, BAR_COLOUR_NAMES, PALETTE_NAMES,
 };
 use omacharts_engine::{
-    BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
+    BarStyle, Direction, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
 };
 
 use super::charts::{self, Workspace};
 use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
 use crate::chart_defaults::ChartDefaults;
+use crate::chart_look::{ChartLook, LookEdit};
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::trading::chart_pnl;
 
@@ -175,7 +176,7 @@ pub fn dispatch(
                 && verb == "rename"
                 && let Some(live) = live
             {
-                live.adopt_header();
+                live.adopt_template_names();
             }
             outcome
         }
@@ -184,6 +185,15 @@ pub fn dispatch(
         ("provider", "status") => provider_status(store, live, json),
         ("provider", "login") => provider_login(store, m, json),
         ("provider", "logout") => provider_logout(store, m, json),
+        ("provider", "order") => {
+            let outcome = provider_order(store, m, json);
+            if outcome.is_ok()
+                && let Some(live) = live
+            {
+                live.adopt_feed();
+            }
+            outcome
+        }
         ("provider", "setup") => {
             let outcome = provider_setup(store, m, json);
             if outcome.is_ok()
@@ -199,8 +209,8 @@ pub fn dispatch(
         ("config", "set") => {
             let outcome = config_set(store, m, json);
             // The settings a window acts on the moment they change: the feed,
-            // whose charts switch with nothing to restart, and the header,
-            // which every chart on screen shows.
+            // whose charts switch with nothing to restart, and the look,
+            // which every chart on screen wears.
             if outcome.is_ok()
                 && let Some(live) = live
             {
@@ -211,20 +221,30 @@ pub fn dispatch(
                     // A login changed: which charts it can serve may have
                     // too.
                     Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
-                    Ok(key) if crate::header::Section::ALL.iter().any(|section| section.setting() == key) => {
-                        live.adopt_header()
-                    }
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
                     }
                     Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
                     Ok(key) if key == chart_pnl::DISPLAY || key == chart_pnl::R_AMOUNT => live.adopt_pnl(),
-                    _ => {}
+                    // Any other may be one of the rows a chart's look is read
+                    // from, which the window reads again and wears only if
+                    // it changed.
+                    _ => live.adopt_look(),
                 }
             }
             outcome
         }
+        ("config", "theme") => config_theme(store, m, json, live),
         ("config", "bars") => config_bars(store, m, json, live),
+        ("config", "header") => config_header(store, m, json, live),
+        ("config", "grid") => read_or_set(m, json, "grid", ChartLook::global(store).grid, |on| {
+            change_every_look(store, live, vec![LookEdit::Grid(on)]);
+            if on { "gridlines on every chart" } else { "no gridlines on any chart" }.to_string()
+        }),
+        ("config", "price-line") => read_or_set(m, json, "priceLine", ChartLook::global(store).price_line, |on| {
+            change_every_look(store, live, vec![LookEdit::PriceLine(on)]);
+            if on { "a last-price line on every chart" } else { "no last-price line on any chart" }.to_string()
+        }),
 
         ("plugin", "status") => plugin_status(&caller.home(), json),
         ("plugin", "install") => plugin_install(&caller.home(), json),
@@ -1149,7 +1169,8 @@ fn charts_verb(
         ("chartbook", "show") | ("chart", "list") => {
             let at = workspace.resolve(selector.map(String::as_str))?;
             let book = workspace.book(at)?;
-            let rows: Vec<String> = charts::panes(book).iter().map(pane_json).collect();
+            let every = ChartLook::global(store);
+            let rows: Vec<String> = charts::panes(book).iter().map(|pane| pane_json(pane, &every)).collect();
             return Ok(match as_json {
                 true => format!(
                     "{{\"chartbook\":{},\"watchlist\":{},\"charts\":[{}]}}\n",
@@ -1187,7 +1208,7 @@ fn charts_verb(
                                     pane["suffix"].as_str()
                                 ),
                                 pane["timeframe"].as_str().unwrap_or(""),
-                                shown_style(pane),
+                                shown_style(pane, &every),
                                 stored_mode(pane).key(),
                                 title,
                             )
@@ -1512,6 +1533,7 @@ fn chart_verb(
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
         "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
         "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
+        "look" => return chart_look(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
 
@@ -1552,25 +1574,6 @@ fn chart_set(
             Fault::usage(format!("{text:?} is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y"))
         })?),
     };
-    // None is not a style but the bars hidden, which keeps the style they
-    // had for showing them again.
-    let style = match arg(m, "style").map(String::as_str) {
-        None => None,
-        Some("none") => Some(None),
-        Some(text) => Some(Some(
-            BarStyle::from_key(text)
-                .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar style")))?,
-        )),
-    };
-    // A scheme a released version offered for a hollow rise or for red up
-    // is the palette with that switch on, for this chart.
-    let colouring = match arg(m, "colouring") {
-        None => None,
-        Some(text) => Some(
-            omacharts_engine::BarColouring::from_stored(text)
-                .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar colouring")))?,
-        ),
-    };
     let session = match arg(m, "session") {
         None => None,
         Some(text) => Some(
@@ -1598,18 +1601,6 @@ fn chart_set(
         }
     };
     let bars = switch("bars")?;
-    if let (Some(Some(style)), Some(false)) = (style, bars) {
-        return Err(Fault::usage(format!(
-            "--style {} shows the bars, and --bars off hides them; pass one",
-            style.key()
-        )));
-    }
-    if let (Some(None), Some(true)) = (style, bars) {
-        return Err(Fault::usage("--style none hides the bars, and --bars on shows them; pass one".into()));
-    }
-    let hollow_up = switch("hollow-up")?;
-    let swapped = switch("swap-colours")?;
-    let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
     // Blank takes the title away, as clearing it in the header does.
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
     let shows_drawings = switch("show-drawings")?;
@@ -1652,49 +1643,15 @@ fn chart_set(
         chart["timeframe"] = json!(timeframe.key());
         changed.push(format!("resolution {}", timeframe.key()));
     }
-    match style {
-        None => {}
-        Some(Some(style)) => {
-            chart["bar_style"] = json!(style.key());
-            chart["bars_hidden"] = json!(false);
-            changed.push(format!("style {}", style.key()));
-        }
-        Some(None) => {
-            chart["bars_hidden"] = json!(true);
-            changed.push("bars hidden".to_string());
-        }
-    }
-    // Said once: `--style none --bars off` agree, and are one change.
-    if let Some(shown) = bars.filter(|_| style.is_none()) {
+    if let Some(shown) = bars {
         chart["bars_hidden"] = json!(!shown);
         changed.push(match shown {
-            true => format!("bars shown, as {}", chart["bar_style"].as_str().unwrap_or("candles")),
+            true => {
+                let style = charts::worn_look(chart, &ChartLook::global(store)).style;
+                format!("bars shown, as {}", style.key())
+            }
             false => "bars hidden".to_string(),
         });
-    }
-    if let Some(look) = colouring {
-        chart["colouring"] = json!(look.colouring.key());
-        changed.push(format!("colouring {}", look.colouring.key()));
-        if look.hollow_up {
-            chart["hollow_up"] = json!(true);
-            changed.push("rises hollow".to_string());
-        }
-        if look.swapped {
-            chart["swapped"] = json!(true);
-            changed.push("up and down swapped".to_string());
-        }
-    }
-    if let Some(thickness) = thickness {
-        chart["ohlc_thickness"] = json!(thickness);
-        changed.push(format!("OHLC bars {thickness}px"));
-    }
-    if let Some(hollow_up) = hollow_up {
-        chart["hollow_up"] = json!(hollow_up);
-        changed.push(format!("rises {}", if hollow_up { "hollow" } else { "filled" }));
-    }
-    if let Some(swapped) = swapped {
-        chart["swapped"] = json!(swapped);
-        changed.push(format!("up and down {}", if swapped { "swapped" } else { "as the colouring has them" }));
     }
     if let Some(session) = session {
         chart["session"] = json!(session.key());
@@ -1707,10 +1664,6 @@ fn chart_set(
     if let Some(mode) = mode {
         chart["link"] = json!(mode.key());
         changed.push(format!("link {}", mode.key()));
-    }
-    if let Some(grid) = arg(m, "grid") {
-        chart["show_grid"] = json!(grid == "on");
-        changed.push(format!("grid {grid}"));
     }
     if let Some(shows) = shows_drawings {
         chart["shows_drawings"] = json!(shows);
@@ -1774,8 +1727,8 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
-             --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --indicators, \
+            "nothing to change; pass --title, --symbol, --resolution, --bars, \
+             --session, --link, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
         ));
@@ -3459,12 +3412,6 @@ struct Edits {
     poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
-    /// `Some(None)` puts volume back on the chart's own colouring, and a
-    /// volume profile on the one chosen in Preferences.
-    colouring: Option<Option<omacharts_engine::BarColouring>>,
-    /// The word `colouring` was given as, since `chart` and `default` are
-    /// each one kind's and not the other's.
-    colouring_word: Option<String>,
     opacity: Option<f64>,
     color: Option<ColorChoice>,
     width: Option<f64>,
@@ -3598,14 +3545,6 @@ impl Edits {
             },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
-            colouring: match arg(m, "colouring").map(String::as_str) {
-                None => None,
-                Some("chart" | "default") => Some(None),
-                Some(text) => Some(Some(omacharts_engine::BarColouring::from_key(text).ok_or_else(
-                    || Fault::usage(format!("{text:?} is not a bar colouring")),
-                )?)),
-            },
-            colouring_word: arg(m, "colouring").cloned(),
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -3702,7 +3641,6 @@ impl Edits {
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
-            && self.colouring.is_none()
             && self.opacity.is_none()
             && self.color.is_none()
             && self.width.is_none()
@@ -3910,28 +3848,6 @@ impl Edits {
                     true => params[key] = to_value(colour)?,
                     false => return Err(refuse(what)),
                 }
-            }
-        }
-        if let Some(colouring) = &self.colouring {
-            let word = self.colouring_word.as_deref().unwrap_or_default();
-            let telling = colouring.is_none_or(|c| omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c));
-            match kind {
-                IndicatorKind::VolumeProfile | IndicatorKind::Cvd if word == "chart" => {
-                    return Err(Fault::usage(format!(
-                        "{} follows the colouring chosen in Preferences; use default",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd if !telling => {
-                    return Err(Fault::usage(format!(
-                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd => {
-                    params["colouring"] = to_value(colouring)?;
-                }
-                _ => return Err(refuse("colouring")),
             }
         }
         if let Some(opacity) = self.opacity {
@@ -4267,10 +4183,8 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
             false => Err(Fault::usage(format!("{text:?} is not a colour; try #rrggbb"))),
         };
     }
-    PALETTE_NAMES
-        .iter()
-        .find(|name| name.eq_ignore_ascii_case(text))
-        .map(|name| Some(ColorChoice::swatch(name)))
+    ColorChoice::named(text, PALETTE_NAMES)
+        .map(Some)
         .ok_or_else(|| {
             Fault::usage(format!(
                 "{text:?} is not a palette colour; try {} — or #rrggbb for one the theme will not change",
@@ -4279,29 +4193,16 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
         })
 }
 
-/// A thickness for OHLC bars, in whole pixels from 1 to 4.
-fn parse_thickness(text: &str, what: &str) -> Result<u8, Fault> {
-    use crate::chart_defaults::{MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
-    text.trim()
-        .parse::<u8>()
-        .ok()
-        .filter(|n| (MIN_OHLC_THICKNESS..=MAX_OHLC_THICKNESS).contains(n))
-        .ok_or_else(|| {
-            Fault::usage(format!(
-                "{what} is a whole number of pixels from {MIN_OHLC_THICKNESS} to {MAX_OHLC_THICKNESS}, not {text:?}"
-            ))
-        })
-}
-
-/// The style a chart's bars are drawn in, or `none` while they are hidden.
-fn shown_style(pane: &Value) -> &str {
+/// The style a chart's bars are drawn in, its own look's or `every` chart's,
+/// or `none` while they are hidden.
+fn shown_style(pane: &Value, every: &ChartLook) -> &'static str {
     match pane["bars_hidden"].as_bool().unwrap_or(false) {
         true => "none",
-        false => pane["bar_style"].as_str().unwrap_or(""),
+        false => charts::worn_look(pane, every).style.key(),
     }
 }
 
-fn pane_json(pane: &Value) -> String {
+fn pane_json(pane: &Value, every: &ChartLook) -> String {
     json!({
         "id": pane["id"],
         // Null for a chart nobody titled.
@@ -4310,20 +4211,13 @@ fn pane_json(pane: &Value) -> String {
         "suffix": pane["suffix"],
         "display": spell(pane["symbol"].as_str().unwrap_or(""), pane["suffix"].as_str()),
         "resolution": pane["timeframe"],
-        "style": shown_style(pane),
-        // The style hidden bars come back in, so `none` above does not lose it.
-        "bar_style": pane["bar_style"],
+        "style": shown_style(pane, every),
+        "own_look": charts::own_look(pane).is_some(),
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
-        "colouring": pane["colouring"],
-        "hollow_up": stored_look(pane).hollow_up,
-        // Missing from a chart stored before OHLC bars could be thicker.
-        "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
-        "swapped": stored_look(pane).swapped,
         "session": pane["session"],
         // Missing from a chart stored before there was a choice, which is
         // drawn as the default says.
         "continuous": pane["continuous"].as_str().map_or_else(|| json!(null), |join| json!(join)),
-        "grid": pane["show_grid"],
         // Missing from a chart stored before it was remembered, and every one
         // of those was fitting itself.
         "auto_scale": pane["auto_scale"].as_bool().unwrap_or(true),
@@ -4802,6 +4696,7 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
     let order = charts::leaves(&book["layout"]);
     let position = order.iter().position(|id| *id == focused);
 
+    let every = ChartLook::global(store);
     let charts_json: Vec<String> = order
         .iter()
         .enumerate()
@@ -4810,7 +4705,7 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
             Some(format!(
                 "{{\"position\":{i},\"target\":\"pos:{i}\",\"focused\":{},\"chart\":{}}}",
                 Some(*id) == Some(focused),
-                pane_json(pane)
+                pane_json(pane, &every)
             ))
         })
         .collect();
@@ -4865,21 +4760,39 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
 /// reads and writes a setting rather than a pane. The same key the
 /// preferences' switch writes, so `config set sync_crosshair` reaches it too.
 fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
-    const KEY: &str = "sync_crosshair";
-    let Some(state) = arg(m, "STATE") else {
-        let on = store.setting_bool(KEY, true);
+    use crate::ui::window::SETTING_SYNC_CROSSHAIR;
+    read_or_set(m, as_json, "crosshairSync", store.setting_bool(SETTING_SYNC_CROSSHAIR, true), |on| {
+        store.set_setting_bool(SETTING_SYNC_CROSSHAIR, on);
+        format!("crosshair syncing across charts of the same symbol is {}", on_off(on))
+    })
+}
+
+/// Every chart's header: read back as it is stored, or set from the zones
+/// given, which are one argument each so nothing needs quoting. Refused
+/// whole on a misspelling, as `config set chart_header` refuses it.
+fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let given: Vec<String> = m.get_many::<String>("ZONES").map(|zones| zones.cloned().collect()).unwrap_or_default();
+    if given.is_empty() {
+        let header = crate::header::spell(&crate::header::load(store).seen());
         return match as_json {
-            true => Ok(format!("{}\n", json!({"crosshairSync": on}))),
-            false => Ok(format!("{}\n", if on { "on" } else { "off" })),
+            true => Ok(format!("{}\n", json!({"header": header}))),
+            false => Ok(format!("{header}\n")),
         };
-    };
-    let on = state == "on";
-    store.set_setting_bool(KEY, on);
-    said(
-        as_json,
-        json!({"crosshairSync": on}),
-        format!("crosshair syncing across charts of the same symbol is {state}"),
-    )
+    }
+    let header = retyped_header(store, &given.join(" "))?;
+    if let Some(live) = live {
+        live.adopt_look();
+    }
+    let header = crate::header::spell(&header.seen());
+    said(as_json, json!({"header": header}), format!("every chart's header shows {header}"))
+}
+
+/// Every chart's header made the one typed, and saved. Refused whole on a
+/// misspelling; trading's parts, while it is off, stay where they were.
+fn retyped_header(store: &Store, text: &str) -> Result<crate::header::Layout, Fault> {
+    let typed = crate::header::parse(text).map_err(Fault::usage)?;
+    LookEdit::save_global([LookEdit::Header(typed)], store);
+    Ok(crate::header::load(store))
 }
 
 // -- settings and cache ---------------------------------------------------
@@ -5251,6 +5164,44 @@ fn provider_setup(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
     )
 }
 
+/// Put the feeds named first, in the order given, with the others behind
+/// them as they were, as dragging them in Preferences does; with none
+/// named, say the order. Only the feeds already on it: adding one is
+/// Preferences' business, since a feed may need signing in or setting up
+/// first.
+fn provider_order(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let order = crate::feeds::stored_order(store);
+    let named: Vec<String> = m.get_many::<String>("NAME").map(|names| names.cloned().collect()).unwrap_or_default();
+    let mut top: Vec<String> = Vec::new();
+    for name in &named {
+        let feed = providers::listed(name)
+            .ok_or_else(|| Fault::not_found(format!("no such data feed: {name:?}; the feeds are {}", feed_names())))?;
+        if !order.iter().any(|id| id.eq_ignore_ascii_case(feed.id)) {
+            return Err(Fault::refused(format!(
+                "{} is not one of the data feeds; the feeds are {}",
+                feed.id,
+                order.join(", ")
+            )));
+        }
+        if top.iter().any(|id| id == feed.id) {
+            return Err(Fault::usage(format!("{name:?} is named twice")));
+        }
+        top.push(feed.id.to_string());
+    }
+    if !top.is_empty() {
+        let rest: Vec<String> =
+            order.into_iter().filter(|id| !top.iter().any(|named| named.eq_ignore_ascii_case(id))).collect();
+        top.extend(rest);
+        crate::feeds::save_order(store, &top);
+    }
+    let order = crate::feeds::stored_order(store);
+    said(
+        as_json,
+        json!({"order": order}),
+        format!("the data feeds, top first: {}", order.join(", ")),
+    )
+}
+
 /// The feed a command named, or the one in use.
 fn named_or_chosen(
     store: &Store,
@@ -5349,6 +5300,12 @@ fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     let value = store
         .setting(key)
         .ok_or_else(|| Fault::not_found(format!("{key:?} has never been set")))?;
+    // The theme that follows the desktop is stored by its id and said as
+    // `config theme` says it.
+    let value = match key == crate::theming::SETTING_THEME {
+        true => crate::theming::spell_theme(&value).to_string(),
+        false => value,
+    };
     match as_json {
         true => Ok(format!("{}\n", json!({"key": key, "value": value}))),
         false => Ok(format!("{value}\n")),
@@ -5366,26 +5323,25 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // and be told it worked. So this one is checked, and stored canonically
     // so that `TOS` and `tos` are the same choice rather than two.
     // The header too, so a typo is refused here rather than read back later
-    // as a header missing a part. Either section, and a part placed in one
-    // leaves the other, as it does in the preferences.
-    if let Some(section) = crate::header::Section::ALL.into_iter().find(|section| section.setting() == key) {
-        let trading = crate::features::stored(store, crate::features::Feature::Trading);
-        let parts = crate::header::parse_for(value, trading).map_err(Fault::usage)?;
-        let value = crate::header::spell(&parts);
-        let mut header = crate::header::load(store);
-        header.set_shown(section, parts, trading);
-        crate::header::save(store, &header);
-        let text = match section {
-            crate::header::Section::Left => format!("every chart's header shows {value}"),
-            crate::header::Section::Center => format!("every chart's header shows {value} in the center"),
-            crate::header::Section::Right => format!("every chart's header shows {value} on the right"),
-        };
+    // as a header missing a part.
+    if key == crate::header::SETTING {
+        let header = retyped_header(store, value)?;
+        let value = crate::header::spell(&header.seen());
+        let text = format!("every chart's header shows {value}");
         return said(as_json, json!({"key": key, "value": value}), text);
     }
     // The templates themselves are a document `template` keeps, with the
     // charts on them holding copies; written raw, the charts would not follow.
     // The clock every chart reads: a zone nobody has heard of would be read
     // back as New York with nothing said, so it is refused here.
+    // The theme that follows the desktop is `system` to whoever types it, as
+    // `config theme` has it, and stored by its id.
+    if key == crate::theming::SETTING_THEME {
+        let id = crate::theming::theme_id(value);
+        store.set_setting(key, id);
+        let value = crate::theming::spell_theme(id);
+        return said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"));
+    }
     if key == crate::clock::SETTING_ZONE {
         let zone = crate::clock::parse_zone(value).map_err(Fault::usage)?;
         crate::clock::save_zone(store, zone);
@@ -5431,14 +5387,6 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let amount = chart_pnl::amount_text(amount);
         let text = format!("1R is {amount}");
         return said(as_json, json!({"key": key, "value": amount}), text);
-    }
-    // Read back clamped, so a figure out of range is refused rather than
-    // stored as something else.
-    if key == crate::chart_defaults::SETTING_OHLC_THICKNESS {
-        let thickness = parse_thickness(value, key)?;
-        store.set_setting(key, &thickness.to_string());
-        let text = format!("new charts draw OHLC bars {thickness}px wide");
-        return said(as_json, json!({"key": key, "value": thickness.to_string()}), text);
     }
     if key == crate::chart_defaults::SETTING_CONTINUOUS {
         let join = omacharts_engine::continuous::Adjustment::from_key(value)
@@ -5492,138 +5440,257 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
 }
 
-/// Where the scheme to go back to when the colour is put back is remembered.
-///
-/// Monochrome is a scheme like any other, so choosing it without
-/// writing this down would throw away a palette somebody had picked and leave
-/// them on the default when they changed their mind.
-const COLOURED_BARS: &str = "coloured_bar_scheme";
 
-/// Which palette every chart paints from, vivid, soft, quiet or monochrome,
-/// asked the way people arrive at it, and the two switches worn over it.
+/// The theme `wanted` names, as `config theme` and `chart look --theme`
+/// take one: by id, any case, spaces for dashes, or `system`.
+fn theme_named<'a>(themes: &[&'a omacharts_engine::Theme], wanted: &str) -> Result<&'a omacharts_engine::Theme, Fault> {
+    let id = crate::theming::theme_id(wanted).to_ascii_lowercase().replace(' ', "-");
+    themes.iter().find(|t| t.id == id).copied().ok_or_else(|| {
+        let names: Vec<&str> = themes.iter().map(|t| crate::theming::spell_theme(&t.id)).collect();
+        Fault::usage(format!("no such theme: {wanted:?}; the themes are {}", names.join(", ")))
+    })
+}
+
+/// Which theme, said by name, and the list to choose from.
 ///
-/// `config set bar_scheme theme-mono` reaches the same scheme, and is not the
-/// same command: it does not remember what to go back to, so putting the
-/// colour back lands on the default rather than on the scheme that was in use.
+/// `config set theme` writes the same row, but it cannot say what the names
+/// are, and a window that is open keeps wearing what it started in. This
+/// checks the name against the themes on offer and tells the window.
+fn config_theme(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let theming = crate::theming::Theming::load(store);
+    let spell = crate::theming::spell_theme;
+    let current = theming.theme();
+    let themes = theming.themes();
+
+    let Some(wanted) = arg(m, "THEME") else {
+        if as_json {
+            let rows: Vec<Value> = themes
+                .iter()
+                .map(|t| json!({"id": spell(&t.id), "name": t.name, "current": t.id == current.id}))
+                .collect();
+            return Ok(format!("{}\n", json!({"theme": spell(&current.id), "themes": rows})));
+        }
+        let width = themes.iter().map(|t| spell(&t.id).len()).max().unwrap_or(0);
+        let mut out = String::new();
+        for theme in &themes {
+            let mark = if theme.id == current.id { '*' } else { ' ' };
+            let name = match theme.id == omacharts_engine::theme::OMARCHY_ID {
+                true => format!("follows the desktop, now {}", theme.name),
+                false => theme.name.clone(),
+            };
+            out.push_str(&format!("{mark} {:width$}  {name}\n", spell(&theme.id)));
+        }
+        return Ok(out);
+    };
+
+    let theme = theme_named(&themes, wanted)?;
+    let (id, name) = (theme.id.clone(), theme.name.clone());
+    let already = theme.id == current.id && store.setting(crate::theming::SETTING_THEME).is_some();
+    store.set_setting(crate::theming::SETTING_THEME, &id);
+    if let Some(live) = live {
+        live.adopt_look();
+    }
+    let text = match already {
+        true => format!("the theme was already {name}"),
+        false => format!("the theme is {name}"),
+    };
+    said(as_json, json!({"theme": spell(&id), "name": name}), text)
+}
+
+/// A switch a verb reads back, `now`, or with `STATE` sets: `set` stores
+/// the state given and says what it did. `--json` calls it `key`.
+fn read_or_set(
+    m: &clap::ArgMatches,
+    as_json: bool,
+    key: &str,
+    now: bool,
+    set: impl FnOnce(bool) -> String,
+) -> Result<String, Fault> {
+    let Some(state) = arg(m, "STATE") else {
+        return match as_json {
+            true => Ok(format!("{}\n", json!({key: now}))),
+            false => Ok(format!("{}\n", on_off(now))),
+        };
+    };
+    let on = state == "on";
+    let text = set(on);
+    said(as_json, json!({key: on}), text)
+}
+
+/// Make `edits` every chart's answers, and have an open window wear them.
+fn change_every_look(store: &Store, live: Option<&dyn Live>, edits: Vec<LookEdit>) {
+    LookEdit::save_global(edits, store);
+    if let Some(live) = live {
+        live.adopt_look();
+    }
+}
+
+/// How every chart draws its bars: the style, a colour for each direction,
+/// and how each body is drawn.
 ///
-/// `coloured`, `hollow` and `red-up` are what a released version took, when
-/// a hollow rise and the colours the other way round were schemes of their
-/// own; a script written then still works. `coloured` is `vivid`, and the
-/// other two are `vivid` with that switch on, on every chart, which
-/// `chart set --hollow-up`, `chart set --swap-colours` and `config set` do
-/// one at a time.
+/// The preset is the question people arrive with — colour or none, and which
+/// way round — and sets the two colours; the flags set any of the other
+/// answers on their own, and win over the preset. Nothing given reports
+/// them.
 fn config_bars(
     store: &Store,
     m: &clap::ArgMatches,
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
-    // Spelled as a palette, whatever an older version wrote: a scheme id
-    // that is not one names colours that now live in a theme, or a look that
-    // is now a switch.
-    let colouring = |id: Option<String>| {
-        omacharts_engine::BarColouring::from_key(id.as_deref().unwrap_or(""))
-            .unwrap_or_default()
-            .key()
-            .to_string()
-    };
-    let current = colouring(store.setting(crate::theming::SETTING_BARS));
-    let worn = crate::chart_defaults::stored_colouring(store);
-    let answer = |scheme: &str, hollow_up: bool, swapped: bool| {
-        let mut text = spell_bars(scheme).to_string();
-        if hollow_up {
-            text.push_str(", hollow");
-        }
-        if swapped {
-            text.push_str(", swapped");
-        }
-        text
-    };
-    let Some(state) = arg(m, "STATE") else {
-        return match as_json {
-            true => Ok(format!(
-                "{}\n",
-                json!({"bars": spell_bars(&current), "scheme": current, "hollow_up": worn.hollow_up, "swapped": worn.swapped})
-            )),
-            false => Ok(format!("{}\n", answer(&current, worn.hollow_up, worn.swapped))),
+    use omacharts_engine::theme::BarLook;
+
+    let mut edits = Vec::new();
+    if let Some(preset) = arg(m, "STATE") {
+        let colours = match preset.as_str() {
+            "monochrome" => BarLook::monochrome(),
+            "red-up" => BarLook::red_up(),
+            _ => BarLook::default(),
         };
-    };
-    let state = state.as_str();
+        edits.extend([LookEdit::Colour(Direction::Up, colours.up), LookEdit::Colour(Direction::Down, colours.down)]);
+    }
+    // After the preset, so a flag wins over it.
+    edits.extend(look_edits(m)?);
 
-    let scheme = match state {
-        "monochrome" => THEME_MONO_ID.to_string(),
-        "soft" => THEME_SOFT_ID.to_string(),
-        "quiet" => THEME_QUIET_ID.to_string(),
-        // "vivid", and "coloured", "hollow" and "red-up" with it: stay on the
-        // palette in use if it already carries the direction in colour, and
-        // otherwise go back to the one it was left from.
-        _ if spell_bars(&current) == "vivid" => current.clone(),
-        _ => colouring(store.setting(COLOURED_BARS)),
+    let was = ChartLook::global(store);
+    let mut look = was.clone();
+    for edit in &edits {
+        look.set(edit.clone());
+    }
+    let given = !edits.is_empty();
+    if given {
+        change_every_look(store, live, edits);
+    }
+    let described = look.spell_bars();
+    // Said rather than silently done, because "it was already monochrome"
+    // and "it is monochrome now" are different answers to somebody checking
+    // their own work.
+    let text = match (given, look == was) {
+        (false, _) => described,
+        (true, true) => format!("bars were already {described}"),
+        (true, false) => format!("bars are now {described}"),
     };
-    let hollow = state == "hollow";
-    let turn_round = state == "red-up";
-    let was = scheme == current && (!hollow || worn.hollow_up) && (!turn_round || worn.swapped);
-    // Leaving a palette somebody picked: remember it to come back to.
-    if scheme != current && spell_bars(&current) == "vivid" {
-        store.set_setting(COLOURED_BARS, &current);
+    let mut answer = to_value(&look)?;
+    if let Some(fields) = answer.as_object_mut() {
+        fields.retain(|key, _| {
+            ["style", "up", "down", "up_body", "down_body", "up_thickness", "down_thickness", "line_low", "line_high"]
+                .contains(&key.as_str())
+        });
     }
-    store.set_setting(crate::theming::SETTING_BARS, &scheme);
-    // Charts are painted one by one now, so the question asked of the whole
-    // app is answered on every chart as well as for the next one — what
-    // "Apply to all charts" does with the same choice in the preferences.
-    let mut workspace = charts::Workspace::load(store);
-    workspace.set_on_every_pane("colouring", json!(scheme));
-    if hollow {
-        store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, true);
-        workspace.set_on_every_pane("hollow_up", json!(true));
+    said(as_json, answer, text)
+}
+
+/// The changes to a look a command was given, in the flags `config bars`
+/// and `chart look` share, any of which a verb may not have.
+///
+/// The parser has already held the style, the bodies and the switches to the
+/// values there are; a colour and a header are free text, and checked here.
+fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
+    use omacharts_engine::theme::{parse_bar_colour, Body, Thickness};
+
+    let colour = |flag: &str| -> Result<Option<ColorChoice>, Fault> {
+        let Some(text) = arg(m, flag) else { return Ok(None) };
+        parse_bar_colour(text).map(Some).ok_or_else(|| {
+            Fault::usage(format!(
+                "no such bar colour: {text:?}; give one of {}, or a #rrggbb hex",
+                BAR_COLOUR_NAMES.map(str::to_lowercase).join(", ")
+            ))
+        })
+    };
+    let switch = |flag: &str| arg(m, flag).map(|state| state == "on");
+    let mut edits = Vec::new();
+    edits.extend(arg(m, "style").and_then(|key| BarStyle::from_key(key)).map(LookEdit::Style));
+    for (direction, flag) in [(Direction::Up, "up"), (Direction::Down, "down")] {
+        edits.extend(colour(flag)?.map(|colour| LookEdit::Colour(direction, colour)));
+        edits.extend(arg(m, &format!("{flag}-body")).and_then(|key| Body::from_key(key)).map(|body| LookEdit::Body(direction, body)));
+        // The parser has held these to the thicknesses there are.
+        let thickness = arg(m, &format!("{flag}-thickness")).and_then(|px| Thickness::parse(px));
+        edits.extend(thickness.map(|px| LookEdit::Thickness(direction, px)));
     }
-    if turn_round {
-        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
-        workspace.set_on_every_pane("swapped", json!(true));
+    edits.extend(colour("line-low")?.map(LookEdit::LineLow));
+    edits.extend(colour("line-high")?.map(LookEdit::LineHigh));
+    if let Some(text) = arg(m, "header") {
+        edits.push(LookEdit::Header(crate::header::parse(text).map_err(Fault::usage)?));
     }
+    edits.extend(switch("grid").map(LookEdit::Grid));
+    edits.extend(switch("price-line").map(LookEdit::PriceLine));
+    Ok(edits)
+}
+
+/// A chart's own look: read, changed, or dropped for every chart's.
+///
+/// The first change copies every chart's look onto the chart and makes it
+/// there, so changes to every chart's from then on leave this one as it is.
+fn chart_look(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+) -> Result<String, Fault> {
+    let mut edits = look_edits(m)?;
+    if let Some(wanted) = arg(m, "theme") {
+        let id = match wanted.eq_ignore_ascii_case(crate::chart_look::WINDOW_THEME) {
+            true => None,
+            false => Some(theme_named(&crate::theming::Theming::load(store).themes(), wanted)?.id.clone()),
+        };
+        edits.push(LookEdit::Theme(id));
+    }
+    let follow = flag(m, "follow");
+    if follow && !edits.is_empty() {
+        return Err(Fault::usage("give --follow or changes to the look, not both".into()));
+    }
+    let (label, book_name) = (chart_label(workspace.book(at)?, pane), workspace.name_of(at));
+    let named = format!("{label} in {book_name}");
+    let target = workspace.book_mut(at)?;
+    let Some(chart) = charts::pane_mut(target, pane) else {
+        return Err(Fault::not_found(format!("no chart {pane}")));
+    };
+    let own = charts::own_look(chart);
+    let worn = own.clone().unwrap_or_else(|| ChartLook::global(store));
+
+    let (look, text) = if follow {
+        chart["look"] = Value::Null;
+        let text = match own {
+            Some(_) => format!("{named} now follows all charts"),
+            None => format!("{named} already follows all charts"),
+        };
+        (ChartLook::global(store), text)
+    } else if edits.is_empty() {
+        return Ok(match (as_json, own) {
+            (true, own) => format!(
+                "{}\n",
+                json!({
+                    "chart": label,
+                    "book": book_name,
+                    "own": own.is_some(),
+                    "look": to_value(&worn)?,
+                })
+            ),
+            (false, Some(own)) => format!("{named} wears its own look: {}\n", own.spell()),
+            (false, None) => format!("{named} follows all charts\n"),
+        });
+    } else {
+        let mut look = worn;
+        for edit in edits {
+            look.set(edit);
+        }
+        chart["look"] = to_value(&look)?;
+        let text = format!("{named} now wears its own look: {}", look.spell());
+        (look, text)
+    };
     workspace.save(store);
-    if let Some(live) = live {
-        live.adopt_theming();
-    }
-    let text = match (state, was) {
-        // Said rather than silently done, because "it was already monochrome"
-        // and "it is monochrome now" are different answers to somebody
-        // checking their own work.
-        (_, true) => format!("bars were already {state}"),
-        ("monochrome", _) => "bars are monochrome; the colours are remembered".to_string(),
-        ("soft", _) => "bars carry their direction in two soft colours, a slate and a sand".to_string(),
-        ("quiet", _) => "bars carry their direction in two greys".to_string(),
-        ("hollow", _) => format!("rising bars are hollow, in the {scheme:?} scheme"),
-        ("red-up", _) => format!("rising bars are red and falling bars green, in the {scheme:?} scheme"),
-        _ => format!("bars carry their direction in colour again, in the {scheme:?} scheme"),
-    };
-    let (hollow_up, swapped) = (worn.hollow_up || hollow, worn.swapped || turn_round);
-    said(as_json, json!({"bars": state, "scheme": scheme, "hollow_up": hollow_up, "swapped": swapped}), text)
-}
-
-/// Which of the four answers a scheme is.
-fn spell_bars(scheme: &str) -> &'static str {
-    match scheme {
-        THEME_MONO_ID => "monochrome",
-        THEME_SOFT_ID => "soft",
-        THEME_QUIET_ID => "quiet",
-        _ => "vivid",
-    }
-}
-
-/// The palette a stored chart paints from and the switches it wears: what
-/// it says, or, from before they were switches, whether its colouring was a
-/// scheme an older version wrote for the look.
-fn stored_look(pane: &Value) -> omacharts_engine::theme::StoredColouring {
-    let written = pane["colouring"]
-        .as_str()
-        .and_then(omacharts_engine::BarColouring::from_stored)
-        .unwrap_or_default();
-    omacharts_engine::theme::StoredColouring {
-        colouring: written.colouring,
-        hollow_up: pane["hollow_up"].as_bool().unwrap_or(written.hollow_up),
-        swapped: pane["swapped"].as_bool().unwrap_or(written.swapped),
-    }
+    said(
+        as_json,
+        json!({"message": text, "chart": pane, "own": !follow, "look": to_value(&look)?}),
+        text,
+    )
 }
 
 /// The widget in the Omarchy bar.
@@ -5835,7 +5902,7 @@ fn backup_restore(
     // arrangement is reloaded after this returns, like any command that
     // writes it.
     if let Some(live) = live {
-        live.adopt_theming();
+        live.adopt_look();
         live.adopt_feed();
         live.adopt_zoom();
         live.adopt_pnl();
@@ -6336,39 +6403,21 @@ mod tests {
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
         crate::features::set(&store, crate::features::Feature::Trading, true);
-        use crate::header::{Header, Part};
-        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
-        assert_eq!(crate::header::load(&store), Header::standard());
-        let out = run("config set chart_header change,symbol,template", &store);
+        use crate::header::{Layout, Part, Zone};
+        assert_eq!(crate::header::load(&store), Layout::standard());
+        let out = run("config header left=change,symbol right=link,template left2=name", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "every chart's header shows change,symbol,template\n");
-        assert_eq!(run("config set chart_header symbol,price", &store).code, EXIT_USAGE);
-        assert_eq!(
-            crate::header::load(&store),
-            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Title], right: corner.clone() }
-        );
-        // The title put on the left leaves the center; the stripe put in
-        // the center leaves the left.
-        assert_eq!(run("config set chart_header symbol,stripe,title", &store).code, 0);
-        assert_eq!(
-            crate::header::load(&store),
-            Header { left: vec![Part::Symbol, Part::Stripe, Part::Title], center: Vec::new(), right: corner.clone() }
-        );
-        assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
-        let out = run("config set chart_header_center stripe", &store);
-        assert_eq!(out.out, "every chart's header shows stripe in the center\n");
-        assert_eq!(
-            crate::header::load(&store),
-            Header { left: vec![Part::Symbol], center: vec![Part::Stripe], right: corner.clone() }
-        );
-        assert_eq!(run("config set chart_header_center stripe,banana", &store).code, EXIT_USAGE);
-        // The right is a section like the others, and the corner's controls
-        // parts like the others.
-        let out = run("config set chart_header_right link,settings", &store);
-        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
-        assert_eq!(crate::header::load(&store).right, vec![Part::Link, Part::Settings]);
-        assert_eq!(run("config set chart_header settings,symbol", &store).code, 0);
-        assert_eq!(crate::header::load(&store).right, vec![Part::Link]);
+        assert_eq!(out.out, "every chart's header shows left=change,symbol right=link,template left2=name\n");
+        assert_eq!(run("config header", &store).out, "left=change,symbol right=link,template left2=name\n");
+        assert_eq!(run("config header left=symbol,price", &store).code, EXIT_USAGE);
+        assert_eq!(run("config set chart_header left=symbol,price", &store).code, EXIT_USAGE);
+        let header = crate::header::load(&store);
+        assert_eq!(header.zone(Zone::Left), [Part::Change, Part::Symbol]);
+        assert_eq!(header.zone(Zone::Right), [Part::Link, Part::Template]);
+        assert_eq!(header.zone(Zone::Left2), [Part::Name]);
+        // The way it was typed before it had zones still works.
+        assert_eq!(run("config set chart_header symbol,change", &store).code, 0);
+        assert_eq!(crate::header::load(&store).zone(Zone::Left), [Part::Symbol, Part::Change]);
         // Not a chart's to have: there is no flag for it any more.
         assert_eq!(run("chart set --header symbol", &store).code, EXIT_USAGE);
     }
@@ -6631,6 +6680,30 @@ mod tests {
             super::super::EXIT_USAGE
         );
         assert_eq!(run("section order Default Nope", &store).code, super::super::EXIT_NOT_FOUND);
+    }
+
+    /// The feeds named go first, the rest keep their order behind them, and
+    /// with none named the order is read back; a feed not on the order is
+    /// not added by ordering it.
+    #[test]
+    fn the_feeds_are_put_in_order_and_those_left_out_follow() {
+        let store = Store::memory().unwrap();
+        assert_eq!(json_of(&run("provider order --json", &store))["order"], json!(["yahoo"]));
+        crate::feeds::add_feed(&store, "rithmic");
+        crate::feeds::add_feed(&store, "tos");
+        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
+
+        let out = run("provider order yahoo", &store);
+        assert_eq!(out.out, "the data feeds, top first: yahoo, rithmic, tos\n", "{}", out.err);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["yahoo", "rithmic", "tos"]);
+        assert_eq!(run("provider order TOS rithmic", &store).code, 0);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "rithmic", "yahoo"]);
+
+        assert_eq!(run("provider order tos tos", &store).code, EXIT_USAGE);
+        assert_eq!(run("provider order nope", &store).code, crate::cli::EXIT_NOT_FOUND);
+        crate::feeds::remove_feed(&store, "rithmic");
+        assert_eq!(run("provider order rithmic", &store).code, crate::cli::EXIT_REFUSED);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "yahoo"], "nothing added or moved");
     }
 
     /// Dragging a symbol between sections, from a terminal.
@@ -7043,6 +7116,125 @@ mod tests {
         assert_eq!(workspace.find("Last copy").unwrap(), workspace.find("Last").unwrap() + 1);
     }
 
+    /// A line's two shades are part of the look, so a chart's own keeps
+    /// them through a change to every chart's.
+    #[test]
+    fn a_charts_own_look_has_its_own_line_shades() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        let said = ok("chart look --book Macro --chart pos:0 --style line --line-low amber", &store);
+        assert!(said.contains("line amber to violet"), "{said}");
+        ok("config bars --line-low teal --line-high rose", &store);
+        let own = &panes_of(&store, "Macro")[0]["look"];
+        assert_eq!((&own["line_low"], &own["line_high"]), (&json!("amber"), &json!("violet")));
+        assert!(ok("config bars", &store).contains("line teal to rose"));
+    }
+
+    /// The first change to one chart's look copies every chart's onto it,
+    /// so a later change to every chart's leaves the copy as it was, until
+    /// `--follow` drops it.
+    #[test]
+    fn a_charts_own_look_is_a_copy_made_on_its_first_change() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart split horizontal --book Macro --chart pos:0", &store);
+        ok("config bars --up blue", &store);
+        let read = ok("chart look --book Macro --chart pos:0", &store);
+        assert!(read.ends_with("follows all charts\n"), "{read}");
+
+        let said = ok("chart look --book Macro --chart pos:0 --style ohlc --grid off", &store);
+        assert!(said.starts_with("pos:0 SPY 1D in Macro now wears its own look: ohlc, up blue"), "{said}");
+        let own = |store: &Store| panes_of(store, "Macro")[0]["look"].clone();
+        assert_eq!((&own(&store)["style"], &own(&store)["up"], &own(&store)["grid"]), (&json!("ohlc"), &json!("blue"), &json!(false)));
+        assert!(panes_of(&store, "Macro")[1]["look"].is_null(), "the other chart was given a look too");
+
+        ok("config bars --up teal --style ohlc", &store);
+        ok("config grid on", &store);
+        assert_eq!((&own(&store)["style"], &own(&store)["up"], &own(&store)["grid"]), (&json!("ohlc"), &json!("blue"), &json!(false)));
+        let listed = json_of(&run("chart list --book Macro --json", &store));
+        assert_eq!((&listed["charts"][0]["style"], &listed["charts"][0]["own_look"]), (&json!("ohlc"), &json!(true)));
+        assert_eq!((&listed["charts"][1]["style"], &listed["charts"][1]["own_look"]), (&json!("ohlc"), &json!(false)));
+        let read = json_of(&run("chart look --book Macro --chart pos:0 --json", &store));
+        assert_eq!((&read["own"], &read["look"]["up"]), (&json!(true), &json!("blue")));
+
+        let said = ok("chart look --book Macro --chart pos:0 --follow", &store);
+        assert_eq!(said, "pos:0 SPY 1D in Macro now follows all charts\n");
+        assert!(own(&store).is_null());
+        let read = json_of(&run("chart look --book Macro --chart pos:0 --json", &store));
+        assert_eq!((&read["own"], &read["look"]["up"]), (&json!(false), &json!("teal")));
+    }
+
+    /// A chart's theme is a theme `config theme` offers, or the window's,
+    /// and putting it back on the window's keeps the rest of its own look.
+    #[test]
+    fn a_chart_wears_a_theme_of_its_own() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart split horizontal --book Macro --chart pos:0", &store);
+        // Whichever this machine offers: Omarchy's, or the ones built in.
+        let theming = crate::theming::Theming::load(&store);
+        let id = crate::theming::spell_theme(&theming.themes().last().expect("a theme").id).to_string();
+        let said = ok(&format!("chart look --book Macro --chart pos:1 --theme {id}"), &store);
+        assert!(said.ends_with(&format!(", theme {id}\n")), "{said}");
+        let panes = panes_of(&store, "Macro");
+        assert!(panes[1]["look"]["theme"].is_string(), "{}", panes[1]);
+        assert!(panes[0]["look"].is_null(), "the other chart was given a look too");
+
+        let refused = run("chart look --book Macro --chart pos:1 --theme no-such-theme", &store);
+        assert_eq!(refused.code, EXIT_USAGE, "{}", refused.err);
+
+        let said = ok("chart look --book Macro --chart pos:1 --theme window --grid off", &store);
+        assert!(said.ends_with(", theme window\n"), "{said}");
+        let look = &panes_of(&store, "Macro")[1]["look"];
+        assert!(look.get("theme").is_none() && look["grid"] == json!(false), "{look}");
+    }
+
+    /// A header typed for one chart while trading is off keeps trading's
+    /// parts where they were, as one typed for every chart does.
+    #[test]
+    fn a_charts_header_typed_with_trading_off_keeps_trading_s_parts() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart look --book Macro --chart pos:0 --header left=symbol", &store);
+        let stored = panes_of(&store, "Macro")[0]["look"]["header"].as_str().unwrap_or_default().to_string();
+        assert_eq!(stored, "left=symbol right=account,day_pnl,trade,size,position");
+        ok("config header left=symbol", &store);
+        assert_eq!(crate::header::spell(&crate::header::load(&store)), stored);
+    }
+
+    /// A split copies the chart it divides, and a duplicated chartbook its
+    /// charts, own looks and all.
+    #[test]
+    fn a_charts_own_look_comes_with_a_split_and_a_duplicate() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart look --book Macro --chart pos:0 --up-body hollow --header symbol,change", &store);
+        ok("chart split horizontal --book Macro --chart pos:0", &store);
+        ok("chartbook duplicate Macro --name Copy", &store);
+        for book in ["Macro", "Copy"] {
+            for pane in panes_of(&store, book) {
+                assert_eq!(pane["look"]["up_body"], "hollow", "{book}");
+                let header = pane["look"]["header"].as_str().unwrap_or_default();
+                assert!(header.starts_with("left=symbol,change "), "{book}: {header}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_look_is_refused_what_it_cannot_be() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        for line in [
+            "chart look --book Macro --follow --grid off",
+            "chart look --book Macro --up mauve",
+            "chart look --book Macro --header symbol,volume",
+        ] {
+            assert_eq!(run(line, &store).code, EXIT_USAGE, "{line}");
+        }
+        assert!(panes_of(&store, "Macro")[0]["look"].is_null(), "a refused change wrote a look");
+        assert_eq!(run("chart look --grid off", &store).code, super::super::EXIT_NO_WINDOW);
+    }
+
     /// A chartbook made from a terminal starts the way one made in the window
     /// does: its chart on Focus, so picking in the rail moves it while it is
     /// the chart in front of you, and a split beside it is not dragged along.
@@ -7067,7 +7259,7 @@ mod tests {
     fn a_charts_symbol_and_resolution_can_be_set_together() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
-        let set = run("chart set --book Macro --symbol NVDA --resolution 1h --style ohlc", &store);
+        let set = run("chart set --book Macro --symbol NVDA --resolution 1h", &store);
         assert_eq!(set.code, 0, "{}", set.err);
 
         let listed = run("chart list --book Macro --json", &store);
@@ -7076,47 +7268,29 @@ mod tests {
         assert_eq!(parsed["charts"][0]["resolution"], "1h");
     }
 
-    /// Hiding the bars is a look at what is under them, so it must not cost
-    /// the style they come back in.
+    /// Hiding the bars is this chart's; how they come back is every chart's.
     #[test]
-    fn hidden_bars_come_back_in_the_style_they_had() {
+    fn hidden_bars_come_back_in_the_style_every_chart_draws() {
         let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         let chart = |store: &Store| -> serde_json::Value {
             let listed = run("chart list --book Macro --json", store);
             serde_json::from_str::<serde_json::Value>(&listed.out).unwrap()["charts"][0].clone()
         };
-        assert_eq!(run("chart set --book Macro --style ohlc", &store).code, 0);
-
-        assert_eq!(run("chart set --book Macro --style none", &store).code, 0);
-        assert_eq!(chart(&store)["style"], "none");
-        assert_eq!(chart(&store)["bar_style"], "ohlc");
-        assert_eq!(chart(&store)["bars"], false);
-
-        let shown = run("chart set --book Macro --bars on", &store);
-        assert_eq!(shown.code, 0, "{}", shown.err);
-        assert_eq!(chart(&store)["style"], "ohlc");
-        assert_eq!(chart(&store)["bars"], true);
+        assert_eq!(chart(&store)["style"], "candles");
 
         assert_eq!(run("chart set --book Macro --bars off", &store).code, 0);
         assert_eq!(chart(&store)["style"], "none");
-        assert_eq!(run("chart set --book Macro --style candles", &store).code, 0);
-        assert_eq!(chart(&store)["style"], "candles", "choosing a style shows the bars");
+        assert_eq!(chart(&store)["bars"], false);
 
-        // Two flags that agree are one change, and said once.
-        let both = run("chart set --book Macro --style none --bars off", &store);
-        assert_eq!(both.code, 0, "{}", both.err);
-        assert_eq!(both.out.matches("bars hidden").count(), 1, "{}", both.out);
-    }
+        assert_eq!(run("config bars --style ohlc", &store).code, 0);
+        assert_eq!(chart(&store)["style"], "none", "a style for every chart leaves hidden bars hidden");
 
-    #[test]
-    fn a_style_and_the_bars_saying_opposite_things_are_refused() {
-        let store = bare();
-        run("chartbook create Macro --symbol SPY --switch", &store);
-        for both in ["--style candles --bars off", "--style none --bars on"] {
-            let out = run(&format!("chart set --book Macro {both}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{both}");
-        }
+        let shown = run("chart set --book Macro --bars on", &store);
+        assert_eq!(shown.code, 0, "{}", shown.err);
+        assert!(shown.out.contains("bars shown, as ohlc"), "{}", shown.out);
+        assert_eq!(chart(&store)["style"], "ohlc");
+        assert_eq!(chart(&store)["bars"], true);
     }
 
     /// A command that half-worked is worse than one that refused: the caller
@@ -7193,6 +7367,30 @@ mod tests {
 
         run("chart set --book Macro --log-scale off", &store);
         assert_eq!(charts(&store)["charts"][0]["log_scale"], false);
+    }
+
+    /// The gridlines and the line at the last price are one answer for every
+    /// chart, read as the charts draw it: off and on to begin with, turned
+    /// off and on and read back from a command.
+    #[test]
+    fn gridlines_and_the_last_price_line_are_one_switch_for_every_chart() {
+        let store = Store::memory().unwrap();
+        // Gridlines start off, the last-price line on: what the charts draw.
+        for (verb, drawn) in [("grid", "off\n"), ("price-line", "on\n")] {
+            assert_eq!(run(&format!("config {verb}"), &store).out, drawn, "{verb} to begin with");
+
+            let off = run(&format!("config {verb} off"), &store);
+            assert_eq!(off.code, 0, "{}", off.err);
+            assert!(off.out.contains("any chart"), "{}", off.out);
+            assert_eq!(run(&format!("config {verb}"), &store).out, "off\n");
+
+            let json = run(&format!("config {verb} --json"), &store).out;
+            assert!(json.contains("false"), "{json}");
+
+            run(&format!("config {verb} on"), &store);
+            assert_eq!(run(&format!("config {verb}"), &store).out, "on\n");
+        }
+        assert!(run("chart set --price-line off", &store).code != 0, "no longer a chart's own");
     }
 
     /// Hiding every indicator is stored with the chart and reported back,
@@ -7374,22 +7572,106 @@ mod tests {
         let bad = run("chart indicator add rsi --book Macro --color Chartreuse", &store);
         assert_eq!(bad.code, super::super::EXIT_USAGE);
         assert!(bad.err.contains("Blue"), "the error has to name the palette: {}", bad.err);
-        assert!(bad.err.contains("Neutral"), "the error has to name the neutral too: {}", bad.err);
+        assert!(bad.err.contains("Foreground"), "the error has to name Foreground too: {}", bad.err);
     }
 
-    /// The neutral is a palette name like the rest: stored as the name, so
-    /// it is worked out again from whichever theme is showing.
+    /// Foreground is a palette name like the rest: stored as the name, so
+    /// it is worked out again from whichever theme is showing. Neutral, the
+    /// name it once had a near twin under, is still taken, as Foreground.
     #[test]
-    fn the_neutral_is_set_by_name_and_stored_as_one() {
+    fn foreground_is_set_by_name_and_stored_as_one() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
-        let added = run("chart indicator add ema --book Macro --color neutral", &store);
-        assert_eq!(added.code, 0, "{}", added.err);
+        for (given, at) in [("foreground", 0), ("neutral", 1)] {
+            let added = run(&format!("chart indicator add ema --book Macro --color {given}"), &store);
+            assert_eq!(added.code, 0, "{}", added.err);
 
-        let listed = run("chart indicator list --book Macro --json", &store);
-        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        assert_eq!(parsed["indicators"][0]["color"]["kind"], "swatch");
-        assert_eq!(parsed["indicators"][0]["color"]["name"], "Neutral");
+            let listed = run("chart indicator list --book Macro --json", &store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            assert_eq!(parsed["indicators"][at]["color"]["kind"], "swatch");
+            assert_eq!(parsed["indicators"][at]["color"]["name"], "Foreground", "{given}");
+        }
+    }
+    #[test]
+    fn a_theme_is_chosen_by_a_name_the_list_gives() {
+        let store = Store::memory().unwrap();
+        let listed = run("config theme --json", &store);
+        assert_eq!(listed.code, 0);
+        let listed: Value = serde_json::from_str(&listed.out).unwrap();
+        let themes = listed["themes"].as_array().unwrap();
+        assert!(themes.len() > 1, "{listed}");
+        let other = themes
+            .iter()
+            .find(|t| t["current"] == false)
+            .and_then(|t| t["id"].as_str())
+            .unwrap()
+            .to_string();
+
+        assert_eq!(run(&format!("config theme {other}"), &store).code, 0);
+        assert_eq!(run("config get theme", &store).out.trim(), other);
+        assert!(run("config theme", &store).out.contains(&format!("* {other}")));
+
+        let typo = run("config theme midnight", &store);
+        assert_eq!(typo.code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("config get theme", &store).out.trim(), other, "a typo changes nothing");
+    }
+    /// The theme that follows the desktop is `system` to `config set` and
+    /// `config get`, as it is to `config theme`, and stored by its id.
+    #[test]
+    fn the_desktop_s_theme_is_system_to_config_set() {
+        let store = bare();
+        assert_eq!(run("config set theme System", &store).out.trim(), "set theme to system");
+        assert_eq!(store.setting(crate::theming::SETTING_THEME).as_deref(), Some(omacharts_engine::theme::OMARCHY_ID));
+        assert_eq!(run("config get theme", &store).out.trim(), "system");
+        assert_eq!(run("config set theme omarchy", &store).out.trim(), "set theme to system", "the stored word still reads");
+        assert_eq!(run("config set theme tokyo-night", &store).out.trim(), "set theme to tokyo-night");
+    }
+    #[test]
+    fn bars_are_answers_set_together_or_alone() {
+        let store = Store::memory().unwrap();
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up green filled 2px, down rose filled 2px, line blue to violet");
+
+        assert_eq!(run("config bars red-up --up-body hollow", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down green filled 2px, line blue to violet");
+
+        // A flag alone leaves the others as they were.
+        assert_eq!(run("config bars --down Foreground", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down foreground filled 2px, line blue to violet");
+        assert_eq!(run("config get bar_down", &store).out.trim(), "foreground");
+
+        // A flag wins over the preset it is given with.
+        assert_eq!(run("config bars monochrome --up #336699 --up-body filled --line-low amber", &store).code, 0);
+        let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "style": "candles", "up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled",
+                "up_thickness": "2", "down_thickness": "2", "line_low": "amber", "line_high": "violet"
+            })
+        );
+        assert_eq!(run("config bars --line-low blue", &store).code, 0);
+
+        let again = run("config bars monochrome --up #336699 --up-body filled --line-low blue", &store);
+        assert!(again.out.starts_with("bars were already"), "{}", again.out);
+
+        assert_eq!(run("config bars --down-body bordered", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up #336699 filled 2px, down foreground bordered 2px, line blue to violet");
+
+        // The style is one more answer, and leaves the colours alone.
+        assert_eq!(run("config bars --style ohlc", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "ohlc, up #336699 filled 2px, down foreground bordered 2px, line blue to violet");
+        assert_eq!(run("config get bar_style", &store).out.trim(), "ohlc");
+        assert_ne!(run("config bars --up-body outlined", &store).code, 0, "a body that does not exist is refused");
+
+        // Each direction's OHLC bars are as thick as it says, and no thicker
+        // than there is.
+        assert_eq!(run("config bars --up-thickness 1 --down-thickness 1.5", &store).code, 0);
+        let look = crate::theming::bar_look(&store);
+        use omacharts_engine::theme::Thickness;
+        assert_eq!((look.up_thickness, look.down_thickness), (Thickness::One, Thickness::OneAndAHalf));
+        for wrong in ["4", "2.5"] {
+            assert_eq!(run(&format!("config bars --up-thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE, "{wrong}");
+        }
     }
 
     #[test]
@@ -7547,72 +7829,8 @@ mod tests {
         assert_ne!(out.code, 0, "an RSI has no periods");
     }
 
-    /// A volume profile's delta follows the colouring chosen in Preferences
-    /// until a command picks one of the three that tell bought from sold,
-    /// and `default` puts it back; the words that are the volume strip's
-    /// own, and Monochrome, are refused and leave it as it was.
-    #[test]
-    fn a_volume_profile_takes_a_colouring_of_its_own_and_gives_it_back() {
-        let store = bare();
-        run("chartbook create Macro --switch", &store);
-        run("chart indicator add volume_profile --book Macro", &store);
-        let colouring = |store: &Store| {
-            let listed = run("chart indicator list --book Macro --json", store);
-            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
-        };
-        assert_eq!(colouring(&store), None, "Preferences' to begin with");
-
-        let out = run("chart indicator set volume_profile --book Macro --colouring theme-quiet", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"));
-
-        for refused in ["chart", "theme-mono", "loud"] {
-            let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {refused}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
-        }
-        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"), "a refusal leaves it as it was");
-
-        let out = run("chart indicator set volume_profile --book Macro --colouring default", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store), None);
-
-    }
-
-    /// Volume's Colouring is the delta profile's: `default`, and `chart` as
-    /// it was spelled before, keep it painted as the chart paints its
-    /// candles, and the three palettes that tell a rise from a fall are its
-    /// own; Monochrome, which tells nothing, is refused.
-    #[test]
-    fn volume_takes_the_delta_profiles_colourings() {
-        let store = bare();
-        run("chartbook create Macro --switch", &store);
-        run("chart indicator add volume --book Macro", &store);
-        let colouring = |store: &Store| {
-            let listed = run("chart indicator list --book Macro --json", store);
-            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
-        };
-        assert_eq!(colouring(&store), None, "the chart's own to begin with");
-
-        let out = run("chart indicator set volume --book Macro --colouring theme-soft", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"));
-
-        let out = run("chart indicator set volume --book Macro --colouring theme-mono", &store);
-        assert_eq!(out.code, super::super::EXIT_USAGE);
-        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"), "a refusal leaves it as it was");
-
-        for back in ["default", "chart"] {
-            run("chart indicator set volume --book Macro --colouring theme-quiet", &store);
-            let out = run(&format!("chart indicator set volume --book Macro --colouring {back}"), &store);
-            assert_eq!(out.code, 0, "{back}: {}", out.err);
-            assert_eq!(colouring(&store), None, "{back}");
-        }
-    }
-
-    /// A cumulative delta starts on the session, as candles, in the
-    /// colouring chosen in Preferences, and every one of those is a flag:
+    /// A cumulative delta starts on the session, as candles, and every one
+    /// of those is a flag:
     /// `never` makes it one running sum, which nothing else takes.
     #[test]
     fn a_cumulative_delta_is_set_up_from_a_command() {
@@ -7629,28 +7847,26 @@ mod tests {
         assert_eq!(made["kind"], "cvd");
         assert_eq!(made["reset"], "session");
         assert_eq!(made["style"], "candles");
-        assert!(made.get("colouring").is_none(), "Preferences' colouring");
 
         let out = run(
-            "chart indicator set cvd --book Macro --anchor never --cvd-style line --colouring theme-quiet --height 0.3",
+            "chart indicator set cvd --book Macro --anchor never --cvd-style line --height 0.3",
             &store,
         );
         assert_eq!(out.code, 0, "{}", out.err);
         let set = params(&store);
         assert!(set["reset"].is_null(), "never: {set}");
         assert_eq!(set["style"], "line");
-        assert_eq!(set["colouring"], "theme-quiet");
         assert_eq!(set["height"], 0.3);
 
         let out = run("chart indicator set cvd --book Macro --anchor week", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(params(&store)["reset"], "week");
 
-        for refused in ["--colouring chart", "--colouring theme-mono", "--rows 20", "--period 9"] {
+        for refused in ["--rows 20", "--period 9"] {
             let out = run(&format!("chart indicator set cvd --book Macro {refused}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+            assert_ne!(out.code, 0, "{refused}");
         }
-        assert_eq!(params(&store)["colouring"], "theme-quiet", "a refusal leaves it as it was");
+        assert_eq!(params(&store)["reset"], "week", "a refusal leaves it as it was");
 
         run("chart indicator add vwap --book Macro", &store);
         let out = run("chart indicator set vwap --book Macro --anchor never", &store);
@@ -8163,149 +8379,24 @@ mod tests {
         assert!(listed(&store)["charts"].as_array().unwrap().iter().all(|c| c["title"].is_null()));
     }
 
-    /// How thick OHLC bars are drawn is a chart's own, from one pixel to
-    /// four, and a default for new charts; a chart written before it could
-    /// be reads as two. A figure out of range is refused, not clamped.
+    /// How thick each direction's OHLC bars are drawn is part of a chart's
+    /// look, 1, 1.5, 2 or 3 pixels, set as its bodies are; there is no one
+    /// thickness for both any more.
     #[test]
-    fn ohlc_thickness_is_set_on_a_chart_and_as_a_default_within_its_range() {
+    fn a_chart_takes_a_thickness_for_each_direction_in_its_look() {
         let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
-        let listed = |store: &Store| -> serde_json::Value {
-            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
-        };
-        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(2));
-        let out = run("chart set --book Macro --style ohlc --thickness 3", &store);
+        let out = run("chart look --book Macro --style ohlc --down-thickness 1.5", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("OHLC bars 3px"), "{}", out.out);
-        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));
-        for wrong in ["0", "5", "1.5", "thick"] {
-            let out = run(&format!("chart set --book Macro --thickness {wrong}"), &store);
-            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{wrong}");
-            assert_eq!(run(&format!("config set ohlc_thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE, "{wrong}");
+        assert!(out.out.contains("up green filled 2px, down rose filled 1.5px"), "{}", out.out);
+        let look = &panes_of(&store, "Macro")[0]["look"];
+        assert_eq!((&look["up_thickness"], &look["down_thickness"]), (&json!("2"), &json!("1.5")));
+        for wrong in ["0", "4", "thick"] {
+            assert_eq!(run(&format!("chart look --book Macro --up-thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE);
         }
-        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));
-        assert_eq!(run("config set ohlc_thickness 4", &store).code, 0);
-        assert_eq!(crate::chart_defaults::ChartDefaults::load(&store).ohlc_thickness, 4);
+        assert_eq!(run("chart set --book Macro --thickness 3", &store).code, crate::cli::EXIT_USAGE);
     }
 
-    /// `red-up` and `hollow` are what a script wrote when those looks were
-    /// schemes of their own: each still reaches every chart, as vivid bars
-    /// with that switch on, and the answer says so.
-    #[test]
-    fn red_up_and_hollow_are_still_answered_as_vivid_bars_with_the_switch_on_everywhere() {
-        let store = bare();
-        run("chartbook create Macro --symbol AAPL --switch", &store);
-        run("chart split horizontal --book Macro", &store);
-        let out = run("config bars red-up", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, swapped");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-        assert_eq!(run("config get swap_colours", &store).out.trim(), "1");
-        assert_eq!(run("config bars hollow", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, hollow, swapped");
-        assert_eq!(run("config get hollow_up", &store).out.trim(), "1");
-        let read: serde_json::Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
-        assert_eq!((&read["bars"], &read["hollow_up"], &read["swapped"]), (&json!("vivid"), &json!(true), &json!(true)));
-        let listed: serde_json::Value = serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
-        for chart in listed["charts"].as_array().unwrap() {
-            assert_eq!((&chart["colouring"], &chart["hollow_up"], &chart["swapped"]), (&json!("theme"), &json!(true), &json!(true)));
-        }
-        assert_eq!(run("config bars red-up", &store).out.trim(), "bars were already red-up");
-        assert_eq!(run("config bars hollow", &store).out.trim(), "bars were already hollow");
-
-        // The switches stay on through the other answers: they are switches
-        // over the palette, not palettes; and the palette remembered is
-        // still the one somebody picked.
-        assert_eq!(run("config bars monochrome", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "monochrome, hollow, swapped");
-        assert_eq!(run("config bars coloured", &store).code, 0);
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-        assert_eq!(run("config set swap_colours off", &store).code, 0);
-        assert_eq!(run("config set hollow_up off", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid");
-        // An older version's setting reads the same way.
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, swapped");
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_HOLLOW_ID);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, hollow");
-    }
-
-    #[test]
-    fn a_chart_wears_the_two_switches_on_its_own() {
-        let store = bare();
-        run("chartbook create Macro --symbol AAPL --switch", &store);
-        run("chart split horizontal --book Macro", &store);
-        let out = run("chart set --book Macro --chart pos:1 --swap-colours on --hollow-up on", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("swapped") && out.out.contains("hollow"), "{}", out.out);
-        let listed = |store: &Store| -> serde_json::Value {
-            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
-        };
-        let charts = listed(&store);
-        assert_eq!((&charts["charts"][0]["swapped"], &charts["charts"][0]["hollow_up"]), (&json!(false), &json!(false)));
-        assert_eq!((&charts["charts"][1]["swapped"], &charts["charts"][1]["hollow_up"]), (&json!(true), &json!(true)));
-        assert_eq!(run("chart set --book Macro --chart pos:1 --swap-colours off --hollow-up off", &store).code, 0);
-        let charts = listed(&store);
-        assert_eq!((&charts["charts"][1]["swapped"], &charts["charts"][1]["hollow_up"]), (&json!(false), &json!(false)));
-        assert_ne!(run("chart set --book Macro --chart pos:1 --swap-colours sideways", &store).code, 0);
-        assert_ne!(run("chart set --book Macro --chart pos:1 --hollow-up maybe", &store).code, 0);
-
-        // The schemes a released version offered for the looks are the
-        // palette with that switch on, for this chart.
-        assert_eq!(run("chart set --book Macro --chart pos:0 --colouring theme-hollow", &store).code, 0);
-        assert_eq!(run("chart set --book Macro --chart pos:1 --colouring theme-red-up", &store).code, 0);
-        let charts = listed(&store);
-        assert_eq!((&charts["charts"][0]["colouring"], &charts["charts"][0]["hollow_up"]), (&json!("theme"), &json!(true)));
-        assert_eq!((&charts["charts"][1]["colouring"], &charts["charts"][1]["swapped"]), (&json!("theme"), &json!(true)));
-        // And a chart stored by that version, which named the look as its
-        // colouring, is read the same way.
-        let mut workspace = charts::Workspace::load(&store);
-        workspace.set_on_every_pane("colouring", json!("theme-hollow"));
-        workspace.each_pane_mut(|pane| {
-            if let Some(pane) = pane.as_object_mut() {
-                pane.remove("hollow_up");
-            }
-        });
-        workspace.save(&store);
-        assert_eq!(listed(&store)["charts"][0]["hollow_up"], true);
-    }
-
-    #[test]
-    fn bars_can_be_soft_or_quiet_on_every_chart_and_get_the_colour_back() {
-        let store = bare();
-        assert_eq!(run("config bars soft", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "soft");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-soft");
-        assert_eq!(run("config bars quiet", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "quiet");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-quiet");
-        assert_eq!(run("config bars vivid", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-    }
-
-    #[test]
-    fn bars_can_lose_their_colour_and_get_the_same_scheme_back() {
-        let store = bare();
-        run("config set bar_scheme theme-soft", &store);
-        assert_eq!(run("config bars", &store).out.trim(), "soft");
-
-        assert_eq!(run("config bars monochrome", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "monochrome");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-mono");
-
-        // Soft carries the direction in colour, so it is what comes back.
-        assert_eq!(run("config bars coloured", &store).code, 0);
-        assert_eq!(
-            run("config get bar_scheme", &store).out.trim(),
-            "theme",
-            "coloured is vivid, whatever palette was left"
-        );
-        run("config set bar_scheme theme", &store);
-        assert_eq!(run("config bars quiet", &store).code, 0);
-        assert_eq!(run("config bars vivid", &store).code, 0);
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-    }
 
     #[test]
     fn a_chart_is_focused_by_its_position_as_well_as_by_its_id() {
@@ -8642,7 +8733,6 @@ mod tests {
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
-        fn adopt_theming(&self) {}
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}
 
@@ -9420,8 +9510,8 @@ mod tests {
         fn reload_watchlists(&self) {
             self.0.borrow_mut().push("watchlists");
         }
-        fn adopt_theming(&self) {
-            self.0.borrow_mut().push("theming");
+        fn adopt_look(&self) {
+            self.0.borrow_mut().push("look");
         }
         fn adopt_feed(&self) {
             self.0.borrow_mut().push("feed");
@@ -9472,7 +9562,7 @@ mod tests {
         let outcome = dispatch(&args, &store, Some(&window), &super::super::Here);
         assert_eq!(outcome.code, 0, "{}", outcome.err);
         assert!(outcome.out.contains("what they replaced is kept as settings-"), "{}", outcome.out);
-        assert_eq!(*window.0.borrow(), vec!["flush", "theming", "feed", "watchlists", "workspace"]);
+        assert_eq!(*window.0.borrow(), vec!["flush", "look", "feed", "watchlists", "workspace"]);
         assert!(!run("watchlist list", &store).out.contains("Later"));
 
         let unknown = run("backup restore settings-nope", &store);
@@ -9555,14 +9645,14 @@ mod tests {
     fn with_trading_off_the_header_has_no_trading_parts() {
         use crate::header::Part;
         let store = bare();
-        let out = run("config set chart_header_right trade,settings", &store);
+        let out = run("config set chart_header right=trade,settings", &store);
         assert_eq!(out.code, EXIT_USAGE);
         assert!(!out.err.contains("day_pnl") && !out.err.contains("account"), "{}", out.err);
-        let out = run("config set chart_header_right link,settings", &store);
+        let out = run("config header left=symbol right=link,settings", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
+        assert_eq!(out.out, "every chart's header shows left=symbol right=link,settings\n");
         assert_eq!(
-            crate::header::load(&store).right,
+            crate::header::load(&store).zone(crate::header::Zone::Right),
             vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link, Part::Settings],
             "trading's parts kept where they were"
         );

@@ -118,7 +118,7 @@ chartbook  Semis (id:1)
   [exit 0]
 ```
 
-`--json` adds every chart's settings (style, colouring, session, scales, link
+`--json` adds every chart's settings (style, session, scales, link
 mode, whether it shows and sends drawings, indicators and chart template) and
 `windowOpen`, which says whether you are reading the window or the stored
 data.
@@ -277,10 +277,10 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `look`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
-| `provider` | The data feed, and signing in to one | [Market data](#market-data) |
-| `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
+| `provider` | The data feeds, their order, and signing in to one | [Market data](#market-data) |
+| `config` | Stored preferences | [Preferences](#preferences); `config bars`, `config grid` and `config price-line` under [Charts](#config-bars) |
 | `cache` | The downloaded prices | [Your data](#cache) |
 | `backup` | Copies of your settings, and putting one back | [Your data](#backup) |
 | `skill` | The agent skill | [`skill`](#skill) |
@@ -359,9 +359,9 @@ omacharts: no instrument called ZZZQX; try `omacharts symbol search ZZZQX`
 
 ## Charts
 
-`chart set` changes one chart, and `chart range` the days it shows.
-`config bars` and `config set` change every
-chart, or what new charts open with. What each setting looks like on screen
+`chart set` changes one chart, `chart range` the days it shows, and
+`chart look` gives it a look of its own. `config bars`, `config grid`,
+`config price-line` and `config set` change every chart, or what new charts open with. What each setting looks like on screen
 is in [Charts](/manual/charts/).
 
 ### `chart set`
@@ -374,8 +374,8 @@ $ omacharts chart set --symbol NVDA --resolution 240
 chart 2: symbol NVDA, resolution 4h
   [exit 0]
 
-$ omacharts chart set --style candles --colouring theme-soft --hollow-up on --session regular --grid off --auto-scale off --log-scale on
-chart 4: style candles, colouring theme-soft, rises hollow, session regular, grid off, auto-scale off, log scale on
+$ omacharts chart set --bars off --session regular --auto-scale off --log-scale on
+chart 4: bars hidden, session regular, auto-scale off, log scale on
   [exit 0]
 
 $ omacharts chart set --title "Semis desk"
@@ -397,14 +397,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
-| `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
-| `--thickness PX` | How many pixels wide OHLC bars are drawn, `1` to `4` | [Style](/manual/charts/#style) |
-| `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
-| `--colouring C` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono`; `theme-hollow` and `theme-red-up`, from earlier versions, are `theme` with the matching switch on | [Colouring](/manual/charts/#colouring) |
-| `--hollow-up on` or `off` | Draws a rising candle as an outline | [Colouring](/manual/charts/#colouring) |
-| `--swap-colours on` or `off` | Paints the colouring the other way round, red for a rise | [Colouring](/manual/charts/#colouring) |
+| `--bars on` or `off` | Shows the chart's bars, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
-| `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
 | `--indicators on` or `off` | Draws the chart's indicators, or hides them all | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
@@ -417,15 +411,11 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
 
-`--hollow-up on` on an OHLC chart is accepted and changes nothing you can
-see until the chart is candles again, since OHLC bars have no body.
-
-`--style none` and `--bars off` both hide the bars and keep their style.
-`--bars on` brings them back in it, and `--style candles` or `--style ohlc`
-shows them in that one. A style and `--bars` that disagree, such as
-`--style candles --bars off`, are refused. In JSON, `style` is `none` while
-the bars are hidden, `bar_style` is the style they come back in, and `bars`
-says whether they are shown.
+How bars are drawn is the chart's look: every chart's, set with
+[`config bars`](#config-bars), or its own, set with
+[`chart look`](#chart-look). In `chart list --json`, `style` is the style
+the chart draws, or `none` while its bars are hidden, `bars` says whether
+they are shown, and `own_look` whether it has a look of its own.
 
 ### `chart range`
 
@@ -474,55 +464,128 @@ window holds until the chart is zoomed or panned and is not stored, so a
 command that changes the arrangement, such as `chart set`, starts the view
 over. Run `chart range` last.
 
+### `chart look`
+
+Gives the focused chart a look of its own: its theme, how its bars are
+drawn and coloured, its header, its gridlines and its last-price line
+([A chart's own look](/manual/charts/#a-charts-own-look)). The first change
+copies every chart's look onto the chart and changes the copy, so later
+changes to every chart's leave it as it is. With no flags it says the look
+the chart wears. `--follow` drops the chart's own look.
+
+```
+$ omacharts chart look
+pos:0 NVDA 1D in Macro follows all charts
+  [exit 0]
+
+$ omacharts chart look --style ohlc --grid off
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme window
+  [exit 0]
+
+$ omacharts chart look --theme catppuccin-latte
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme catppuccin-latte
+  [exit 0]
+
+$ omacharts chart look --follow
+pos:0 NVDA 1D in Macro now follows all charts
+  [exit 0]
+
+$ omacharts chart look --follow --grid on
+omacharts: give --follow or changes to the look, not both
+  [exit 2]
+```
+
+| Flag | Takes | Does |
+|---|---|---|
+| `--theme THEME` | A theme as `omacharts config theme` lists them, or `window` | The theme the chart is drawn on; `window` puts it back on the window's ([A chart's own look](/manual/charts/#a-charts-own-look)) |
+| `--style STYLE` | `candles`, `ohlc`, `line` | How the chart draws its bars ([Style](/manual/charts/#style)) |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, `slate`, `sand`, `silver` or `graphite` ([Themes](/manual/themes/)), or `#rrggbb` | One direction's colour |
+| `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
+| `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn |
+| `--line-low COLOUR`, `--line-high COLOUR` | As `--up` | A line's colour at its lowest close on screen and at its highest |
+| `--header PARTS` | Parts in their places, as [`config header`](#config-header) takes them, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
+| `--grid on` or `off` | | Draws the grid ([Gridlines](/manual/charts/#gridlines)) |
+| `--price-line on` or `off` | | Draws the dashed line at the last price |
+| `--follow` | | Drops the chart's own look, so it wears every chart's again |
+| `--book BOOK`, `--chart CHART` | | Which chart ([Which chart a command acts on](#which-chart-a-command-acts-on)) |
+| `--json` | | The result as JSON, with the look under `look` and whether it is the chart's own under `own` |
+
+It acts on the chart on screen, so with no window open and no `--book` it
+exits `6`.
+
 ### `config bars`
 
-Sets the colouring of every chart at once, in every chartbook and for the
-charts made next, as **Apply to all charts now** does.
+Sets how bars look on every chart that has no look of its own, as Preferences › Appearance › Bars does: how they are drawn, for each direction a colour, a body (filled, bordered or hollow) and how thick its OHLC bars are, and a line's two colours ([Bars](/manual/themes/#bars)).
 
 ```
 $ omacharts config bars
-vivid
+candles, up green filled 2px, down rose filled 2px, line blue to violet
   [exit 0]
 
-$ omacharts config bars monochrome
-bars are monochrome; the colours are remembered
+$ omacharts config bars red-up --up-body hollow
+bars are now candles, up rose hollow 2px, down green filled 2px, line blue to violet
   [exit 0]
 
-$ omacharts config bars red-up
-rising bars are red and falling bars green, in the "theme" scheme
+$ omacharts config bars --style ohlc --up-thickness 1 --down-thickness 3
+bars are now ohlc, up rose hollow 1px, down green filled 3px, line blue to violet
   [exit 0]
 
-$ omacharts config bars
-vivid, swapped
-  [exit 0]
-
-$ omacharts config bars vivid
-bars carry their direction in colour again, in the "theme" scheme
+$ omacharts config bars monochrome --up-body filled --down-body filled
+bars are now ohlc, up foreground filled 1px, down foreground filled 3px, line blue to violet
   [exit 0]
 ```
 
-| `STATE` | Does |
+| Argument or flag | Takes | Does |
+|---|---|---|
+| `--style STYLE` | `candles`, `ohlc`, `line` | How every chart draws its bars ([Style](/manual/charts/#style)) |
+| `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Foreground. Omitted, the command prints the current look |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, `slate`, `sand`, `silver` or `graphite` ([Themes](/manual/themes/)), or `#rrggbb` | One direction's colour. Wins over `STATE` |
+| `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
+| `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn, `2` until set. A bar is drawn thinner where bars are too close for it |
+| `--line-low COLOUR`, `--line-high COLOUR` | As `--up` | A line's colour at its lowest close on screen and at its highest. Blue and violet until set |
+
+A flag changes only its own answer. The others stay as they were.
+
+### `config grid` and `config price-line`
+
+Whether every chart draws gridlines, and the dashed line across at the last
+price. The same on every chart, in every chartbook. Without `on` or `off`,
+prints the state.
+
+```
+$ omacharts config grid on
+gridlines on every chart
+  [exit 0]
+
+$ omacharts config price-line
+on
+  [exit 0]
+```
+
+The chart defaults (`chart_session`, `chart_log_scale`, `chart_shows_legend`,
+`timeframes`) are set with `config set`; see [Settings](#settings).
+
+### `config header`
+
+Sets what every chart's header shows and where, as Preferences › Overlays › **Header** does. One argument per place, each `place=part,part`, so nothing needs quoting. Places left out are empty.
+
+```
+$ omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name
+every chart's header shows left=symbol,change center=strip right=settings,maximize,link left2=name
+  [exit 0]
+
+$ omacharts config header
+left=symbol,change center=strip right=settings,maximize,link left2=name
+  [exit 0]
+```
+
+| Takes | Means |
 |---|---|
-| (none) | Prints the current state: `vivid`, `soft`, `quiet` or `monochrome`, followed by `, hollow` when rises are hollow and `, swapped` when up and down are swapped. With `--json`, the `hollow_up` and `swapped` fields |
-| `vivid` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
-| `soft` | Every chart soft: a slate and a sand from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
-| `quiet` | Every chart quiet: two greys made from the theme's text, a rise the lighter and a fall the darker ([Colouring](/manual/charts/#colouring)) |
-| `monochrome` | Every chart monochrome, remembering the colouring in use |
-| `coloured` | The same as `vivid`, from earlier versions |
-| `hollow` | `vivid`, with rises hollow on every chart and for new ones. From earlier versions, when Hollow was a colouring; `chart set --hollow-up` and `config set hollow_up` are the switch itself |
-| `red-up` | `vivid`, with up and down swapped on every chart and for new ones. From earlier versions, when Red up was a colouring; `chart set --swap-colours` and `config set swap_colours` are the switch itself |
+| Places | `left`, `center`, `right` on the first row; `left2`, `center2`, `right2` on the second |
+| Parts | `symbol`, `resolution`, `change`, `last`, `template`, `look`, `name`, `title`, `feed`, `strip`, `settings`, `maximize`, `link` |
+| `none` | A header with nothing in it |
 
-The two switches are worn over the palette, not palettes themselves, so the
-other states leave them as they are. `config set hollow_up off` and
-`config set swap_colours off` turn one off for new charts, and
-`chart set --hollow-up off` or `--swap-colours off` for one chart.
-
-`config set bar_scheme theme-mono` is different. It changes only what new
-charts open with, and remembers nothing to go back to.
-
-The chart defaults (`bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`, `chart_session`, `show_grid`,
-`chart_log_scale`, `chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
-see [Settings](#settings).
+A part named twice, or a word that is not a place or a part, is refused and changes nothing. A place on the second row under an empty one moves up into it. Omitted, the command prints the header as it is stored.
 
 ## Indicators
 
@@ -562,7 +625,6 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |
@@ -576,7 +638,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--legend B` | `on`, `off`; `on` for a new indicator, `off` for Session Times | Any. Whether the chart's legend names it. It is drawn either way |
 
 A colour is a palette name (`Blue`, `Amber`, `Violet`, `Teal`, `Rose`,
-`Green`, `Orange`, `Cyan`, `Neutral`, capitals ignored) or `#rrggbb`. A palette name follows
+`Green`, `Orange`, `Cyan`, `Foreground`, capitals ignored) or `#rrggbb`. A palette name follows
 the theme; a hex does not.
 
 Volume and a volume profile are bars, not lines, so `--width` and `--style`
@@ -1062,7 +1124,7 @@ omacharts: this chartbook has 3 charts, so there is no pos:7
 ### `chart list`
 
 Lists the charts in a chartbook: raw id, symbol, resolution, bar style
-(`none` while the bars are hidden), link mode and chart title, with `*` on the focused one. `--chart` takes these raw ids. The
+(every chart's, or `none` while that chart's bars are hidden), link mode and chart title, with `*` on the focused one. `--chart` takes these raw ids. The
 list is by id, not layout order; `status show` gives positions.
 
 ```
@@ -1075,7 +1137,7 @@ Desk — watchlist "Default"
 ```
 
 `--book` lists another chartbook. `--json` gives each chart in full:
-its chart title, `title` (`null` when it has none), colouring, session, gridlines, both scales, whether it shows and sends
+its chart title, `title` (`null` when it has none), session, both scales, whether it shows and sends
 drawings, indicators and template.
 
 ## Chartbooks
@@ -1220,7 +1282,7 @@ omacharts: NVDA not shown; the focused chart is pinned and no chart follows the 
 
 ## Sharing the crosshair
 
-Whether the pointer on one chart draws the same moment on every other chart of the same symbol, whatever their link mode. One setting for every chart, Preferences › Charts › Other › **Sync crosshair across charts** ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)).
+Whether the pointer on one chart draws the same moment on every other chart of the same symbol, whatever their link mode. One setting for every chart, Preferences › Overlays › **Crosshair across Follow charts** ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)).
 
 | Command | Does |
 |---|---|
@@ -1422,9 +1484,9 @@ The section with an empty name holds the symbols in no section.
 
 `chart screenshot` captures the focused chart of the open chartbook, and
 `chartbook screenshot` the open chartbook. What a picture holds, the key and
-the Preferences rows are in [Screenshots](/manual/screenshots/). Unlike the
-key, the commands always write a file, whatever **Also save a PNG** says, and
-copy to the clipboard only with `--clipboard`.
+where the file goes are in [Screenshots](/manual/screenshots/). Like the
+key, the commands always write a file. Unlike it, they copy to the clipboard
+only with `--clipboard`.
 
 ```
 $ omacharts chart screenshot
@@ -1446,9 +1508,8 @@ With no window open both exit 6. Neither takes `--book` or `--chart`; a
 chart that is not on screen cannot be captured. Focus the chart first with
 `chart focus`, or open the chartbook with `chartbook switch`.
 
-`screenshot_save_file` does not affect the commands; `screenshot_folder` is
-where they write when `--output` is not given. Both are in
-[Settings](#settings).
+`screenshot_folder` is where they and the key write when `--output` is not
+given ([Settings](#settings)).
 
 ## Market data
 
@@ -1484,6 +1545,26 @@ no saved thinkorswim session to forget
 
 Both take a feed's name and default to the feed in use. `provider logout
 yahoo` is refused with exit 5; Yahoo has no sign-in.
+
+### `provider order`
+
+`provider order` puts the data feeds in the order they are tried, as dragging
+them in Preferences does. Name the feeds first to last; any left out keep
+their order behind them. With no names it prints the order.
+
+```
+$ omacharts provider order
+the data feeds, top first: tos, yahoo
+  [exit 0]
+
+$ omacharts provider order yahoo
+the data feeds, top first: yahoo, tos
+  [exit 0]
+```
+
+Only feeds already on the list can be ordered. Naming one that is not is
+refused with exit 5; add it in Preferences first. A name that is no feed
+exits 3, and a feed named twice exits 2.
 
 ### `provider list` and `provider status`
 
@@ -1554,43 +1635,45 @@ same.
 
 | Setting | Values | Default | Preferences row | Chapter |
 |---|---|---|---|---|
-| `theme` | `omarchy` (System), `midnight`, `carbon`, `paper`, `daylight`, `omarchy:SLUG` for one installed Omarchy theme, or the id of a theme of your own | `omarchy` on Omarchy, `midnight` elsewhere | Theme › Theme | [Themes](/manual/themes/) |
-| `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
-| `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
-| `bar_scheme` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
-| `hollow_up` | on, off | off | Charts › Defaults › Hollow up bars | [Chart settings](/manual/chart-settings/) |
-| `swap_colours` | on, off | off | Charts › Defaults › Swap up and down colours | [Chart settings](/manual/chart-settings/) |
-| `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
-| `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
-| `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
-| `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
-| `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
-| `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Charts › Header › Left | [Charts](/manual/charts/) |
-| `chart_header_center` | the same | `title` | Charts › Header › Center | [Charts](/manual/charts/) |
-| `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
-| `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
-| `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
-| `sync_crosshair` | on, off | on | Charts › Other › Chart › Sync crosshair across charts | [Charts](/manual/charts/#sharing-the-crosshair) |
-| `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | Charts › Other › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
-| `provider` | `yahoo`, `tos` | `yahoo` | Data › Data feed | [Market data feeds](/manual/market-data/) |
-| `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
-| `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |
-| `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Data › Keep at most | [Where your data lives](/manual/your-data/) |
+| `theme` | `system` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `system` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
+| `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
+| `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
+| `bar_style` | `candles`, `ohlc`, `line` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
+| `bar_up_thickness`, `bar_down_thickness` | `1`, `1.5`, `2`, `3` | `2` | Appearance › Bars › Up, Down, under OHLC | [Themes](/manual/themes/#bars) |
+| `bar_line_low`, `bar_line_high` | as `bar_up` | `blue`, `violet` | Appearance › Bars › Low, High, under Line | [Themes](/manual/themes/#bars) |
+| `chart_session` | `extended`, `regular` | `extended` | Charts › Hours | [Chart settings](/manual/chart-settings/) |
+| `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
+| `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |
+| `chart_log_scale` | on, off | off | Charts › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
+| `chart_shows_drawings` | on, off | on | Charts › Show drawings from other charts | [Drawings](/manual/drawings/) |
+| `chart_sends_drawings` | on, off | on | Charts › Send drawings to other charts | [Drawings](/manual/drawings/) |
+| `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Template | [Chart templates](/manual/chart-templates/) |
+| `chart_header` | places as [`config header`](#config-header) takes them, in one quoted value; or `none`. A comma-separated list of parts with no places is the older form: those on the first row's left, `name` on the second | `left=feed,symbol,resolution,change center=title right=account,day_pnl,trade,size,settings,maximize,link` | Overlays › Header | [Charts](/manual/charts/#the-header) |
+| `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |
+| `time_format` | `24h`, `12h` | the desktop's clock format | General › Time › Time format | [Preferences](/manual/preferences/#time) |
+| `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | General › Chart › Preset resolutions | [Charts](/manual/charts/) |
+| `sync_crosshair` | on, off | on | Overlays › Crosshair across Follow charts | [Charts](/manual/charts/#sharing-the-crosshair) |
+| `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | General › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
+| `provider` | `yahoo`, `tos` | `yahoo` | Market data › Data feed | [Market data feeds](/manual/market-data/) |
+| `screenshot_folder` | a folder; `~/` is your home; empty for the default | where Omarchy saves screenshots; `<Pictures>/Omacharts` without Omarchy | None | [Screenshots](/manual/screenshots/) |
+| `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Market data › Keep at most | [Where your data lives](/manual/your-data/) |
 
 ### Theme
 
-`config set theme` takes `omarchy` for System, `midnight`, `carbon`, `paper`,
-`daylight`, `omarchy:everforest` for an installed Omarchy theme (its folder
-name after the colon), or the id of one of your own (`config get theme`
-prints it while that theme is chosen). The window picks the theme up when it
-next opens; Preferences changes the window in front of you.
+`config theme` lists the themes, the one in use starred, and `config theme
+NAME` puts the window in one: `system`, which follows the desktop's Omarchy
+theme, or any Omarchy theme on the machine by its folder name. Without
+Omarchy, the list is the Omarchy themes built into the app. A name that is
+not a theme is refused with exit 2, and changes nothing. An open window
+changes at once.
 
 ```
-$ omacharts config set theme midnight
-set theme to midnight
+$ omacharts config theme gruvbox
+the theme is Gruvbox
   [exit 0]
 ```
+
+`config set theme` writes the same setting with no check.
 
 ### When a setting is checked and takes effect
 
@@ -1610,7 +1693,7 @@ omacharts: no such data feed: "thinkorswimm"; the feeds are yahoo, tos
   [exit 2]
 
 $ omacharts config set chart_header symbol,banana
-omacharts: "banana" is not part of a header; try symbol, resolution, change, template, title, feed, stripe, settings, maximize, link
+omacharts: "banana" is not part of a header; try symbol, resolution, change, last, template, name, title, feed, strip, settings, maximize, link
   [exit 2]
 
 $ omacharts config set chart_time_zone Europe/London

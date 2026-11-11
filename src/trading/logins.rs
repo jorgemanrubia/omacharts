@@ -506,7 +506,7 @@ mod tests {
     }
 
     /// The last login, asked: keeping the data feed leaves Rithmic on the
-    /// Data page with nobody signed in; removing both takes it off.
+    /// Market data page with nobody signed in; removing both takes it off.
     #[test]
     fn removing_the_last_login_keeps_the_data_feed_or_removes_both() {
         if skip() {

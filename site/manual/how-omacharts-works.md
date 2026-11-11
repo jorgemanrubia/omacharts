@@ -50,9 +50,9 @@ and [Hotkeys](/manual/hotkeys/).
 ## Charts
 
 A chart shows one instrument at one resolution, such as NVDA on the daily or
-SPY on the five-minute. Each chart has its own indicators, trading hours, bar
-style, colouring, gridlines and price scale. New charts start from Preferences ›
-Charts › Defaults ([Chart settings](/manual/chart-settings/)).
+SPY on the five-minute. Each chart has its own indicators, trading hours and
+price scale; how bars are drawn and coloured is the same on every chart, unless one is given a look of its own.
+New charts start from Preferences › Charts ([Chart settings](/manual/chart-settings/)).
 
 See [Symbols and search](/manual/symbols/), [Charts](/manual/charts/) and
 [Indicators](/manual/indicators/).
@@ -158,12 +158,11 @@ window: 2560x1440 @2, bin/headless-window
 state:
   (as the figure above)
   key ctrl+comma
-  click 215 147     (Charts)
-  click 695 63      (Templates)
+  click 307 186     (Templates)
 capture: bin/headless-window shot prefs.png
-crop: 940,85,1180,480
+crop: 900,215,1180,340
 -->
-{% include figure.html src="/assets/manual/how-omacharts-works/templates.png" alt="The Templates tab listing the Default and Momentum chart templates with their indicators" caption="The Templates tab of Preferences › Charts." %}
+{% include figure.html src="/assets/manual/how-omacharts-works/templates.png" alt="The Templates page listing the Default and Momentum chart templates with their indicators" caption="The Templates page of Preferences." %}
 
 Change the indicators of one chart by hand and it leaves its template,
 keeping the indicators it had. Its header no longer names a template.
@@ -195,13 +194,14 @@ configurations, on <kbd>Alt</kbd> + <kbd>1</kbd> to <kbd>9</kbd>. See
 ## The theme
 
 Omacharts uses the Omarchy desktop's theme. Change the theme and the window
-changes with it. Candles take the theme's up and down colours, and indicators take their
+changes with it. Candles take the theme's green and rose, and indicators take their
 colours from its palette.
 
 A colour is a name from the theme's palette or a hex value. An indicator
 coloured **Amber** takes the theme's amber and changes with the theme. A hex
-value stays as you set it. Preferences › Theme also has built-in themes, and
-lets you copy one and edit it. See [Themes and colours](/manual/themes/).
+value stays as you set it. Preferences › Appearance can also hold the window
+on any one Omarchy theme, whatever the desktop wears, and sets the colours of
+the bars. See [Themes and colours](/manual/themes/).
 
 ## The CLI
 
@@ -246,7 +246,7 @@ is added on the first launch. Remove it and it stays removed. See [Omarchy plugi
 ## Market data
 
 Prices come from a market data feed. The default feed needs no account.
-Choose another and sign in to it in Preferences › Data. See
+Choose another and sign in to it in Preferences › Market data. See
 [Market data feeds](/manual/market-data/).
 
 ## Your data

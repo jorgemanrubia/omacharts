@@ -16,13 +16,13 @@ use std::path::Path;
 use omacharts_engine::frame::{MIN_FROM_CANDLE, MIN_FROM_FURNITURE, MIN_GUTTER, RING_CONTRAST};
 use omacharts_engine::omarchy::{AXIS_CONTRAST, CROSSHAIR_CONTRAST, GRID_CONTRAST};
 use omacharts_engine::theme::{
-    contrast_ratio, delta_e, hue_gap, theme_bars, theme_mono_bars, Direction, Oklch,
+    contrast_ratio, delta_e, hue_gap, theme_bars, BarLook, Direction, Oklch,
     COMPANION_GAP, MONO_CONTRAST, SWATCH_SEQUENCE,
 };
 use omacharts_engine::{omarchy, palette, Theme};
 
 fn fixtures() -> Vec<(String, Theme)> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/omarchy");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("themes");
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("fixtures directory") {
         let path = entry.expect("entry").path();
@@ -278,12 +278,12 @@ fn a_tag_reads_in_every_theme_under_every_scheme() {
     use omacharts_engine::ink::{tag_reads, LIGHT_FILL, TAG_LIGHT_LABEL, TEXT_CONTRAST};
     use omacharts_engine::theme::apca_contrast;
     for (name, theme) in fixtures() {
-        for scheme in every_scheme(&theme) {
+        for (id, scheme) in every_scheme(&theme) {
             let ink = theme.ink(&scheme);
             for direction in [Direction::Up, Direction::Down, Direction::Flat] {
                 let tag = ink.tag(direction);
                 let raw = scheme.outline(direction);
-                let at = format!("{name} / {} / {direction:?}: {} on {} (from {raw})", scheme.id, tag.label, tag.fill);
+                let at = format!("{name} / {id} / {direction:?}: {} on {} (from {raw})", tag.label, tag.fill);
                 let ratio = contrast_ratio(&tag.label, &tag.fill);
                 let lc = apca_contrast(&tag.label, &tag.fill);
                 assert!(ratio >= TEXT_CONTRAST.floor, "{at} is {ratio:.2}:1");
@@ -550,7 +550,7 @@ fn the_frame_is_visible_and_unmistakable_in_every_theme() {
 fn every_monochrome_bar_is_legible_and_unlike_the_colours_it_replaces() {
     for (name, theme) in fixtures() {
         let coloured = theme_bars(&theme);
-        let mono = theme_mono_bars(&theme);
+        let mono = BarLook::monochrome().scheme(&theme);
         assert_eq!(mono.up, mono.down, "{name}: a direction colour survived");
 
         let ratio = contrast_ratio(&mono.up, &theme.ui.background);
@@ -567,10 +567,14 @@ fn every_monochrome_bar_is_legible_and_unlike_the_colours_it_replaces() {
 // The palette's ink: the text roles the bar widget writes in
 // ---------------------------------------------------------------------------
 
-/// Every scheme a person can pick, built against `theme` the way the window
-/// builds them.
-fn every_scheme(theme: &Theme) -> Vec<omacharts_engine::BarScheme> {
-    omacharts_engine::theme::bar_schemes(theme)
+/// Every built-in look a person can pick, built against `theme` the way
+/// the window builds them, each with a name to say which failed.
+fn every_scheme(theme: &Theme) -> Vec<(&'static str, omacharts_engine::BarScheme)> {
+    vec![
+        ("default", omacharts_engine::BarLook::default().scheme(theme)),
+        ("red up", omacharts_engine::BarLook::red_up().scheme(theme)),
+        ("monochrome", omacharts_engine::BarLook::monochrome().scheme(theme)),
+    ]
 }
 
 /// WCAG AA, 4.5:1, for every text role against every surface it can be
@@ -582,7 +586,7 @@ fn every_scheme(theme: &Theme) -> Vec<omacharts_engine::BarScheme> {
 fn every_text_role_reads_on_every_surface_in_every_theme() {
     use omacharts_engine::ink::TEXT_CONTRAST;
     for (name, theme) in fixtures() {
-        for scheme in every_scheme(&theme) {
+        for (id, scheme) in every_scheme(&theme) {
             let ink = theme.ink(&scheme);
             let ui = &theme.ui;
             let grounds = [
@@ -602,8 +606,7 @@ fn every_text_role_reads_on_every_surface_in_every_theme() {
                     let ratio = contrast_ratio(colour, ground);
                     assert!(
                         ratio >= TEXT_CONTRAST.floor,
-                        "{name} / {}: {role} {colour} on the {surface} {ground} is {ratio:.2}:1",
-                        scheme.id
+                        "{name} / {id}: {role} {colour} on the {surface} {ground} is {ratio:.2}:1"
                     );
                 }
             }
@@ -695,58 +698,3 @@ fn the_charts_text_is_reported() {
     }
 }
 
-/// Every shipped theme's neutral stands out from its chart, very light on
-/// a dark theme and very dark on a light one, is never its grid nor quite
-/// its text, and carries a tint of the theme's own rather than being a
-/// white or a black: a pale lavender on Tokyo Night, a cream on Gruvbox.
-#[test]
-fn every_shipped_theme_has_a_neutral_of_its_own() {
-    for (name, theme) in fixtures() {
-        let neutral = theme.neutral();
-        let tone = Oklch::of(&neutral).unwrap();
-        let (ground, text) = (Oklch::of(&theme.ui.background).unwrap(), Oklch::of(&theme.ui.text).unwrap());
-        if text.l > ground.l {
-            assert!(tone.l > 0.8, "{name}: {neutral} is not very light");
-        } else {
-            assert!(tone.l < 0.4, "{name}: {neutral} is not very dark");
-        }
-        assert!(delta_e(&neutral, &theme.ui.background) >= 0.5, "{name}: {neutral} on {}", theme.ui.background);
-        assert!(delta_e(&neutral, &theme.ui.grid) >= 0.4, "{name}: {neutral} reads as the grid {}", theme.ui.grid);
-        assert!(delta_e(&neutral, &theme.ui.text) >= 0.04, "{name}: {neutral} is the text {}", theme.ui.text);
-        assert!(tone.c >= 0.02, "{name}: {neutral} is a plain grey");
-        if text.c >= 0.015 {
-            assert!(hue_gap(tone.h, text.h) < 10.0, "{name}: {neutral} lost the hue of {}", theme.ui.text);
-        }
-    }
-    let by_name = |wanted: &str| fixtures().into_iter().find(|(name, _)| name == wanted).unwrap().1;
-    let tokyo = Oklch::of(&by_name("tokyo-night").neutral()).unwrap();
-    assert!(tokyo.l > 0.85 && (250.0..300.0).contains(&tokyo.h), "tokyo-night's neutral is not a pale lavender: {tokyo:?}");
-    let gruvbox = Oklch::of(&by_name("gruvbox").neutral()).unwrap();
-    assert!(gruvbox.l > 0.85 && gruvbox.c > 0.03 && (20.0..90.0).contains(&gruvbox.h), "gruvbox's neutral is not a cream: {gruvbox:?}");
-    let latte = Oklch::of(&by_name("catppuccin-latte").neutral()).unwrap();
-    assert!(latte.l < 0.4 && (250.0..300.0).contains(&latte.h), "catppuccin-latte's neutral is not a dark blue-grey: {latte:?}");
-}
-
-/// The last price on every shipped theme is its own colour: light on a
-/// dark chart and readable on a light one, and round the wheel from both
-/// candles, so its line is never taken for one.
-#[test]
-fn every_shipped_theme_has_a_last_price_apart_from_its_candles() {
-    use omacharts_engine::theme::{theme_last_price, Mode};
-    for (name, theme) in fixtures() {
-        let price = theme_last_price(&theme);
-        let colour = Oklch::of(&price).expect("a colour");
-        let ratio = contrast_ratio(&price, &theme.ui.background);
-        match theme.mode {
-            Mode::Dark => assert!(colour.l >= 0.85 && ratio >= 7.0, "{name}: {price} is not light ({ratio:.1})"),
-            Mode::Light => assert!(ratio >= 4.5, "{name}: {price} does not read ({ratio:.1})"),
-        }
-        let bars = theme_bars(&theme);
-        for candle in [&bars.up, &bars.down] {
-            let candle = Oklch::of(candle).unwrap();
-            if candle.c >= 0.03 {
-                assert!(hue_gap(colour.h, candle.h) >= 35.0, "{name}: {price} is a candle's hue");
-            }
-        }
-    }
-}

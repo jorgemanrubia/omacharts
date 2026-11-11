@@ -80,7 +80,7 @@ out loud to a colleague, rewrite it.
   strip, chart template, link mode, Omarchy plugin: the words the UI uses, the same word
   every time. No synonyms for variety.
 - **British spelling** in prose: colour, licence, maximise, centre. Code is
-  spelled as the code spells it: `--color`, `chart set --colouring`.
+  spelled as the code spells it: `--color`, `chart look --up-body`.
 - **Contractions are fine** where they make a sentence sound like speech.
 
 Do not take the voice from the code comments or `AGENTS.md`: those argue a
@@ -177,15 +177,15 @@ follows").
     [exit 0]
   ```
 
-- **Paths through the UI** with ›: Preferences › Charts › Defaults. Labels as
-  the UI spells them, in the same case, in bold: **Apply to all charts now**.
+- **Paths through the UI** with ›: Preferences › Charts › Settings. Labels as
+  the UI spells them, in the same case, in bold: **Reset to defaults**.
 - **Enumerated values** as the command takes them: `regular`, `extended`;
   `focus`, `follow`, `pinned`.
 - **The app** is Omacharts; **the command** is `omacharts`. A chart is named
   `pos:N`, counting from 0.
 - **Settings** by key in backticks, with the values they take:
-  `chart_header` is a comma-separated list of `symbol`, `resolution`,
-  `change`, `template`, `title`, `account` and `stripe`, or `none`.
+  `chart_header` is places such as `left=symbol,resolution right=link`, or
+  `none`.
 
 ## Screenshots
 

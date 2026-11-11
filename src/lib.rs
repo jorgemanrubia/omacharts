@@ -9,6 +9,7 @@ pub mod bar_plugin;
 pub mod at_price;
 pub mod cache;
 pub mod chart_defaults;
+pub mod chart_look;
 pub mod clock;
 pub mod cli;
 pub mod features;

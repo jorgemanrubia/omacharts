@@ -33,9 +33,11 @@ impl Workspace {
             .and_then(|json| serde_json::from_str::<Value>(&json).ok())
             .filter(|value| value.get("books").is_some_and(Value::is_array))
             .unwrap_or_else(|| json!({ "books": [], "active": 0 }));
-        // A chart still written with a link group gets its mode the way the
-        // window gives it one, so both read the same row the same way.
+        // A chart still written with a link group gets its mode, and one
+        // written with one OHLC thickness its look, the way the window gives
+        // them, so both read the same row the same way.
         crate::ui::window::upgrade_link_groups(&mut value, store);
+        crate::ui::window::upgrade_thicknesses(&mut value, store);
         Workspace { value }
     }
 
@@ -75,17 +77,6 @@ impl Workspace {
                 false => before.iter().map(leaves).find(|old| old.iter().any(|id| now.contains(id))),
             };
             carry(store, self.books_mut(), at, &was.unwrap_or_default());
-        }
-    }
-
-    /// One field, the same on every chart in every book.
-    pub fn set_on_every_pane(&mut self, key: &str, value: Value) {
-        for book in self.books_mut() {
-            if let Some(panes) = book["panes"].as_array_mut() {
-                for pane in panes {
-                    pane[key] = value.clone();
-                }
-            }
         }
     }
 
@@ -359,11 +350,13 @@ pub fn new_pane(
         "suffix": suffix,
         "timeframe": "1D",
         "indicators": [],
-            "bar_style": defaults.bar_style.key(),
-            "colouring": defaults.colouring.key(),
             "session": defaults.session.key(),
             "continuous": defaults.continuous.key(),
-            "show_grid": defaults.show_grid,
+            // Not read: gridlines and how bars are drawn are the same on
+            // every chart. Written for a build from before then, which
+            // refuses a chart without them.
+            "show_grid": true,
+            "bar_style": omacharts_engine::BarStyle::default().key(),
             // Focus, which is where the window starts a new chartbook's
             // chart: it takes a click in the rail while it is focused.
             "link": LinkMode::default().key(),
@@ -381,7 +374,19 @@ pub fn new_pane(
     })
 }
 
-/// A chart copied from another, which is what splitting one means.
+/// The look a stored chart holds of its own, or `None` while it wears every
+/// chart's. See [`crate::chart_look`].
+pub fn own_look(pane: &Value) -> Option<crate::chart_look::ChartLook> {
+    serde_json::from_value(pane["look"].clone()).ok().flatten()
+}
+
+/// The look a stored chart wears: its own, or `every` chart's.
+pub fn worn_look(pane: &Value, every: &crate::chart_look::ChartLook) -> crate::chart_look::ChartLook {
+    own_look(pane).unwrap_or_else(|| every.clone())
+}
+
+/// A chart copied from another, which is what splitting one means. Its own
+/// look, if it has one, comes with it.
 pub fn copy_pane(from: &Value, id: u32) -> Value {
     let mut copy = from.clone();
     copy["id"] = json!(id);

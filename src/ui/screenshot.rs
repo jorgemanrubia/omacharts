@@ -41,11 +41,14 @@
 //! own over the chart — which is why that layer exists at all, and what makes
 //! leaving it out a matter of not asking for one child.
 //!
-//! Where it goes is the clipboard, always. That is what somebody pressing the
-//! key wants nine times out of ten — the picture lands in the chat, the note,
-//! the issue — and it is the one destination no setting governs. Keeping a PNG
-//! as well is the part that is optional, because a folder quietly filling with
-//! images you pasted once is a cost somebody should be able to decline.
+//! Where it goes is where the desktop's own screenshots go: the clipboard and
+//! a file, both, every time, announced the way the desktop announces its own.
+//! On Omarchy that is `OMARCHY_SCREENSHOT_DIR` or the pictures directory, and
+//! a notification that opens the editor when clicked — so Super+Alt+, edits a
+//! chart's picture exactly as it edits one taken with Print. Two screenshot
+//! tools on one desktop with two sets of rules is one too many, and a
+//! preference for a folder the desktop already has an answer for is a
+//! preference nobody should have to find.
 
 use std::path::{Path, PathBuf};
 
@@ -56,18 +59,20 @@ use omacharts_engine::Theme;
 use crate::store::Store;
 use crate::ui::chart::POINTER_LAYER;
 use crate::ui::colors;
-use crate::ui::pane::{ChartPane, TITLE_UNTITLED};
+use crate::ui::pane::{ChartPane, LOOK_MARK, TITLE_UNTITLED};
 
-/// Where screenshots are written. Unset means the default, which is derived
-/// rather than stored: writing it down on first run would freeze today's
-/// answer for everyone who never chose.
+/// Where screenshots are written, for somebody who wants them somewhere the
+/// desktop's are not. Unset means the default, which is derived rather than
+/// stored: writing it down on first run would freeze today's answer for
+/// everyone who never chose. Reached through `config set` only — the window
+/// has no control for it, because the desktop already has an answer.
 pub const SETTING_FOLDER: &str = "screenshot_folder";
 
-/// Whether a PNG is kept as well as copied. Unset means on.
-pub const SETTING_SAVE_FILE: &str = "screenshot_save_file";
+/// Omarchy's own override for where screenshots go.
+const OMARCHY_FOLDER: &str = "OMARCHY_SCREENSHOT_DIR";
 
-/// The folder made inside the user's pictures directory. Capitalised the way
-/// the application is.
+/// The folder made inside the user's pictures directory, off Omarchy.
+/// Capitalised the way the application is.
 pub const FOLDER: &str = "Omacharts";
 
 /// The widgets a screenshot leaves out, by the CSS class they already carry.
@@ -88,6 +93,8 @@ pub const FOLDER: &str = "Omacharts";
 /// - `pane-expand` — the maximize corner.
 /// - `feed-part` — the data feed's dot: how a connection stood at the
 ///   moment is not what the picture is of.
+/// - [`LOOK_MARK`] — the mark of a chart with a look of its own: a note
+///   about the chart's settings, not about what the picture shows.
 /// - [`TITLE_UNTITLED`] — an untitled chart's Title part, which is only
 ///   ever a way to give it one. A chart's title stays: it titles the chart.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
@@ -101,6 +108,7 @@ const LEFT_OUT: &[&str] = &[
     "legend-button",
     "pane-expand",
     "feed-part",
+    LOOK_MARK,
     TITLE_UNTITLED,
     POINTER_LAYER,
 ];
@@ -176,7 +184,7 @@ pub fn take_chartbook(
     deliver(window, store, chartbook(area, book, theme), "Chartbook");
 }
 
-/// Copy it, keep it if that is wanted, and say in one line what happened.
+/// Copy it, keep it, and say in one line what happened.
 fn deliver(
     window: &adw::ApplicationWindow,
     store: &Store,
@@ -188,19 +196,57 @@ fn deliver(
         Err(error) => return tell(window, "Screenshot not taken", &error, true),
     };
     // First, and whatever happens next. A screenshot that reached the
-    // clipboard is a screenshot, whether or not a file was also kept.
+    // clipboard is a screenshot, whether or not the file could be written.
     shot.copy();
 
-    let copied = format!("{what} screenshot copied");
-    if !save_file(store) {
-        return tell(window, &copied, "Ready to paste", false);
-    }
     match shot.save_into(&folder(store)) {
-        Ok(path) => tell(window, &copied, &format!("Also saved to {}", readable(&path)), false),
+        Ok(path) => saved(window, what, &path),
         // The picture is not lost — it is on the clipboard — so this says what
         // was wanted and then what went wrong, in that order.
-        Err(error) => tell(window, &copied, &format!("Not saved: {error}"), true),
+        Err(error) => {
+            tell(window, &format!("{what} screenshot copied"), &format!("Not saved: {error}"), true)
+        }
     }
+}
+
+/// Announce a screenshot that is on the clipboard and in a file.
+///
+/// On Omarchy, through Omarchy's own notifier with the words, the thumbnail
+/// and the click-to-edit its Print key uses, so the two are one feature to
+/// whoever is looking at the corner of the screen. Anywhere else, or if that
+/// cannot be started, as an ordinary notification.
+fn saved(window: &adw::ApplicationWindow, what: &str, path: &Path) {
+    let headline = format!("{what} screenshot saved to clipboard and file");
+    if omarchy_notify(&headline, path) {
+        return;
+    }
+    tell(window, &headline, &format!("Saved to {}", readable(path)), false);
+}
+
+/// What Omarchy's `omarchy-capture-screenshot` sends, word for word but for
+/// the headline. False when there is no such program to run.
+///
+/// A `gio::Subprocess` rather than `std::process` because GLib reaps it: the
+/// notifier exits on its own, and nothing here waits for it.
+fn omarchy_notify(headline: &str, path: &Path) -> bool {
+    let editor = std::env::var_os("OMARCHY_SCREENSHOT_EDITOR")
+        .filter(|set| !set.is_empty())
+        .unwrap_or_else(|| "tensaku-edit".into());
+    let args: [&std::ffi::OsStr; 8] = [
+        "omarchy-notification-send".as_ref(),
+        "--image".as_ref(),
+        path.as_os_str(),
+        headline.as_ref(),
+        "Edit with Super + Alt + , (or click this)".as_ref(),
+        "--exec".as_ref(),
+        editor.as_os_str(),
+        path.as_os_str(),
+    ];
+    gio::Subprocess::newv(
+        &args,
+        gio::SubprocessFlags::STDOUT_SILENCE | gio::SubprocessFlags::STDERR_SILENCE,
+    )
+    .is_ok()
 }
 
 /// One line, outside the window.
@@ -402,13 +448,26 @@ pub fn folder(store: &Store) -> PathBuf {
     }
 }
 
-/// `<Pictures>/Omacharts`.
+/// Where the desktop keeps screenshots, or `<Pictures>/Omacharts` on one
+/// that has no opinion.
 pub fn default_folder() -> PathBuf {
-    pictures().join(FOLDER)
+    let home = crate::store::home();
+    let set = std::env::var(OMARCHY_FOLDER).ok();
+    default_folder_for(set.as_deref(), crate::bar_plugin::available(&home), pictures(), &home)
 }
 
-pub fn save_file(store: &Store) -> bool {
-    store.setting_bool(SETTING_SAVE_FILE, true)
+/// The decision, with what it reads handed in.
+///
+/// The same answer as Omarchy's own screenshot script, which reads
+/// `OMARCHY_SCREENSHOT_DIR` and falls back to the pictures directory itself.
+/// Off Omarchy the folder of our own stays, because a pictures directory
+/// filling with chart images nobody else's tool put there is a mess.
+fn default_folder_for(set: Option<&str>, omarchy: bool, pictures: PathBuf, home: &Path) -> PathBuf {
+    match set.map(str::trim).filter(|set| !set.is_empty()) {
+        Some(set) => expand_home(set, home),
+        None if omarchy => pictures,
+        None => pictures.join(FOLDER),
+    }
 }
 
 /// The user's pictures directory.
@@ -560,17 +619,19 @@ fn now() -> String {
 mod tests {
     use super::*;
 
-    /// The clipboard is not a setting and the file is, so a fresh install
-    /// keeps one — and the switch that turns it off has to be the only thing
-    /// that can.
+    /// Omarchy's override wins, then Omarchy's fallback, then a folder of our
+    /// own on a desktop with no opinion.
     #[test]
-    fn a_png_is_kept_unless_somebody_says_otherwise() {
-        let store = Store::memory().expect("a store");
-        assert!(save_file(&store), "a fresh install keeps the file");
-        store.set_setting_bool(SETTING_SAVE_FILE, false);
-        assert!(!save_file(&store), "and stops when it is told to");
-        store.set_setting_bool(SETTING_SAVE_FILE, true);
-        assert!(save_file(&store));
+    fn screenshots_go_where_the_desktop_keeps_its_own() {
+        let home = Path::new("/home/someone");
+        let pictures = || home.join("Pictures");
+        assert_eq!(
+            default_folder_for(Some("~/Pictures/Screenshots"), true, pictures(), home),
+            home.join("Pictures/Screenshots"),
+        );
+        assert_eq!(default_folder_for(None, true, pictures(), home), pictures());
+        assert_eq!(default_folder_for(Some("  "), true, pictures(), home), pictures());
+        assert_eq!(default_folder_for(None, false, pictures(), home), home.join("Pictures/Omacharts"));
     }
 
     #[test]
@@ -698,8 +759,7 @@ mod tests {
     #[test]
     fn every_control_left_out_of_a_screenshot_is_one_the_stylesheet_knows_about() {
         let themes = omacharts_engine::theme::builtin_themes();
-        let schemes = omacharts_engine::theme::bar_schemes(&themes[0]);
-        let css = crate::theming::stylesheet(&themes[0], &schemes[0]);
+        let css = crate::theming::stylesheet(&themes[0], &omacharts_engine::theme_bars(&themes[0]));
         for class in LEFT_OUT.iter().filter(|class| **class != POINTER_LAYER) {
             assert!(css.contains(&format!(".{class}")), "{class} is not styled anywhere");
         }

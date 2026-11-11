@@ -26,7 +26,7 @@ pub enum Feature {
     /// Theme page's Trading colours, and every sign-in to an order plant.
     /// A trading service's data feed is not trading and stays without it.
     Trading,
-    /// Sierra Chart: its data feed, read from its files, on the Data page
+    /// Sierra Chart: its data feed, read from its files, on the Market data page
     /// and in `provider` commands, with `provider setup`; and, with trading
     /// on too, its trading service. Off, nothing looks for its folder, watches a
     /// file or connects to its DTC server.

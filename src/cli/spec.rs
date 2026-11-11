@@ -265,12 +265,8 @@ pub const CHART_SELECTOR: &str =
     "`pos:N`, counting from 0 in layout order, or a raw id from `chart list` \
      — prefer the position, which survives the window rebuilding";
 
-/// The palette a chart paints its bars from, spelled as the scheme ids the
-/// settings store, plus the two a released version offered for a hollow
-/// rise and for red up, which are Vivid with that switch on.
-const COLOURINGS: &[&str] =
-    &["theme", "theme-soft", "theme-quiet", "theme-mono", "theme-hollow", "theme-red-up"];
-const STYLES: &[&str] = &["candles", "ohlc", "none"];
+/// How a chart draws its bars, spelled as `bar_style` stores them.
+const STYLES: &[&str] = &["candles", "ohlc", "line"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -291,16 +287,32 @@ const PROFILE_METHODS: &[&str] = &["total", "delta"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
-/// The answers `config bars` gives and takes. `coloured`, `hollow` and
-/// `red-up` are what a released version took: `coloured` is `vivid`, and the
-/// other two are `vivid` with that switch on, on every chart.
-const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
-/// What a volume pane's bars may be painted from: the chart's own colouring
-/// (`default`, or `chart` as a released version spelled it), or one of the
-/// three palettes that tell a rise from a fall; and a delta volume profile's
-/// two sides and a cumulative delta's: the colouring chosen in Preferences,
-/// or one of the same three.
-const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet"];
+const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
+const BODIES: &[&str] = &["filled", "bordered", "hollow"];
+/// An OHLC bar's thickness in pixels: `Thickness::ALL`.
+const THICKNESSES: &[&str] = &["1", "1.5", "2", "3"];
+const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
+     foreground (the text colour) for none, slate, sand, silver or graphite (worked out from the theme), or #rrggbb";
+/// How bars are drawn: the same flags for every chart's look, `config
+/// bars`, and one chart's own, `chart look`.
+const STYLE_FLAG: Flag = Flag::valued("style", "STYLE", "candles, OHLC bars or a line through the closes").of(STYLES);
+const UP_FLAG: Flag = Flag::valued("up", "COLOUR", BAR_COLOUR);
+const DOWN_FLAG: Flag = Flag::valued("down", "COLOUR", BAR_COLOUR);
+const UP_BODY_FLAG: Flag = Flag::valued(
+    "up-body",
+    "BODY",
+    "a rising candle filled, filled with its wick and edge in the theme's text colour, or an outline",
+)
+.of(BODIES);
+const DOWN_BODY_FLAG: Flag = Flag::valued("down-body", "BODY", "the same for a falling candle").of(BODIES);
+const UP_THICKNESS_FLAG: Flag =
+    Flag::valued("up-thickness", "PX", "how many pixels wide a rising OHLC bar is drawn").of(THICKNESSES);
+const DOWN_THICKNESS_FLAG: Flag =
+    Flag::valued("down-thickness", "PX", "the same for a falling OHLC bar").of(THICKNESSES);
+const LINE_LOW_FLAG: Flag =
+    Flag::valued("line-low", "COLOUR", "a line's colour at its lowest close on screen, as a bar colour is given");
+const LINE_HIGH_FLAG: Flag =
+    Flag::valued("line-high", "COLOUR", "a line's colour at its highest close on screen, shaded from the low one");
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -363,7 +375,7 @@ const AGENT_FLAGS: &[Flag] = &[
 ];
 
 pub const COLOUR: &str =
-    "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral — \
+    "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Foreground — \
      which follows the theme, or #rrggbb, which does not";
 
 /// Everything `chart indicator` takes, and `template indicator` after the
@@ -400,7 +412,6 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
@@ -903,6 +914,41 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "look",
+                about: "Give a chart a look of its own, or put it back on every chart's: its theme, how its bars are drawn and coloured, its header, gridlines and last-price line. The first change copies every chart's look onto it; omit everything to read the look it wears",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued(
+                        "theme",
+                        "THEME",
+                        "the theme it is drawn on: one `config theme` lists, or window for the window's",
+                    ),
+                    STYLE_FLAG,
+                    UP_FLAG,
+                    DOWN_FLAG,
+                    UP_BODY_FLAG,
+                    DOWN_BODY_FLAG,
+                    UP_THICKNESS_FLAG,
+                    DOWN_THICKNESS_FLAG,
+                    LINE_LOW_FLAG,
+                    LINE_HIGH_FLAG,
+                    Flag::valued("grid", "BOOL", "draw gridlines").of(SWITCHES),
+                    Flag::valued("price-line", "BOOL", "draw a line across at the last price").of(SWITCHES),
+                    Flag::valued(
+                        "header",
+                        "PARTS",
+                        "what its header shows, and where, as `config header` takes it: zone=part,part for any of left, center, right and the second row's left2, center2, right2, several in one quoted argument; none for an empty header",
+                    ),
+                    Flag::switch("follow", "drop the chart's own look and wear every chart's again"),
+                ],
+                example: "omacharts chart look --style ohlc --up blue --grid off",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
                 name: "range",
                 about: "Go to a date and keep the window, or show a span or a custom range, on the focused chart, as Go to (Ctrl+G) does",
                 args: &[Arg::req("RANGE", "a date, which keeps the window (oct 22, 2026/10/22, yesterday, last fri, 3 weeks ago); a span back from today (6m, 3w, ytd, 2025, 2025/03, all); or a custom range, two ends joined by : or .. with either end optional (3 weeks ago:, oct 1:oct 22, 2025:, and -6m:-1m after --). One with a space in it goes in quotes")],
@@ -923,18 +969,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
-                    Flag::valued("style", "STYLE", "how bars are drawn, or `none` to hide them").of(STYLES),
-                    Flag::valued("thickness", "PX", "how many pixels wide OHLC bars are drawn, from 1 to 4"),
-                    Flag::valued(
-                        "bars",
-                        "BOOL",
-                        "hide the bars, or show them again in the style they had",
-                    )
-                    .of(SWITCHES),
-                    Flag::valued("colouring", "COLOURING", "which of the theme's palettes the bars are painted from").of(COLOURINGS),
-                    Flag::valued("hollow-up", "BOOL", "draw a rising body as an outline").of(SWITCHES),
-                    Flag::valued("swap-colours", "BOOL", "swap the colouring's up and down, red for a rise")
-                        .of(SWITCHES),
+                    Flag::valued("bars", "BOOL", "hide the chart's bars, or show them again").of(SWITCHES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
                         "continuous",
@@ -948,7 +983,6 @@ pub const SURFACE: &[Noun] = &[
                         "what the watchlist does to it: moves it while focused, always (and it leads the others), or never",
                     )
                     .of(LINKS),
-                    Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
                     Flag::valued("show-drawings", "BOOL", "whether the chart shows what other charts of its symbol draw")
                         .of(SWITCHES),
                     Flag::valued("send-drawings", "BOOL", "whether what is drawn here goes to the symbol's other charts")
@@ -970,7 +1004,7 @@ pub const SURFACE: &[Noun] = &[
                          `none` for no indicators at all; a name or id:N",
                     ),
                 ],
-                example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
+                example: "omacharts chart set --symbol NVDA --resolution 1h --session regular",
                 json: true,
                 writes: true,
                 workspace: true,
@@ -1232,6 +1266,19 @@ pub const SURFACE: &[Noun] = &[
                 writes: false,
                 workspace: false,
             },
+            Verb {
+                name: "order",
+                about: "Put the data feeds in this order: a chart comes from the first that has its symbol",
+                args: &[Arg::any(
+                    "NAME",
+                    "the feeds, first to last; any left out keep their order behind them. Omit to read the order",
+                )],
+                flags: &[],
+                example: "omacharts provider order yahoo",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
         ],
     },
     Noun {
@@ -1270,14 +1317,64 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
-                name: "bars",
-                about: "Which palette every chart paints its bars from: vivid, soft, quiet or monochrome; and whether a rise is hollow or up and down are swapped",
-                args: &[Arg::opt("STATE", "omit to read it").of(COLOURING)],
+                name: "theme",
+                about: "The theme the app wears: system, which follows Omarchy, or an Omarchy theme by name",
+                args: &[Arg::opt("THEME", "omit to list them")],
                 flags: &[],
-                example: "omacharts config bars monochrome",
+                example: "omacharts config theme tokyo-night",
                 json: true,
                 writes: true,
-                workspace: true,
+                workspace: false,
+            },
+            Verb {
+                name: "bars",
+                about: "How every chart draws its bars: candles, OHLC bars or a line, a colour for up and for down, how each body is drawn, and how thick each OHLC bar is",
+                args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or foreground; omit to read them").of(COLOURING)],
+                flags: &[
+                    STYLE_FLAG,
+                    UP_FLAG,
+                    DOWN_FLAG,
+                    UP_BODY_FLAG,
+                    DOWN_BODY_FLAG,
+                    UP_THICKNESS_FLAG,
+                    DOWN_THICKNESS_FLAG,
+                    LINE_LOW_FLAG,
+                    LINE_HIGH_FLAG,
+                ],
+                example: "omacharts config bars monochrome --style candles --up-body hollow --down-body bordered",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "header",
+                about: "What every chart's header shows, and where: zone=part,part for any of left, center, right and the second row's left2, center2, right2",
+                args: &[Arg::any("ZONES", "omit to read it; none for an empty header")],
+                flags: &[],
+                example: "omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "grid",
+                about: "Whether every chart draws gridlines",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts config grid off",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "price-line",
+                about: "Whether every chart draws a line across at the last price",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts config price-line off",
+                json: true,
+                writes: true,
+                workspace: false,
             },
         ],
     },
@@ -1514,15 +1611,12 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("suffix", "chart set", "--suffix"),
     ("timeframe", "chart set", "--resolution"),
     ("indicators", "chart indicator", ""),
-    ("bar_style", "chart set", "--style"),
+    ("bar_style", "", "never read: how bars are drawn is the chart's look, `chart look --style`; written for older builds"),
     ("bars_hidden", "chart set", "--bars"),
-    ("colouring", "chart set", "--colouring"),
-    ("swapped", "chart set", "--swap-colours"),
-    ("hollow_up", "chart set", "--hollow-up"),
-    ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("continuous", "chart set", "--continuous"),
-    ("show_grid", "chart set", "--grid"),
+    ("show_grid", "", "never read: gridlines are the chart's look, `chart look --grid`; written for older builds"),
+    ("look", "chart look", ""),
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),
@@ -1580,6 +1674,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "",
         "exploratory: the suffix of what a chart trades instead, set with its trading symbol",
     ),
+    ("price_line", "config price-line", ""),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),
@@ -1619,8 +1714,7 @@ mod tests {
 
     #[test]
     fn the_bar_styles_on_offer_are_the_ones_that_exist() {
-        let mut engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
-        engine.push("none");
+        let engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
         assert_eq!(STYLES, engine.as_slice());
     }
 
@@ -1729,6 +1823,18 @@ mod tests {
         assert_eq!(LINE_STYLES.to_vec(), engine);
     }
 
+    #[test]
+    fn the_bodies_on_offer_are_the_ones_that_exist() {
+        let engine: Vec<&str> = omacharts_engine::Body::ALL.iter().map(|b| b.key()).collect();
+        assert_eq!(BODIES.to_vec(), engine);
+    }
+
+    #[test]
+    fn the_thicknesses_on_offer_are_the_ones_there_are() {
+        let engine: Vec<&str> = omacharts_engine::Thickness::ALL.iter().map(|px| px.key()).collect();
+        assert_eq!(THICKNESSES.to_vec(), engine);
+    }
+
     /// The help names the palette, and a name it offers that the theme does
     /// not carry resolves to the accent — which looks like the command was
     /// ignored rather than wrong.
@@ -1736,6 +1842,15 @@ mod tests {
     fn the_colours_the_help_names_are_the_ones_every_theme_carries() {
         for name in omacharts_engine::theme::PALETTE_NAMES {
             assert!(COLOUR.contains(name), "the help does not mention {name}");
+        }
+    }
+
+    /// A bar's colour menu offers more than the palette: the help names
+    /// every colour a bar can be given.
+    #[test]
+    fn the_bar_colours_the_help_names_are_the_ones_there_are() {
+        for name in omacharts_engine::theme::BAR_COLOUR_NAMES {
+            assert!(BAR_COLOUR.contains(&name.to_lowercase()), "the help does not mention {name}");
         }
     }
 

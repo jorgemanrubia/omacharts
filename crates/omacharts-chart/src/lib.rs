@@ -50,9 +50,8 @@ pub mod zoom;
 pub use marks::{AnyPrice, AxisChip, LabelSide, MarkDrag, MarkEvent, MarkLink, MarkPreview, MarkRules, MarkTab, PriceMark, MARK_NEAR};
 pub use view::bench;
 pub use view::{
-    clamp_thickness, delta_colours, volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover,
-    IndicatorEvent, ProfileSpot, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS, POINTER_LAYER,
-    PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS,
+    volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover, IndicatorEvent,
+    ProfileSpot, POINTER_LAYER, PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS,
 };
 
 /// The class the editor typed into on the chart wears.

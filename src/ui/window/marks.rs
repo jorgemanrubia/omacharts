@@ -118,7 +118,7 @@ pub enum TradeEvent {
 }
 
 /// What each kind of mark is known by on the chart.
-const POSITION: &str = "position";
+pub(super) const POSITION: &str = "position";
 const HELD: &str = "held:";
 const ORDER: &str = "order:";
 
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn only_the_positions_line_is_solid() {
         for theme in omacharts_engine::theme::builtin_themes() {
-            let look = omacharts_engine::theme_trading(&theme, Default::default());
+            let look = omacharts_engine::theme_trading(&theme, &omacharts_engine::TradingLook::default(), &omacharts_engine::BarLook::default());
             assert_eq!(look.limit, LineStyle::Dashed, "{}: a limit, a target among them", theme.name);
             assert_eq!(look.stop, LineStyle::Dashed, "{}: a stop, a stop loss among them", theme.name);
             assert_eq!(look.position, LineStyle::Solid, "{}", theme.name);

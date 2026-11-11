@@ -74,14 +74,16 @@ crop: 898,193,763,399   (the whole card, 24px layout margin)
 
 ### The preset resolutions
 
-The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › Charts › Other › **Preset resolutions** › **Edit…**.
+The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › General › Chart › **Preset resolutions** › **Edit…**.
+
+The strip is a part of [the header](#the-header). To hide it, take it off the header in Preferences › Overlays › **Header**, or leave `strip` out of `omacharts config header`. The resolutions stay: typing one, the resolution in the header and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> all still work.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart, sidebar hidden)
-  omacharts config set chart_header_center stripe
+  omacharts config header left=symbol,resolution,change center=strip right=settings,maximize,link
   run bin/virtual-pointer --extent 1280x720 --button right click 600 24
   click 675 46            # Edit resolutions…
 capture: bin/headless-window shot /tmp/resdialog.png
@@ -113,85 +115,54 @@ Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart 
 
 ### Style
 
+Charts draw their bars in the style picked at the head of Preferences › Appearance › **Bars**, which `omacharts config bars --style` sets too. A chart's **Bar style** submenu changes that chart alone, giving it [a look of its own](#a-charts-own-look), and shows its bars if they were hidden.
+
 | Style | Draws |
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
-| **None** | Nothing. The bars are hidden |
+| **Line** | One line through the closes, shaded from its Low colour at the lowest close on screen to its High colour at the highest, the theme's blue and violet until set ([Bars](/manual/themes/#bars)). For a series that is only a close: a yield, a spread |
 
-OHLC bars have a **Thickness** row under **Style**, from 1 to 4 pixels and 2 by default. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
+OHLC bars have a thickness, 1, 1.5, 2 or 3 pixels and 2 by default, for rising and falling bars apart. It is part of the bars' look, beside each direction's colour in Preferences › Appearance › [Bars](/manual/themes/#bars), there while the bars are OHLC bars, and `omacharts config bars --up-thickness`, `--down-thickness` sets it too. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+theme, window: as Preferences › General ([Preferences](/manual/preferences/)): tokyo-night as an Omarchy desktop's,
+  Yaru-purple icons, 2560x2400 @2 from bin/headless-window start --size 2560x2400, HOME sandboxed
 state:
-  (one NVDA 1D chart drawn as OHLC bars)
-  key ctrl+shift+s
+  omacharts config bars --style ohlc --down-thickness 1.5
+  key ctrl+comma
+  run swaymsg '[title="^Preferences$"] resize set 820 770, move position 230 100'
+  click 313 351          # Appearance in the sidebar
+  click 775 614          # Down's thickness
 capture: bin/headless-window shot /tmp/thickness.png
-crop: 755,243,1050,640 (the Bars group)
+crop: 892,898,1184,706   (the Bars group and the open list, 8px layout margin)
 -->
-{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="The Bars group of Chart settings on OHLC bars, with the Thickness slider under Style" caption="Thickness, under Style on OHLC bars." %}
+{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="The Bars group of Preferences › Appearance on OHLC bars, Down's thickness list open on 1, 1.5, 2 and 3" caption="Each direction's thickness, beside its colour on OHLC bars." %}
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (the daily-candles state above)
-  omacharts chart set --style ohlc
+  omacharts config bars --style ohlc
 capture: bin/headless-window cli chart screenshot --output /tmp/ohlc.png
 crop: none (resized to 2000 wide)
 -->
 {% include figure.html src="/assets/manual/charts/daily-ohlc.jpg" alt="The same NVDA daily chart drawn as OHLC bars" caption="The same chart as OHLC bars." %}
 
-### Colouring
+### Colours
 
-The colouring is which of the theme's colours a chart paints its bars from ([Themes and colours](/manual/themes/)). It is one of four palettes, with two switches under it.
-
-| Colouring | Paints |
-|---|---|
-| **Vivid** | Rises in the theme's up colour, falls in its down colour. The default |
-| **Soft** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
-| **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, so the price sits back and says nothing about good or bad |
-| **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless its rises are hollow |
-
-**Hollow up bars** draws a rising candle as an outline, in whichever palette is chosen. It is how a Monochrome candle shows its direction. An OHLC bar has no body to leave open, so the switch is greyed out while the style is OHLC bars, and keeps its setting for when the chart is candles again.
-
-**Swap up and down colours** paints whatever palette is chosen the other way round: a rise in the down colour and a fall in the up colour, so a Vivid chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. A hollow rise is still the rise. It is greyed out on Monochrome, which paints a rise and a fall alike.
-
-Earlier versions offered **Hollow** and **Red up** as colourings of their own. Each is **Vivid** with the matching switch on, and a chart saved with either still looks the same.
-
-<!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
-state:
-  (the daily-candles state above, sidebar hidden)
-  for each cell: omacharts chart set --colouring C --hollow-up H --swap-colours S
-                 omacharts chart range 3m
-capture: bin/headless-window cli chart screenshot --output /tmp/CELL.png, one per cell
-crop: the four cells joined two by two with a 12px gap of the chart background (#1a1b26), resized to 2000 wide, -quality 88
-cells: theme · theme-soft (top); theme-quiet · theme-mono (bottom), switches off
--->
-{% include figure.html src="/assets/manual/charts/palettes.jpg" alt="Four NVDA daily charts of the same three months, one in each palette" caption="Vivid, Soft (top); Quiet, Monochrome (bottom)." %}
-
-<!-- regenerate:
-as the palettes figure, cells: theme-quiet --hollow-up on · theme-mono --hollow-up on (top); theme --swap-colours on · theme with `chart indicator set volume --colouring theme-quiet` (bottom)
--->
-{% include figure.html src="/assets/manual/charts/switches.jpg" alt="Four NVDA daily charts: Quiet and Monochrome with hollow rises, Vivid with up and down swapped, and Vivid over a quiet volume strip" caption="Hollow up bars on Quiet and on Monochrome (top); Vivid with up and down swapped, and Vivid over a volume strip of its own, Quiet (bottom)." %}
-
-<!-- regenerate:
-as the palettes figure, on midnight (top) and paper (bottom): theme-soft · theme-quiet, the two rows joined with a 12px gap
--->
-{% include figure.html src="/assets/manual/charts/soft-quiet.jpg" alt="Soft and Quiet side by side on the Midnight theme and on the Paper theme" caption="Soft (left) and Quiet (right) on Midnight and on Paper." %}
+The colour of a rise and of a fall, and whether a candle's body is filled, bordered or hollow, are set beside the style ([Bars](/manual/themes/#bars)). They are every chart's, except on a chart with [a look of its own](#a-charts-own-look).
 
 ### Hiding the bars
 
-<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides the focused chart's bars, and pressing it again shows them in the style they had. Choosing **None** does the same. Hiding the bars leaves their style as it was, so they come back as candles or OHLC bars, whichever the chart had. Choosing a style shows them again.
+<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides the focused chart's bars, and pressing it again shows them, drawn in the chart's style. Choosing **None** in the **Bar style** submenu does the same, and choosing a style shows them again. Hidden bars are always the chart's alone, for a chart that is all indicators, and are not part of its look.
 
 Only the bars go. The price scale still fits them, and the indicators, drawings, last price and crosshair stay. Hidden bars are kept with the chart, and a chart made by splitting it starts with its bars hidden too.
 
 While they are hidden, a struck-through candle after the chart's resolution says so. Click it to show them again.
 
-Set them per chart from the chart menu's **Bar style** submenu or the **Style** and **Colouring** rows of Chart settings. To change every chart at once, use **Apply to all charts now** in Preferences ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
+The **Show bars** switch of [Chart settings](/manual/chart-settings/) and `omacharts chart set --bars off` hide them too.
 
 ## Scales
 
@@ -207,7 +178,7 @@ The price axis fits the bars on screen until you drag it. A chart's scales come 
 | Double-click the time axis | Back to the resting zoom, at the latest bar |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | **Reset chart**. Both scales back to how the chart opens, at the latest bars |
 
-The time axis is labelled in the time zone and the time format chosen in Preferences › Charts › Other ([Time](/manual/preferences/#time)), New York time unless you change it.
+The time axis is labelled in the time zone and the time format chosen in Preferences › General › Time ([Time](/manual/preferences/#time)), New York time unless you change it.
 
 ### Logarithmic scale
 
@@ -238,8 +209,6 @@ state:
   omacharts chart set --symbol NVDA --resolution 1D
   key ctrl+shift+b                          # sidebar hidden
   omacharts chart split horizontal    # so the left chart's price axis is mid-window and the menu has room
-  omacharts chart set --chart pos:0 --style candles
-  omacharts chart set --chart pos:1 --style candles
   omacharts chart focus pos:0
   move 1250 710
   run bin/virtual-pointer --extent 1280x720 --button right click 600 300   # the left chart's price axis
@@ -266,7 +235,7 @@ crop: 490,300,1180,536   (the menu with 20px layout margin right and below)
 | <kbd>+</kbd> <kbd>−</kbd> | Zooms in and out about the middle |
 | <kbd>End</kbd> | Back to the latest bar, following new bars again |
 
-The wheel zooms a step a notch. A trackpad's two-finger swipe up or down zooms by how far the fingers travel, so a slow swipe zooms a little. Preferences › Charts › Other › **Zoom sensitivity** makes both gentler or faster, for every chart at once, and also sets how far the wheel stretches the price axis.
+The wheel zooms a step a notch. A trackpad's two-finger swipe up or down zooms by how far the fingers travel, so a slow swipe zooms a little. Preferences › General › Chart › **Zoom sensitivity** makes both gentler or faster, for every chart at once, and also sets how far the wheel stretches the price axis.
 
 A chart can be panned a little past either end of its bars. One panned back into history stays there as new bars arrive. <kbd>↑</kbd> <kbd>↓</kbd> over a chart move through the watchlist, not the chart ([Watchlists](/manual/watchlists/)).
 
@@ -381,7 +350,13 @@ The chart keeps the window until you zoom or pan. A new symbol, new bars and a r
 
 ## Gridlines
 
-<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides the focused chart's gridlines. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines** and the **Gridlines** row of [Chart settings](/manual/chart-settings/).
+Gridlines are the same on every chart, in every chartbook, and start off. <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides them. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines**, the **Gridlines** row of [Chart settings](/manual/chart-settings/), and Preferences › Overlays › **Gridlines**.
+
+The switch changes the look the chart wears. On a chart with [a look of its own](#a-charts-own-look) that is the chart's alone. On any other it is every chart's, so the gridlines go on or off on every chart that has no look of its own. The [last price line](#the-last-price-line) works the same way.
+
+## The last price line
+
+A dashed line runs across every chart at the last price, in every chartbook. Preferences › Overlays › **Last price line**, the row of that name in [Chart settings](/manual/chart-settings/), and `omacharts config price-line off` take it off every chart. The price itself stays on the price axis either way.
 
 ## The crosshair and the last price
 
@@ -394,23 +369,24 @@ state:
   omacharts chart split vertical --chart pos:1
   omacharts chart set --chart pos:1 --resolution 1h
   omacharts chart set --chart pos:2 --resolution 15m
-  key alt+Right
+  omacharts chart focus pos:1
+  key ctrl+shift+b       # hide the sidebar
   key ctrl+m
   move 700 300; move 702 302
 capture: bin/headless-window shot /tmp/max.png
 crop: 1100,500,1460,940
 -->
-{% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the theme's last-price colour." %}
+{% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in blue, after a rising bar." %}
 
 The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value.
 
-The last price is a tag on the price axis with a dashed line across the chart at its level, both in the theme's own last-price colour so that the line is never taken for a candle's: a pale cyan on most dark themes and a deeper one on light themes, from the theme's palette ([Your own themes](/manual/themes/#your-own-themes)).
+The last price is a tag on the price axis, with a dashed line across the chart at its level. Both are in Blue, the default line colour, when the last bar rose, and in the down colour when it fell ([Bars](/manual/themes/#bars)). Out of hours, on a chart of regular hours only, it is the latest trade, coloured by whether it is above or below the session's close.
 
 ### Sharing the crosshair
 
 The pointer on one chart draws a dimmed crosshair at the same moment and price on every other chart on screen of the same symbol, each at its own resolution. It does not matter how the charts are linked to the watchlist. Charts of different symbols never share a crosshair.
 
-It is one switch for every chart: Preferences › Charts › Other › Chart › **Sync crosshair across charts** ([Preferences](/manual/preferences/#charts)). It is on by default.
+It is one switch for every chart: Preferences › Overlays › **Crosshair across Follow charts** ([Preferences](/manual/preferences/#overlays)). It is on by default.
 
 ## When a chart is empty or out of date
 
@@ -425,7 +401,7 @@ state:
 capture: bin/headless-window shot /tmp/unserved.png
 crop: 0,0,1998,880, resized to 1400 wide
 -->
-{% include figure.html src="/assets/manual/charts/feed-failure.png" alt="A EURUSD daily chart with no bars and the line: No data feed in Preferences → Data charts this symbol." caption="EURUSD on a feed that cannot chart it." %}
+{% include figure.html src="/assets/manual/charts/feed-failure.png" alt="A EURUSD daily chart with no bars and the line: No data feed in Preferences → Market data charts this symbol." caption="EURUSD on a feed that cannot chart it." %}
 
 | The chart says | What it means | What to do |
 |---|---|---|
@@ -433,12 +409,12 @@ crop: 0,0,1998,880, resized to 1400 wide
 | *Loading…* | The prices are loading. | Nothing. |
 | *No data for this symbol* | The feed has no bars for it, such as a delisted ticker. | Try another symbol, or another feed. |
 | *The data feed does not have this symbol.* | The feed has no such ticker. | Check the spelling and venue suffix ([Symbols](/manual/symbols/)). |
-| *No data feed in Preferences → Data charts this symbol.* | The feed cannot chart this kind of instrument. | Switch feed ([Market data feeds](/manual/market-data/)). |
+| *No data feed in Preferences → Market data charts this symbol.* | The feed cannot chart this kind of instrument. | Switch feed ([Market data feeds](/manual/market-data/)). |
 | *The data feed does not serve this resolution.* | The feed has no bars at this resolution. | Try another resolution. |
-| *This data feed is not signed in. Open Preferences → Data.* | thinkorswim is chosen and is not signed in, or the sign-in has expired. | Preferences › Data › **Sign in…**. |
+| *This data feed is not signed in. Open Preferences → Market data.* | thinkorswim is chosen and is not signed in, or the sign-in has expired. | Preferences › Market data › **Sign in…**. |
 | *Rate limited by the data feed. Prices fill in shortly.* | The feed has stopped sending prices for a while. | Wait. Prices fill in when it allows them again. |
 | *No network connection. Prices fill in when there is one.* | This machine is offline. | Nothing. It fills in when the connection is back. |
-| *The data feed is not answering. Prices fill in when it does.* | The feed is not answering. | Wait. If it persists, check the feed in Preferences › Data. |
+| *The data feed is not answering. Prices fill in when it does.* | The feed is not answering. | Wait. If it persists, check the feed in Preferences › Market data. |
 | *The data feed sent a reply this could not read.* | The feed sent something that was not prices. | Wait for the next refresh. |
 | *Could not open the local price cache.* | The disk is full, or Omacharts cannot write to its data folder. | Check the data folder ([Where your data lives](/manual/your-data/)). |
 
@@ -448,20 +424,36 @@ Prices refresh as bars close. A chart does not refresh while its market is shut 
 
 ## The header
 
-The header is the line at a chart's top-left and the row centred across its top. It is the same on every chart in every chartbook. Each part goes in one of its two sections, **Left** or **Center**, in any order.
+The header runs across a chart's top. It has two rows, each with a left, a centre and a right, and every part of it goes in one of those six places, in any order. It is the same on every chart in every chartbook, except a chart with [a look of its own](#a-charts-own-look).
 
 | Part | Shows |
 |---|---|
 | **Symbol** | The symbol, with its venue. Click it to [find another](/manual/symbols/) |
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
-| **Daily change** | The day's move as a percentage, green for a rise and red for a fall in the theme's own tones, swapped on a chart set to red up, and in the header's text when it has not moved. The same figure as the sidebar's |
+| **Daily change** | The day's move as a percentage, in the chart's up and down colours, and in the header's text when it has not moved. The same figure as the sidebar's |
+| **Last price** | The last price, as the sidebar writes it |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
+| **Local visuals** | A window pulled off another, dimmed, on a chart whose [look of its own](#a-charts-own-look) differs from every chart's. Nothing on any other |
+| **Name** | The instrument's full name, faded. Nothing when the feed knows no name beyond the ticker |
 | **Chart title** | The chart's own title. Click it to [edit it](#chart-titles) |
-| **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
+| **Resolution strip** | The [preset resolutions](#the-preset-resolutions) as buttons, on the focused chart only |
+| **Chart settings** | The gear, while the pointer is on the chart ([The corners](/manual/window/#the-corners)) |
+| **Maximize** | The two arrows, when the chartbook has two charts or more |
+| **Link mode** | The link button ([Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist)) |
 
-Out of the box the left shows the data feed, the symbol, the resolution and the daily change, and the center the chart title.
+Out of the box the first row has the data feed, the symbol, the resolution and the daily change on the left, the chart title in the centre, and the gear, **Maximize** and the link on the right, with the account, the P&L, **Buy**, **Sell** and the quantity ahead of them while trading is on. The second row is empty, and an empty second row takes no room.
 
-Edit it in Preferences › Charts › **Header**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
+Edit it in Preferences › Overlays › **Header**, or right-click the header and choose **Edit header…**, which opens Preferences there. A header with every part taken off has nothing to right-click, so open Preferences › Overlays to put parts back. The page draws the header as a chart shows it, with the parts it does not show underneath. Drag a part to any place in the header, or down among the others to take it off, or right-click or double-click it; click one underneath to put it back where it goes out of the box. The places are outlined while a part is being dragged. A place on the second row takes a part only under a place that has one, and when the last part leaves a place on the first row, the parts under it move up.
+
+On a narrow chart, a row's centre is hidden when it would run into what is either side of it.
+
+From a terminal, `omacharts config header` takes one place per argument, each `place=part,part`:
+
+```
+omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name
+```
+
+The places are `left`, `center` and `right`, and `left2`, `center2` and `right2` on the second row. `none` is a header with nothing in it, and `config header` alone prints the header as it is.
 
 ### Chart titles
 
@@ -500,6 +492,24 @@ crop: 940,460,680,520   (the whole dialog)
 
 A chart made by splitting another starts with no chart title.
 
+## A chart's own look
+
+A chart's look is its theme, how its bars are drawn and coloured, its header, its gridlines and its last-price line. Every chart wears the same look until you give one a look of its own.
+
+The first change you make to one chart alone copies every chart's look onto it, then makes the change. From then on, a change to every chart's look leaves that chart as it was. Colours are kept as the names you picked, such as **Blue** or **Foreground**, so a new theme recolours the chart the way it recolours every other. A hex colour stays that colour.
+
+A chart with a look of its own is on the window's theme until you pick one for it under **LOCAL** › Appearance › Theme, in Preferences or its Chart settings. The chart then draws in that theme: its background, scales and bars, and its header, legend and buttons too. The rest of the window keeps the window's theme. The reset arrow after **LOCAL** puts the chart back on the window's theme with the rest of every chart's look.
+
+To give one chart a look of its own, focus it, open Preferences or its Chart settings and pick **LOCAL** on the **VISUAL** rule, then change Appearance or Overlays. In a split, Chart settings opens on **LOCAL**. The reset arrow after **LOCAL** puts it back on every chart's look. Choosing a style from a chart's **Bar style** submenu also gives that chart a look of its own. A chart's own look comes with it when you split it or duplicate its chartbook.
+
+`omacharts chart look` gives the focused chart a look of its own, reads the look it wears, and with `--follow` puts it back on every chart's ([`chart look`](/manual/cli/#chart-look)).
+
+```sh
+omacharts chart look --style ohlc --up blue --grid off
+omacharts chart look --theme catppuccin-latte
+omacharts chart look --follow
+```
+
 ## The chart menu
 
 Right-click a chart for its menu. The chart under the pointer is focused first. A right-click on a drawing opens the drawing's own menu instead ([Drawings](/manual/drawings/)), and one on the price axis the [price axis menu](#the-price-axis-menu).
@@ -519,11 +529,11 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | Item | Does | Explained in |
 |---|---|---|
 | **Paste** | Puts down the drawings or the indicator last copied. Only there while something has been copied | [Drawings](/manual/drawings/), [Indicators](/manual/indicators/#selecting-an-indicator) |
-| **Bar style** › **Candles**, **OHLC bars**, **None** | The chart's bar style, or its bars hidden, with its key | [Bars](#bars) |
+| **Bar style** › **Candles**, **OHLC bars**, **Line**, **None** | How this chart draws its bars, in [a look of its own](#a-charts-own-look), or its bars hidden, with its key | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |
-| **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
+| **Gridlines** | Ticked while the charts have them. The same on every chart | [Gridlines](#gridlines) |
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Edit chart title…** | Asks for the chart title, with its key. Blank removes it | [Chart titles](#chart-titles) |

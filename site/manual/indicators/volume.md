@@ -15,12 +15,11 @@ Its own strip. Each bar's volume, in the candles' up or down colour.
 | Setting | Default | Allowed |
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
 | **Opacity** | 85% | 20 to 100%. At 100% the bars hide what is behind them |
-| **Up** colour | The colouring's up colour | A palette name, or a custom colour |
-| **Down** colour | The colouring's down colour | A palette name, or a custom colour |
+| **Up** colour | The candles' up colour | A palette name, or a custom colour |
+| **Down** colour | The candles' down colour | A palette name, or a custom colour |
 
-**Default** is the chart's own colouring, and follows it whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid bar with no body to leave open. Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. Monochrome is not offered, because it paints rising and falling bars alike; a strip already painted Monochrome keeps it, and it is listed last. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both. A selected strip is drawn solid whatever its **Opacity**.
+**Up** and **Down** follow the chart's candles, whatever their colours are changed to, and a colour set by hand wins. A volume bar is a solid bar with no body to leave open, so hollow candles do not reach the volume. A selected strip is drawn solid whatever its **Opacity**.
 
 The **Default** [chart template](/manual/chart-templates/) holds Volume, with [Session Times](/manual/indicators/session-times/).
 
@@ -42,17 +41,11 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart on the Default template, sidebar hidden)
-  key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume); click 800 383 (the Colouring row)
-capture: bin/headless-window shot /tmp/volume-colouring.png
-crop: 700,84,1160,1276
--->
-{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open: Same as the chart, Vivid, Soft, Quiet, Monochrome" caption="A volume strip's own Colouring." %}
-
-<!-- regenerate:
-as above, with the Colouring row closed
+  key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume)
+capture: bin/headless-window shot /tmp/volume-opacity.png
 crop: 762,640,1036,518 (the Colours group)
 -->
-{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring, then the Opacity slider at 85%, then Up and Down" caption="Opacity, under the strip's Colouring." %}
+{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: the Opacity slider at 85%, then Up and Down" caption="Opacity, over the strip's Up and Down." %}
 
 ## Volume Profile
 
@@ -63,7 +56,6 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
 | **Only show in last period** | Off | On draws the newest period's profile alone: the same profile, with the same rows, as among the others, and past the last bar when aligned right |
 | **Calculation method** | Total volume | Total volume, or Ask volume - bid volume |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**. Only for Ask volume - bid volume |
 | **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 800 |
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
 | **Outline** | Off | On for an edge round filled rows. Always on in the Outline style. Off, its colour and thickness are greyed |
@@ -77,7 +69,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
 | **Width** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
-**Ask volume - bid volume** draws each row as what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the up colour of its **Colouring**, rows where sellers took more in the down colour. **Default** is the colouring set in Preferences for new charts ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)), and changes when that does. Pick **Vivid**, **Soft** or **Quiet** to keep this profile in that colouring. Either way it is swapped when Preferences' **Swap up and down colours** is on. Monochrome is not offered, because it paints buying and selling alike. The point of control is the row furthest either way, and there is no value area. Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn. The legend reads **VP Δ**.
+**Ask volume - bid volume** draws each row as what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the chart's up colour, rows where sellers took more in its down colour. These are the colours its bars are drawn in ([Bars](/manual/themes/#bars)), its own on a chart with [a look of its own](/manual/charts/#a-charts-own-look), and they change when those do. The point of control is the row furthest either way, and there is no value area. Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn. The legend reads **VP Δ**.
 
 **Automatic** gives every period rows of the same height, a round multiple of the instrument's price step, about 400 to a typical period. A period too quiet for 40 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too. With **Automatic** off, **Rows** is the number of rows each period is divided into.
 
@@ -108,11 +100,10 @@ Its own strip. The running total of what was bought at the ask less what was sol
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)), or Never for one running total over the whole chart |
 | **Style** | Candles | Candles, or Line: the running total at each bar's close |
-| **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet** |
 | **Pane height %** | 16% | 5 to 95% |
 | **Colour**, **Thickness**, **Line style** | The next free colour, 1 px, solid | Only for the Line style |
 
-As candles, each bar opens where the total stood at the previous close and closes where it stands at its own. Its wicks are the highest and lowest the total reached inside the bar, minute by minute, so a 1-minute chart and a daily or longer one have no wicks. A bar that added to the total is drawn in the up colour of its **Colouring**, one that took from it in the down colour. **Default** is the colouring set in Preferences for new charts, as for a delta volume profile, and is swapped when Preferences' **Swap up and down colours** is on.
+As candles, each bar opens where the total stood at the previous close and closes where it stands at its own. Its wicks are the highest and lowest the total reached inside the bar, minute by minute, so a 1-minute chart and a daily or longer one have no wicks. A bar that added to the total is drawn in the chart's up colour, one that took from it in its down colour, as a delta volume profile's rows are.
 
 On a data feed with volume at price the total is measured from each trade's side. On any other feed, Yahoo for one, and for bars from before the feed's history begins, it is estimated from the bars instead: a bar that closed above its open counts all its volume as bought, one that closed below as sold, and one that closed where it opened goes by its close against the previous bar's close, or counts as nought if that is unchanged too. The estimate uses the chart's own bars, so it is coarser on a coarser chart. While any of the bars on the chart is estimated, the legend reads **CVD ≈** and the settings say so in one line.
 

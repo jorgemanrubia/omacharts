@@ -37,9 +37,8 @@ use omacharts_engine::drawings::{
 use omacharts_engine::bars::Unit;
 use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
-use omacharts_engine::indicators::profile::DELTA_COLOURINGS;
 use omacharts_engine::{
-    grouped_decimals, Bar, BarColouring, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
+    grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
 };
 
@@ -90,17 +89,6 @@ const EDGE_GRAB: f64 = 4.0;
 const PANE_CONTROL: f64 = 13.0;
 /// Left edge to left edge of two neighbouring corner controls.
 const CONTROL_PITCH: f64 = PANE_CONTROL + 2.0;
-
-/// How many pixels wide an OHLC bar's line and ticks may be drawn, and are
-/// unless asked otherwise.
-pub const MIN_OHLC_THICKNESS: u8 = 1;
-pub const MAX_OHLC_THICKNESS: u8 = 4;
-pub const DEFAULT_OHLC_THICKNESS: u8 = 2;
-
-/// A thickness the chart draws: from one pixel to four.
-pub fn clamp_thickness(thickness: u8) -> u8 {
-    thickness.clamp(MIN_OHLC_THICKNESS, MAX_OHLC_THICKNESS)
-}
 
 /// Fewest bars we will zoom into, and the most we will put on screen at once.
 ///
@@ -176,20 +164,10 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
-    /// The colouring chosen in Preferences, and whether it is worn the
-    /// other way round: what a delta profile with no colouring of its own
-    /// is painted in, rather than this chart's.
-    house: (BarColouring, bool),
-    /// A delta profile's bought and sold colours, for the house colouring
-    /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
-    /// theme or the house colouring changes rather than on every frame.
-    delta_inks: [(String, String); 1 + DELTA_COLOURINGS.len()],
-    /// The last-price tag for a rise and a fall, worked out from the scheme
-    /// whenever it changes rather than on every frame.
-    price_tags: [Tag; 2],
-    /// The last price's colour and its tag, from the theme, worked out
-    /// whenever the theme changes rather than on every frame.
-    last_ink: LastInk,
+    /// The tags for a rise and a fall, worked out from the scheme whenever
+    /// it changes rather than on every frame: the ruler's, and the last
+    /// price's, which after a rise is [`BarScheme::last_price`]'s.
+    price_tags: PriceTags,
     /// The feed's latest trade when the bars drawn leave it out, a chart
     /// of the regular session out of hours: the price is the price,
     /// whatever candles are shown. `None` when the last bar has it.
@@ -265,12 +243,13 @@ struct State {
     /// chart.
     axis_start_taken: f64,
     bar_style: BarStyle,
-    /// How many pixels wide an OHLC bar's line and ticks are drawn.
-    ohlc_thickness: u8,
     bars_hidden: bool,
     show_grid: bool,
     /// The clock the time axis and the crosshair read.
     clock: Clock,
+    /// Whether the dashed line runs across the chart at the last close. Its
+    /// label on the price axis stays either way.
+    price_line: bool,
     /// Why the last fetch for this chart came back with nothing, if it did.
     ///
     /// One piece of state for both of the things that used to be separate —
@@ -899,11 +878,16 @@ impl<'a> Columns<'a> {
     /// candles into one block. There the body keeps the width it had, and
     /// the wick takes the same side of its middle on every candle.
     fn body(&self, at: usize) -> (f64, f64) {
+        let width = self.body_width();
+        (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
+    }
+
+    /// Every candle body's width in whole pixels; see [`Columns::body`].
+    fn body_width(&self) -> f64 {
         let wanted = (self.bar_w * 0.68).clamp(1.0, 24.0);
         let room = (self.bar_w.floor() - 1.0).max(1.0);
         let odd = ((wanted - 1.0) / 2.0).round() * 2.0 + 1.0;
-        let width = if odd <= room { odd } else { wanted.round().min(room) };
-        (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
+        if odd <= room { odd } else { wanted.round().min(room) }
     }
 
     /// The pixel a column holding several bars is, as a left edge and a
@@ -1204,12 +1188,18 @@ impl PriceScale {
 /// the chart draws that stretch linear rather than drawing nothing; the choice
 /// is kept, so it comes back once the bars on screen allow it.
 ///
+/// A line chart fits its closes, the only price it draws: fitted to the
+/// highs and lows, its line would sit inside a range nothing on screen
+/// reaches.
+///
 /// `None` when the bars carry nothing finite to measure.
 fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale> {
     let (mut low, mut high) = (f64::MAX, f64::MIN);
+    let line = state.draws_a_line();
     for b in bars {
-        low = low.min(b.low);
-        high = high.max(b.high);
+        let (bar_low, bar_high) = if line { (b.close, b.close) } else { (b.low, b.high) };
+        low = low.min(bar_low);
+        high = high.max(bar_high);
     }
     // The latest trade the bars leave out, while the chart shows its end:
     // its line would otherwise run off the plot, out of hours, the moment
@@ -1359,9 +1349,6 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
-            last_ink: LastInk::of(&theme),
-            delta_inks: delta_inks(&theme, HOUSE_LOOK),
-            house: HOUSE_LOOK,
             theme,
             price_tags: price_tags(&scheme),
             scheme,
@@ -1388,10 +1375,10 @@ impl State {
             axis_corner_taken: false,
             axis_start_taken: 0.0,
             bar_style: BarStyle::default(),
-            ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             bars_hidden: false,
             show_grid: false,
             clock: Clock::default(),
+            price_line: true,
             drag: None,
             trouble: None,
             trouble_words: None,
@@ -1535,6 +1522,21 @@ impl State {
         self.locate_with(width, height, x, y, false)
     }
 
+    /// Whether the price is drawn as one line through the closes.
+    fn draws_a_line(&self) -> bool {
+        self.bar_style == BarStyle::Line
+    }
+
+    /// What a snapped anchor can land on: the prices the chart draws of a
+    /// bar. All four on candles and bars; the close alone on a line chart,
+    /// where the other three are drawn nowhere to be aimed at.
+    fn snap_prices(&self, bar: &Bar) -> [f64; 4] {
+        match self.draws_a_line() {
+            true => [bar.close; 4],
+            false => [bar.open, bar.high, bar.low, bar.close],
+        }
+    }
+
     /// [`locate`](Self::locate), and with `snap` the price is pulled onto
     /// the candle under the pointer: whichever of the prices the chart draws
     /// of it is nearest on screen. That is Ctrl while a drawing is laid down
@@ -1557,7 +1559,7 @@ impl State {
         let price = match snap && index >= 0.0 {
             true => self.bars.get(index as usize).map_or(price, |bar| {
                 let off = |price: f64| (scale.to_y(price, plan.price_y, plan.price_h) - y).abs();
-                [bar.open, bar.high, bar.low, bar.close]
+                self.snap_prices(bar)
                     .into_iter()
                     .min_by(|a, b| off(*a).total_cmp(&off(*b)))
                     .unwrap_or(price)
@@ -2382,17 +2384,9 @@ impl State {
     }
 
     /// The bought and sold colours a delta profile or a cumulative delta is
-    /// painted in: its own colouring's, or the house colouring's when it has
-    /// none, or one that is not offered to a delta.
-    fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
-        let chosen = match &drawn.indicator.params {
-            omacharts_engine::Params::VolumeProfile { colouring, .. }
-            | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
-            _ => None,
-        };
-        let at = chosen.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
-        let (up, down) = &self.delta_inks[at];
-        (up, down)
+    /// painted in: the chart's own rise and fall, as its volume is.
+    fn delta_ink(&self) -> (&str, &str) {
+        (&self.scheme.up, &self.scheme.down)
     }
 
     /// Whether the price scale is automatic, and the zoom and shift of a
@@ -4455,6 +4449,10 @@ impl ChartView {
         self.redraw();
     }
 
+    pub fn show_grid(&self) -> bool {
+        self.state.borrow().show_grid
+    }
+
     /// Show or hide the gridlines. The axes and their labels stay: without
     /// them a chart is a shape with no scale.
     pub fn set_show_grid(&self, show: bool) {
@@ -4475,6 +4473,17 @@ impl ChartView {
         self.redraw();
     }
 
+    pub fn price_line(&self) -> bool {
+        self.state.borrow().price_line
+    }
+
+    /// Show or hide the line across the chart at the last price. The price
+    /// stays on the axis: it is the one number the chart is asked most.
+    pub fn set_price_line(&self, show: bool) {
+        self.state.borrow_mut().price_line = show;
+        self.redraw();
+    }
+
     pub fn bar_style(&self) -> BarStyle {
         self.state.borrow().bar_style
     }
@@ -4490,13 +4499,6 @@ impl ChartView {
 
     pub fn set_bar_style(&self, style: BarStyle) {
         self.state.borrow_mut().bar_style = style;
-        self.redraw();
-    }
-
-    /// How thick an OHLC bar is drawn, in pixels; held to what the setting
-    /// allows.
-    pub fn set_ohlc_thickness(&self, thickness: u8) {
-        self.state.borrow_mut().ohlc_thickness = clamp_thickness(thickness);
         self.redraw();
     }
 
@@ -4913,28 +4915,30 @@ impl ChartView {
         });
     }
 
+    /// The colours its bars are painted in.
+    pub fn scheme(&self) -> BarScheme {
+        self.state.borrow().scheme.clone()
+    }
+
+    /// The theme the chart is drawn on: the window's, or its own.
+    pub fn theme(&self) -> Theme {
+        self.state.borrow().theme.clone()
+    }
+
+    /// Paint the chart on `theme` with `scheme`'s bars. An indicator with
+    /// no colour of its own takes one from the theme's palette, so it is
+    /// recoloured here rather than computed again: its values are the
+    /// same on any theme.
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
-            state.last_ink = LastInk::of(&theme);
-            state.delta_inks = delta_inks(&theme, state.house);
+            let shown: Vec<Indicator> = state.indicators.iter().map(|drawn| drawn.indicator.clone()).collect();
+            for (drawn, colour) in state.indicators.iter_mut().zip(omacharts_engine::palette_colors(&shown, &theme)) {
+                drawn.color = colour;
+            }
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
-        }
-        self.redraw();
-    }
-
-    /// The colouring chosen in Preferences and whether it is worn swapped,
-    /// which a delta profile with no colouring of its own is painted in.
-    pub fn set_house_look(&self, colouring: BarColouring, swapped: bool) {
-        {
-            let mut state = self.state.borrow_mut();
-            if state.house == (colouring, swapped) {
-                return;
-            }
-            state.house = (colouring, swapped);
-            state.delta_inks = delta_inks(&state.theme, state.house);
         }
         self.redraw();
     }
@@ -6864,7 +6868,50 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
     if state.bars_hidden {
         return;
     }
-    candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, columns, to_y);
+    if state.draws_a_line() {
+        close_line(cr, &state.scheme, columns, to_y);
+        return;
+    }
+    candles(cr, state.bar_style, &state.scheme, columns, to_y);
+}
+
+/// One line through the closes, shaded from the scheme's low colour at the
+/// lowest close on screen to its high colour at the highest. A line has no
+/// up or down to colour, and green for a yield that rose says nothing; where
+/// a close sits in the range drawn is what the shade tells instead.
+fn close_line(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    let Some((top, bottom)) = trace_closes(cr, columns, to_y) else { return };
+    // A flat line, with no height to shade across, is drawn in the low colour.
+    let fade = cairo::LinearGradient::new(0.0, bottom, 0.0, top.min(bottom - 1.0));
+    for (at, colour) in [(0.0, &scheme.line_low), (1.0, &scheme.line_high)] {
+        let (r, g, b, a) = colors::rgba(colour);
+        fade.add_color_stop_rgba(at, r, g, b, a);
+    }
+    let _ = cr.set_source(&fade);
+    let _ = cr.stroke();
+}
+
+/// The path of a line through the closes, with the pen set for it, left
+/// for the caller to stroke in its own colour. Returns the highest and the
+/// lowest y it reaches, or None when there is no bar to draw.
+fn trace_closes(cr: &cairo::Context, columns: &Columns, to_y: &impl Fn(f64) -> f64) -> Option<(f64, f64)> {
+    let mut points = columns.bars.iter().enumerate().map(|(i, bar)| (columns.x(i), to_y(bar.close)));
+    let (x, y) = points.next()?;
+    cr.set_line_width(1.5);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.move_to(x, y);
+    let (mut top, mut bottom) = (y, y);
+    let mut alone = true;
+    for (x, y) in points {
+        cr.line_to(x, y);
+        (top, bottom) = (top.min(y), bottom.max(y));
+        alone = false;
+    }
+    if alone {
+        // A single close is a line to nowhere; a dot is what there is.
+        cr.line_to(x + 1.0, y);
+    }
+    Some((top, bottom))
 }
 
 /// Candles, from nothing but what it takes to draw one: the style, the
@@ -6876,26 +6923,28 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
 fn candles(
     cr: &cairo::Context,
     bar_style: BarStyle,
-    ohlc_thickness: u8,
     scheme: &BarScheme,
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     if bar_style == BarStyle::Ohlc {
-        ohlc(cr, scheme, columns, to_y, ohlc_thickness);
+        ohlc(cr, scheme, columns, to_y);
         return;
     }
     let (bars, bar_w) = (&columns.bars, columns.bar_w);
     // Below about three pixels a candle is a line; outlining it just muddies
     // the colour.
     let hairline = bar_w < 3.0;
+    // A border takes a pixel off each side of the body. Under five pixels
+    // that leaves the colour one pixel or none, and every candle reads as
+    // the border colour, so a candle that narrow keeps its direction's own
+    // colours throughout, as a hairline does.
+    let bordered = columns.body_width() >= 5.0;
 
     for rising in [false, true] {
-        let (outline, fill) = if rising {
-            (&scheme.up, &scheme.up_fill)
-        } else {
-            (&scheme.down, &scheme.down_fill)
-        };
+        let direction = if rising { Direction::Up } else { Direction::Down };
+        let fill = scheme.body(direction);
+        let edge = if bordered { scheme.edge(direction) } else { scheme.outline(direction) };
 
         // A hollow body shows what is behind it, so a wick drawn through it
         // would be seen inside: it stops at the body's edges instead.
@@ -6903,7 +6952,7 @@ fn candles(
 
         // Wicks.
         cr.set_line_width(1.0);
-        colors::set_source(cr, outline);
+        colors::set_source(cr, edge);
         let mut any = false;
         for (i, bar) in bars.iter().enumerate() {
             if (bar.close >= bar.open) != rising {
@@ -6943,21 +6992,36 @@ fn candles(
             continue;
         }
 
-        // Bodies, as one path.
-        for (i, bar) in bars.iter().enumerate() {
-            if (bar.close >= bar.open) != rising {
-                continue;
+        // Bodies, as one path, `inset` pixels in from every side. A body
+        // with no inside at that inset is left out of the path.
+        let bodies = |inset: f64| {
+            for (i, bar) in bars.iter().enumerate() {
+                if (bar.close >= bar.open) != rising {
+                    continue;
+                }
+                let (x, w) = columns.body(i);
+                let top = to_y(bar.open.max(bar.close)).round();
+                let h = (to_y(bar.open.min(bar.close)).round() - top).max(1.0);
+                if inset == 0.0 || (w > 2.0 * inset && h > 2.0 * inset) {
+                    cr.rectangle(x + inset, top + inset, w - 2.0 * inset, h - 2.0 * inset);
+                }
             }
-            let (x, w) = columns.body(i);
-            let top = to_y(bar.open.max(bar.close)).round();
-            let bottom = to_y(bar.open.min(bar.close)).round();
-            cr.rectangle(x, top, w, (bottom - top).max(1.0));
-        }
+        };
+        bodies(0.0);
         if hollow {
             // Hollow: stroke the outline and leave the background showing.
-            colors::set_source(cr, outline);
+            colors::set_source(cr, edge);
             let _ = cr.stroke();
-        } else {
+            continue;
+        }
+        colors::set_source(cr, if bordered { edge } else { fill });
+        let _ = cr.fill();
+        if bordered && edge != fill {
+            // Bordered: the edge colour filled the whole body, and the body
+            // colour fills its inside, a pixel in, the way TradingView draws
+            // one. A body too thin to have an inside stays all edge, which
+            // is how a doji reads as a dark dash there too.
+            bodies(1.0);
             colors::set_source(cr, fill);
             let _ = cr.fill();
         }
@@ -6989,21 +7053,24 @@ fn stroke_wicks(cr: &cairo::Context, columns: &Columns) {
     };
 }
 
-/// Open and close as ticks either side of a high-low line.
-fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64, thickness: u8) {
+/// Open and close as ticks either side of a high-low line, a rise and a
+/// fall each as thick as the scheme says.
+fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
     let tick = (columns.bar_w * 0.32).clamp(1.0, 10.0);
     let ticked = tick > 1.0;
-    let width = ohlc_width(thickness, columns.bar_px, ticked);
-    // On a pixel's edge for an even width and through its middle for an
-    // odd one, so the line covers whole pixels and stays crisp.
-    let centre = if width as i64 % 2 == 1 { 0.5 } else { 0.0 };
-    // Showing as much past the line as a thin line's did, a pixel at the
-    // least, and ending on a pixel's edge; short of the next bar's tick.
-    let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((columns.bar_px - 1.0) / 2.0).max(1.0));
-    let reach = (reach - centre).round() + centre;
-    cr.set_line_width(width);
     for rising in [false, true] {
         let direction = if rising { Direction::Up } else { Direction::Down };
+        let thickness = if rising { scheme.up_thickness } else { scheme.down_thickness };
+        let width = ohlc_width(thickness, columns.bar_px, ticked);
+        // Its left edge on a pixel's: on the edge for an even width, through
+        // the middle for an odd one, so a whole width covers whole pixels and
+        // stays crisp, and 1.5 is one crisp pixel and half of the next.
+        let centre = (width / 2.0).fract();
+        // Showing as much past the line as a thin line's did, a pixel at the
+        // least, and ending on a pixel's edge; short of the next bar's tick.
+        let reach = (width / 2.0 + (tick - 0.5).max(1.0)).min(((columns.bar_px - 1.0) / 2.0).max(1.0));
+        let reach = (reach - centre).round() + centre;
+        cr.set_line_width(width);
         let mut any = false;
         for (i, bar) in columns.bars.iter().enumerate() {
             if (bar.close >= bar.open) != rising {
@@ -7034,10 +7101,11 @@ fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl 
 /// How wide an OHLC bar's line is drawn: as thick as asked while there is
 /// room, and thinner where there is not, down to a pixel. Room is a pixel's
 /// gap to the next bar, and with ticks a pixel of tick showing either side
-/// as well, so neighbours never merge. Whole pixels, so its edges stay crisp.
-fn ohlc_width(thickness: u8, bar_px: f64, ticked: bool) -> f64 {
+/// as well, so neighbours never merge. Whole pixels when thinned, so its
+/// edges stay crisp.
+fn ohlc_width(thickness: f64, bar_px: f64, ticked: bool) -> f64 {
     let spare = if ticked { 3.0 } else { 1.0 };
-    f64::from(thickness).min(bar_px.floor() - spare).max(1.0)
+    thickness.min(bar_px.floor() - spare).max(1.0)
 }
 
 fn draw_volume(
@@ -7440,7 +7508,7 @@ fn draw_pane(
             drawn.indicator.params,
             omacharts_engine::Params::Cvd { style: omacharts_engine::indicators::cvd::Style::Line, .. }
         );
-        let (up, down) = state.delta_ink(drawn);
+        let (up, down) = state.delta_ink();
         let chip = match line {
             true => {
                 draw_delta_line(cr, state, drawn, shown, columns, &strip, lit);
@@ -8490,7 +8558,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
         }
     }
-    let last = last_price(state).map(|price| to_y(price).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price(state).map(|(price, _)| to_y(price).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -8641,14 +8709,15 @@ fn draw_last_price(
     // Where the tag goes when marks' chips on the axis moved it.
     tag_at: Option<f64>,
 ) {
-    let Some(price) = last_price(state) else { return };
+    let Some((price, rising)) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    // In the last price's own colour, the line's: one thing on the chart,
-    // whose rise or fall the candles and the header already say.
-    let tag = &state.last_ink.tag;
+    let tag = match rising {
+        true => &state.price_tags.last_up,
+        false => &state.price_tags.down,
+    };
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
         draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
@@ -8666,14 +8735,18 @@ fn draw_last_price(
     );
 }
 
-/// The last price: the feed's latest trade when the bars drawn leave it
-/// out, else the last bar's close.
-fn last_price(state: &State) -> Option<f64> {
+/// The last price, and whether it rose: the feed's latest trade when the
+/// bars drawn leave it out, against the session's last close, else the last
+/// bar's close against its open.
+fn last_price(state: &State) -> Option<(f64, bool)> {
     let last = state.bars.last()?;
-    Some(state.latest.unwrap_or(last.close))
+    Some(match state.latest {
+        Some(latest) => (latest, latest >= last.close),
+        None => (last.close, last.close >= last.open),
+    })
 }
 
-/// The last price's dashed line across the plot.
+/// The last price's dashed line across the plot, unless it was turned off.
 fn draw_last_price_line(
     cr: &cairo::Context,
     state: &State,
@@ -8682,7 +8755,10 @@ fn draw_last_price_line(
     price_y: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let Some(price) = last_price(state) else { return };
+    if !state.price_line {
+        return;
+    }
+    let Some((price, rising)) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
@@ -8690,7 +8766,7 @@ fn draw_last_price_line(
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
-    colors::set_source_alpha(cr, &state.last_ink.line, 0.7);
+    colors::set_source_alpha(cr, state.scheme.last_price(rising), 0.7);
     cr.move_to(plot_x, y);
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
@@ -8866,24 +8942,17 @@ fn draw_pane_value(
     );
 }
 
-/// The last price's colour on the theme, and its tag filled in it.
-#[derive(Clone)]
-struct LastInk {
-    line: String,
-    tag: Tag,
+/// A chip on the price axis for each direction, and for the last price
+/// after a rise: the same fill and label the bar widget's change pill is
+/// drawn in, from the one rule in [`Tag::on`].
+struct PriceTags {
+    up: Tag,
+    down: Tag,
+    last_up: Tag,
 }
 
-impl LastInk {
-    fn of(theme: &Theme) -> LastInk {
-        let line = omacharts_engine::theme::theme_last_price(theme);
-        LastInk { tag: Tag::on(&line), line }
-    }
-}
-
-/// The last-price tag for each direction: the same fill and label the bar
-/// widget's change pill is drawn in, from the one rule in [`Tag::on`].
-fn price_tags(scheme: &BarScheme) -> [Tag; 2] {
-    [Tag::on(&scheme.up), Tag::on(&scheme.down)]
+fn price_tags(scheme: &BarScheme) -> PriceTags {
+    PriceTags { up: Tag::on(&scheme.up), down: Tag::on(&scheme.down), last_up: Tag::on(scheme.last_price(true)) }
 }
 
 /// The last-price tag on the price axis, the shape of every other chip there.
@@ -9043,12 +9112,12 @@ fn draw_ruler(
     let kind = state.instrument.as_ref().map(|i| i.kind);
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
     // The candles' own up and down, so a chart with them turned round
-    // measures a rise in red; the label is the last-price tag of that direction, whose figure is
-    // already chosen to read on its fill.
+    // measures a rise in red; the label is that direction's tag, whose
+    // figure is already chosen to read on its fill.
     let flat;
     let (colour, tag) = match RulerDirection::of(from, to) {
-        RulerDirection::Up => (&state.scheme.up, &state.price_tags[0]),
-        RulerDirection::Down => (&state.scheme.down, &state.price_tags[1]),
+        RulerDirection::Up => (&state.scheme.up, &state.price_tags.up),
+        RulerDirection::Down => (&state.scheme.down, &state.price_tags.down),
         RulerDirection::Flat => {
             flat = Tag::on(&state.scheme.neutral);
             (&state.scheme.neutral, &flat)
@@ -9795,24 +9864,14 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 }
 
 /// The colours a volume pane paints a rising and a falling bar: the
-/// indicator's own when somebody chose them, otherwise the candles' own —
-/// the chart's candles, or the colouring the indicator chose for itself.
+/// indicator's own when somebody chose them, otherwise the chart's candles'.
 pub fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
 ) -> (String, String) {
-    let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
-    else {
+    let omacharts_engine::Params::Volume { up_color, down_color, .. } = &indicator.params else {
         return (scheme.up.clone(), scheme.down.clone());
-    };
-    let own;
-    let scheme = match colouring {
-        Some(colouring) => {
-            own = colouring.scheme(theme);
-            &own
-        }
-        None => scheme,
     };
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
@@ -9873,46 +9932,10 @@ fn profile_inks(
     match method {
         Method::Total => vec![ink(selection::Side::All, &drawn.color)],
         Method::Delta => {
-            let (up, down) = state.delta_ink(drawn);
+            let (up, down) = state.delta_ink();
             vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
         }
     }
-}
-
-/// What a chart is told the house colouring is until it is told otherwise:
-/// the one Preferences opens with.
-const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
-
-/// A delta profile's bought and sold colours, for the house colouring and
-/// then each colouring a delta can be given, in the order
-/// [`DELTA_COLOURINGS`] offers them. Each is the colouring's rise and fall,
-/// swapped when the house colouring is: red for a rise is said once, in
-/// Preferences, and a delta reads the way the candles do.
-fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
-    let pair = |colouring: BarColouring| {
-        let scheme = colouring.scheme(theme).worn(swapped, false);
-        (scheme.up, scheme.down)
-    };
-    let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
-    inks[0] = pair(house);
-    for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
-        inks[at + 1] = pair(colouring);
-    }
-    inks
-}
-
-/// A delta profile's bought and sold colours, as a pair of hex colours: the
-/// house colouring's, or the one the profile chose of
-/// [`DELTA_COLOURINGS`].
-pub fn delta_colours(
-    colouring: Option<BarColouring>,
-    theme: &Theme,
-    house: BarColouring,
-    swapped: bool,
-) -> (String, String) {
-    let inks = delta_inks(theme, (house, swapped));
-    let at = colouring.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
-    inks[at].clone()
 }
 
 /// How strongly a delta's rows are filled: all as strongly as a total's
@@ -10734,14 +10757,15 @@ mod tests {
     /// never under a pixel.
     #[test]
     fn an_ohlc_bar_is_as_thick_as_asked_unless_its_neighbours_would_touch() {
-        assert_eq!(ohlc_width(2, 8.0, true), 2.0);
-        assert_eq!(ohlc_width(4, 12.0, true), 4.0);
-        assert_eq!(ohlc_width(4, 6.0, true), 3.0, "a pixel of tick either side and a pixel's gap");
-        assert_eq!(ohlc_width(2, 4.5, true), 1.0, "at this density two would hide the ticks");
-        assert_eq!(ohlc_width(2, 3.0, false), 2.0, "no ticks to keep room for");
-        assert_eq!(ohlc_width(2, 2.5, false), 1.0);
-        assert_eq!(ohlc_width(3, 1.0, false), 1.0);
-        assert_eq!(ohlc_width(1, 20.0, true), 1.0);
+        assert_eq!(ohlc_width(2.0, 8.0, true), 2.0);
+        assert_eq!(ohlc_width(1.5, 8.0, true), 1.5);
+        assert_eq!(ohlc_width(3.0, 12.0, true), 3.0);
+        assert_eq!(ohlc_width(3.0, 5.0, true), 2.0, "a pixel of tick either side and a pixel's gap");
+        assert_eq!(ohlc_width(2.0, 4.5, true), 1.0, "at this density two would hide the ticks");
+        assert_eq!(ohlc_width(2.0, 3.0, false), 2.0, "no ticks to keep room for");
+        assert_eq!(ohlc_width(2.0, 2.5, false), 1.0);
+        assert_eq!(ohlc_width(3.0, 1.0, false), 1.0);
+        assert_eq!(ohlc_width(1.0, 20.0, true), 1.0);
     }
 
     use super::*;
@@ -11894,23 +11918,37 @@ mod tests {
         assert_eq!(contracts(2_500_000_000.0), "2.50B");
     }
 
-    /// A volume pane on Default, which every volume pane before its
-    /// Colouring was a delta's is, paints as the chart's candles do; one of
-    /// the three palettes, or a Monochrome kept from before, paints as that
-    /// palette does, as it always did.
+    /// A volume pane paints as the chart's candles do, and a colour of its
+    /// own wins for its side.
     #[test]
-    fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
+    fn a_volume_pane_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
-        let scheme = BarColouring::Quiet.scheme(&theme);
+        let scheme = omacharts_engine::BarLook::red_up().scheme(&theme);
         let mut indicator = Indicator::new(1, indicators::Kind::Volume);
         assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
-        for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
-            if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
-                *colouring = Some(own);
-            }
-            let painted = own.scheme(&theme);
-            assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
+        if let omacharts_engine::Params::Volume { up_color, .. } = &mut indicator.params {
+            *up_color = Some(omacharts_engine::ColorChoice::Fixed { hex: "#123456".into() });
         }
+        assert_eq!(volume_colours(&indicator, &theme, &scheme), ("#123456".to_string(), scheme.down.clone()));
+    }
+
+
+    /// A line chart is scaled to its closes, the only price it draws, and
+    /// candles to their highs and lows.
+    #[test]
+    fn a_line_chart_fits_its_closes() {
+        let mut state = charted(100);
+        let plan = layout(&state, 600.0, 400.0);
+        let (first, visible, _) = state.view();
+        let shown = &state.bars[first..first + visible];
+        let reach = |state: &State| price_range(state, shown, &plan).unwrap().prices();
+        let (low, high) = reach(&state);
+        assert!(shown.iter().all(|bar| bar.low >= low && bar.high <= high), "candles fit their wicks");
+        state.bar_style = BarStyle::Line;
+        let (line_low, line_high) = reach(&state);
+        let closes = shown.iter().fold((f64::MAX, f64::MIN), |(lo, hi), bar| (lo.min(bar.close), hi.max(bar.close)));
+        assert!(line_low <= closes.0 && line_high >= closes.1, "the closes fit");
+        assert!(line_low > low && line_high < high, "and nothing wider: {line_low}..{line_high} in {low}..{high}");
     }
 
     /// A chart of the regular session out of hours: the last price is the
@@ -11921,21 +11959,21 @@ mod tests {
     fn the_last_price_is_the_feed_s_newest_trade_whatever_the_bars_drawn() {
         let mut state = charted(100);
         let last = *state.bars.last().unwrap();
-        assert_eq!(last_price(&state), Some(last.close));
+        assert_eq!(last_price(&state).map(|(price, _)| price), Some(last.close));
 
         let plan = layout(&state, 600.0, 400.0);
         let (first, visible, _) = state.view();
         let (low, high) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
         let away = high + (high - low);
         state.latest = Some(away);
-        assert_eq!(last_price(&state), Some(away), "not the close drawn");
+        assert_eq!(last_price(&state), Some((away, true)), "not the close drawn");
         let (_, reach) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
         assert!(reach >= away, "the scale reaches it: {reach} for {away}");
         let (_, back) = price_range(&state, &state.bars[..50], &plan).unwrap().prices();
         assert!(back < away, "panned back, the bars alone");
 
         state.latest = Some(last.close - 1.0);
-        assert_eq!(last_price(&state), Some(last.close - 1.0), "the next trade");
+        assert_eq!(last_price(&state), Some((last.close - 1.0, false)), "the next trade");
 
         // The line and the tag stand at it.
         let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
@@ -11943,30 +11981,6 @@ mod tests {
         let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
         let stride = 600 * 4;
         assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
-    }
-
-    /// The last price is drawn in the theme's own colour for it, the tag
-    /// and the line alike, and in one somebody set on a theme of their own.
-    #[test]
-    fn the_last_price_is_in_the_theme_s_colour() {
-        let mut theme = omacharts_engine::theme::builtin_themes().remove(0);
-        let state = State::blank(theme.clone(), omacharts_engine::theme::theme_bars(&theme));
-        let derived = omacharts_engine::theme::theme_last_price(&theme);
-        assert_eq!(state.last_ink.line, derived);
-        assert_eq!(state.last_ink.tag, Tag::on(&derived));
-
-        theme.last_price = Some("#ffcc00".into());
-        let mut state = charted(20);
-        state.last_ink = LastInk::of(&theme);
-        assert_eq!(state.last_ink.tag, Tag::on("#ffcc00"));
-        let close = state.bars.last().unwrap().close;
-        let to_y = |price: f64| 100.0 - (price - close);
-        let pixels = frame(200.0, 200.0, |cr| draw_last_price_line(cr, &state, 0.0, 200.0, 0.0, &to_y));
-        let row = &pixels[100 * 200 * 4..101 * 200 * 4];
-        // Cairo's bytes are blue, green, red, alpha: a yellow has no blue.
-        let inked: Vec<&[u8]> = row.chunks(4).filter(|pixel| pixel[3] != 0).collect();
-        assert!(!inked.is_empty(), "a line on the price's row");
-        assert!(inked.iter().all(|pixel| pixel[0] == 0 && pixel[2] > pixel[1]), "in the yellow set: {:?}", inked[0]);
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
@@ -12171,7 +12185,6 @@ mod tests {
         let mut state = marked();
         state.scheme = omacharts_engine::theme::theme_bars(&theme);
         state.price_tags = price_tags(&state.scheme);
-        state.last_ink = LastInk::of(&theme);
         state.theme = theme;
         let last = state.bars.last().unwrap().close;
         let up = state.scheme.up.clone();
@@ -12278,7 +12291,7 @@ mod tests {
         }
         let Some(home) = std::env::var_os("HOME") else { return };
         let wanted = ["tokyo-night", "catppuccin-latte", "gruvbox", "nord", "rose-pine", "flexoki-light", "everforest", "matte-black"];
-        for theme in omacharts_engine::omarchy::installed(std::path::Path::new(&home)) {
+        for theme in omacharts_engine::omarchy::installed(std::path::Path::new(&home)).into_iter().map(omacharts_engine::omarchy::Palette::into_theme) {
             let slug = theme.id.rsplit(':').next().unwrap_or_default().to_string();
             if wanted.contains(&slug.as_str()) {
                 picture(&waiting(theme).with_progress(Some(0.72)), 2.0, &format!("loading-later-omarchy-{slug}"));
@@ -12369,7 +12382,7 @@ mod tests {
                 let mut state = at_the_last_price(theme);
                 state.mark_labels = side;
                 state.hover_mark = None;
-                let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+                let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::TradingLook::default(), &omacharts_engine::theme::BarLook::default());
                 let (first, visible, _) = state.view();
                 let plan = layout(&state, w, h);
                 let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
@@ -12512,7 +12525,7 @@ mod tests {
         for (theme, name) in [(0, "dark"), (3, "light")] {
             let mut state = at_the_last_price(theme);
             state.hover_mark = None;
-            let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+            let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::TradingLook::default(), &omacharts_engine::theme::BarLook::default());
             let (first, visible, _) = state.view();
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
@@ -12854,6 +12867,41 @@ mod tests {
         assert_eq!(alpha(50), 0, "the inside of a hollow body is left empty");
         assert!((11..40).all(|y| alpha(y) != 0), "the upper wick reaches the body");
         assert!((61..90).all(|y| alpha(y) != 0), "the lower wick reaches the body");
+    }
+
+    #[test]
+    fn a_bordered_candle_has_its_edge_and_wick_in_the_border_colour() {
+        let mut state = charted(1);
+        (state.scheme.up, state.scheme.up_fill, state.scheme.up_edge) =
+            ("#00ff00".into(), "#00ff00".into(), "#ff0000".into());
+        let bars = [Bar { ts: 0, open: 40.0, high: 90.0, low: 10.0, close: 60.0, volume: 0.0 }];
+        let to_y = |price: f64| 100.0 - price;
+        let columns = Columns::of(&bars, 0, 1, 0.0, 20.0);
+        let (left, w) = columns.body(0);
+        let (x, left, right) = (columns.x(0).round() as usize, left as usize, (left + w) as usize - 1);
+        let drawn = frame(20.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+        // Cairo's ARGB32, little-endian: blue, green, red, alpha.
+        let red = |x: usize, y: usize| drawn[(y * 20 + x) * 4 + 2] > 200 && drawn[(y * 20 + x) * 4 + 1] < 50;
+        let green = |x: usize, y: usize| drawn[(y * 20 + x) * 4 + 1] > 200 && drawn[(y * 20 + x) * 4 + 2] < 50;
+        assert!(red(x, 20) && red(x, 80), "the wicks are the border's");
+        assert!(red(left, 50) && red(right, 50), "the body's sides are the border's");
+        assert!(red(x, 40) && red(x, 59), "the body's top and bottom are the border's");
+        assert!(green(x, 50) && green(left + 1, 50), "the inside is the candle's colour");
+    }
+
+    #[test]
+    fn a_candle_too_narrow_for_a_border_keeps_its_colour() {
+        let mut state = charted(1);
+        (state.scheme.up, state.scheme.up_fill, state.scheme.up_edge) =
+            ("#00ff00".into(), "#00ff00".into(), "#ff0000".into());
+        let bars = [Bar { ts: 0, open: 40.0, high: 90.0, low: 10.0, close: 60.0, volume: 0.0 }];
+        let to_y = |price: f64| 100.0 - price;
+        // Four pixels a bar: a three-pixel body, one pixel of colour inside a border.
+        let columns = Columns::of(&bars, 0, 1, 0.0, 4.0);
+        assert_eq!(columns.body_width(), 3.0);
+        let drawn = frame(4.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+        let red = drawn.chunks(4).any(|px| px[2] > 200 && px[1] < 50);
+        assert!(!red, "no pixel of the border is drawn");
     }
 
     #[test]
@@ -13995,6 +14043,27 @@ mod drawing_tests {
         state.magnet = true;
         state.follow_hand(w, h);
         assert_eq!(state.placing.as_ref().unwrap().to.price, bar.high);
+    }
+
+    /// A line chart draws only the closes, so the high, the low and the open
+    /// are nothing on screen to snap to: aimed right at the high, the anchor
+    /// still lands on the close.
+    #[test]
+    fn a_line_chart_snaps_only_to_the_close() {
+        let mut state = charted(100);
+        state.visible = 100;
+        state.overhang = 0;
+        state.bar_style = BarStyle::Line;
+        let (w, h) = (800.0, 400.0);
+        let plan = layout(&state, w, h);
+        let (first, visible) = state.slice();
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let bar = state.bars[40];
+        let x = plan.plot_x + 40.5 * plan.plot_w / visible as f64;
+        for aim in [bar.high, bar.low, bar.open] {
+            let y = scale.to_y(aim, plan.price_y, plan.price_h);
+            assert_eq!(state.locate_with(w, h, x, y, true).unwrap().price, bar.close);
+        }
     }
 
     /// The configuration chosen for the next drawing survives picking a

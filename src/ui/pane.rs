@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use omacharts_engine::{
-    BarStyle, FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
+    BarScheme, FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
 };
 
 use crate::ui::chart::{ChartView, Hidden};
@@ -185,14 +185,16 @@ pub struct ChartPane {
     /// one, `indicators` is a copy of the template's, kept current by the
     /// window; see [`crate::templates`].
     pub template: Cell<Option<u32>>,
-    /// What the header shows, in order. See [`crate::header`].
-    pub header: RefCell<crate::header::Header>,
-    /// The line the header is written on, and the two parts of it only the
-    /// window can fill in.
-    pub header_row: gtk::Box,
-    /// The header's center: the row across the chart's top, where the strip
-    /// is until somebody moves it.
-    pub header_center: gtk::Box,
+    /// The look of its own, if it has one; `None` while it wears every
+    /// chart's. See [`crate::chart_look`].
+    pub look: RefCell<Option<crate::chart_look::ChartLook>>,
+    /// What the header shows, and where. See [`crate::header`].
+    pub header: RefCell<crate::header::Layout>,
+    /// The header's six places, in the order of [`crate::header::Zone::ALL`].
+    /// The first, the first row's left, is where the symbol starts out and
+    /// where the glyphs for what the chart is hiding always go.
+    pub zones: [gtk::Box; 6],
+    /// The parts only the window can fill in.
     pub change_label: gtk::Label,
     /// What the day's move is measured from: the close before the session,
     /// and that session's day (see [`crate::cli::session_day`]). Kept when
@@ -202,7 +204,10 @@ pub struct ChartPane {
     /// The move written, in hundredths of a percent: a trade that leaves it
     /// where it is writes nothing.
     pub change_shown: Cell<Option<i64>>,
+    pub last_label: gtk::Label,
     pub template_label: gtk::Label,
+    /// Says the chart's look differs from every chart's: see `Part::Look`.
+    pub look_mark: gtk::DrawingArea,
     /// The Title part: the chart title, a flat button like the symbol
     /// that turns into an entry where it stands when clicked, Enter or
     /// clicking away keeping what was typed and Escape what was there.
@@ -282,23 +287,15 @@ pub struct ChartPane {
     /// half. Held until the rest arrives to name it, written back as it
     /// was, and nothing is traded meanwhile — never what the chart charts.
     pub trading_pending: RefCell<Option<(String, Option<String>)>>,
-    /// The style its bars are drawn in when they are drawn: hiding them
-    /// leaves it alone, so showing them again brings back the same one.
-    pub bar_style: Cell<BarStyle>,
+    /// The instrument's name, under the line rather than on it.
+    name_label: gtk::Label,
+    /// Whether its bars are hidden. How they are drawn when they are not is
+    /// its look's answer.
     pub bars_hidden: Cell<bool>,
-    /// How the theme's candle colours are painted on this chart.
-    pub colouring: Cell<omacharts_engine::BarColouring>,
-    /// The two switches worn over that colouring: its up and down
-    /// exchanged, red for a rise, and a rising body drawn as an outline.
-    pub swapped: Cell<bool>,
-    pub hollow_up: Cell<bool>,
-    /// How many pixels wide its OHLC bars are drawn.
-    pub ohlc_thickness: Cell<u8>,
     pub session: Cell<Session>,
     /// How a futures root's months are joined at the rolls, on a feed
     /// that stitches them; nothing to any other chart.
     pub continuous: Cell<omacharts_engine::continuous::Adjustment>,
-    pub show_grid: Cell<bool>,
     /// What the rail does to this chart.
     mode: Cell<LinkMode>,
     /// Whether this chart shows the drawings other charts of its symbol
@@ -380,11 +377,10 @@ impl ChartPane {
         scheme: omacharts_engine::theme::BarScheme,
         timeframe: Timeframe,
         indicators: Vec<Indicator>,
-        bar_style: BarStyle,
         session: Session,
-        show_grid: bool,
         mode: LinkMode,
     ) -> Rc<ChartPane> {
+        let theme_class = crate::theming::theme_class(&theme.id);
         let view = ChartView::new(theme, scheme);
 
         let symbol_button = gtk::Button::new();
@@ -396,9 +392,7 @@ impl ChartPane {
         symbol_button.set_valign(gtk::Align::Center);
         symbol_button.set_tooltip_text(Some(&shortcuts::tooltip("Find a symbol", "win.find")));
 
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        strip.add_css_class("linked");
-        strip.add_css_class("timeframe-strip");
+        let strip = strip();
         strip.set_valign(gtk::Align::Center);
         strip.set_visible(false);
 
@@ -443,7 +437,7 @@ impl ChartPane {
         // window says when, through `set_expandable`.
         link.set_visible(mode == LinkMode::Pinned);
 
-        let gear = gtk::Button::from_icon_name("emblem-system-symbolic");
+        let gear = gtk::Button::from_icon_name(GEAR_ICON);
         gear.add_css_class("flat");
         gear.add_css_class("legend-gear");
         gear.set_tooltip_text(Some(&shortcuts::tooltip("Chart settings", "chart.settings")));
@@ -451,16 +445,13 @@ impl ChartPane {
 
         let hidden_glyphs = hidden_glyphs(&view);
 
-        // The symbol and its resolution on the left, as the chart's title:
-        // the resolution stays on every chart, focused or not, and in every
-        // screenshot, because which bars these are is information. The
-        // controls go to the opposite corner, where they stay out of it.
-        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        // The two parts a header may also show, written by the window when
-        // the chart is showing them. Labels rather than buttons: there is
-        // nothing to do to a day's move or a template's name from here.
+        // The parts only the window can fill in. Labels rather than buttons:
+        // there is nothing to do to a day's move or a template's name from
+        // here.
         let change_label = gtk::Label::new(None);
         change_label.add_css_class("readout-symbol");
+        let last_label = gtk::Label::new(None);
+        last_label.add_css_class("readout-symbol");
         change_label.set_valign(gtk::Align::Center);
         // Nothing, and no room, until there is a move to write: it is in
         // every header now, and a chart opening ahead of its quote must
@@ -470,6 +461,9 @@ impl ChartPane {
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
         template_label.set_valign(gtk::Align::Center);
+        let look_mark = look_icon(16);
+        look_mark.set_tooltip_text(Some("This chart has a look of its own"));
+        look_mark.set_visible(false);
         // The title reads as the header's other words do, the symbol's
         // weight and its hover, and is a button only so the pointer can say
         // it is one. Untitled, its words are there and not drawn, so the
@@ -523,9 +517,7 @@ impl ChartPane {
         // reads. The warning beside it is there only when something went
         // wrong, so a dot that is merely red says "not connected" and a
         // dot with a warning says "tried, and could not".
-        let feed_dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        feed_dot.add_css_class("feed-dot");
-        feed_dot.set_valign(gtk::Align::Center);
+        let feed_dot = feed_dot();
         let feed_warning = gtk::Image::from_icon_name("dialog-warning-symbolic");
         feed_warning.add_css_class("feed-warning");
         feed_warning.set_pixel_size(12);
@@ -541,28 +533,11 @@ impl ChartPane {
         feed_menu.set_child(Some(&feed_light));
         feed_menu.set_always_show_arrow(false);
         feed_menu.set_visible(false);
-        // Two words in the trading colours, as calm as the rest of the
-        // line until the pointer is on one.
-        let buy_button = gtk::Button::with_label("Buy");
-        let sell_button = gtk::Button::with_label("Sell");
-        for (button, class) in [(&buy_button, "trade-buy"), (&sell_button, "trade-sell")] {
-            button.add_css_class("flat");
-            button.add_css_class("trade-button");
-            button.add_css_class(class);
-            button.set_valign(gtk::Align::Center);
-        }
-        let trade_part = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        trade_part.append(&buy_button);
-        trade_part.append(&sell_button);
+        let (trade_part, [buy_button, sell_button]) = trade_pair();
         trade_part.set_visible(false);
         // The same kind of button, not dim: it is what the next order
-        // spends. "Qty" in the line's quiet grey, the number in full.
-        let size_label = gtk::Label::new(None);
-        let size_word = gtk::Label::new(Some("Qty"));
-        size_word.add_css_class("dim-label");
-        let size_line = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-        size_line.append(&size_word);
-        size_line.append(&size_label);
+        // spends.
+        let (size_line, size_label) = worded("Qty");
         let size_menu = gtk::MenuButton::new();
         size_menu.add_css_class("flat");
         size_menu.add_css_class("readout-symbol");
@@ -570,16 +545,11 @@ impl ChartPane {
         size_menu.set_child(Some(&size_line));
         size_menu.set_always_show_arrow(false);
         size_menu.set_visible(false);
-        // Read like the quantity: the word quiet, the money in the profit
-        // or loss colour, or plain at nothing either way.
-        let day_word = gtk::Label::new(Some("P&L"));
-        day_word.add_css_class("dim-label");
-        let day_amount = gtk::Label::new(None);
-        let day_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        // Read like the quantity, the money in the profit or loss colour,
+        // or plain at nothing either way.
+        let (day_part, day_amount) = worded("P&L");
         day_part.add_css_class("readout-symbol");
         day_part.set_valign(gtk::Align::Center);
-        day_part.append(&day_word);
-        day_part.append(&day_amount);
         day_part.set_visible(false);
         // The size signed, "+3", in full; the money in brackets after it in
         // the profit or loss colour, as the day's P&L is.
@@ -598,44 +568,70 @@ impl ChartPane {
                 part.set_has_tooltip(!open && part.tooltip_text().is_some());
             });
         }
-        // The padding the two buttons beside them have, so the four sit
-        // evenly apart whichever order they are in.
-        for label in [&change_label, &template_label] {
+        let name_label = gtk::Label::new(None);
+        name_label.add_css_class("legend-name");
+        name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        name_label.set_max_width_chars(40);
+        // The padding the buttons beside them have, so the parts sit evenly
+        // apart whichever order they are in.
+        for label in [&change_label, &last_label, &template_label, &name_label] {
+            label.set_valign(gtk::Align::Center);
             label.set_margin_start(8);
             label.set_margin_end(8);
+            label.set_visible(false);
         }
-        // As tall as the strip, so the symbol reads on the same line as the
-        // resolutions. Alone it is shorter than the strip and sat above it.
-        // A number rather than a size group, because the strip is hidden on
-        // every chart but the focused one and the symbol would jump on focus.
-        bar.set_height_request(SYMBOL_ROW_HEIGHT);
+        // Its own style indents it already, to sit under the symbol's word.
+        name_label.set_margin_start(0);
+
+        // The header's six places, two rows of left, centre and right. Each
+        // row as tall as the strip, so the symbol reads on the same line as
+        // the resolutions: alone it is shorter and sat above them. A number
+        // rather than a size group, because the strip is hidden on every
+        // chart but the focused one and the symbol would jump on focus.
+        let zones: [gtk::Box; 6] = std::array::from_fn(|at| {
+            let zone = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            zone.set_height_request(if at < 3 { SYMBOL_ROW_HEIGHT } else { SECOND_ROW_HEIGHT });
+            zone.set_halign(match at % 3 {
+                0 => gtk::Align::Start,
+                1 => gtk::Align::Center,
+                _ => gtk::Align::End,
+            });
+            // Until the header puts something in the second row.
+            zone.set_visible(at < 3);
+            zone
+        });
+        // The first row's centre fills what the overlay gives it, so an
+        // untitled chart's lone title can span the top (see below); given
+        // only its own width otherwise, it is centred all the same.
+        zones[1].set_halign(gtk::Align::Fill);
 
         let indicator_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
         indicator_legend.set_halign(gtk::Align::Start);
         indicator_legend.set_visible(false);
 
+        // The left of both rows, with the indicator rows hanging under them.
         let legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
         legend.set_halign(gtk::Align::Start);
         legend.set_valign(gtk::Align::Start);
         legend.set_margin_start(LEGEND_MARGIN);
         legend.set_margin_top(6);
-        legend.append(&bar);
+        legend.append(&zones[0]);
+        legend.append(&zones[3]);
         legend.append(&indicator_legend);
 
-        // The strip sits across the top of its own chart rather than in the
-        // legend: centred it reads as this chart's own toolbar, where in the
-        // corner it was one more thing in a stack of names.
-        // Spaced as the line on the left is, for when the center holds more
-        // than the strip.
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        // Placed by the overlay below, which centres it itself.
+        // The centre of both rows, across the top of its own chart: the
+        // strip centred there reads as this chart's own toolbar, where in
+        // the corner it was one more thing in a stack of names. Filling
+        // what the overlay places it in (below), which is its own width
+        // or, for an untitled chart's lone title, the whole top: centred,
+        // it would shrink back to its own width inside that.
+        let top = gtk::Box::new(gtk::Orientation::Vertical, 0);
         top.set_halign(gtk::Align::Fill);
         top.set_valign(gtk::Align::Start);
         top.set_margin_top(6);
+        top.append(&zones[1]);
+        top.append(&zones[4]);
 
-        // The opposite corner from the legend, and the only thing in it, so
-        // that a chart which has grown to fill the window still shows the way
-        // back without anything else being in the way.
         let expand_state = Rc::new(Cell::new(false));
         let expand_icon = expand_icon(expand_state.clone());
         let expand = gtk::Button::new();
@@ -647,20 +643,16 @@ impl ChartPane {
         // Nothing to maximize away from until there is a second chart.
         expand.set_visible(false);
 
-        let corner = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // The right of both rows, in the opposite corner from the legend, so
+        // that a chart which has grown to fill the window still shows the
+        // way back without anything else being in the way.
+        let corner = gtk::Box::new(gtk::Orientation::Vertical, 0);
         corner.set_halign(gtk::Align::End);
         corner.set_valign(gtk::Align::Start);
         corner.set_margin_top(6);
-        // The symbol's row's height, so the corner's buttons centre on the
-        // line the symbol is written on rather than a few pixels above it.
-        corner.set_height_request(SYMBOL_ROW_HEIGHT);
         corner.set_margin_end(corner_margin(0));
-        corner.append(&gear);
-        corner.append(&expand);
-        // The link last, against the price axis: it is the one that stays up
-        // at rest on a Follow or Pinned chart, and at the end of the row it
-        // keeps its place when the gear and the maximize appear beside it.
-        corner.append(&link);
+        corner.append(&zones[2]);
+        corner.append(&zones[5]);
 
         let overlay = gtk::Overlay::new();
         // The chart's own two layers, stacked, rather than the drawing area
@@ -678,44 +670,47 @@ impl ChartPane {
         overlay.add_overlay(&corner);
 
         // The three are laid over the chart independently, so on a narrow
-        // chart the centred row lands on the symbol or under the corner. It
-        // slides along to clear them, and steps aside altogether when there
-        // is no room between them; for the strip, the resolution beside the
-        // symbol offers the same list. Decided
-        // where the overlay places it, the one moment every width involved
-        // is known.
+        // chart they meet. A row's centre slides along to clear what is
+        // either side of it, and steps aside altogether when there is no room
+        // between them. Decided where the overlay places them, the one
+        // moment every width involved is known.
         //
-        // On the left, the strip steps aside from the corner the same way:
-        // the line grows towards it, and on a narrow chart would run under
-        // the gear. The legend is placed first, so the center is measured
-        // against the line as it will be drawn.
-        let (legend_box, legend_row, strip_row, corner_box, strip_part) =
-            (legend.clone(), bar.clone(), top.clone(), corner.clone(), strip.clone());
-        let (lone_title, untitled, typed) = (title_part.clone(), title_button.clone(), title_entry.clone());
+        // On the first row's left, the strip steps aside from the corner the
+        // same way: the line grows towards it, and on a narrow chart would
+        // run under the gear. The legend is placed first, so the centre is
+        // measured against the line as it will be drawn.
+        let (legend_box, top_box, corner_box, places, strip_part) =
+            (legend.clone(), top.clone(), corner.clone(), zones.clone(), strip.clone());
+        let (lone_title, untitled) = (title_part.clone(), title_button.clone());
         overlay.connect_get_child_position(move |overlay, child| {
             let natural = |w: &gtk::Widget| w.preferred_size().1.width();
+            let [left, center, right, left2, center2, right2] = &places;
             if child == legend_box.upcast_ref::<gtk::Widget>()
-                && strip_part.parent().is_some_and(|parent| parent == legend_row)
+                && strip_part.parent().is_some_and(|parent| parent == places[0])
             {
                 let strip_width = natural(strip_part.upcast_ref());
                 // The line without the strip, however it was last decided:
                 // a strip not laid out is not in the line's own measure.
                 let laid_out = strip_part.is_visible() && strip_part.is_child_visible();
-                let rest = natural(legend_row.upcast_ref())
-                    - if laid_out { strip_width + legend_row.spacing() } else { 0 };
+                let rest = natural(places[0].upcast_ref())
+                    - if laid_out { strip_width + places[0].spacing() } else { 0 };
                 let right = natural(corner_box.upcast_ref()) + corner_box.margin_end();
-                let fits = legend_box.margin_start() + rest + legend_row.spacing() + strip_width + STRIP_GAP
+                let fits = legend_box.margin_start() + rest + places[0].spacing() + strip_width + STRIP_GAP
                     <= overlay.width() - right;
                 if strip_part.is_child_visible() != fits {
                     strip_part.set_child_visible(fits);
                 }
             }
-            if child == strip_row.upcast_ref::<gtk::Widget>() {
+            if child == top_box.upcast_ref::<gtk::Widget>() {
                 // Read here, not once: a chart on the window's left edge
                 // steps its legend past the drawing toggle after it is built.
-                let left = legend_box.margin_start() + natural(legend_row.upcast_ref());
-                let right = natural(corner_box.upcast_ref()) + corner_box.margin_end();
-                let (_, size) = strip_row.preferred_size();
+                let second = left2.is_visible();
+                let widest = |a: &gtk::Box, b: &gtk::Box| {
+                    natural(a.upcast_ref()).max(if second { natural(b.upcast_ref()) } else { 0 })
+                };
+                let left = legend_box.margin_start() + widest(left, left2);
+                let right = widest(right, right2) + corner_box.margin_end();
+                let (_, size) = top_box.preferred_size();
                 // An untitled chart's title, alone in the centre, is the
                 // whole of the top between the two sides: pointed at
                 // anywhere there it offers Add title, and clicked, it edits.
@@ -725,33 +720,26 @@ impl ChartPane {
                 // sides, left of centre beside a wide corner.
                 let spans = untitled.has_css_class(TITLE_UNTITLED)
                     && lone_title.visible_child_name().as_deref() != Some("editing")
-                    && strip_row.first_child().is_some_and(|child| child == lone_title)
-                    && lone_title.next_sibling().is_none();
-                // A title the line shows has room to be typed into too, or
-                // it is not shown: F2 then asks for it in a dialog rather
-                // than open an entry with nowhere to go.
-                let typing = lone_title.parent().is_some_and(|row| row == strip_row)
-                    && lone_title.visible_child_name().as_deref() != Some("editing");
-                let entry_room =
-                    if typing { (natural(typed.upcast_ref()) - natural(untitled.upcast_ref())).max(0) } else { 0 };
-                let place = center_start(overlay.width(), left, size.width() + entry_room, right)
-                    .and_then(|_| center_place(overlay.width(), left, size.width(), right, spans));
+                    && center.first_child().is_some_and(|child| child == lone_title)
+                    && lone_title.next_sibling().is_none()
+                    && center2.first_child().is_none();
+                let place = center_place(overlay.width(), left, size.width(), right, spans);
                 // Being typed into, the title keeps its place whatever it
                 // grows to: hidden, its entry would lose the keys and keep
                 // what was typed so far. It takes the room between the two
                 // sides, and no less than it needs.
-                let editing = lone_title.parent().is_some_and(|row| row == strip_row)
+                let editing = lone_title.parent().as_ref() == Some(center.upcast_ref())
                     && lone_title.visible_child_name().as_deref() == Some("editing");
                 let place = place.or_else(|| {
                     editing.then(|| {
-                        let (least, _) = strip_row.preferred_size();
+                        let (least, _) = top_box.preferred_size();
                         let room = overlay.width() - right - STRIP_GAP - (left + STRIP_GAP);
                         let width = size.width().min(room).max(least.width());
                         ((left + STRIP_GAP).min(overlay.width() - width).max(0), width)
                     })
                 });
-                if strip_row.is_child_visible() != place.is_some() {
-                    strip_row.set_child_visible(place.is_some());
+                if top_box.is_child_visible() != place.is_some() {
+                    top_box.set_child_visible(place.is_some());
                 }
                 return place.map(|(x, width)| gtk::gdk::Rectangle::new(x, 0, width, size.height()));
             }
@@ -764,6 +752,8 @@ impl ChartPane {
         let menu_actions = gtk::gio::SimpleActionGroup::new();
         root.insert_action_group("pane", Some(&menu_actions));
         root.add_css_class("chart-pane");
+        // Its theme's colours, as `wear_theme` changes them.
+        root.add_css_class(&theme_class);
         root.set_hexpand(true);
         root.set_vexpand(true);
         root.append(&overlay);
@@ -792,13 +782,15 @@ impl ChartPane {
             timeframe: Cell::new(timeframe),
             indicators: RefCell::new(indicators),
             template: Cell::new(None),
-            header: RefCell::new(crate::header::Header::standard()),
-            header_row: bar,
-            header_center: top,
+            look: RefCell::new(None),
+            header: RefCell::new(crate::header::Layout::standard()),
+            zones,
             change_label,
             change_basis: Cell::new(None),
             change_shown: Cell::new(None),
+            last_label,
             template_label,
+            look_mark,
             title_part,
             title_button,
             title_label,
@@ -832,15 +824,10 @@ impl ChartPane {
             trading_size: RefCell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
-            bar_style: Cell::new(bar_style),
+            name_label,
             bars_hidden: Cell::new(false),
-            colouring: Cell::new(Default::default()),
-            swapped: Cell::new(false),
-            hollow_up: Cell::new(false),
-            ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),
-            show_grid: Cell::new(show_grid),
             mode: Cell::new(mode),
             shows_drawings: Cell::new(true),
             sends_drawings: Cell::new(true),
@@ -982,21 +969,20 @@ impl ChartPane {
     /// A ring rather than anything louder: with four charts on screen the
     /// focused one has to be obvious at a glance and invisible the moment you
     /// stop looking for it.
-    /// Draw its OHLC bars this many pixels wide.
-    pub fn set_ohlc_thickness(&self, thickness: u8) {
-        let thickness = crate::chart_defaults::clamp_thickness(thickness);
-        self.ohlc_thickness.set(thickness);
-        self.view.set_ohlc_thickness(thickness);
-    }
-
     pub fn set_focused(&self, focused: bool) {
         if focused {
             self.root.add_css_class("focused");
         } else {
             self.root.remove_css_class("focused");
         }
-        self.strip.set_visible(focused);
+        self.place_strip();
         self.indicator_legend.set_visible(focused);
+    }
+
+    /// On the focused chart, when the header has it.
+    fn place_strip(&self) {
+        self.strip.set_visible(self.root.has_css_class("focused"));
+        self.sync_rows();
     }
 
     pub fn mode(&self) -> LinkMode {
@@ -1004,8 +990,7 @@ impl ChartPane {
     }
 
     /// Change what the rail does to this chart. The colour is resolved against
-    /// the live theme by the window and handed in, because a pane has no theme
-    /// of its own to ask once the user has changed it.
+    /// the theme the chart is drawn on by the caller and handed in.
     pub fn set_mode(&self, mode: LinkMode, colour: Option<String>) {
         self.mode.set(mode);
         *self.link_colour.borrow_mut() = colour;
@@ -1015,6 +1000,23 @@ impl ChartPane {
         if let Some(icon) = self.link.child() {
             icon.queue_draw();
         }
+    }
+
+    /// Draw the chart on `theme`, with `bars` for its candles, and give
+    /// its header, legend and controls the same theme through the theme's
+    /// class ([`crate::theming::theme_class`]). Whether either changed: what
+    /// is coloured from the palette or the bars has to be worked out again.
+    pub fn wear_theme(&self, theme: Theme, bars: BarScheme) -> bool {
+        let was = self.view.theme();
+        if was == theme && self.view.scheme() == bars {
+            return false;
+        }
+        self.root.remove_css_class(&crate::theming::theme_class(&was.id));
+        self.root.add_css_class(&crate::theming::theme_class(&theme.id));
+        let mode = self.mode();
+        self.set_mode(mode, mode.colour(&theme));
+        self.view.restyle(theme, bars);
+        true
     }
 
     /// Point at the pin, for a rail click this chart refused.
@@ -1057,6 +1059,7 @@ impl ChartPane {
         // already split came up with no link button until the next split.
         self.link
             .set_visible(self.expand.get_visible() || self.mode.get() == LinkMode::Pinned);
+        self.sync_rows();
     }
 
     /// Point the glyph in or out, and say which it is.
@@ -1075,68 +1078,84 @@ impl ChartPane {
         }
     }
 
-    /// Put the header's parts in its three sections in the chart's order,
-    /// and take off the ones it does not show.
-    pub fn arrange_header(&self) {
+    /// The widget that is `part` on this chart.
+    fn part_widget(&self, part: crate::header::Part) -> gtk::Widget {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 15] = [
-            (Part::Symbol, self.symbol_button.clone().upcast()),
-            (Part::Resolution, self.timeframe_menu.clone().upcast()),
-            (Part::Change, self.change_label.clone().upcast()),
-            (Part::Template, self.template_label.clone().upcast()),
-            (Part::Title, self.title_part.clone().upcast()),
-            (Part::Account, self.account_menu.clone().upcast()),
-            (Part::Feed, self.feed_menu.clone().upcast()),
-            (Part::DayPnl, self.day_part.clone().upcast()),
-            (Part::Trade, self.trade_part.clone().upcast()),
-            (Part::Size, self.size_menu.clone().upcast()),
-            (Part::Position, self.position_part.clone().upcast()),
-            (Part::Stripe, self.strip.clone().upcast()),
-            (Part::Settings, self.gear.clone().upcast()),
-            (Part::Maximize, self.expand.clone().upcast()),
-            (Part::Link, self.link.clone().upcast()),
-        ];
-        for (_, widget) in &parts {
-            if let Some(parent) = widget.parent().and_downcast::<gtk::Box>() {
-                parent.remove(widget);
+        match part {
+            Part::Symbol => self.symbol_button.clone().upcast(),
+            Part::Resolution => self.timeframe_menu.clone().upcast(),
+            Part::Change => self.change_label.clone().upcast(),
+            Part::Last => self.last_label.clone().upcast(),
+            Part::Template => self.template_label.clone().upcast(),
+            Part::Look => self.look_mark.clone().upcast(),
+            Part::Name => self.name_label.clone().upcast(),
+            Part::Title => self.title_part.clone().upcast(),
+            Part::Account => self.account_menu.clone().upcast(),
+            Part::Feed => self.feed_menu.clone().upcast(),
+            Part::DayPnl => self.day_part.clone().upcast(),
+            Part::Trade => self.trade_part.clone().upcast(),
+            Part::Size => self.size_menu.clone().upcast(),
+            Part::Position => self.position_part.clone().upcast(),
+            Part::Strip => self.strip.clone().upcast(),
+            Part::Settings => self.gear.clone().upcast(),
+            Part::Maximize => self.expand.clone().upcast(),
+            Part::Link => self.link.clone().upcast(),
+        }
+    }
+
+    /// Put the header's parts in their zones in the header's order, and take
+    /// off the ones it does not show.
+    pub fn arrange_header(&self) {
+        use crate::header::{Part, Zone};
+        let glyphs = self.hidden_glyphs.iter().map(|(_, button)| button.clone().upcast::<gtk::Widget>());
+        let placed = Part::ALL.into_iter().map(|part| self.part_widget(part));
+        for widget in placed.chain(glyphs) {
+            if let Some(zone) = widget.parent().and_downcast::<gtk::Box>() {
+                zone.remove(&widget);
             }
         }
-        // Whichever section it lands in decides afresh whether it fits.
-        self.strip.set_child_visible(true);
-        let header = self.header.borrow();
-        for (row, section) in [
-            (&self.header_row, &header.left),
-            (&self.header_center, &header.center),
-            (&self.corner, &header.right),
-        ] {
-            for part in section {
-                if let Some((_, widget)) = parts.iter().find(|(p, _)| p == part) {
-                    row.append(widget);
-                }
+        let layout = self.header.borrow().clone();
+        for (zone, place) in Zone::ALL.into_iter().zip(&self.zones) {
+            for part in layout.zone(zone) {
+                place.append(&self.part_widget(*part));
             }
         }
-        // Leading the line, the dot steps out of its button's padding so it
-        // stands over the legend's dots, the button's hover reaching left
-        // past them instead.
-        match header.left.first() == Some(&Part::Feed) {
+        // Leading the first row's left, the dot steps out of its button's
+        // padding so it stands over the legend's dots, the button's hover
+        // reaching left past them instead.
+        match layout.zone(Zone::Left).first() == Some(&Part::Feed) {
             true => self.feed_menu.add_css_class("lead"),
             false => self.feed_menu.remove_css_class("lead"),
         }
-        // Last, whatever the header shows: it says what is missing from this
+        // Whichever zone it lands in decides afresh whether it fits.
+        self.strip.set_child_visible(true);
+        // Last, wherever the rest went: they say what is missing from this
         // chart, not what it is.
         for (_, button) in &self.hidden_glyphs {
-            if button.parent().is_some() {
-                self.header_row.remove(button);
-            }
-            self.header_row.append(button);
+            self.zones[0].append(button);
+        }
+        self.write_name();
+        self.place_strip();
+    }
+
+    /// The second row, when anything in it is showing: an empty one would
+    /// push the note and the indicator rows down for nothing. All three of
+    /// its places together, so the rows line up across the chart.
+    fn sync_rows(&self) {
+        let shown = self.zones[3..].iter().any(|zone| crate::ui::children(zone).any(|part| part.get_visible()));
+        for zone in &self.zones[3..] {
+            zone.set_visible(shown);
         }
     }
 
     /// Whether the title can be typed where it stands: the header has it,
-    /// and has room for the row it is in.
+    /// and has room for the place it is in and the side that place is on,
+    /// either of which a narrow chart hides.
     pub fn title_in_view(&self) -> bool {
         self.shows(crate::header::Part::Title)
-            && self.title_part.parent().is_some_and(|row| row.is_child_visible())
+            && self.title_part.parent().is_some_and(|zone| {
+                zone.is_child_visible() && zone.parent().is_none_or(|side| side.is_child_visible())
+            })
     }
 
     /// Whether the header has `part` in it, so the window only works out what
@@ -1149,6 +1168,14 @@ impl ChartPane {
     pub fn write_template(&self, name: Option<&str>) {
         self.template_label.set_text(name.unwrap_or(""));
         self.template_label.set_visible(name.is_some());
+        self.sync_rows();
+    }
+
+    /// The last price, as written; nothing at all until there is one.
+    pub fn write_last(&self, price: Option<&str>) {
+        self.last_label.set_text(price.unwrap_or(""));
+        self.last_label.set_visible(price.is_some());
+        self.sync_rows();
     }
 
     /// Which account the chart is on, or nothing at all: hidden, the part
@@ -1396,14 +1423,7 @@ impl ChartPane {
     pub fn write_change(&self, change: Option<(f64, Option<&str>)>) {
         match change {
             Some((pct, colour)) => {
-                let text = gtk::glib::markup_escape_text(&crate::header::change_text(pct));
-                match colour {
-                    Some(colour) => {
-                        let colour = gtk::glib::markup_escape_text(colour);
-                        self.change_label.set_markup(&format!("<span foreground=\"{colour}\">{text}</span>"));
-                    }
-                    None => self.change_label.set_markup(&text),
-                }
+                self.change_label.set_markup(&crate::header::change_markup(&crate::header::change_text(pct), colour));
                 self.change_label.set_visible(true);
             }
             None => {
@@ -1411,11 +1431,30 @@ impl ChartPane {
                 self.change_label.set_visible(false);
             }
         }
+        self.sync_rows();
     }
 
     pub fn write_readout(&self) {
         self.symbol_button.set_label(&self.shown_symbol());
         self.write_timeframe();
+        self.write_name();
+    }
+
+    /// The instrument's name, when the header shows it.
+    /// Nothing for a name that only repeats the ticker, as one looked up
+    /// outside the inventory has.
+    fn write_name(&self) {
+        let symbol = self.symbol_button.label().unwrap_or_default();
+        let name = self
+            .instrument
+            .borrow()
+            .as_ref()
+            .filter(|_| self.shows(crate::header::Part::Name))
+            .map(|i| i.name.trim().to_string())
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case(&symbol));
+        self.name_label.set_text(name.as_deref().unwrap_or(""));
+        self.name_label.set_visible(name.is_some());
+        self.sync_rows();
     }
 
     /// The trading symbol in force: the one set for this chart while
@@ -1667,6 +1706,8 @@ pub fn legend_row(dot: &impl IsA<gtk::Widget>, name: &gtk::Label) -> gtk::Box {
 
 /// The strip's height: its buttons plus the padding around them.
 const SYMBOL_ROW_HEIGHT: i32 = 32;
+/// The second row's: a line of text, as the name under the symbol was.
+const SECOND_ROW_HEIGHT: i32 = 24;
 
 /// What an untitled chart's Title part says under the pointer, and holds the
 /// room of at rest without drawing it.
@@ -1674,6 +1715,9 @@ pub const TITLE_PLACEHOLDER: &str = "Add title";
 /// The class an untitled chart's Title part wears; a screenshot leaves it
 /// out, since it is a control and not a title.
 pub const TITLE_UNTITLED: &str = "chart-title-untitled";
+/// The class the Look part's mark wears, in a header and on the header
+/// card; a screenshot leaves it out.
+pub const LOOK_MARK: &str = "look-mark";
 /// How long a title may be, and how much of it the header shows before it
 /// is cut short.
 pub const TITLE_MAX_LENGTH: i32 = 80;
@@ -1724,6 +1768,7 @@ fn center_place(width: i32, left: i32, center: i32, right: i32, spans: bool) -> 
 /// The air the strip keeps from what is beside it.
 const STRIP_GAP: i32 = 8;
 
+
 /// Two arrows on a diagonal, pointing away from each other — and, once the
 /// chart has the window to itself, back towards each other.
 ///
@@ -1733,7 +1778,7 @@ const STRIP_GAP: i32 = 8;
 /// than named for the same reason the chain is: Adwaita's nearest icons are
 /// "view-fullscreen", which is a frame with corner brackets and reads as a
 /// crop tool at this size, and "zoom-fit-best", which reads as a magnifier.
-fn expand_icon(maximized: Rc<Cell<bool>>) -> gtk::DrawingArea {
+pub(crate) fn expand_icon(maximized: Rc<Cell<bool>>) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(18);
     area.set_content_height(18);
@@ -1797,7 +1842,7 @@ fn expand_icon(maximized: Rc<Cell<bool>>) -> gtk::DrawingArea {
 /// Focus, the chain for Follow, a pin for Pinned. One link and two say how
 /// much the chart is tied to the watchlist, only while focused or always;
 /// "never moves" is not a fainter "always moves", so it is not a chain at all.
-fn mode_icon(tint: Rc<RefCell<Option<String>>>, glyph: Rc<Cell<LinkMode>>) -> gtk::DrawingArea {
+pub(crate) fn mode_icon(tint: Rc<RefCell<Option<String>>>, glyph: Rc<Cell<LinkMode>>) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(18);
     area.set_content_height(18);
@@ -1894,6 +1939,109 @@ fn draw_pin(cr: &gtk::cairo::Context, w: f64) {
     cr.move_to(0.0, -k);
     cr.line_to(0.0, 7.6 * k);
     let _ = cr.stroke();
+}
+
+/// The Look part: one window pulled off another, for a chart whose look
+/// is split off every chart's. Dim, as the header's other furniture is,
+/// and `size` pixels square: a chart's header draws it at 16, the header
+/// card in Settings at 13.
+///
+/// The window in front, up and to the right, is drawn whole; the one it
+/// left behind is half ink and stops short of it, so at this size the two
+/// read as a front and a back rather than two boxes crossing.
+pub(crate) fn look_icon(size: i32) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(size);
+    area.set_content_height(size);
+    area.add_css_class("dim-label");
+    area.add_css_class(LOOK_MARK);
+    area.set_valign(gtk::Align::Center);
+    area.set_draw_func(|area, cr, width, height| {
+        let colour = area.color();
+        let ink = |share: f32| cr.set_source_color(&colour.with_alpha(colour.alpha() * share));
+        // Drawn on a 16-unit grid, scaled to the area, with the strokes the
+        // header's other glyphs have whatever the size.
+        let size = width.min(height) as f64;
+        cr.translate((width as f64 - size) / 2.0, (height as f64 - size) / 2.0);
+        cr.scale(size / 16.0, size / 16.0);
+        let line = 1.3 * 16.0 / size;
+        let (back, front, radius, gap) = ((1.0, 7.0), (5.0, 1.5), 2.0, 1.5);
+        let window = |(x, y): (f64, f64)| rounded(cr, x, y, 10.0, 7.5, radius);
+        cr.push_group();
+        cr.set_line_width(line);
+        ink(0.5);
+        window(back);
+        let _ = cr.stroke();
+        // Clear the front window's ground and a gap round it, cutting the
+        // back one off where it would run behind.
+        cr.set_operator(gtk::cairo::Operator::Clear);
+        window(front);
+        let _ = cr.fill_preserve();
+        cr.set_line_width(line + 2.0 * gap);
+        let _ = cr.stroke();
+        cr.set_operator(gtk::cairo::Operator::Over);
+        cr.set_line_width(line);
+        ink(1.0);
+        window(front);
+        let _ = cr.stroke();
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint();
+    });
+    area
+}
+
+/// The icon of a chart's settings gear.
+pub(crate) const GEAR_ICON: &str = "emblem-system-symbolic";
+
+/// The data feed's dot, in the colour its class gives it.
+pub(crate) fn feed_dot() -> gtk::Box {
+    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dot.add_css_class("feed-dot");
+    dot.set_valign(gtk::Align::Center);
+    dot
+}
+
+/// Buy and Sell: two words in the trading colours, as calm as the rest of
+/// the line until the pointer is on one.
+pub(crate) fn trade_pair() -> (gtk::Box, [gtk::Button; 2]) {
+    let pair = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let buttons = [("Buy", "trade-buy"), ("Sell", "trade-sell")].map(|(words, class)| {
+        let button = gtk::Button::with_label(words);
+        button.add_css_class("flat");
+        button.add_css_class("trade-button");
+        button.add_css_class(class);
+        button.set_valign(gtk::Align::Center);
+        pair.append(&button);
+        button
+    });
+    (pair, buttons)
+}
+
+/// `word` in the line's quiet grey, and the label after it for the amount
+/// it names, in full: "Qty 2", "P&L +$1,250.00".
+pub(crate) fn worded(word: &str) -> (gtk::Box, gtk::Label) {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    let word = gtk::Label::new(Some(word));
+    word.add_css_class("dim-label");
+    line.append(&word);
+    let amount = gtk::Label::new(None);
+    line.append(&amount);
+    (line, amount)
+}
+
+/// The resolution strip, its buttons joined.
+pub(crate) fn strip() -> gtk::Box {
+    let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    strip.add_css_class("linked");
+    strip.add_css_class("timeframe-strip");
+    strip
+}
+
+/// One of the strip's resolutions.
+pub(crate) fn strip_button(timeframe: Timeframe) -> gtk::ToggleButton {
+    let button = gtk::ToggleButton::with_label(&timeframe.label());
+    button.add_css_class("flat");
+    button
 }
 
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
@@ -2185,17 +2333,17 @@ mod tests {
     /// at the same place. No gap where it would be, no room taken.
     #[test]
     fn a_blank_account_or_feed_takes_no_room_in_the_header() {
-        use crate::header::{Header, Part};
+        use crate::header::{Part, Zone};
         crate::ui::on_gtk(|| {
             let pane = test_pane();
             pane.symbol_button.set_label("ES");
             pane.write_template(Some("Footprint"));
             let laid_out = |parts: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new(), right: Vec::new() };
+                *pane.header.borrow_mut() = layout(&[(Zone::Left, &parts)]);
                 pane.arrange_header();
-                let width = pane.header_row.preferred_size().1.width();
-                pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
-                let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
+                let width = pane.zones[0].preferred_size().1.width();
+                pane.zones[0].allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
+                let template = pane.template_label.compute_bounds(&pane.zones[0]).expect("placed").x();
                 (width, template)
             };
             let without = laid_out(vec![Part::Symbol, Part::Resolution, Part::Template]);
@@ -2279,11 +2427,11 @@ mod tests {
     }
 
     /// The corner's controls are header parts: in the corner in their
-    /// order out of the box, in the line when put there, and gone when
-    /// taken out.
+    /// order out of the box, wherever else the header puts them, and gone
+    /// when taken out.
     #[test]
     fn the_corner_s_controls_go_where_the_header_puts_them() {
-        use crate::header::{Header, Part};
+        use crate::header::{Layout, Part, Zone};
         crate::ui::on_gtk(|| {
             let pane = test_pane();
             let children = |row: &gtk::Box| {
@@ -2295,7 +2443,7 @@ mod tests {
                 }
                 found
             };
-            let corner = |pane: &ChartPane| children(&pane.corner);
+            let corner = |pane: &ChartPane| children(&pane.zones[2]);
             assert_eq!(
                 corner(&pane),
                 vec![
@@ -2310,16 +2458,17 @@ mod tests {
                 ]
             );
             let header = |left: Vec<Part>, right: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left, center: Vec::new(), right };
+                *pane.header.borrow_mut() = layout(&[(Zone::Left, &left), (Zone::Right, &right)]);
                 pane.arrange_header();
             };
             header(vec![Part::Settings, Part::Symbol], vec![Part::Link, Part::Maximize]);
             assert_eq!(corner(&pane), vec![pane.link.clone().upcast::<gtk::Widget>(), pane.expand.clone().upcast()]);
-            assert_eq!(children(&pane.header_row)[0], pane.gear.clone().upcast::<gtk::Widget>());
+            assert_eq!(children(&pane.zones[0])[0], pane.gear.clone().upcast::<gtk::Widget>());
             header(vec![Part::Symbol], Vec::new());
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
-            header(Header::standard().left, Header::standard().right);
+            *pane.header.borrow_mut() = Layout::standard();
+            pane.arrange_header();
             // The account, the P&L, Buy and Sell and the quantity, then the
             // three controls.
             assert_eq!(corner(&pane).len(), 8);
@@ -2330,17 +2479,17 @@ mod tests {
     /// the same width as a header without it. Written, it does.
     #[test]
     fn a_blank_trading_size_takes_no_room_in_the_header() {
-        use crate::header::{Header, Part};
+        use crate::header::{Part, Zone};
         crate::ui::on_gtk(|| {
             let pane = test_pane();
             pane.symbol_button.set_label("ES");
             pane.write_template(Some("Footprint"));
             let laid_out = |parts: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new(), right: Vec::new() };
+                *pane.header.borrow_mut() = layout(&[(Zone::Left, &parts)]);
                 pane.arrange_header();
-                let width = pane.header_row.preferred_size().1.width();
-                pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
-                let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
+                let width = pane.zones[0].preferred_size().1.width();
+                pane.zones[0].allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
+                let template = pane.template_label.compute_bounds(&pane.zones[0]).expect("placed").x();
                 (width, template)
             };
             let without = laid_out(vec![Part::Symbol, Part::Template]);
@@ -2475,6 +2624,17 @@ mod tests {
         });
     }
 
+    /// A header of `zones`, the rest empty.
+    fn layout(zones: &[(crate::header::Zone, &[crate::header::Part])]) -> crate::header::Layout {
+        let mut layout = crate::header::Layout::default();
+        for (zone, parts) in zones {
+            for part in *parts {
+                layout.place(*part, *zone, usize::MAX);
+            }
+        }
+        layout
+    }
+
     fn test_pane() -> Rc<ChartPane> {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
         let scheme = omacharts_engine::theme::theme_bars(&theme);
@@ -2484,19 +2644,17 @@ mod tests {
             scheme,
             Timeframe::days(1),
             Vec::new(),
-            BarStyle::default(),
             Session::default(),
-            true,
             LinkMode::default(),
         )
     }
 
-    /// The stripe is a part like the others: across the top when put
+    /// The strip is a part like the others: across the top when put
     /// there, in the line on the left when put there, and nowhere, taking
     /// no room at all, when taken out, which is where it is by default.
     #[test]
-    fn the_stripe_goes_where_the_header_puts_it() {
-        use crate::header::{Header, Part};
+    fn the_strip_goes_where_the_header_puts_it() {
+        use crate::header::{Layout, Part, Zone};
         crate::ui::on_gtk(|| {
             let pane = test_pane();
             pane.symbol_button.set_label("ES");
@@ -2506,35 +2664,38 @@ mod tests {
             pane.set_focused(true);
             let width = |row: &gtk::Box| row.preferred_size().1.width();
             let parent = || pane.strip.parent();
-            let header = |left: Vec<Part>, center: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left, center, right: Header::standard().right };
+            let standard = Layout::standard();
+            let header = |left: &[Part], center: &[Part]| {
+                *pane.header.borrow_mut() =
+                    layout(&[(Zone::Left, left), (Zone::Center, center), (Zone::Right, standard.zone(Zone::Right))]);
                 pane.arrange_header();
             };
+            let (line_of, centre) = (&pane.zones[0], &pane.zones[1]);
 
-            assert!(parent().is_none(), "the stripe is in the standard header");
-            assert!(pane.title_part.parent().is_some_and(|p| p == pane.header_center));
-            header(Header::standard().left, vec![Part::Stripe]);
-            assert!(parent().is_some_and(|p| p == pane.header_center));
-            let line = width(&pane.header_row);
-            assert!(width(&pane.header_center) > 0);
-            header(vec![Part::Symbol, Part::Resolution, Part::Account, Part::Stripe], Vec::new());
-            assert!(parent().is_some_and(|p| p == pane.header_row));
-            assert_eq!(pane.header_row.last_child(), pane.hidden_glyphs.last().map(|(_, b)| b.clone().upcast()));
-            assert!(width(&pane.header_row) > line);
-            assert_eq!(width(&pane.header_center), 0);
+            assert!(parent().is_none(), "the strip is in the standard header");
+            assert!(pane.title_part.parent().is_some_and(|p| p == *centre));
+            header(standard.zone(Zone::Left), &[Part::Strip]);
+            assert!(parent().is_some_and(|p| p == *centre));
+            let line = width(line_of);
+            assert!(width(centre) > 0);
+            header(&[Part::Symbol, Part::Resolution, Part::Account, Part::Strip], &[]);
+            assert!(parent().is_some_and(|p| p == *line_of));
+            assert_eq!(line_of.last_child(), pane.hidden_glyphs.last().map(|(_, b)| b.clone().upcast()));
+            assert!(width(line_of) > line);
+            assert_eq!(width(centre), 0);
 
-            header(vec![Part::Symbol, Part::Resolution, Part::Account], Vec::new());
+            header(&[Part::Symbol, Part::Resolution, Part::Account], &[]);
             assert!(parent().is_none());
-            assert_eq!(width(&pane.header_row), line);
-            assert_eq!(width(&pane.header_center), 0);
+            assert_eq!(width(line_of), line);
+            assert_eq!(width(centre), 0);
 
-            header(Header::standard().left, vec![Part::Stripe]);
-            assert!(parent().is_some_and(|p| p == pane.header_center));
-            assert_eq!(width(&pane.header_row), line);
+            header(standard.zone(Zone::Left), &[Part::Strip]);
+            assert!(parent().is_some_and(|p| p == *centre));
+            assert_eq!(width(line_of), line);
 
-            header(Header::standard().left, Header::standard().center);
+            header(standard.zone(Zone::Left), standard.zone(Zone::Center));
             assert!(parent().is_none());
-            assert!(pane.title_part.parent().is_some_and(|p| p == pane.header_center));
+            assert!(pane.title_part.parent().is_some_and(|p| p == *centre));
         });
     }
 
@@ -2569,7 +2730,7 @@ mod tests {
     /// left of the header, it is typed there.
     #[test]
     fn an_untitled_title_is_typed_where_a_title_is_drawn() {
-        use crate::header::{Header, Part};
+        use crate::header::{Layout, Part, Zone};
         use gtk::gdk;
         crate::ui::on_gtk(|| {
             let Some(display) = gdk::Display::default() else { return };
@@ -2626,17 +2787,16 @@ mod tests {
             assert_eq!(gtk::prelude::EntryExt::alignment(&pane.title_entry), 0.5);
             pane.finish_title_edit(false);
 
-            let standard = Header::standard();
-            let mut left = standard.left.clone();
-            left.push(Part::Title);
-            *pane.header.borrow_mut() = Header { left, center: Vec::new(), right: standard.right.clone() };
+            let mut layout = Layout::standard();
+            layout.place(Part::Title, Zone::Left, usize::MAX);
+            *pane.header.borrow_mut() = layout;
             pane.arrange_header();
             settle();
             pane.begin_title_edit();
             settle();
             let entry = pane.title_entry.compute_bounds(&pane.root).expect("laid out");
             let symbol = pane.symbol_button.compute_bounds(&pane.root).expect("laid out");
-            assert!(pane.title_part.parent().is_some_and(|row| row == pane.header_row));
+            assert!(pane.title_part.parent().is_some_and(|zone| zone == pane.zones[0]), "in the first row's left");
             assert!(entry.x() > symbol.x() + symbol.width(), "typed off the line it is in");
             assert!(entry.x() < drawn - 100.0, "typed in the centre, not on the left");
             pane.finish_title_edit(false);

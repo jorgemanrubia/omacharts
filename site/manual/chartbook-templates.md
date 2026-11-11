@@ -79,9 +79,9 @@ state:
   type Desk
   move 1279 719
 capture: bin/headless-window shot save.png
-crop: 880,470,800,500
+crop: 960,556,640,330   (the whole card, 10px layout margin)
 -->
-{% include figure.html src="/assets/manual/chartbook-templates/save-new.png" alt="The Save as New Chartbook Template dialog with Desk typed in the Name box, and Cancel and Save buttons" caption="Saving a chartbook as a new template." %}
+{% include figure.html src="/assets/manual/chartbook-templates/save-new.png" alt="The Save as New Chartbook Template card with Desk typed in the Name box, and Cancel and Save under it" caption="Saving a chartbook as a new template." %}
 
 <!-- regenerate:
 theme: tokyo-night

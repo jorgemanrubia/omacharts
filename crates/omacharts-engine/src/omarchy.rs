@@ -11,7 +11,9 @@
 //! exactly the case where watching a path either misses the change or needs
 //! re-arming. Two `stat` calls on a timer cost nothing and never miss.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::palette;
@@ -22,6 +24,8 @@ use crate::theme::{
 
 const COLORS: &str = ".local/state/omarchy/current/theme/colors.toml";
 const NAME: &str = ".local/state/omarchy/current/theme.name";
+const THEMES: &str = ".local/share/omarchy/themes";
+const USER_THEMES: &str = ".config/omarchy/themes";
 
 pub fn colors_path(home: &Path) -> PathBuf {
     home.join(COLORS)
@@ -65,35 +69,94 @@ pub fn current(home: &Path) -> Option<Theme> {
     Some(derive(&parse(&text), &name))
 }
 
-/// Where Omarchy keeps the themes it ships, and where people install their
-/// own. A theme in the second shadows one of the same name in the first,
-/// the way Omarchy itself resolves them.
-const INSTALLED: [&str; 2] = [".local/share/omarchy/themes", ".config/omarchy/themes"];
-
-/// Every Omarchy theme installed on this machine, each as a fixed theme of
-/// its own, sorted by name.
+/// Every Omarchy theme on this machine, each fixed at its own palette.
 ///
-/// Offered beside the one that follows the desktop, so a chart can wear a
-/// theme other than the desktop's. Read once rather than polled: a theme
-/// installed while the app is open shows up next time it starts.
-pub fn installed(home: &Path) -> Vec<Theme> {
-    let mut found: HashMap<String, Theme> = HashMap::new();
-    for dir in INSTALLED {
+/// What `omarchy theme list` lists: the themes Omarchy ships, and the user's
+/// own in `~/.config/omarchy/themes`, which win over a shipped one of the same
+/// name. Read once rather than followed, because only the current theme ever
+/// changes under a name, and that one is offered separately, as System.
+/// Sorted by name, the way the list prints them.
+pub fn installed(home: &Path) -> Vec<Palette> {
+    let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for dir in [THEMES, USER_THEMES] {
         let Ok(entries) = std::fs::read_dir(home.join(dir)) else { continue };
         for entry in entries.flatten() {
-            let slug = entry.file_name().to_string_lossy().into_owned();
-            let Ok(text) = std::fs::read_to_string(entry.path().join("colors.toml")) else {
+            let colors = entry.path().join("colors.toml");
+            let id = entry.file_name().to_string_lossy().to_string();
+            if !colors.is_file() || id.starts_with('.') {
                 continue;
-            };
-            let mut theme = derive(&parse(&text), &pretty_name(&slug));
-            theme.id = format!("{OMARCHY_ID}:{slug}");
-            theme.source = Source::BuiltIn;
-            found.insert(slug, theme);
+            }
+            found.insert(id, colors);
         }
     }
-    let mut themes: Vec<Theme> = found.into_values().collect();
-    themes.sort_by(|a, b| a.name.cmp(&b.name));
-    themes
+    found
+        .into_iter()
+        .filter_map(|(id, path)| Some(Palette::new(id.into(), std::fs::read_to_string(path).ok()?.into())))
+        .collect()
+}
+
+/// The Omarchy palettes built into the binary, for a machine without Omarchy.
+///
+/// A few of the themes Omarchy ships, chosen to give a dark and a light of
+/// each temperament, rather than a set of our own: the derivation is tuned
+/// against these files, and they are what everybody on Omarchy sees.
+pub fn bundled() -> Vec<Palette> {
+    BUNDLED.iter().map(|(id, text)| Palette::new((*id).into(), (*text).into())).collect()
+}
+
+const BUNDLED: [(&str, &str); 9] = [
+    ("tokyo-night", include_str!("../themes/tokyo-night.toml")),
+    ("catppuccin", include_str!("../themes/catppuccin.toml")),
+    ("everforest", include_str!("../themes/everforest.toml")),
+    ("gruvbox", include_str!("../themes/gruvbox.toml")),
+    ("kanagawa", include_str!("../themes/kanagawa.toml")),
+    ("nord", include_str!("../themes/nord.toml")),
+    ("rose-pine", include_str!("../themes/rose-pine.toml")),
+    ("catppuccin-latte", include_str!("../themes/catppuccin-latte.toml")),
+    ("flexoki-light", include_str!("../themes/flexoki-light.toml")),
+];
+
+/// A fixed theme on offer, its palette read and its theme derived the first
+/// time somebody looks at it.
+///
+/// Deriving is what a theme costs: the furniture held to its contrast bands
+/// a lightness step at a time, eight swatches placed clear of each other. A
+/// window wears one theme of twenty, so the list is of palettes, and only
+/// the ones worn, or all of them while the list is on screen, are derived.
+pub struct Palette {
+    id: Cow<'static, str>,
+    text: Cow<'static, str>,
+    theme: OnceCell<Theme>,
+}
+
+impl Palette {
+    fn new(id: Cow<'static, str>, text: Cow<'static, str>) -> Palette {
+        Palette { id, text, theme: OnceCell::new() }
+    }
+
+    /// The theme's id, which is its directory's name: known without
+    /// deriving it.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn theme(&self) -> &Theme {
+        self.theme.get_or_init(|| named(&self.id, &self.text))
+    }
+
+    pub fn into_theme(self) -> Theme {
+        let Palette { id, text, theme } = self;
+        theme.into_inner().unwrap_or_else(|| named(&id, &text))
+    }
+}
+
+/// One theme by its directory name, fixed rather than following the desktop.
+fn named(id: &str, text: &str) -> Theme {
+    Theme {
+        id: id.to_string(),
+        source: Source::BuiltIn,
+        ..derive(&parse(text), &pretty_name(id))
+    }
 }
 
 /// `key = "value"`, one per line; comments and blanks ignored.
@@ -277,9 +340,6 @@ pub fn derive(keys: &HashMap<String, String>, name: &str) -> Theme {
             accent,
         },
         swatches,
-        bars: None,
-        trading: None,
-        last_price: None,
     }
 }
 
@@ -407,30 +467,6 @@ magenta = "#d699b6"
     }
 
     #[test]
-    fn every_installed_theme_is_offered_once_and_a_users_own_wins() {
-        let home = std::env::temp_dir().join(format!("omacharts-installed-{}", std::process::id()));
-        let write = |dir: &str, slug: &str, background: &str| {
-            let path = home.join(dir).join(slug);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("colors.toml"), format!("background = \"{background}\"\n"))
-                .unwrap();
-        };
-        write(INSTALLED[0], "tokyo-night", "#1a1b26");
-        write(INSTALLED[0], "everforest", "#2d353b");
-        write(INSTALLED[1], "everforest", "#000000");
-        std::fs::create_dir_all(home.join(INSTALLED[0]).join("no-colours")).unwrap();
-
-        let themes = installed(&home);
-        let _ = std::fs::remove_dir_all(&home);
-
-        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["Everforest", "Tokyo Night"]);
-        assert_eq!(themes[0].id, "omarchy:everforest");
-        assert_eq!(themes[0].source, Source::BuiltIn);
-        assert_eq!(themes[0].ui.background, derive(&parse("background = \"#000000\""), "").ui.background);
-    }
-
-    #[test]
     fn names_are_prettified() {
         assert_eq!(pretty_name("tokyo-night"), "Tokyo Night");
         assert_eq!(pretty_name("everforest"), "Everforest");
@@ -441,5 +477,39 @@ magenta = "#d699b6"
     fn the_fingerprint_moves_with_the_content() {
         assert_ne!(hash("a"), hash("b"));
         assert_eq!(hash(EVERFOREST), hash(EVERFOREST));
+    }
+
+    #[test]
+    fn installed_themes_are_every_directory_with_a_palette_the_users_winning() {
+        let home = std::env::temp_dir().join(format!("omacharts-themes-{}", std::process::id()));
+        let write = |dir: &str, name: &str, text: &str| {
+            let at = home.join(dir).join(name);
+            std::fs::create_dir_all(&at).unwrap();
+            if !text.is_empty() {
+                std::fs::write(at.join("colors.toml"), text).unwrap();
+            }
+        };
+        write(THEMES, "everforest", EVERFOREST);
+        write(THEMES, "tokyo-night", "background = \"#1a1b26\"\n");
+        write(THEMES, "no-palette", "");
+        write(USER_THEMES, "tokyo-night", "background = \"#000000\"\n");
+
+        let themes: Vec<Theme> = installed(&home).into_iter().map(Palette::into_theme).collect();
+        let _ = std::fs::remove_dir_all(&home);
+        let ids: Vec<&str> = themes.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["everforest", "tokyo-night"]);
+        assert_eq!(themes[1].name, "Tokyo Night");
+        assert_eq!(themes[1].ui.background, "#000000", "the user's copy wins");
+        assert!(themes.iter().all(|t| t.source == Source::BuiltIn), "a named theme stays put");
+    }
+
+    #[test]
+    fn every_bundled_theme_is_a_named_theme_of_its_own() {
+        let themes: Vec<Theme> = bundled().into_iter().map(Palette::into_theme).collect();
+        assert!(themes.iter().any(|t| t.mode == Mode::Light), "a light theme is offered");
+        for theme in &themes {
+            assert_ne!(theme.id, OMARCHY_ID);
+            assert_eq!(themes.iter().filter(|t| t.id == theme.id).count(), 1, "{}", theme.id);
+        }
     }
 }

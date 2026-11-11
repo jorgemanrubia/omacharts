@@ -1,6 +1,6 @@
 ---
 title: "Themes and colours"
-description: "The desktop theme, the shipped themes, themes of your own, and the palette that indicators and drawings use."
+description: "The desktop theme, the Omarchy themes, the colours of the bars, and the palette that indicators and drawings use."
 section: configuration
 nav_order: 25
 ---
@@ -24,93 +24,32 @@ crop: none
 
 ## Choosing a theme
 
-Preferences › Theme › **Theme** lists the themes in groups, separated by a line.
+Preferences › Appearance › **Theme** has two cards, each a small picture of the window in its theme. The same page is under **VISUAL** in [Chart settings](/manual/chart-settings/).
 
-| Entry | What it is |
+| Card | What it is |
 |---|---|
-| **System** | The desktop's Omarchy theme, followed as it changes. The row says which one, *Following Tokyo Night*. Only on Omarchy, where it is the default. |
-| Your own themes | Made with **Customize**, under the names you gave them. |
-| **Midnight**, **Carbon**, **Paper**, **Daylight** | Shipped with Omacharts. Midnight is the default without Omarchy. |
-| Installed Omarchy themes | Every theme installed on the desktop, under its own name. These do not follow the desktop. A theme installed while the window is open appears next time it opens. |
+| **Follow system** | The desktop's Omarchy theme, followed as it changes. The card says which one, *Now Tokyo Night*. Only on Omarchy, where it is the default |
+| **Catalogue** | Every Omarchy theme on the machine, as a page of pictures. Pick one and the window wears it, whatever the desktop does; the card then shows it. The desktop's own is marked **desktop** |
 
-<!-- regenerate:
-theme: tokyo-night
-window: 2560x1600 @2, bin/headless-window start --size 2560x1600, with the desktop's themes' colors.toml copied into $HOME/.local/share/omarchy/themes
-state:
-  move 1270 790
-  omacharts config set theme omarchy
-  key ctrl+comma
-  click 214 205          # Theme in the sidebar
-  click 985 157          # the Theme row's drop-down
-capture: bin/headless-window shot /tmp/theme-list.png
-crop: 934,228,1294,962   (the Theme group and the drop-down, 16px layout margin)
--->
-{% include figure.html src="/assets/manual/themes/theme-list.png" alt="The Theme drop-down open, with System first and the shipped and installed themes below" caption="The Theme drop-down." %}
+Without Omarchy there is no **Follow system**, and the catalogue holds a set of Omarchy's themes built into the app, Tokyo Night the default. A theme installed on the desktop while the window is open appears next time it opens. A light theme makes the whole window light, dialogs and menus included.
 
-| Shipped theme | Look |
+A theme of your own is made with Omarchy's tools, and then appears in the catalogue like any other.
+
+## Bars
+
+Preferences › Appearance › **Bars** sets how bars look on every chart, or under **LOCAL** on the focused chart alone ([A chart's own look](/manual/charts/#a-charts-own-look)). Tabs at its head pick the style: **Candles**, **OHLC bars** or **Line** ([Style](/manual/charts/#style)). Under them, the **Up** and **Down** rows each hold the direction's colour and, beside it, its body for candles or its thickness for OHLC bars, each picked from a list showing a bar drawn as the charts draw it. A line has no rise or fall to colour, so **High** and **Low** take Up's and Down's places: its colour at the highest close on screen and at the lowest, the theme's violet and blue until you pick others.
+
+| Control | Does |
 |---|---|
-| Midnight | Dark. Deep slate blue. |
-| Carbon | Dark. Neutral greys with a blue accent. |
-| Paper | Light. Warm off-white with ink text. |
-| Daylight | Light. White with cool neutrals. |
+| Colour | A colour from the theme's palette, or **Foreground**, the theme's text colour (Omarchy's `foreground`), for bars with no colour. It is light on a dark theme and dark on a light one |
+| Filled | The whole candle in its colour |
+| Bordered | The wick and the body's edge in the theme's text colour, as TradingView draws one. It follows the theme, so it is light on a dark theme and dark on a light one |
+| Hollow | The body as an outline in the candle's colour. Foreground and Hollow make a hollow candle in the text colour |
+| Thickness | How many pixels wide an OHLC bar is drawn, 1, 1.5, 2 or 3, for rising and falling bars apart. Bars too close together for it are drawn thinner |
 
-A light theme makes the whole window light, dialogs and menus included.
+A border needs room: a candle whose body is under five pixels wide keeps its own colour throughout, and one too narrow for a body is drawn as a line in its colour. `omacharts config bars` sets the same answers ([`config bars`](/manual/cli/#config-bars)).
 
-## Your own themes
-
-A theme of your own is a copy of another theme. System, the shipped themes and installed Omarchy themes cannot be edited themselves. Preferences › Theme › Make it yours › **Customize** asks for a name (*Copy of Tokyo Night* is offered) and **Create** makes the copy, selects it and shows a row for every colour. A copy of System keeps the colours it had when copied and stops following the desktop. The copy stays in the list when you switch back to the original.
-
-<!-- regenerate:
-theme: tokyo-night
-window: 2560x1600 @2, $SP/kit/hw
-state:
-  omacharts config set theme omarchy
-  key ctrl+comma
-  click 214 205          # Theme
-  click 971 212          # Customize
-  key Return             # Create, with the name offered
-capture: bin/headless-window shot /tmp/custom-theme.png
-crop: 301,122,1958,1356
--->
-{% include figure.html src="/assets/manual/themes/custom-theme.png" alt="Preferences on Theme with a theme of your own chosen, showing its colour rows" caption="A theme of your own." %}
-
-A swatch opens the colour chooser. The colour applies as you pick it. **Rename** changes the name only. **Delete** asks first (*Charts go back to System*) and puts the window on System, or on Midnight without Omarchy.
-
-| Group | Row | Colours |
-|---|---|---|
-| Bars | **Up outline**, **Up body** | A rising candle's edge and body. A body can be made transparent. A fully transparent body gives a hollow candle. |
-| Bars | **Down outline**, **Down body** | The same for a falling candle. |
-| Bars | **No change** | A bar that closed where it opened. |
-| Bars | **Monochrome** | Every bar, when a chart's **Colouring** is Monochrome. Until set, it follows the theme's text colour. |
-| Backgrounds | **Chart background** | The chart, and lists beside it. |
-| Backgrounds | **Panels** | The window, the sidebar, dialogs. |
-| Backgrounds | **Toolbars** | Headers, popovers, cards. |
-| Text | **Text** | All text. |
-| Text | **Secondary text** | Subtitles, hints and other quieter labels. |
-| Palette | **Blue**, **Amber**, **Violet**, **Teal**, **Rose**, **Green**, **Orange**, **Cyan** | The colours indicators and drawings pick from ([The palette](#the-palette)). |
-| Other | **Borders** | Separators and outlines. |
-| Other | **Grid lines** | The chart's gridlines. |
-| Other | **Axes** | The axis rules. |
-| Other | **Crosshair** | The crosshair. |
-| Other | **Last price** | The last price's tag and its dashed line across the chart. Until set, a pale tint of the palette's Cyan on a dark theme and a deeper one that reads on a light theme, or the first of Amber, Teal, Blue and Violet when Cyan is near a candle's colour. |
-| Other | **Accent** | A selected row, a switch that is on, the button a dialog suggests. |
-
-Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Vivid, soft, quiet or monochrome bars, hollow rises, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
-
-<!-- regenerate:
-theme: paper
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
-state: one NVDA 1D chart, sidebar hidden; for each cell, chart set --colouring C --hollow-up H --swap-colours S, then chart range 3m
-capture: bin/headless-window cli chart screenshot, one per cell; the four joined two by two with a 12px gap, resized to 2000 wide, -quality 88
-cells: theme · theme-soft (top); theme-quiet · theme-mono (bottom)
--->
-{% include figure.html src="/assets/manual/themes/palettes-paper.jpg" alt="The four palettes on the Paper theme: Vivid, Soft, Quiet and Monochrome" caption="The four palettes on Paper: Vivid, Soft (top); Quiet, Monochrome (bottom)." %}
-
-<!-- regenerate:
-as above, on midnight and on paper, cells: theme-quiet --hollow-up on · theme-mono --hollow-up on (top); theme --swap-colours on · theme with `chart indicator set volume --colouring theme-quiet` (bottom)
--->
-{% include figure.html src="/assets/manual/themes/switches-midnight.jpg" alt="The two switches on Midnight: hollow rises on Quiet and on Monochrome, Vivid with up and down swapped, and Vivid over a quiet volume strip" caption="The switches on Midnight: Hollow up bars on Quiet and on Monochrome (top); Vivid swapped, and Vivid over a Quiet volume strip (bottom)." %}
-{% include figure.html src="/assets/manual/themes/switches-paper.jpg" alt="The same four charts on Paper" caption="The same on Paper." %}
+The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Foreground both ways. Beside the palette and Foreground, the pickers offer **Slate** and **Sand**, a slate against a sand from the theme's palette that sit back behind what is drawn over the bars, and **Silver** and **Graphite**, two greys made from its text. They are every chart's, except on a chart with [a look of its own](/manual/charts/#a-charts-own-look). Volume bars take the candle colours unless the volume indicator was given colours of its own ([Volume](/manual/indicators/volume/)).
 
 ## The palette
 
@@ -118,7 +57,7 @@ The palette is the theme's named colours for indicators and drawings. An indicat
 
 An indicator added without a colour gets the next of Blue, Amber, Violet, Teal, Orange and Cyan not already on the chart. After six they repeat. Green and Rose are never given automatically, but you can pick them.
 
-**Neutral** is a very light tone of the theme's own hue on a dark theme and a very dark one on a light theme: close to the theme's text, never quite it, and tinted rather than white or black, a pale lavender on Tokyo Night and a cream on Gruvbox. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, or its background or accent when the text is a plain grey, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
+**Foreground** is the theme's text colour, as monochrome bars have it: light on a dark theme and dark on a light one, with only a trace of the text's tint, and held clear of Green and Rose. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically. A colour set to Neutral, the name an earlier version offered beside it, is Foreground.
 
 ### The palette picker
 
@@ -138,7 +77,7 @@ state:
 capture: bin/headless-window shot /tmp/picker.png
 crop: 751,500,1206,600   (the Line group and the palette, 16px layout margin round both)
 -->
-{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row: nine colours in three rows, Neutral last, the colour in use ringed and Custom… below" caption="The palette picker." %}
+{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row: nine colours in three rows, Foreground last, the colour in use ringed and Custom… below" caption="The palette picker." %}
 
 | Choice | When the theme changes |
 |---|---|

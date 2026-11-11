@@ -7,91 +7,86 @@ nav_order: 28
 
 Each chart has settings of its own. New charts open with the defaults set in Preferences.
 
-## The Chart settings dialog
+## The Chart settings window
 
-Chart settings is the dialog for the focused chart. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. It has two pages, **Chart** and **Indicators**, and <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves between them.
+Chart settings is a window of its own for the focused chart, so the chart stays in sight while you change it. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. The chart's name is under the window's title, such as **pos:0 NVDA 1D**. Focus another chart while it is open and it shows that one.
+
+The sections down its side are the chart's own, **Chart** and **Indicators**, then **Appearance** and **Overlays** under the **VISUAL** rule, the same pages and the same rule as in [Preferences](/manual/preferences/). **GLOBAL** changes every chart. **LOCAL** changes this chart alone: the first change gives it [a look of its own](/manual/charts/#a-charts-own-look). In a split Chart settings opens on **LOCAL**, since the chart in sight is one of several; on a chart alone it opens on **GLOBAL**. Focusing another chart starts it the same way again. The choice is this window's own, so picking one here leaves Preferences on its own choice. The reset arrow after **LOCAL** works as it does in Preferences. <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves from one section to the next.
 
 ### The Chart page
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+theme, window: as Preferences › General ([Preferences](/manual/preferences/)): tokyo-night as an Omarchy desktop's,
+  Yaru-purple icons, 2560x2400 @2 from bin/headless-window start --size 2560x2400, HOME sandboxed
 state:
-  (one NVDA 1D chart, sidebar hidden)
+  omacharts chart set --symbol NVDA --resolution 1D
+  click 640 900          # the chart, so it has the keyboard
   key ctrl+shift+s
-capture: bin/headless-window shot /tmp/chartsettings.png; then scroll 640 500 10 and shot /tmp/chartsettings2.png
-crop: 700,84,1160,1276 (both)
+  run swaymsg '[title="^Chart settings$"] move position 260 100'   # its own size, 760x640
+  move 100 1150          # off the window, so no row is hovered
+capture: bin/headless-window shot /tmp/chartsettings.png; then scroll 760 500 10, move 100 1150, wait for the scrollbar to fade and shot /tmp/chartsettings2.png
+crop: 496,176,1568,1328 (both; the whole window, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Title row, the Bars group with its Colouring, Hollow up bars and Swap up and down colours rows, and the Scales group" caption="The Chart page, top." %}
+{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart settings window on Chart, showing the Title row, the Bars group and the Scales group, with Chart, Indicators, Appearance and Overlays down its side" caption="The Chart page, top." %}
 
-<!-- regenerate: as the figure above; this is its second capture, /tmp/chartsettings2.png, after scroll 640 500 10 -->
+<!-- regenerate: as the figure above; this is its second capture, /tmp/chartsettings2.png, after scroll 760 500 10 -->
 {% include figure.html src="/assets/manual/charts/chart-settings-lower.png" alt="The Chart page scrolled down, showing the Session, Drawings and Reset to defaults groups" caption="The Chart page, bottom." %}
-
-<!-- regenerate:
-as above, with omacharts chart set --colouring theme-mono run before key ctrl+shift+s
-crop: 700,84,1160,1276
--->
-{% include figure.html src="/assets/manual/charts/chart-settings-monochrome.png" alt="The Chart page with Monochrome chosen, the Swap up and down colours row greyed out" caption="Monochrome paints a rise and a fall alike, so the swap is greyed out; Hollow up bars is how it shows direction." %}
 
 | Group › row | Does |
 |---|---|
 | **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
-| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
-| **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
-| **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |
-| **Bars** › **Hollow up bars** | Draws a rising candle as an outline. Greyed out on OHLC bars, which have no body |
-| **Bars** › **Swap up and down colours** | Paints the colouring the other way round, red for a rise. Greyed out on Monochrome |
+| **Bars** › **Show bars** | Off, this chart's bars are hidden ([Hiding the bars](/manual/charts/#hiding-the-bars)). How bars are drawn, OHLC thickness included, is part of the chart's look, on the **Appearance** page |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
-| **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
+| **Scales** › **Gridlines** | Draws the grid, on every chart, or on this chart alone when it has [a look of its own](/manual/charts/#a-charts-own-look). The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) |
+| **Scales** › **Last price line** | The dashed line across at the last price, on every chart, or on this chart alone when it has a look of its own. The price stays on the axis either way ([The last price line](/manual/charts/#the-last-price-line)) |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
-| **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
+| **Session** › **Hours** | **Extended** or **Regular** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
 | **Drawings** › **Send drawings to other charts** | Off, what is drawn on this chart stays on this chart ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |
 | **Reset to defaults** › **Reset** | Puts this chart back on the defaults. See [Putting one chart back on the defaults](#putting-one-chart-back-on-the-defaults) |
 
 ### The Indicators page
 
-The Indicators page lists the chart's indicators under **On the chart**, or the template's under **On the Default template** on a chart on one, with the **Chart template** and **Show legend for indicators** rows above them; off, the second takes the [legend](/manual/indicators/#the-legend) off the chart. <kbd>Ctrl</kbd> + <kbd>I</kbd> and the chart menu's **Indicators…** open the dialog on this page. Its rows are in [Indicators](/manual/indicators/#the-indicators-page), and the template row in [Chart templates](/manual/chart-templates/).
+The Indicators page lists the chart's indicators under **On the chart**, or the template's under **On the Default template** on a chart on one, with the **Chart template** and **Show legend for indicators** rows above them; off, the second takes the [legend](/manual/indicators/#the-legend) off the chart. <kbd>Ctrl</kbd> + <kbd>I</kbd> and the chart menu's **Indicators…** open Chart settings on this page. Its rows are in [Indicators](/manual/indicators/#the-indicators-page), and the template row in [Chart templates](/manual/chart-templates/).
 
 ## Defaults for new charts
 
-Preferences › Charts › **Defaults** is what every new chart opens with. A chart made by splitting copies the chart it divides instead ([Layouts](/manual/layouts/)). Changing a default changes no chart already open, and changing a chart never changes the defaults.
+Preferences › **Charts** is what every new chart opens with. A chart made by splitting copies the chart it divides instead ([Layouts](/manual/layouts/)). Changing a chart in its own settings never changes the defaults.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+theme: the fresh profile's own (Yaru-purple icons from a scratch XDG_CONFIG_HOME's gtk-4.0/settings.ini)
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed)
 state:
+  omacharts chart set --symbol NVDA --resolution 1D
   key ctrl+comma
-  click 214 147           # Charts
-capture: bin/headless-window shot /tmp/prefs-charts.png
-crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
+  click 294 355          # Charts in the sidebar, the last row
+  move 1270 700
+capture: bin/headless-window shot /tmp/charts.png
+crop: 449,69,1662,1302   (the whole window, 12px margin)
 -->
-{% include figure.html src="/assets/manual/charts/preferences-defaults.png" alt="Preferences open on the Charts Defaults tab" caption="Preferences › Charts › Defaults." %}
+{% include figure.html src="/assets/manual/charts/preferences-defaults.png" alt="Preferences open on Charts" caption="Preferences › Charts." %}
 
 | Group › row | Choices | Default |
 |---|---|---|
-| **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
-| **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
-| **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet**, **Monochrome** | **Vivid** |
-| **Bars** › **Hollow up bars** | On or off. Greyed out on OHLC bars | Off |
-| **Bars** › **Swap up and down colours** | On or off. Greyed out on Monochrome | Off |
 | **Scales** › **Logarithmic scale** | On or off | Off |
-| **Scales** › **Gridlines** | On or off | Off |
-| **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
+| **Session** › **Hours** | **Extended**, **Regular** | **Extended** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
 | **Indicators** › **Show legend for indicators** | On or off ([The legend](/manual/indicators/#the-legend)) | On |
 | **Drawings** › **Show drawings from other charts**, **Send drawings to other charts** | On or off ([Drawings](/manual/drawings/)) | On |
 
 A new chart's price scale starts by fitting the bars.
 
-### Applying the defaults to every chart
+### Every chart, or the focused one
 
-Once a row has changed, *New charts will use these options.* and **Apply to all charts now** appear under the last group. The button puts every chart in every chartbook on the defaults at once, all but the template. Each chart keeps its template and its indicators as they are, with their settings; the template only says what a new chart opens on.
+**GLOBAL / LOCAL**, on the rule above Appearance in the sidebar, says which charts the rows change.
+
+- **GLOBAL** changes the default and every chart in every chartbook at once, that row only: turning on **Logarithmic scale** leaves each chart's hours as they were. Each chart keeps its template and its indicators as they are, with their settings; the template only says what a new chart opens on.
+- **LOCAL** changes the focused chart, as its own settings do, and the rows show that chart's settings. Its symbol is in LOCAL's tooltip. The defaults stay as they are.
 
 ### Putting one chart back on the defaults
 
-**Reset to defaults** › **Reset**, at the bottom of the Chart page, puts the focused chart's bars, session, scales, drawing switches, legend and template back on the defaults. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
+**Reset to defaults** › **Reset**, at the bottom of the Chart page, shows the focused chart's bars and puts its session, scales, drawing switches, legend and template back on the defaults. Gridlines, the last-price line and how bars are drawn are part of the chart's look, and stay as they are. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
 
 ## See also
 

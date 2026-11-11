@@ -15,14 +15,12 @@
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::theme::{ColorChoice, Theme};
+use gtk::subclass::prelude::ObjectSubclassIsExt;
+use omacharts_engine::theme::{ColorChoice, Theme, FOREGROUND};
 
 use crate::ui::colors;
 
 const SWATCH: i32 = 26;
-/// Nine colours, the eight with a hue and the neutral, as a square: three
-/// rows of three, the neutral last, in the corner by itself.
-const COLUMNS: i32 = 3;
 
 /// A button showing `resolved`, which opens the theme's palette.
 ///
@@ -34,18 +32,134 @@ pub fn picker(
     resolved: &str,
     on_pick: impl Fn(ColorChoice) + Clone + 'static,
 ) -> gtk::MenuButton {
-    let button = gtk::MenuButton::new();
-    button.set_valign(gtk::Align::Center);
-    button.add_css_class("swatch-button");
-    button.set_tooltip_text(Some("Pick a colour from the theme's palette"));
-
     let shown = swatch_area(resolved, false);
     shown.set_size_request(30, 20);
-    button.set_child(Some(&shown));
+    let button = menu_button(theme, choice, resolved, &shown, shown.clone(), on_pick);
+    button.add_css_class("swatch-button");
+    button
+}
 
+/// [`picker`] with the colour's name beside its swatch, for a choice that
+/// is read as much as seen: "Green" still says what it is after a theme
+/// swap has made it a different green. In a [`slot`] as wide as Foreground,
+/// the longest name a bar is offered.
+pub fn chip(theme: &Theme, choice: ColorChoice, on_pick: impl Fn(ColorChoice) + Clone + 'static) -> adw::Bin {
+    let resolved = choice.resolve(theme);
+    // At 12px the swatch's rounded corners meet: a dot.
+    let shown = swatch_area(&resolved, false);
+    shown.set_size_request(12, 12);
+    shown.set_valign(gtk::Align::Center);
+    let name = gtk::Label::new(Some(&chip_name(&choice)));
+    let inside = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    inside.append(&shown);
+    inside.append(&name);
+    inside.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+    let named = name.clone();
+    let button = menu_button(theme, Some(choice), &resolved, &shown, inside, move |choice: ColorChoice| {
+        named.set_text(&chip_name(&choice));
+        on_pick(choice);
+    });
+    button.add_css_class("colour-chip");
+    slot(&button, &[FOREGROUND], move || name.text().to_string())
+}
+
+/// Hold `control` in a slot as wide as it is with the widest of `words` in
+/// place of `shown()`, the word it shows now. The control's box hugs what
+/// it shows, at the slot's start, and the room left over sits after it,
+/// outside the box: what stands beside the slot does not move as the word
+/// changes, and the highlight is only as wide as what it highlights.
+pub(crate) fn slot(control: &impl IsA<gtk::Widget>, words: &[&str], shown: impl Fn() -> String + 'static) -> adw::Bin {
+    let layout: SlotLayout = glib::Object::new();
+    layout.imp().words.replace(words.iter().map(|word| word.to_string()).collect());
+    layout.imp().shown.replace(Some(Box::new(shown)));
+    control.set_halign(gtk::Align::Start);
+    let slot = adw::Bin::new();
+    slot.set_layout_manager(Some(layout));
+    slot.set_child(Some(control));
+    slot.set_valign(gtk::Align::Center);
+    slot
+}
+
+glib::wrapper! {
+    /// How a [`slot`] is sized: its one child, and the room the widest
+    /// word would need beyond the word shown.
+    pub struct SlotLayout(ObjectSubclass<slot_layout::SlotLayout>) @extends gtk::LayoutManager;
+}
+
+mod slot_layout {
+    use std::cell::RefCell;
+
+    use gtk::glib;
+    use gtk::prelude::*;
+    use gtk::subclass::prelude::*;
+
+    #[derive(Default)]
+    pub struct SlotLayout {
+        pub words: RefCell<Vec<String>>,
+        pub shown: RefCell<Option<Box<dyn Fn() -> String>>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for SlotLayout {
+        const NAME: &'static str = "OmachartsSlotLayout";
+        type Type = super::SlotLayout;
+        type ParentType = gtk::LayoutManager;
+    }
+
+    impl ObjectImpl for SlotLayout {}
+
+    impl LayoutManagerImpl for SlotLayout {
+        /// The words are measured in the slot's font each time it is sized,
+        /// so a word changed, or a font that arrived after the slot was
+        /// built, is measured as it is.
+        fn measure(&self, slot: &gtk::Widget, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let Some(child) = slot.first_child() else { return (0, 0, -1, -1) };
+            let measured = child.measure(orientation, for_size);
+            if orientation == gtk::Orientation::Vertical {
+                return measured;
+            }
+            let width = |word: &str| slot.create_pango_layout(Some(word)).pixel_size().0;
+            let widest = self.words.borrow().iter().map(|word| width(word)).max().unwrap_or(0);
+            let shown = self.shown.borrow().as_ref().map(|shown| shown()).unwrap_or_default();
+            let room = (widest - width(&shown)).max(0);
+            (measured.0 + room, measured.1 + room, -1, -1)
+        }
+
+        /// The child's own start alignment holds it at the slot's start, at
+        /// its natural width.
+        fn allocate(&self, slot: &gtk::Widget, width: i32, height: i32, baseline: i32) {
+            if let Some(child) = slot.first_child() {
+                child.allocate(width, height, baseline, None);
+            }
+        }
+    }
+}
+
+/// What a chip calls a colour: the swatch's name, or Custom for one picked
+/// on the wheel, whose hex nobody reads.
+fn chip_name(choice: &ColorChoice) -> String {
+    match choice {
+        ColorChoice::Swatch { name } => name.clone(),
+        ColorChoice::Fixed { .. } => "Custom".to_string(),
+    }
+}
+
+/// A menu button holding `child`, whose popover is the palette; a pick
+/// repaints `shown`.
+fn menu_button(
+    theme: &Theme,
+    choice: Option<ColorChoice>,
+    resolved: &str,
+    shown: &gtk::DrawingArea,
+    child: impl IsA<gtk::Widget>,
+    on_pick: impl Fn(ColorChoice) + Clone + 'static,
+) -> gtk::MenuButton {
+    let button = gtk::MenuButton::new();
+    button.set_valign(gtk::Align::Center);
+    button.set_tooltip_text(Some("Pick a colour from the theme's palette"));
+    button.set_child(Some(&child));
     let popover = gtk::Popover::new();
-    popover.set_has_arrow(false);
-    popover.set_child(Some(&palette_box(theme, choice, resolved, &popover, &shown, on_pick)));
+    popover.set_child(Some(&palette_box(theme, choice, resolved, &popover, shown, on_pick)));
     button.set_popover(Some(&popover));
     button
 }
@@ -80,10 +194,16 @@ fn palette_box(
         _ => None,
     };
 
+    // Full rows, or a last row one short: four across for eight, three for
+    // the nine of the palette, seven for the thirteen a bar is offered. A
+    // swatch alone on a row reads as a leftover.
+    let palette = theme.palette();
+    let count = palette.len() as i32;
+    let columns = [4, 3, 7].into_iter().find(|c| count % c == 0 || count % c == c - 1).unwrap_or(4);
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);
-    for (n, swatch) in theme.palette().iter().enumerate() {
+    for (n, swatch) in palette.iter().enumerate() {
         let picked = current_name.as_deref() == Some(swatch.name.as_str());
         let cell = gtk::Button::new();
         cell.add_css_class("flat");
@@ -102,7 +222,7 @@ fn palette_box(
                 popover.popdown();
             }
         });
-        grid.attach(&cell, n as i32 % COLUMNS, n as i32 / COLUMNS, 1, 1);
+        grid.attach(&cell, n as i32 % columns, n as i32 / columns, 1, 1);
     }
     content.append(&grid);
 
@@ -110,6 +230,8 @@ fn palette_box(
 
     let custom = gtk::Button::with_label("Custom…");
     custom.add_css_class("flat");
+    // An action word wherever a row's actions are, as it always was there.
+    custom.add_css_class("action-word");
     custom.set_tooltip_text(Some("Pick an exact colour, which the theme will not change"));
     let choose = on_pick.clone();
     let popover_weak = popover.downgrade();
