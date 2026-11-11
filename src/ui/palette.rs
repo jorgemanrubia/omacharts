@@ -15,6 +15,7 @@
 
 use adw::prelude::*;
 use gtk::glib;
+use gtk::subclass::prelude::ObjectSubclassIsExt;
 use omacharts_engine::theme::{ColorChoice, Theme, FOREGROUND};
 
 use crate::ui::colors;
@@ -40,8 +41,9 @@ pub fn picker(
 
 /// [`picker`] with the colour's name beside its swatch, for a choice that
 /// is read as much as seen: "Green" still says what it is after a theme
-/// swap has made it a different green.
-pub fn chip(theme: &Theme, choice: ColorChoice, on_pick: impl Fn(ColorChoice) + Clone + 'static) -> gtk::MenuButton {
+/// swap has made it a different green. In a [`slot`] as wide as Foreground,
+/// the longest name a bar is offered.
+pub fn chip(theme: &Theme, choice: ColorChoice, on_pick: impl Fn(ColorChoice) + Clone + 'static) -> adw::Bin {
     let resolved = choice.resolve(theme);
     // At 12px the swatch's rounded corners meet: a dot.
     let shown = swatch_area(&resolved, false);
@@ -52,26 +54,85 @@ pub fn chip(theme: &Theme, choice: ColorChoice, on_pick: impl Fn(ColorChoice) + 
     inside.append(&shown);
     inside.append(&name);
     inside.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
-    // As wide as Foreground, the longest name a bar is offered, so what
-    // sits beside the chip does not move as the colour changes, and its dot
-    // and chevron stand where the chip's above and below them stand.
-    name.set_hexpand(true);
-    name.set_xalign(0.0);
-    reserve(&inside, &name, &[FOREGROUND], 12 + 7 + 7 + 10);
+    let named = name.clone();
     let button = menu_button(theme, Some(choice), &resolved, &shown, inside, move |choice: ColorChoice| {
-        name.set_text(&chip_name(&choice));
+        named.set_text(&chip_name(&choice));
         on_pick(choice);
     });
     button.add_css_class("colour-chip");
-    button
+    slot(&button, &[FOREGROUND], move || name.text().to_string())
 }
 
-/// Hold `face` as wide as it is with the widest of `words` set in `word`'s
-/// font, plus `rest` pixels for what sits beside the word. Whichever child
-/// expands takes the room left over.
-pub(crate) fn reserve(face: &gtk::Box, word: &gtk::Label, words: &[&str], rest: i32) {
-    let widest = words.iter().map(|w| word.create_pango_layout(Some(w)).pixel_size().0).max().unwrap_or(0);
-    face.set_size_request(widest + rest, -1);
+/// Hold `control` in a slot as wide as it is with the widest of `words` in
+/// place of `shown()`, the word it shows now. The control's box hugs what
+/// it shows, at the slot's start, and the room left over sits after it,
+/// outside the box: what stands beside the slot does not move as the word
+/// changes, and the highlight is only as wide as what it highlights.
+pub(crate) fn slot(control: &impl IsA<gtk::Widget>, words: &[&str], shown: impl Fn() -> String + 'static) -> adw::Bin {
+    let layout: SlotLayout = glib::Object::new();
+    layout.imp().words.replace(words.iter().map(|word| word.to_string()).collect());
+    layout.imp().shown.replace(Some(Box::new(shown)));
+    control.set_halign(gtk::Align::Start);
+    let slot = adw::Bin::new();
+    slot.set_layout_manager(Some(layout));
+    slot.set_child(Some(control));
+    slot.set_valign(gtk::Align::Center);
+    slot
+}
+
+glib::wrapper! {
+    /// How a [`slot`] is sized: its one child, and the room the widest
+    /// word would need beyond the word shown.
+    pub struct SlotLayout(ObjectSubclass<slot_layout::SlotLayout>) @extends gtk::LayoutManager;
+}
+
+mod slot_layout {
+    use std::cell::RefCell;
+
+    use gtk::glib;
+    use gtk::prelude::*;
+    use gtk::subclass::prelude::*;
+
+    #[derive(Default)]
+    pub struct SlotLayout {
+        pub words: RefCell<Vec<String>>,
+        pub shown: RefCell<Option<Box<dyn Fn() -> String>>>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for SlotLayout {
+        const NAME: &'static str = "OmachartsSlotLayout";
+        type Type = super::SlotLayout;
+        type ParentType = gtk::LayoutManager;
+    }
+
+    impl ObjectImpl for SlotLayout {}
+
+    impl LayoutManagerImpl for SlotLayout {
+        /// The words are measured in the slot's font each time it is sized,
+        /// so a word changed, or a font that arrived after the slot was
+        /// built, is measured as it is.
+        fn measure(&self, slot: &gtk::Widget, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            let Some(child) = slot.first_child() else { return (0, 0, -1, -1) };
+            let measured = child.measure(orientation, for_size);
+            if orientation == gtk::Orientation::Vertical {
+                return measured;
+            }
+            let width = |word: &str| slot.create_pango_layout(Some(word)).pixel_size().0;
+            let widest = self.words.borrow().iter().map(|word| width(word)).max().unwrap_or(0);
+            let shown = self.shown.borrow().as_ref().map(|shown| shown()).unwrap_or_default();
+            let room = (widest - width(&shown)).max(0);
+            (measured.0 + room, measured.1 + room, -1, -1)
+        }
+
+        /// The child's own start alignment holds it at the slot's start, at
+        /// its natural width.
+        fn allocate(&self, slot: &gtk::Widget, width: i32, height: i32, baseline: i32) {
+            if let Some(child) = slot.first_child() {
+                child.allocate(width, height, baseline, None);
+            }
+        }
+    }
 }
 
 /// What a chip calls a colour: the swatch's name, or Custom for one picked

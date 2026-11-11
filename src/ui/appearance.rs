@@ -323,12 +323,11 @@ fn body_word(body: Body) -> &'static str {
 /// A dropdown of a few answers, each told by a picture and a word, in the
 /// shape of the colour beside it: its face the answer picked, and its list
 /// the app's menu, the answer picked ticked. Every face, a body's or a
-/// thickness's, is one picture's box and the longest body wide, so the
-/// row does not move as a word or the style changes; the picture at its
-/// left, the chevron after the word, and the room left over after that: a
-/// chevron out at the edge would sit against the colour's dot and read as
-/// the colour's. `draw` paints an answer's picture when it is drawn, so
-/// a change of colour elsewhere needs only the card's redraw.
+/// thickness's, is held in a [`palette::slot`] as wide as the longest
+/// body, so the row does not move as a word or the style changes; the
+/// picture at its left and the chevron after the word. `draw` paints an
+/// answer's picture when it is drawn, so a change of colour elsewhere
+/// needs only the card's redraw.
 fn choice<T: Copy + PartialEq + 'static>(
     card: &Card,
     answers: Vec<T>,
@@ -336,15 +335,14 @@ fn choice<T: Copy + PartialEq + 'static>(
     word: fn(T) -> String,
     draw: impl Fn(&gtk::cairo::Context, f64, f64, T) + 'static,
     picked: impl Fn(T) + 'static,
-) -> gtk::DropDown {
+) -> adw::Bin {
     let words: Vec<String> = answers.iter().map(|answer| word(*answer)).collect();
-    let bodies: Vec<&str> = Body::ALL.iter().map(|body| body_word(*body)).collect();
     let model = gtk::StringList::new(&words.iter().map(String::as_str).collect::<Vec<_>>());
     let answers = Rc::new(answers);
     let draw = Rc::new(draw);
     let factory = |listed: bool| {
         let factory = gtk::SignalListItemFactory::new();
-        let (card, bodies) = (card.clone(), bodies.clone());
+        let card = card.clone();
         factory.connect_setup(move |_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
             let glyph = gtk::DrawingArea::new();
@@ -364,10 +362,7 @@ fn choice<T: Copy + PartialEq + 'static>(
                     tick.add_css_class("tick");
                     inside.append(&tick);
                 }
-                false => {
-                    inside.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
-                    palette::reserve(&inside, &label, &bodies, GLYPH.0 + 7 + 7 + 10);
-                }
+                false => inside.append(&gtk::Image::from_icon_name("pan-down-symbolic")),
             }
             item.set_child(Some(&inside));
         });
@@ -395,12 +390,18 @@ fn choice<T: Copy + PartialEq + 'static>(
     dropdown.set_factory(Some(&factory(false)));
     dropdown.set_list_factory(Some(&factory(true)));
     dropdown.set_selected(answers.iter().position(|answer| *answer == current).unwrap_or(0) as u32);
+    let picks = answers.clone();
     dropdown.connect_selected_notify(move |dropdown| {
-        if let Some(&answer) = answers.get(dropdown.selected() as usize) {
+        if let Some(&answer) = picks.get(dropdown.selected() as usize) {
             picked(answer);
         }
     });
-    dropdown
+    let bodies: Vec<&str> = Body::ALL.iter().map(|body| body_word(*body)).collect();
+    let face = dropdown.downgrade();
+    palette::slot(&dropdown, &bodies, move || {
+        let selected = face.upgrade().map_or(0, |dropdown| dropdown.selected() as usize);
+        answers.get(selected).map(|answer| word(*answer)).unwrap_or_default()
+    })
 }
 
 /// A rise and a fall drawn in `style`, in the colours the charts use.
