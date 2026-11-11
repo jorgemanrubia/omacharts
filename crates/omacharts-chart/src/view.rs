@@ -219,9 +219,10 @@ struct State {
     /// the room a hand dragged open. Kept as new bars arrive, so the margin
     /// stays what it was set to. `RIGHT_MARGIN` at rest.
     overhang: usize,
-    /// Whether a hand set `overhang`, panning. At rest it is widened to
-    /// fit the live sessions of the right-aligned volume profiles, and
-    /// narrowed back as they go; set by hand, it is what the hand left.
+    /// Whether a hand set `overhang`, panning. At rest the room the live
+    /// sessions of the right-aligned volume profiles take is added to it,
+    /// and taken off as they go, so the empty room before them is the same
+    /// as with none; set by hand, it is what the hand left.
     overhang_by_hand: bool,
     /// The share of the columns a hand left `overhang` at, short of the
     /// profiles' margin: what zooming keeps it at, so it stays as wide on
@@ -2202,6 +2203,11 @@ impl State {
         let was = self.left_edge();
         let left = was + bars.round() as i64;
         let left = left.clamp(-room, (len - columns as i64 + ahead).max(-room));
+        // Held at the stop, nothing moved: at rest the margin stays the
+        // resting margin it is, with the profiles' room still on top.
+        if left == was {
+            return;
+        }
         let right = left + columns as i64;
         self.lead = (-left).max(0) as usize;
         self.overhang = (right - len).max(0) as usize;
@@ -2209,21 +2215,19 @@ impl State {
         self.anchored = right >= len;
         // Moving the view is choosing where to look: whatever range it was
         // holding to, this is it now.
-        if left != was {
-            self.range = None;
-            self.overhang_by_hand = true;
-            self.overhang_share = self.overhang as f64 / columns as f64;
-        }
+        self.range = None;
+        self.overhang_by_hand = true;
+        self.overhang_share = self.overhang as f64 / columns as f64;
         self.settle_at_stop();
     }
 
     /// The room past the last bar the view stops at while right-aligned
-    /// profiles keep a margin there: the resting margin, widened for them.
-    /// None without such profiles, when the view may run on as far as
-    /// `OVERHANG_PX`.
+    /// profiles keep a margin there: the resting margin, with the room they
+    /// take on top. None without such profiles, when the view may run on as
+    /// far as `OVERHANG_PX`.
     fn profile_stop(&self) -> Option<usize> {
         let floor = self.margin_floor();
-        (floor > 0).then(|| floor.max(RIGHT_MARGIN))
+        (floor > 0).then(|| floor + RIGHT_MARGIN)
     }
 
     /// Back at rest once the view reaches the profiles' margin, so it is
@@ -2274,13 +2278,19 @@ impl State {
     fn trim_room(&mut self, plot_w: f64) {
         let room = self.max_overhang(plot_w);
         self.lead = self.lead.min(room);
-        self.overhang = self.overhang.min(room.max(self.margin_floor()));
+        // At rest it is the resting margin alone, trimmed as with no
+        // profiles; set by hand it may reach as far as the view stops.
+        let most = match self.overhang_by_hand {
+            true => room.max(self.profile_stop().unwrap_or(0)),
+            false => room,
+        };
+        self.overhang = self.overhang.min(most);
     }
 
-    /// The fewest empty columns past the last bar at rest: room for the
-    /// live sessions of the right-aligned volume profiles on screen, side by
-    /// side, and none when there are none. A share of the columns, so it is
-    /// the same share of the plot at any zoom.
+    /// The columns past the last bar the live sessions of the right-aligned
+    /// volume profiles on screen take, side by side, and none when there are
+    /// none: added to the resting margin at rest. A share of the columns, so
+    /// it is the same share of the plot at any zoom.
     fn margin_floor(&self) -> usize {
         let share = selection::margin_share(self);
         if share <= 0.0 {
@@ -2290,11 +2300,13 @@ impl State {
     }
 
     /// The empty columns past the last bar, while anchored: what a hand
-    /// left, or at rest the resting margin widened to the floor.
+    /// left, or at rest the resting margin with the profiles' room on top,
+    /// so the room between the last bar and the first of them is the room a
+    /// chart with none has.
     fn overhang_now(&self) -> usize {
         match self.overhang_by_hand {
             true => self.overhang,
-            false => self.overhang.max(self.margin_floor()),
+            false => self.overhang + self.margin_floor(),
         }
     }
 
