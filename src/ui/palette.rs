@@ -195,12 +195,12 @@ fn palette_box(
         _ => None,
     };
 
-    // Full rows: four across for eight, three for nine, seven for the
-    // fourteen a bar is offered. A swatch alone on a row reads as a
-    // leftover.
+    // Full rows, or a last row one short: four across for eight, three for
+    // the nine of the palette, seven for the thirteen a bar is offered. A
+    // swatch alone on a row reads as a leftover.
     let palette = theme.palette();
     let count = palette.len() as i32;
-    let columns = [4, 3, 7].into_iter().find(|c| count % c == 0).unwrap_or(4);
+    let columns = [4, 3, 7].into_iter().find(|c| count % c == 0 || count % c == c - 1).unwrap_or(4);
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);

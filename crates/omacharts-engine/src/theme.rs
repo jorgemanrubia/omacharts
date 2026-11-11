@@ -108,48 +108,18 @@ pub const SWATCH_NAMES: [&str; 8] = [
 pub const SWATCH_SEQUENCE: [&str; 6] =
     ["Blue", "Amber", "Violet", "Teal", "Orange", "Cyan"];
 
-/// The palette's one colour with no hue of its own to pick: a very light
-/// tone of the theme's own hue on a dark theme and a very dark one on a
-/// light theme, close to the text in weight but tinted, for an outline, a
-/// profile or a line that should read plainly without taking a colour. It
-/// is not one of a theme's [`Swatch`]es, because nobody sets it: it is
-/// worked out from the theme each time it is asked for, so it follows the
-/// theme as the others do. See [`Theme::neutral`].
-pub const NEUTRAL: &str = "Neutral";
-
 /// Every name a colour can be picked by, in the order the palette shows
-/// them: the theme's swatches, then [`NEUTRAL`].
+/// them: the theme's swatches, then [`FOREGROUND`], the one with no hue of
+/// its own to pick, for an outline, a profile or a line that should read
+/// plainly without taking a colour.
 pub const PALETTE_NAMES: [&str; 9] = [
-    "Blue", "Amber", "Violet", "Teal", "Rose", "Green", "Orange", "Cyan", NEUTRAL,
+    "Blue", "Amber", "Violet", "Teal", "Rose", "Green", "Orange", "Cyan", FOREGROUND,
 ];
 
-/// The OKLCh lightness of [`Theme::neutral`] on a dark theme: very light,
-/// near the text of most themes, short of white.
-const NEUTRAL_LIGHT: f64 = 0.89;
-
-/// Its lightness on a light theme: very dark, short of black.
-const NEUTRAL_DARK: f64 = 0.32;
-
-/// The least and the most of the theme's tint it carries, in OKLCh chroma:
-/// enough at the ends of the scale to read as the theme's own tone rather
-/// than a grey, not so much that it reads as one more hue of the palette.
-const NEUTRAL_MIN_CHROMA: f64 = 0.035;
-const NEUTRAL_MAX_CHROMA: f64 = 0.06;
-
-/// A theme's text tinted at least this much, in OKLCh chroma, gives the
-/// neutral its hue; text greyer than this leaves the hue to the panels.
-const NEUTRAL_TEXT_TINT: f64 = 0.015;
-
-/// Below this a panel's chroma is too slight to take a hue from.
-const NEUTRAL_TINT: f64 = 0.004;
-
-/// The least the neutral is from the theme's text, as [`delta_e`] sees it,
-/// so that it is never just the text colour over again.
-const NEUTRAL_FROM_TEXT: f64 = 0.04;
-
-/// How far from the text towards the chart it is moved, in OKLCh
-/// lightness, when the usual lightness would land on the text.
-const NEUTRAL_FROM_TEXT_STEP: f64 = 0.05;
+/// Names a colour was stored or typed by once, and the name each is read as
+/// now. Neutral was a tone of the text's own offered beside Foreground,
+/// near enough to it on most themes to be the same colour twice.
+const RENAMED: [(&str, &str); 2] = [("ink", FOREGROUND), ("neutral", FOREGROUND)];
 
 /// The least a companion may be from what it accompanies, as `delta_e` sees
 /// it — the floor consecutive entries of the sequence are held to, and so
@@ -159,7 +129,7 @@ pub const COMPANION_GAP: f64 = 0.12;
 
 /// How a colour was chosen for an indicator or overlay.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(tag = "kind", rename_all = "lowercase", from = "StoredChoice")]
 pub enum ColorChoice {
     /// A named swatch, re-resolved against whichever theme is active.
     Swatch { name: String },
@@ -167,9 +137,38 @@ pub enum ColorChoice {
     Fixed { hex: String },
 }
 
+/// A [`ColorChoice`] as it was stored, read under the name it has now.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum StoredChoice {
+    Swatch { name: String },
+    Fixed { hex: String },
+}
+
+impl From<StoredChoice> for ColorChoice {
+    fn from(stored: StoredChoice) -> ColorChoice {
+        match stored {
+            StoredChoice::Swatch { name } => ColorChoice::swatch(renamed(&name)),
+            StoredChoice::Fixed { hex } => ColorChoice::Fixed { hex },
+        }
+    }
+}
+
+/// The name a swatch has now, for one it was once stored or typed by.
+fn renamed(name: &str) -> &str {
+    RENAMED.iter().find(|(was, _)| was.eq_ignore_ascii_case(name)).map_or(name, |(_, now)| now)
+}
+
 impl ColorChoice {
     pub fn swatch(name: &str) -> ColorChoice {
         ColorChoice::Swatch { name: name.to_string() }
+    }
+
+    /// The one of `names` that `text` names, in any case or by a name it was
+    /// once stored by: how a typed or stored colour name is read.
+    pub fn named(text: &str, names: impl IntoIterator<Item = &'static str>) -> Option<ColorChoice> {
+        let name = renamed(text.trim());
+        names.into_iter().find(|known| known.eq_ignore_ascii_case(name)).map(ColorChoice::swatch)
     }
 
     /// Resolve against a theme, falling back to its accent if the swatch name
@@ -179,7 +178,7 @@ impl ColorChoice {
             ColorChoice::Fixed { hex } => hex.clone(),
             ColorChoice::Swatch { name } => match theme.swatch(name) {
                 Some(swatch) => swatch.hex.clone(),
-                None if name == NEUTRAL => theme.neutral(),
+                None if name == FOREGROUND => foreground(theme),
                 None => theme.ui.accent.clone(),
             },
         }
@@ -383,50 +382,13 @@ impl Theme {
     }
 
     /// Every colour the palette offers, as the picker shows them: the
-    /// theme's swatches and then [`NEUTRAL`], worked out from it now.
+    /// theme's swatches and then [`FOREGROUND`], worked out from it now.
     pub fn palette(&self) -> Vec<Swatch> {
         let mut all = self.swatches.clone();
-        if self.swatch(NEUTRAL).is_none() {
-            all.push(Swatch { name: NEUTRAL.to_string(), hex: self.neutral() });
+        if self.swatch(FOREGROUND).is_none() {
+            all.push(Swatch::new(FOREGROUND, &foreground(self)));
         }
         all
-    }
-
-    /// The theme's neutral: a very light tone of its own hue on a dark
-    /// chart, a very dark one on a light chart.
-    ///
-    /// The hue and the tint come from the theme's text when it has any, so
-    /// Tokyo Night's is a pale lavender and Gruvbox's a cream; from its
-    /// background or panels when the text is a plain grey; and from its
-    /// accent when the whole theme is grey, so no theme gets a white or a
-    /// black that belongs to no theme. The tint is held to a narrow band
-    /// of chroma: a tone, not a colour. Whichever side of the background
-    /// the text is on decides light or dark, and when that lightness would make it the text
-    /// colour over again, as on a theme whose text is already that light,
-    /// it is the text's own lightness toned a step towards the chart.
-    pub fn neutral(&self) -> String {
-        let (Some(ground), Some(text)) = (Oklch::of(&self.ui.background), Oklch::of(&self.ui.text)) else {
-            return self.ui.text.clone();
-        };
-        let panels = [&self.ui.background, &self.ui.surface, &self.ui.surface_variant, &self.ui.border]
-            .into_iter()
-            .filter_map(|hex| Oklch::of(hex))
-            .find(|colour| colour.c >= NEUTRAL_TINT);
-        let source = Some(text)
-            .filter(|text| text.c >= NEUTRAL_TEXT_TINT)
-            .or(panels)
-            .or_else(|| Oklch::of(&self.ui.accent))
-            .unwrap_or(text);
-        let c = source.c.clamp(NEUTRAL_MIN_CHROMA, NEUTRAL_MAX_CHROMA);
-        let light = text.l > ground.l;
-        let tone = |l: f64| Oklch { l, c, h: source.h }.hex();
-        let first = tone(if light { NEUTRAL_LIGHT } else { NEUTRAL_DARK });
-        if delta_e(&first, &self.ui.text) >= NEUTRAL_FROM_TEXT {
-            return first;
-        }
-        // Back from the text towards the chart, which keeps the tint: past
-        // a near-white text there is too little room left for any.
-        tone(if light { text.l - NEUTRAL_FROM_TEXT_STEP } else { text.l + NEUTRAL_FROM_TEXT_STEP })
     }
 
     /// The nth colour to hand an overlay that has not been given one.
@@ -734,9 +696,6 @@ impl Body {
 /// plainly means light candles and on a light one dark.
 pub const FOREGROUND: &str = "Foreground";
 
-/// What [`FOREGROUND`] was called before, still read from a stored setting.
-const FOREGROUND_WAS: &str = "ink";
-
 /// A body that is not painted: the outline is drawn and the chart shows
 /// through.
 pub const HOLLOW: &str = "#00000000";
@@ -772,8 +731,13 @@ impl BarLook {
 
     /// The colours on a theme.
     pub fn scheme(&self, theme: &Theme) -> BarScheme {
-        let up = bar_colour(theme, &self.up);
-        let down = bar_colour(theme, &self.down);
+        // Against what the colour menu offers, which is only worked out for
+        // a pair's colour: the theme's own palette answers the rest.
+        let resolve = |choice: &ColorChoice| match choice {
+            ColorChoice::Swatch { name } if PAIR_NAMES.contains(&name.as_str()) => choice.resolve(&bar_palette(theme)),
+            choice => choice.resolve(theme),
+        };
+        let (up, down) = (resolve(&self.up), resolve(&self.down));
         let fill = |colour: &String, body: Body| match body {
             Body::Hollow => HOLLOW.to_string(),
             _ => colour.clone(),
@@ -810,34 +774,24 @@ pub fn spell_bar_colour(choice: &ColorChoice) -> String {
     }
 }
 
-/// The other way: any case of a swatch's name or `foreground`, or a
+/// The other way: any case of a name a bar's colour menu offers, or a
 /// `#rrggbb` hex.
 pub fn parse_bar_colour(text: &str) -> Option<ColorChoice> {
     let text = text.trim();
     if text.starts_with('#') {
         return rgb(text).map(|_| ColorChoice::Fixed { hex: text.to_lowercase() });
     }
-    if text.eq_ignore_ascii_case(FOREGROUND_WAS) {
-        return Some(ColorChoice::swatch(FOREGROUND));
-    }
-    SWATCH_NAMES
-        .iter()
-        .chain(&[FOREGROUND, SLATE, SAND, SILVER, GRAPHITE])
-        .find(|name| name.eq_ignore_ascii_case(text))
-        .map(|name| ColorChoice::swatch(name))
+    ColorChoice::named(text, PALETTE_NAMES.into_iter().chain(PAIR_NAMES))
 }
 
-/// A bar colour on a theme: one of its swatches, [`FOREGROUND`], one of
-/// the soft and quiet pairs' colours, or a fixed hex.
-pub fn bar_colour(theme: &Theme, choice: &ColorChoice) -> String {
-    match choice {
-        ColorChoice::Swatch { name } if name == FOREGROUND => foreground(theme),
-        ColorChoice::Swatch { name } if name == SLATE => slate_and_sand(theme).0,
-        ColorChoice::Swatch { name } if name == SAND => slate_and_sand(theme).1,
-        ColorChoice::Swatch { name } if name == SILVER => quiet_greys(theme).0,
-        ColorChoice::Swatch { name } if name == GRAPHITE => quiet_greys(theme).1,
-        choice => choice.resolve(theme),
-    }
+/// `theme` with what a bar's colour menu offers beside its palette, the
+/// soft and quiet pairs' colours, as swatches of its own: what the menu
+/// shows, and what it resolves a pick against.
+pub fn bar_palette(theme: &Theme) -> Theme {
+    let mut offered = theme.clone();
+    offered.swatches = theme.palette();
+    offered.swatches.extend(pair_colours(theme));
+    offered
 }
 
 /// What a monochrome bar is held to against the chart behind it.
@@ -926,6 +880,7 @@ pub const SLATE: &str = "Slate";
 pub const SAND: &str = "Sand";
 pub const SILVER: &str = "Silver";
 pub const GRAPHITE: &str = "Graphite";
+const PAIR_NAMES: [&str; 4] = [SLATE, SAND, SILVER, GRAPHITE];
 
 /// [`SLATE`], [`SAND`], [`SILVER`] and [`GRAPHITE`] on `theme`, as the
 /// colour pickers offer them.
@@ -1386,85 +1341,40 @@ mod tests {
         theme
     }
 
-    /// The neutral is a name like the others, stored as a name and
-    /// resolved against whichever theme is showing: on a navy chart a very
-    /// light lavender, the text's own hue a step lighter than the text, and
-    /// on a warm white one a very dark warm brown, so it stands out from
-    /// the chart rather than sitting on it.
+    /// The picker shows the palette in the order the names list it,
+    /// Foreground last, on every built-in theme.
     #[test]
-    fn the_neutral_is_worked_out_from_a_dark_theme_and_from_a_light_one() {
-        let neutral = ColorChoice::swatch(NEUTRAL);
-
-        // Tokyo Night's ground and text.
-        let dark = grounded(Mode::Dark, "#1a1b26", "#a9b1d6", "#24283b");
-        let hex = neutral.resolve(&dark);
-        assert_eq!(hex, dark.neutral());
-        let (text, tone) = (Oklch::of("#a9b1d6").unwrap(), Oklch::of(&hex).unwrap());
-        assert!(tone.l > 0.85, "{hex} is not very light");
-        assert!(delta_e(&hex, "#1a1b26") >= 0.5, "{hex} does not stand out from the chart");
-        assert!(delta_e(&hex, "#24283b") >= 0.5, "{hex} could be taken for the grid");
-        assert!(delta_e(&hex, "#a9b1d6") >= NEUTRAL_FROM_TEXT, "{hex} is just the text colour");
-        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c >= NEUTRAL_MIN_CHROMA, "{hex} lost the theme's lavender");
-
-        // Paper: a warm white with warm near-black text, so a very dark
-        // warm tone, not the text and not a black.
-        let light = grounded(Mode::Light, "#fbf8f3", "#2d2a26", "#efe9de");
-        let hex = neutral.resolve(&light);
-        assert_eq!(hex, light.neutral());
-        let (ground, tone) = (Oklch::of(&light.ui.background).unwrap(), Oklch::of(&hex).unwrap());
-        assert!(tone.l < 0.4, "{hex} is not very dark");
-        assert!(delta_e(&hex, &light.ui.background) >= 0.5, "{hex} does not stand out from the chart");
-        assert!(delta_e(&hex, &light.ui.grid) >= 0.5, "{hex} could be taken for the grid");
-        assert!(delta_e(&hex, &light.ui.text) >= NEUTRAL_FROM_TEXT, "{hex} is just the text colour");
-        assert!(hue_gap(tone.h, ground.h) < 30.0 && tone.c >= 0.03, "{hex} lost Paper's warmth");
-
-        // The same stored name is a different colour on each.
-        assert_ne!(neutral.resolve(&dark), neutral.resolve(&light));
-    }
-
-    /// Text already as light as the neutral would be is not handed back as
-    /// the neutral: it is toned a step towards the chart, keeping its tint.
-    #[test]
-    fn a_neutral_that_would_be_the_text_is_toned_back_from_it() {
-        let theme = grounded(Mode::Dark, "#1e1e2e", "#cdd6f4", "#2b2c3d");
-        let (hex, text) = (theme.neutral(), Oklch::of("#cdd6f4").unwrap());
-        let tone = Oklch::of(&hex).unwrap();
-        assert!(delta_e(&hex, "#cdd6f4") >= NEUTRAL_FROM_TEXT, "{hex}");
-        assert!(tone.l < text.l && tone.l > 0.8, "{hex} is not a light tone just under the text");
-        assert!(hue_gap(tone.h, text.h) < 10.0 && tone.c > 0.03, "{hex} lost the tint");
-    }
-
-    /// A theme that is grey all through, black and white, takes its tint
-    /// from its accent rather than ending on a white or a black that
-    /// belongs to no theme: very light on the black chart, very dark on
-    /// the white one, and far from the grid either way.
-    #[test]
-    fn a_grey_theme_takes_its_neutral_tint_from_its_accent() {
-        let black = grounded(Mode::Dark, "#000000", "#ffffff", "#191919");
-        let accent = Oklch::of(&black.ui.accent).unwrap();
-        let hex = black.neutral();
-        let tone = Oklch::of(&hex).unwrap();
-        assert!(tone.l > 0.85 && delta_e(&hex, "#ffffff") >= NEUTRAL_FROM_TEXT, "{hex}");
-        assert!(delta_e(&hex, "#191919") >= 0.5, "{hex} reads as a grid line");
-        assert!(hue_gap(tone.h, accent.h) < 10.0 && tone.c > 0.03, "{hex} is a plain grey");
-
-        let white = grounded(Mode::Light, "#ffffff", "#000000", "#ececec");
-        let hex = white.neutral();
-        let tone = Oklch::of(&hex).unwrap();
-        assert!(tone.l < 0.4 && delta_e(&hex, "#000000") >= NEUTRAL_FROM_TEXT, "{hex}");
-        assert!(delta_e(&hex, "#ececec") >= 0.5, "{hex} reads as a grid line");
-        assert!(hue_gap(tone.h, accent.h) < 10.0 && tone.c > 0.03, "{hex} is a plain grey");
-    }
-
-    /// The picker shows the palette in the order the names list it, the
-    /// neutral last, on every built-in theme.
-    #[test]
-    fn the_palette_is_the_swatches_and_then_the_neutral() {
+    fn the_palette_is_the_swatches_and_then_foreground() {
         for theme in builtin_themes() {
             let names: Vec<String> = theme.palette().into_iter().map(|s| s.name).collect();
             assert_eq!(names, PALETTE_NAMES, "{}", theme.name);
-            assert_eq!(theme.palette().last().unwrap().hex, theme.neutral());
+            assert_eq!(theme.palette().last().unwrap().hex, foreground(&theme));
         }
+    }
+
+    /// Every colour a bar's menu offers is drawn as the menu shows it once
+    /// it has been stored and read back: a name the store cannot read comes
+    /// back as the default, which drew Neutral candles green.
+    #[test]
+    fn every_colour_a_bar_is_offered_is_read_back_as_itself() {
+        for theme in builtin_themes() {
+            for swatch in bar_palette(&theme).palette() {
+                let stored = spell_bar_colour(&ColorChoice::swatch(&swatch.name));
+                let read = parse_bar_colour(&stored);
+                assert_eq!(read, Some(ColorChoice::swatch(&swatch.name)), "{} {stored}", theme.name);
+                let drawn = BarLook { up: ColorChoice::swatch(&swatch.name), ..BarLook::default() }.scheme(&theme).up;
+                assert_eq!(drawn, swatch.hex, "{} {stored}", theme.name);
+            }
+        }
+    }
+
+    /// Neutral is Foreground now: an indicator stored under the old name
+    /// and a command given it read as Foreground.
+    #[test]
+    fn a_colour_stored_as_neutral_reads_as_foreground() {
+        let stored: ColorChoice = serde_json::from_str(r#"{"kind":"swatch","name":"Neutral"}"#).unwrap();
+        assert_eq!(stored, ColorChoice::swatch(FOREGROUND));
+        assert_eq!(ColorChoice::named("neutral", PALETTE_NAMES), Some(ColorChoice::swatch(FOREGROUND)));
     }
 
     fn light() -> Theme {
@@ -1867,6 +1777,20 @@ mod tests {
         let theme = dark();
         let look = BarLook { up: parse_bar_colour("foreground").unwrap(), ..BarLook::default() };
         assert_eq!(look.scheme(&theme).up, theme_mono_bars(&theme).up);
+    }
+
+    /// Candles set to Neutral are stored as its name and read back from it,
+    /// so a name the bar menu offers and the store cannot read comes back
+    /// as the default instead: Neutral candles drawn green.
+    #[test]
+    fn a_bar_stored_as_neutral_is_drawn_in_foreground() {
+        let catppuccin = grounded(Mode::Dark, "#1e1e2e", "#cdd6f4", "#2b2c3d");
+        let stored = spell_bar_colour(&ColorChoice::Swatch { name: "Neutral".into() });
+        let read = parse_bar_colour(&stored).expect("a stored Neutral reads back");
+        let look = BarLook { up: read.clone(), down: read, ..BarLook::default() };
+        let scheme = look.scheme(&catppuccin);
+        assert_eq!(scheme.up, foreground(&catppuccin));
+        assert_eq!(scheme.down, foreground(&catppuccin));
     }
 
     #[test]

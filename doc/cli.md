@@ -141,7 +141,7 @@ omacharts chart profile merge --at 2026-10-28
 
 Colours come in two kinds, and the difference matters:
 
-- **A palette name** — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral —
+- **A palette name** — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Foreground —
   is re-resolved every time the desktop theme changes, so the indicator follows
   the theme.
 - **`#rrggbb`** is the exact colour you picked, and is never touched again.

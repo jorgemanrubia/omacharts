@@ -17,8 +17,7 @@ use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::BarStyle;
 use omacharts_engine::theme::{
-    foreground, pair_colours, BarLook, BarScheme, Body, ColorChoice, Direction, Swatch, Theme, Thickness,
-    FOREGROUND,
+    bar_palette, BarLook, BarScheme, Body, ColorChoice, Direction, Theme, Thickness,
 };
 
 use crate::chart_look::{ChartLook, LookEdit};
@@ -147,12 +146,7 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
 
-    let theme = context.theming.borrow().theme();
-    // The theme's swatches, Foreground and the pairs' own colours: what a
-    // bar can be drawn in.
-    let mut offered = theme.clone();
-    offered.swatches.push(Swatch::new(FOREGROUND, &foreground(&theme)));
-    offered.swatches.extend(pair_colours(&theme));
+    let offered = bar_palette(&context.theming.borrow().theme());
 
     let card = Card::default();
     group.add(&style_head(context, &card));

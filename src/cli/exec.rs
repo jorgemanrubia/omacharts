@@ -4167,10 +4167,8 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
             false => Err(Fault::usage(format!("{text:?} is not a colour; try #rrggbb"))),
         };
     }
-    PALETTE_NAMES
-        .iter()
-        .find(|name| name.eq_ignore_ascii_case(text))
-        .map(|name| Some(ColorChoice::swatch(name)))
+    ColorChoice::named(text, PALETTE_NAMES)
+        .map(Some)
         .ok_or_else(|| {
             Fault::usage(format!(
                 "{text:?} is not a palette colour; try {} — or #rrggbb for one the theme will not change",
@@ -7470,22 +7468,25 @@ mod tests {
         let bad = run("chart indicator add rsi --book Macro --color Chartreuse", &store);
         assert_eq!(bad.code, super::super::EXIT_USAGE);
         assert!(bad.err.contains("Blue"), "the error has to name the palette: {}", bad.err);
-        assert!(bad.err.contains("Neutral"), "the error has to name the neutral too: {}", bad.err);
+        assert!(bad.err.contains("Foreground"), "the error has to name Foreground too: {}", bad.err);
     }
 
-    /// The neutral is a palette name like the rest: stored as the name, so
-    /// it is worked out again from whichever theme is showing.
+    /// Foreground is a palette name like the rest: stored as the name, so
+    /// it is worked out again from whichever theme is showing. Neutral, the
+    /// name it once had a near twin under, is still taken, as Foreground.
     #[test]
-    fn the_neutral_is_set_by_name_and_stored_as_one() {
+    fn foreground_is_set_by_name_and_stored_as_one() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
-        let added = run("chart indicator add ema --book Macro --color neutral", &store);
-        assert_eq!(added.code, 0, "{}", added.err);
+        for (given, at) in [("foreground", 0), ("neutral", 1)] {
+            let added = run(&format!("chart indicator add ema --book Macro --color {given}"), &store);
+            assert_eq!(added.code, 0, "{}", added.err);
 
-        let listed = run("chart indicator list --book Macro --json", &store);
-        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        assert_eq!(parsed["indicators"][0]["color"]["kind"], "swatch");
-        assert_eq!(parsed["indicators"][0]["color"]["name"], "Neutral");
+            let listed = run("chart indicator list --book Macro --json", &store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            assert_eq!(parsed["indicators"][at]["color"]["kind"], "swatch");
+            assert_eq!(parsed["indicators"][at]["color"]["name"], "Foreground", "{given}");
+        }
     }
     #[test]
     fn a_theme_is_chosen_by_a_name_the_list_gives() {

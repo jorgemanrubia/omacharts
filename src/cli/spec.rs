@@ -372,7 +372,7 @@ const AGENT_FLAGS: &[Flag] = &[
 ];
 
 pub const COLOUR: &str =
-    "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral — \
+    "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Foreground — \
      which follows the theme, or #rrggbb, which does not";
 
 /// Everything `chart indicator` takes, and `template indicator` after the

@@ -238,7 +238,7 @@ A paste is a new indicator with the same settings, on the chart that has the key
 
 An indicator with no chosen colour takes the first of the theme's sequence (Blue, Amber, Violet, Teal, Orange, Cyan) that no other indicator on the chart is using. When all are in use, they repeat. Adding an indicator never changes the colours already on the chart. [Session Times](/manual/indicators/session-times/) is the exception: it shades without a colour of its own unless one is chosen.
 
-A **palette name** (Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral) is the theme's colour of that name and follows the theme when it changes. A **custom** colour, picked exactly or typed as a hex such as `#e0af68`, stays the same in every theme.
+A **palette name** (Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Foreground) is the theme's colour of that name and follows the theme when it changes. A **custom** colour, picked exactly or typed as a hex such as `#e0af68`, stays the same in every theme.
 
 Each **Colour** row opens the theme's palette ([Themes and colours](/manual/themes/)). **Custom…** under it picks an exact colour. **Reset** beside the swatch goes back to the automatic colour.
 

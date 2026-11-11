@@ -57,7 +57,7 @@ The palette is the theme's named colours for indicators and drawings. An indicat
 
 An indicator added without a colour gets the next of Blue, Amber, Violet, Teal, Orange and Cyan not already on the chart. After six they repeat. Green and Rose are never given automatically, but you can pick them.
 
-**Neutral** is a very light tone of the theme's own hue on a dark theme and a very dark one on a light theme: close to the theme's text, never quite it, and tinted rather than white or black, a pale lavender on Tokyo Night and a cream on Gruvbox. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, or its background or accent when the text is a plain grey, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically.
+**Foreground** is the theme's text colour, as monochrome bars have it: light on a dark theme and dark on a light one, with only a trace of the text's tint, and held clear of Green and Rose. It suits outlines, profiles and lines that should read plainly without taking a colour. It comes from the theme's text, so it has no row in the theme editor, and like the rest of the palette it changes with the theme. It is never given automatically. A colour set to Neutral, the name an earlier version offered beside it, is Foreground.
 
 ### The palette picker
 
@@ -77,7 +77,7 @@ state:
 capture: bin/headless-window shot /tmp/picker.png
 crop: 751,500,1206,600   (the Line group and the palette, 16px layout margin round both)
 -->
-{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row: nine colours in three rows, Neutral last, the colour in use ringed and Custom… below" caption="The palette picker." %}
+{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row: nine colours in three rows, Foreground last, the colour in use ringed and Custom… below" caption="The palette picker." %}
 
 | Choice | When the theme changes |
 |---|---|
