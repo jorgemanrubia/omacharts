@@ -280,12 +280,12 @@ impl Store {
 
     // -- settings ----------------------------------------------------------
 
+    /// The statement is prepared once per connection and kept: a launch reads
+    /// a dozen rows for the bars' look alone, and preparing the same SQL for
+    /// each was most of what loading the theme cost.
     pub fn setting(&self, key: &str) -> Option<String> {
-        self.conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
-            .optional()
-            .ok()
-            .flatten()
+        let mut stmt = self.conn.prepare_cached("SELECT value FROM settings WHERE key = ?1").ok()?;
+        stmt.query_row(params![key], |r| r.get(0)).optional().ok().flatten()
     }
 
     /// Whether a setting has been written at all, without reading it.
