@@ -571,9 +571,11 @@ fn build_charts_page(context: &Rc<Context>) {
     offer(&footer, false);
     let window = context.window.clone();
     let line = footer.clone();
+    // At once, with nothing to ask: every chart is drawn on the defaults as
+    // the line fades, and its indicators are left as they are.
     apply.connect_clicked(move |_| {
-        let line = line.clone();
-        window.apply_chart_defaults(move || offer(&line, false));
+        window.apply_chart_defaults();
+        offer(&line, false);
     });
 
     // Every row writes through here: the defaults are saved as they change,

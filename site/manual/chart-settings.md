@@ -87,7 +87,7 @@ A new chart's price scale starts by fitting the bars.
 
 ### Applying the defaults to every chart
 
-Once a row has changed, *New charts will use these options.* and **Apply to all charts now** appear under the last group. The button puts every chart in every chartbook on the defaults, template included. When that would remove some charts' own indicators, it asks first with **Apply to All Charts?**, saying how many charts have indicators of their own and whether they are replaced by the default template's or removed. **Cancel** changes nothing.
+Once a row has changed, *New charts will use these options.* and **Apply to all charts now** appear under the last group. The button puts every chart in every chartbook on the defaults at once, all but the template. Each chart keeps its template and its indicators as they are, with their settings; the template only says what a new chart opens on.
 
 ### Putting one chart back on the defaults
 
