@@ -1,14 +1,15 @@
 //! Settings.
 //!
-//! Five sections, each a question somebody arrives with. General: the app on
-//! this desktop, its clock, its backups. Charts: what a new chart opens
-//! with, and the templates. Market data: where the bars come from and how
-//! they are kept. Appearance: how every chart looks, and Overlays: what every
-//! chart draws over its bars, each answered once for all of them; they are
-//! modules of their own, [`crate::ui::appearance`] and
-//! [`crate::ui::overlays`], because a chart's settings show them too.
-//! Trading, while it is switched on: the accounts, and how orders and
-//! positions are drawn.
+//! Six sections, each a question somebody arrives with. General: the app on
+//! this desktop, its clock, its backups. Market data: where the bars come
+//! from and how they are kept. Templates: the sets of indicators charts can
+//! share, the same whichever chart is on one. Trading, while it is switched
+//! on: the accounts, and how orders and positions are drawn. Then the
+//! visual sections, under a rule that says which charts they change.
+//! Appearance: how every chart looks, and Overlays: what every chart draws
+//! over its bars, each answered once for all of them; they are modules of
+//! their own, [`crate::ui::appearance`] and [`crate::ui::overlays`], because
+//! a chart's settings show them too. Charts: what a new chart opens with.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,33 +28,20 @@ use crate::ui::window::Window;
 
 pub struct Preferences;
 
-/// What opens the window at the Trading section rather than at a tab of
-/// Charts.
+/// The section of the account lists and the trading look, by its id.
 pub const TRADING: &str = "trading";
 
-/// What opens the window at Overlays, where the header is edited, rather
-/// than at a tab of Charts: from a chart's header.
-pub const HEADER: &str = "header";
-
 /// Where the window was when it was last looked at, for this run of the app:
-/// the section down the sidebar, by its id, and the tab shown in Charts.
-/// Opening it again goes back there, so somebody adjusting one row over and
-/// over does not have to find it each time. Not kept across restarts.
+/// the section down the sidebar, by its id. Opening it again goes back
+/// there, so somebody adjusting one row over and over does not have to find
+/// it each time. Not kept across restarts.
 #[derive(Clone, Default)]
 struct Seen {
     section: Option<String>,
-    charts_tab: Option<String>,
 }
 
 thread_local! {
     static LAST_SEEN: RefCell<Seen> = RefCell::new(Seen::default());
-}
-
-/// Have the window open next at the section `id`, for a test that reads
-/// what is on it.
-#[cfg(test)]
-pub(crate) fn open_next_at(id: &str) {
-    LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id.to_string()));
 }
 
 struct Context {
@@ -70,20 +58,20 @@ struct Context {
     on_restored: Rc<dyn Fn()>,
     general_page: adw::PreferencesPage,
     charts_page: adw::PreferencesPage,
-    charts_templates_page: adw::PreferencesPage,
+    templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
     window: Rc<Window>,
-    /// The list on the Templates tab, rebuilt whenever one changes.
+    /// The list on the Templates page, rebuilt whenever one changes.
     templates_group: RefCell<Option<adw::PreferencesGroup>>,
     /// Whether the Charts page changes the focused chart rather than every
     /// chart: the rule over the sidebar, picked Local.
     charts_local: std::cell::Cell<bool>,
     /// Reads the Charts page's rows again: after the scope or the focused
     /// chart changes, and after a template is made, renamed or deleted on the
-    /// tab beside it.
+    /// Templates page.
     show_chart_settings: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
@@ -113,58 +101,36 @@ impl Preferences {
         on_edit_resolutions: Rc<dyn Fn()>,
         on_restored: Rc<dyn Fn()>,
         window: Rc<Window>,
-        charts_tab: Option<&str>,
+        at: Option<&str>,
     ) {
         if let Some(open) = OPEN.with(|open| open.borrow().upgrade()) {
-            // Asked for a particular tab or section, it opens again there;
-            // changes are already applied, so closing loses nothing.
-            if charts_tab.is_none() {
+            // Asked for a particular section, it opens again there; changes
+            // are already applied, so closing loses nothing.
+            if at.is_none() {
                 open.present();
                 return;
             }
             open.close();
         }
-        // Trading is a section, not a tab of Charts, and is asked for by the
-        // same word: from a chart's account list. So is the header, which is
-        // the first thing on Overlays: from a chart's header.
-        let (charts_tab, at_trading, at_header) = match charts_tab {
-            Some(TRADING) => (None, true, false),
-            Some(HEADER) => (None, false, true),
-            tab => (tab, false, false),
-        };
 
         let general_page = adw::PreferencesPage::new();
         let charts_page = adw::PreferencesPage::new();
+        let templates_page = adw::PreferencesPage::new();
         let data_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
-
-        // Charts is two things: a chart's settings, and the sets of
-        // indicators charts can share.
-        let charts_templates_page = adw::PreferencesPage::new();
-        let charts = gtk::Stack::new();
-        charts.add_titled(&charts_page, Some("settings"), "Settings");
-        charts.add_titled(&charts_templates_page, Some("templates"), "Templates");
-        // Opened from something on a chart, at the tab that is about it;
-        // otherwise where it was left.
-        let last = LAST_SEEN.with(|seen| seen.borrow().clone());
-        if let Some(tab) = charts_tab.map(str::to_string).or(last.charts_tab) {
-            charts.set_visible_child_name(&tab);
-        }
-        charts.connect_visible_child_name_notify(|charts| {
-            let tab = charts.visible_child_name().map(|name| name.to_string());
-            LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
-        });
 
         let appearance_page = window.appearance_page();
         let overlays_page = window.overlays_page();
 
         // What the app does first, then, under a rule that says which
-        // charts they change, what the charts look like.
-        // Trading's page only while trading is switched on.
+        // charts they change, what the charts look like. A template is the
+        // same for every chart on it, so it sits with the app, not under
+        // the rule. Trading's page only while trading is switched on.
         let trading = crate::features::trading();
         let mut app: Vec<Section> = vec![
             ("general", "General", "preferences-system-symbolic", general_page.clone().upcast()),
             ("data", "Market data", "network-transmit-receive-symbolic", data_page.clone().upcast()),
+            ("templates", "Templates", "edit-copy-symbolic", templates_page.clone().upcast()),
         ];
         if trading {
             app.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
@@ -173,18 +139,16 @@ impl Preferences {
         let visual: [Section; 3] = [
             ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.clone().upcast()),
             ("overlays", "Overlays", "view-grid-symbolic", overlays_page.clone().upcast()),
-            ("charts", "Charts", "utilities-system-monitor-symbolic", charts.upcast()),
+            ("charts", "Charts", "utilities-system-monitor-symbolic", charts_page.clone().upcast()),
         ];
         // Opened from a chart at the section it asked for, else where it was
         // left. The header is the first thing on Overlays, so opening there
         // is all it takes to show it.
-        let start = match (charts_tab, at_trading && trading, at_header) {
-            (_, true, _) => Some(TRADING.to_string()),
-            (_, _, true) => Some("overlays".to_string()),
-            (Some(_), ..) => Some("charts".to_string()),
-            (None, ..) => last.section,
-        }
-        .unwrap_or_else(|| "general".to_string());
+        let last = LAST_SEEN.with(|seen| seen.borrow().clone());
+        let start = at
+            .map(str::to_string)
+            .or(last.section)
+            .unwrap_or_else(|| "general".to_string());
 
         let context = Rc::new(Context {
             store,
@@ -194,7 +158,7 @@ impl Preferences {
             on_restored,
             general_page,
             charts_page,
-            charts_templates_page,
+            templates_page,
             data_page,
             trading_page,
             window,
@@ -237,8 +201,7 @@ type Section = (&'static str, &'static str, &'static str, gtk::Widget);
 /// selected one beside it.
 ///
 /// Two lists rather than one with a header, so the rule's buttons sit in
-/// the tab order between them. A section with tabs of its own shows them in
-/// its header, where the title would be.
+/// the tab order between them.
 fn split_view(
     frame: &adw::Window,
     lists: [&[Section]; 2],
@@ -251,16 +214,8 @@ fn split_view(
         let sidebar = gtk::ListBox::new();
         sidebar.add_css_class("navigation-sidebar");
         for (id, title, icon, page) in sections {
-            let header = adw::HeaderBar::new();
-            // Words alone: a switcher that insists on an icon per tab draws a
-            // placeholder for every tab that has none.
-            if let Some(tabs) = page.downcast_ref::<gtk::Stack>() {
-                let switcher = gtk::StackSwitcher::new();
-                switcher.set_stack(Some(tabs));
-                header.set_title_widget(Some(&switcher));
-            }
             let toolbar = adw::ToolbarView::new();
-            toolbar.add_top_bar(&header);
+            toolbar.add_top_bar(&adw::HeaderBar::new());
             toolbar.set_content(Some(page));
             let view = adw::NavigationView::new();
             view.add(&adw::NavigationPage::with_tag(&toolbar, title, id));
@@ -507,7 +462,7 @@ fn build_charts_page(context: &Rc<Context>) {
     drawings.add(&shows);
     drawings.add(&sends);
     // "None" first, then every template. The ids are kept beside the row,
-    // since the list changes with the Templates tab.
+    // since the list changes on the Templates page.
     let template = adw::ComboRow::new();
     template.set_title("Template");
     indicators.add(&template);
@@ -800,7 +755,7 @@ fn utc_offset(seconds: i32) -> String {
     }
 }
 
-/// The Templates tab: every chart template, and a way to make, edit, rename
+/// The Templates page: every chart template, and a way to make, edit, rename
 /// and delete them.
 ///
 /// Rebuilt whole after any change, as the theme page is. There are a handful,
@@ -808,7 +763,7 @@ fn utc_offset(seconds: i32) -> String {
 /// a template is called or how many charts are using it.
 fn rebuild_templates(context: &Rc<Context>) {
     if let Some(old) = context.templates_group.borrow_mut().take() {
-        context.charts_templates_page.remove(&old);
+        context.templates_page.remove(&old);
     }
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart templates");
@@ -884,7 +839,7 @@ fn rebuild_templates(context: &Rc<Context>) {
         group.add(&row);
     }
 
-    context.charts_templates_page.add(&group);
+    context.templates_page.add(&group);
     *context.templates_group.borrow_mut() = Some(group);
 }
 
@@ -894,7 +849,7 @@ fn edit_template(context: &Rc<Context>, template: u32) {
     crate::ui::chart_settings::TemplateEditor::present(
         &context.window,
         template,
-        &context.charts_templates_page,
+        &context.templates_page,
         move || rebuild_templates(&ctx),
     );
 }

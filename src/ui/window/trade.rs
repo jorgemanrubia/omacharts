@@ -3698,8 +3698,7 @@ pub(super) mod tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
-            crate::ui::preferences::open_next_at(crate::ui::preferences::TRADING);
-            window.open_preferences_at(None);
+            window.open_preferences_at(Some(crate::ui::preferences::TRADING));
             let dialog = preferences_of(&window);
             // Below the accounts, which are drawn again as a login comes and goes.
             let below = || {

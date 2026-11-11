@@ -51,8 +51,8 @@ and [Hotkeys](/manual/hotkeys/).
 
 A chart shows one instrument at one resolution, such as NVDA on the daily or
 SPY on the five-minute. Each chart has its own indicators, trading hours and
-price scale; how bars are drawn and coloured is the same on every chart. New charts start from Preferences ›
-Charts › Settings ([Chart settings](/manual/chart-settings/)).
+price scale; how bars are drawn and coloured is the same on every chart, unless one is given a look of its own.
+New charts start from Preferences › Charts ([Chart settings](/manual/chart-settings/)).
 
 See [Symbols and search](/manual/symbols/), [Charts](/manual/charts/) and
 [Indicators](/manual/indicators/).
@@ -158,12 +158,11 @@ window: 2560x1440 @2, bin/headless-window
 state:
   (as the figure above)
   key ctrl+comma
-  click 215 147     (Charts)
-  click 695 63      (Templates)
+  click 307 186     (Templates)
 capture: bin/headless-window shot prefs.png
-crop: 940,85,1180,480
+crop: 900,215,1180,340
 -->
-{% include figure.html src="/assets/manual/how-omacharts-works/templates.png" alt="The Templates tab listing the Default and Momentum chart templates with their indicators" caption="The Templates tab of Preferences › Charts." %}
+{% include figure.html src="/assets/manual/how-omacharts-works/templates.png" alt="The Templates page listing the Default and Momentum chart templates with their indicators" caption="The Templates page of Preferences." %}
 
 Change the indicators of one chart by hand and it leaves its template,
 keeping the indicators it had. Its header no longer names a template.

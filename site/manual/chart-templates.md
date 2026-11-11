@@ -8,25 +8,25 @@ nav_order: 16
 A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume) and [Session Times](/manual/indicators/session-times/) with ETH. New charts open on no template until you choose one for them.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1040 @2, scratchpad kit (bin/headless-window, sandboxed HOME)
+theme: the fresh profile's own (Yaru-purple icons from a scratch XDG_CONFIG_HOME's gtk-4.0/settings.ini)
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed)
 state:
+  omacharts chart set --symbol NVDA --resolution 1D
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd
   omacharts chart set --template Momentum
   key ctrl+comma
-  click 214 127        # Charts
-  click 695 42         # Templates
-  move 1270 510
+  click 307 186        # Templates in the sidebar, the third row
+  move 1270 700
 capture: bin/headless-window shot /tmp/tpl.png
-crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
+crop: 449,69,1662,1302   (the whole dialog, 12px margin)
 -->
-{% include figure.html src="/assets/manual/chart-templates/preferences-templates.png" alt="Preferences open on the Charts Templates tab, listing Default and Momentum" caption="Preferences › Charts › Templates, with two templates." %}
+{% include figure.html src="/assets/manual/chart-templates/preferences-templates.png" alt="Preferences open on Templates, listing Default and Momentum" caption="Preferences › Templates, with two templates." %}
 
 ## Creating a template
 
-1. Open Preferences (<kbd>Ctrl</kbd> + <kbd>,</kbd>) › Charts › **Templates**.
+1. Open Preferences (<kbd>Ctrl</kbd> + <kbd>,</kbd>) › **Templates**.
 2. Click **+**, type a name and click **Create**.
 3. In the template's editor, add indicators with **+**, as on a chart's [Indicators page](/manual/indicators/#the-indicators-page).
 4. Put a chart on it from the chart menu › **Template** ([Choosing a chart's template](#choosing-a-charts-template)).
@@ -81,7 +81,7 @@ crop: 0,0,1800,936   (the submenu with 20px layout margin right and below)
 
 ## Editing a template
 
-Preferences › Charts › **Templates** lists every template with its name, what it holds and how many charts use it. A template can also be edited from any chart on it, on the chart's [Indicators page](/manual/indicators/#the-indicators-page), which lists the template's indicators under **On the Momentum template** and changes them there.
+Preferences › **Templates** lists every template with its name, what it holds and how many charts use it. A template can also be edited from any chart on it, on the chart's [Indicators page](/manual/indicators/#the-indicators-page), which lists the template's indicators under **On the Momentum template** and changes them there.
 
 | Control | Does |
 |---|---|
@@ -113,7 +113,7 @@ crop: 496,176,1568,1328   (the whole window, 12px layout margin)
 
 ## The template new charts open with
 
-Preferences › Charts › Settings › Indicators › **Template**, under **GLOBAL**, is the template a new chart opens on, or **None**. A new chartbook's first chart opens on it. A chart made by splitting copies the chart it came from instead.
+Preferences › Charts › Indicators › **Template**, under **GLOBAL**, is the template a new chart opens on, or **None**. A new chartbook's first chart opens on it. A chart made by splitting copies the chart it came from instead.
 
 **Reset to defaults** in a chart's settings puts the chart on this template the way choosing it does, asking first when it would lose its own indicators ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)). Choosing it under **GLOBAL** leaves every chart's template and indicators as they are. If this template is deleted, new charts open on **None**. **Default** can be deleted like any other template, and is not recreated.
 

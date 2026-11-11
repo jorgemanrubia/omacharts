@@ -8410,13 +8410,15 @@ impl Window {
         self.open_preferences_at(None);
     }
 
-    /// The preferences at the tab that edits what every chart's header
+    /// The preferences at the section that edits what every chart's header
     /// shows, from the header itself.
     pub fn edit_header(self: &Rc<Self>) {
-        self.open_preferences_at(Some(crate::ui::preferences::HEADER));
+        self.open_preferences_at(Some("overlays"));
     }
 
-    fn open_preferences_at(self: &Rc<Self>, charts_tab: Option<&str>) {
+    /// The preferences, at section `at` when asked for, else where they
+    /// were left.
+    fn open_preferences_at(self: &Rc<Self>, at: Option<&str>) {
         let this = self.clone();
         let editor = self.clone();
         let restorer = self.clone();
@@ -8433,7 +8435,7 @@ impl Window {
             Rc::new(move || editor.edit_timeframes()),
             Rc::new(move || restorer.adopt_restored()),
             self.clone(),
-            charts_tab,
+            at,
         );
     }
 

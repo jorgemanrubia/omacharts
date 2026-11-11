@@ -9,9 +9,9 @@ Preferences holds the settings that apply to the whole app. Open it with <kbd>Ct
 
 ## The dialog
 
-The sections down its side are **General** and **Market data**, then **Appearance**, **Overlays** and **Charts**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
+The sections down its side are **General**, **Market data** and **Templates**, then **Appearance**, **Overlays** and **Charts**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
 
-Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header goes to Overlays, where the header is edited.
+Reopened while the app is running, the dialog comes back on the section you left it on. Opening it from a chart's header goes to Overlays, where the header is edited.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -58,21 +58,19 @@ Daily and longer bars are dates and read the same in every time zone.
 ### Charts
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+theme: the fresh profile's own (Yaru-purple icons from a scratch XDG_CONFIG_HOME's gtk-4.0/settings.ini)
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed)
 state:
   omacharts chart set --symbol NVDA --resolution 1D
   key ctrl+comma
-  click 214 147          # Charts in the sidebar
+  click 294 355          # Charts in the sidebar, the last row
+  move 1270 700
 capture: bin/headless-window shot /tmp/charts.png
-crop: 292,76,1976,1288
+crop: 449,69,1662,1302   (the whole dialog, 12px margin)
 -->
-{% include figure.html src="/assets/manual/preferences/charts.png" alt="Preferences on Charts, Settings tab" caption="Preferences on Charts, Settings tab." %}
+{% include figure.html src="/assets/manual/preferences/charts.png" alt="Preferences on Charts, with the Scales, Session, Indicators and Drawings groups" caption="Preferences on Charts." %}
 
-| Tab | Does | Chapter |
-|---|---|---|
-| **Settings** | A chart's scale, session hours, template and drawings. Under **GLOBAL**, every chart's and what a new chart opens with; under **LOCAL**, the focused chart's. | [Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts) |
-| **Templates** | The list of chart templates. **+** makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
+A chart's scale, session hours, template and drawings. Under **GLOBAL**, every chart's and what a new chart opens with; under **LOCAL**, the focused chart's ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)).
 
 ### Market data
 
@@ -97,6 +95,10 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | thinkorswim › **Sign in…** / **Sign out** | Shown only while thinkorswim is chosen. | [Market data feeds](/manual/market-data/) |
 | Storage › **Cached data**, **Clear** | How much downloaded price data is kept, and a button to delete it all. | [Where your data lives](/manual/your-data/) |
 | Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
+
+### Templates
+
+The list of chart templates, the same for every chart on one. **+** makes one, a row opens its editor, the pencil renames, the bin deletes ([Chart templates](/manual/chart-templates/)).
 
 ### Appearance
 
