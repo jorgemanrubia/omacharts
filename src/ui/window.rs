@@ -47,6 +47,7 @@ use crate::ui::shortcuts;
 use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
+pub(crate) mod compare;
 mod log;
 mod marks;
 mod trade;
@@ -726,6 +727,7 @@ mod tests {
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 profile_merges: Vec::new(),
+                compare: Default::default(),
                 source: None,
                 account: None,
                 trading_size: None,
@@ -862,6 +864,7 @@ mod tests {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
+            compare: Default::default(),
             source: None,
             account: None,
             trading_size: None,
@@ -1273,6 +1276,33 @@ mod tests {
         assert_eq!(one.indicators.iter().map(|indicator| indicator.id).collect::<Vec<_>>(), vec![4]);
         assert!(two.strip_windows.is_empty());
         assert_eq!(two.timeframe, "5m", "the rest of the chart read");
+    }
+
+    /// A chart's comparisons are read market by market: a field a later
+    /// build wrote is passed over, a market that will not read is left out,
+    /// and the others stay compared, pinned as they were.
+    #[test]
+    fn a_comparison_that_will_not_read_leaves_the_others() {
+        let mut value: serde_json::Value = serde_json::from_str(ONE_ARRANGEMENT).unwrap();
+        value["panes"][0]["compare"] = serde_json::json!({
+            "symbols": [
+                { "symbol": "QQQ", "color": { "kind": "swatch", "name": "Rose" }, "weight": 2 },
+                { "symbol": 5 },
+                { "symbol": "ES" },
+            ],
+            "from": 1767312000,
+            "a_field_from_a_later_build": true,
+        });
+        let read = parse_workspace(&value.to_string()).expect("read but for what will not");
+        let compare = &read.books[0].panes[0].compare;
+        assert_eq!(compare.symbols.iter().map(|c| c.symbol.as_str()).collect::<Vec<_>>(), ["QQQ", "ES"]);
+        assert!(compare.symbols[0].color.is_some(), "its colour kept");
+        assert_eq!(compare.from, Some(1767312000));
+
+        value["panes"][0]["compare"] = serde_json::json!("garbage");
+        let read = parse_workspace(&value.to_string()).expect("read but for what will not");
+        assert!(read.books[0].panes[0].compare.is_empty());
+        assert_eq!(read.books[0].panes[0].symbol, "SPY", "the rest of the chart read");
     }
 
     #[test]
@@ -3475,6 +3505,55 @@ impl Feed {
     }
 }
 
+/// Bars as a feed sent them, folded to what a chart at `timeframe` draws.
+fn fold_for_screen(
+    instrument: &Instrument,
+    timeframe: Timeframe,
+    session: Session,
+    bars: Vec<omacharts_engine::Bar>,
+) -> Vec<omacharts_engine::Bar> {
+    let bars = drawable_bars(instrument, timeframe, bars);
+    in_session(instrument, timeframe, session, &bars)
+}
+
+/// The bars anyone could have traded, before a session cuts them down:
+/// what [`fold_for_screen`] starts from, and what a chart reads its hidden
+/// latest trade from.
+fn drawable_bars(
+    instrument: &Instrument,
+    timeframe: Timeframe,
+    bars: Vec<omacharts_engine::Bar>,
+) -> Vec<omacharts_engine::Bar> {
+    // A market that never closes opens where it left off. Nothing here is
+    // specific to a provider: the repair only fires when the series it is
+    // given has no bodies, which is true of Yahoo's currency pairs and
+    // not of its crypto.
+    let mut bars = if instrument.kind.is_continuous() {
+        omacharts_engine::repair_continuous_opens(&bars)
+    } else {
+        bars
+    };
+    // Then what nobody could have traded, left out or cut back: here,
+    // on the way to the screen, and never where the bars are kept.
+    omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
+    bars
+}
+
+/// Drawable bars through the chart's session, folded to its timeframe.
+fn in_session(
+    instrument: &Instrument,
+    timeframe: Timeframe,
+    session: Session,
+    bars: &[omacharts_engine::Bar],
+) -> Vec<omacharts_engine::Bar> {
+    let bars = omacharts_engine::session::filter(bars, session, instrument, timeframe.is_intraday());
+    if timeframe.is_derived() {
+        resample(&bars, timeframe, &Grid::new(instrument, session))
+    } else {
+        bars
+    }
+}
+
 /// Which feed serves a chart, as [`Window::route`] decided it.
 struct Routed {
     feed: Rc<Feed>,
@@ -3654,6 +3733,11 @@ struct StoredPane {
     /// Volume profile periods merged into composites on this chart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profile_merges: Vec<omacharts_engine::indicators::profile::Merge>,
+    /// The markets drawn against this chart's own, where they are measured
+    /// from, and whether its bars give way to a line. Missing for a chart
+    /// that compares nothing, which is every chart written before any could.
+    #[serde(default, skip_serializing_if = "omacharts_engine::compare::Compare::is_empty")]
+    compare: omacharts_engine::compare::Compare,
     /// The data feed somebody chose for this chart, by id. Missing for a
     /// chart that follows the order of feeds, which is every chart until
     /// somebody chooses and every chart written before anybody could.
@@ -3714,6 +3798,7 @@ impl StoredPane {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
+            compare: Default::default(),
             source: None,
             account: None,
             trading_size: None,
@@ -4034,6 +4119,15 @@ fn mend_book(book: &mut serde_json::Value, left_out: &mut Vec<String>) -> bool {
     if let Some(panes) = book.get_mut("panes").and_then(serde_json::Value::as_array_mut) {
         for pane in panes {
             let symbol = pane.get("symbol").and_then(serde_json::Value::as_str).unwrap_or("?").to_string();
+            // The markets compared are read market by market, so one that
+            // will not read leaves the others compared.
+            if let Some(compare) = pane.get_mut("compare") {
+                let blank = serde_json::to_value(omacharts_engine::compare::Compare::default()).expect("a comparison is written down");
+                if !mend::<omacharts_engine::compare::Compare>(compare, &blank, &format!("what the {symbol} chart in {named} compares"), left_out) {
+                    pane.as_object_mut().map(|pane| pane.remove("compare"));
+                    left_out.push(format!("what the {symbol} chart in {named} compares"));
+                }
+            }
             if !mend::<StoredPane>(pane, &blank_pane, &format!("the {symbol} chart in {named}"), left_out) {
                 left_out.push(format!("{named}, whose {symbol} chart it cannot be rebuilt without"));
                 return false;
@@ -5400,6 +5494,7 @@ impl Window {
         added.set_ohlc_thickness(from.ohlc_thickness.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
+        *added.compare.borrow_mut() = from.compare.borrow().clone();
         added.shows_legend.set(from.shows_legend.get());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
@@ -6190,6 +6285,7 @@ impl Window {
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     profile_merges: pane.profile_merges.borrow().clone(),
+                    compare: pane.compare.borrow().clone(),
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
@@ -6481,6 +6577,7 @@ impl Window {
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
+            *pane.compare.borrow_mut() = stored.compare.clone();
             *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
@@ -6613,6 +6710,18 @@ impl Window {
                 self.show_in(&pane, instrument);
                 charted = true;
             }
+        }
+        // A market compared that the curated half could not name, BIT
+        // beside SPY, is looked up again in the whole catalogue.
+        let comparing: Vec<Rc<ChartPane>> = self
+            .panes
+            .borrow()
+            .iter()
+            .filter(|pane| pane.compared.borrow().iter().any(|loaded| loaded.instrument.is_none()))
+            .cloned()
+            .collect();
+        for pane in comparing {
+            self.load_comparisons(&pane);
         }
         if charted {
             self.sync_header();
@@ -9140,6 +9249,7 @@ impl Window {
                 .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
         }
         pane.follow_load(load);
+        self.load_comparisons(pane);
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
         }
@@ -9584,6 +9694,12 @@ impl Window {
             // reason another one loads slowly.
             feed.loader.fetch(Request { key, symbol, timeframe, speculative: true }, REFRESH);
         }
+        for id in self.mounted().leaves() {
+            let Some(pane) = self.pane(id) else { continue };
+            if !pane.compared.borrow().is_empty() {
+                self.refresh_comparisons(&pane, visible, now);
+            }
+        }
     }
 
     /// Is the window on screen at all?
@@ -9635,6 +9751,7 @@ impl Window {
         bars: Vec<omacharts_engine::Bar>,
         trouble: Option<FetchFailure>,
     ) {
+        self.compare_arrived(key, native, &bars, trouble);
         // A series being streamed is newer in memory than any reply: the
         // reply still feeds the rail, and paints nothing.
         let streamed = self
@@ -9699,30 +9816,9 @@ impl Window {
         timeframe: Timeframe,
         bars: Vec<omacharts_engine::Bar>,
     ) {
-        // A market that never closes opens where it left off. Nothing here is
-        // specific to a provider: the repair only fires when the series it is
-        // given has no bodies, which is true of Yahoo's currency pairs and
-        // not of its crypto.
-        let mut bars = if instrument.kind.is_continuous() {
-            omacharts_engine::repair_continuous_opens(&bars)
-        } else {
-            bars
-        };
-        // Then what nobody could have traded, left out or cut back: here,
-        // on the way to the screen, and never where the bars are kept.
-        omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
+        let bars = drawable_bars(instrument, timeframe, bars);
         let latest = hidden_latest(&bars, pane.session.get(), instrument, timeframe);
-        let bars = omacharts_engine::session::filter(
-            &bars,
-            pane.session.get(),
-            instrument,
-            timeframe.is_intraday(),
-        );
-        let bars = if timeframe.is_derived() {
-            resample(&bars, timeframe, &Grid::new(instrument, pane.session.get()))
-        } else {
-            bars
-        };
+        let bars = in_session(instrument, timeframe, pane.session.get(), &bars);
         self.recompute_indicators(pane, instrument, timeframe, &bars);
         let bars = Rc::new(bars);
         {
@@ -10549,6 +10645,9 @@ impl Window {
             match self.route_pane(&pane, &instrument) {
                 Some(routed) if was.as_deref() == Some(routed.key().as_str()) => {
                     self.write_feed_of(&pane, Some(&routed.feed), &routed.passed);
+                    if self.comparisons_rerouted(&pane) {
+                        self.load_comparisons(&pane);
+                    }
                 }
                 _ => self.show_in(&pane, instrument),
             }
@@ -12970,6 +13069,7 @@ impl Window {
     }
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
+        self.note_menu_at(x);
         let menu = self.chart_menu_model(y);
 
         // Hung off the window rather than the chart it was opened on: a menu
@@ -13095,6 +13195,9 @@ impl Window {
         }
         let menu = outer;
 
+        // Other markets against this one: what is measured, and from where.
+        menu.append_section(None, &self.compare_menu_section());
+
         // The layout, in its own section: splitting and closing are about the
         // arrangement rather than about what this chart draws.
         let layout = gio::Menu::new();
@@ -13208,6 +13311,7 @@ impl Window {
     /// choice as a selected radio item without anybody building ticks by hand.
     fn install_chart_actions(self: &Rc<Self>) {
         let actions = gio::SimpleActionGroup::new();
+        self.install_compare_actions(&actions);
 
         let bar_style = gio::SimpleAction::new_stateful(
             "bar-style",

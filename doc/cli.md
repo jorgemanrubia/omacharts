@@ -917,6 +917,28 @@ it as it was; Ctrl+B and Ctrl+I set the selection — or the word the caret is
 in — bold or italic. Ctrl+= and Ctrl+− grow and shrink the selected
 drawing's text, which on a figure is its label rather than the figure.
 
+## Comparing markets on one chart
+
+`chart compare` draws other markets over a chart as lines in percent, each 0%
+at the same bar, and turns the price axis into percent while it does:
+
+```sh
+omacharts chart compare add GC NQ BTC-USD
+# compared GC, NQ, BTC on pos:0 SPY 1D in "Macro"
+omacharts chart compare set --from 2026-01-02 --lines-only on
+omacharts chart compare set GC --color Rose
+omacharts chart compare list --json
+omacharts chart compare remove NQ
+omacharts chart compare clear
+```
+
+The base is the first bar on screen unless `--from` pins it to a date, a
+moment or unix seconds; `--from left` lets it follow the screen again.
+`--lines-only on` draws the chart's own symbol as a line too. Each market is
+read at the chart's resolution from the feed that would chart it, and laid on
+the chart's bars by carrying its last close forward over its closed hours.
+What a chart compares is saved with it and in chartbook templates.
+
 ## Measuring a move
 
 With a window open, `chart measure` puts the ruler on the focused chart between

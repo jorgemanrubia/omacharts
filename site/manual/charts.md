@@ -117,6 +117,7 @@ Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart 
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
+| **Line** | One line through the closes, in the theme's text colour |
 | **None** | Nothing. The bars are hidden |
 
 OHLC bars have a **Thickness** row under **Style**, from 1 to 4 pixels and 2 by default. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
@@ -142,6 +143,20 @@ capture: bin/headless-window cli chart screenshot --output /tmp/ohlc.png
 crop: none (resized to 2000 wide)
 -->
 {% include figure.html src="/assets/manual/charts/daily-ohlc.jpg" alt="The same NVDA daily chart drawn as OHLC bars" caption="The same chart as OHLC bars." %}
+
+A line shows the closes alone, so the price scale fits the closes rather than the highs and lows. The colouring still paints the volume strip and the last price on the axis. **Hollow up bars** has nothing to leave open on a line, so it is not shown.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  omacharts chartbook create Line --symbol SPY --switch
+  omacharts chart set --resolution 1D --session regular --style line
+  omacharts chart range 1y
+capture: bin/headless-window cli chart screenshot --output site/assets/manual/charts/daily-line.png
+crop: none
+-->
+{% include figure.html src="/assets/manual/charts/daily-line.png" alt="SPY daily over a year drawn as one line through the closes" caption="SPY as a line." %}
 
 ### Colouring
 
@@ -519,7 +534,7 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | Item | Does | Explained in |
 |---|---|---|
 | **Paste** | Puts down the drawings or the indicator last copied. Only there while something has been copied | [Drawings](/manual/drawings/), [Indicators](/manual/indicators/#selecting-an-indicator) |
-| **Bar style** › **Candles**, **OHLC bars**, **None** | The chart's bar style, or its bars hidden, with its key | [Bars](#bars) |
+| **Bar style** › **Candles**, **OHLC bars**, **Line**, **None** | The chart's bar style, or its bars hidden, with its key | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |
@@ -527,6 +542,10 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Edit chart title…** | Asks for the chart title, with its key. Blank removes it | [Chart titles](#chart-titles) |
+| **Compare with…** | Opens the search to draw another market on the chart in percent | [Comparing markets](/manual/comparing/) |
+| **Compare from here** | Measures every compared line from the bar under the pointer. Only while the chart compares something | [Where the lines are measured from](/manual/comparing/#where-the-lines-are-measured-from) |
+| **Compare from left edge** | Measures from the first bar on screen again. Only while the base is pinned | [Where the lines are measured from](/manual/comparing/#where-the-lines-are-measured-from) |
+| **Lines only** | Ticked while the chart's own symbol is drawn as a line. Only while the chart compares something | [Lines only](/manual/comparing/#lines-only) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |

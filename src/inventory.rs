@@ -93,7 +93,7 @@ impl Inventory {
         self.get().resolve(symbol, suffix)
     }
 
-    fn replace(&self, index: SearchIndex) {
+    pub(crate) fn replace(&self, index: SearchIndex) {
         *self.index.borrow_mut() = Rc::new(index);
         self.complete.set(true);
     }

@@ -1512,6 +1512,7 @@ fn chart_verb(
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
         "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
         "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
+        "compare" => return chart_compare(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
 
@@ -1892,6 +1893,228 @@ fn chart_indicator(
         workspace.name_of(at)
     );
     said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// What a stored chart compares, or nothing for one that compares nothing or
+/// holds something this build cannot read.
+fn stored_compare(chart: &Value) -> omacharts_engine::compare::Compare {
+    serde_json::from_value(chart["compare"].clone()).unwrap_or_default()
+}
+
+/// A colour as `--color` takes it back: the palette name, or the hex.
+fn colour_words(choice: &ColorChoice) -> String {
+    match choice {
+        ColorChoice::Swatch { name } => name.clone(),
+        ColorChoice::Fixed { hex } => hex.clone(),
+    }
+}
+
+/// Where a comparison's lines are measured from, in words.
+fn compare_base(compare: &omacharts_engine::compare::Compare, zone: Tz) -> String {
+    match compare.from {
+        None => "from the left edge".to_string(),
+        Some(ts) => match chrono::DateTime::from_timestamp(ts, 0) {
+            Some(utc) => {
+                let local = utc.with_timezone(&zone);
+                let midnight = local.format("%H:%M").to_string() == "00:00";
+                format!("from {}", local.format(if midnight { "%Y-%m-%d" } else { "%Y-%m-%d %H:%M" }))
+            }
+            None => format!("from {ts}"),
+        },
+    }
+}
+
+/// `chart compare`: other markets drawn against the chart's own, in percent.
+///
+/// Everything named is checked before anything is written, so a typo in the
+/// third symbol leaves the first two uncompared rather than half the list in.
+fn chart_compare(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+) -> Result<String, Fault> {
+    use omacharts_engine::compare::{Compare, Comparison};
+    let action = required(m, "ACTION")?.as_str();
+    let book = workspace.book(at)?.clone();
+    let chart = charts::panes(&book)
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(pane as u64))
+        .cloned()
+        .ok_or_else(|| Fault::not_found(format!("no chart {pane}")))?;
+    let own_symbol = chart["symbol"].as_str().unwrap_or("").to_string();
+    let own_suffix = chart["suffix"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let zone = chart_zone(store, &own_symbol, own_suffix.as_deref());
+    let label = chart_label(&book, pane);
+    let mut compare = stored_compare(&chart);
+
+    let report = |compare: &Compare, message: String| -> Result<String, Fault> {
+        let listed: Vec<Value> = compare
+            .symbols
+            .iter()
+            .map(|c| json!({"symbol": c.spelled(), "color": c.color.as_ref().map(colour_words)}))
+            .collect();
+        said(
+            as_json,
+            json!({
+                "chart": pane,
+                "compare": listed,
+                "from": compare.from,
+                "lines_only": compare.lines_only,
+                "message": message,
+            }),
+            message,
+        )
+    };
+
+    let named: Vec<String> = m.get_many::<String>("SYMBOL").map(|given| given.cloned().collect()).unwrap_or_default();
+    if action == "list" {
+        if !named.is_empty() {
+            return Err(Fault::usage("`chart compare list` takes no symbols".into()));
+        }
+        let message = match compare.symbols.is_empty() {
+            true => format!("{label} compares nothing"),
+            false => format!(
+                "{label} compared with {}, {}{}",
+                compare.symbols.iter().map(Comparison::spelled).collect::<Vec<_>>().join(", "),
+                compare_base(&compare, zone),
+                if compare.lines_only { ", lines only" } else { "" }
+            ),
+        };
+        return report(&compare, message);
+    }
+
+    // Read and check everything first.
+    let index = crate::inventory::everything();
+    let mut markets: Vec<(String, Option<String>)> = Vec::new();
+    for text in &named {
+        let (mut symbol, suffix) = listing(&index, text, None);
+        // A coin as an exchange quotes it against the dollar, BTC-USD, is
+        // the coin the listings call BTC.
+        if index.resolve(&symbol, suffix.as_deref()).is_none()
+            && let Some(coin) = symbol.strip_suffix("-USD")
+            && index.find(coin, None).is_some_and(|i| i.kind == omacharts_engine::InstrumentKind::Crypto)
+        {
+            symbol = coin.to_string();
+        }
+        if index.resolve(&symbol, suffix.as_deref()).is_none() {
+            return Err(Fault::not_found(format!(
+                "no instrument called {}; try `omacharts symbol search {symbol}`",
+                spell(&symbol, suffix.as_deref())
+            )));
+        }
+        markets.push((symbol, suffix));
+    }
+    let from = match arg(m, "from").map(String::as_str) {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("left") => Some(None),
+        Some(text) => Some(Some(read_when(text, "from", zone)?)),
+    };
+    let lines_only = match arg(m, "lines-only").map(String::as_str) {
+        None => None,
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(text) => return Err(Fault::usage(format!("--lines-only takes on or off, not {text:?}"))),
+    };
+    let color = match arg(m, "color").map(String::as_str) {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("auto") => Some(None),
+        Some(_) => Some(colour(m, "color")?),
+    };
+
+    let mut said_what: Vec<String> = Vec::new();
+    match action {
+        "add" => {
+            if markets.is_empty() {
+                return Err(Fault::usage("say which markets to compare, like `chart compare add GC NQ`".into()));
+            }
+            for (symbol, suffix) in &markets {
+                let spelled = spell(symbol, suffix.as_deref());
+                if symbol.eq_ignore_ascii_case(&own_symbol)
+                    && suffix.as_deref().unwrap_or("").eq_ignore_ascii_case(own_suffix.as_deref().unwrap_or(""))
+                {
+                    return Err(Fault::refused(format!("{label} is {spelled}; compare it with another market")));
+                }
+                if !compare.add(Comparison::new(symbol, suffix.as_deref())) {
+                    said_what.push(format!("{spelled} was compared already"));
+                }
+            }
+            let added: Vec<String> = markets.iter().map(|(s, x)| spell(s, x.as_deref())).collect();
+            said_what.insert(0, format!("compared {}", added.join(", ")));
+        }
+        "remove" => {
+            if markets.is_empty() {
+                return Err(Fault::usage(
+                    "say which markets to stop comparing, or `chart compare clear` for all of them".into(),
+                ));
+            }
+            for (symbol, suffix) in &markets {
+                let spelled = spell(symbol, suffix.as_deref());
+                if !compare.remove(symbol, suffix.as_deref()) {
+                    return Err(Fault::not_found(format!("{label} does not compare {spelled}")));
+                }
+            }
+            let removed: Vec<String> = markets.iter().map(|(s, x)| spell(s, x.as_deref())).collect();
+            said_what.push(format!("stopped comparing {}", removed.join(", ")));
+        }
+        "clear" => {
+            if !markets.is_empty() {
+                return Err(Fault::usage("`chart compare clear` takes no symbols; it takes them all off".into()));
+            }
+            compare = Compare::default();
+            said_what.push("stopped comparing anything".to_string());
+        }
+        "set" => {
+            if from.is_none() && lines_only.is_none() && color.is_none() {
+                return Err(Fault::usage("say what to set: --from, --lines-only or --color".into()));
+            }
+        }
+        other => return Err(Fault::usage(format!("{other:?} is not something chart compare does"))),
+    }
+
+    // The settings, after the list is what it is going to be.
+    if compare.is_empty() && (from.is_some() || lines_only.is_some() || color.is_some()) && action != "clear" {
+        return Err(Fault::refused(format!(
+            "{label} compares nothing; add a market first, like `chart compare add GC`"
+        )));
+    }
+    if let Some(color) = color {
+        if markets.is_empty() {
+            return Err(Fault::usage("--color is for the markets named; say which".into()));
+        }
+        for (symbol, suffix) in &markets {
+            let at = compare.position(symbol, suffix.as_deref()).ok_or_else(|| {
+                Fault::not_found(format!("{label} does not compare {}", spell(symbol, suffix.as_deref())))
+            })?;
+            if let Some(comparison) = compare.symbols.get_mut(at) {
+                comparison.color = color.clone();
+            }
+        }
+        let named: Vec<String> = markets.iter().map(|(s, x)| spell(s, x.as_deref())).collect();
+        said_what.push(match &color {
+            Some(paint) => format!("{} coloured {}", named.join(", "), colour_words(paint)),
+            None => format!("{} coloured by the theme", named.join(", ")),
+        });
+    }
+    if let Some(from) = from {
+        compare.from = from;
+        said_what.push(compare_base(&compare, zone));
+    }
+    if let Some(on) = lines_only {
+        compare.lines_only = on;
+        said_what.push(if on { "lines only".to_string() } else { "with its bars".to_string() });
+    }
+
+    let target = workspace.book_mut(at)?;
+    let Some(stored) = charts::pane_mut(target, pane) else {
+        return Err(Fault::not_found(format!("no chart {pane}")));
+    };
+    stored["compare"] = serde_json::to_value(&compare).map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
+    workspace.save(store);
+    let message = format!("{} on {label} in {:?}", said_what.join(", "), workspace.name_of(at));
+    report(&compare, message)
 }
 
 /// A chart as a new one opens: the defaults, and the template they name.
@@ -4460,6 +4683,9 @@ fn pane_json(pane: &Value) -> String {
         // The chart template by id, as `template list` names it; none before
         // there were templates.
         "template": pane["template"],
+        // The markets compared with it, in the order they were added; empty
+        // for a chart that compares nothing.
+        "compare": stored_compare(pane).symbols.iter().map(|c| c.spelled()).collect::<Vec<_>>(),
     })
     .to_string()
 }
@@ -7192,6 +7418,21 @@ mod tests {
         assert_eq!(parsed["charts"][0]["resolution"], "1h");
     }
 
+    #[test]
+    fn a_chart_can_be_drawn_as_a_line_and_new_charts_can_start_as_one() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let set = run("chart set --book Macro --style line", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let listed = run("chart list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["charts"][0]["style"], "line");
+        assert_eq!(parsed["charts"][0]["bar_style"], "line");
+
+        assert_eq!(run("config set bar_style line", &store).code, 0);
+        assert_eq!(crate::chart_defaults::ChartDefaults::load(&store).bar_style, BarStyle::Line);
+    }
+
     /// Hiding the bars is a look at what is under them, so it must not cost
     /// the style they come back in.
     #[test]
@@ -7332,6 +7573,85 @@ mod tests {
 
         run("chart set --book Macro --indicators on", &store);
         assert_eq!(charts(&store)["charts"][0]["indicators_shown"], true);
+    }
+
+    /// Markets are compared, listed, coloured, pinned, drawn as lines and
+    /// taken off from the command line, and each change is written down
+    /// with the chart and said back about the chart it reached.
+    #[test]
+    fn markets_are_compared_from_the_command_line() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let compare = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&run("chart compare list --book Macro --json", store).out).unwrap()
+        };
+        assert_eq!(compare(&store)["compare"], serde_json::json!([]), "nothing compared to begin with");
+
+        let added = run("chart compare add --book Macro GC nq BTC-USD", &store);
+        assert_eq!(added.code, 0, "{}", added.err);
+        assert!(added.out.contains("compared GC, NQ, BTC on pos:0 SPY 1D"), "{}", added.out);
+        let listed = compare(&store);
+        let symbols: Vec<&str> = listed["compare"].as_array().unwrap().iter().map(|c| c["symbol"].as_str().unwrap()).collect();
+        assert_eq!(symbols, ["GC", "NQ", "BTC"], "BTC-USD is the coin the listings call BTC");
+        assert_eq!(listed["from"], serde_json::Value::Null);
+        assert_eq!(listed["lines_only"], false);
+
+        let again = run("chart compare add --book Macro GC", &store);
+        assert_eq!(again.code, 0, "{}", again.err);
+        assert!(again.out.contains("GC was compared already"), "{}", again.out);
+        assert_eq!(compare(&store)["compare"].as_array().unwrap().len(), 3, "not twice");
+
+        let set = run("chart compare set --book Macro --from 2026-01-02 --lines-only on", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        assert!(set.out.contains("from 2026-01-02, lines only"), "{}", set.out);
+        let listed = compare(&store);
+        assert!(listed["from"].as_i64().is_some());
+        assert_eq!(listed["lines_only"], true);
+
+        let coloured = run("chart compare set --book Macro GC --color Rose", &store);
+        assert_eq!(coloured.code, 0, "{}", coloured.err);
+        assert_eq!(compare(&store)["compare"][0]["color"], "Rose");
+
+        run("chart compare set --book Macro --from left", &store);
+        assert_eq!(compare(&store)["from"], serde_json::Value::Null, "back to the left edge");
+
+        let removed = run("chart compare remove --book Macro NQ", &store);
+        assert_eq!(removed.code, 0, "{}", removed.err);
+        let charts: serde_json::Value =
+            serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
+        assert_eq!(charts["charts"][0]["compare"], serde_json::json!(["GC", "BTC"]));
+
+        let cleared = run("chart compare clear --book Macro", &store);
+        assert_eq!(cleared.code, 0, "{}", cleared.err);
+        let listed = compare(&store);
+        assert_eq!(listed["compare"], serde_json::json!([]));
+        assert_eq!(listed["lines_only"], false, "lines only goes with the last market");
+    }
+
+    /// What cannot be compared is refused before anything is written: a
+    /// market nobody lists, the chart's own symbol, settings with nothing
+    /// to set them on, and a market that is not there to take off.
+    #[test]
+    fn a_comparison_that_cannot_be_made_changes_nothing() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let refused = |line: &str, code: u8, words: &str| {
+            let outcome = run(line, &store);
+            assert_eq!(outcome.code, code, "{line}: {}", outcome.err);
+            assert!(outcome.err.contains(words), "{line}: {}", outcome.err);
+        };
+        refused("chart compare add --book Macro GC ZZZZQ", 3, "no instrument called ZZZZQ");
+        refused("chart compare add --book Macro SPY", 5, "compare it with another market");
+        refused("chart compare set --book Macro --lines-only on", 5, "compares nothing");
+        refused("chart compare add --book Macro", 2, "say which markets");
+        run("chart compare add --book Macro GC", &store);
+        refused("chart compare remove --book Macro NQ", 3, "does not compare NQ");
+        refused("chart compare set --book Macro NQ --color Rose", 3, "does not compare NQ");
+        refused("chart compare set --book Macro --from yesterday", 2, "--from takes a moment");
+        let listed: serde_json::Value =
+            serde_json::from_str(&run("chart compare list --book Macro --json", &store).out).unwrap();
+        let symbols: Vec<&str> = listed["compare"].as_array().unwrap().iter().map(|c| c["symbol"].as_str().unwrap()).collect();
+        assert_eq!(symbols, ["GC"], "the refused GC ZZZZQ added neither");
     }
 
     /// The legend is on for a new chart unless the default says otherwise,

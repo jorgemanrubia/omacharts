@@ -397,7 +397,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
-| `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
+| `--style STYLE` | `candles`, `ohlc`, `line`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
 | `--thickness PX` | How many pixels wide OHLC bars are drawn, `1` to `4` | [Style](/manual/charts/#style) |
 | `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | `--colouring C` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono`; `theme-hollow` and `theme-red-up`, from earlier versions, are `theme` with the matching switch on | [Colouring](/manual/charts/#colouring) |
@@ -808,6 +808,64 @@ $ omacharts template create Trend --from-chart
 created chart template "Trend" (id:5) from the indicator on pos:0 SPY 1D in "Chartbook 1", and put the chart on it
   [exit 0]
 ```
+
+## Comparing markets
+
+`omacharts chart compare ACTION [SYMBOL…]` draws other markets on a chart as
+lines in percent. What comparing is, and how it looks, is in
+[Comparing markets](/manual/comparing/). `--book BOOK` and `--chart CHART` pick
+the chart as under [Which chart a command acts on](#which-chart-a-command-acts-on).
+
+| Action | Does |
+|---|---|
+| `list` | The markets the chart compares, where they are measured from, and whether it is lines only. |
+| `add SYMBOL…` | Compares one or more markets. A market already compared is said and left alone. The chart's own symbol is refused, exit `5`. `BTC-USD` is the coin listed as `BTC`. |
+| `remove SYMBOL…` | Stops comparing them. A market the chart does not compare is refused, exit `3`. |
+| `set` | Changes only the flags below. |
+| `clear` | Stops comparing anything. Lines only and the base go with the markets. |
+
+| Flag | Does |
+|---|---|
+| `--from WHEN` | The bar every line is 0% at: a date `2026-01-02`, a moment `2026-01-02T14:30` in the chart's time zone, or unix seconds. On daily and longer bars a date is that day's bar. `left` measures from the first bar on screen again |
+| `--lines-only on`, `off` | Draws the chart's own symbol as a line instead of its bars |
+| `--color COLOUR` | The colour of the markets named on the line: a palette name, `#rrggbb`, or `auto` for the theme's |
+| `--json` | Returns the chart, `compare` (each market's `symbol` and `color`), `from` in unix seconds or `null`, `lines_only` and `message` |
+
+Every symbol is checked before anything is written, so a command naming one
+unknown symbol (exit `3`) compares none of them. `--from`, `--lines-only` and
+`--color` on a chart that compares nothing are refused, exit `5`.
+
+```
+$ omacharts chart compare add GC NQ BTC-USD
+compared GC, NQ, BTC on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare set --from 2026-01-02
+from 2026-01-02 on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare set GC --color Rose
+GC coloured Rose on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare list
+pos:0 SPY 1D compared with GC, NQ, BTC, from 2026-01-02
+  [exit 0]
+
+$ omacharts chart compare add SPY
+omacharts: pos:0 SPY 1D is SPY; compare it with another market
+  [exit 5]
+
+$ omacharts chart compare set --lines-only on --from left
+from the left edge, lines only on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare clear
+stopped comparing anything on pos:0 SPY 1D in "Macro"
+  [exit 0]
+```
+
+`chart list --json` gives each chart's compared markets as `compare`.
 
 ## Measuring a move
 
@@ -1562,7 +1620,7 @@ same.
 | Setting | Values | Default | Preferences row | Chapter |
 |---|---|---|---|---|
 | `theme` | `omarchy` (System), `midnight`, `carbon`, `paper`, `daylight`, `omarchy:SLUG` for one installed Omarchy theme, or the id of a theme of your own | `omarchy` on Omarchy, `midnight` elsewhere | Theme › Theme | [Themes](/manual/themes/) |
-| `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
+| `bar_style` | `candles`, `ohlc`, `line` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
 | `bar_scheme` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `hollow_up` | on, off | off | Charts › Defaults › Hollow up bars | [Chart settings](/manual/chart-settings/) |

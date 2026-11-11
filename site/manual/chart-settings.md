@@ -36,15 +36,19 @@ crop: 700,84,1160,1276
 | Group › row | Does |
 |---|---|
 | **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
-| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
+| **Bars** › **Style** | **Candles**, **OHLC bars**, **Line**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
 | **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
 | **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |
-| **Bars** › **Hollow up bars** | Draws a rising candle as an outline. Greyed out on OHLC bars, which have no body |
+| **Bars** › **Hollow up bars** | Draws a rising candle as an outline. Greyed out on OHLC bars, which have no body, and not shown on a line |
 | **Bars** › **Swap up and down colours** | Paints the colouring the other way round, red for a rise. Greyed out on Monochrome |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
+| **Compare** › each market | Its colour, and the bin to stop comparing it ([Comparing markets](/manual/comparing/)) |
+| **Compare** › **Compare with…** | Closes the dialog and opens the search to add a market |
+| **Compare** › **Lines only** | Draws the chart's own symbol as a line. Only while the chart compares something |
+| **Compare** › **Measured from** | **Left edge**, or the day the lines are pinned to, with a **Left edge** button to unpin |
 | **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
 | **Drawings** › **Send drawings to other charts** | Off, what is drawn on this chart stays on this chart ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |
@@ -71,10 +75,10 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 
 | Group › row | Choices | Default |
 |---|---|---|
-| **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
+| **Bars** › **Style** | **Candles**, **OHLC bars**, **Line** | **Candles** |
 | **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
 | **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet**, **Monochrome** | **Vivid** |
-| **Bars** › **Hollow up bars** | On or off. Greyed out on OHLC bars | Off |
+| **Bars** › **Hollow up bars** | On or off. Greyed out on OHLC bars, not shown on a line | Off |
 | **Bars** › **Swap up and down colours** | On or off. Greyed out on Monochrome | Off |
 | **Scales** › **Logarithmic scale** | On or off | Off |
 | **Scales** › **Gridlines** | On or off | Off |

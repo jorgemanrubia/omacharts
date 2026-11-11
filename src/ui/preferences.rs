@@ -623,6 +623,7 @@ fn build_charts_page(context: &Rc<Context>) {
     hollow.set_title(crate::ui::chart_settings::HOLLOW_LABEL);
     hollow.set_active(current.hollow_up);
     hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(current.bar_style));
+    hollow.set_visible(crate::ui::chart_settings::hollow_offered(current.bar_style));
     let swapped = adw::SwitchRow::new();
     swapped.set_title(crate::ui::chart_settings::SWAP_LABEL);
     swapped.set_active(current.swapped);
@@ -656,6 +657,7 @@ fn build_charts_page(context: &Rc<Context>) {
             let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
             changed(&|d| d.bar_style = chosen);
             hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(chosen));
+            hollow.set_visible(crate::ui::chart_settings::hollow_offered(chosen));
             thickness.set_visible(chosen == BarStyle::Ohlc);
         });
     }
