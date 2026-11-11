@@ -1614,16 +1614,20 @@ mod strip_window_tests {
         });
     }
 
-    /// The defaults putting a chart on other trading hours let go of its
-    /// strips held on their own scale, as choosing the hours does: on screen
-    /// and in a book that is not.
+    /// Resetting a chart onto other trading hours lets go of its strips held
+    /// on their own scale, as choosing the hours does. Applying the defaults
+    /// to every chart never touches what is kept with its indicators, so it
+    /// keeps them: on screen and in a book that is not.
     #[test]
-    fn the_defaults_putting_a_chart_on_other_hours_let_go_of_its_strips() {
+    fn resetting_a_chart_onto_other_hours_lets_go_of_its_strips_and_applying_to_all_keeps_them() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
-            window.save_workspace();
             let pane = window.focused_pane();
+            // A strip held is one of the chart's indicators': redrawn, a
+            // window held for none of them is dropped.
+            window.set_indicators_of(&pane, vec![Indicator::new(7, omacharts_engine::IndicatorKind::Cvd)]);
+            window.save_workspace();
             let same = window.session();
             let other = match same {
                 Session::Regular => Session::Extended,
@@ -1640,7 +1644,8 @@ mod strip_window_tests {
             assert_eq!(window.session(), other);
             assert!(pane.view.held_strip_windows().is_empty(), "held across other hours");
 
-            // A book not on screen, changed where it is written.
+            // Apply to all: the strips stay held, on screen and where a book
+            // not on screen is written.
             let elsewhere = {
                 let mut book = window.books.borrow()[0].clone();
                 book.name = "Elsewhere".into();
@@ -1649,8 +1654,14 @@ mod strip_window_tests {
                 book
             };
             window.books.borrow_mut().push(elsewhere);
+            pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
+            defaults.session = same;
             window.apply_chart_defaults_now(&defaults);
-            assert!(window.books.borrow()[1].panes[0].strip_windows.is_empty(), "held where it is written");
+            assert_eq!(window.session(), same, "the hours are applied");
+            assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "kept on screen");
+            let books = window.books.borrow();
+            assert_eq!(books[1].panes[0].session, same.key(), "the hours are applied where it is written");
+            assert_eq!(books[1].panes[0].strip_windows.get(&7).map(|s| s.window), Some([-1.0, 1.0]), "kept where it is written");
         });
     }
 
@@ -1827,6 +1838,124 @@ mod legend_switch_tests {
             window.apply_chart_defaults_now(&defaults);
             assert!(!window.shows_legend(), "the chart on screen");
             assert!(!window.books.borrow()[1].panes[0].shows_legend, "the book written down");
+        });
+    }
+}
+
+#[cfg(test)]
+mod apply_to_all_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+    use omacharts_engine::IndicatorKind;
+
+    /// Indicators of a chart's own, each with settings of its own.
+    fn own() -> Vec<Indicator> {
+        let mut hidden = Indicator::new(1, IndicatorKind::Sma);
+        hidden.visible = false;
+        let mut quiet = Indicator::new(2, IndicatorKind::Rsi);
+        quiet.in_legend = false;
+        vec![hidden, quiet, Indicator::new(3, IndicatorKind::Cvd)]
+    }
+
+    /// Every widget under `root`.
+    fn widgets(root: gtk::Widget) -> Vec<gtk::Widget> {
+        let (mut found, mut stack) = (Vec::new(), vec![root]);
+        while let Some(widget) = stack.pop() {
+            let mut child = widget.first_child();
+            while let Some(next) = child {
+                child = next.next_sibling();
+                stack.push(next);
+            }
+            found.push(widget);
+        }
+        found
+    }
+
+    /// Apply to all, from Preferences, applies at once with nothing asked:
+    /// every chart takes the defaults but keeps its template and its
+    /// indicators as they are, on screen and in a chartbook that is not.
+    #[test]
+    fn applying_to_all_keeps_every_chart_s_template_and_indicators_and_asks_nothing() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let mine = own();
+            let on_a = crate::templates::create_from(&store, "Momentum", vec![Indicator::new(1, IndicatorKind::Macd)]);
+            let default = crate::templates::create_from(&store, "Swing", vec![Indicator::new(1, IndicatorKind::Ema)]);
+
+            // On screen: a chart with indicators of its own.
+            let pane = window.focused_pane();
+            window.set_indicators_of(&pane, mine.clone());
+            pane.view.hold_strip_window(3, Some(IndicatorKind::Cvd), -1500.0, 2500.0);
+            window.save_workspace();
+
+            // Not on screen: one chart on a template, one with its own.
+            let elsewhere = {
+                let mut book = window.books.borrow()[0].clone();
+                book.name = "Elsewhere".into();
+                let mut templated = book.panes[0].clone();
+                templated.id += 100;
+                templated.template = Some(on_a.id);
+                templated.indicators = on_a.indicators.clone();
+                book.panes.push(templated);
+                book
+            };
+            window.books.borrow_mut().push(elsewhere);
+
+            // Defaults that differ from every chart, the template among them.
+            let mut defaults = ChartDefaults::load(&store);
+            defaults.template = Some(default.id);
+            defaults.bar_style = BarStyle::Ohlc;
+            defaults.show_grid = !pane.show_grid.get();
+            defaults.log_scale = !pane.view.price_log();
+            defaults.shows_legend = !pane.shows_legend.get();
+            defaults.save(&store);
+
+            window.open_preferences_at(Some("defaults"));
+            let preferences = window.window.visible_dialog().expect("the preferences");
+            let apply = widgets(preferences.clone().upcast())
+                .into_iter()
+                .find_map(|widget| {
+                    widget.downcast::<gtk::Button>().ok().filter(|b| b.label().as_deref() == Some("Apply to all charts now"))
+                })
+                .expect("the Apply to all button");
+            apply.emit_clicked();
+
+            let shown = window.window.visible_dialog().expect("the preferences, still");
+            assert!(shown.downcast_ref::<adw::AlertDialog>().is_none(), "nothing is asked");
+            assert_eq!(shown, preferences, "nothing over the preferences");
+
+            // The chart on screen: its own indicators, settings and all, and
+            // no template; the rest of the defaults applied.
+            assert_eq!(pane.template.get(), None, "kept off the default template");
+            assert_eq!(*pane.indicators.borrow(), mine, "its own indicators, as they were");
+            assert_eq!(pane.view.held_strip_windows().get(&3), Some(&(-1500.0, 2500.0)), "its strip as held");
+            assert_eq!(pane.bar_style.get(), BarStyle::Ohlc);
+            assert_eq!(pane.show_grid.get(), defaults.show_grid);
+            assert_eq!(pane.view.price_log(), defaults.log_scale);
+            assert_eq!(pane.shows_legend.get(), defaults.shows_legend);
+
+            // The chartbook not on screen, where it is written.
+            let books = window.books.borrow();
+            let (theirs, templated) = (&books[1].panes[0], &books[1].panes[1]);
+            assert_eq!(theirs.template, None);
+            assert_eq!(theirs.indicators, mine, "its own indicators, as they were");
+            assert_eq!(templated.template, Some(on_a.id), "kept on its own template");
+            assert_eq!(templated.indicators, on_a.indicators);
+            for stored in [theirs, templated] {
+                assert_eq!(stored.bar_style, BarStyle::Ohlc.key());
+                assert_eq!(stored.show_grid, defaults.show_grid);
+                assert_eq!(stored.log_scale, defaults.log_scale);
+                assert_eq!(stored.shows_legend, defaults.shows_legend);
+            }
+            drop(books);
+            preferences.force_close();
+
+            // A chart on screen on a template stays on it too.
+            window.set_template(Some(on_a.id));
+            window.apply_chart_defaults();
+            assert_eq!(pane.template.get(), Some(on_a.id), "kept on its own template");
+            assert_eq!(*pane.indicators.borrow(), on_a.indicators);
         });
     }
 }
@@ -11708,100 +11837,37 @@ impl Window {
         self.choose_template(defaults.template, done);
     }
 
-    /// Every chart, in every chartbook, to what a new chart opens with,
-    /// asking first when charts would lose indicators of their own; `applied`
-    /// runs only if it went ahead.
-    pub fn apply_chart_defaults(self: &Rc<Self>, applied: impl Fn() + 'static) {
+    /// Every chart, in every chartbook, on the defaults, at once: there is
+    /// nothing to ask, since it never touches a chart's indicators.
+    ///
+    /// Everything of the defaults but the template. A chart's template, its
+    /// indicators and all that is kept with them, down to the strips each is
+    /// held at, are its own and stay as they are; the template a new chart
+    /// opens on is for new charts only.
+    pub fn apply_chart_defaults(self: &Rc<Self>) {
         let defaults = ChartDefaults::load(&self.store);
-        let templates = self.templates();
-        let chosen = defaults.template.and_then(|id| templates.iter().find(|t| t.id == id));
-        // The same test as choosing a template for one chart: a chart on a
-        // template, or showing exactly what some template holds, has nothing
-        // of its own to lose.
-        let loses = |template: Option<u32>, indicators: &[Indicator]| {
-            template.is_none()
-                && !indicators.is_empty()
-                && !templates.iter().any(|t| t.indicators == indicators)
-        };
-        let active = self.active.get();
-        let on_screen = self
-            .panes
-            .borrow()
-            .iter()
-            .filter(|pane| loses(pane.template.get(), &pane.indicators.borrow()))
-            .count();
-        let elsewhere: usize = self
-            .books
-            .borrow()
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| *at != active)
-            .map(|(_, book)| {
-                book.panes.iter().filter(|stored| loses(stored.template, &stored.indicators)).count()
-            })
-            .sum();
-        let count = on_screen + elsewhere;
-        if count == 0 {
-            self.apply_chart_defaults_now(&defaults);
-            applied();
-            return;
-        }
-        let charts = match count {
-            1 => "One chart has indicators of its own".to_string(),
-            n => format!("{n} charts have indicators of their own"),
-        };
-        let body = match chosen {
-            Some(chosen) => format!(
-                "{charts}, which will be replaced by the indicators of \u{201c}{}\u{201d}.",
-                chosen.name
-            ),
-            None => format!("{charts}, which will be removed."),
-        };
-        let dialog = adw::AlertDialog::new(Some("Apply to All Charts?"), Some(&body));
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("apply", "Apply to All Charts");
-        dialog.set_response_appearance("apply", adw::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-        let this = self.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "apply" {
-                this.apply_chart_defaults_now(&ChartDefaults::load(&this.store));
-                applied();
-            }
-        });
-        dialog.present(Some(&self.window));
+        self.apply_chart_defaults_now(&defaults);
     }
 
     fn apply_chart_defaults_now(self: &Rc<Self>, defaults: &ChartDefaults) {
         let panes = self.panes.borrow().clone();
         for pane in &panes {
-            self.adopt_defaults(pane, defaults);
+            self.adopt_chart_settings(pane, defaults);
         }
         // The books not on screen are only written down, so they are changed
         // where they are written.
         let active = self.active.get();
-        let template = defaults.template.and_then(|id| crate::templates::get(&self.store, id));
         for (at, book) in self.books.borrow_mut().iter_mut().enumerate() {
             if at == active {
                 continue;
             }
             for stored in &mut book.panes {
-                // Onto the default template, or onto none and no indicators:
-                // the same two answers a chart on screen gets.
-                stored.template = template.as_ref().map(|t| t.id);
-                stored.indicators = template.as_ref().map(|t| t.indicators.clone()).unwrap_or_default();
                 stored.bar_style = defaults.bar_style.key().to_string();
                 stored.bars_hidden = false;
                 stored.colouring = Some(defaults.colouring.key().to_string());
                 stored.swapped = Some(defaults.swapped);
                 stored.hollow_up = Some(defaults.hollow_up);
                 stored.ohlc_thickness = Some(defaults.ohlc_thickness);
-                // And a book not on screen lets go of them where they are
-                // written.
-                if stored.session != defaults.session.key() {
-                    stored.strip_windows.clear();
-                }
                 stored.session = defaults.session.key().to_string();
                 stored.continuous = Some(defaults.continuous.key().to_string());
                 stored.show_grid = defaults.show_grid;
@@ -11819,15 +11885,23 @@ impl Window {
         self.save_workspace();
     }
 
-    /// One chart to the defaults, drawn as it now is. Drawings move the way
-    /// the switches in its own settings move them.
-    fn adopt_defaults(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
-        self.adopt_looks(pane, defaults);
-        self.put_on_template(pane, defaults.template);
+    /// Everything of the defaults but the template, for a chart being put
+    /// back on what a new chart opens with: other hours let go of the strips
+    /// held, as `set_session` does.
+    fn adopt_looks(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
+        let other_hours =
+            pane.session.get() != defaults.session || pane.continuous.get() != defaults.continuous;
+        self.adopt_chart_settings(pane, defaults);
+        if other_hours {
+            pane.view.free_strip_windows();
+        }
     }
 
-    /// Everything of the defaults but the template.
-    fn adopt_looks(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
+    /// A chart's own settings from the defaults, drawn as it now is, and
+    /// nothing of its indicators: the legend's switch is the chart's, read
+    /// over them. Drawings move the way the switches in its own settings
+    /// move them.
+    fn adopt_chart_settings(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
         pane.bar_style.set(defaults.bar_style);
         pane.view.set_bar_style(defaults.bar_style);
         pane.bars_hidden.set(false);
@@ -11839,13 +11913,8 @@ impl Window {
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
         self.apply_marks_to(pane);
-        // Other hours let go of the strips held, as `set_session` does.
-        if pane.session.replace(defaults.session) != defaults.session {
-            pane.view.free_strip_windows();
-        }
-        if pane.continuous.replace(defaults.continuous) != defaults.continuous {
-            pane.view.free_strip_windows();
-        }
+        pane.session.set(defaults.session);
+        pane.continuous.set(defaults.continuous);
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);
         pane.view.set_price_log(defaults.log_scale);
