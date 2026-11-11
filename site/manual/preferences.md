@@ -38,7 +38,7 @@ Appearance, Overlays and Charts sit under the **VISUAL** rule, which says which 
 | Desktop › **Show in the Omarchy bar** | Puts the Omarchy plugin in the bar, or takes it out. The group appears only on an Omarchy desktop. | [Omarchy plugin](/manual/bar-widget/) |
 | Time › **Time zone**, **Time format** | How every chart tells the time. | [Time](#time) |
 | Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
-| Chart › **Zoom sensitivity** | How far the wheel and a two-finger swipe zoom every chart, from 10% to 200%. 100% by default, where a wheel notch zooms as it always has. | [Moving around](/manual/charts/#moving-around) |
+| Chart › **Zoom sensitivity** | How far the wheel and a two-finger swipe zoom every chart, from 10% to 200%. 100% by default, where a wheel notch zooms as it always has. Dragged near 100%, the slider settles on it; the arrow keys step through it. | [Moving around](/manual/charts/#moving-around) |
 | Preference backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 | Updates › **Update automatically** | Downloads new releases in the background, to start at the next launch. On by default. | [Installation](/manual/installing/#updates) |
 

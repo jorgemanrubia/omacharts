@@ -386,21 +386,35 @@ fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
 
 /// How far the wheel and a two-finger swipe zoom, for every chart, as a
 /// percentage of the base rate. Read by the charts on every scroll, so a
-/// change is felt on the next one. The mark is where it started.
+/// change is felt on the next one. A hairline slider, its tick where it
+/// started: a pointer that lets go within a step of the tick lands on it,
+/// since halving and doubling are the steps anyone feels, and the keys
+/// still walk every step past it.
 fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
     use crate::zoom::{DEFAULT, MAX, MIN};
+    const STEP: f64 = 5.0;
     let row = adw::ActionRow::new();
     row.set_title("Zoom sensitivity");
-    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN as f64, MAX as f64, 5.0);
-    scale.set_size_request(180, -1);
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN as f64, MAX as f64, STEP);
+    scale.add_css_class("hairline");
     scale.set_valign(gtk::Align::Center);
     scale.set_draw_value(true);
-    scale.set_value_pos(gtk::PositionType::Left);
+    scale.set_value_pos(gtk::PositionType::Right);
     scale.set_digits(0);
     scale.set_round_digits(0);
     scale.set_format_value_func(|_, v| format!("{v:.0}%"));
-    scale.add_mark(DEFAULT as f64, gtk::PositionType::Bottom, None);
+    scale.add_mark(DEFAULT as f64, gtk::PositionType::Top, None);
     scale.set_value(crate::zoom::sensitivity(&context.store) as f64);
+    scale.connect_change_value(|scale, scroll, value| {
+        let near = (value - DEFAULT as f64).abs() <= STEP;
+        match scroll == gtk::ScrollType::Jump && near {
+            true => {
+                scale.set_value(DEFAULT as f64);
+                glib::Propagation::Stop
+            }
+            false => glib::Propagation::Proceed,
+        }
+    });
     let store = context.store.clone();
     scale.connect_value_changed(move |scale| {
         let percent = scale.value().round() as u32;

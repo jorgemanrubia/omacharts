@@ -976,6 +976,52 @@ viewswitcher button:checked > stack > box.wide { border-bottom-color: @accent_co
 .words button:checked { background: none; color: @window_fg_color; font-weight: 600; }
 .words button:checked:hover { background-color: alpha(@window_fg_color, 0.08); }
 .words label.dot { color: alpha(@window_fg_color, 0.38); }
+/* A setting's slider is a hairline: a 2px rail, the accent up to a small
+   knob, a tick where it started, and its value after it in a dropdown's
+   dim. The trough is the knob's height so all three centre on the rail;
+   the tick is GTK's own mark, set over the trough rather than beside it,
+   and drawn before it, so the knob covers it. */
+scale.hairline { padding: 4px 0; }
+scale.hairline > trough {
+  min-width: 150px;
+  min-height: 10px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+  background: linear-gradient(alpha(@window_fg_color, 0.22), alpha(@window_fg_color, 0.22)) center / 100% 2px no-repeat;
+}
+scale.hairline > trough > highlight {
+  min-height: 0;
+  margin: 4px 0;
+  border: none;
+  border-radius: 1px;
+  background: @accent_color;
+}
+scale.hairline > trough > slider {
+  min-width: 10px;
+  min-height: 10px;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  box-shadow: none;
+  background: @window_fg_color;
+}
+scale.hairline:focus-visible > trough > slider { outline: 2px solid alpha(@accent_color, 0.5); outline-offset: 1px; }
+scale.hairline > marks.top { margin: 0 0 -10px; }
+scale.hairline > marks > mark > indicator {
+  min-width: 1px;
+  min-height: 10px;
+  background-color: alpha(@window_fg_color, 0.30);
+}
+scale.hairline > value {
+  min-width: 36px;
+  margin: 0 0 0 10px;
+  color: alpha(@window_fg_color, 0.60);
+  font-variant-numeric: tabular-nums;
+}
 
 /* A picker over a chart (see `pick_frame`) is the same surface with no title
    bar: the search box is its top edge, on a hairline, and the chart it will
