@@ -296,6 +296,12 @@ struct State {
     /// The handle at the end of a mark the pointer is over, lit.
     hover_mark: Option<MarkHit>,
     loading: bool,
+    /// The first bar's time the last time older bars were asked for: see
+    /// [`ChartView::set_history_handler`].
+    history_asked: Cell<Option<i64>>,
+    /// How far the load being waited on has got, from 0 to 1, when its feed
+    /// can say: a bar under Loading….
+    progress: Option<f64>,
     /// Multiplier on the held price range. 1.0 shows exactly the range that
     /// was held; above that is zoomed in.
     price_zoom: f64,
@@ -1387,6 +1393,8 @@ impl State {
             mark_tick: None,
             hover_mark: None,
             loading: false,
+            progress: None,
+            history_asked: Cell::new(None),
             price_zoom: 1.0,
             price_offset: 0.0,
             price_auto: true,
@@ -2233,6 +2241,19 @@ impl State {
         }
     }
 
+    /// The first bar's time, when the view has come within a screen of it
+    /// and older bars have not been asked for since it was first: then
+    /// they are, as of now.
+    fn wants_older(&self) -> Option<i64> {
+        let first = self.bars.first()?.ts;
+        self.instrument.as_ref()?;
+        let near = self.left_edge() < self.columns() as i64;
+        (near && self.history_asked.get() != Some(first)).then(|| {
+            self.history_asked.set(Some(first));
+            first
+        })
+    }
+
     /// The column index of the view's left edge, negative when there is
     /// room before the first bar.
     fn left_edge(&self) -> i64 {
@@ -2405,6 +2426,16 @@ impl State {
             .unwrap_or(true)
             || self.timeframe != timeframe;
         let first = self.instrument.is_none();
+        // Older bars come in before the ones shown: the view stays on them.
+        let before = match (self.bars.first(), changed || self.anchored) {
+            (Some(was), false) => bars.partition_point(|bar| bar.ts < was.ts),
+            _ => 0,
+        };
+        if before > 0 {
+            let left = self.first as i64 - self.lead as i64 + before as i64;
+            self.lead = (-left).max(0) as usize;
+            self.first = left.max(0) as usize;
+        }
         self.bars = bars;
         self.instrument = Some(instrument);
         self.timeframe = timeframe;
@@ -2655,6 +2686,9 @@ pub struct ChartView {
     /// Told when the drawings, the indicators or the bars are hidden or
     /// shown, whatever did it, for the legend's glyphs.
     on_hidden: Handler<dyn Fn(Hidden)>,
+    /// Told the first bar's time when the view comes within a screen of
+    /// it, once for each first bar: see [`ChartView::set_history_handler`].
+    on_history: Handler<dyn Fn(i64)>,
 }
 
 impl ChartView {
@@ -2703,6 +2737,7 @@ impl ChartView {
             on_tool: Rc::new(RefCell::new(None)),
             on_price_auto: Rc::new(RefCell::new(None)),
             on_hidden: Rc::new(RefCell::new(None)),
+            on_history: Rc::new(RefCell::new(None)),
         });
         view.wire_drawing();
         view.wire_pointer();
@@ -4608,6 +4643,16 @@ impl ChartView {
         *self.on_price_auto.borrow_mut() = Some(Box::new(handler));
     }
 
+    /// Be told when the view comes within a screen of the series' first
+    /// bar, however it got there, with that bar's time: whoever has older
+    /// bars can bring them, and the view stays on what it shows as they
+    /// come in before it. Told once for each first bar, so a feed with
+    /// nothing older is not asked again until a series with another first
+    /// bar is drawn. Told after the chart is drawn, with nothing borrowed.
+    pub fn set_history_handler(&self, handler: impl Fn(i64) + 'static) {
+        *self.on_history.borrow_mut() = Some(Box::new(handler));
+    }
+
     pub fn set_context_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
         *self.on_context_menu.borrow_mut() = Some(Box::new(handler));
     }
@@ -4787,6 +4832,32 @@ impl ChartView {
         self.redraw();
     }
 
+    pub fn loading(&self) -> bool {
+        self.state.borrow().loading
+    }
+
+    /// How far the load the chart is waiting on has got, from 0 to 1: a
+    /// thin bar under Loading…, for as long as that shows. `None` for a load
+    /// that cannot say, which shows the words alone. Drawn again only when
+    /// the bar would move by a pixel's worth or more.
+    pub fn set_progress(&self, progress: Option<f64>) {
+        let progress = progress.map(|fraction| fraction.clamp(0.0, 1.0));
+        let moved = {
+            let mut state = self.state.borrow_mut();
+            let moved = match (state.progress, progress) {
+                (Some(was), Some(now)) => (now - was).abs() >= 1.0 / 400.0,
+                (was, now) => was.is_some() != now.is_some(),
+            };
+            if moved {
+                state.progress = progress;
+            }
+            moved && state.loading
+        };
+        if moved {
+            self.redraw();
+        }
+    }
+
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
@@ -4925,8 +4996,16 @@ impl ChartView {
 
     fn wire_drawing(&self) {
         let state = self.state.clone();
+        let on_history = self.on_history.clone();
         self.area.set_draw_func(move |_, cr, width, height| {
-            draw(cr, width as f64, height as f64, &state.borrow());
+            let older = {
+                let state = state.borrow();
+                draw(cr, width as f64, height as f64, &state);
+                state.wants_older()
+            };
+            if let (Some(first), Some(handler)) = (older, on_history.borrow().as_ref()) {
+                handler(first);
+            }
         });
 
         let state = self.state.clone();
@@ -6486,13 +6565,43 @@ fn draw_placeholder(cr: &cairo::Context, width: f64, height: f64, state: &State)
         Some(words) if state.instrument.is_some() && !state.loading && state.trouble.is_some() => words.as_str(),
         _ => placeholder_text(state.instrument.is_some(), state.loading, state.trouble),
     };
-    colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
+    colors::set_source_alpha(cr, &state.theme.ui.text_muted, PLACEHOLDER_ALPHA);
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(13.0);
     if let Ok(extents) = cr.text_extents(text) {
         cr.move_to((width - extents.width()) / 2.0, height / 2.0);
         let _ = cr.show_text(text);
+        if let Some(fraction) = state.progress.filter(|_| state.loading && state.instrument.is_some()) {
+            draw_progress(cr, width / 2.0, height / 2.0, extents.width(), fraction, &state.theme.ui.text_muted);
+        }
     }
+}
+
+/// How strongly the placeholder's words are drawn, in their muted colour:
+/// the progress bar under them is the same.
+const PLACEHOLDER_ALPHA: f64 = 0.8;
+
+/// The progress bar under Loading…, all of its look in one place: as tall,
+/// as much wider than the words, as far under their baseline, and its track
+/// as faint a share of the words' tone as these say.
+const PROGRESS_HEIGHT: f64 = 2.0;
+const PROGRESS_WIDER_THAN_TEXT: f64 = 1.2;
+const PROGRESS_BELOW_BASELINE: f64 = 9.0;
+const PROGRESS_TRACK_SHARE: f64 = 0.25;
+
+/// The bar of a load `fraction` done, centred on `centre` under words
+/// `text_width` wide whose baseline is at `baseline`, in the words' colour
+/// `tone`: filled with it as they are drawn, over a track of the same tone
+/// fainter.
+fn draw_progress(cr: &cairo::Context, centre: f64, baseline: f64, text_width: f64, fraction: f64, tone: &str) {
+    let width = (text_width * PROGRESS_WIDER_THAN_TEXT).round();
+    let (x, y) = ((centre - width / 2.0).round(), (baseline + PROGRESS_BELOW_BASELINE).round());
+    colors::set_source_alpha(cr, tone, PLACEHOLDER_ALPHA * PROGRESS_TRACK_SHARE);
+    cr.rectangle(x, y, width, PROGRESS_HEIGHT);
+    let _ = cr.fill();
+    colors::set_source_alpha(cr, tone, PLACEHOLDER_ALPHA);
+    cr.rectangle(x, y, (width * fraction.clamp(0.0, 1.0)).round(), PROGRESS_HEIGHT);
+    let _ = cr.fill();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10802,6 +10911,65 @@ mod tests {
         data[y * stride + x * 4 + 3] > 0
     }
 
+    /// Scrolled to within a screen of its first bar, a chart asks for older
+    /// bars once for that bar, and when they come in before it the view
+    /// stays on the bars it was showing.
+    #[test]
+    fn scrolled_back_a_chart_asks_for_older_bars_once_and_stays_put_as_they_come() {
+        let mut state = charted(1_000);
+        state.instrument = Some(named("ES"));
+        state.visible = 100;
+        assert_eq!(state.wants_older(), None, "at the live edge, far from the first bar");
+
+        state.anchored = false;
+        state.first = 50;
+        let first = state.bars[0].ts;
+        assert_eq!(state.wants_older(), Some(first));
+        assert_eq!(state.wants_older(), None, "asked again for the same first bar");
+
+        let shown = state.bars[state.slice().0].ts;
+        let mut bars: Vec<Bar> = (1..=300).rev().map(|i| Bar { ts: first - i * 60, ..state.bars[0] }).collect();
+        bars.extend(state.bars.clone());
+        state.replace_series(named("ES"), state.timeframe, bars);
+        assert_eq!(state.bars[state.slice().0].ts, shown, "the view moved as older bars came in");
+        assert_eq!(state.first, 350);
+        assert_eq!(state.wants_older(), None, "three screens from the new first bar");
+    }
+
+    /// Loading… has a bar under it while its load says how far it has got,
+    /// filled that far, and none for a load that cannot say, or once the
+    /// chart is no longer loading.
+    #[test]
+    fn a_load_that_says_how_far_it_has_got_has_a_bar_under_loading() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        state.instrument = Some(named("ES"));
+        state.loading = true;
+        let bar_row = (100.0 + PROGRESS_BELOW_BASELINE) as usize + 1;
+        let drawn = |state: &State| {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 300, 200).unwrap();
+            draw_placeholder(&cairo::Context::new(&surface).unwrap(), 300.0, 200.0, state);
+            let row: Vec<u8> = (0..300)
+                .map(|x| {
+                    let stride = surface.stride() as usize;
+                    surface.data().unwrap()[bar_row * stride + x * 4 + 3]
+                })
+                .collect();
+            row
+        };
+
+        assert!(drawn(&state).iter().all(|&alpha| alpha == 0), "a bar for a load that cannot say");
+        state.progress = Some(0.5);
+        let row = drawn(&state);
+        let inked: Vec<usize> = (0..300).filter(|&x| row[x] > 0).collect();
+        let (left, right) = (*inked.first().unwrap(), *inked.last().unwrap());
+        assert!((148..=152).contains(&((left + right) / 2)), "centred: {left}..{right}");
+        assert!(row[left + 2] > row[right - 2], "filled from the left, over a fainter track");
+        state.loading = false;
+        assert!(drawn(&state).iter().all(|&alpha| alpha == 0), "a bar once loaded");
+    }
+
     /// A yearly VWAP's bands jump at the new year: the old year's envelope
     /// is wide and the new one starts on the line. Drawn as one path, that
     /// jump is a stroke straight down the chart; it has to be two lines.
@@ -11993,6 +12161,33 @@ mod tests {
         let bytes = gtk::glib::Bytes::from(&surface.data().unwrap()[..]);
         let texture = gtk::gdk::MemoryTexture::new(w, h, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride);
         texture.save_to_png(path).unwrap();
+    }
+
+    /// Loading… and the bar under it as pictures, for a person to look at:
+    /// early and late in a load, and a load that cannot say, dark and light,
+    /// at two pixels to the point. Written only when asked for, to the
+    /// folder in `OMACHARTS_MARK_SHOTS`.
+    #[test]
+    fn the_loading_bar_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
+        let (w, h) = (600.0, 400.0);
+        for (theme, name) in [(0, "dark"), (3, "light")] {
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().nth(theme).expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let mut state = State::blank(theme, scheme);
+            state.instrument = Some(named("ES"));
+            state.loading = true;
+            for (progress, stage) in [(Some(0.18), "early"), (Some(0.72), "later"), (None, "unmeasured")] {
+                state.progress = progress;
+                let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
+                {
+                    let cr = cairo::Context::new(&surface).unwrap();
+                    cr.scale(2.0, 2.0);
+                    draw(&cr, w, h, &state);
+                }
+                save_png(surface, &format!("{folder}/loading-{stage}-{name}.png"));
+            }
+        }
     }
 
     /// A cumulative delta's axis as pictures, for a person to look at: as

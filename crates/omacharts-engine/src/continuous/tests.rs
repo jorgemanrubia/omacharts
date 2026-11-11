@@ -444,11 +444,14 @@ struct Years {
     front: Month,
     front_from: i64,
     read: Mutex<Vec<Asked>>,
+    /// How far an hourly chart's load had got at each read, halfway
+    /// through it, as a feed that measures what it reads says.
+    progress: Mutex<Vec<f64>>,
 }
 
 impl Years {
     fn new(front_from: i64) -> Arc<Years> {
-        Arc::new(Years { front: Month::of('Z', 2026).unwrap(), front_from, read: Mutex::new(Vec::new()) })
+        Arc::new(Years { front: Month::of('Z', 2026).unwrap(), front_from, read: Mutex::new(Vec::new()), progress: Mutex::new(Vec::new()) })
     }
 
     fn spelled(&self) -> String {
@@ -485,6 +488,16 @@ impl Years {
     fn month_of(symbol: &str) -> Option<Month> {
         let (root, month) = contracts::parse(symbol, contracts::today())?;
         (root == "ES" && month <= Month::of('Z', 2026).unwrap() && month.year >= 1990).then_some(month)
+    }
+
+    /// A read says it is half done, notes how far an hourly chart's load
+    /// has got, and is done.
+    fn report(&self) {
+        crate::progress::advance(0.5);
+        if let Some(now) = crate::progress::of(&crate::progress::name(&self.spelled(), Timeframe::hours(1))) {
+            self.progress.lock().unwrap().push(now);
+        }
+        crate::progress::advance(1.0);
     }
 
     /// The bars read of `symbol` at `timeframe`, however they were asked for.
@@ -528,12 +541,14 @@ impl Provider for Years {
         let month = Years::month_of(symbol).ok_or(ProviderError::NotFound)?;
         let bars: Vec<Bar> = self.held(month, timeframe).into_iter().filter(|bar| since.is_none_or(|since| bar.ts >= since)).collect();
         self.read.lock().unwrap().push((symbol.to_string(), timeframe, since.unwrap_or(i64::MIN), None, bars.len()));
+        self.report();
         Ok(bars)
     }
     fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
         let month = Years::month_of(symbol).ok_or(ProviderError::NotFound)?;
         let bars: Vec<Bar> = self.held(month, timeframe).into_iter().filter(|bar| bar.ts >= since && bar.ts < until).collect();
         self.read.lock().unwrap().push((symbol.to_string(), timeframe, since, Some(until), bars.len()));
+        self.report();
         Ok(bars)
     }
     fn earliest(&self, symbol: &str) -> Option<i64> {
@@ -577,6 +592,30 @@ fn an_hourly_chart_reads_only_the_months_its_front_month_s_history_spans() {
     let read: usize = years.months_read(hourly).iter().map(|month| years.bars_read(month, hourly)).sum();
     assert!(read <= bars.len() + 24 * 8, "{read} bars read for {} drawn", bars.len());
     assert!(years.months_read(Timeframe::days(1)).len() <= 6, "the gaps are measured on the days around the rolls alone");
+}
+
+/// A load stitched of many months says how far it has got as it reads
+/// them, never less than it said before, and all of it once it is read. A
+/// load nobody measures says nothing.
+#[test]
+fn a_stitched_load_s_progress_only_grows_across_its_months() {
+    let hourly = Timeframe::hours(1);
+    let years = Years::new(now() - 200 * 86_400);
+    let feed = Continuous::shared(years.clone());
+    let name = crate::progress::name(&years.spelled(), hourly);
+    let load = crate::progress::begin(&name);
+    crate::progress::within(Some(load), || feed.bars(&years.spelled(), hourly, None).unwrap());
+
+    let seen = years.progress.lock().unwrap().clone();
+    assert!(seen.len() >= 3, "{seen:?}");
+    assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "went back: {seen:?}");
+    assert!(seen[0] < 0.3, "the front month is read first, and says so: {seen:?}");
+    assert_eq!(crate::progress::of(&name), Some(1.0));
+    crate::progress::end(&name);
+
+    let quiet = Years::new(now() - 200 * 86_400);
+    Continuous::shared(quiet.clone()).bars(&quiet.spelled(), hourly, None).unwrap();
+    assert!(quiet.progress.lock().unwrap().is_empty());
 }
 
 /// A daily chart goes back twenty years, not to the oldest month on disk,
