@@ -13,9 +13,9 @@ window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   omacharts chartbook create Compare --symbol SPY --switch
   omacharts chart set --resolution 1D --session regular
-  omacharts chart indicator remove volume
   omacharts chart compare add GC NQ BTC-USD
   omacharts chart range 1y
+  bin/headless-window move 1100 500   (pointer on the sidebar, so the legend reads the last bar)
 capture: bin/headless-window cli chart screenshot --output site/assets/manual/comparing/compared.png
 crop: none
 -->

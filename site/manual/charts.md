@@ -156,7 +156,7 @@ state:
 capture: bin/headless-window cli chart screenshot --output site/assets/manual/charts/daily-line.png
 crop: none
 -->
-{% include figure.html src="/assets/manual/charts/daily-line.png" alt="SPY daily over a year drawn as one line through the closes, with the volume strip below" caption="SPY as a line." %}
+{% include figure.html src="/assets/manual/charts/daily-line.png" alt="SPY daily over a year drawn as one line through the closes" caption="SPY as a line." %}
 
 ### Colouring
 
