@@ -58,7 +58,19 @@
 //! a year missing is where the feed's history of the root ends.
 //!
 //! Only the spans asked for are read: a request from `since` reads the months
-//! from the one front at `since` on, and each from where its span starts.
+//! from the one front at `since` on, and each from where its span starts to
+//! where the next one's does, never the rest of its file.
+//!
+//! **How far back.** A request for everything is not the root's whole
+//! history: a folder can hold every month back twenty years, a hundred files
+//! of trades. An intraday chart reaches back as far as its front month's own
+//! history does, what it charted before it was stitched, and never more than
+//! [`INTRADAY_MOST_DAYS`]; a daily one [`DAILY_YEARS`]. Older spans are asked
+//! for by time, with [`Provider::bars_between`], as a chart scrolls back.
+//!
+//! **Months read once.** An expired month's bars over a span never change:
+//! they are kept once read, for the next chart, the other adjustment and a
+//! scroll back, and only what was not read yet is ever asked of the feed.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -298,6 +310,31 @@ fn cut(root: &str, date: NaiveDate, timeframe: Timeframe) -> i64 {
     }
 }
 
+/// How many years of daily bars a stitched root reaches back when asked for
+/// everything.
+pub const DAILY_YEARS: i64 = 20;
+
+/// The most days of intraday bars a stitched root reaches back when asked
+/// for everything, however far back its front month's own history goes.
+pub const INTRADAY_MOST_DAYS: i64 = 400;
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// Where a stitched series asked for everything starts: as far back as its
+/// front month's own history, as the root was charted before it was
+/// stitched, within [`INTRADAY_MOST_DAYS`]; daily, [`DAILY_YEARS`] back.
+fn reach(inner: &dyn Provider, spelled: &Spelled, timeframe: Timeframe) -> i64 {
+    match timeframe.unit {
+        Unit::Minute | Unit::Hour => {
+            let most = now() - INTRADAY_MOST_DAYS * 86_400;
+            inner.earliest(&contract(&spelled.root, spelled.front)).map_or(most, |earliest| earliest.max(most))
+        }
+        _ => midnight(contracts::today() - chrono::Duration::days(DAILY_YEARS * 365 + DAILY_YEARS / 4)),
+    }
+}
+
 /// One month's part of a stitched series.
 #[derive(Clone, Debug)]
 struct Span {
@@ -317,25 +354,98 @@ struct Span {
 /// A run of months missing this long is where the feed's history ends.
 const MISSING_RUN_DAYS: i64 = 400;
 
-/// A month's bars from `since`, as the feed has them: `None` when it has no
-/// such contract.
-type Fetch<'a> = dyn Fn(Month, i64) -> Result<Option<Vec<Bar>>, ProviderError> + 'a;
+/// A month's bars from `since`, and before `until` when there is one, as
+/// the feed has them: `None` when it has no such contract.
+type Fetch<'a> = dyn Fn(Month, i64, Option<i64>) -> Result<Option<Vec<Bar>>, ProviderError> + 'a;
 
-fn fetch_from<'a>(inner: &'a dyn Provider, root: &str, timeframe: Timeframe) -> impl Fn(Month, i64) -> Result<Option<Vec<Bar>>, ProviderError> + 'a {
+/// An expired month's bars as read, by the feed, the contract and the
+/// timeframe: from when to when, and the bars over it.
+type Held = HashMap<(String, String, Timeframe), (i64, i64, Arc<Vec<Bar>>)>;
+
+/// The expired months' bars a feed has given so far: what a span of a month
+/// that will never trade in it again holds is read once.
+type Read = Arc<Mutex<Option<Held>>>;
+
+/// How many months' bars are kept before they are let go, all at once.
+const MOST_HELD: usize = 400;
+
+fn kept(bars: &[Bar], since: i64, until: i64) -> Vec<Bar> {
+    let a = bars.partition_point(|bar| bar.ts < since);
+    let b = bars.partition_point(|bar| bar.ts < until).max(a);
+    bars[a..b].to_vec()
+}
+
+fn fetch_from<'a>(inner: &'a dyn Provider, read_so_far: &'a Read, root: &str, front: Month, timeframe: Timeframe) -> impl Fn(Month, i64, Option<i64>) -> Result<Option<Vec<Bar>>, ProviderError> + 'a {
     let root = root.to_string();
-    move |month, since| match inner.bars(&contract(&root, month), timeframe, Some(since)) {
-        Ok(bars) => Ok(Some(bars)),
-        Err(ProviderError::NotFound) => Ok(None),
-        Err(error) => Err(error),
+    move |month, since, until| {
+        let symbol = contract(&root, month);
+        let read = |since: i64, until: Option<i64>| {
+            let read = match until {
+                Some(until) => inner.bars_between(&symbol, timeframe, since, until),
+                None => inner.bars(&symbol, timeframe, Some(since)),
+            };
+            match read {
+                Ok(bars) => Ok(Some(bars)),
+                Err(ProviderError::NotFound) => Ok(None),
+                Err(error) => Err(error),
+            }
+        };
+        // The front month trades on, and a span that reaches now may too.
+        let Some(until) = until.filter(|until| month != front && *until <= now()) else { return read(since, until) };
+        let key = (inner.id().to_string(), symbol.clone(), timeframe);
+        let held = read_so_far.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|held| held.get(&key).cloned());
+        if since >= until {
+            // Only whether the feed has the month.
+            return match held {
+                Some(_) => Ok(Some(Vec::new())),
+                None => read(since, Some(until)),
+            };
+        }
+        let (lo, hi, bars) = match held {
+            Some((lo, hi, bars)) if lo <= since && until <= hi => return Ok(Some(kept(&bars, since, until))),
+            // Only the ends not read yet.
+            Some((lo, hi, bars)) if since <= hi && lo <= until => {
+                let before = match since < lo {
+                    true => match read(since, Some(lo))? {
+                        Some(before) => before,
+                        None => return Ok(None),
+                    },
+                    false => Vec::new(),
+                };
+                let after = match until > hi {
+                    true => read(hi, Some(until))?.unwrap_or_default(),
+                    false => Vec::new(),
+                };
+                let mut joined: Vec<Bar> = before.into_iter().filter(|bar| bar.ts < lo).collect();
+                joined.extend(bars.iter().copied());
+                joined.extend(after.into_iter().filter(|bar| bar.ts >= hi));
+                (since.min(lo), until.max(hi), joined)
+            }
+            _ => match read(since, Some(until))? {
+                Some(bars) => (since, until, bars),
+                None => return Ok(None),
+            },
+        };
+        let wanted = kept(&bars, since, until);
+        let mut all = read_so_far.lock().unwrap_or_else(|e| e.into_inner());
+        let all = all.get_or_insert_with(HashMap::new);
+        if all.len() >= MOST_HELD {
+            all.clear();
+        }
+        all.insert(key, (lo, hi, Arc::new(bars)));
+        Ok(Some(wanted))
     }
 }
 
 /// The spans of `root` from `front` back to the one front at `since`, newest
-/// first, each with its own bars over it. A month the feed has nothing of
-/// over its span is drawn from the month after it, and so is one it could
-/// not read just now, which goes in `unread`.
-fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fetch: &Fetch, unread: &mut Vec<(Month, String)>) -> Result<Vec<Span>, ProviderError> {
-    let since = since.unwrap_or(i64::MIN);
+/// first, each with its own bars over it from `since` and before `until`:
+/// the months after `until` are there to be moved by, with no bars read. A
+/// month the feed has nothing of over its span is drawn from the month after
+/// it, and so is one it could not read just now, which goes in `unread`.
+fn spans(root: &str, front: Month, timeframe: Timeframe, since: i64, until: Option<i64>, fetch: &Fetch, unread: &mut Vec<(Month, String)>) -> Result<Vec<Span>, ProviderError> {
+    // How far the load has got: each span's share of the time asked for.
+    let end = until.unwrap_or_else(now).max(since.saturating_add(1));
+    let total = end.saturating_sub(since).max(1) as f64;
     let mut found: Vec<Span> = Vec::new();
     // Missing months since the last one found, newest first, with where
     // the oldest of them starts.
@@ -345,11 +455,20 @@ fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fet
     for (month, starts) in schedule(root, front).take(600) {
         let from = cut(root, starts, timeframe);
         let want = from.max(since);
+        let newer = until.is_some_and(|until| from >= until);
+        let bound = match (upper, until) {
+            (Some(upper), Some(until)) => Some(upper.min(until)),
+            (upper, until) => upper.or(until),
+        };
         let within = |bars: Vec<Bar>, from: i64, to: Option<i64>| -> Vec<Bar> {
             bars.into_iter().filter(|bar| bar.ts >= from && to.is_none_or(|to| bar.ts < to)).collect()
         };
-        let got = match fetch(month, want) {
-            Ok(got) => got.map(|bars| within(bars, want, upper)),
+        let hi = bound.unwrap_or(end).clamp(since, end);
+        let (base, share) = ((end - hi) as f64 / total, (hi - want.min(hi)) as f64 / total);
+        let fetched = crate::progress::part(base, share, || fetch(month, want, bound));
+        crate::progress::advance(base + share);
+        let got = match fetched {
+            Ok(got) => got.map(|bars| within(bars, want, bound)),
             Err(error) if found.is_empty() => return Err(error),
             Err(error) => {
                 unread.push((month, error.to_string()));
@@ -362,9 +481,9 @@ fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fet
                 found.push(Span { month, starts, from, to: None, bars, stood_in: Vec::new() });
             }
             None if found.is_empty() => return Err(ProviderError::NotFound),
-            Some(bars) if !bars.is_empty() => {
+            Some(bars) if !bars.is_empty() || newer => {
                 if let (Some((missing_starts, missing_from)), Some(newer)) = (missing_from.take(), found.last_mut()) {
-                    stand_in(newer, missing_starts, missing_from, std::mem::take(&mut missing), fetch)?;
+                    stand_in(newer, missing_starts, missing_from, std::mem::take(&mut missing), until, fetch)?;
                 }
                 found.push(Span { month, starts, from, to: upper, bars, stood_in: Vec::new() });
             }
@@ -382,7 +501,7 @@ fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fet
             // The span `since` falls in is drawn, by a month that stands in
             // for it when its own is missing.
             if let (Some((missing_starts, missing_from)), Some(newer)) = (missing_from.take(), found.last_mut()) {
-                stand_in(newer, missing_starts, missing_from, std::mem::take(&mut missing), fetch)?;
+                stand_in(newer, missing_starts, missing_from, std::mem::take(&mut missing), until, fetch)?;
             }
             break;
         }
@@ -390,10 +509,14 @@ fn spans(root: &str, front: Month, timeframe: Timeframe, since: Option<i64>, fet
     Ok(found)
 }
 
-/// Draw `newer` back over months the feed has nothing of, from `from`.
-fn stand_in(newer: &mut Span, starts: NaiveDate, from: i64, months: Vec<Month>, fetch: &Fetch) -> Result<(), ProviderError> {
-    let to = newer.to;
-    if let Some(bars) = fetch(newer.month, from)? {
+/// Draw `newer` back over months the feed has nothing of, from `from`, and
+/// before `until`.
+fn stand_in(newer: &mut Span, starts: NaiveDate, from: i64, months: Vec<Month>, until: Option<i64>, fetch: &Fetch) -> Result<(), ProviderError> {
+    let to = match (newer.to, until) {
+        (Some(to), Some(until)) => Some(to.min(until)),
+        (to, until) => to.or(until),
+    };
+    if let Some(bars) = fetch(newer.month, from, to)? {
         newer.bars = bars.into_iter().filter(|bar| bar.ts >= from && to.is_none_or(|to| bar.ts < to)).collect();
     }
     newer.starts = starts;
@@ -458,8 +581,8 @@ pub(crate) fn gap(inner: &dyn Provider, root: &str, older: Month, newer: Month, 
     let timeframe = basis;
     // A month's bars, none when the feed has none of it; `Err` when it could
     // not be read just now.
-    let read = |month: Month, on: Timeframe, since: i64| -> Result<Vec<Bar>, ()> {
-        match inner.bars(&contract(root, month), on, Some(since)) {
+    let read = |month: Month, on: Timeframe, since: i64, until: i64| -> Result<Vec<Bar>, ()> {
+        match inner.bars_between(&contract(root, month), on, since, until) {
             Ok(bars) => Ok(bars),
             Err(ProviderError::NotFound) => Ok(Vec::new()),
             Err(_) => Err(()),
@@ -469,14 +592,15 @@ pub(crate) fn gap(inner: &dyn Provider, root: &str, older: Month, newer: Month, 
     let daily = Timeframe::days(1);
     let by_day = || -> Result<Option<f64>, ()> {
         let since = midnight(roll - chrono::Duration::days(14));
-        let (older, newer) = (read(older, daily, since)?, read(newer, daily, since)?);
+        let until = midnight(roll);
+        let (older, newer) = (read(older, daily, since, until)?, read(newer, daily, since, until)?);
         let day = older.iter().rev().filter(|bar| bar.ts < midnight(roll)).find(|bar| newer.iter().any(|n| n.ts == bar.ts));
         Ok(day.and_then(|day| newer.iter().find(|n| n.ts == day.ts).map(|then| then.close - day.close)))
     };
     let by_bar = || -> Result<Option<f64>, ()> {
         let at = cut(root, roll, timeframe);
         let since = at - 7 * 86_400;
-        let (older, newer) = (read(older, timeframe, since)?, read(newer, timeframe, since)?);
+        let (older, newer) = (read(older, timeframe, since, at)?, read(newer, timeframe, since, at)?);
         let Some(last) = close_before(&older, at) else { return Ok(None) };
         Ok(close_before(&newer, last.ts + 1).map(|then| then.close - last.close))
     };
@@ -583,10 +707,12 @@ fn assembled(spans: &[Span], offsets: &[f64]) -> Vec<Bar> {
 /// The stitched series `spelled` names, from `since`, with `fetch` reading
 /// each month, and whether it is short of what it should be: a month that
 /// could not be read, or a roll joined unadjusted that should have been.
-fn stitched(inner: &dyn Provider, spelled: &Spelled, timeframe: Timeframe, since: Option<i64>, fetch: &Fetch) -> Result<(Vec<Bar>, bool), ProviderError> {
+/// Asked for everything, from as far back as [`reach`] says.
+fn stitched(inner: &dyn Provider, spelled: &Spelled, timeframe: Timeframe, since: Option<i64>, until: Option<i64>, fetch: &Fetch) -> Result<(Vec<Bar>, bool), ProviderError> {
     let root = spelled.root.as_str();
     let mut unread = Vec::new();
-    let spans = spans(root, spelled.front, timeframe, since, fetch, &mut unread)?;
+    let since = since.unwrap_or_else(|| reach(inner, spelled, timeframe));
+    let spans = spans(root, spelled.front, timeframe, since, until, fetch, &mut unread)?;
     for (month, why) in &unread {
         // Said every time: it is drawn again until it can be read.
         crate::log::add(crate::log::Entry::warning(
@@ -755,16 +881,18 @@ pub fn drawn_front(symbol: &str) -> Option<String> {
 /// else handed through as it was.
 pub struct Continuous {
     inner: Arc<dyn Provider>,
+    /// Its expired months' bars, as read.
+    read: Read,
 }
 
 impl Continuous {
     pub fn new(inner: Box<dyn Provider>) -> Continuous {
-        Continuous { inner: Arc::from(inner) }
+        Continuous::shared(Arc::from(inner))
     }
 
     /// The same, of a feed held elsewhere too.
     pub fn shared(inner: Arc<dyn Provider>) -> Continuous {
-        Continuous { inner }
+        Continuous { inner, read: Read::default() }
     }
 
     /// The front month of a stitched symbol, as the feed is asked for it.
@@ -838,10 +966,26 @@ impl Provider for Continuous {
         let Some(spelled) = Spelled::parse(symbol) else { return self.inner.bars(symbol, timeframe, since) };
         let series = (self.inner.id().to_string(), symbol.to_string(), timeframe);
         let since = since.filter(|_| !degraded(&series));
-        let fetch = fetch_from(self.inner.as_ref(), &spelled.root, timeframe);
-        let (bars, short) = stitched(self.inner.as_ref(), &spelled, timeframe, since, &fetch)?;
+        let fetch = fetch_from(self.inner.as_ref(), &self.read, &spelled.root, spelled.front, timeframe);
+        let (bars, short) = stitched(self.inner.as_ref(), &spelled, timeframe, since, None, &fetch)?;
         note_degraded(series, short);
         Ok(bars)
+    }
+
+    /// A stitched root's older spans, for a chart scrolled back: only the
+    /// months between the two are read, moved by the gaps at every roll
+    /// after them.
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        let Some(spelled) = Spelled::parse(symbol) else { return self.inner.bars_between(symbol, timeframe, since, until) };
+        let fetch = fetch_from(self.inner.as_ref(), &self.read, &spelled.root, spelled.front, timeframe);
+        stitched(self.inner.as_ref(), &spelled, timeframe, Some(since), Some(until), &fetch).map(|(bars, _)| bars)
+    }
+
+    fn earliest(&self, symbol: &str) -> Option<i64> {
+        match Spelled::parse(symbol) {
+            Some(_) => None,
+            None => self.inner.earliest(symbol),
+        }
     }
 
     fn contracts(&self, root: &str) -> Result<Vec<(String, NaiveDate)>, ProviderError> {
@@ -895,7 +1039,9 @@ impl Provider for Continuous {
         self.inner.ladders().map(|_| self as &dyn Ladders)
     }
 
+    /// What was read of its months goes with the files it was read from.
     fn retire(&self) {
+        *self.read.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.inner.retire()
     }
 }
@@ -909,35 +1055,50 @@ impl Stream for Continuous {
         let inner = self.inner.clone();
         let series = (self.inner.id().to_string(), symbol.to_string(), timeframe);
         let following = spelled.clone();
+        // The front month from where it became front: what it has from
+        // before that is drawn from the months before it.
+        let front_from = schedule(&spelled.root, spelled.front).next().map(|(_, starts)| cut(&spelled.root, starts, timeframe));
+        let progress = crate::progress::current();
+        let read_so_far = self.read.clone();
         let stitching: Sink = Box::new(move |update| match update {
-            Update::Snapshot(bars) => {
+            Update::Snapshot(bars) => crate::progress::within(progress.clone(), || {
+                // The months before the front month in full when they were
+                // drawn short: what the chart holds of them is replaced.
+                let since = since.filter(|_| !degraded(&series));
+                // The front month is drawn at once, and the months before
+                // it once they are read.
+                if since.is_none_or(|since| front_from.is_some_and(|from| since < from)) {
+                    sink(Update::Snapshot(bars.iter().filter(|bar| front_from.is_none_or(|from| bar.ts >= from)).copied().collect()));
+                }
                 // The snapshot is the front month's; the rest are read here,
                 // on the feed's thread.
                 let given = Mutex::new(Some(bars));
                 let root = spelled.root.clone();
-                let read = fetch_from(inner.as_ref(), &root, timeframe);
-                let fetch = |month: Month, from: i64| -> Result<Option<Vec<Bar>>, ProviderError> {
+                let read = fetch_from(inner.as_ref(), &read_so_far, &root, spelled.front, timeframe);
+                let fetch = |month: Month, from: i64, until: Option<i64>| -> Result<Option<Vec<Bar>>, ProviderError> {
                     if month == spelled.front
                         && let Some(bars) = given.lock().unwrap_or_else(|e| e.into_inner()).take()
                     {
-                        return Ok(Some(bars.into_iter().filter(|bar| bar.ts >= from).collect()));
+                        return Ok(Some(bars.into_iter().filter(|bar| bar.ts >= from && until.is_none_or(|until| bar.ts < until)).collect()));
                     }
-                    read(month, from)
+                    read(month, from, until)
                 };
-                // The months before the front month in full when they were
-                // drawn short: what the chart holds of them is replaced.
-                let since = since.filter(|_| !degraded(&series));
-                match stitched(inner.as_ref(), &spelled, timeframe, since, &fetch) {
+                match stitched(inner.as_ref(), &spelled, timeframe, since, None, &fetch) {
                     Ok((bars, short)) => {
                         note_degraded(series.clone(), short);
                         sink(Update::Snapshot(bars))
                     }
                     Err(error) => sink(Update::Lost((&error).into())),
                 }
-            }
+            }),
             other => sink(other),
         });
-        let subscription = stream.subscribe(&front, timeframe, since, stitching)?;
+        let asked = since.or(front_from);
+        // The front month's snapshot is its span's share of the load.
+        let start = since.unwrap_or_else(|| reach(self.inner.as_ref(), &following, timeframe));
+        let front_share = front_from.map_or(1.0, |from| ((now() - from.max(start)) as f64 / (now() - start).max(1) as f64).clamp(0.0, 1.0));
+        let front_part = crate::progress::part(0.0, front_share, crate::progress::current);
+        let subscription = crate::progress::within(front_part, || stream.subscribe(&front, timeframe, asked, stitching))?;
         Ok(Box::new(follow(self.inner.clone(), following, subscription)))
     }
 }

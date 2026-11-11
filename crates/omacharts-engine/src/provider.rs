@@ -503,6 +503,24 @@ pub trait Provider: Send + Sync {
         since: Option<i64>,
     ) -> Result<Vec<Bar>, ProviderError>;
 
+    /// The bars of [`Self::bars`] from `since` and starting before `until`:
+    /// one span of a contract, for a stitch that needs nothing after it. A
+    /// feed that can read only that part of what it holds says so here, as
+    /// Sierra Chart's does of its files; the rest read from `since` on and
+    /// leave out what is past `until`.
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        let mut bars = self.bars(symbol, timeframe, Some(since))?;
+        bars.retain(|bar| bar.ts < until);
+        Ok(bars)
+    }
+
+    /// When the history this feed holds of `symbol` starts, where it can say
+    /// so without reading it: the first trade in a file of them. `None`
+    /// where it cannot.
+    fn earliest(&self, _symbol: &str) -> Option<i64> {
+        None
+    }
+
     /// The dated contracts of the futures root `root` this provider lists,
     /// each as its symbol in the exchange's spelling and the day it stops
     /// trading, in no particular order. One request, made now, off the

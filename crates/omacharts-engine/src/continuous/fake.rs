@@ -64,6 +64,9 @@ pub struct Months {
     pub unreadable: Mutex<Vec<usize>>,
     /// What its stream and its live ladders were asked to follow.
     pub followed: Mutex<Vec<String>>,
+    /// Every span asked for by time, with how many bars it held: what was
+    /// read.
+    pub between: Mutex<Vec<(String, Timeframe, i64, i64, usize)>>,
 }
 
 impl Months {
@@ -83,6 +86,7 @@ impl Months {
             front: Mutex::new("ESZ6".into()),
             unreadable: Mutex::new(Vec::new()),
             followed: Mutex::new(Vec::new()),
+            between: Mutex::new(Vec::new()),
         }
     }
 
@@ -170,6 +174,16 @@ impl Provider for Months {
             bars.retain(|bar| bar.ts >= midnight(starts));
         }
         Ok(bars)
+    }
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        let mut bars = self.bars(symbol, timeframe, Some(since))?;
+        bars.retain(|bar| bar.ts < until);
+        self.between.lock().unwrap().push((symbol.to_string(), timeframe, since, until, bars.len()));
+        Ok(bars)
+    }
+    /// Every month's history starts at [`first`], as a back month.
+    fn earliest(&self, symbol: &str) -> Option<i64> {
+        self.held(symbol).map(|_| first())
     }
     fn stream(&self) -> Option<&dyn Stream> {
         Some(self)
