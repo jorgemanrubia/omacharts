@@ -817,12 +817,16 @@ pub(crate) mod tests {
     /// line comment blanked and each line kept where it was, so that a line
     /// number is still the file's. A tests module is known by its
     /// `#[cfg(test)]` and ends at the brace that closes it: some files go on
-    /// after theirs, and what follows is as live as what comes before.
+    /// after theirs, and what follows is as live as what comes before. A
+    /// raw string's quotes and braces are its text, not code: the JSON a test
+    /// reads from one would otherwise end the module early.
     fn live_code(text: &str) -> String {
         let mut out = String::new();
         let mut lines = text.lines().peekable();
         // Inside a tests module, how deep in its braces.
         let mut tests: Option<i32> = None;
+        // Inside a raw string, how many hashes close it. It can span lines.
+        let mut raw: Option<usize> = None;
         while let Some(line) = lines.next() {
             if tests.is_none()
                 && line.trim() == "#[cfg(test)]"
@@ -837,6 +841,25 @@ pub(crate) mod tests {
             let mut escaped = false;
             let mut chars = line.chars().peekable();
             while let Some(c) = chars.next() {
+                if let Some(hashes) = raw {
+                    code.push(c);
+                    if c == '"' && chars.clone().take(hashes).filter(|c| *c == '#').count() == hashes {
+                        code.extend(chars.by_ref().take(hashes));
+                        raw = None;
+                    }
+                    continue;
+                }
+                // An `r` then a quote, after any hashes, starts one: no word
+                // ends in `r` right before a quote but `br"` and `cr"`.
+                if !in_string && c == 'r' {
+                    let hashes = chars.clone().take_while(|c| *c == '#').count();
+                    if chars.clone().nth(hashes) == Some('"') {
+                        code.push(c);
+                        code.extend(chars.by_ref().take(hashes + 1));
+                        raw = Some(hashes);
+                        continue;
+                    }
+                }
                 if !in_string && c == '/' && chars.peek() == Some(&'/') {
                     break;
                 }
@@ -912,5 +935,7 @@ pub(crate) mod tests {
         assert_eq!(live_code("let a = 1; // rithmic\nlet b = \"//\"; // tos\n"), "let a = 1; \nlet b = \"//\"; \n");
         let after = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() { \"}\" }\n}\nfn c() {}\n";
         assert_eq!(live_code(after), "fn a() {}\n\n\n\n\nfn c() {}\n", "the code after a tests module is read");
+        let raw = "#[cfg(test)]\nmod tests {\n    fn b() { r#\"{\"a\": [\n}\"#; }\n    fn tos() {}\n}\nfn c() {}\n";
+        assert_eq!(live_code(raw), "\n\n\n\n\n\nfn c() {}\n", "a raw string's braces do not end the module");
     }
 }
