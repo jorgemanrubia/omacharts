@@ -300,8 +300,15 @@ struct State {
     /// [`ChartView::set_history_handler`].
     history_asked: Cell<Option<i64>>,
     /// How far the load being waited on has got, from 0 to 1, when its feed
-    /// can say: a bar under Loading….
+    /// can say: a bar under Loading…. This is how far the bar is drawn; it
+    /// eases towards `progress_target` a frame at a time, see
+    /// [`ChartView::set_progress`].
     progress: Option<f64>,
+    /// How far the load has really got, the last the feed said: where the
+    /// bar is heading. Only ever grows within one load.
+    progress_target: f64,
+    /// Whether a frame callback is moving `progress` towards its target.
+    progress_easing: bool,
     /// Multiplier on the held price range. 1.0 shows exactly the range that
     /// was held; above that is zoomed in.
     price_zoom: f64,
@@ -1394,6 +1401,8 @@ impl State {
             hover_mark: None,
             loading: false,
             progress: None,
+            progress_target: 0.0,
+            progress_easing: false,
             history_asked: Cell::new(None),
             price_zoom: 1.0,
             price_offset: 0.0,
@@ -4838,24 +4847,70 @@ impl ChartView {
 
     /// How far the load the chart is waiting on has got, from 0 to 1: a
     /// thin bar under Loading…, for as long as that shows. `None` for a load
-    /// that cannot say, which shows the words alone. Drawn again only when
-    /// the bar would move by a pixel's worth or more.
+    /// that cannot say, which shows the words alone.
+    ///
+    /// The bar does not jump to each fraction as it is read: it starts
+    /// empty and eases towards the newest one, frame by frame, closing all
+    /// but an e-th of the gap every [`PROGRESS_EASE_SECONDS`]. The reads
+    /// come ten times a second, so the bar is always on its way to the
+    /// last of them, and never still between two. A fraction lower than
+    /// the last is the same load misread, not a load going backwards, and
+    /// the bar keeps the higher.
     pub fn set_progress(&self, progress: Option<f64>) {
-        let progress = progress.map(|fraction| fraction.clamp(0.0, 1.0));
-        let moved = {
+        let (redraw, start) = {
             let mut state = self.state.borrow_mut();
-            let moved = match (state.progress, progress) {
-                (Some(was), Some(now)) => (now - was).abs() >= 1.0 / 400.0,
-                (was, now) => was.is_some() != now.is_some(),
-            };
-            if moved {
-                state.progress = progress;
+            let loading = state.loading;
+            match progress {
+                None => {
+                    let shown = state.progress.take().is_some();
+                    state.progress_target = 0.0;
+                    (shown && loading, false)
+                }
+                Some(fraction) => {
+                    state.progress_target = fraction.clamp(0.0, 1.0).max(state.progress_target);
+                    let appeared = state.progress.is_none();
+                    let shown = *state.progress.get_or_insert(0.0);
+                    (appeared && loading, loading && !state.progress_easing && shown < state.progress_target)
+                }
             }
-            moved && state.loading
         };
-        if moved {
-            self.redraw();
+        if redraw {
+            self.area.queue_draw();
         }
+        if start {
+            self.ease_progress();
+        }
+    }
+
+    /// Move the bar under Loading… towards where the load has got, a frame
+    /// at a time, until it is there or Loading… is gone. One of these runs
+    /// at a time: [`set_progress`](Self::set_progress) only starts another
+    /// once this one has settled.
+    fn ease_progress(&self) {
+        self.state.borrow_mut().progress_easing = true;
+        let state = Rc::downgrade(&self.state);
+        let last_frame = Cell::new(None::<i64>);
+        self.area.add_tick_callback(move |area, clock| {
+            let Some(state) = state.upgrade() else { return glib::ControlFlow::Break };
+            let mut state = state.borrow_mut();
+            let now = clock.frame_time();
+            let seconds = last_frame.replace(Some(now)).map_or(0.0, |then| (now - then) as f64 / 1e6);
+            let (shown, target, loading) = (state.progress, state.progress_target, state.loading);
+            let Some(shown) = shown.filter(|_| loading) else {
+                state.progress_easing = false;
+                return glib::ControlFlow::Break;
+            };
+            let left = (target - shown) * (-seconds / PROGRESS_EASE_SECONDS).exp();
+            let settled = left < PROGRESS_SETTLED;
+            state.progress = Some(if settled { target } else { target - left });
+            area.queue_draw();
+            if settled {
+                state.progress_easing = false;
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
@@ -6583,25 +6638,46 @@ const PLACEHOLDER_ALPHA: f64 = 0.8;
 
 /// The progress bar under Loading…, all of its look in one place: as tall,
 /// as much wider than the words, as far under their baseline, and its track
-/// as faint a share of the words' tone as these say.
+/// as faint a share of the words' tone as these say. Its ends are round,
+/// and so is the tip of its fill.
 const PROGRESS_HEIGHT: f64 = 2.0;
 const PROGRESS_WIDER_THAN_TEXT: f64 = 1.2;
-const PROGRESS_BELOW_BASELINE: f64 = 9.0;
-const PROGRESS_TRACK_SHARE: f64 = 0.25;
+const PROGRESS_BELOW_BASELINE: f64 = 11.0;
+const PROGRESS_TRACK_SHARE: f64 = 0.3;
+
+/// How the bar moves towards where the load has got: the time it takes to
+/// close all but an e-th of the way, and the gap under which it is there
+/// and stops, a quarter of a pixel on a bar the width of a long word.
+const PROGRESS_EASE_SECONDS: f64 = 0.18;
+const PROGRESS_SETTLED: f64 = 1.0 / 400.0;
 
 /// The bar of a load `fraction` done, centred on `centre` under words
 /// `text_width` wide whose baseline is at `baseline`, in the words' colour
 /// `tone`: filled with it as they are drawn, over a track of the same tone
 /// fainter.
+///
+/// Track and fill are each one stroke as thick as the bar with round caps,
+/// along the middle of a whole row of pixels, so the long edges land on
+/// pixel boundaries and only the caps are softened. The fill is never
+/// shorter than it is tall: at nothing done it is a dot at the left end.
 fn draw_progress(cr: &cairo::Context, centre: f64, baseline: f64, text_width: f64, fraction: f64, tone: &str) {
     let width = (text_width * PROGRESS_WIDER_THAN_TEXT).round();
     let (x, y) = ((centre - width / 2.0).round(), (baseline + PROGRESS_BELOW_BASELINE).round());
+    let radius = PROGRESS_HEIGHT / 2.0;
+    let middle = y + radius;
+    let pill = |length: f64| {
+        cr.move_to(x + radius, middle);
+        cr.line_to(x + length - radius, middle);
+        let _ = cr.stroke();
+    };
+    let _ = cr.save();
+    cr.set_line_width(PROGRESS_HEIGHT);
+    cr.set_line_cap(cairo::LineCap::Round);
     colors::set_source_alpha(cr, tone, PLACEHOLDER_ALPHA * PROGRESS_TRACK_SHARE);
-    cr.rectangle(x, y, width, PROGRESS_HEIGHT);
-    let _ = cr.fill();
+    pill(width);
     colors::set_source_alpha(cr, tone, PLACEHOLDER_ALPHA);
-    cr.rectangle(x, y, (width * fraction.clamp(0.0, 1.0)).round(), PROGRESS_HEIGHT);
-    let _ = cr.fill();
+    pill((width * fraction.clamp(0.0, 1.0)).round().max(PROGRESS_HEIGHT));
+    let _ = cr.restore();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -12165,28 +12241,56 @@ mod tests {
 
     /// Loading… and the bar under it as pictures, for a person to look at:
     /// early and late in a load, and a load that cannot say, dark and light,
-    /// at two pixels to the point. Written only when asked for, to the
-    /// folder in `OMACHARTS_MARK_SHOTS`.
+    /// at two pixels to the point, and late in a load at one pixel to the
+    /// point as well, to see that the bar lands on whole pixels at either. Late
+    /// in a load again on a few of the desktop's own themes, on a machine
+    /// that has them. Written only when asked for, to the folder in
+    /// `OMACHARTS_MARK_SHOTS`.
     #[test]
     fn the_loading_bar_as_pictures() {
         let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
         let (w, h) = (600.0, 400.0);
-        for (theme, name) in [(0, "dark"), (3, "light")] {
-            let theme = omacharts_engine::theme::builtin_themes().into_iter().nth(theme).expect("a built-in theme");
+        let picture = |state: &State, scale: f64, name: &str| {
+            let (pw, ph) = ((w * scale) as i32, (h * scale) as i32);
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, pw, ph).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.scale(scale, scale);
+                draw(&cr, w, h, state);
+            }
+            save_png(surface, &format!("{folder}/{name}.png"));
+        };
+        let waiting = |theme: Theme| {
             let scheme = omacharts_engine::theme::theme_bars(&theme);
             let mut state = State::blank(theme, scheme);
             state.instrument = Some(named("ES"));
             state.loading = true;
+            state
+        };
+        for (theme, name) in [(0, "dark"), (3, "light")] {
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().nth(theme).expect("a built-in theme");
+            let mut state = waiting(theme);
             for (progress, stage) in [(Some(0.18), "early"), (Some(0.72), "later"), (None, "unmeasured")] {
                 state.progress = progress;
-                let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
-                {
-                    let cr = cairo::Context::new(&surface).unwrap();
-                    cr.scale(2.0, 2.0);
-                    draw(&cr, w, h, &state);
-                }
-                save_png(surface, &format!("{folder}/loading-{stage}-{name}.png"));
+                picture(&state, 2.0, &format!("loading-{stage}-{name}"));
             }
+            picture(&state.with_progress(Some(0.72)), 1.0, &format!("loading-later-{name}-1x"));
+        }
+        let Some(home) = std::env::var_os("HOME") else { return };
+        let wanted = ["tokyo-night", "catppuccin-latte", "gruvbox", "nord", "rose-pine", "flexoki-light", "everforest", "matte-black"];
+        for theme in omacharts_engine::omarchy::installed(std::path::Path::new(&home)) {
+            let slug = theme.id.rsplit(':').next().unwrap_or_default().to_string();
+            if wanted.contains(&slug.as_str()) {
+                picture(&waiting(theme).with_progress(Some(0.72)), 2.0, &format!("loading-later-omarchy-{slug}"));
+            }
+        }
+    }
+
+    impl State {
+        /// This state, with the load it waits on got this far.
+        fn with_progress(mut self, progress: Option<f64>) -> Self {
+            self.progress = progress;
+            self
         }
     }
 
