@@ -196,7 +196,7 @@ fn trades(feed: &Listed) -> bool {
 /// version, the app's, which no library crate's is. Called once at
 /// startup.
 pub fn identify() {
-    providers::identify(env!("CARGO_PKG_VERSION"));
+    providers::identify(crate::launch::VERSION);
 }
 
 /// Hand every feed whose login is a trading service connection the data login: the

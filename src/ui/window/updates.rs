@@ -1,6 +1,7 @@
 //! Updates, as the window sees them: a check once the first frame is on
-//! screen and every few hours after, on a thread of its own, and the corner
-//! notice that offers the restart once a newer version is ready.
+//! screen and every hour after, on a thread of its own, and the corner
+//! notice that offers the restart once a newer version is ready. The About
+//! dialog's check is in `about.rs`.
 //!
 //! Everything about downloading and handing over is [`crate::update`]'s. A
 //! window that is not the installed binary's — a build in `target/`, a test —
@@ -56,10 +57,12 @@ impl Window {
         });
     }
 
-    /// Check now, and again every [`update::CADENCE`]. A timer, which the
-    /// app otherwise avoids for noticing outside changes: nothing can tell a
-    /// running window that a release was published, so it has to ask. Four
-    /// times a day, and each time it is one request when nothing is new.
+    /// Check now, whenever the last check was, and again every
+    /// [`update::CADENCE`]. A timer, which the app otherwise avoids for
+    /// noticing outside changes: nothing can tell a running window that a
+    /// release was published, so it has to ask. Once an hour, and each time
+    /// it is one request when nothing is new — none at all when another
+    /// window, a command or the About dialog asked within the hour.
     fn keep_up_to_date(self: &Rc<Self>) {
         self.check_for_update(true);
         let weak = Rc::downgrade(self);
@@ -91,7 +94,7 @@ impl Window {
                 let first = asked.replace(asked.get() + 1) == 0;
                 if at_launch && first { origin.installed_version } else { update::installed_version(origin) }
             };
-            let ready = if shelf.check_due(SystemTime::now()) {
+            let ready = if shelf.check_due(SystemTime::now(), at_launch) {
                 match update::check(&update::GitHub::new(), &shelf, running, &installed, true) {
                     Ok(checked @ Checked::Ready { .. }) => checked.restart_brings(running, installed()),
                     Ok(_) => None,
@@ -170,7 +173,7 @@ impl Window {
     /// Start the installed binary again, to come up once this one is gone,
     /// and close every window the way closing it by hand would: what a quit
     /// saves is saved, and the new process restores it as any launch does.
-    fn restart_to_update(&self) {
+    pub(super) fn restart_to_update(&self) {
         if let Err(error) = update::spawn_restart() {
             self.say(crate::log_words::trouble("Updates", "Could not restart", &error));
             return;

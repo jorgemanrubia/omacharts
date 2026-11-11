@@ -63,6 +63,17 @@ pub const HEALTHY: &str = ".healthy";
 /// before it is given up on.
 pub const UNHEALTHY_LIMIT: usize = 3;
 
+/// The version this binary was built as. The one place it is read from the
+/// build: `--version`, the About dialog, the updater and the launcher all
+/// say this, so none of them can disagree with another.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What `--version` prints: `omacharts 0.2.19`. The updater reads a
+/// download's version back from this line, so its shape is a contract.
+pub fn version_line() -> String {
+    format!("omacharts {VERSION}")
+}
+
 /// A release's version, `major.minor.patch`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct Version(pub u32, pub u32, pub u32);
@@ -87,7 +98,7 @@ impl Version {
     /// The version this was built as. The launcher and the app come out of
     /// one package, so it is the same number in both.
     pub fn running() -> Version {
-        Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or(Version(0, 0, 0))
+        Version::parse(VERSION).unwrap_or(Version(0, 0, 0))
     }
 }
 

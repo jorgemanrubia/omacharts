@@ -51,6 +51,7 @@ mod log;
 mod marks;
 mod trade;
 mod updates;
+mod about;
 use trade::Trade;
 
 /// How often the rail's missing prices are looked for.
@@ -4145,6 +4146,8 @@ pub struct Window {
     trade: Trade,
     /// The Log, the corner notice and the main menu's dot.
     messages: log::Messages,
+    /// The About dialog, while it is open.
+    about: RefCell<Option<Rc<about::About>>>,
     /// Which feed a loader reply belongs to. Bumped by a switch, so a reply
     /// the old worker had already sent is recognised and dropped rather
     /// than painted onto a chart that has moved on.
@@ -4296,6 +4299,7 @@ impl Window {
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
             messages: log::Messages::new(omacharts_engine::log::global()),
+            about: RefCell::new(None),
             feed_generation: Cell::new(0),
             refresh_timer_on: Cell::new(false),
             drain_scheduled: Cell::new(false),
@@ -7378,6 +7382,10 @@ impl Window {
         shortcuts::append(&menu, "Preferences", "win.preferences");
         shortcuts::append(&menu, "Log", "win.log");
         shortcuts::append(&menu, "Keyboard Shortcuts", "win.shortcuts");
+        // A section of its own, so the menu draws its own separator above it.
+        let about = gio::Menu::new();
+        shortcuts::append(&about, "About Omacharts", "win.about");
+        menu.append_section(None, &about);
         let menu_button = gtk::MenuButton::new();
         menu_button.set_icon_name("open-menu-symbolic");
         crate::ui::menus::set_model(&menu_button, &menu);
@@ -7670,6 +7678,11 @@ impl Window {
         let this = self.clone();
         log.connect_activate(move |_, _| this.toggle_log());
         self.window.add_action(&log);
+
+        let about = gio::SimpleAction::new("about", None);
+        let this = self.clone();
+        about.connect_activate(move |_, _| this.show_about());
+        self.window.add_action(&about);
 
         let find = gio::SimpleAction::new("find", None);
         let this = self.clone();

@@ -29,11 +29,11 @@ Either way, Omacharts keeps itself up to date from there ([Updates](#updates)).
 
 ## Updates
 
-Omacharts downloads each new release from GitHub in the background and checks it against the release's published checksum. When one is ready, a notice in the window's corner says **Omacharts 0.2.15 is ready** with **Restart to update**. Restarting, or just quitting and opening it again, starts the new version where you left off.
+Omacharts asks GitHub for a new release each time it starts, and every hour while it stays open. It downloads each new release in the background and checks it against the release's published checksum. When one is ready, a notice in the window's corner says **Omacharts 0.2.15 is ready** with **Restart to update**. Restarting, or just quitting and opening it again, starts the new version where you left off.
 
 Nothing needs <kbd>sudo</kbd>: the package's files are never touched. Downloads go to `~/.local/share/omacharts/versions/`, which holds only the newest. Once the package catches up with a download, through `omarchy update` or `pacman -Syu`, the download is deleted and the package's own version runs.
 
-Turn it off with Preferences › General › Updates › **Update automatically**. What is already downloaded stays in use until the package catches up.
+Turn it off with Preferences › General › Updates › **Update automatically**. What is already downloaded stays in use until the package catches up. [About Omacharts](/manual/window/#about-omacharts) in the main menu checks too, and offers **Update** even with the switch off.
 
 | Command | Does |
 |---|---|
@@ -47,7 +47,7 @@ The menu entry, the icon, the manual page and the agent skill are the package's,
 
 ### When an update misbehaves
 
-A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds, or whose own update of your settings fails, set it aside too. A full disk, a settings file another program holds, or a launch with no display to open, from ssh or a script, doesn't count. A version that has run properly once is never set aside, because it may be the only one that can open your settings. A download that doesn't match its checksum is tried again at the next check, and set aside if it doesn't match twice.
+A downloaded version that will not start is set aside, and the package's version runs instead. Three launches in a row that end before its window has been up for a few seconds, or whose own update of your settings fails, set it aside too. A full disk, a settings file another program holds, or a launch with no display to open, from ssh or a script, doesn't count. A version that has run properly once is never set aside, because it may be the only one that can open your settings. A download that doesn't match its checksum is tried again six hours later, and set aside if it doesn't match twice. A download that fails on the way waits six hours too, rather than starting again at every launch.
 
 Before a downloaded version first opens your settings, a copy of them is kept as `~/.local/share/omacharts/versions/.saved-<version>`, apart from the regular backups so it isn't pruned. If it can't be taken, on a full disk for example, that version leaves your settings alone: its window runs with nothing saved, and its commands stop with an error, until there is room. If a version that was set aside had already updated your settings to a form the running version can't read, and nothing newer can open them, they are put back from the newest such copy the running version can read. The window says so once, even when a command did it. What changed since is kept beside them in `~/.local/share/omacharts/`, as `omacharts.db.from-<version>-<time>`.
 
