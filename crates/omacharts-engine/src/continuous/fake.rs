@@ -46,6 +46,10 @@ pub fn index_of(month: Month) -> Option<usize> {
     MONTHS.iter().position(|(code, year)| Month::of(*code, *year) == Some(month))
 }
 
+/// A span asked for by time: the contract, the timeframe, from, to, and how
+/// many bars it held.
+pub type Between = (String, Timeframe, i64, i64, usize);
+
 /// The feed: the months it holds, what it declares, and what it was asked.
 pub struct Months {
     /// `months` unless a test needs what is known of its rolls to itself.
@@ -66,7 +70,7 @@ pub struct Months {
     pub followed: Mutex<Vec<String>>,
     /// Every span asked for by time, with how many bars it held: what was
     /// read.
-    pub between: Mutex<Vec<(String, Timeframe, i64, i64, usize)>>,
+    pub between: Mutex<Vec<Between>>,
 }
 
 impl Months {

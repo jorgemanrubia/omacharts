@@ -432,6 +432,10 @@ fn what_was_drawn_short_is_known_until_it_is_drawn_whole() {
     assert!(!drawn_short("months-short", &symbol, daily));
 }
 
+/// A read: the contract, the timeframe, from, to when it was asked by time,
+/// and how many bars it held.
+type Asked = (String, Timeframe, i64, Option<i64>, usize);
+
 /// Years of ES, every quarter's month, as a folder of a hundred contract
 /// files has them: each from half a year before it is front to a week after
 /// its roll, the front month from `front_from`, and each quarter ten points
@@ -439,7 +443,7 @@ fn what_was_drawn_short_is_known_until_it_is_drawn_whole() {
 struct Years {
     front: Month,
     front_from: i64,
-    read: Mutex<Vec<(String, Timeframe, i64, Option<i64>, usize)>>,
+    read: Mutex<Vec<Asked>>,
 }
 
 impl Years {
