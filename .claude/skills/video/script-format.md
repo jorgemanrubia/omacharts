@@ -95,7 +95,7 @@ block names each cue once:
 | `scroll <x%> <y%> <steps>` | wheel notches; negative scrolls up |
 | `wait <seconds>` | pause the timeline |
 | `zoom <x%> <y%> <scale>` | a zoom there, held until the next action, the next zoom or 8 s |
-| `terminal open [command]` / `terminal close` | a real terminal, themed like the app, tiled on the right at 38% of the width; the chart reflows beside it. Its shell runs this studio's `omacharts` and `vp-agent`; a command given starts in it at once, so nothing is typed just to begin the scene. The composer covers the snap with a light sweep and labels the two panes while it is open |
+| `terminal open [command]` / `terminal close` | a real terminal, themed like the app, tiled on the right at 38% of the width; the chart reflows beside it. Its shell runs this studio's `omacharts` and every played agent in `video/agent/`; a command given starts in it at once, so nothing is typed just to begin the scene. The composer covers the snap with a light sweep and labels the two panes while it is open |
 | `focus app` / `focus terminal` | which window the keys go to |
 
 Several actions on one cue go on one line, separated by `;`. Positions are
