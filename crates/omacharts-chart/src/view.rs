@@ -6529,7 +6529,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                 draw_pane_name(cr, state, drawn, plot_x, row.top);
             }
             Output::Pane(pane) => {
-                draw_pane(cr, state, pane, drawn, &columns, plot_w, row.top, row.height, width)
+                draw_pane(cr, state, pane, drawn, &columns, &plan, row.top, row.height, width)
             }
             _ => {}
         }
@@ -7488,12 +7488,15 @@ fn draw_pane(
     pane: &omacharts_engine::indicators::Pane,
     drawn: &Drawn,
     columns: &Columns,
-    plot_w: f64,
+    plan: &Layout,
     top: f64,
     height: f64,
     width: f64,
 ) {
-    let plot_x = columns.plot_x;
+    // The strip's own box, where its name, guides and scale go. The bars
+    // can start further in, past room dragged open before the first one,
+    // and only the lines follow them, through `columns`.
+    let (plot_x, plot_w) = (plan.plot_x, plan.plot_w);
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
     let lit = state.picked == Some(drawn.indicator.id);
