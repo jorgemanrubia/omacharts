@@ -7,7 +7,8 @@
 //! deterministic function of the symbol and the clock, so the history it
 //! answers a one-shot request with and the snapshot its stream opens with
 //! are the same bars — a chart painted from one and then fed by the other
-//! does not jump.
+//! does not jump. [`Synthetic::frozen`] stops that clock at one moment,
+//! so a test sees the same bars whenever it runs.
 //!
 //! The stream is the honest shape of the contract in [`crate::Stream`]: a
 //! thread per subscription that sends a snapshot first and then one bar per
@@ -41,11 +42,24 @@ pub struct Synthetic {
     /// How often the forming bar moves. `None` streams the snapshot and then
     /// nothing, which is what a market that is shut looks like.
     tick: Option<Duration>,
+    /// The moment it is always, if it is not the wall clock's.
+    clock: Option<i64>,
 }
 
 impl Synthetic {
     pub fn new(tick: Option<Duration>) -> Synthetic {
-        Synthetic { tick }
+        Synthetic { tick, clock: None }
+    }
+
+    /// A feed whose clock stands at `at`, in seconds since the epoch: its
+    /// history ends there and its stream sends that snapshot and nothing
+    /// more, the same bars every time.
+    pub fn frozen(at: i64) -> Synthetic {
+        Synthetic { tick: None, clock: Some(at) }
+    }
+
+    fn now(&self) -> i64 {
+        self.clock.unwrap_or_else(now)
     }
 }
 
@@ -79,7 +93,7 @@ impl Provider for Synthetic {
         if !self.serves(timeframe) {
             return Err(ProviderError::Unsupported(timeframe.label()));
         }
-        Ok(history(symbol, timeframe, since, now()))
+        Ok(history(symbol, timeframe, since, self.now()))
     }
 
     fn stream(&self) -> Option<&dyn Stream> {
@@ -101,9 +115,10 @@ impl Stream for Synthetic {
         let (stop, stopped) = mpsc::channel::<()>();
         let symbol = symbol.to_string();
         let tick = self.tick;
+        let clock = self.clock;
         std::thread::Builder::new()
             .name(format!("synthetic {symbol}"))
-            .spawn(move || serve(&symbol, timeframe, since, tick, &sink, &stopped))
+            .spawn(move || serve(&symbol, timeframe, since, tick, clock, &sink, &stopped))
             .map_err(|e| ProviderError::Network(e.to_string()))?;
         Ok(Box::new(Handle { _stop: stop }))
     }
@@ -122,12 +137,14 @@ fn serve(
     timeframe: Timeframe,
     since: Option<i64>,
     tick: Option<Duration>,
+    clock: Option<i64>,
     sink: &Sink,
     stopped: &mpsc::Receiver<()>,
 ) {
     let step = timeframe.seconds();
-    let mut forming = history(symbol, timeframe, since, now()).pop();
-    sink(Update::Snapshot(history(symbol, timeframe, since, now())));
+    let at = clock.unwrap_or_else(now);
+    let mut forming = history(symbol, timeframe, since, at).pop();
+    sink(Update::Snapshot(history(symbol, timeframe, since, at)));
     let Some(tick) = tick else {
         // A snapshot and then silence, for as long as somebody watches.
         let _ = stopped.recv();
@@ -264,6 +281,29 @@ mod tests {
             assert!(bar.low <= bar.open.min(bar.close) && bar.high >= bar.open.max(bar.close));
         }
         assert_eq!(a.last().unwrap().ts, now.div_euclid(300) * 300);
+    }
+
+    /// Frozen, it answers with the bars of its moment whenever it is asked,
+    /// and its stream opens with the same ones.
+    #[test]
+    fn a_frozen_feed_serves_its_moment() {
+        let at = 1_700_000_000;
+        let feed = Synthetic::frozen(at);
+        let bars = feed.bars("ES", Timeframe::minutes(5), None).expect("bars");
+        assert_eq!(bars, history("ES", Timeframe::minutes(5), None, at));
+        let heard: Arc<Mutex<Vec<Update>>> = Arc::new(Mutex::new(Vec::new()));
+        let into = heard.clone();
+        let _handle = feed
+            .subscribe("ES", Timeframe::minutes(5), None, Box::new(move |u| into.lock().unwrap().push(u)))
+            .expect("a subscription");
+        let started = std::time::Instant::now();
+        while heard.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match heard.lock().unwrap().first() {
+            Some(Update::Snapshot(snapshot)) => assert_eq!(snapshot, &bars),
+            other => panic!("not the snapshot of its moment: {other:?}"),
+        }
     }
 
     #[test]
