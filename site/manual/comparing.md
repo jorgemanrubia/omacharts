@@ -2,7 +2,7 @@
 title: "Comparing markets"
 description: "Other markets drawn on a chart as lines, each in percent from the same bar."
 section: charting
-nav_order: 14.5
+nav_order: 24
 ---
 
 Comparing draws other markets on a chart as lines, each rebased to 0% at the same bar, so you can read how far each one has come since then. While a chart compares anything, its price axis is in percent and every line, the chart's own bars included, starts from 0% at that bar.
