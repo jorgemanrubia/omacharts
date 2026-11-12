@@ -494,7 +494,7 @@ impl Years {
     /// has got, and is done.
     fn report(&self) {
         crate::progress::advance(0.5);
-        if let Some(now) = crate::progress::of(&crate::progress::name(&self.spelled(), Timeframe::hours(1))) {
+        if let Some(now) = crate::progress::tests::reported(&crate::progress::name(&self.spelled(), Timeframe::hours(1))) {
             self.progress.lock().unwrap().push(now);
         }
         crate::progress::advance(1.0);
