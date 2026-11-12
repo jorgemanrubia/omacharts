@@ -2076,9 +2076,10 @@ pub struct Drawing {
     /// A chart that stops sending has to take back the drawings it sent,
     /// and "the ones it sent" is a question nothing could answer: a shared
     /// drawing sits with the symbol, and the symbol does not remember who
-    /// put it there. So it is written down. Nothing reads it to draw
-    /// anything, and a drawing written before charts had names has none —
-    /// which means no chart claims it, and no chart can withdraw it.
+    /// put it there. So it is written down. A chart not shown other charts'
+    /// drawings reads it too, to keep showing its own. A drawing written
+    /// before charts had names has none — which means no chart claims it,
+    /// no chart can withdraw it, and every chart counts it as another's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
     /// The corners of a zig-zag, first to last, and empty for every other
@@ -2119,6 +2120,39 @@ pub struct Drawing {
 /// first among equals.
 pub fn sort_for_painting(drawings: &mut [Drawing]) {
     drawings.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.abs().cmp(&b.id.abs())));
+}
+
+impl Drawing {
+    /// Whether the chart named `uid` made this. A drawing with no origin was
+    /// made by no chart anybody can name, so no chart claims it.
+    pub fn made_by(&self, uid: &str) -> bool {
+        !uid.is_empty() && self.origin.as_deref() == Some(uid)
+    }
+
+    /// Whether a chart named `uid` sees this shared drawing: all of them
+    /// when it is shown what other charts send, and only the ones it sent
+    /// itself when it is not.
+    pub fn seen_by(&self, uid: &str, shows_others: bool) -> bool {
+        shows_others || self.made_by(uid)
+    }
+}
+
+/// What one chart sees, painting order: the symbol's shared drawings that
+/// [`Drawing::seen_by`] lets through, and the chart's own local ones always.
+///
+/// "Show drawings from other charts" turned off hides other charts' work,
+/// never the chart's own. A chart sends what it draws by default, so its own
+/// drawings sit with the symbol beside everybody else's, and only the origin
+/// tells them apart. A drawing with no origin, written before charts had
+/// names, belongs to no chart: it counts as another chart's, and is hidden
+/// with them. Claiming it for every chart would put it back on each chart
+/// somebody had asked to keep clean, and sending works the same way — no
+/// chart can withdraw it either.
+pub fn seen_by(shared: &[Drawing], own: &[Drawing], uid: &str, shows_others: bool) -> Vec<Drawing> {
+    let mut all: Vec<Drawing> = shared.iter().filter(|d| d.seen_by(uid, shows_others)).cloned().collect();
+    all.extend(own.iter().cloned());
+    sort_for_painting(&mut all);
+    all
 }
 
 /// The width a line is drawn at when nobody chose one: the chart's own
@@ -2822,6 +2856,53 @@ impl Projected {
         }
         (left, top, right - left, bottom - top)
     }
+
+    /// The box a label is placed against, on a chart whose plot runs from
+    /// `left` to `right`: for a line, the box round the part of it that is
+    /// on screen; for every other kind, [`bounds`](Self::bounds).
+    ///
+    /// A line is as long as the time its anchors span, and the same span is
+    /// a few candles on one chart and thousands on another. A label placed
+    /// against the whole of it sits at the middle or an end of that span, so
+    /// a level drawn on an hourly chart carried its words with it to a
+    /// two-minute chart — somewhere days off screen, while the line itself
+    /// ran right across the plot. Placed against what is on screen, the
+    /// words go wherever the line shows. A line wholly on screen gets the
+    /// box it always had, and one wholly off it keeps that too, since there
+    /// is nothing to put the words beside.
+    pub fn label_bounds(&self, left: f64, right: f64) -> (f64, f64, f64, f64) {
+        if !self.kind.is_line() || right <= left {
+            return self.bounds();
+        }
+        let mut seen: Option<(f64, f64, f64, f64)> = None;
+        for (a, b) in self.segments() {
+            let Some((p, q)) = clip_across(a, b, left, right) else { continue };
+            let (x0, x1) = ordered(p.0, q.0);
+            let (y0, y1) = ordered(p.1, q.1);
+            seen = Some(match seen {
+                None => (x0, y0, x1, y1),
+                Some((l, t, r, b)) => (l.min(x0), t.min(y0), r.max(x1), b.max(y1)),
+            });
+        }
+        match seen {
+            Some((l, t, r, b)) => (l, t, r - l, b - t),
+            None => self.bounds(),
+        }
+    }
+}
+
+/// The part of the segment `a`–`b` between `left` and `right`, or `None`
+/// when none of it is.
+fn clip_across(a: (f64, f64), b: (f64, f64), left: f64, right: f64) -> Option<((f64, f64), (f64, f64))> {
+    let (a, b) = if a.0 <= b.0 { (a, b) } else { (b, a) };
+    if b.0 < left || a.0 > right {
+        return None;
+    }
+    // Only asked about an edge the segment crosses, so it is never upright.
+    let at = |x: f64| (x, a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0));
+    let start = if a.0 < left { at(left) } else { a };
+    let end = if b.0 > right { at(right) } else { b };
+    Some((start, end))
 }
 
 /// Whether a point is in the ellipse inscribed in `bounds`, allowing `reach`
@@ -3120,6 +3201,63 @@ mod shape_tests {
         // And a drawing written down with one of them reads back shared.
         let old = r#"{"kind":"line","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":4.0},"scope":"group-7"}"#;
         assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().scope, Scope::Shared);
+    }
+
+    /// A chart not shown other charts' drawings keeps the ones it sent
+    /// itself and its local ones; a drawing with no origin, from before
+    /// charts had names, is nobody's and goes with the others. Shown
+    /// everything, it sees everything, in painting order.
+    #[test]
+    fn a_chart_sees_its_own_drawings_whatever_it_is_shown_of_others() {
+        let at = |id: i64, origin: Option<&str>| {
+            let mut d = Drawing::new(Kind::Line, Anchor::new(1, 1.0), Anchor::new(2, 2.0));
+            d.id = id;
+            d.origin = origin.map(str::to_string);
+            d
+        };
+        let shared = vec![at(1, Some("mine")), at(2, Some("theirs")), at(3, None)];
+        let mut local = at(-1, Some("mine"));
+        local.scope = Scope::Local;
+        let ids = |seen: Vec<Drawing>| seen.iter().map(|d| d.id).collect::<Vec<_>>();
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", false)), vec![1, -1]);
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", true)), vec![1, -1, 2, 3]);
+        // A chart with no name yet claims nothing, even the drawings that
+        // have none either.
+        assert_eq!(ids(seen_by(&shared, &[], "", false)), Vec::<i64>::new());
+        // And an old drawing with no origin still reads.
+        let old = r#"{"kind":"horizontal","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":2.0}}"#;
+        assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().origin, None);
+    }
+
+    /// A line's label is placed against the part of it on screen: one that
+    /// runs off both sides centres its words on the plot, one wholly on
+    /// screen keeps its own box, and one wholly off it keeps that too.
+    #[test]
+    fn a_line_s_label_is_placed_against_the_part_of_it_on_screen() {
+        // A level from far left of the plot to far right of it.
+        let wide = Projected::new(Kind::Horizontal, (-5000.0, 100.0), (9000.0, 100.0));
+        assert_eq!(wide.label_bounds(50.0, 850.0), (50.0, 100.0, 800.0, 0.0));
+        let (x, _) = text_origin(Kind::Horizontal, wide.label_bounds(50.0, 850.0), (80.0, 16.0), Place::Center);
+        assert_eq!(x, 410.0, "centred on the plot");
+        // Its whole box would have put the words thousands of pixels away.
+        let (far, _) = text_origin(Kind::Horizontal, wide.bounds(), (80.0, 16.0), Place::Center);
+        assert!(far > 850.0);
+        // A sloped line cut at both edges, its heights where it is cut.
+        let slope = Projected::new(Kind::Line, (0.0, 0.0), (1000.0, 1000.0));
+        assert_eq!(slope.label_bounds(100.0, 400.0), (100.0, 100.0, 300.0, 300.0));
+        // Wholly on screen, and wholly off it: the box it always had.
+        let inside = Projected::new(Kind::Line, (200.0, 50.0), (300.0, 80.0));
+        assert_eq!(inside.label_bounds(50.0, 850.0), inside.bounds());
+        let off = Projected::new(Kind::Line, (-900.0, 50.0), (-300.0, 80.0));
+        assert_eq!(off.label_bounds(50.0, 850.0), off.bounds());
+        // A zig-zag's box is round the parts of its legs on screen.
+        let path = Projected::through(Kind::Zigzag, vec![(-100.0, 0.0), (100.0, 200.0), (1000.0, 50.0)]);
+        let (left, top, _, height) = path.label_bounds(0.0, 500.0);
+        assert_eq!((left, top), (0.0, 100.0));
+        assert!(height > 0.0);
+        // A box is a box: placed against all of it, as ever.
+        let rect = Projected::new(Kind::Rect, (-500.0, 0.0), (500.0, 100.0));
+        assert_eq!(rect.label_bounds(0.0, 200.0), rect.bounds());
     }
 
     #[test]
