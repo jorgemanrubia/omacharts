@@ -31,6 +31,12 @@ script.md ──► voice ──► record ──► polish ──► compose �
    fit them, eased in and out, released when the hands go to the keyboard or
    1.6s after the last click; a badge for every chord with a modifier.
    Remotion only draws what the plan says. `polish: off` in a script skips it.
+   A zoom's point is the one that stays put on screen (CSS
+   `transform-origin`), not the one brought to the middle: `zoom 8% 9% 2.2`
+   on a legend in the top-left corner pushed half of it off the frame.
+   For something near an edge, aim at the edge or corner itself (`zoom 1%
+   1% 2.2`). An asked-for zoom lets go on the hands' next move as well as
+   their next click or key; it once held through a crosshair glide.
 4. **Compose.** ffmpeg: the cover held and faded into the polished recording,
    the voice placed scene by scene, music ducked under it, the mix mastered,
    a 4K H.264 file and a 1080p one, and subtitles from the aligned words.
@@ -63,7 +69,7 @@ script.md ──► voice ──► record ──► polish ──► compose �
 
 For a scene about the command line — an agent using it, say — `terminal open`
 tiles a real `foot` beside the app, themed from the same colours, with a shell
-whose PATH holds this studio's `omacharts` and `video/agent/vp-agent`. Typed
+whose PATH holds this studio's `omacharts` and every played agent in `video/agent/`. Typed
 commands run against the app on camera, so the chart changes as they do.
 Lessons:
 
@@ -76,8 +82,12 @@ Lessons:
   with no terminal once closed the app: close only after checking the
   terminal is there and has the focus.
 - An agent's own run is not the same twice and cannot be timed to a voice,
-  so `vp-agent` plays one: its sentences are written, every command it shows
-  is the real one, run live.
+  so a played agent in `video/agent/` (`vp-agent`, `compare-agent`) plays
+  one: its sentences are written, every command it shows is the real one,
+  run live. Write it from a real run: put a real agent, with the Omacharts
+  skill, on a held studio off camera (a wrapper `omacharts` on its PATH that
+  carries the studio's environment) and take its choices and commands from
+  what it did.
 
 ## Driving it
 
