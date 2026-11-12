@@ -261,9 +261,12 @@ the bars between `--from` and `--to`; only their times are read. `--color` is
 its outline, `--fill` its background, `--width` the outline's thickness,
 `--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
 `--profile-style filled|outline`, `--align
-left|right`, `--value-area` and `--transparency` the rest. The study takes
+left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`
+and `--value-area-color` the rest. The study takes
 `--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
-`--poc-style` and `--transparency` (0 to 1) the same way; a MACD's signal line
+`--poc-style`, `--transparency` (0 is its colour solid, 1 invisible, 0.7 by
+default), `--highlight-value-area` and `--value-area-color` (`none` for the
+rows' own) the same way; a MACD's signal line
 takes `--signal-style` and a stochastic's %D `--d-style`. It takes no `--text`. The study's own profiles are read and merged with
 `chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds

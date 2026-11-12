@@ -587,8 +587,13 @@ fn describe(kind: Kind, style: &Style) -> String {
                 true => String::new(),
                 false => format!(" on {}", name_of(&style.fill)),
             };
+            let area = match (look.highlight, &look.value_area_paint) {
+                (false, _) => ", value area not set apart".to_string(),
+                (true, Some(paint)) => format!(", value area {}", name_of(paint)),
+                (true, None) => String::new(),
+            };
             format!(
-                "{}{background} {}, from the {}, point of control {}",
+                "{}{background} {}, from the {}, point of control {}{area}",
                 name_of(&style.colour),
                 look.shape.label().to_lowercase(),
                 look.align.label().to_lowercase(),
@@ -955,9 +960,9 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.fill)));
 
-            // Over the outline and the background together, from the look
-            // as designed at 0%: their strengths are measured, and this
-            // only fades them.
+            // How much of the chart shows through the rows: none at 0%,
+            // where the value area is the background picked, solid, and all
+            // of it at 100%. The outline fades with them.
             let fade = adw::ActionRow::new();
             fade.set_title("Transparency");
             let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
@@ -966,18 +971,29 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             scale.set_draw_value(true);
             scale.set_value_pos(gtk::PositionType::Left);
             scale.set_format_value_func(|_, v| format!("{v:.0}%"));
-            scale.set_value((1.0 - style.borrow().profile.opacity) * 100.0);
+            scale.set_value(transparency_percent(&style.borrow()));
             {
                 let style = style.clone();
                 let emit = emit.clone();
+                let showing = showing.clone();
                 scale.connect_value_changed(move |scale| {
-                    style.borrow_mut().profile.opacity = (1.0 - scale.value() / 100.0).clamp(0.0, 1.0);
+                    if showing.get() {
+                        return;
+                    }
+                    style.borrow_mut().set_profile_alpha(1.0 - scale.value() / 100.0);
                     emit();
                 });
             }
             fade.add_suffix(&scale);
             group.add(&fade);
-            shows.push(Rc::new(move |s: &Style| scale.set_value((1.0 - s.profile.opacity) * 100.0)));
+            {
+                let showing = showing.clone();
+                shows.push(Rc::new(move |s: &Style| {
+                    let was = showing.replace(true);
+                    scale.set_value(transparency_percent(s));
+                    showing.set(was);
+                }));
+            }
 
             let poc_ink = {
                 let style = style.clone();
@@ -1076,6 +1092,74 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             }
             group.add(&area);
             shows.push(Rc::new(move |s: &Style| area.set_value(s.profile.value_area * 100.0)));
+
+            // The value area set apart from the other rows, or not; and in
+            // a colour of its own, or in the background's, only stronger.
+            let highlight = adw::SwitchRow::new();
+            highlight.set_title("Highlight value area");
+            highlight.set_subtitle("Off, every row is drawn alike");
+            highlight.set_active(style.borrow().profile.highlight);
+            group.add(&highlight);
+            let area_paint = |s: &Style| s.profile.value_area_paint.clone().unwrap_or_else(|| s.fill.clone());
+            let (area_row, show) = paint_row(&theme, "Value area colour", &area_paint(&style.borrow()), {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().profile.value_area_paint = Some(paint);
+                    emit();
+                }
+            });
+            let reset = gtk::Button::with_label("Reset");
+            reset.add_css_class("flat");
+            reset.add_css_class("subtle-link");
+            reset.set_valign(gtk::Align::Center);
+            reset.set_tooltip_text(Some("Back to the background's colour"));
+            area_row.add_suffix(&reset);
+            let show: Rc<dyn Fn(&Style)> = {
+                let reset = reset.clone();
+                Rc::new(move |s: &Style| {
+                    show(&area_paint(s));
+                    reset.set_visible(s.profile.value_area_paint.is_some());
+                })
+            };
+            show(&style.borrow());
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                let show = show.clone();
+                reset.connect_clicked(move |_| {
+                    style.borrow_mut().profile.value_area_paint = None;
+                    let now = style.borrow().clone();
+                    show(&now);
+                    emit();
+                });
+            }
+            area_row.set_sensitive(style.borrow().profile.highlight);
+            group.add(&area_row);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                let showing = showing.clone();
+                let area_row = area_row.clone();
+                highlight.connect_active_notify(move |row| {
+                    area_row.set_sensitive(row.is_active());
+                    if showing.get() {
+                        return;
+                    }
+                    style.borrow_mut().profile.highlight = row.is_active();
+                    emit();
+                });
+            }
+            {
+                let showing = showing.clone();
+                shows.push(Rc::new(move |s: &Style| {
+                    let was = showing.replace(true);
+                    highlight.set_active(s.profile.highlight);
+                    showing.set(was);
+                    area_row.set_sensitive(s.profile.highlight);
+                    show(s);
+                }));
+            }
         }
         // The study's rows, in the study's order and groups: what it is
         // worked out from, the line, then a group for each band.
@@ -1795,7 +1879,16 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
     let row_h = h / rows.len() as f64;
     let colour = style.colour.hex(theme);
     let fill = style.fill.hex(theme);
-    let opacity = style.profile.opacity.clamp(0.0, 1.0);
+    let area_fill = match (style.profile.highlight, &style.profile.value_area_paint) {
+        (true, Some(paint)) => paint.hex(theme),
+        _ => fill.clone(),
+    };
+    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    let alpha = style.profile_alpha();
+    let (inside_alpha, outside_alpha) = row_alphas(alpha, style.profile.highlight);
+    // A swatch is small: its faintest rows are kept in sight while the
+    // profile is in sight at all.
+    let least = 0.12 * line_alpha(1.0, alpha);
     let right = style.profile.align == ProfileAlign::Right;
     let span = |share: f64| match right {
         true => (x + w - w * share, w * share),
@@ -1816,18 +1909,18 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
         ProfileShape::Filled => {
             for (n, share) in rows.iter().enumerate() {
                 let inside = (2..=4).contains(&n);
-                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                colors::set_source_alpha(cr, &fill, alpha.max(0.12) * opacity);
+                let (paint, strength) = if inside { (&area_fill, inside_alpha) } else { (&fill, outside_alpha) };
+                colors::set_source_alpha(cr, paint, strength.max(least));
                 let (left, width) = span(*share);
                 cr.rectangle(left, y + n as f64 * row_h, width, row_h);
                 let _ = cr.fill();
             }
             let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, &colour, edge * opacity);
+            colors::set_source_alpha(cr, &colour, line_alpha(edge, alpha));
             cr.set_line_width(1.0);
         }
         ProfileShape::Outline => {
-            colors::set_source_alpha(cr, &colour, opacity);
+            colors::set_source_alpha(cr, &colour, line_alpha(1.0, alpha));
             cr.set_line_width(style.width.clamp(1.0, 2.0));
         }
     }
@@ -2388,6 +2481,12 @@ fn width_row(title: &str, current: f64, on_pick: impl Fn(f64) + 'static) -> (adw
 
 /// A row that picks a colour: the nine presets as tiles, and a wheel for a
 /// colour of one's own.
+/// A volume profile's transparency, as its row shows it: what it draws, in
+/// whole percent, whether it was saved as a fade or as a strength.
+fn transparency_percent(style: &Style) -> f64 {
+    (1.0 - style.profile_alpha()) * 100.0
+}
+
 fn paint_row(
     theme: &Theme,
     title: &str,

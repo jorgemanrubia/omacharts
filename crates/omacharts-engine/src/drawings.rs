@@ -758,6 +758,10 @@ fn is_false(flag: &bool) -> bool {
     !*flag
 }
 
+fn is_true(flag: &bool) -> bool {
+    *flag
+}
+
 impl Span {
     pub fn plain(text: &str) -> Span {
         Span { text: text.to_string(), bold: false, italic: false }
@@ -1431,8 +1435,9 @@ fn stored_fib_levels<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Vec<Fi
 
 /// A volume profile drawing's own properties: the study's, as one drawing
 /// carries them. The rows are the drawing's fill, the value area at its
-/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it; the edge round them is
-/// its colour.
+/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it while the value area is
+/// highlighted, or all at its alpha when not; the edge round them is its
+/// colour.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct ProfileLook {
     /// The line across the busiest price.
@@ -1449,11 +1454,21 @@ pub struct ProfileLook {
     /// increment, as the study does.
     #[serde(default)]
     pub rows: Option<usize>,
-    /// How much of the outline and the background shows, over the strength
-    /// each is drawn at: 1 is the look as designed, 0 nothing. The point of
-    /// control keeps its own, being the line the profile is read by.
+    /// A fade over the drawing's `alpha`, from before the Transparency row
+    /// set the alpha itself: 1 draws the alpha as it is. A drawing stored
+    /// with one is drawn as it was; the row folds it into the alpha on the
+    /// next change. The point of control keeps its own strength, being the
+    /// line the profile is read by. See [`Style::profile_alpha`].
     #[serde(default = "ProfileLook::opaque")]
     pub opacity: f64,
+    /// Whether the value area is set apart from the other rows. Off, every
+    /// row is drawn alike. Missing, it is, as every profile was.
+    #[serde(default = "ProfileLook::shown", skip_serializing_if = "is_true")]
+    pub highlight: bool,
+    /// The value area's own colour, while it is highlighted. Unset is the
+    /// drawing's fill, the same colour stronger, as it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_area_paint: Option<Paint>,
     /// The point of control's thickness. The outline's is the drawing's
     /// own `width`.
     #[serde(default = "ProfileLook::poc_default")]
@@ -1473,6 +1488,10 @@ impl ProfileLook {
         DEFAULT_WIDTH
     }
 
+    fn shown() -> bool {
+        true
+    }
+
     fn is_default(&self) -> bool {
         *self == ProfileLook::default()
     }
@@ -1487,6 +1506,8 @@ impl Default for ProfileLook {
             value_area: 0.70,
             rows: None,
             opacity: 1.0,
+            highlight: true,
+            value_area_paint: None,
             poc_width: DEFAULT_WIDTH,
             poc_style: LineStyle::Solid,
         }
@@ -1498,11 +1519,11 @@ pub use crate::indicators::profile::{Align as ProfileAlign, Style as ProfileShap
 /// The value area's fill: the study's own. A drawing over a study is already
 /// on top, and being louder would only cost the candles under it — at 0.36
 /// the up and down bodies under a fill fall below 0.06 ΔE apart.
-pub const PROFILE_ALPHA: f64 = 0.30;
+pub const PROFILE_ALPHA: f64 = crate::indicators::profile::DESIGNED_ALPHA;
 
 /// The rows outside the value area, as a share of its alpha: the study's
 /// 0.14 to its 0.30.
-pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
+pub const PROFILE_ROW_SHARE: f64 = crate::indicators::profile::OUTSIDE_SHARE;
 
 /// The hairline around a filled profile's silhouette, the drawing's and the
 /// study's alike. Soft on purpose: 0.55 read as a box drawn round the rows
@@ -1655,6 +1676,20 @@ impl Style {
     /// box in nothing.
     pub fn text(preset: Preset) -> Style {
         Style { border: false, alpha: 0.0, ..Style::rect(preset) }
+    }
+
+    /// How solid a volume profile's value area is drawn: its alpha, faded
+    /// by any opacity it was stored with. The Transparency row is one minus
+    /// this.
+    pub fn profile_alpha(&self) -> f64 {
+        crate::indicators::profile::drawn_alpha(self.alpha, self.profile.opacity)
+    }
+
+    /// Set how solid a volume profile's value area is drawn, the old fade
+    /// folded away: 0 is nothing and 1 the colour itself.
+    pub fn set_profile_alpha(&mut self, alpha: f64) {
+        self.alpha = alpha.clamp(0.0, 1.0);
+        self.profile.opacity = 1.0;
     }
 
     /// A volume profile starts from the box's look, with what only a
@@ -4453,6 +4488,33 @@ mod edge_grip_tests {
         assert!(!look.contains("poc_style"), "{look}");
         let look: ProfileLook = serde_json::from_str(&look).unwrap();
         assert_eq!(look.poc_style, LineStyle::Solid);
+    }
+
+    /// A profile drawing stored before its value area could be set apart
+    /// or coloured, and faded by the opacity it had then, draws at the
+    /// strength it always did, highlighted in its background's colour; and
+    /// a strength set now is the strength itself, with the old fade let go.
+    #[test]
+    fn a_stored_profile_drawing_keeps_its_look_and_a_new_strength_is_its_own() {
+        let mut stored = serde_json::to_value(Style::profile(Preset::Blue)).unwrap();
+        if stored.get("profile").is_none() {
+            stored["profile"] = serde_json::to_value(ProfileLook::default()).unwrap();
+        }
+        let look = stored["profile"].as_object_mut().unwrap();
+        assert!(!look.contains_key("highlight") && !look.contains_key("value_area_paint"), "{look:?}");
+        look.insert("opacity".into(), serde_json::json!(0.5));
+        let style: Style = serde_json::from_value(stored).unwrap();
+        assert!(style.profile.highlight && style.profile.value_area_paint.is_none());
+        assert!((style.profile_alpha() - PROFILE_ALPHA * 0.5).abs() < 1e-12);
+        assert_eq!(Style::profile(Preset::Blue).profile_alpha(), PROFILE_ALPHA, "a new one looks as they always did");
+
+        let mut set = style.clone();
+        set.set_profile_alpha(1.0);
+        assert_eq!((set.alpha, set.profile.opacity, set.profile_alpha()), (1.0, 1.0, 1.0), "0% is solid");
+        set.profile.highlight = false;
+        set.profile.value_area_paint = Some(Paint::preset(Preset::Ink));
+        let back: Style = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+        assert_eq!(back, set);
     }
 
     /// A box's and an ellipse's fill is lighter than it first shipped, its

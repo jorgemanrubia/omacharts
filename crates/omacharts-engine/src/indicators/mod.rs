@@ -380,7 +380,10 @@ impl Kind {
                 poc_width: 1.0,
                 poc_style: LineStyle::Solid,
                 poc: true,
+                alpha: profile::DESIGNED_ALPHA,
                 opacity: 1.0,
+                highlight: true,
+                value_area_color: None,
                 last_only: false,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
@@ -507,13 +510,29 @@ pub enum Params {
         /// profile drew it before it could be turned off.
         #[serde(default = "profile::shown")]
         poc: bool,
-        /// How much of the background shows, over the strength its rows are
-        /// drawn at: 1 is the look as designed, 0 nothing. On the outline
-        /// style, which has no rows, the outline. The Transparency row, the
-        /// other way up. Missing, the look as designed, as every profile was
-        /// drawn before it could be faded.
+        /// How solid the value area's rows are: 0 is nothing, 1 is the
+        /// colour itself. The Transparency row, the other way up; the rest
+        /// of the rows follow it, and on the outline style, which has no
+        /// rows, the outline does. Missing, the strength the rows were
+        /// designed at, as every profile was drawn before this was stored.
+        /// See [`profile::drawn_alpha`].
+        #[serde(default = "profile::designed_alpha", skip_serializing_if = "profile::is_designed_alpha")]
+        alpha: f64,
+        /// A fade over `alpha`, from before the Transparency row set the
+        /// strength itself: 1 draws `alpha` as it is. A profile stored with
+        /// one is drawn as it was; the row folds it into `alpha` on the
+        /// next change. Missing, 1.
         #[serde(default = "profile::opaque", skip_serializing_if = "profile::is_opaque")]
         opacity: f64,
+        /// Whether the value area is set apart from the other rows. Off,
+        /// every row is drawn alike. Missing, it is, as every profile was.
+        #[serde(default = "profile::shown", skip_serializing_if = "profile::is_shown")]
+        highlight: bool,
+        /// The value area's own colour, while it is highlighted. Unset is
+        /// the background's, so the value area is the same colour stronger,
+        /// which is what it always was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_color: Option<ColorChoice>,
         /// Whether only the newest period's profile is drawn, the ones
         /// before it left out. Missing, every period is, as before it could
         /// be chosen.
@@ -1433,6 +1452,35 @@ pub fn search(query: &str) -> Vec<Kind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A volume profile stored before its strength, highlight and value
+    /// area colour could be set reads as it was drawn, its old fade kept;
+    /// a new one writes none of the three, and one set writes them back.
+    #[test]
+    fn a_stored_volume_profile_reads_as_it_was_drawn() {
+        let fresh = Indicator::new(1, Kind::VolumeProfile);
+        let mut stored = serde_json::to_value(&fresh).unwrap();
+        let params = stored["params"].as_object_mut().unwrap();
+        for key in ["alpha", "opacity", "highlight", "value_area_color"] {
+            assert!(!params.contains_key(key), "{key} written by default: {params:?}");
+        }
+        params.insert("opacity".into(), serde_json::json!(0.4));
+        let read: Indicator = serde_json::from_value(stored).unwrap();
+        let Params::VolumeProfile { alpha, opacity, highlight, value_area_color, .. } = &read.params else {
+            panic!("{read:?}")
+        };
+        assert!((profile::drawn_alpha(*alpha, *opacity) - 0.30 * 0.4).abs() < 1e-12);
+        assert!(*highlight && value_area_color.is_none());
+
+        let mut chosen = fresh.clone();
+        if let Params::VolumeProfile { alpha, highlight, value_area_color, .. } = &mut chosen.params {
+            *alpha = 1.0;
+            *highlight = false;
+            *value_area_color = Some(ColorChoice::swatch("Neutral"));
+        }
+        let back: Indicator = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+        assert_eq!(back, chosen);
+    }
 
     /// Alt+Shift with + and − walks a study's line along the thicknesses
     /// its settings offer and stops at the ends, never at no line; a volume

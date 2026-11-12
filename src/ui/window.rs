@@ -1901,6 +1901,67 @@ mod apply_to_all_tests {
         found
     }
 
+    /// An indicator's colour changed on a chart on a template comes back
+    /// after a restart drawn as its settings show it: the chart is drawn
+    /// from what the settings read, on screen and in a chartbook that is
+    /// not, for every indicator on it.
+    #[test]
+    fn an_indicator_s_colour_is_drawn_as_its_settings_show_it_after_a_restart() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let first = window(&store);
+            let mut vwap = Indicator::new(1, IndicatorKind::Vwap);
+            vwap.color = Some(omacharts_engine::ColorChoice::swatch("Orange"));
+            let flow = crate::templates::create_from(
+                &store,
+                "Flow",
+                vec![vwap, Indicator::new(2, IndicatorKind::VolumeProfile), Indicator::new(3, IndicatorKind::Ema)],
+            );
+            let pane = first.focused_pane();
+            first.put_on_template(&pane, Some(flow.id));
+            let elsewhere = {
+                let mut book = first.books.borrow()[0].clone();
+                book.name = "Elsewhere".into();
+                for stored in &mut book.panes {
+                    stored.id += 100;
+                    stored.template = Some(flow.id);
+                    stored.indicators = flow.indicators.clone();
+                }
+                book
+            };
+            first.books.borrow_mut().push(elsewhere);
+
+            // From orange to blue, as the settings change it.
+            let mut changed = first.indicators();
+            changed[0].color = Some(omacharts_engine::ColorChoice::swatch("Blue"));
+            first.set_template_indicators(flow.id, changed);
+            first.save_workspace();
+            drop(first);
+
+            let again = window(&store);
+            let theme = again.theming.borrow().theme();
+            let shown = crate::templates::get(&store, flow.id).expect("the template").indicators;
+            let drawn = again.focused_pane().indicators.borrow().clone();
+            let blue = omacharts_engine::ColorChoice::swatch("Blue").resolve(&theme);
+            assert_eq!(omacharts_engine::palette_colors(&shown, &theme)[0], blue, "the settings show blue");
+            assert_eq!(
+                omacharts_engine::palette_colors(&drawn, &theme),
+                omacharts_engine::palette_colors(&shown, &theme),
+                "the chart is drawn in what its settings show"
+            );
+            for book in again.books.borrow().iter() {
+                for stored in &book.panes {
+                    assert_eq!(
+                        omacharts_engine::palette_colors(&stored.indicators, &theme),
+                        omacharts_engine::palette_colors(&shown, &theme),
+                        "{}: a chart in a book not on screen",
+                        book.name
+                    );
+                }
+            }
+        });
+    }
+
     /// Apply to all, from Preferences, applies at once with nothing asked:
     /// every chart takes the defaults but keeps its template and its
     /// indicators as they are, on screen and in a chartbook that is not.
@@ -2910,7 +2971,8 @@ mod outside_change_tests {
     }
 
     /// A volume profile's Transparency, under its background, starts at
-    /// none, and reaches the profile from its slider and from a command.
+    /// what it has always drawn, 70%, and reaches the profile from its
+    /// slider and from a command: 0% is its colour solid.
     #[test]
     fn a_profile_s_transparency_is_set_from_its_slider_and_a_command() {
         crate::ui::on_gtk(|| {
@@ -2926,8 +2988,8 @@ mod outside_change_tests {
             let opacity = || {
                 let stored = window.indicators();
                 match &stored.iter().find(|i| i.id == profile).expect("the profile").params {
-                    omacharts_engine::indicators::Params::VolumeProfile { opacity, .. } => {
-                        omacharts_engine::indicators::profile::drawn_opacity(*opacity)
+                    omacharts_engine::indicators::Params::VolumeProfile { alpha, opacity, .. } => {
+                        omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity)
                     }
                     other => panic!("{other:?}"),
                 }
@@ -2941,14 +3003,37 @@ mod outside_change_tests {
             let above = row().prev_sibling().and_then(|w| w.downcast::<adw::ActionRow>().ok());
             assert_eq!(above.map(|r| r.title()).as_deref(), Some("Background"), "Transparency is not under Background");
             let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
-            assert_eq!(slider(row()).value(), 0.0);
-            assert_eq!(opacity(), 1.0);
+            assert!((slider(row()).value() - 70.0).abs() < 1e-9, "{}", slider(row()).value());
+            assert!((opacity() - 0.30).abs() < 1e-9);
 
             slider(row()).set_value(40.0);
             assert!((opacity() - 0.6).abs() < 1e-9, "the slider did not reach the profile: {}", opacity());
+            slider(row()).set_value(0.0);
+            assert_eq!(opacity(), 1.0, "0% is the colour solid");
 
             command(&window, &["chart", "indicator", "set", "volume_profile", "--transparency", "0.75"]);
             assert!((opacity() - 0.25).abs() < 1e-9);
+
+            // The value area is set apart unless turned off, and its colour
+            // is offered only while it is.
+            let highlighted = || match &window.indicators().iter().find(|i| i.id == profile).expect("the profile").params {
+                omacharts_engine::indicators::Params::VolumeProfile { highlight, .. } => *highlight,
+                other => panic!("{other:?}"),
+            };
+            let switch = || {
+                titled::<adw::SwitchRow>(&window, crate::ui::chart_settings::PROFILE_HIGHLIGHT_LABEL)
+                    .pop()
+                    .expect("a Highlight value area switch")
+            };
+            let colour = || {
+                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::PROFILE_AREA_COLOUR_LABEL)
+                    .pop()
+                    .expect("a Value area colour row")
+            };
+            assert!(switch().is_active() && highlighted() && colour().is_sensitive());
+            switch().set_active(false);
+            assert!(!highlighted(), "the switch did not reach the profile");
+            assert!(!colour().is_sensitive(), "a colour for a value area not set apart");
         });
     }
 

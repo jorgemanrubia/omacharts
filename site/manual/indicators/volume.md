@@ -56,7 +56,7 @@ crop: 762,640,1036,518 (the Colours group)
 
 ## Volume Profile
 
-Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. That space is widened to fit it, and narrowed again when no profile is aligned right. It is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width** says, and squeezed alike when they would not fit; past the last bar they take at most 60% of the chart between them. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
+Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. That space is widened to fit it, and narrowed again when no profile is aligned right. It is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width** says, and squeezed alike when they would not fit; past the last bar they take at most 60% of the chart between them. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger, unless **Highlight value area** is off, and in a colour of their own if **Value area colour** gives them one. The **point of control**, the busiest row, is a line across the profile.
 
 | Setting | Default | Allowed |
 |---|---|---|
@@ -66,12 +66,14 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**. Only for Ask volume - bid volume |
 | **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 800 |
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
+| **Highlight value area** | On | Off draws every row alike. Greyed for Ask volume - bid volume |
+| **Value area colour** | The background colour | A palette name, or a custom colour, for the value area while it is highlighted. Greyed while it is not, and for Ask volume - bid volume |
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, in the Outline style. Its colour, style and thickness show while it is on |
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
 | **Outline thickness** | 1 px | 0.5 to 6 px |
 | **Background** colour | The next free colour | A palette name, or a custom colour |
-| **Transparency** | 0% | 0 to 100%: how much of the chart shows through the rows. In the Outline style, through the outline |
+| **Transparency** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
 | **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, style and thickness show while it is on |
 | **Point of control** colour | A contrasting colour from the theme | A palette name, or a custom colour |
 | **Point of control style** | Solid | Solid, Dashed, Dotted |
