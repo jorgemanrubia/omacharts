@@ -40,6 +40,9 @@ pub struct FakeService {
     /// What the trading service holds for a login, by the login's name, from before
     /// it signed in: a session's refresh finds it.
     pub held: Mutex<HashMap<String, Book>>,
+    /// Orders from before the session that only its fill history has, by
+    /// the login's name, "" for any login named in neither.
+    pub past: Mutex<HashMap<String, Vec<Order>>>,
     /// How long signing in takes, as a network would.
     pub takes: std::time::Duration,
     /// Every session it signed in, in order.
@@ -131,6 +134,52 @@ pub fn day_of_orders() -> Book {
     }
 }
 
+/// Where a build with the `fakes` feature reads the fills its fake account
+/// had before it signed in, for a look at a chart's past trades: a JSON
+/// list of `{"at": <unix seconds>, "side": "buy" | "sell", "qty": 1,
+/// "price": 7612.25}`, in ESZ6 unless a fill says `"contract"`. Made up,
+/// always: nothing reads an account to write it.
+pub const PAST_FILLS_ENV: &str = "OMACHARTS_FAKE_FILLS";
+
+/// The orders the file at `path` describes, each filled at once: see
+/// [`PAST_FILLS_ENV`]. None for a file that is not there or does not read.
+pub fn past_fills(path: &std::path::Path) -> Vec<Order> {
+    #[derive(serde::Deserialize)]
+    struct Told {
+        at: i64,
+        side: String,
+        qty: u32,
+        price: f64,
+        #[serde(default)]
+        contract: Option<String>,
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let told: Vec<Told> = serde_json::from_str(&text).unwrap_or_default();
+    told.into_iter()
+        .enumerate()
+        .filter_map(|(at, fill)| {
+            let basket = format!("P{}", at + 1);
+            Some(Order {
+                account: "FAKE-1".into(),
+                basket_id: basket.clone(),
+                contract: fill.contract.unwrap_or_else(|| "ESZ6".into()),
+                exchange: "CME".into(),
+                side: Side::from_key(&fill.side)?,
+                qty: fill.qty,
+                filled: fill.qty,
+                kind: OrderKind::Market,
+                price: None,
+                status: Stage::Filled.into(),
+                fill_price: Some(fill.price),
+                fills: vec![Fill { basket, at: fill.at, qty: fill.qty, price: fill.price }],
+                at: fill.at,
+                tag: None,
+                tick: Some(0.25),
+            })
+        })
+        .collect()
+}
+
 /// A second trading service, in memory: a session that fills a market order at
 /// once, at `last`, and holds a limit or a stop until it is cancelled.
 /// Its book is the one a real session would push, with `changed` called
@@ -146,6 +195,11 @@ pub struct FakeSession {
     /// [`Session::refresh`] brings into the book. Its orders are added to
     /// the book's, its positions and money replace the book's.
     pub held: Mutex<Book>,
+    /// Orders that only [`Session::history`] has, filled before the
+    /// session: what an account traded on another day.
+    pub past: Mutex<Vec<Order>>,
+    /// How many times [`Session::history`] was asked.
+    pub histories: AtomicUsize,
     /// How many times it was refreshed.
     pub refreshes: AtomicUsize,
     pub last: Mutex<f64>,
@@ -213,6 +267,8 @@ impl FakeSession {
             gone: Default::default(),
             book: Mutex::default(),
             held: Mutex::default(),
+            past: Mutex::default(),
+            histories: AtomicUsize::new(0),
             refreshes: AtomicUsize::new(0),
             last: Mutex::new(7_612.25),
             market: Mutex::default(),
@@ -447,11 +503,14 @@ impl Session for FakeSession {
         Ok(())
     }
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
+        self.histories.fetch_add(1, Ordering::AcqRel);
         self.refused()?;
         let book = self.book.lock().unwrap();
+        let past = self.past.lock().unwrap();
         let mut orders: Vec<Order> = book
             .orders
             .iter()
+            .chain(past.iter())
             .filter(|order| order.account == account && (from..=to).contains(&order.at))
             .cloned()
             .collect();
@@ -627,6 +686,9 @@ impl TradingService for FakeService {
         // What a login named in neither holds is under no name at all.
         *session.held.lock().unwrap() = held.get(&login.name).or_else(|| held.get("")).cloned().unwrap_or_default();
         drop(held);
+        let past = self.past.lock().unwrap();
+        *session.past.lock().unwrap() = past.get(&login.name).or_else(|| past.get("")).cloned().unwrap_or_default();
+        drop(past);
         let session = Arc::new(session);
         self.sessions.lock().unwrap().push(session.clone());
         Ok(session)

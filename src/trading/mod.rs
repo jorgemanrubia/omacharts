@@ -42,9 +42,11 @@
 //!   build with the `fakes` feature.
 //! - `sizes`: trading sizes and their templates.
 //! - `chart_pnl`: whether the charts write P&L as money or in R.
+//! - `executions`: an account's fills in a contract, paired into round trips.
 
 pub mod services;
 pub mod chart_pnl;
+pub mod executions;
 mod domain;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;

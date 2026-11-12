@@ -315,6 +315,9 @@ pub const LEGEND_LABEL: &str = "Show legend for indicators";
 
 pub const TRADING_SYMBOL_LABEL: &str = "Trading symbol";
 
+/// The switch for marking the account's fills on the chart.
+pub const SHOW_FILLS_LABEL: &str = "Show fills";
+
 /// The Trading tab's icon: orders going out and fills coming back, apart
 /// from the lists the other tabs wear.
 pub const TRADING_ICON: &str = "network-transmit-receive-symbolic";
@@ -338,9 +341,17 @@ fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
     row.add_suffix(&value);
     row.add_suffix(&clear);
     group.add(&row);
+    let fills = adw::SwitchRow::new();
+    fills.set_title(SHOW_FILLS_LABEL);
+    group.add(&fills);
     page.add(&group);
 
     let id = window.focused_pane().id;
+    fills.set_active(window.shows_fills(id));
+    {
+        let window = window.clone();
+        fills.connect_active_notify(move |row| window.set_shows_fills(id, row.is_active()));
+    }
     let show = {
         let window = Rc::downgrade(window);
         let value = value.downgrade();

@@ -48,6 +48,7 @@ use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
 pub(crate) mod compare;
+mod executions;
 mod log;
 mod marks;
 mod trade;
@@ -733,6 +734,7 @@ mod tests {
                 trading_size: None,
                 trading_symbol: None,
                 trading_suffix: None,
+                shows_fills: false,
                 auto_scale: false,
                 price_window: None,
                 strip_windows: Default::default(),
@@ -870,6 +872,7 @@ mod tests {
             trading_size: None,
             trading_symbol: None,
             trading_suffix: None,
+            shows_fills: false,
             auto_scale: true,
             price_window: None,
             strip_windows: Default::default(),
@@ -3762,6 +3765,10 @@ struct StoredPane {
     trading_symbol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trading_suffix: Option<String>,
+    /// Whether the chart marks its account's fills. Missing for a chart
+    /// that does not, which is every chart until somebody turns it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shows_fills: bool,
 }
 
 impl StoredPane {
@@ -3804,6 +3811,7 @@ impl StoredPane {
             trading_size: None,
             trading_symbol: None,
             trading_suffix: None,
+            shows_fills: false,
         }
     }
 }
@@ -6300,6 +6308,7 @@ impl Window {
                         Some(traded) => traded.suffix.clone(),
                         None => pane.trading_pending.borrow().as_ref().and_then(|(_, suffix)| suffix.clone()),
                     },
+                    shows_fills: pane.shows_fills.get(),
                     auto_scale: pane.view.price_auto(),
                     price_window: pane.view.held_price_window().map(|(low, high)| [low, high]),
                     // Only the strips of indicators the chart still has: one
@@ -6581,6 +6590,7 @@ impl Window {
             *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
+            pane.shows_fills.set(stored.shows_fills);
             // The window opens on the curated half, which may not name it:
             // then it waits for the rest, as the chart's own symbol does,
             // and nothing is traded meanwhile.

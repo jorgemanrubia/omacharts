@@ -736,6 +736,45 @@ live account: an order from the menu, a key or a drag, a move, a cancel and
 a flatten go to the broker at once, and the pending look is the feedback.
 Whether a live account should ask, and how, is an open decision, below.
 
+#### Past fills
+
+A chart's settings have **Show fills** on the Trading tab, off until it is
+turned on, kept with the chart. On, the chart marks every fill of its
+account in the contract it trades, as Sierra Chart does: a small triangle
+at the fill's bar and price, in the theme's colour for a rise for a buy and
+its colour for a fall for a sell, the candles' own two. An entry stands left
+of its bar pointing right at it, an exit right of it pointing left, so the
+two ends of a round trip face each other; a fill that closed one way and
+opened the other wears both. The tip is at the price and off the bar's
+body. A thin dotted line joins each entry to the exit that closed it, in the
+profit colour for a trip that won and the loss colour for one that lost.
+
+Exits are matched to entries first in, first out: an entry scaled out of in
+three parts has three lines, three entries closed by one exit have three,
+and what an exit has left once flat opens the other way. What the account
+held before the oldest fill there is, worked out from the position held
+now, is closed with no line rather than taken for a new position.
+
+The fills come from the broker's fill history, asked for once for each
+account, 30 days back, the first time a chart with fills on needs it, and
+from the session's book, today's orders and every fill heard since, which
+appear as they come. A history the broker refuses is asked again only after
+the session next refreshes. What each broker serves:
+
+- **Rithmic:** `show_fill_history` over a range of seconds (or of trade
+  dates), one answer per fill with its basket, size, price and time. On
+  Rithmic Test it answers nothing (see *Signing in*), so only today's
+  orders, from `show_orders`, and what fills live are marked there.
+  `show_order_history_summary` has whole days of exchange notifications back
+  to 2013 and is not used for this yet.
+- **Sierra Chart (DTC):** `HISTORICAL_ORDER_FILLS_REQUEST` with a start and
+  a number of days, one answer per fill with its execution id, prices
+  unscaled by the contract's display multiplier; a fill whose contract has
+  no definition is left out rather than drawn a hundred times off.
+
+Drawing them costs two searches for the fills in view and one search of the
+bars for each; nothing is worked out per bar.
+
 #### The Log
 
 The Log is what the data feeds, the brokers and the app have said since
