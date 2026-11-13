@@ -873,7 +873,8 @@ omacharts chart set --show-drawings off
 `--send-drawings off` keeps what is drawn on that chart to that chart —
 useful for sketching on one view without it appearing on every other.
 `--show-drawings off` keeps the chart clear of what is already drawn on the
-symbol; its own are still there either way (`--drawings off` hides both).
+symbol; its own, the ones it sent included, are still there either way
+(`--drawings off` hides both).
 The two are independent: a chart that shows but does not send is a reference
 view.
 

@@ -2320,6 +2320,73 @@ mod outside_change_tests {
         rows::<T>(window.window.upcast_ref()).into_iter().filter(|row| row.title() == title).collect()
     }
 
+    /// The prices of the levels a chart shows, lowest first.
+    fn levels(pane: &ChartPane) -> Vec<f64> {
+        let mut prices: Vec<f64> = pane.view.drawings().iter().map(|d| d.from.price).collect();
+        prices.sort_by(f64::total_cmp);
+        prices
+    }
+
+    fn level(window: &Rc<Window>, chart: &str, price: f64) {
+        let at = format!("2026-09-01,{price}");
+        let to = format!("2026-09-20,{price}");
+        command(window, &["chart", "drawing", "add", "hline", "--from", &at, "--to", &to, "--chart", chart]);
+    }
+
+    /// "Show drawings from other charts" turned off hides other charts'
+    /// drawings and keeps the chart's own — which it sent to the symbol, as
+    /// every chart does by default, so they sit beside everybody else's. It
+    /// holds through a split, a restart, and in a chartbook built from a
+    /// template, whose charts are new charts with names of their own.
+    #[test]
+    fn a_chart_not_shown_other_charts_drawings_still_shows_its_own() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "split", "horizontal"]);
+            level(&window, "pos:0", 100.0);
+            level(&window, "pos:1", 200.0);
+            command(&window, &["chart", "set", "--show-drawings", "off", "--chart", "pos:0"]);
+            assert_eq!(levels(&at(&window, 0)), vec![100.0], "the chart lost its own, or kept the other's");
+            assert_eq!(levels(&at(&window, 1)), vec![100.0, 200.0]);
+            let listed: serde_json::Value =
+                serde_json::from_str(&command(&window, &["chart", "drawing", "list", "--json", "--chart", "pos:0"]))
+                    .expect("JSON");
+            assert_eq!(listed["drawings"].as_array().map(Vec::len), Some(1), "the command lists what the chart shows");
+
+            command(&window, &["chart", "focus", "pos:0"]);
+            command(&window, &["chart", "split", "vertical"]);
+            let context = gtk::glib::MainContext::default();
+            while context.iteration(false) {}
+            assert_eq!(levels(&at(&window, 0)), vec![100.0], "a split took the chart's own away");
+            // The half a split makes is a copy, switch and all, under a name
+            // of its own: what the first half drew is another chart's to it.
+            assert_eq!(levels(&at(&window, 1)), Vec::<f64>::new(), "the new half claimed the other's drawing");
+            assert_eq!(levels(&at(&window, 2)), vec![100.0, 200.0]);
+            command(&window, &["chart", "set", "--show-drawings", "on", "--chart", "pos:1"]);
+            assert_eq!(levels(&at(&window, 1)), vec![100.0, 200.0]);
+            assert_eq!(levels(&at(&window, 0)), vec![100.0]);
+
+            window.save_workspace();
+            drop(window);
+            let window = bare_window(&store);
+            assert_eq!(levels(&at(&window, 0)), vec![100.0], "a restart took the chart's own away");
+            assert_eq!(levels(&at(&window, 1)), vec![100.0, 200.0]);
+            assert_eq!(levels(&at(&window, 2)), vec![100.0, 200.0]);
+
+            let listed: serde_json::Value =
+                serde_json::from_str(&command(&window, &["chart", "list", "--json"])).expect("JSON");
+            let symbol = listed["charts"][0]["symbol"].as_str().expect("a symbol").to_string();
+            command(&window, &["chartbook", "template", "save", "Grid"]);
+            command(&window, &["chartbook", "create", "Copy", "--template", "Grid", "--symbol", &symbol, "--switch"]);
+            command(&window, &["chart", "set", "--show-drawings", "off", "--chart", "pos:0"]);
+            assert_eq!(levels(&at(&window, 0)), Vec::<f64>::new(), "a new chart claimed another chart's drawing");
+            level(&window, "pos:0", 300.0);
+            assert_eq!(levels(&at(&window, 0)), vec![300.0], "a chart from a template lost its own");
+            assert_eq!(levels(&at(&window, 2)), vec![100.0, 200.0, 300.0]);
+        });
+    }
+
     /// A range set on one chart by a command stays on it when another
     /// command moves the focus, which rebuilds every chart from what was
     /// written down, and when the focus comes back.
@@ -12513,12 +12580,13 @@ impl Window {
                 let (locals, shared): (Vec<_>, Vec<_>) = list.into_iter().partition(|d| d.id < 0);
                 *pane.local_drawings.borrow_mut() = locals;
                 let shows = pane.shows_drawings.get();
+                let mine = pane.uid.borrow().clone();
                 let keep: std::collections::HashSet<i64> = shared.iter().map(|d| d.id).collect();
                 for d in self.store.drawings(&instrument.symbol, suffix) {
                     // Only what this chart could see is this chart's to
-                    // undo: a chart that is not shown the symbol's drawings
-                    // cannot have removed one.
-                    if shows && !keep.contains(&d.id) {
+                    // undo: a chart that is not shown other charts'
+                    // drawings cannot have removed one of theirs.
+                    if d.seen_by(&mine, shows) && !keep.contains(&d.id) {
                         self.store.remove_drawing(d.id);
                     }
                 }
@@ -12551,14 +12619,14 @@ impl Window {
     /// What one chart sees, out of what is drawn on its symbol.
     fn drawings_for(&self, pane: &ChartPane, shared: &[omacharts_engine::Drawing]) -> Vec<omacharts_engine::Drawing> {
         // The symbol's, when this chart is shown what others send; and its
-        // own either way, which is the half a toggle never takes away.
-        let mut all: Vec<omacharts_engine::Drawing> = match pane.shows_drawings.get() {
-            true => shared.to_vec(),
-            false => Vec::new(),
-        };
-        all.extend(pane.local_drawings.borrow().iter().cloned());
-        omacharts_engine::drawings::sort_for_painting(&mut all);
-        all
+        // own either way — the ones it sent as well as the ones it keeps —
+        // which is the half a toggle never takes away.
+        omacharts_engine::drawings::seen_by(
+            shared,
+            &pane.local_drawings.borrow(),
+            &pane.uid.borrow(),
+            pane.shows_drawings.get(),
+        )
     }
 
     /// The nine configurations of each kind, as stored.

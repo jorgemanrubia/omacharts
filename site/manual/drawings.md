@@ -217,7 +217,7 @@ crop: 840,220,880,1160
 
 | Row | Does |
 |---|---|
-| **Position** | Where a figure's label sits inside it, at a corner, an edge or the centre. Not on a text drawing, which sits at its point |
+| **Position** | Where a figure's label sits inside it, at a corner, an edge or the centre. A line's label is placed against the part of the line on the chart, so it shows wherever the line does, at any resolution or zoom. Not on a text drawing, which sits at its point |
 | **Text** | The words. Typing here removes bold and italic; set them on the chart |
 | **Colour** | The text's colour |
 | **Font** | **System font**, the desktop's own, or any font installed on this machine. System font is the default |
@@ -492,6 +492,8 @@ Each chart has two switches, in the **Drawings** group of [Chart settings](/manu
 | **Send drawings to other charts** | What is drawn on this chart stays on this chart |
 
 Both act on existing drawings as well as new ones. Turning sending off takes this chart's drawings off the other charts, and turning it back on sends them again.
+
+With showing off, the chart still shows every drawing made on it, including the ones it sent to other charts. A drawing from an early version that does not record which chart made it counts as another chart's.
 
 New charts take their defaults from Preferences › Charts › Defaults › **Drawings**, the same two switches ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
 

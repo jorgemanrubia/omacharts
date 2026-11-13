@@ -1070,6 +1070,13 @@ fn index_of_ts(bars: &[Bar], ts: i64) -> f64 {
     (at - 1) as f64 + (ts - before) as f64 / gap as f64
 }
 
+/// The box a drawing's label is placed against: a line's is only the part
+/// of it inside the plot, so its words show wherever it does. See
+/// [`Projected::label_bounds`].
+fn label_bounds(plan: &Layout, projected: &Projected) -> (f64, f64, f64, f64) {
+    projected.label_bounds(plan.plot_x, plan.plot_x + plan.plot_w)
+}
+
 /// How prices become heights on the price plot, and back.
 ///
 /// `low` and `high` are in the scale's own units: prices on a linear axis,
@@ -1781,14 +1788,14 @@ impl State {
         // nothing, which is most of them.
         match drawing.has_text() {
             false => projected,
-            true => self.with_words(projected, drawing),
+            true => self.with_words(plan, projected, drawing),
         }
     }
 
-    fn with_words(&self, projected: Projected, drawing: &Drawing) -> Projected {
+    fn with_words(&self, plan: &Layout, projected: Projected, drawing: &Drawing) -> Projected {
         match crate::text::block(
             drawing.kind,
-            projected.bounds(),
+            label_bounds(plan, &projected),
             &drawing.text,
             drawing.style(&self.configs),
         ) {
@@ -3968,8 +3975,9 @@ impl ChartView {
             let projected = state.project(&plan, &scale, drawing);
             // The drawing's own box, not the label's: a figure is placed in
             // by its shape, and a text drawing hangs from its anchor, which
-            // `text_origin` reads off the degenerate box either way.
-            let origin = drawings::text_origin(drawing.kind, projected.bounds(), size, at);
+            // `text_origin` reads off the degenerate box either way. A line's
+            // is the part of it on screen, as when the label is drawn.
+            let origin = drawings::text_origin(drawing.kind, label_bounds(&plan, &projected), size, at);
             (origin, size, style.text.clamped_size())
         };
         editing.place(placed.0, placed.1, placed.2);
@@ -14644,6 +14652,43 @@ mod drawing_tests {
         let (bare, _) = shot_at(&state, size, 2.0);
         let differs = |data: &[u8]| data.chunks(4).zip(bare.chunks(4)).filter(|(p, q)| p != q).count();
         assert!(differs(&dotted) > 0 && differs(&dotted) < differs(&solid) * 3 / 4, "{} of {}", differs(&dotted), differs(&solid));
+    }
+
+    /// A labelled level that reaches far past both edges of the plot — one
+    /// drawn on a slower chart, seen on a faster one — has its words on the
+    /// plot, wherever it is zoomed or scrolled to, while any of it shows.
+    #[test]
+    fn a_line_s_words_show_wherever_the_line_does() {
+        crate::on_gtk(|| {
+            let size = (800.0, 400.0);
+            let (w, h) = size;
+            let mut state = charted(400);
+            let price = state.locate(w, h, 400.0, 200.0).unwrap().price;
+            let first = state.bars[0].ts;
+            let step = state.bars[1].ts - state.bars[0].ts;
+            let last = state.bars.last().unwrap().ts;
+            // From long before the first bar to long after the last.
+            let mut level = Drawing::new(
+                DrawingKind::Horizontal,
+                Anchor::new(first - 5000 * step, price),
+                Anchor::new(last + 5000 * step, price),
+            );
+            level.text = omacharts_engine::drawings::Text::plain("Weekly PoC");
+            state.drawings = vec![level];
+            let words = |state: &State| {
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                let projected = state.project(&plan, &scale, &state.drawings[0]);
+                let (x, _, width, _) = projected.words.expect("words");
+                (x, width, plan.plot_x, plan.plot_x + plan.plot_w)
+            };
+            for zoom in [0.25, 1.0, 4.0] {
+                state.zoom_time(zoom, 0.5, w);
+                let (x, width, left, right) = words(&state);
+                assert!(x >= left && x + width <= right, "at {zoom}x the words are at {x}, the plot {left}..{right}");
+            }
+        });
     }
 
     /// A large box selected by its border alone gives a click inside it to

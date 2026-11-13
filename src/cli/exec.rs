@@ -2335,14 +2335,9 @@ fn chart_drawing(
         .as_array()
         .map(|list| list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).collect())
         .unwrap_or_default();
+    let mine = chart["drawing_uid"].as_str().unwrap_or("").to_string();
     let shown = |store: &Store, locals: &[Drawing]| -> Vec<Drawing> {
-        let mut all: Vec<Drawing> = match shows {
-            true => store.drawings(&symbol, suffix.as_deref()),
-            false => Vec::new(),
-        };
-        all.extend(locals.iter().cloned());
-        omacharts_engine::drawings::sort_for_painting(&mut all);
-        all
+        omacharts_engine::drawings::seen_by(&store.drawings(&symbol, suffix.as_deref()), locals, &mine, shows)
     };
 
     if action == "list" {
