@@ -54,7 +54,7 @@ refused, or there is no connection), a line above the first dash says why.
 | **Symbol** | The ticker, always first. Hover a row for the instrument's full name. |
 | **Last** | The last price. |
 | **Chg** | The move since the previous close, in price. |
-| **Chg %** | The move since the previous close, as a percentage. A yield, such as `TNX`, and a [spread](/manual/symbols/#arithmetic-on-symbols) show the move in points instead, since a rate is read by how far it moved. |
+| **Chg %** | The move since the previous close, as a percentage. |
 
 Out of the box the sidebar shows **Symbol**, **Last** and **Chg %**. Drag a column's title along the row to move it. **Symbol** doesn't move.
 

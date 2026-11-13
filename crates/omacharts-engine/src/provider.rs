@@ -450,11 +450,11 @@ pub trait Provider: Send + Sync {
 
     /// What to ask this provider for, if it serves the instrument at all.
     ///
-    /// A formula — a ratio, a spread, a pair turned over — is its arithmetic
+    /// A formula — a ratio, a spread, a basket — is its arithmetic
     /// with each leg in this provider's spelling, `{GC=F}/{SI=F}`, which
     /// [`crate::formula::bars`] reads again to fetch each one. None is
     /// offered on a streamed feed: a stream is one subscription per symbol,
-    /// and nothing here combines two or turns one over.
+    /// and nothing here combines two.
     ///
     /// Not to be overridden — implement [`Self::native_symbol`] instead.
     fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
@@ -768,9 +768,6 @@ mod tests {
         assert_eq!(Bare.symbol_for(&ratio).as_deref(), Some("{GC}/{SI}"));
         assert_eq!(Pushes.symbol_for(&ratio), None);
         assert_eq!(Pushes.symbol_for(&ratio.legs()[0]).as_deref(), Some("GC"));
-
-        let turned = index.resolve("USDEUR", None).expect("one over EURUSD");
-        assert_eq!(Bare.symbol_for(&turned).as_deref(), Some("1/{EURUSD}"));
 
         let spread = index.resolve("3*CL-HO*42", None).expect("a spread");
         assert_eq!(Bare.symbol_for(&spread).as_deref(), Some("3*{CL}-{HO}*42"));

@@ -203,8 +203,9 @@ pub struct ChartPane {
     /// the move is read from the cache, so a trade can move it without
     /// reading the cache again.
     pub change_basis: Cell<Option<(f64, i64)>>,
-    /// The move written: a trade that leaves it where it is writes nothing.
-    pub change_shown: RefCell<Option<String>>,
+    /// The move written, in hundredths of a percent: a trade that leaves it
+    /// where it is writes nothing.
+    pub change_shown: Cell<Option<i64>>,
     pub template_label: gtk::Label,
     /// The Title part: the chart title, a flat button like the symbol
     /// that turns into an entry where it stands when clicked, Enter or
@@ -815,7 +816,7 @@ impl ChartPane {
             header_center: top,
             change_label,
             change_basis: Cell::new(None),
-            change_shown: RefCell::new(None),
+            change_shown: Cell::new(None),
             template_label,
             title_part,
             title_button,
@@ -1414,10 +1415,10 @@ impl ChartPane {
 
     /// The day's move, in `colour`, or the header's text when it has none;
     /// nothing at all until there is one.
-    pub fn write_change(&self, change: Option<(&str, Option<&str>)>) {
+    pub fn write_change(&self, change: Option<(f64, Option<&str>)>) {
         match change {
-            Some((text, colour)) => {
-                let text = gtk::glib::markup_escape_text(text);
+            Some((pct, colour)) => {
+                let text = gtk::glib::markup_escape_text(&crate::header::change_text(pct));
                 match colour {
                     Some(colour) => {
                         let colour = gtk::glib::markup_escape_text(colour);

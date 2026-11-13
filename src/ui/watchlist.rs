@@ -252,10 +252,7 @@ impl Sort {
             Column::Symbol => Rank::Name(instrument.display_symbol()),
             Column::Last => Rank::Price(quote(instrument).map(|q| q.last)),
             Column::Change => Rank::Price(quote(instrument).map(|q| q.change)),
-            Column::ChangePct => Rank::Price(quote(instrument).map(|q| match instrument.moves_in_units() {
-                true => q.change,
-                false => q.change_pct,
-            })),
+            Column::ChangePct => Rank::Price(quote(instrument).map(|q| q.change_pct)),
         }
     }
 
@@ -1826,7 +1823,7 @@ impl Watchlist {
             let RowKind::Entry { instrument, cells, .. } = kind else { continue };
             let quote = (self.quote)(instrument);
             for (column, label) in cells {
-                write_cell(label, *column, quote, instrument);
+                write_cell(label, *column, quote, instrument.kind);
             }
         }
         // New prices can reorder a list sorted by them.
@@ -2214,7 +2211,7 @@ impl Watchlist {
         label.add_css_class("caption");
         label.set_xalign(1.0);
         label.set_width_chars(column.width_chars());
-        write_cell(&label, column, quote, instrument);
+        write_cell(&label, column, quote, instrument.kind);
         label
     }
 
@@ -3186,9 +3183,9 @@ fn write_cell(
     label: &gtk::Label,
     column: Column,
     quote: Option<Quote>,
-    instrument: &Instrument,
+    kind: omacharts_engine::InstrumentKind,
 ) {
-    let decimals = quote.map(|q| decimals_for(q.last, instrument.kind)).unwrap_or(2);
+    let decimals = quote.map(|q| decimals_for(q.last, kind)).unwrap_or(2);
     for class in ["change-up", "change-down", "change-flat", "dim-label"] {
         label.remove_css_class(class);
     }
@@ -3199,8 +3196,12 @@ fn write_cell(
     };
     match column {
         Column::Last => label.set_text(&grouped_decimals(q.last, decimals)),
-        Column::Change => label.set_text(&crate::header::signed(q.change, decimals)),
-        Column::ChangePct => label.set_text(&crate::header::change_text(instrument, q.last, q.change, q.change_pct)),
+        Column::Change => {
+            // The plus `{:+}` would write: on anything not negative or NaN.
+            let plus = if q.change.is_sign_positive() && !q.change.is_nan() { "+" } else { "" };
+            label.set_text(&format!("{plus}{}", grouped_decimals(q.change, decimals)))
+        }
+        Column::ChangePct => label.set_text(&format!("{:+.2}%", q.change_pct)),
         Column::Symbol => {}
     }
     if column != Column::Last {

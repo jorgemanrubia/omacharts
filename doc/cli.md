@@ -978,30 +978,11 @@ whichever is larger, widened to hold the open and close. A bar that divides
 by zero is left out, and a formula has no volume.
 
 A spread can go below zero, where a log scale has nothing to show, so a chart
-of one that does is drawn on a linear scale. A formula that subtracts moves
-in its own units in a watchlist, the way a yield does, since a spread that
-crosses zero has moved an infinite percentage; a ratio or a basket moves in
-percent.
+of one that does is drawn on a linear scale.
 
-Every leg is anything that charts on its own: a listing abroad, `SAN.MC`, a
-futures contract, a pair turned over, `USDEUR`. A feed that streams, such as
-thinkorswim, offers no formulas: a stream is one subscription per symbol,
-and nothing combines them.
-
-## Currency pairs
-
-A dozen pairs are listed, and search finds them by name. Any other pair of
-currencies charts all the same when its six letters are typed in full, or as
-Yahoo spells it:
-
-```
-omacharts chart set --symbol SEKUSD
-omacharts chart set --symbol SEKUSD=X
-```
-
-Both are the same chart, stored as `SEKUSD`. A listed pair turned over,
-`USDEUR`, is drawn as one over `EURUSD`, so the two read the same quotes; any
-other pair comes from Yahoo as it is.
+Every leg is anything that charts on its own: a listing abroad, `SAN.MC`, or
+a futures contract. A feed that streams, such as thinkorswim, offers no
+formulas: a stream is one subscription per symbol, and nothing combines them.
 
 ## Measuring a move
 

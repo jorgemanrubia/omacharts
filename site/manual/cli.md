@@ -314,7 +314,7 @@ GCAL       Goldman Sachs Dynamic California … ETF      NYSE Arca
 
 | Argument or flag | Takes |
 |---|---|
-| `QUERY` | A ticker or part of a name. A whole [formula](/manual/symbols/#arithmetic-on-symbols) or [currency pair](/manual/symbols/#currency-pairs), such as `GC/SI` or `USDEUR`, is the first row |
+| `QUERY` | A ticker or part of a name. A whole [formula](/manual/symbols/#arithmetic-on-symbols), such as `GC/SI`, is the first row |
 | `--limit N` | How many to show; 10 when not given |
 | `--json` | The result as JSON |
 

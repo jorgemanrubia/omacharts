@@ -1,6 +1,6 @@
 //! Formulas: arithmetic on symbols. `GC/SI` is gold over silver, `TNX-FVX`
 //! the ten-year less the five-year, `(2*RB+HO)*42/3-CL` the 3-2-1 crack,
-//! `(SPY+QQQ)/2` a basket, and `USDEUR` one over the listed `EURUSD`.
+//! and `(SPY+QQQ)/2` a basket.
 //!
 //! Nothing trades a formula, so no provider serves one. It is a fetch per
 //! leg and the arithmetic, done here rather than in each provider: a
@@ -47,9 +47,7 @@ const DEPTH: usize = 32;
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Formula {
     /// Each symbol it reads, once, in the order they were first spelled.
-    /// The first is the clock the others are joined to. None is a formula
-    /// itself: one spelled with another in it, `USDEUR/GC`, carries the
-    /// inner one's legs.
+    /// The first is the clock the others are joined to.
     pub legs: Vec<Instrument>,
     pub expr: Expr,
 }
@@ -69,14 +67,6 @@ impl Formula {
         Some(self.expr.spell(&leg, &TYPED))
     }
 
-    /// Whether a move in it is read in its own units rather than in percent.
-    /// Anything that subtracts can cross zero, and a spread that does has
-    /// moved an infinite percentage. A sum or a scaling of rates is still a
-    /// rate. A product or a quotient of two legs is a ratio, read in percent
-    /// whatever its legs are.
-    pub fn in_units(&self) -> bool {
-        self.expr.subtracts() || (!self.expr.combines_legs() && self.legs.iter().all(Instrument::moves_in_units))
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -149,34 +139,6 @@ impl Expr {
             Expr::Leg(at) => which(*at),
             Expr::Neg(inner) => inner.any_leg(which),
             Expr::Bin(_, a, b) => a.any_leg(which) || b.any_leg(which),
-        }
-    }
-
-    fn subtracts(&self) -> bool {
-        match self {
-            Expr::Num(_) | Expr::Leg(_) => false,
-            Expr::Neg(_) | Expr::Bin(Op::Sub, ..) => true,
-            Expr::Bin(_, a, b) => a.subtracts() || b.subtracts(),
-        }
-    }
-
-    /// Whether two legs are multiplied or divided: `GC/SI`, not `2*GC`.
-    fn combines_legs(&self) -> bool {
-        match self {
-            Expr::Num(_) | Expr::Leg(_) => false,
-            Expr::Neg(inner) => inner.combines_legs(),
-            Expr::Bin(Op::Mul | Op::Div, a, b) if a.any_leg(&|_| true) && b.any_leg(&|_| true) => true,
-            Expr::Bin(_, a, b) => a.combines_legs() || b.combines_legs(),
-        }
-    }
-
-    /// Each leg replaced by what `with` makes of it.
-    pub fn substitute(&self, with: &dyn Fn(usize) -> Expr) -> Expr {
-        match self {
-            Expr::Num(n) => Expr::Num(*n),
-            Expr::Leg(at) => with(*at),
-            Expr::Neg(inner) => Expr::Neg(Box::new(inner.substitute(with))),
-            Expr::Bin(op, a, b) => Expr::Bin(*op, Box::new(a.substitute(with)), Box::new(b.substitute(with))),
         }
     }
 
@@ -312,13 +274,13 @@ fn symbol_run(chars: &[char], start: usize) -> (String, usize) {
 }
 
 /// Whether two legs are the same listing: `GC` twice in a formula is one leg.
-pub(crate) fn same_leg(a: &Instrument, b: &Instrument) -> bool {
+fn same_leg(a: &Instrument, b: &Instrument) -> bool {
     a.symbol == b.symbol && a.suffix == b.suffix
 }
 
 /// Where `item` is in `list` by `same`, put at its end the first time:
 /// a leg spelled twice is one leg.
-pub(crate) fn intern<T>(list: &mut Vec<T>, item: T, same: impl Fn(&T, &T) -> bool) -> usize {
+fn intern<T>(list: &mut Vec<T>, item: T, same: impl Fn(&T, &T) -> bool) -> usize {
     match list.iter().position(|had| same(had, &item)) {
         Some(at) => at,
         None => {
