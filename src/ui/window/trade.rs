@@ -2899,6 +2899,63 @@ pub(super) mod tests {
         });
     }
 
+    /// The open position's line breathes on a chart on screen, and nothing
+    /// else does: not a position whose price is off the chart, not a
+    /// working order alone, and not the chart once the position is flat.
+    /// With animation turned off on the desktop the position's line is
+    /// still.
+    #[test]
+    fn only_the_open_position_s_line_breathes() {
+        crate::ui::on_gtk(|| {
+            use super::super::marks::TradeEvent;
+            let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
+            window.window.present();
+            assert!(settle_for(&window, 10, || pane.view.last_price().is_some()), "no last price");
+            let last = pane.view.last_price().expect("a last price");
+            settle_for(&window, 1, || false);
+            assert!(!pane.view.breathing(), "a position far off the chart's prices breathes");
+            let flat = |pane: &Rc<ChartPane>| pane.view.mark_states().0.is_none();
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert!(settle_for(&window, 10, || flat(&pane)), "not flattened");
+
+            // Bought at the chart's own price, so its line is on the chart.
+            *session.last.lock().unwrap() = last.floor();
+            session.place(&resting(Side::Buy, OrderKind::Market, None)).unwrap();
+            window.desk.tell();
+            assert!(settle_for(&window, 10, || pane.view.breathing()), "an open position's line does not breathe");
+            let levels = RefCell::new(Vec::new());
+            settle_for(&window, 3, || {
+                levels.borrow_mut().push(pane.view.breath().unwrap_or(0.0));
+                false
+            });
+            let (low, high) = levels.borrow().iter().fold((f64::MAX, f64::MIN), |(low, high), at| (low.min(*at), high.max(*at)));
+            assert!(high - low > 0.5, "the breath hardly moved: {low} to {high}");
+
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert!(settle_for(&window, 10, || flat(&pane)), "not flattened");
+            assert!(settle_for(&window, 2, || !pane.view.breathing()), "a flat chart breathes");
+
+            session.place(&resting(Side::Buy, OrderKind::Limit, Some((last - 10.0).floor()))).unwrap();
+            window.desk.tell();
+            assert!(settle_for(&window, 5, || !pane.view.mark_states().1.is_empty()), "no working order");
+            settle_for(&window, 1, || false);
+            assert!(!pane.view.breathing(), "a working order breathes");
+
+            let settings = gtk::Settings::default().expect("settings");
+            settings.set_gtk_enable_animations(false);
+            session.place(&resting(Side::Buy, OrderKind::Market, None)).unwrap();
+            window.desk.tell();
+            let held = settle_for(&window, 10, || !flat(&pane));
+            settle_for(&window, 1, || false);
+            let still = !pane.view.breathing() && pane.view.breath().is_none_or(|level| level == 0.0);
+            settings.set_gtk_enable_animations(true);
+            assert!(held, "no position on the chart");
+            assert!(still, "a position breathes with animation off");
+            assert!(settle_for(&window, 5, || pane.view.breathing()), "animation back on and still");
+            window.window.close();
+        });
+    }
+
     /// On a chart fed from elsewhere, which side of the market a limit or a
     /// stop is on is the account's own market's word, not the chart's; the
     /// chart's until the session has heard a trade.

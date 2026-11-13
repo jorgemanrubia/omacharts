@@ -54,7 +54,7 @@ use gtk::{gdk, gio, graphene, gsk};
 use omacharts_engine::Theme;
 
 use crate::store::Store;
-use crate::ui::chart::POINTER_LAYER;
+use crate::ui::chart::{POINTER_LAYER, PULSE_LAYER};
 use crate::ui::colors;
 use crate::ui::pane::{ChartPane, TITLE_UNTITLED};
 
@@ -93,6 +93,9 @@ pub const FOLDER: &str = "Omacharts";
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
 ///   a strip wears under the pointer. Not a control, and the only thing here
 ///   that is not: it is where the mouse is, and a picture has no mouse.
+/// - [`PULSE_LAYER`] — the breath of an open position's line. A picture
+///   is of one moment, and which moment of a breath it caught is not what
+///   it is of.
 const LEFT_OUT: &[&str] = &[
     "timeframe-strip",
     "legend-gear",
@@ -103,6 +106,7 @@ const LEFT_OUT: &[&str] = &[
     "feed-part",
     TITLE_UNTITLED,
     POINTER_LAYER,
+    PULSE_LAYER,
 ];
 
 /// A rendered screenshot, not yet anywhere.
@@ -690,17 +694,17 @@ mod tests {
     /// Every control left out is styled as a control in the stylesheet, which
     /// is how the capture knows to find it — so the two lists have to agree.
     ///
-    /// The pointer layer is the one entry that is not a control, and it has no
-    /// style of its own: it is a drawing area over the chart, and its class is
-    /// there to be matched rather than to paint anything. It takes its name
-    /// from the chart's own constant, so there is no second spelling of it to
-    /// drift.
+    /// The pointer layer and the pulse layer are the entries that are not
+    /// controls, and have no style of their own: they are layers over the
+    /// chart, and their classes are there to be matched rather than to paint
+    /// anything. They take their names from the chart's own constants, so
+    /// there is no second spelling of them to drift.
     #[test]
     fn every_control_left_out_of_a_screenshot_is_one_the_stylesheet_knows_about() {
         let themes = omacharts_engine::theme::builtin_themes();
         let schemes = omacharts_engine::theme::bar_schemes(&themes[0]);
         let css = crate::theming::stylesheet(&themes[0], &schemes[0]);
-        for class in LEFT_OUT.iter().filter(|class| **class != POINTER_LAYER) {
+        for class in LEFT_OUT.iter().filter(|class| ![POINTER_LAYER, PULSE_LAYER].contains(*class)) {
             assert!(css.contains(&format!(".{class}")), "{class} is not styled anywhere");
         }
     }
