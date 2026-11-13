@@ -743,7 +743,7 @@ row.bars-head button:checked { color: @window_fg_color; border-bottom-color: @ac
 .header-card .header-zone, .header-card .header-spare { font-size: 0.8em; }
 .header-card .timeframe-strip button { min-width: 22px; min-height: 20px; padding: 0 4px; }
 .header-card .trade-button { min-height: 20px; padding: 0 6px; }
-.header-card.dragging .header-zone:not(.shut) { min-width: 72px; }
+.header-card.dragging .header-zone:not(.shut) { min-width: 100px; }
 .header-card .zone-name {
   font-size: 0.75em;
   letter-spacing: 0.08em;
