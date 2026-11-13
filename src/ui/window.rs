@@ -2957,7 +2957,7 @@ mod outside_change_tests {
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
             let label = crate::ui::chart_settings::PROFILE_POC_LABEL;
             let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
-            let colour = || titled::<adw::ActionRow>(&window, "Point of control").pop().expect("its colour");
+            let colour = || titled::<adw::ActionRow>(&window, crate::ui::profile_rows::POC_COLOUR).pop().expect("its colour");
             let pattern = || titled::<adw::ActionRow>(&window, "Point of control style").pop().expect("its style");
             let width = || titled::<adw::SpinRow>(&window, "Point of control thickness").pop().expect("its thickness");
             let drawn = || {
@@ -2972,7 +2972,8 @@ mod outside_change_tests {
             assert!(switch().is_active() && drawn(), "on to begin with");
             assert_eq!(shown(), [true; 3]);
             assert_eq!(switch().next_sibling().as_ref(), Some(colour().upcast_ref()), "above its colour");
-            assert_eq!(colour().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its colour");
+            assert_eq!(colour().next_sibling().as_ref(), Some(width().upcast_ref()), "its thickness under its colour");
+            assert_eq!(width().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its thickness");
 
             for method in ["total", "delta"] {
                 command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
@@ -2983,6 +2984,37 @@ mod outside_change_tests {
                 assert!(drawn(), "on again on {method}");
                 assert_eq!(shown(), [true; 3]);
             }
+        });
+    }
+
+    /// A study's bands are switched on and shaded from switch rows, as a
+    /// drawn VWAP's are, with no hint under them, and the switch reaches the
+    /// study.
+    #[test]
+    fn a_study_s_bands_are_switched_from_switch_rows() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "vwap"]);
+            let vwap = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Vwap)
+                .map(|i| i.id)
+                .expect("a VWAP added");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, vwap);
+            let shows = titled::<adw::SwitchRow>(&window, crate::ui::property_rows::SHOW);
+            let shaded = titled::<adw::SwitchRow>(&window, crate::ui::property_rows::SHADED);
+            assert_eq!((shows.len(), shaded.len()), (3, 3), "one of each a band");
+            assert!(shaded.iter().all(|row| row.subtitle().is_none_or(|s| s.is_empty())), "no hint");
+            let enabled = || {
+                let stored = window.indicators();
+                let params = &stored.iter().find(|i| i.id == vwap).expect("the VWAP").params;
+                params.bands().expect("bands").iter().map(|b| b.enabled).collect::<Vec<_>>()
+            };
+            let before = enabled();
+            shows[0].set_active(!shows[0].is_active());
+            assert_ne!(enabled()[0], before[0], "the switch reached the study");
         });
     }
 
@@ -3011,12 +3043,14 @@ mod outside_change_tests {
             };
             let colour = || titled::<adw::ActionRow>(&window, "Outline colour").pop().expect("its colour");
             let pattern = || titled::<adw::ActionRow>(&window, "Outline style").pop().expect("its style");
+            let width = || titled::<adw::SpinRow>(&window, "Outline thickness").pop().expect("its thickness");
             let shown = || [colour().property::<bool>("visible"), pattern().property::<bool>("visible")];
 
             assert!(matches!(params(), Params::VolumeProfile { style: ProfileStyle::Filled, outline: false, .. }));
             assert!(!switch().is_active() && switch().is_sensitive(), "off and free over filled rows");
             assert_eq!(shown(), [false; 2]);
-            assert_eq!(colour().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its colour");
+            assert_eq!(colour().next_sibling().as_ref(), Some(width().upcast_ref()), "its thickness under its colour");
+            assert_eq!(width().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its thickness");
 
             let outline = ProfileStyle::ALL.iter().position(|s| *s == ProfileStyle::Outline).unwrap() as u32;
             let filled = ProfileStyle::ALL.iter().position(|s| *s == ProfileStyle::Filled).unwrap() as u32;
@@ -3136,13 +3170,15 @@ mod outside_change_tests {
                     || titled::<adw::SwitchRow>(&window, "Select by border only").pop().expect("the edge-only switch");
                 let colour = || titled::<adw::ActionRow>(&window, "Border colour").pop().expect("its colour");
                 let pattern = || titled::<adw::ActionRow>(&window, "Border style").pop().expect("its style");
-                let width = || titled::<adw::ActionRow>(&window, "Border thickness").pop().expect("its thickness");
+                let width = || titled::<adw::SpinRow>(&window, "Border thickness").pop().expect("its thickness");
                 let shown = || {
-                    [colour(), pattern(), width()].map(|row| row.property::<bool>("visible"))
+                    [colour().upcast::<gtk::Widget>(), pattern().upcast(), width().upcast()]
+                        .map(|row| row.property::<bool>("visible"))
                 };
                 assert!(border().is_active() && stored().border, "{kind:?} has a border to begin with");
                 assert_eq!(shown(), [true; 3], "{kind:?}");
-                assert_eq!(colour().next_sibling().as_ref(), Some(pattern().upcast_ref()), "the style under the colour");
+                assert_eq!(colour().next_sibling().as_ref(), Some(width().upcast_ref()), "the thickness under the colour");
+                assert_eq!(width().next_sibling().as_ref(), Some(pattern().upcast_ref()), "the style under the thickness");
                 assert_eq!(stored().line_style, LineStyle::Solid);
 
                 border().set_active(false);

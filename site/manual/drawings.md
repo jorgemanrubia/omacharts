@@ -193,14 +193,14 @@ crop: 840,220,880,1160
 | Row | Kinds | Does |
 |---|---|---|
 | **Colour** | Line, level, arrow, zig-zag | One of the [nine presets](#colours), or **Custom…** for a hex colour |
-| **Line style** | Line, level, arrow, zig-zag | **Solid**, **Dashed**, **Dotted**. The dashes and dots grow with the thickness. An arrowhead is always solid |
 | **Thickness** | Line, level, arrow, zig-zag | 0.5 to 12 px, by halves |
+| **Line style** | Line, level, arrow, zig-zag | **Solid**, **Dashed**, **Dotted**. The dashes and dots grow with the thickness. An arrowhead is always solid |
 | **Arrow** | Line, level, arrow, zig-zag | **None**, **At the end**, **At the start**, **Both ends**, each drawn as it would look |
 | **Arrowhead** | Line, level, arrow, zig-zag | **Filled**, **Open**, **Barb**. Greyed while there is no arrow |
 | **Background** | Rectangle, circle | The fill's colour |
-| **Transparency** | Rectangle, circle | How much of the candles shows through the fill, 0 to 100% |
+| **Transparency %** | Rectangle, circle | How much of the candles shows through the fill, 0 to 100%, on a slider with a box to type it in |
 | **Border** | Rectangle, circle | Whether it has an edge |
-| **Border thickness**, **Border colour**, **Border style** | Rectangle, circle | The edge, shown while there is one. **Border style** is Solid, Dashed or Dotted |
+| **Border colour**, **Border thickness**, **Border style** | Rectangle, circle | The edge, shown while there is one. **Border thickness** is 0.5 to 12 px, by halves; **Border style** is Solid, Dashed or Dotted |
 | **Select by border only** | Rectangle, circle | Off by default. On, only the edge selects it, whether or not a border is drawn, and a click or a <kbd>Shift</kbd> + drag inside it reaches the chart and the drawings under it |
 
 <!-- regenerate:
@@ -263,7 +263,7 @@ The volume profile tool draws a profile of the bars in the span you drag across:
 
 It is drawn under the bars, as the study's profiles are, so the candles stay on top. Selected, it has a grip at each corner: the left two move its start and the right two its end, sideways only, and the profile is worked out again. It cannot be moved whole or nudged with the arrow keys; a press on it that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars. A pasted copy lands a few bars to the right of the original.
 
-Its properties are the [Volume Profile](/manual/indicators/volume/#volume-profile) study's, with the same names, ranges and controls, in the same groups and order. It leaves out what only the study has: **Reset every** and **Only show in last period**, since the span is set by its ends; **Calculation method** and **Colouring**, since a drawing is worked out from its bars' volume alone; and **Width**, since a drawing is as wide as its span.
+Its properties are the [Volume Profile](/manual/indicators/volume/#volume-profile) study's, with the same names, ranges and controls, in the same groups and order. It leaves out what only the study has: **Reset every** and **Only show in last period**, since the span is set by its ends; **Calculation method** and **Colouring**, since a drawing is worked out from its bars' volume alone; and **Width %**, since a drawing is as wide as its span.
 
 | Group | Property | Does |
 |---|---|---|
@@ -271,16 +271,16 @@ Its properties are the [Volume Profile](/manual/indicators/volume/#volume-profil
 | | **Value area %** | The share of the span's volume the value area holds, 10 to 100%, 70% by default |
 | | **Highlight value area** | On by default: the value area is drawn stronger than the other rows, which are a little under half as strong. Off draws every row alike |
 | | **Value area colour** | The value area's own colour while it is highlighted. By default the background's; **Reset** gives it back |
-| **Style** | **Outline** | Whether filled rows have an edge round them. Off by default; always on, and greyed, for an outline. The outline's colour, style and thickness show while it is on |
+| **Style** | **Outline** | Whether filled rows have an edge round them. Off by default; always on, and greyed, for an outline. The outline's colour, thickness and style show while it is on |
 | | **Outline colour** | The edge round the rows |
-| | **Outline style** | Solid, Dashed or Dotted. Solid by default |
 | | **Outline thickness** | 0.5 to 12 px. 1 px on a filled configuration, 1.5 px on an outline |
+| | **Outline style** | Solid, Dashed or Dotted. Solid by default |
 | | **Background** | The rows |
-| | **Transparency** | How much of the candles shows through the background, 70% by default. At 0% the value area is the background colour, solid; at 100% the profile is gone. The outline fades with it |
-| | **Show point of control** | On by default. Off leaves the profile without its point of control. Its colour, style and thickness show while it is on |
-| | **Point of control** | The line across the busiest price |
-| | **Point of control style** | Solid, Dashed or Dotted. Solid by default |
+| | **Transparency %** | How much of the candles shows through the background, 70% by default. At 0% the value area is the background colour, solid; at 100% the profile is gone. The outline fades with it |
+| | **Show point of control** | On by default. Off leaves the profile without its point of control. Its colour, thickness and style show while it is on |
+| | **Point of control colour** | The line across the busiest price |
 | | **Point of control thickness** | 0.5 to 12 px, 1.5 px by default |
+| | **Point of control style** | Solid, Dashed or Dotted. Solid by default |
 | | **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
 | | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
 

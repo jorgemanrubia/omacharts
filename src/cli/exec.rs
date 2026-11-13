@@ -3366,15 +3366,14 @@ impl StyleEdits {
             ));
         }
         use omacharts_engine::DrawingKind as K;
-        let stroked = matches!(kind, K::Line | K::Horizontal | K::Arrow | K::Zigzag | K::Rect | K::Ellipse | K::Profile);
+        let stroked = matches!(kind, K::Line | K::Horizontal | K::Arrow | K::Zigzag | K::Rect | K::Ellipse | K::Profile | K::Vwap);
         if self.line_style.is_some() && !stroked {
             let instead = match kind {
-                K::Vwap => "; its line's is --style",
                 K::Fib => "; its levels' is --level-style",
                 _ => "",
             };
             return Err(Fault::usage(format!(
-                "--line-style is a line's, a box's or an ellipse's edge, or a profile's outline; a {} has none{instead}",
+                "--line-style is a line's, a box's or an ellipse's edge, a profile's outline or an anchored VWAP's line; a {} has none{instead}",
                 kind.label().to_lowercase()
             )));
         }
@@ -3495,7 +3494,13 @@ impl StyleEdits {
         if let Some(source) = self.source {
             style.vwap.source = source;
         }
-        if let Some(line) = self.line {
+        // --line-style is every line's pattern, an anchored VWAP's too;
+        // --style, its older name there, is still read.
+        let vwap_line = match kind {
+            omacharts_engine::DrawingKind::Vwap => self.line.or(self.line_style),
+            _ => self.line,
+        };
+        if let Some(line) = vwap_line {
             style.vwap.line = line;
         }
         if let Some(shown) = &self.bands {
@@ -3983,7 +3988,8 @@ impl Edits {
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
-            style: match arg(m, "style") {
+            // --line-style, as on a drawing; --style, the older name, too.
+            style: match arg(m, "line-style").or_else(|| arg(m, "style")) {
                 None => None,
                 Some(text) => Some(
                     LineStyle::ALL
@@ -7892,6 +7898,38 @@ mod tests {
         let out = run("chart indicator add rsi", &store);
         assert_eq!(out.code, super::super::EXIT_NO_WINDOW);
         assert!(out.err.contains("name one, or start Omacharts"), "{}", out.err);
+    }
+
+    /// --line-style names a line's pattern on a study as on a drawing, an
+    /// anchored VWAP's line too, and --style, its older name on both, still
+    /// works.
+    #[test]
+    fn line_style_is_one_name_on_studies_and_drawings_and_style_still_works() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        for words in [
+            "chart indicator add sma --book Macro --line-style dotted",
+            "chart indicator add ema --book Macro --style dashed",
+            "chart drawing add avwap --book Macro --from 2026-10-14,0 --line-style dotted",
+            "chart drawing add avwap --book Macro --from 2026-10-15,0 --style dashed",
+        ] {
+            let out = run(words, &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        }
+        let studies = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(studies["indicators"][0]["stroke"]["style"], "dotted");
+        assert_eq!(studies["indicators"][1]["stroke"]["style"], "dashed");
+        let drawings = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(drawings["drawings"][0]["style"]["vwap"]["style"], "dotted");
+        assert_eq!(drawings["drawings"][1]["style"]["vwap"]["style"], "dashed");
+
+        let set = run("chart indicator set sma --book Macro --line-style solid", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let studies = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(studies["indicators"][0]["stroke"]["style"], "solid");
+        let fib = run("chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --line-style dashed", &store);
+        assert_ne!(fib.code, 0, "a retracement's levels have --level-style");
+        assert!(fib.err.contains("--level-style"), "{}", fib.err);
     }
 
     #[test]

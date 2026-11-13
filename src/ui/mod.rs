@@ -20,6 +20,7 @@ pub mod menus;
 pub mod pick_frame;
 pub mod preferences;
 pub mod profile_rows;
+pub mod property_rows;
 pub mod range_card;
 pub mod sign_in_dialogs;
 pub mod size_templates;

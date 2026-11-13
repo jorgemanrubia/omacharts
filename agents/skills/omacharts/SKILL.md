@@ -296,7 +296,7 @@ volume-weighted average price from the bar at `--from` (its price is not
 read) to the last bar, never reset and worked out again as bars arrive:
 anchor it where a move began, an earnings gap or a swing low, to see the
 average cost of everyone who bought since. Its properties are the VWAP
-study's: `--style` is its line's pattern, `--source hlc3|hl2|ohlc4|close`
+study's: `--line-style` is its line's pattern (`--style` still works), `--source hlc3|hl2|ohlc4|close`
 the price each bar adds, and `--bands 1,2,3` (or `none`) which of its three
 bands are drawn, at 1, 1.5 and 2 standard deviations. `--band N` with
 `--band-deviations`, `--band-shaded`, `--band-alpha`, `--band-color`,

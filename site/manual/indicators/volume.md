@@ -16,11 +16,11 @@ Its own strip. Each bar's volume, in the candles' up or down colour.
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
 | **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
-| **Opacity** | 85% | 20 to 100%. At 100% the bars hide what is behind them |
+| **Opacity %** | 85% | 20 to 100%. At 100% the bars hide what is behind them |
 | **Up** colour | The colouring's up colour | A palette name, or a custom colour |
 | **Down** colour | The colouring's down colour | A palette name, or a custom colour |
 
-**Default** is the chart's own colouring, and follows it whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid bar with no body to leave open. Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. Monochrome is not offered, because it paints rising and falling bars alike; a strip already painted Monochrome keeps it, and it is listed last. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both. A selected strip is drawn solid whatever its **Opacity**.
+**Default** is the chart's own colouring, and follows it whatever it is changed to, and its **Swap up and down colours** with it. **Hollow up bars** does not reach the volume: a volume bar is a solid bar with no body to leave open. Choosing a colouring keeps the volume in it while the price changes: vivid candles over a soft volume, or the other way round. Monochrome is not offered, because it paints rising and falling bars alike; a strip already painted Monochrome keeps it, and it is listed last. A colouring of its own is painted its own way round, whether or not the chart's up and down are swapped. **Up** and **Down** then take that colouring's colours, and a colour set by hand wins over both. A selected strip is drawn solid whatever its **Opacity %**.
 
 The **Default** [chart template](/manual/chart-templates/) holds Volume, with [Session Times](/manual/indicators/session-times/).
 
@@ -56,7 +56,7 @@ crop: 762,640,1036,518 (the Colours group)
 
 ## Volume Profile
 
-Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. That space is widened to fit it, and narrowed again when no profile is aligned right. It is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width** says, and squeezed alike when they would not fit; past the last bar they take at most 60% of the chart between them. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger, unless **Highlight value area** is off, and in a colour of their own if **Value area colour** gives them one. The **point of control**, the busiest row, is a line across the profile.
+Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, as much of its width as **Width %** says. Aligned right, the session still forming is drawn in the empty space past the last bar, against the price axis, when there is room for it there; scrolled back, or with no room open, it ends where its bars do like the rest. That space is widened to fit it, and narrowed again when no profile is aligned right. It is a share of the chart's width, not a number of bars, so zooming in and out moves the bars and leaves it, and the profiles in it, the same size. Scrolling forward stops at it, so coming back to the latest bar finds it as wide as before. Drag part of it shut and it stays as you left it, at the same size on screen as you zoom, until you scroll back to the latest bar or reset the view. Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit; past the last bar they take at most 60% of the chart between them. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger, unless **Highlight value area** is off, and in a colour of their own if **Value area colour** gives them one. The **point of control**, the busiest row, is a line across the profile.
 
 | Setting | Default | Allowed |
 |---|---|---|
@@ -68,19 +68,19 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
 | **Highlight value area** | On | Off draws every row alike. Greyed for Ask volume - bid volume |
 | **Value area colour** | The background colour | A palette name, or a custom colour, for the value area while it is highlighted. Greyed while it is not, and for Ask volume - bid volume |
-| **Outline** | Off | On for an edge round filled rows. Always on, and greyed, in the Outline style. Its colour, style and thickness show while it is on |
+| **Outline** | Off | On for an edge round filled rows. Always on, and greyed, in the Outline style. Its colour, thickness and style show while it is on |
 | **Outline colour** | The background colour | A palette name, or a custom colour |
-| **Outline style** | Solid | Solid, Dashed, Dotted |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
+| **Outline style** | Solid | Solid, Dashed, Dotted |
 | **Background** colour | The next free colour | A palette name, or a custom colour |
-| **Transparency** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
-| **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, style and thickness show while it is on |
-| **Point of control** colour | A contrasting colour from the theme | A palette name, or a custom colour |
-| **Point of control style** | Solid | Solid, Dashed, Dotted |
+| **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
+| **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, thickness and style show while it is on |
+| **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |
 | **Point of control thickness** | 1 px | 0.5 to 12 px |
+| **Point of control style** | Solid | Solid, Dashed, Dotted |
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
-| **Width** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
+| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
 **Ask volume - bid volume** draws each row as what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the up colour of its **Colouring**, rows where sellers took more in the down colour. **Default** is the colouring set in Preferences for new charts ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)), and changes when that does. Pick **Vivid**, **Soft** or **Quiet** to keep this profile in that colouring. Either way it is swapped when Preferences' **Swap up and down colours** is on. Monochrome is not offered, because it paints buying and selling alike. The point of control is the row furthest either way, and there is no value area. Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn. The legend reads **VP Δ**.
 
