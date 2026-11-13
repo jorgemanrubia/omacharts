@@ -1,6 +1,6 @@
 # Omacharts
 
-**[omacharts.org](https://omacharts.org)**
+[omacharts.org](https://omacharts.org) | **[Manual](https://omacharts.org/manual/)**
 
 [![CI](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml?query=branch%3Amain)
 
