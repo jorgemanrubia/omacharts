@@ -427,7 +427,13 @@ as it was given, so the next page starts from what the last one was corrected
 on. Feedback on a page goes into that file in the same change as the fix,
 as the concrete preference rather than a principle distilled from it.
 
-## A row's subtitle is the exception
+## No hints in the UI by default
+
+The default is no hint text anywhere in the UI: no subtitles explaining a
+row, no helper lines under a field, no notes saying what a control does or
+what happens when it is off. The interface speaks through its labels and
+controls. A hint goes in only when the maintainer asks for it, or under the
+rule below.
 
 A settings row is its title and its control. Add a subtitle, or any other
 line of explanatory text under a title, only when the row is ambiguous
