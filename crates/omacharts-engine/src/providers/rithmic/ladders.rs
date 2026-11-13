@@ -157,7 +157,7 @@ impl Ladders for Rithmic {
         // A dated contract is its own; a root is its front month.
         let contract = match crate::specs::root_of(symbol) == symbol {
             true => client.front_month(symbol, exchange).map_err(map_err)?,
-            false => symbol.to_string(),
+            false => super::spelled(symbol),
         };
         let found = client.ladders(&contract, exchange, from, to).map_err(map_err)?;
         Ok(found.iter().map(|m| minute_of(m, tick_size)).collect())
@@ -183,7 +183,7 @@ impl Ladders for Rithmic {
                 };
                 let _watch = match crate::specs::root_of(&root) == root {
                     true => client.watch(&root, exchange_of(&root), hear),
-                    false => client.watch_contract(&root, exchange_of(&root), hear),
+                    false => client.watch_contract(&super::spelled(&root), exchange_of(&root), hear),
                 };
                 fold(&inbox, Tape::new(tick_size, DEFAULT_CAPACITY), &say, &stopping);
             })

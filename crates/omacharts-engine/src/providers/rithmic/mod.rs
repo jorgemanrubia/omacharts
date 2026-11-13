@@ -8,8 +8,20 @@
 //! (`rithmic:ES`), and which contract that means today — `ESZ6` — is asked
 //! when bars are fetched, on the provider's thread. A roll is then a series
 //! whose newest bars disagree with the cached tail of the old contract,
-//! which the loader already treats as history rewritten. Front month only,
-//! not stitched: a long daily chart starts where the contract does.
+//! which the loader already treats as history rewritten.
+//!
+//! **Front month only, not stitched.** Rithmic replays history only for
+//! contracts it still lists: an expired month is refused with "reference
+//! data not available", so there are no earlier months to stitch a
+//! continuous series from, and a long daily chart starts where the
+//! contract's own history does. A dated contract may be asked for in
+//! either spelling, `ESZ26` or Rithmic's `ESZ6` ([`spelled`]).
+//!
+//! **A decade apart.** Rithmic spells a contract's year with one digit, so
+//! `ESZ6` is December 2026 and also December 2016, and its history plant
+//! answers a long request with both. A contract's bars are kept only from
+//! nine years before its month ([`first_possible`]), which no contract of
+//! the same name ten years older reaches.
 
 pub mod ladders;
 pub mod session;
@@ -118,6 +130,26 @@ fn is_dated(symbol: &str) -> bool {
     root_of(symbol) != symbol
 }
 
+/// A dated contract as Rithmic spells it, with a one-digit year: `ESZ6`,
+/// from the stitcher's `ESZ26` or from `ESZ6` itself. A root, or anything
+/// that is not a contract, is itself.
+pub(crate) fn spelled(symbol: &str) -> String {
+    match crate::contracts::parse(symbol, crate::contracts::today()) {
+        Some((root, month)) if is_dated(symbol) => format!("{root}{}{}", month.code(), month.year.rem_euclid(10)),
+        _ => symbol.to_string(),
+    }
+}
+
+/// The earliest a bar can be of the dated contract `symbol`, in either
+/// spelling: nine years before its month. Its namesake ten years older,
+/// which Rithmic spells the same, has stopped trading by then. `None` for
+/// a root.
+fn first_possible(symbol: &str) -> Option<i64> {
+    let (_, month) = crate::contracts::parse(symbol, crate::contracts::today()).filter(|_| is_dated(symbol))?;
+    let month = crate::contracts::Month::new(month.year - 9, month.month)?;
+    Some(month.first_day().and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+}
+
 fn period_of(timeframe: Timeframe) -> Result<rithmic::Period, ProviderError> {
     match (timeframe.unit, timeframe.count) {
         (Unit::Minute, count @ (1 | 2 | 5 | 15 | 30 | 90)) => Ok(rithmic::Period::Minutes(count)),
@@ -184,25 +216,32 @@ fn front_month_bars(
     let period = period_of(timeframe)?;
     let exchange = exchange_of(root);
     let to = now() + timeframe.seconds();
+    // Its own bars, and none of a namesake a decade older.
+    let own = |contract: &str, bars: Vec<rithmic::Bar>| -> Vec<Bar> {
+        let from = from.max(first_possible(contract).unwrap_or(i64::MIN));
+        bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect()
+    };
     if is_dated(root) {
-        let bars = client.bars(root, exchange, period, from, to).map_err(map_err)?;
-        return Ok(bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect());
+        let contract = spelled(root);
+        let bars = client.bars(&contract, exchange, period, from, to).map_err(map_err)?;
+        return Ok(own(&contract, bars));
     }
     let contract = client.front_month(root, exchange).map_err(map_err)?;
     let first = client.bars(&contract, exchange, period, from, to);
-    let bars = match first {
-        Ok(bars) if !bars.is_empty() => bars,
+    let (contract, bars) = match first {
+        Ok(bars) if !bars.is_empty() => (contract, bars),
         stale => {
             client.forget_front_month(root, exchange);
             let fresh = client.front_month(root, exchange).map_err(map_err)?;
             if fresh == contract {
-                stale.map_err(map_err)?
+                (contract, stale.map_err(map_err)?)
             } else {
-                client.bars(&fresh, exchange, period, from, to).map_err(map_err)?
+                let bars = client.bars(&fresh, exchange, period, from, to).map_err(map_err)?;
+                (fresh, bars)
             }
         }
     };
-    Ok(bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect())
+    Ok(own(&contract, bars))
 }
 
 /// Where a trade at `ts` lands at `timeframe`: the start of its minute or
@@ -469,7 +508,7 @@ fn stream(
         let _ = heard.send(Event::Live(live));
     };
     let _watch = match is_dated(&root) {
-        true => client.watch_contract(&root, exchange_of(&root), hear),
+        true => client.watch_contract(&spelled(&root), exchange_of(&root), hear),
         false => client.watch(&root, exchange_of(&root), hear),
     };
     let load: Load = {
@@ -704,6 +743,37 @@ mod tests {
 
     fn instrument(kind: InstrumentKind, symbol: &str) -> Instrument {
         Instrument { symbol: symbol.into(), kind, ..placeholder() }
+    }
+
+    /// The stitcher's two-digit year is Rithmic's one; a root, or Rithmic's
+    /// own spelling, is itself.
+    #[test]
+    fn a_month_is_asked_of_rithmic_as_rithmic_spells_it() {
+        assert_eq!(spelled("ESZ26"), "ESZ6");
+        assert_eq!(spelled("MNQH27"), "MNQH7");
+        assert_eq!(spelled("ESZ6"), "ESZ6");
+        assert_eq!(spelled("ES"), "ES");
+        assert_eq!(spelled("6EZ26"), "6EZ6");
+    }
+
+    /// December 2026's bars start no earlier than nine years before it, so
+    /// December 2016's, which Rithmic spells the same, are left out; a
+    /// root has no such bound.
+    #[test]
+    fn a_contract_keeps_none_of_its_namesake_a_decade_older() {
+        let first = first_possible("ESZ26").expect("a contract");
+        assert_eq!(first, first_possible("ESZ6").unwrap(), "either spelling");
+        let dec_2016 = chrono::NaiveDate::from_ymd_opt(2016, 12, 15).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        let dec_2017 = chrono::NaiveDate::from_ymd_opt(2017, 12, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        assert!(dec_2016 < first && first <= dec_2017);
+        assert_eq!(first_possible("ES"), None);
+    }
+
+    /// A root is its front month: Rithmic refuses the history of a month
+    /// that has expired, so there are none to stitch.
+    #[test]
+    fn a_root_is_its_front_month() {
+        assert_eq!(crate::continuous::source(&Rithmic::new()), crate::continuous::Source::FrontMonth);
     }
 
     #[test]

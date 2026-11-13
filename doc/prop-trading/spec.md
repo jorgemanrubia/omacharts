@@ -302,8 +302,16 @@ is of.
 
 - **A root is the contract trading now, not stitched.** Rithmic's `ES` is
   the front month, with the history that contract has (about 90 days
-  intraday). That is what a prop trader watches at 1m or 5m, and it never
-  crosses a roll.
+  intraday). Rithmic replays history only for contracts it still lists: an
+  expired month is refused with "reference data not available" (seen on a
+  LucidTrading login, November 2026), so there are no earlier months for
+  the engine's `continuous` module to stitch, as it does Sierra Chart's. A
+  long daily chart starts where the front month's own history does.
+- **A month is asked for as Rithmic spells it.** The stitcher names a month
+  `ESZ26`; Rithmic spells it `ESZ6`, which is also December 2016, and its
+  history plant answers a long request with both. A contract's bars are
+  kept only from nine years before its month, which its namesake a decade
+  older never reaches.
 - **The feed says which contract is the front month, and says when it
   changes.** Rithmic is asked once per root with `RequestFrontMonthContract`
   and `need_updates`, so a roll arrives as a `FrontMonthContractUpdate` the
@@ -331,11 +339,6 @@ is of.
 - **At a roll the chart corrects itself.** The new contract's bars disagree
   with the cached tail of the old one, and the loader's `OVERLAP` check
   already treats that as history rewritten and fetches again.
-- **Stitching, later.** When long daily charts from Rithmic matter, the
-  provider fetches the earlier contracts back to the start and joins them on
-  a fixed roll date, unadjusted, all inside its own `bars()`. Back-adjusting
-  prices across rolls would be a chart option and never the default, because
-  it moves prices a trader has drawn levels on.
 - **Not a special case for daily.** Sending daily `ES` to Yahoo because
   Rithmic is not stitched would make the feed depend on the resolution and
   break "the first that serves it". Routing stays by instrument alone.
