@@ -1374,40 +1374,52 @@ fn bars_of(responses: &[RithmicResponse], period: Period) -> Result<Vec<Bar>, Er
     Ok(bars)
 }
 
+/// One minute of a volume-profile replay, if it says its prices.
+fn ladder_minute(bar: &rithmic_rs::rti::ResponseVolumeProfileMinuteBars) -> Option<LadderMinute> {
+    let (Some(marker), Some(open), Some(high), Some(low), Some(close)) =
+        (bar.marker, bar.open_price, bar.high_price, bar.low_price, bar.close_price)
+    else {
+        return None;
+    };
+    let n = bar.profile_price.len();
+    let wide = |values: &[i32]| -> Vec<u64> {
+        (0..n).map(|i| values.get(i).map_or(0, |v| u64::try_from(*v).unwrap_or(0))).collect()
+    };
+    let count = |values: &[i32]| -> Vec<u32> {
+        (0..n).map(|i| values.get(i).map_or(0, |v| u32::try_from(*v).unwrap_or(0))).collect()
+    };
+    Some(LadderMinute {
+        start: i64::from(marker) - 60,
+        open,
+        high,
+        low,
+        close,
+        volume: bar.volume.unwrap_or(0),
+        prices: bar.profile_price.clone(),
+        // Rithmic names a side by its aggressor: its bid volume is what
+        // bidders took, buyers lifting the offer, and goes with its bid
+        // aggressor trades. Read the other way round, a session's cumulative
+        // delta came out the mirror of Sierra Chart's on the same ES day
+        // (November 2026).
+        bid: wide(&bar.profile_ask_volume),
+        ask: wide(&bar.profile_bid_volume),
+        unknown: wide(&bar.profile_no_aggressor_volume),
+        bid_trades: count(&bar.profile_ask_aggressor_trades),
+        ask_trades: count(&bar.profile_bid_aggressor_trades),
+        unknown_trades: count(&bar.profile_no_aggressor_trades),
+    })
+}
+
 /// The minutes of a volume-profile replay, oldest first. Marked, as minute
 /// bars are, with the time they close.
 fn ladders_of(responses: &[RithmicResponse]) -> Result<Vec<LadderMinute>, Error> {
-    let mut minutes: Vec<LadderMinute> = Vec::with_capacity(responses.len());
-    for response in responses {
-        let RithmicMessage::ResponseVolumeProfileMinuteBars(bar) = &response.message else { continue };
-        let (Some(marker), Some(open), Some(high), Some(low), Some(close)) =
-            (bar.marker, bar.open_price, bar.high_price, bar.low_price, bar.close_price)
-        else {
-            continue;
-        };
-        let n = bar.profile_price.len();
-        let wide = |values: &[i32]| -> Vec<u64> {
-            (0..n).map(|i| values.get(i).map_or(0, |v| u64::try_from(*v).unwrap_or(0))).collect()
-        };
-        let count = |values: &[i32]| -> Vec<u32> {
-            (0..n).map(|i| values.get(i).map_or(0, |v| u32::try_from(*v).unwrap_or(0))).collect()
-        };
-        minutes.push(LadderMinute {
-            start: i64::from(marker) - 60,
-            open,
-            high,
-            low,
-            close,
-            volume: bar.volume.unwrap_or(0),
-            prices: bar.profile_price.clone(),
-            bid: wide(&bar.profile_bid_volume),
-            ask: wide(&bar.profile_ask_volume),
-            unknown: wide(&bar.profile_no_aggressor_volume),
-            bid_trades: count(&bar.profile_bid_aggressor_trades),
-            ask_trades: count(&bar.profile_ask_aggressor_trades),
-            unknown_trades: count(&bar.profile_no_aggressor_trades),
-        });
-    }
+    let mut minutes: Vec<LadderMinute> = responses
+        .iter()
+        .filter_map(|response| match &response.message {
+            RithmicMessage::ResponseVolumeProfileMinuteBars(bar) => ladder_minute(bar),
+            _ => None,
+        })
+        .collect();
     if minutes.is_empty()
         && let Some(error) = responses.last().and_then(|end| end.error.as_ref())
     {
@@ -1534,6 +1546,27 @@ pub(crate) mod tests {
         assert_eq!(hello[0], 0x16, "not a TLS handshake: {hello:?}");
         assert_eq!(hello[5], 0x01, "not a ClientHello: {hello:?}");
         assert!(hello.windows(9).any(|w| w == b"localhost"), "no server name in the hello");
+    }
+
+    /// A minute's bid aggressors are its buyers: Rithmic's bid volume is
+    /// what lifted the offer, its ask volume what hit the bid.
+    #[test]
+    fn rithmics_bid_aggressors_are_buyers() {
+        let mut bar = rithmic_rs::rti::ResponseVolumeProfileMinuteBars::default();
+        bar.marker = Some(1_700_000_060);
+        bar.open_price = Some(100.0);
+        bar.high_price = Some(100.25);
+        bar.low_price = Some(100.0);
+        bar.close_price = Some(100.25);
+        bar.volume = Some(10);
+        bar.profile_price = vec![100.0];
+        bar.profile_bid_volume = vec![7];
+        bar.profile_ask_volume = vec![3];
+        bar.profile_bid_aggressor_trades = vec![4];
+        bar.profile_ask_aggressor_trades = vec![2];
+        let minute = ladder_minute(&bar).expect("a minute");
+        assert_eq!((minute.ask.as_slice(), minute.ask_trades.as_slice()), (&[7][..], &[4][..]), "buyers");
+        assert_eq!((minute.bid.as_slice(), minute.bid_trades.as_slice()), (&[3][..], &[2][..]), "sellers");
     }
 
     #[test]
