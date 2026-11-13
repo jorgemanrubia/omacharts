@@ -283,6 +283,22 @@ fn drawing(rows: &mut Vec<Row>) {
         }));
     }
 
+    // A chart with a position held: its line and label drawn with every
+    // frame of the chart, and the layer its breath is on, which is drawn
+    // beside the chart and so is not in a cairo frame at all.
+    let mut scene = Scene::new(3_000, 1_500);
+    scene.hold_position();
+    scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+    let (surface, cr) = canvas();
+    rows.push(row("draw", "pan/zoom frame, a position held, 1500 bars", || {
+        scene.view_frame(&cr, WIDTH, HEIGHT);
+        surface.flush();
+    }));
+    rows.push(row("draw", "crosshair frame, a position held, 1500 bars", || {
+        scene.pointer_frame(&cr, WIDTH, HEIGHT);
+        surface.flush();
+    }));
+
     // A volume profile over the price, at each edge: aligned right with room
     // open past the last bar, the session still forming is drawn there.
     for (align, room) in [("left", 0usize), ("right", 150)] {

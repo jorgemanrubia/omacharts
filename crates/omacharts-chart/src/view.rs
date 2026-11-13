@@ -22,10 +22,12 @@
 pub mod bench;
 mod compare;
 mod executions;
+mod pulse;
 mod selection;
 pub use executions::{ExecutionMark, Executions, TripLine};
 pub use compare::{CompareLine, Comparing, Reading, Readout};
 pub use selection::ProfileSpot;
+pub use pulse::PULSE_LAYER;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -2718,6 +2720,12 @@ pub struct ChartView {
     pub area: gtk::DrawingArea,
     /// The crosshair and the rest of what follows the pointer, over the top.
     pointer: gtk::DrawingArea,
+    /// The breath of a mark that asks for one, between the two: made the
+    /// first time a mark asks, so a chart with none has no layer at all.
+    pulse: Rc<RefCell<Option<pulse::PulseLayer>>>,
+    /// How many frames of the chart itself were drawn, for the tests.
+    #[cfg(test)]
+    drawn: Rc<Cell<u64>>,
     /// The editor open on the chart, if any.
     ///
     /// It hangs straight off [`root`], placed by its margins, and is there
@@ -2804,6 +2812,9 @@ impl ChartView {
         let view = Rc::new(ChartView {
             area,
             pointer,
+            pulse: Rc::default(),
+            #[cfg(test)]
+            drawn: Rc::default(),
             editing: RefCell::new(None),
             root,
             state,
@@ -4884,7 +4895,37 @@ impl ChartView {
                 state.drag = None;
             }
         }
+        self.breathe();
         self.redraw();
+    }
+
+    /// Put the layer the breath is drawn on between the chart and the
+    /// pointer's layer, the first time a mark asks for one.
+    fn breathe(&self) {
+        if self.pulse.borrow().is_some() || !self.state.borrow().marks.lines.iter().any(|mark| mark.pulse) {
+            return;
+        }
+        let (state, held) = (Rc::downgrade(&self.state), Rc::downgrade(&self.state));
+        let layer = pulse::PulseLayer::new(
+            move |width, height| state.upgrade().and_then(|state| pulse_band(&*state.try_borrow().ok()?, width, height)),
+            // The hand is on the chart: a pan, an axis pulled, a mark or a
+            // drawing in hand.
+            move || held.upgrade().is_none_or(|state| state.try_borrow().map_or(true, |state| state.drag.is_some())),
+        );
+        self.root.add_overlay(&layer);
+        layer.insert_before(&self.root, Some(&self.pointer));
+        *self.pulse.borrow_mut() = Some(layer);
+    }
+
+    /// Whether a mark's line is breathing: its timer running.
+    pub fn breathing(&self) -> bool {
+        self.pulse.borrow().as_ref().is_some_and(|layer| layer.ticking())
+    }
+
+    /// How strong the breath is drawn now, 0 to 1, with no layer for it at
+    /// all as `None`.
+    pub fn breath(&self) -> Option<f64> {
+        self.pulse.borrow().as_ref().map(|layer| layer.level())
     }
 
     /// Mark `executions` on the chart: past fills and the round trips
@@ -5186,10 +5227,20 @@ impl ChartView {
     fn wire_drawing(&self) {
         let state = self.state.clone();
         let on_history = self.on_history.clone();
+        let pulse = self.pulse.clone();
+        #[cfg(test)]
+        let drawn = self.drawn.clone();
         self.area.set_draw_func(move |_, cr, width, height| {
+            #[cfg(test)]
+            drawn.set(drawn.get() + 1);
             let older = {
                 let state = state.borrow();
                 draw(cr, width as f64, height as f64, &state);
+                // Drawn before the layer over it in the same frame, so the
+                // halo moves with the line rather than a frame after it.
+                if let Some(layer) = pulse.borrow().as_ref() {
+                    layer.chart_drawn(state.marks.lines.iter().any(|mark| mark.pulse));
+                }
                 state.wants_older()
             };
             if let (Some(first), Some(handler)) = (older, on_history.borrow().as_ref()) {
@@ -8732,6 +8783,74 @@ fn draw_marks(
     }
     cr.restore().ok();
     moved
+}
+
+/// Where the halo of the mark that breathes goes on a chart `width` by
+/// `height`: either side of its line, along the stretches of it no label
+/// or tab sits on — its own or another mark's at about the same price — so
+/// that nothing with words on it ever changes. Nothing for a mark that is
+/// faint, in hand, off the price plot, or with no line.
+fn pulse_band(state: &State, width: f64, height: f64) -> Option<pulse::Band> {
+    let mark = state.marks.lines.iter().find(|mark| mark.pulse)?;
+    let weight = mark.line?;
+    if mark.dim || state.mark_held_off() == Some(mark.id.as_str()) {
+        return None;
+    }
+    let (first, visible, _) = state.view();
+    if visible == 0 {
+        return None;
+    }
+    let plan = layout(state, width, height);
+    let scale = price_range(state, &state.bars[first..first + visible], &plan)?;
+    let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h).round();
+    let (top, bottom) = (plan.price_y, plan.price_y + plan.price_h);
+    let y = to_y(mark.price);
+    if y < top || y > bottom {
+        return None;
+    }
+    let lane = state.lane(&plan);
+    let mut spans = vec![pulse::Span { from: lane.start(), to: lane.end, fade_in: pulse::END_FADE, fade_out: pulse::END_FADE }];
+    let cr = measuring()?;
+    // Clear of a label by the room between its pieces.
+    let clear = MARK_GAP;
+    let near = MARK_H / 2.0 + pulse::REACH + weight;
+    for other in &state.marks.lines {
+        let at = to_y(other.price);
+        if (at - y).abs() > near || at < top || at > bottom {
+            continue;
+        }
+        let row = label_row(&cr, lane, other);
+        let pieces = std::iter::once((row.left(), row.right())).chain(row.tabs.iter().map(|(_, x, w)| (*x, x + w)));
+        for (left, right) in pieces {
+            spans = spans
+                .into_iter()
+                .flat_map(|span| {
+                    let (before, after) = (left - clear, right + clear);
+                    if span.to <= before || span.from >= after {
+                        return vec![span];
+                    }
+                    let mut kept = Vec::with_capacity(2);
+                    if before > span.from {
+                        kept.push(pulse::Span { to: before, fade_out: pulse::LABEL_FADE, ..span });
+                    }
+                    if after < span.to {
+                        kept.push(pulse::Span { from: after, fade_in: pulse::LABEL_FADE, ..span });
+                    }
+                    kept
+                })
+                .collect();
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    // Light on a dark ground carries further than a tint on a light one.
+    let (r, g, b, _) = colors::rgba(&state.theme.ui.background);
+    let peak = match 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 {
+        true => pulse::PEAK_LIGHT,
+        false => pulse::PEAK_DARK,
+    };
+    Some(pulse::Band { y, half: weight / 2.0, spans, colour: colors::parse(&mark.colour), peak, top, bottom })
 }
 
 /// The line joining linked marks, on the side of their labels that faces
@@ -13602,6 +13721,322 @@ mod tests {
                 .compute_point(&view.area, &gtk::graphene::Point::new(0.0, 0.0))
                 .expect("the two layers are in the same window");
             assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
+        });
+    }
+
+    /// A long held a little under the last price with its target and its
+    /// stop working, in the trading look of the theme at `theme`: the
+    /// position breathing when `pulse`.
+    fn held_long(theme: usize, pulse: bool) -> (State, Vec<PriceMark>, Exits) {
+        let mut state = at_the_last_price(theme);
+        state.hover_mark = None;
+        let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, 600.0, 400.0);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let (low, high) = scale.prices();
+        let last = state.bars.last().unwrap().close;
+        let up = state.scheme.up.clone();
+        let down = state.scheme.down.clone();
+        let avg = last - (high - low) * 0.08;
+        let mut held = position(avg, "▼ 2", "+0.25R", &look.profit, Vec::new());
+        held.tag = "▲ 2".into();
+        held.style = look.position;
+        held.tabs = vec![exit(false, &up, look.limit, 2), exit(true, &down, look.stop, 2)];
+        held.pulse = pulse;
+        let order = |id: &str, stop: bool, tag: &str, at: f64, colour: &str, style, money: f64| PriceMark {
+            body: Some(Exits::money(money)),
+            chip: Some(AxisChip { text: grouped_decimals(at, 2), filled: true }),
+            ..order_mark(id, at, tag, stop, colour, style)
+        };
+        let (tp, sl) = (last + (high - last) * 0.6, avg - (high - low) * 0.2);
+        let lines = vec![
+            order("TP", false, "L 2", tp, &look.profit, look.limit, (tp - avg) * 100.0),
+            order("SL", true, "STP 2", sl, &look.loss, look.stop, (sl - avg) * 100.0),
+            held,
+        ];
+        let mut rules = rules_of(&state);
+        rules.avg = avg;
+        rules.net = 2;
+        rules.orders = vec![("TP".into(), true, false, 2), ("SL".into(), true, true, 2)];
+        rules.profit = look.profit.clone();
+        rules.loss = look.loss.clone();
+        state.marks.lines.clear();
+        (state, lines, rules)
+    }
+
+    /// A window holding a chart of [`held_long`], drawn and on screen.
+    fn breathing_window(theme: usize, pulse: bool) -> (gtk::Window, Rc<ChartView>) {
+        let (state, lines, rules) = held_long(theme, pulse);
+        let view = ChartView::new(state.theme.clone(), state.scheme.clone());
+        *view.state.borrow_mut() = state;
+        view.set_marks(lines, rules);
+        let window = gtk::Window::new();
+        window.set_default_size(900, 560);
+        window.set_child(Some(&view.root));
+        window.present();
+        // The clock is every chart's, and an earlier test's left it
+        // wherever it was: from the start of a breath, so each starts alike.
+        if let Some(layer) = view.pulse.borrow().as_ref() {
+            layer.restart();
+        }
+        run_for(400);
+        (window, view)
+    }
+
+    /// The main loop turned for `ms` milliseconds, as a window open that
+    /// long would turn it.
+    fn run_for(ms: u64) {
+        let context = glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            while context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn layer(view: &ChartView) -> pulse::PulseLayer {
+        view.pulse.borrow().clone().expect("a layer for the breath")
+    }
+
+    /// Animation allowed again however a test ends.
+    struct Animations;
+
+    impl Animations {
+        fn off() -> Animations {
+            gtk::Settings::default().expect("settings").set_gtk_enable_animations(false);
+            Animations
+        }
+    }
+
+    impl Drop for Animations {
+        fn drop(&mut self) {
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_enable_animations(true);
+            }
+        }
+    }
+
+    /// An open position's line breathes: the halo's strength moves over a
+    /// breath, on its own layer, a frame of it at most every 50 ms — and the
+    /// chart under it is not drawn again once, however many frames of the
+    /// breath go by.
+    #[test]
+    fn a_position_breathes_on_its_own_layer_without_redrawing_the_chart() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            assert!(view.breathing(), "no clock held for a position on screen");
+            let layer = layer(&view);
+            assert!(layer.band().is_some(), "no halo for the line");
+            let (drawn, frames) = (view.drawn.get(), layer.frames());
+            let mut levels = Vec::new();
+            for _ in 0..30 {
+                run_for(100);
+                levels.push(view.breath().expect("a level"));
+            }
+            let spread = levels.iter().cloned().fold(f64::MIN, f64::max) - levels.iter().cloned().fold(f64::MAX, f64::min);
+            assert!(spread > 0.5, "the breath hardly moved over three seconds: {levels:?}");
+            assert_eq!(view.drawn.get(), drawn, "the chart was drawn again for the breath");
+            let breathed = layer.frames() - frames;
+            assert!(breathed >= 8, "only {breathed} frames of the breath in three seconds");
+            assert!(breathed <= 3_000 / 50 + 2, "{breathed} frames of the breath in three seconds");
+            window.destroy();
+        });
+    }
+
+    /// The layer over the chart takes nothing from the hand: whatever is
+    /// under the line, the chart is what a pointer finds there.
+    #[test]
+    fn the_breath_takes_no_pointer_input() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            let layer = layer(&view);
+            assert!(!layer.can_target() && !layer.can_focus());
+            assert_eq!((layer.width(), layer.height()), (view.area.width(), view.area.height()));
+            let band = layer.band().expect("a halo");
+            for span in &band.spans {
+                for y in [band.y - band.half - 2.0, band.y, band.y + band.half + 2.0] {
+                    let picked = view.root.pick((span.from + span.to) / 2.0, y, gtk::PickFlags::DEFAULT).expect("something there");
+                    assert_eq!(picked, view.area.clone().upcast::<gtk::Widget>(), "the breath took the pointer at {y}");
+                }
+            }
+            window.destroy();
+        });
+    }
+
+    /// A chart with no position has no layer for a breath and holds no
+    /// clock; the position closed, or the window hidden, lets go of it and
+    /// draws no more frames of it.
+    #[test]
+    fn a_flat_chart_holds_no_clock_and_draws_no_breath() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, false);
+            run_for(300);
+            assert_eq!(view.breath(), None, "a layer for a breath nobody asked for");
+            assert!(!view.breathing());
+            window.destroy();
+
+            let (window, view) = breathing_window(0, true);
+            assert!(view.breathing());
+            window.set_visible(false);
+            run_for(100);
+            assert!(!view.breathing(), "a hidden window holds the clock");
+            window.set_visible(true);
+            run_for(300);
+            assert!(view.breathing(), "back on screen and not breathing");
+
+            let orders: Vec<PriceMark> = view.price_marks().into_iter().filter(|mark| !mark.pulse).collect();
+            let rules = rules_of(&view.state.borrow());
+            view.set_marks(orders, rules);
+            run_for(200);
+            assert!(!view.breathing(), "flat and still holding the clock");
+            let frames = layer(&view).frames();
+            run_for(500);
+            assert_eq!(layer(&view).frames(), frames, "frames of a breath on a flat chart");
+            window.destroy();
+        });
+    }
+
+    /// With animation turned off on the desktop the line is still: no clock
+    /// held and no halo drawn. Turned on, it breathes; off again, it stops.
+    #[test]
+    fn no_breath_while_the_desktop_turns_animation_off() {
+        crate::on_gtk(|| {
+            let animations = Animations::off();
+            let (window, view) = breathing_window(0, true);
+            run_for(300);
+            assert!(!view.breathing(), "a clock held with animation off");
+            assert_eq!(view.breath(), Some(0.0));
+            assert_eq!(layer(&view).frames(), 0, "a halo drawn with animation off");
+            drop(animations);
+            run_for(300);
+            assert!(view.breathing(), "animation on and no breath");
+            let _off = Animations::off();
+            run_for(100);
+            assert!(!view.breathing(), "animation off and still breathing");
+            window.destroy();
+        });
+    }
+
+    /// The rest between breaths is as long as it says, though the clock
+    /// sleeps through it: the next breath comes up on time.
+    #[test]
+    fn the_next_breath_comes_after_the_rest() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            // From 0.4 s in to the rest, which ends at 5.2 s.
+            run_for(4_300);
+            let mut after = Vec::new();
+            for _ in 0..12 {
+                run_for(100);
+                after.push(view.breath().unwrap_or(0.0));
+            }
+            assert!(after.iter().any(|level| *level > 0.0), "no breath after the rest: {after:?}");
+            window.destroy();
+        });
+    }
+
+    /// While the hand is on the chart the breath holds where it is rather
+    /// than asking for frames beside the chart's.
+    #[test]
+    fn the_breath_holds_while_the_chart_is_dragged() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            run_for(600);
+            view.state.borrow_mut().drag = Some(Drag::Pan { left: 0, offset: 0.0, strip: None });
+            run_for(100);
+            let (level, frames) = (view.breath(), layer(&view).frames());
+            run_for(800);
+            assert_eq!(view.breath(), level, "the breath moved under the hand");
+            assert_eq!(layer(&view).frames(), frames);
+            view.state.borrow_mut().drag = None;
+            run_for(800);
+            assert_ne!(layer(&view).frames(), frames, "the breath did not come back after the hand");
+            window.destroy();
+        });
+    }
+
+    /// The halo runs either side of the line and nowhere near a label or a
+    /// tab, the position's own or another mark's beside it; and there is
+    /// none for a position that is faint, or off the price plot.
+    #[test]
+    fn the_halo_keeps_clear_of_every_label() {
+        let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            let (mut state, mut lines, rules) = held_long(0, true);
+            state.mark_labels = side;
+            // An order a hair from the position, its label across the line.
+            let avg = lines[2].price;
+            lines[0].price = avg + state.tick().unwrap_or(0.01);
+            state.marks = Marks { lines, rules: Box::new(rules) };
+            let band = pulse_band(&state, w, h).expect("a halo");
+            let plan = layout(&state, w, h);
+            let lane = state.lane(&plan);
+            let cr = measuring().unwrap();
+            assert!(band.spans.iter().all(|span| span.from >= lane.start() && span.to <= lane.end), "{side:?}");
+            for mark in [&state.marks.lines[0], &state.marks.lines[2]] {
+                let row = label_row(&cr, lane, mark);
+                let pieces = std::iter::once((row.left(), row.right())).chain(row.tabs.iter().map(|(_, x, w)| (*x, x + w)));
+                for (left, right) in pieces {
+                    for span in &band.spans {
+                        assert!(span.to <= left - MARK_GAP || span.from >= right + MARK_GAP, "{side:?}: over {}", mark.id);
+                    }
+                }
+            }
+            assert!(!band.spans.is_empty());
+
+            mark_mut(&mut state, "position").dim = true;
+            assert_eq!(pulse_band(&state, w, h), None, "{side:?}: a faint position breathes");
+            mark_mut(&mut state, "position").dim = false;
+            mark_mut(&mut state, "position").price = 1e9;
+            assert_eq!(pulse_band(&state, w, h), None, "{side:?}: a position off the plot breathes");
+        }
+    }
+
+    /// The breath as pictures, for a person to look at: one breath of the
+    /// real thing on screen, six frames of it through the compositor; and
+    /// its top in three strengths, the chosen one between a fainter and a
+    /// stronger. Written only when asked for, to the folder in
+    /// `OMACHARTS_PULSE_SHOTS`.
+    #[test]
+    fn the_breath_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_PULSE_SHOTS") else { return };
+        crate::on_gtk(move || {
+            for (theme, name) in [(0, "dark"), (3, "light")] {
+                let (window, view) = breathing_window(theme, true);
+                let layer = layer(&view);
+                let render = |file: &str| {
+                    let (w, h) = (view.root.width(), view.root.height());
+                    let snapshot = gtk::Snapshot::new();
+                    snapshot.scale(2.0, 2.0);
+                    view.root.snapshot_child(&view.area, &snapshot);
+                    view.root.snapshot_child(&layer, &snapshot);
+                    let node = snapshot.to_node().expect("a picture");
+                    let renderer = window.renderer().expect("a renderer");
+                    let viewport = gtk::graphene::Rect::new(0.0, 0.0, 2.0 * w as f32, 2.0 * h as f32);
+                    renderer.render_texture(node, Some(&viewport)).save_to_png(format!("{folder}/{file}")).unwrap();
+                };
+                // The fainter one is about 0.08 of the line's colour on a
+                // dark ground, the stronger about 0.15.
+                for (times, strength) in [(0.0, "none"), (0.72, "fainter"), (1.0, "chosen"), (1.36, "stronger")] {
+                    layer.show(1.0, times);
+                    render(&format!("peak-{name}-{strength}.png"));
+                }
+                if name == "dark" {
+                    // The real thing: the clock taken up again from the
+                    // start of a breath, and the screen read six times over
+                    // one of them.
+                    layer.show(0.0, 1.0);
+                    layer.restart();
+                    run_for(100);
+                    for n in 0..6 {
+                        let file = format!("{folder}/breath-{n}.png");
+                        let _ = std::process::Command::new("grim").arg(&file).status();
+                        run_for(5_200 / 6);
+                    }
+                }
+                window.destroy();
+            }
         });
     }
 

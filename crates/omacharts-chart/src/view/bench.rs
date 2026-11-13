@@ -23,7 +23,8 @@ use omacharts_engine::drawings::{Anchor, Drawing, Kind as DrawingKind};
 use omacharts_engine::indicators::{self, Kind};
 use omacharts_engine::{theme, Bar, Indicator, Timeframe};
 
-use super::{draw, draw_pointer, layout, Drawn, State};
+use super::{draw, draw_pointer, layout, Drawn, Marks, State};
+use crate::marks::{AnyPrice, PriceMark};
 
 /// A chart set up to be drawn, with no window under it.
 pub struct Scene {
@@ -166,6 +167,22 @@ impl Scene {
         }
         self.state.selected = drawings.len().checked_sub(1).into_iter().collect();
         self.state.drawings = drawings;
+    }
+
+    /// Hold a position at the last close: the line, its label and its tabs
+    /// as the trading window lays them.
+    ///
+    /// Built from [`PriceMark::new`] and the fields every revision with
+    /// marks has, so the file still grafts onto one from before a field
+    /// this branch added.
+    pub fn hold_position(&mut self) {
+        let Some(last) = self.state.bars.last().copied() else { return };
+        let mut mark = PriceMark::new("position", last.close, "\u{25b2} 1", "#5fb878");
+        mark.body = Some("+$125.00".into());
+        mark.closable = true;
+        mark.draggable = true;
+        mark.raised = true;
+        self.state.marks = Marks { lines: vec![mark], rules: Box::new(AnyPrice) };
     }
 
     /// What a pointer motion costs before anything is repainted.

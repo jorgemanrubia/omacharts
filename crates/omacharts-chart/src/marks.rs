@@ -59,6 +59,10 @@ pub struct PriceMark {
     /// Over the line joining linked marks, where the others are under it;
     /// and its handles are found before theirs.
     pub raised: bool,
+    /// Its line breathes: a faint halo either side of it that swells and
+    /// fades on a slow period, while it is on screen, not faint and the
+    /// desktop allows animation. One mark at a time — the first that asks.
+    pub pulse: bool,
 }
 
 impl PriceMark {
@@ -80,6 +84,7 @@ impl PriceMark {
             tabs: Vec::new(),
             link: None,
             raised: false,
+            pulse: false,
         }
     }
 

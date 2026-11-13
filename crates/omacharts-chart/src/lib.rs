@@ -53,7 +53,7 @@ pub use view::{CompareLine, Comparing, Reading, Readout};
 pub use view::{ExecutionMark, Executions, TripLine};
 pub use view::{
     clamp_thickness, delta_colours, volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover,
-    IndicatorEvent, ProfileSpot, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS, POINTER_LAYER,
+    IndicatorEvent, ProfileSpot, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS, POINTER_LAYER, PULSE_LAYER,
     PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS,
 };
 
