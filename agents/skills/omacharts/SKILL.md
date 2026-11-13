@@ -160,6 +160,17 @@ omacharts chart compare add --chart pos:0 GC NQ BTC-USD
 omacharts chart compare set --chart pos:0 --from 2026-01-02 --lines-only on
 ```
 
+**Gold over silver, or the ten-year less the five-year?** Any symbol takes
+arithmetic — `+ - * /`, numbers, parentheses — so a ratio, a spread or a
+basket is one symbol, charted and listed like any other. Quote it for the
+shell. A dash that names a ticker is the ticker; space a minus to subtract.
+
+```
+omacharts chart set --chart pos:0 --symbol 'TNX-FVX' --resolution 1D
+omacharts watchlist create Spreads
+omacharts watchlist add Spreads 'GC/SI' '(SPY+QQQ)/2' '3*CL - HO*42'
+```
+
 **Each chart has a link mode**, which is what a click in the watchlist does
 to it. `focus` (the default) takes the click only while it is the focused
 chart, for charts showing different symbols. `follow` takes every click, so

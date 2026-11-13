@@ -161,7 +161,7 @@ const DAY_LEAD: i64 = 6 * 3_600;
 /// evening its session opens, which is the day before by the calendar. Six
 /// hours forward puts an evening open on the day it trades for and leaves a
 /// midnight or a morning on its own.
-fn moment(ts: i64, by_day: bool) -> i64 {
+pub(crate) fn moment(ts: i64, by_day: bool) -> i64 {
     match by_day {
         true => (ts + DAY_LEAD).div_euclid(86_400),
         false => ts,

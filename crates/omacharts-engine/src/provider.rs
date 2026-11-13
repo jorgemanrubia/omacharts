@@ -443,7 +443,27 @@ pub trait Provider: Send + Sync {
     fn delay_minutes(&self, kind: InstrumentKind) -> u32;
 
     /// This instrument in the provider's own symbology, if it serves it.
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String>;
+    ///
+    /// Only ever asked about something that trades; [`Self::symbol_for`] is
+    /// what callers ask, and it handles formulas before this sees one.
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String>;
+
+    /// What to ask this provider for, if it serves the instrument at all.
+    ///
+    /// A formula — a ratio, a spread, a pair turned over — is its arithmetic
+    /// with each leg in this provider's spelling, `{GC=F}/{SI=F}`, which
+    /// [`crate::formula::bars`] reads again to fetch each one. None is
+    /// offered on a streamed feed: a stream is one subscription per symbol,
+    /// and nothing here combines two or turns one over.
+    ///
+    /// Not to be overridden — implement [`Self::native_symbol`] instead.
+    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+        match instrument.formula.as_deref() {
+            None => self.native_symbol(instrument),
+            Some(formula) if self.stream().is_none() => formula.provider_symbol(|leg| self.native_symbol(leg)),
+            Some(_) => None,
+        }
+    }
 
     /// Could this feed chart `instrument` at all, whatever it holds of it
     /// right now? What a chart may be pointed at: a feed of files on this
@@ -669,7 +689,7 @@ mod tests {
         fn delay_minutes(&self, _: InstrumentKind) -> u32 {
             0
         }
-        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
             Some(instrument.symbol.clone())
         }
         fn capabilities(&self) -> &'static [Capability] {
@@ -714,7 +734,7 @@ mod tests {
         fn delay_minutes(&self, _: InstrumentKind) -> u32 {
             0
         }
-        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
             Some(instrument.symbol.clone())
         }
         fn capabilities(&self) -> &'static [Capability] {
@@ -737,6 +757,23 @@ mod tests {
         assert_eq!(Pushes.delivery(), Delivery::Streamed);
         assert_eq!(Delivery::Streamed.word(), "streamed");
         assert_eq!(Delivery::Polled.word(), "polled");
+    }
+
+    /// A formula is spelled as its legs for a feed that is polled, and not
+    /// at all for one that streams: nothing combines two subscriptions.
+    #[test]
+    fn a_formula_is_its_legs_on_a_polled_feed_and_none_on_a_streamed_one() {
+        let index = crate::symbols::SearchIndex::new(crate::symbols::seed());
+        let ratio = index.resolve("GC/SI", None).expect("gold over silver");
+        assert_eq!(Bare.symbol_for(&ratio).as_deref(), Some("{GC}/{SI}"));
+        assert_eq!(Pushes.symbol_for(&ratio), None);
+        assert_eq!(Pushes.symbol_for(&ratio.legs()[0]).as_deref(), Some("GC"));
+
+        let turned = index.resolve("USDEUR", None).expect("one over EURUSD");
+        assert_eq!(Bare.symbol_for(&turned).as_deref(), Some("1/{EURUSD}"));
+
+        let spread = index.resolve("3*CL-HO*42", None).expect("a spread");
+        assert_eq!(Bare.symbol_for(&spread).as_deref(), Some("3*{CL}-{HO}*42"));
     }
 
     /// The bug this whole type exists for: every failure used to reach the

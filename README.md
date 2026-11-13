@@ -42,6 +42,8 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   volume profile, RSI, MACD, ATR and stochastic, each in its own resizable
   strip. Save a set of them as a chart template and put charts on it: change
   the template and every chart on it follows. More coming.
+- **Arithmetic on symbols.** Ratios, spreads and baskets as one symbol:
+  `GC/SI`, `TNX-FVX`, `(2*RB + HO)*42/3 - CL`, `(SPY+QQQ)/2`.
 - **Sessions.** Each instrument keeps its exchange's hours: Globex's evening
   open, the cash session, a listing abroad in its own clock. New charts set
   the extended hours apart from the regular session, and any other stretch of

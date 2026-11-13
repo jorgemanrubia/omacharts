@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-use omacharts_engine::{drawable, Bar, InstrumentKind, Timeframe};
+use omacharts_engine::{drawable, Bar, Instrument, Timeframe};
 
 /// The windows of `tests/fixtures/indices/<name>.csv`, each a run of days,
 /// every bar with its date.
@@ -50,12 +50,21 @@ fn served(name: &str) -> Vec<Vec<(String, Bar)>> {
     windows
 }
 
+/// From JSON, so a field added to an instrument needs nothing here.
+fn index(symbol: &str) -> Instrument {
+    let fields = serde_json::json!({
+        "symbol": symbol, "name": symbol, "kind": "index", "currency": "USD", "tier": 0,
+        "session_origin": 0, "overrides": [], "popularity": 0,
+    });
+    serde_json::from_value(fields).expect("an instrument")
+}
+
 fn assert_drawn_as_served(symbol: &str) {
     let windows = served(symbol);
     assert!(windows.len() >= 10, "{symbol}: {} windows", windows.len());
     for served in windows {
         let mut drawn: Vec<Bar> = served.iter().map(|(_, bar)| *bar).collect();
-        drawable(&mut drawn, Timeframe::days(1), InstrumentKind::Index);
+        drawable(&mut drawn, Timeframe::days(1), &index(symbol));
         let changed: Vec<String> = served
             .iter()
             .filter(|(_, bar)| drawn.binary_search_by_key(&bar.ts, |b| b.ts).map(|at| drawn[at]) != Ok(*bar))

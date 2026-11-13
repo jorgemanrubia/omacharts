@@ -257,6 +257,7 @@ fx	EURJPY	Euro / Japanese Yen	-	JPY	2	0	-
 fx	USDMXN	US Dollar / Mexican Peso	-	MXN	2	0	-
 fx	USDCNY	US Dollar / Chinese Yuan	-	CNY	2	0	-
 fx	USDTWD	US Dollar / Taiwan Dollar	-	TWD	2	0	-	-	-	美元/新台幣
+fx	USDKRW	US Dollar / South Korean Won	-	KRW	2	0	-
 crypto	BTC	Bitcoin	-	USD	0	0	-
 crypto	ETH	Ethereum	-	USD	0	0	-
 crypto	SOL	Solana	-	USD	1	0	-

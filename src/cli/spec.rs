@@ -465,7 +465,7 @@ pub const SURFACE: &[Noun] = &[
                 name: "show",
                 about: "Everything known about one instrument",
                 args: &[
-                    Arg::req("SYMBOL", "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one"),
+                    Arg::req("SYMBOL", "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one; or arithmetic on symbols, GC/SI or TNX-FVX"),
                     Arg::opt("SUFFIX", "the venue suffix for a listing abroad, such as DE"),
                 ],
                 flags: &[],
@@ -544,7 +544,7 @@ pub const SURFACE: &[Noun] = &[
             Verb {
                 name: "add",
                 about: "Put symbols in a watchlist",
-                args: &[Arg::req("LIST", SELECTOR), Arg::many("SYMBOL", "one or more tickers, such as NVDA or 2330.TW")],
+                args: &[Arg::req("LIST", SELECTOR), Arg::many("SYMBOL", "one or more tickers, such as NVDA, 2330.TW, the ratio GC/SI or the spread TNX-FVX")],
                 flags: &[
                     Flag::valued("section", "NAME", "put them in this section rather than at the top"),
                     Flag::valued("suffix", "S", "venue suffix, applied to every symbol given"),
@@ -927,7 +927,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
                     Flag::valued("title", "TITLE", "the chart title, shown in its header; \"\" for none"),
-                    Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
+                    Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL, 2330.TW, the ratio GC/SI, the spread TNX-FVX or any arithmetic, (SPY+QQQ)/2"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
                     Flag::valued("style", "STYLE", "how bars are drawn, or `none` to hide them").of(STYLES),

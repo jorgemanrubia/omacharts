@@ -12172,6 +12172,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         }
     }
 
@@ -14210,6 +14211,7 @@ mod tests {
                     exchange: None,
                     popularity: 0,
                     local_name: None,
+                    formula: None,
                 },
                 Timeframe::days(1),
                 ramp(200),

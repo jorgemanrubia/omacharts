@@ -551,17 +551,17 @@ pub struct Quote {
 /// Read an instrument's move from the cache.
 pub fn quote(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> Option<Quote> {
     let key = cache_key(provider, instrument)?;
-    quote_from(store, &key, instrument, &daily_bars(store, &key, instrument.kind))
+    quote_from(store, &key, instrument, &daily_bars(store, &key, instrument))
 }
 
 /// The daily bars cached under `key`, as a chart draws them.
 pub fn daily_bars(
     store: &Store,
     key: &str,
-    kind: omacharts_engine::InstrumentKind,
+    instrument: &Instrument,
 ) -> Vec<omacharts_engine::Bar> {
     let mut bars = store.load_bars(key, Timeframe::days(1));
-    omacharts_engine::drawable(&mut bars, Timeframe::days(1), kind);
+    omacharts_engine::drawable(&mut bars, Timeframe::days(1), instrument);
     bars
 }
 
@@ -751,7 +751,10 @@ pub fn plan_refresh(
         let fetched_at =
             if left_out { coverage.fetched_at } else { coverage.fetched_at.max(asked.unwrap_or(0)) };
         let due = row_due(instrument, fetched_at, now);
-        if batch == 0 || left_out {
+        // A formula is several series worked together, which a batch of
+        // closes cannot ask for.
+        let unbatchable = omacharts_engine::formula::is_formula(&symbol);
+        if batch == 0 || unbatchable || left_out {
             if due == Due::Now {
                 bars.push((fetched_at, instrument));
             }
@@ -965,7 +968,7 @@ fn entry_json(store: &Store, provider: Option<&dyn Provider>, instrument: &Instr
     );
     let quote = provider.and_then(|provider| quote(store, provider, instrument));
     if let Some(key) = provider.and_then(|provider| cache_key(provider, instrument)) {
-        let bars = daily_bars(store, &key, instrument.kind);
+        let bars = daily_bars(store, &key, instrument);
         let mut closes: Vec<(i64, f64)> = bars.iter().map(|bar| (bar.ts, bar.close)).collect();
         // The line ends where the price beside it does. A batch of closes is
         // usually newer than the bars: its close replaces the day it shares

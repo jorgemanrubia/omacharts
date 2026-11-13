@@ -3832,7 +3832,7 @@ pub(super) mod tests {
         fn delay_minutes(&self, _: omacharts_engine::InstrumentKind) -> u32 {
             0
         }
-        fn symbol_for(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
+        fn native_symbol(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
             let future = instrument.kind == omacharts_engine::InstrumentKind::FutureRoot;
             (future || !self.futures_only).then(|| instrument.symbol.clone())
         }

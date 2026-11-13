@@ -329,8 +329,14 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         .map(|l| l.parse().unwrap_or(10))
         .unwrap_or(10);
     let index = crate::inventory::everything();
-    let hits: Vec<&omacharts_engine::Instrument> =
-        index.search(query, limit).iter().filter_map(|h| index.get(h.index)).collect();
+    // A whole spelling — a formula, a pair nobody listed — first, the way
+    // the search field offers it.
+    let exact = index.spelled(query);
+    let hits: Vec<&omacharts_engine::Instrument> = exact
+        .iter()
+        .chain(index.search(query, limit).iter().filter_map(|h| index.get(h.index)))
+        .take(limit)
+        .collect();
     if hits.is_empty() {
         return Err(Fault::not_found(format!("nothing matches {query:?}")));
     }
@@ -1990,22 +1996,16 @@ fn chart_compare(
     let index = crate::inventory::everything();
     let mut markets: Vec<(String, Option<String>)> = Vec::new();
     for text in &named {
-        let (mut symbol, suffix) = listing(&index, text, None);
-        // A coin as an exchange quotes it against the dollar, BTC-USD, is
-        // the coin the listings call BTC.
-        if index.resolve(&symbol, suffix.as_deref()).is_none()
-            && let Some(coin) = symbol.strip_suffix("-USD")
-            && index.find(coin, None).is_some_and(|i| i.kind == omacharts_engine::InstrumentKind::Crypto)
-        {
-            symbol = coin.to_string();
-        }
-        if index.resolve(&symbol, suffix.as_deref()).is_none() {
+        let (symbol, suffix) = listing(&index, text, None);
+        // Kept as the instrument it resolves to, so BTC-USD is the coin the
+        // listings call BTC.
+        let Some(found) = index.resolve(&symbol, suffix.as_deref()) else {
             return Err(Fault::not_found(format!(
                 "no instrument called {}; try `omacharts symbol search {symbol}`",
                 spell(&symbol, suffix.as_deref())
             )));
-        }
-        markets.push((symbol, suffix));
+        };
+        markets.push((found.symbol, found.suffix));
     }
     let from = match arg(m, "from").map(String::as_str) {
         None => None,
@@ -6436,7 +6436,13 @@ fn listing(
     suffix: Option<String>,
 ) -> (String, Option<String>) {
     let symbol = symbol.to_uppercase();
-    if suffix.is_some() || index.find(&symbol, None).is_some() {
+    // A formula carries its legs' suffixes inside it: `GC/SAN.MC` is one
+    // symbol, not `GC/SAN` in Madrid, and `SPY-SAP.DE` not `SPY-SAP` there.
+    if suffix.is_some()
+        || index.find(&symbol, None).is_some()
+        || omacharts_engine::formula::looks_like(&symbol)
+        || (symbol.contains('-') && index.resolve(&symbol, None).is_some())
+    {
         return (symbol, suffix);
     }
     // A dated contract however it was typed, ESH27 or ES H7, as the exchange

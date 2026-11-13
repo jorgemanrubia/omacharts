@@ -76,7 +76,7 @@ impl Provider for Synthetic {
         0
     }
 
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         Some(instrument.symbol.clone())
     }
 

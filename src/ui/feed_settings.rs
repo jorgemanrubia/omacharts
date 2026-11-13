@@ -860,6 +860,7 @@ mod tests {
                 exchange: None,
                 popularity: 0,
                 local_name: None,
+                formula: None,
             };
             let future = instrument("ES", omacharts_engine::InstrumentKind::FutureRoot);
             let stock = instrument("AAPL", omacharts_engine::InstrumentKind::Equity);
