@@ -1938,7 +1938,9 @@ fn parameters_group(
             ));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::VolumeProfile { reset, rows, value_area, method, colouring, last_only, .. } => {
+        Params::VolumeProfile {
+            reset, rows, value_area, method, colouring, last_only, highlight, value_area_color, ..
+        } => {
             group.add(&reset_row(owner, refresh, id, *reset));
             // The newest period alone, on either method and either edge.
             let last_row = adw::SwitchRow::new();
@@ -1995,6 +1997,22 @@ fn parameters_group(
             // A delta has no value area: its rows cancel each other out, so
             // a share of their sum is a share of nothing.
             area_row.set_sensitive(has_value_area(*method));
+            group.add(&area_row);
+            let (highlight_row, area_colour_row) =
+                value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
+            let set_apart = {
+                let highlight_row = highlight_row.clone();
+                let area_colour_row = area_colour_row.clone();
+                move |method: Method| {
+                    highlight_row.set_sensitive(has_value_area(method));
+                    area_colour_row.set_sensitive(has_value_area(method) && highlight_row.is_active());
+                }
+            };
+            set_apart(*method);
+            highlight_row.connect_active_notify({
+                let area_colour_row = area_colour_row.clone();
+                move |row| area_colour_row.set_sensitive(row.is_sensitive() && row.is_active())
+            });
             method_row.connect_selected_notify({
                 let area_row = area_row.clone();
                 let colouring_row = colouring_row.clone();
@@ -2002,9 +2020,11 @@ fn parameters_group(
                     let method = Method::ALL.get(row.selected() as usize).copied().unwrap_or_default();
                     area_row.set_sensitive(has_value_area(method));
                     colouring_row.set_visible(has_colouring(method));
+                    set_apart(method);
                 }
             });
-            group.add(&area_row);
+            group.add(&highlight_row);
+            group.add(&area_colour_row);
         }
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
@@ -2181,6 +2201,58 @@ fn has_value_area(method: Method) -> bool {
     method == Method::Total
 }
 
+/// The volume profile switch that sets its value area apart from its other
+/// rows.
+pub const PROFILE_HIGHLIGHT_LABEL: &str = "Highlight value area";
+
+/// The volume profile row that paints its value area a colour of its own.
+pub const PROFILE_AREA_COLOUR_LABEL: &str = "Value area colour";
+
+/// Whether a volume profile sets its value area apart, and in what colour:
+/// unset, the rows' own, only stronger, as it always was.
+fn value_area_rows(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    highlight: bool,
+    choice: Option<ColorChoice>,
+) -> (adw::SwitchRow, adw::ActionRow) {
+    let switch = adw::SwitchRow::new();
+    switch.set_title(PROFILE_HIGHLIGHT_LABEL);
+    switch.set_subtitle("Off, every row is drawn alike");
+    switch.set_active(highlight);
+    {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        switch.connect_active_notify(move |row| {
+            let on = row.is_active();
+            update(&owner, id, |indicator| {
+                if let Params::VolumeProfile { highlight, .. } = &mut indicator.params {
+                    *highlight = on;
+                }
+            });
+            refresh.run();
+        });
+    }
+    let drawn = drawn_colour(owner, &owner.indicators(), id);
+    let shown = choice.as_ref().map(|c| c.resolve(&owner.theme())).unwrap_or(drawn);
+    let colour = colour_row(
+        owner,
+        refresh,
+        &Ink::new(String::new),
+        PROFILE_AREA_COLOUR_LABEL,
+        &shown,
+        choice,
+        |indicator, choice| {
+            if let Params::VolumeProfile { value_area_color, .. } = &mut indicator.params {
+                *value_area_color = choice;
+            }
+        },
+        id,
+    );
+    (switch, colour)
+}
+
 /// The volume profile switch that draws the newest period's profile alone.
 pub const PROFILE_LAST_ONLY_LABEL: &str = "Only show in last period";
 
@@ -2232,6 +2304,7 @@ fn profile_style(
         poc_width,
         poc_style,
         poc,
+        alpha,
         opacity,
         ..
     } = &indicator.params
@@ -2350,19 +2423,21 @@ fn profile_style(
         move |indicator, choice| indicator.color = choice,
         id,
     ));
-    // How much of the chart shows through the rows, or through the
-    // outline's own fill when that is how it is drawn.
+    // How much of the chart shows through the rows: none at 0%, where the
+    // value area is the colour picked, solid, and all of it at 100%. A
+    // profile saved with an older fade reads here as what it draws.
     group.add(&percent_row(
         owner,
         refresh,
         id,
         PROFILE_TRANSPARENCY_LABEL,
-        1.0 - omacharts_engine::indicators::profile::drawn_opacity(*opacity),
+        1.0 - omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
         0.0,
         1.0,
         move |indicator, share| {
-            if let Params::VolumeProfile { opacity, .. } = &mut indicator.params {
-                *opacity = (1.0 - share).clamp(0.0, 1.0);
+            if let Params::VolumeProfile { alpha, opacity, .. } = &mut indicator.params {
+                *alpha = (1.0 - share).clamp(0.0, 1.0);
+                *opacity = omacharts_engine::indicators::profile::opaque();
             }
         },
     ));

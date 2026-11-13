@@ -10112,9 +10112,10 @@ pub fn delta_colours(
     inks[at].clone()
 }
 
-/// How strongly a delta's rows are filled: all as strongly as a total's
-/// value area, a delta having none to set apart.
-const DELTA_ROW_ALPHA: f64 = 0.30;
+/// How strongly a delta's rows are filled as designed: all as strongly as a
+/// total's value area, a delta having none to set apart. Its Transparency
+/// moves them as it moves a total's value area.
+const DELTA_ROW_ALPHA: f64 = omacharts_engine::indicators::profile::DESIGNED_ALPHA;
 
 /// One histogram per period, anchored where its period begins.
 fn draw_profiles(
@@ -10132,14 +10133,27 @@ fn draw_profiles(
         } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
         _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
-    let (outline_style, poc_style, opacity) = match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { outline_style, poc_style, opacity, .. } => {
-            (*outline_style, *poc_style, omacharts_engine::indicators::profile::drawn_opacity(*opacity))
-        }
-        _ => (LineStyle::Solid, LineStyle::Solid, 1.0),
+    let (outline_style, poc_style, alpha, highlight, area_choice) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile {
+            outline_style, poc_style, alpha, opacity, highlight, value_area_color, ..
+        } => (
+            *outline_style,
+            *poc_style,
+            omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+            *highlight,
+            value_area_color.as_ref(),
+        ),
+        _ => (LineStyle::Solid, LineStyle::Solid, DELTA_ROW_ALPHA, true, None),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
+    // The value area in a colour of its own, when it is set apart and has
+    // one; otherwise the rows' own.
+    let area_fill = match (method, highlight, area_choice) {
+        (Method::Total, true, Some(choice)) => Some(choice.resolve(&state.theme)),
+        _ => None,
+    };
+    let (inside, outside) = omacharts_engine::indicators::profile::row_alphas(alpha, highlight);
     let look = selection::placed_look(state, drawn);
     let style = look.style;
 
@@ -10153,14 +10167,16 @@ fn draw_profiles(
         match style {
             omacharts_engine::indicators::profile::Style::Filled => {
                 let (area_low, area_high) = profile.value_area_bounds();
-                let alpha_of = |row: &omacharts_engine::indicators::ProfileRow| match method {
-                    Method::Total if row.low >= area_low && row.high <= area_high => 0.30,
-                    Method::Total => 0.14,
-                    Method::Delta => DELTA_ROW_ALPHA,
+                // Which pass a row is painted in: the value area's, or the
+                // rest's. A delta has no value area, and every row of it is
+                // painted as the value area of a total is.
+                let in_area = |row: &omacharts_engine::indicators::ProfileRow| match method {
+                    Method::Total => row.low >= area_low && row.high <= area_high,
+                    Method::Delta => true,
                 };
-                let strengths: &[f64] = match method {
-                    Method::Total => &[0.30, 0.14],
-                    Method::Delta => &[DELTA_ROW_ALPHA],
+                let passes: &[bool] = match method {
+                    Method::Total => &[true, false],
+                    Method::Delta => &[true],
                 };
                 // One path and one fill for every row of an ink at a
                 // strength, rather than a fill a row: a tick a row is
@@ -10168,11 +10184,11 @@ fn draw_profiles(
                 // row costs. The rows of one pass are side by side, never
                 // over each other, so they composite as they did one by one.
                 for (at, ink) in inks.iter().enumerate() {
-                    for &strength in strengths {
+                    for &pass in passes {
                         let mut any = false;
                         for row in &profile.rows {
                             let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
-                            if !mine || alpha_of(row) != strength {
+                            if !mine || in_area(row) != pass {
                                 continue;
                             }
                             let (from, to) = area.row(row.volume.abs() / profile.max_volume);
@@ -10182,8 +10198,11 @@ fn draw_profiles(
                             any = true;
                         }
                         if any {
-                            // The background as designed, faded by its transparency.
-                            colors::set_source_alpha(cr, &ink.fill, strength * opacity);
+                            let (fill, strength) = match pass {
+                                true => (area_fill.as_deref().unwrap_or(ink.fill.as_str()), inside),
+                                false => (ink.fill.as_str(), outside),
+                            };
+                            colors::set_source_alpha(cr, fill, strength);
                             let _ = cr.fill();
                         }
                     }
@@ -10208,7 +10227,7 @@ fn draw_profiles(
                 cr.set_line_join(cairo::LineJoin::Miter);
                 set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
                 for ink in &inks {
-                    colors::set_source_alpha(cr, &ink.edge, 0.75 * opacity);
+                    colors::set_source_alpha(cr, &ink.edge, omacharts_engine::indicators::profile::line_alpha(0.75, alpha));
                     selection::profile_path(cr, &area, profile, to_y, ink.side);
                     let _ = cr.stroke();
                 }
@@ -10264,10 +10283,18 @@ fn draw_profile_drawing(
         Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
         Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
     };
-    let opacity = look.opacity.clamp(0.0, 1.0);
+    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    let alpha = style.profile_alpha();
     match look.shape {
         Shape::Filled => {
             let fill = style.fill.hex(&state.theme);
+            // The value area in a colour of its own, when it is set apart and
+            // has one; otherwise the rows' own.
+            let area_fill = match (look.highlight, &look.value_area_paint) {
+                (true, Some(paint)) => paint.hex(&state.theme),
+                _ => fill.clone(),
+            };
+            let (inside_alpha, outside_alpha) = row_alphas(alpha, look.highlight);
             let (area_low, area_high) = profile.value_area_bounds();
             // The value area's rows in one fill and the rest in another, as
             // the study's are: a fill a row is most of what a row costs.
@@ -10285,18 +10312,18 @@ fn draw_profile_drawing(
                     any = true;
                 }
                 if any {
-                    let alpha = if in_area { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                    colors::set_source_alpha(cr, &fill, alpha * opacity);
+                    let (paint, strength) = if in_area { (&area_fill, inside_alpha) } else { (&fill, outside_alpha) };
+                    colors::set_source_alpha(cr, paint, strength);
                     let _ = cr.fill();
                 }
             }
             // An edge the drawing can go without: off, the rows are all of it.
             let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, colour, edge * opacity);
+            colors::set_source_alpha(cr, colour, line_alpha(edge, alpha));
             cr.set_line_width(style.width.max(0.5));
         }
         Shape::Outline => {
-            colors::set_source_alpha(cr, colour, opacity);
+            colors::set_source_alpha(cr, colour, line_alpha(1.0, alpha));
             cr.set_line_width(style.width.max(0.5));
         }
     }

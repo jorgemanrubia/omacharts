@@ -270,13 +270,15 @@ It is drawn under the bars, as the study's profiles are, so the candles stay on 
 | **Outline style** | Solid, Dashed or Dotted. Solid by default |
 | **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
 | **Background** | The rows |
-| **Transparency** | Fades the outline and the background together. 0% is the look as configured |
+| **Transparency** | How much of the candles shows through the background, 70% by default. At 0% the value area is the background colour, solid; at 100% the profile is gone. The outline fades with it |
 | **Point of control** | The line across the busiest price |
 | **Point of control style** | Solid, Dashed or Dotted. Solid by default |
 | **Point of control thickness** | The point of control, 1.5 px |
 | **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
 | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
 | **Value area %** | The share of the span's volume the value area holds, 10 to 100% |
+| **Highlight value area** | On by default: the value area is drawn stronger than the other rows, which are a little under half as strong. Off draws every row alike |
+| **Value area colour** | The value area's own colour while it is highlighted. By default the background's; **Reset** gives it back |
 
 | Configuration | Colour | Style | Alignment |
 |---|---|---|---|

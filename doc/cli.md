@@ -120,7 +120,7 @@ Every indicator the app has, with every parameter it exposes:
 | `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
 Anything that draws a line also takes `--color`, `--width` and `--style`, and
 everything takes `--visible`.
@@ -774,8 +774,10 @@ omacharts chart drawing reset-configs rect
 anchors: its height is the prices its bars reached. `--color` is its outline
 and `--fill` its background, `--border on|off` whether filled rows have it,
 `--width` its thickness and `--line-style` its pattern;
-`--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area` and
-`--transparency` are the rest. It is never moved whole, only
+`--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
+`--transparency` (0 its background solid, 0.7 by default),
+`--highlight-value-area on|off` and `--value-area-color` (or `none` for its
+background's) are the rest. It is never moved whole, only
 re-spanned, and it takes no words.
 
 **An anchored VWAP** (`avwap`, or `vwap`) reads only the time of its anchor,

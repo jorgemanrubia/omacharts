@@ -2833,7 +2833,10 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "style": style.profile.shape.key(),
             "align": style.profile.align.key(),
             "value_area": style.profile.value_area,
-            "transparency": 1.0 - style.profile.opacity,
+            "transparency": 1.0 - style.profile_alpha(),
+            "highlight_value_area": style.profile.highlight,
+            // Null while it is the background's own.
+            "value_area_color": style.profile.value_area_paint.as_ref().map(|paint| paint.spell()),
             "poc_width": style.profile.poc_width,
             "poc_style": style.profile.poc_style.label().to_lowercase(),
         });
@@ -2943,13 +2946,19 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
         Kind::Text => describe_text_style(style),
         Kind::Profile => {
             let look = &style.profile;
+            let area = match (look.highlight, &look.value_area_paint) {
+                (false, _) => ", not set apart".to_string(),
+                (true, Some(paint)) => format!(" in {}", paint.spell()),
+                (true, None) => String::new(),
+            };
             format!(
-                "{} {}, from the {}, point of control {}, value area {:.0}%",
+                "{} {}, from the {}, point of control {}, value area {:.0}%{area}, transparency {:.0}%",
                 style.colour.spell(),
                 look.shape.key(),
                 look.align.key(),
                 look.poc.spell(),
-                look.value_area * 100.0
+                look.value_area * 100.0,
+                (1.0 - style.profile_alpha()) * 100.0
             )
         }
         Kind::Vwap => {
@@ -3025,6 +3034,11 @@ struct StyleEdits {
     align: Option<omacharts_engine::drawings::ProfileAlign>,
     value_area: Option<f64>,
     transparency: Option<f64>,
+    /// Whether a profile sets its value area apart.
+    highlight: Option<bool>,
+    /// The value area's own colour; `Some(None)` gives it back the
+    /// background's.
+    area_paint: Option<Option<omacharts_engine::Paint>>,
     poc_width: Option<f64>,
     source: Option<omacharts_engine::drawings::VwapSource>,
     /// An anchored VWAP's line pattern.
@@ -3186,6 +3200,10 @@ impl StyleEdits {
             Some("off") => Ok(Some(false)),
             Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
         };
+        let area_paint = match arg(m, "value-area-color").map(String::as_str) {
+            Some("none") => Some(None),
+            _ => paint("value-area-color")?.map(Some),
+        };
         Ok(StyleEdits {
             line_style: pattern("line-style")?,
             edge_only: switch("select-by-border")?,
@@ -3212,6 +3230,8 @@ impl StyleEdits {
             align,
             value_area: bounded(m, "value-area", 0.1, 1.0)?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            highlight: switch("highlight-value-area")?,
+            area_paint,
             poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
             colour: paint("color")?,
             width,
@@ -3247,6 +3267,8 @@ impl StyleEdits {
             && self.align.is_none()
             && self.value_area.is_none()
             && self.transparency.is_none()
+            && self.highlight.is_none()
+            && self.area_paint.is_none()
             && self.poc_width.is_none()
             && self.source.is_none()
             && self.line.is_none()
@@ -3428,7 +3450,13 @@ impl StyleEdits {
             style.profile.value_area = share;
         }
         if let Some(clear) = self.transparency {
-            style.profile.opacity = 1.0 - clear;
+            style.set_profile_alpha(1.0 - clear);
+        }
+        if let Some(on) = self.highlight {
+            style.profile.highlight = on;
+        }
+        if let Some(paint) = &self.area_paint {
+            style.profile.value_area_paint = paint.clone();
         }
         if let Some(width) = self.poc_width {
             style.profile.poc_width = width;
@@ -3723,6 +3751,11 @@ struct Edits {
     cvd_style: Option<omacharts_engine::indicators::cvd::Style>,
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
+    /// Whether a volume profile sets its value area apart.
+    highlight: Option<bool>,
+    /// A volume profile's value area colour; `Some(None)` is `none`, the
+    /// rows' own.
+    value_area_color: Option<Option<ColorChoice>>,
     poc_color: Option<ColorChoice>,
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
@@ -3845,6 +3878,16 @@ impl Edits {
                 })?)),
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
+            highlight: match arg(m, "highlight-value-area").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--highlight-value-area is on or off, not {other:?}"))),
+            },
+            value_area_color: match arg(m, "value-area-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "value-area-color")?.map(Some),
+            },
             poc_color: colour(m, "poc-color")?,
             outline: match arg(m, "outline").map(String::as_str) {
                 None => None,
@@ -3989,6 +4032,8 @@ impl Edits {
             && self.cvd_style.is_none()
             && self.rows.is_none()
             && self.value_area.is_none()
+            && self.highlight.is_none()
+            && self.value_area_color.is_none()
             && self.poc_color.is_none()
             && self.profile_style.is_none()
             && self.align.is_none()
@@ -4220,8 +4265,25 @@ impl Edits {
         }
         if let Some(clear) = self.transparency {
             match kind == IndicatorKind::VolumeProfile {
-                true => params["opacity"] = json!(1.0 - clear),
+                true => {
+                    // The strength it is drawn at, from solid at 0 to gone at
+                    // 1; a fade saved by an older build is let go of.
+                    params["alpha"] = json!(1.0 - clear);
+                    params["opacity"] = json!(omacharts_engine::indicators::profile::opaque());
+                }
                 false => return Err(refuse("transparency")),
+            }
+        }
+        if let Some(on) = self.highlight {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["highlight"] = json!(on),
+                false => return Err(refuse("value area highlight")),
+            }
+        }
+        if let Some(choice) = &self.value_area_color {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["value_area_color"] = to_value(choice)?,
+                false => return Err(refuse("value area colour")),
             }
         }
         for (width, key, what) in [
@@ -9203,6 +9265,21 @@ mod tests {
         assert_eq!(profile["align"], "right");
         assert_eq!(profile["poc_color"], "amber");
         assert_eq!(profile["value_area"], 0.6);
+        assert!((profile["transparency"].as_f64().unwrap() - 0.7).abs() < 1e-9, "as it always looked: {profile}");
+        assert_eq!(profile["highlight_value_area"], true);
+        assert!(profile["value_area_color"].is_null(), "{profile}");
+
+        let out = run(
+            "chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 \
+             --transparency 0 --highlight-value-area off --value-area-color ink",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][1]["style"]["profile"];
+        assert_eq!(profile["transparency"], 0.0, "0 is its background solid: {profile}");
+        assert_eq!(profile["highlight_value_area"], false);
+        assert_eq!(profile["value_area_color"], "ink");
 
         let bad = run("chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 --align up", &store);
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
@@ -9272,6 +9349,7 @@ mod tests {
         }
         for words in [
             "volume_profile --outline-style dotted --poc-style dashed --transparency 0.3",
+            "volume_profile --highlight-value-area off --value-area-color Neutral",
             "macd --signal-style dashed",
             "stochastic --d-style dotted",
         ] {
@@ -9282,7 +9360,15 @@ mod tests {
         let params = |n: usize| listed["indicators"][n]["params"].clone();
         assert_eq!(params(0)["outline_style"], "dotted");
         assert_eq!(params(0)["poc_style"], "dashed");
-        assert!((params(0)["opacity"].as_f64().unwrap() - 0.7).abs() < 1e-9, "{}", params(0));
+        // 0.3 of the chart showing through is 0.7 of the colour, solid at 0.
+        assert!((params(0)["alpha"].as_f64().unwrap() - 0.7).abs() < 1e-9, "{}", params(0));
+        assert_eq!(params(0)["opacity"], 1.0, "no older fade is kept: {}", params(0));
+        assert_eq!(params(0)["highlight"], false);
+        assert_eq!(params(0)["value_area_color"]["name"], "Neutral", "{}", params(0));
+        let out = run("chart indicator set volume_profile --value-area-color none --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert!(listed["indicators"][0]["params"]["value_area_color"].is_null(), "{}", listed["indicators"][0]);
         assert_eq!(params(1)["signal_style"], "dashed");
         assert_eq!(params(2)["d_style"], "dotted");
 
@@ -9292,6 +9378,10 @@ mod tests {
             "macd --outline-style dotted",
             "rsi --transparency 0.5",
             "volume_profile --transparency 1.5",
+            "rsi --highlight-value-area off",
+            "volume_profile --highlight-value-area maybe",
+            "rsi --value-area-color Blue",
+            "volume_profile --value-area-color nonsense",
             "macd --signal-style wavy",
         ] {
             let out = run(&format!("chart indicator set {bad} --book Macro"), &store);

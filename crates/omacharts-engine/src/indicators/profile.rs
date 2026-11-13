@@ -76,6 +76,68 @@ pub fn drawn_opacity(opacity: f64) -> f64 {
     }
 }
 
+/// How solid a profile's value area is drawn until somebody says otherwise:
+/// the strength its rows were designed at, which is a Transparency of 70%.
+/// A study and a drawing alike, so a new profile looks as every profile
+/// always did.
+pub const DESIGNED_ALPHA: f64 = 0.30;
+
+/// The rows outside the value area, as a share of the value area's
+/// strength, while it is highlighted: the 0.14 to 0.30 the study was
+/// designed at.
+///
+/// A share rather than a fixed step down, at every transparency, so the
+/// value area reads as the value area however strong the profile is drawn:
+/// at 0% the value area is the colour picked, solid, and the rest is that
+/// colour at 47%, quiet enough to tell apart and strong enough to read. A
+/// profile wanted solid all through turns the highlight off.
+pub const OUTSIDE_SHARE: f64 = 0.14 / DESIGNED_ALPHA;
+
+pub fn designed_alpha() -> f64 {
+    DESIGNED_ALPHA
+}
+
+pub fn is_designed_alpha(alpha: &f64) -> bool {
+    *alpha == DESIGNED_ALPHA
+}
+
+pub fn is_shown(on: &bool) -> bool {
+    *on
+}
+
+/// How solid a profile's value area is drawn: `alpha` faded by `opacity`,
+/// inside nothing to solid. The Transparency row is one minus this.
+///
+/// Two numbers because the opacity came first: it faded the look as
+/// designed, so a profile stored with one is drawn at the strength it had,
+/// and the Transparency row writes the strength itself, with the opacity
+/// back at 1.
+pub fn drawn_alpha(alpha: f64, opacity: f64) -> f64 {
+    let alpha = match alpha.is_finite() {
+        true => alpha.clamp(0.0, 1.0),
+        false => DESIGNED_ALPHA,
+    };
+    alpha * drawn_opacity(opacity)
+}
+
+/// How solid a profile's rows are drawn, inside its value area and out,
+/// from how solid the value area is: the rest at [`OUTSIDE_SHARE`] of it
+/// while the value area is highlighted, and every row the same when not.
+pub fn row_alphas(alpha: f64, highlight: bool) -> (f64, f64) {
+    match highlight {
+        true => (alpha, alpha * OUTSIDE_SHARE),
+        false => (alpha, alpha),
+    }
+}
+
+/// A line drawn with the rows, an outline or an edge, at the strength it
+/// was designed at beside rows at [`DESIGNED_ALPHA`], following them as they
+/// are made fainter or stronger: gone with them at 100% transparency, and
+/// solid well before they are.
+pub fn line_alpha(designed: f64, alpha: f64) -> f64 {
+    (designed * alpha / DESIGNED_ALPHA).clamp(0.0, 1.0)
+}
+
 /// How much of the room a profile has its longest row may reach: of its
 /// period's width, or of the empty space past the last bar when it is drawn
 /// there. What every profile was drawn at before it could be chosen, so one
@@ -858,6 +920,32 @@ mod tests {
 
     fn bar(ts: i64, low: f64, high: f64, volume: f64) -> Bar {
         Bar { ts, open: low, high, low, close: high, volume }
+    }
+
+    /// A profile's strength is the colour solid at 1 and nothing at 0,
+    /// faded by any opacity stored before it could be set; the rows outside
+    /// the value area are the share they were designed at while it is set
+    /// apart, and the same as it when not; and the lines go with them,
+    /// exactly as designed at the designed strength.
+    #[test]
+    fn a_profile_is_drawn_at_its_strength_and_as_designed_by_default() {
+        assert_eq!(drawn_alpha(DESIGNED_ALPHA, 1.0), 0.30);
+        assert_eq!(drawn_alpha(1.0, 1.0), 1.0);
+        assert_eq!(drawn_alpha(0.0, 1.0), 0.0);
+        assert!((drawn_alpha(DESIGNED_ALPHA, 0.5) - 0.15).abs() < 1e-12);
+        assert_eq!(drawn_alpha(f64::NAN, 1.0), DESIGNED_ALPHA);
+        assert_eq!(drawn_alpha(3.0, 1.0), 1.0);
+
+        let (inside, outside) = row_alphas(DESIGNED_ALPHA, true);
+        assert!((inside - 0.30).abs() < 1e-12 && (outside - 0.14).abs() < 1e-12, "{inside} {outside}");
+        assert_eq!(row_alphas(1.0, false), (1.0, 1.0));
+        let (_, outside) = row_alphas(1.0, true);
+        assert!((outside - 0.14 / 0.30).abs() < 1e-12);
+
+        assert!((line_alpha(0.75, DESIGNED_ALPHA) - 0.75).abs() < 1e-12);
+        assert!((line_alpha(0.45, DESIGNED_ALPHA * 0.5) - 0.225).abs() < 1e-12);
+        assert_eq!(line_alpha(1.0, 1.0), 1.0);
+        assert_eq!(line_alpha(0.45, 0.0), 0.0);
     }
 
     #[test]

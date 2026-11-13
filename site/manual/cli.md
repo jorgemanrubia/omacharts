@@ -564,7 +564,9 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile |
-| `--transparency F` | 0 to 1; 0 when not given | Volume profile: how much of the chart shows through its rows, or through its outline in the outline style |
+| `--transparency F` | 0 to 1; 0.7 when not given | Volume profile: how much of the chart shows through its rows and outline. 0 is its colour solid, 1 invisible |
+| `--highlight-value-area B` | `on`, `off` | Volume profile: whether its value area is set apart from its other rows; on when not given |
+| `--value-area-color C` | A colour, or `none` | Volume profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
@@ -992,7 +994,9 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--profile-style S` | `filled`, `outline` | A volume profile's rows, or only their edge |
 | `--align A` | `left`, `right` | The edge of its span a volume profile grows from |
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
-| `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
+| `--transparency F` | 0 to 1 | How much of the chart shows through a volume profile's background and outline: 0 solid, 1 invisible; 0.7 by default |
+| `--highlight-value-area B` | `on`, `off` | Whether a volume profile's value area is set apart from its other rows; on by default |
+| `--value-area-color C` | A colour, or `none` | A volume profile's value area while it is set apart; `none` for its background's colour |
 | `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
 | `--poc-style S` | `solid`, `dashed`, `dotted` | How a volume profile's point of control is drawn; `--line-style` is its outline's |
 | `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
@@ -1019,7 +1023,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--poc-width`, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 
