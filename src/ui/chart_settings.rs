@@ -3256,9 +3256,11 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     dialog.set_content_height(620);
     dialog.set_child(Some(&content));
 
-    // What each row adds, in order, and whether the query gave them their
-    // numbers ("sma 50"), which makes them set up already.
-    let shown: Rc<RefCell<(Vec<Indicator>, bool)>> = Rc::default();
+    // What each row adds, in order.
+    let shown: Rc<RefCell<Vec<Indicator>>> = Rc::default();
+    // Whether the query gave them their numbers ("sma 50"), which makes them
+    // set up already.
+    let numbered = Rc::new(std::cell::Cell::new(false));
     // Grouped under their families while nothing is typed, which is when the
     // list is being browsed; once something is, it is a ranked answer, and
     // headings would scatter the best match away from the top.
@@ -3273,7 +3275,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
             }
             let picks = shown.borrow();
             let category = |row: &gtk::ListBoxRow| {
-                picks.0.get(row.index().max(0) as usize).map(|pick| pick.kind.category())
+                picks.get(row.index().max(0) as usize).map(|pick| pick.kind.category())
             };
             let this = category(row);
             if this.is_none() || before.and_then(category) == this {
@@ -3295,6 +3297,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
         let rows = rows.clone();
         let shown = shown.clone();
         let grouped = grouped.clone();
+        let numbered = numbered.clone();
         move |query: &str| {
             while let Some(child) = rows.first_child() {
                 rows.remove(&child);
@@ -3308,12 +3311,11 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
                 true => indicators::Category::ALL.iter().flat_map(|c| c.kinds()).collect(),
                 false => indicators::search(name),
             };
-            let picks: Vec<Indicator> =
-                kinds.into_iter().filter_map(|kind| Indicator::numbered(0, kind, &numbers)).collect();
-            let numbered = !numbers.is_empty();
+            numbered.set(!numbers.is_empty());
             // Filled before the rows, which the header function reads.
-            *shown.borrow_mut() = (picks.clone(), numbered);
-            for pick in &picks {
+            *shown.borrow_mut() =
+                kinds.into_iter().filter_map(|kind| Indicator::numbered(0, kind, &numbers)).collect();
+            for pick in shown.borrow().iter() {
                 let kind = pick.kind;
                 let name = gtk::Label::new(Some(kind.name()));
                 name.set_xalign(0.0);
@@ -3329,7 +3331,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
                 // is the name itself, it would be saying it twice. With
                 // numbers, it is the label they make, which is the only place
                 // they show before Enter.
-                let chip = match numbered {
+                let chip = match numbered.get() {
                     true => Some(pick.label()),
                     false => (!kind.short_name().eq_ignore_ascii_case(kind.name()))
                         .then(|| kind.short_name().to_string()),
@@ -3386,12 +3388,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     let dialog_for_pick = dialog.clone();
     rows.connect_row_activated(move |_, row| {
         let at = row.index().max(0) as usize;
-        let Some((picked, numbered)) = ({
-            let (picks, numbered) = &*shown.borrow();
-            picks.get(at).cloned().map(|picked| (picked, *numbered))
-        }) else {
-            return;
-        };
+        let Some(picked) = shown.borrow().get(at).cloned() else { return };
         let id = owner_for_pick.next_indicator_id();
         // On a template it goes onto the template, like every other change
         // made here, so there is no template to go back onto if it is not
@@ -3404,7 +3401,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
         dialog_for_pick.close();
         // Typed with its numbers, it is set up already: they said what was
         // meant.
-        if numbered {
+        if numbered.get() {
             return;
         }
         // Straight into its settings: picking the kind and setting it up are
