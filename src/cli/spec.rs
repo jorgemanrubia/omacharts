@@ -1614,6 +1614,12 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "",
         "exploratory: the suffix of what a chart trades instead, set with its trading symbol",
     ),
+    (
+        "shows_fills",
+        "",
+        "exploratory: whether a chart marks its account's fills is switched in its settings for now, \
+         and the command comes with trading shipping",
+    ),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

@@ -21,7 +21,9 @@
 
 pub mod bench;
 mod compare;
+mod executions;
 mod selection;
+pub use executions::{ExecutionMark, Executions, TripLine};
 pub use compare::{CompareLine, Comparing, Reading, Readout};
 pub use selection::ProfileSpot;
 
@@ -292,6 +294,9 @@ struct State {
     marks: Marks,
     /// Which end of their lines the marks' labels sit at.
     mark_labels: LabelSide,
+    /// Past fills and the round trips joining them, laid over the chart
+    /// by whoever embeds it; empty unless somebody asks for them.
+    executions: Executions,
     /// The step a mark is dragged on, set by whoever lays the marks: the
     /// contract it trades, which need not step as the series charted does
     /// — a 6E chart trading M6E. The series' own step when unset.
@@ -1420,6 +1425,7 @@ impl State {
             trouble_words: None,
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
+            executions: Executions::default(),
             mark_tick: None,
             hover_mark: None,
             loading: false,
@@ -4869,6 +4875,24 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Mark `executions` on the chart: past fills and the round trips
+    /// joining them. Redrawn only when they change.
+    pub fn set_executions(&self, executions: Executions) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.executions == executions {
+                return;
+            }
+            state.executions = executions;
+        }
+        self.redraw();
+    }
+
+    /// The fills the chart marks, as they were given.
+    pub fn executions(&self) -> Executions {
+        self.state.borrow().executions.clone()
+    }
+
     /// The marks the chart is laid over with, as they were given.
     pub fn price_marks(&self) -> Vec<PriceMark> {
         self.state.borrow().marks.lines.clone()
@@ -6471,6 +6495,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         draw_candles(cr, state, &columns, &to_y);
     }
     draw_indicator_lines(cr, state, &columns, &to_y);
+    executions::draw(cr, state, &plan, &scale);
     if let Some((overlay, based)) = &compared {
         compare::draw_lines(cr, state, overlay, based, &columns, &plan, &to_y);
     }

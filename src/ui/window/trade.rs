@@ -99,6 +99,8 @@ pub(super) struct Trade {
     /// Whether the charts write P&L as money or in R, read when trading
     /// comes in and again whenever Preferences or a command changes it.
     pub pnl: Cell<trading::chart_pnl::ChartPnl>,
+    /// The accounts' fills, for the charts that mark them.
+    pub fills: super::executions::Fills,
 }
 
 /// How often at most the positions are marked to a moving market.
@@ -534,8 +536,10 @@ impl Window {
         self.trade.placed.borrow_mut().clear();
         self.trade.pending.borrow_mut().clear();
         self.trade.linking.borrow_mut().clear();
+        self.trade.fills.clear();
         for pane in self.panes.borrow().iter() {
             pane.view.set_marks(Vec::new(), super::marks::TradeRules::default());
+            pane.view.set_executions(Default::default());
             self.write_size_of(pane);
         }
     }
@@ -1806,6 +1810,7 @@ impl Window {
             return;
         }
         self.write_size_of(pane);
+        self.apply_fills_to(pane);
         pane.view.set_mark_labels(self.trade.order_labels.get());
         let Ok(target) = self.order_target(pane) else {
             pane.view.set_mark_tick(None);

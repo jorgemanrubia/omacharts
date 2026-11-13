@@ -286,6 +286,10 @@ pub struct ChartPane {
     /// half. Held until the rest arrives to name it, written back as it
     /// was, and nothing is traded meanwhile — never what the chart charts.
     pub trading_pending: RefCell<Option<(String, Option<String>)>>,
+    /// Whether the chart marks its account's fills in what it trades, past
+    /// and live. Off until somebody turns it on, and ignored while trading
+    /// is off.
+    pub shows_fills: Cell<bool>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -847,6 +851,7 @@ impl ChartPane {
             trading_size: RefCell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
+            shows_fills: Cell::new(false),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),

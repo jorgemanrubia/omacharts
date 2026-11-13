@@ -26,6 +26,10 @@ pub fn registry() -> Registry {
         // tests start from nothing.
         #[cfg(not(test))]
         fake.held.lock().unwrap().insert(String::new(), super::fake::day_of_orders());
+        #[cfg(not(test))]
+        if let Some(path) = std::env::var_os(super::fake::PAST_FILLS_ENV) {
+            fake.past.lock().unwrap().insert(String::new(), super::fake::past_fills(std::path::Path::new(&path)));
+        }
         services.push(Arc::new(fake));
     }
     Registry::of(services)
