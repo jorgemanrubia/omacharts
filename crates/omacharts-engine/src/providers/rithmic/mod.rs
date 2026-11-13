@@ -235,6 +235,7 @@ fn placeholder() -> Instrument {
         exchange: None,
         popularity: 0,
         local_name: None,
+        formula: None,
     }
 }
 
@@ -636,7 +637,7 @@ impl Provider for Rithmic {
         0
     }
 
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         rithmic_symbol(instrument)
     }
 

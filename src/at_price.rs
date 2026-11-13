@@ -937,7 +937,7 @@ mod tests {
         fn delay_minutes(&self, _: InstrumentKind) -> u32 {
             0
         }
-        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
             Some(instrument.symbol.clone())
         }
         fn capabilities(&self) -> &'static [Capability] {
@@ -964,6 +964,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         }
     }
 
@@ -1367,7 +1368,7 @@ mod tests {
         fn delay_minutes(&self, _: InstrumentKind) -> u32 {
             0
         }
-        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
             Some(instrument.symbol.clone())
         }
         fn capabilities(&self) -> &'static [Capability] {
@@ -1484,7 +1485,7 @@ mod tests {
             fn delay_minutes(&self, _: InstrumentKind) -> u32 {
                 0
             }
-            fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+            fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
                 Some(instrument.symbol.clone())
             }
             fn capabilities(&self) -> &'static [Capability] {

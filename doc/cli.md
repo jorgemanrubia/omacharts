@@ -942,6 +942,67 @@ read at the chart's resolution from the feed that would chart it, and laid on
 the chart's bars by carrying its last close forward over its closed hours.
 What a chart compares is saved with it and in chartbook templates.
 
+## Arithmetic on symbols
+
+Anywhere a symbol goes, arithmetic on symbols goes too: `+ - * /`, numbers
+and parentheses, with the usual precedence. A ratio, a spread, a basket and a
+crack spread are each one symbol, charted, listed and linked like any other.
+
+```
+$ omacharts watchlist add Spreads TNX-FVX GC/SI '(2*RB + HO)*42/3 - CL' '(SPY+QQQ)/2'
+added 4 to "Spreads": TNX-FVX GC/SI (2*RB+HO)*42/3-CL (SPY+QQQ)/2
+  [exit 0]
+
+$ omacharts symbol show '(2*RB + HO)*42/3 - CL'
+(2*RB+HO)*42/3-CL
+(2 × RBOB Gasoline + Heating Oil) × 42 / 3 − Crude Oil WTI
+kind      Futures
+exchange  unknown
+currency  unknown
+  [exit 0]
+```
+
+Quote it: to a shell, `*` and parentheses mean something.
+
+**A dash is a symbol's first.** Tickers can have dashes in them, so a run
+with a dash in it is the symbol it names, and a minus only when it names
+nothing: `TNX-FVX` subtracts. Spaces round a minus always subtract, and a
+formula that would read back as a symbol is shown with them.
+
+**Each leg is fetched, then the arithmetic is done on the bars.** The first
+symbol in the formula is its clock: every other leg is taken at its latest
+bar at or before each of the first's, so a stock over a future, which print
+at different hours, still line up. Open is the formula on the opens and close
+on the closes; high and low are the formula on the highs and on the lows,
+whichever is larger, widened to hold the open and close. A bar that divides
+by zero is left out, and a formula has no volume.
+
+A spread can go below zero, where a log scale has nothing to show, so a chart
+of one that does is drawn on a linear scale. A formula that subtracts moves
+in its own units in a watchlist, the way a yield does, since a spread that
+crosses zero has moved an infinite percentage; a ratio or a basket moves in
+percent.
+
+Every leg is anything that charts on its own: a listing abroad, `SAN.MC`, a
+futures contract, a pair turned over, `USDEUR`. A feed that streams, such as
+thinkorswim, offers no formulas: a stream is one subscription per symbol,
+and nothing combines them.
+
+## Currency pairs
+
+A dozen pairs are listed, and search finds them by name. Any other pair of
+currencies charts all the same when its six letters are typed in full, or as
+Yahoo spells it:
+
+```
+omacharts chart set --symbol SEKUSD
+omacharts chart set --symbol SEKUSD=X
+```
+
+Both are the same chart, stored as `SEKUSD`. A listed pair turned over,
+`USDEUR`, is drawn as one over `EURUSD`, so the two read the same quotes; any
+other pair comes from Yahoo as it is.
+
 ## Measuring a move
 
 With a window open, `chart measure` puts the ruler on the focused chart between

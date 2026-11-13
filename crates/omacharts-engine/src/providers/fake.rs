@@ -63,7 +63,7 @@ impl Provider for Fake {
     }
 
     /// Futures roots only, so that a stock still goes to the next feed.
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         (instrument.kind == InstrumentKind::FutureRoot).then(|| instrument.symbol.clone())
     }
 

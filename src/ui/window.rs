@@ -413,6 +413,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         };
         let (regular, extended) = (omacharts_engine::Session::Regular, omacharts_engine::Session::Extended);
         let hour = Timeframe::hours(1);
@@ -1055,6 +1056,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         }
     }
 
@@ -3690,7 +3692,7 @@ fn drawable_bars(
     };
     // Then what nobody could have traded, left out or cut back: here,
     // on the way to the screen, and never where the bars are kept.
-    omacharts_engine::drawable(&mut bars, timeframe, instrument.kind);
+    omacharts_engine::drawable(&mut bars, timeframe, instrument);
     bars
 }
 
@@ -4097,11 +4099,6 @@ impl Chartbook {
 struct Workspace {
     books: Vec<Chartbook>,
     active: usize,
-}
-
-/// A move as the header writes it, in whole hundredths of a percent.
-fn hundredths(change_pct: f64) -> i64 {
-    (change_pct * 100.0).round() as i64
 }
 
 /// A feed's row in the Data feed part's menu: its name, and when it has
@@ -11082,7 +11079,7 @@ impl Window {
                             // refolding this week, month or year would put back
                             // what the chart had left out of it.
                             let drawn =
-                                omacharts_engine::drawable_from(native, start, timeframe, instrument.kind);
+                                omacharts_engine::drawable_from(native, start, timeframe, &instrument);
                             let tail = omacharts_engine::session::filter(
                                 &drawn,
                                 pane.session.get(),
@@ -11575,22 +11572,24 @@ impl Window {
 
     fn write_change_of(self: &Rc<Self>, pane: &Rc<ChartPane>) {
         let instrument = pane.instrument.borrow().clone();
-        let quote = instrument.and_then(|instrument| {
-            let routed = self.route_pane(pane, &instrument)?;
-            crate::cli::quote(&self.store, routed.feed.provider.as_ref(), &instrument)
+        let quote = instrument.as_ref().and_then(|instrument| {
+            let routed = self.route_pane(pane, instrument)?;
+            let quote = crate::cli::quote(&self.store, routed.feed.provider.as_ref(), instrument)?;
+            Some((quote, instrument))
         });
         // In the theme's green and red, a chart whose rises are red saying
         // so here too; see `header::change_colour`.
         match quote {
-            Some(quote) => {
+            Some((quote, instrument)) => {
                 pane.change_basis.set(Some((quote.last - quote.change, crate::cli::session_day(quote.as_of))));
-                pane.change_shown.set(Some(hundredths(quote.change_pct)));
+                let text = crate::header::change_text(instrument, quote.last, quote.change, quote.change_pct);
                 let colour = crate::header::change_colour(&self.theme(), pane.swapped.get(), quote.change);
-                pane.write_change(Some((quote.change_pct, colour.as_deref())));
+                pane.write_change(Some((&text, colour.as_deref())));
+                pane.change_shown.replace(Some(text));
             }
             None => {
                 pane.change_basis.set(None);
-                pane.change_shown.set(None);
+                pane.change_shown.replace(None);
                 pane.write_change(None);
             }
         }
@@ -11606,12 +11605,17 @@ impl Window {
             return;
         }
         let change = newest.close - previous;
-        let change_pct = change / previous * 100.0;
-        if pane.change_shown.replace(Some(hundredths(change_pct))) == Some(hundredths(change_pct)) {
+        let text = {
+            let instrument = pane.instrument.borrow();
+            let Some(instrument) = instrument.as_ref() else { return };
+            crate::header::change_text(instrument, newest.close, change, change / previous * 100.0)
+        };
+        if pane.change_shown.borrow().as_deref() == Some(text.as_str()) {
             return;
         }
         let colour = crate::header::change_colour(&self.theme(), pane.swapped.get(), change);
-        pane.write_change(Some((change_pct, colour.as_deref())));
+        pane.write_change(Some((&text, colour.as_deref())));
+        pane.change_shown.replace(Some(text));
     }
 
     /// Delete a template. Its charts keep what it was showing them.

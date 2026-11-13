@@ -7,6 +7,8 @@
 //! is where [`Part::home`] puts it, which is how every chart looked before
 //! there was a choice.
 
+use omacharts_engine::Instrument;
+
 use crate::store::Store;
 
 /// What the header shows on the left: the line it always had, so a header
@@ -456,9 +458,23 @@ pub fn save(store: &Store, header: &Header) {
     store.set_setting(RIGHT_SETTING, &spell(&header.right));
 }
 
-/// A day's move as the header writes it: `+1.25%`.
-pub fn change_text(change_pct: f64) -> String {
-    format!("{change_pct:+.2}%")
+/// A day's move as the header and the watchlist's Chg % write it: `+1.25%`,
+/// or in its own units for a yield or a spread, `+0.0120`, since a rate is
+/// read by how far it moved and a spread that crosses zero has moved an
+/// infinite percentage: see [`Instrument::moves_in_units`]. `last` is the
+/// price the move is to, which decides how many decimals it is given.
+pub fn change_text(instrument: &Instrument, last: f64, change: f64, change_pct: f64) -> String {
+    match instrument.moves_in_units() {
+        true => signed(change, omacharts_engine::price_decimals(0.0, last, Some(instrument.kind))),
+        false => format!("{change_pct:+.2}%"),
+    }
+}
+
+/// A move in its own units, thousands marked, with the plus `{:+}` would
+/// write: on anything not negative or NaN.
+pub fn signed(value: f64, decimals: usize) -> String {
+    let plus = if value.is_sign_positive() && !value.is_nan() { "+" } else { "" };
+    format!("{plus}{}", omacharts_engine::grouped_decimals(value, decimals))
 }
 
 /// The colour a day's move is written in: the theme's own up and down,
@@ -764,8 +780,12 @@ mod tests {
     }
 
     #[test]
-    fn a_change_reads_with_its_sign() {
-        assert_eq!(change_text(-1.0), "-1.00%");
-        assert_eq!(change_text(0.256), "+0.26%");
+    fn a_change_reads_with_its_sign_and_a_spread_in_its_own_units() {
+        let index = omacharts_engine::SearchIndex::new(omacharts_engine::symbols::seed());
+        let spy = index.resolve("SPY", None).unwrap();
+        assert_eq!(change_text(&spy, 99.0, -1.0, -1.0), "-1.00%");
+        assert_eq!(change_text(&spy, 100.256, 0.256, 0.256), "+0.26%");
+        let spread = index.resolve("TNX-FVX", None).unwrap();
+        assert_eq!(change_text(&spread, 0.158, -0.013, -7.6), "-0.0130", "points, not percent");
     }
 }

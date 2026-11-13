@@ -88,6 +88,30 @@ A listing outside the US is its ticker plus its venue's suffix. `SAP DE` and `SA
 
 The venue tells two listings of one company apart. `BBVA.MC` is the Madrid listing and `BBVA` the New York one. Not every feed charts every venue ([Market data feeds](/manual/market-data/)). A chart asked for a symbol its feed does not have says **The data feed does not have this symbol.** or **No data feed in Preferences → Data charts this symbol.**
 
+## Arithmetic on symbols
+
+A symbol can be arithmetic on other symbols: `GC/SI` is gold over silver, `TNX-FVX` the ten-year yield less the five-year, `(SPY+QQQ)/2` a basket of the two, and `(2*RB+HO)*42/3-CL` a crack spread. It takes `+`, `-`, `*`, `/`, numbers and parentheses, with multiplying and dividing before adding and subtracting. Type one into the search and it is the first row. It goes anywhere a symbol goes, so a watchlist can hold it and a chart can follow it.
+
+| Typed | Charts |
+|---|---|
+| `GC/SI` | Gold over silver |
+| `TNX-FVX` | The ten-year yield less the five-year |
+| `(SPY+QQQ)/2` | The average of SPY and QQQ |
+| `SAN.MC/BBVA.MC` | Two listings abroad, each with its venue |
+| `USDEUR/GC` | A pair turned over, as a leg like any other |
+
+The chart is worked out from each leg's bars. The first symbol is the one whose bars the chart follows, and every other leg is read at its latest bar at or before each of them, so a stock over a future still lines up although the two trade at different hours. The open is worked out from the opens and the close from the closes. The high and the low are the larger and the smaller of the formula on the highs and on the lows, so a leg that is subtracted or divided by pulls them the other way. A day that would divide by zero is left out, and the chart has no volume.
+
+A dash can be part of a ticker, so a run of letters with a dash in it is the ticker it names, and a minus only when it names nothing. A minus with spaces round it always subtracts.
+
+In a watchlist, a formula that subtracts moves in points, the way a yield does, because a spread can cross zero. A ratio or a basket moves in percent. A spread that goes below zero is drawn on a linear scale, since a logarithmic one has nothing to show there.
+
+A feed that streams, such as thinkorswim, charts no formulas. Each of its symbols is a stream of its own, and nothing joins two of them.
+
+## Currency pairs
+
+The search lists a dozen pairs, such as `EURUSD`. Any other pair of currencies charts when you type its six letters, or Yahoo's spelling of them: `SEKUSD` and `SEKUSD=X` are the same chart, kept as `SEKUSD`. A listed pair typed the other way round, `USDEUR`, is drawn as one over `EURUSD`, so the two read the same prices.
+
 ## See also
 
 - [Searching symbols from the CLI](/manual/cli/#symbols)

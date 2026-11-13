@@ -634,18 +634,20 @@ fn clip(bars: &[Bar], i: usize) -> Option<(f64, f64)> {
 ///
 /// The same for every provider: both rules read nothing but the bars. Wicks
 /// are not judged within the day, where an index really does spike and come
-/// back inside an hour.
+/// back inside an hour, nor on a formula of two or more symbols, whose wicks
+/// are several series'. A pair turned over is judged, being one series'
+/// prints upside down.
 ///
 /// A future's prints are all kept: one with no volume is its settlement,
 /// which the exchange sets every day whether or not anybody traded, and on a
 /// fast day it can sit far from both neighbours. Palladium on 2026-01-27
 /// settled 14% down with no trades, 8% under the next day, while platinum did
 /// the same 3.6% under its own.
-pub fn drawable(bars: &mut Vec<Bar>, timeframe: Timeframe, kind: InstrumentKind) {
-    if !kind.settles_untraded() {
+pub fn drawable(bars: &mut Vec<Bar>, timeframe: Timeframe, instrument: &Instrument) {
+    if !instrument.kind.settles_untraded() {
         drop_phantoms(bars);
     }
-    if !timeframe.is_intraday() {
+    if !timeframe.is_intraday() && instrument.legs().len() < 2 {
         clip_stray_wicks(bars);
     }
 }
@@ -655,12 +657,12 @@ pub fn drawable(bars: &mut Vec<Bar>, timeframe: Timeframe, kind: InstrumentKind)
 /// weekly, monthly or yearly chart reaches back over days that have already
 /// been judged. Each bar is judged with the bars before it in view, which is
 /// all either rule reads behind it.
-pub fn drawable_from(native: &[Bar], start: usize, timeframe: Timeframe, kind: InstrumentKind) -> Vec<Bar> {
+pub fn drawable_from(native: &[Bar], start: usize, timeframe: Timeframe, instrument: &Instrument) -> Vec<Bar> {
     let Some(first) = native.get(start).map(|bar| bar.ts) else {
         return Vec::new();
     };
     let mut bars = native[start.saturating_sub(2 * (STRAY_WICK_AROUND + 1))..].to_vec();
-    drawable(&mut bars, timeframe, kind);
+    drawable(&mut bars, timeframe, instrument);
     bars.retain(|bar| bar.ts >= first);
     bars
 }
@@ -1008,21 +1010,26 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_within_the_day_keeps_its_wick() {
+    fn a_ratio_and_a_bar_within_the_day_keep_their_wicks() {
         let fx = |ts, o, h, l, c| Bar { ts, open: o, high: h, low: l, close: c, volume: 0.0 };
         let served = vec![
             fx(1, 1.3107, 1.3180, 1.3095, 1.3107),
             fx(2, 1.3089, 1.3160, 0.7606, 1.3093),
             fx(3, 1.3207, 1.3208, 1.3084, 1.3208),
         ];
-        let drawn = |timeframe: Timeframe| {
+        let drawn = |symbol: &str, timeframe: Timeframe| {
             let mut bars = served.clone();
-            drawable(&mut bars, timeframe, InstrumentKind::Equity);
+            drawable(&mut bars, timeframe, &of(symbol));
             bars[1].low
         };
-        assert_eq!(drawn(Timeframe::days(1)), 1.3089, "a day");
-        assert_eq!(drawn(Timeframe::weeks(1)), 1.3089, "folded to weeks");
-        assert_eq!(drawn(Timeframe::hours(1)), 0.7606, "within the day");
+        assert_eq!(drawn("EURUSD", Timeframe::days(1)), 1.3089, "the pair itself");
+        assert_eq!(drawn("USDEUR", Timeframe::weeks(1)), 1.3089, "turned over, and folded to weeks");
+        assert_eq!(drawn("EURUSD/GBPUSD", Timeframe::days(1)), 0.7606, "a ratio of two");
+        assert_eq!(drawn("EURUSD", Timeframe::hours(1)), 0.7606, "within the day");
+    }
+
+    fn of(symbol: &str) -> Instrument {
+        crate::symbols::SearchIndex::new(crate::symbols::seed()).resolve(symbol, None).expect(symbol)
     }
 
     /// Palladium's settlement on 2026-01-27: no trades, one price, 8% under
@@ -1031,13 +1038,13 @@ mod tests {
     fn a_futures_settlement_with_no_trades_is_kept() {
         let day = |ts, price: f64, volume| Bar { ts, open: price, high: price, low: price, close: price, volume };
         let served = vec![day(1, 2169.9, 24.0), day(2, 1861.8, 0.0), day(3, 2025.4, 34.0)];
-        let drawn = |kind| {
+        let drawn = |symbol: &str| {
             let mut bars = served.clone();
-            drawable(&mut bars, Timeframe::days(1), kind);
+            drawable(&mut bars, Timeframe::days(1), &of(symbol));
             bars.len()
         };
-        assert_eq!(drawn(InstrumentKind::FutureRoot), 3, "the settlement is a price");
-        assert_eq!(drawn(InstrumentKind::Equity), 2, "a stock's lone print is not");
+        assert_eq!(drawn("GC"), 3, "the settlement is a price");
+        assert_eq!(drawn("AAPL"), 2, "a stock's lone print is not");
     }
 
     #[test]
@@ -1051,14 +1058,14 @@ mod tests {
         native[20] = Bar { ts: 20, open: 39.625, high: 39.625, low: 39.625, close: 39.625, volume: 0.0 };
         native[30] = Bar { ts: 30, open: 34.2, high: 34.3, low: 20.0, close: 34.2, volume: 0.0 };
         let mut whole = native.clone();
-        drawable(&mut whole, Timeframe::days(1), InstrumentKind::Etf);
+        drawable(&mut whole, Timeframe::days(1), &of("SPY"));
         assert_eq!(whole.len(), 39, "the print is left out");
         assert_eq!(whole.iter().find(|b| b.ts == 30).map(|b| b.low), Some(34.2), "and the wick cut");
 
         for start in 0..=native.len() {
             let from = native.get(start).map_or(i64::MAX, |b| b.ts);
             let expected: Vec<Bar> = whole.iter().copied().filter(|b| b.ts >= from).collect();
-            let tail = drawable_from(&native, start, Timeframe::days(1), InstrumentKind::Etf);
+            let tail = drawable_from(&native, start, Timeframe::days(1), &of("SPY"));
             assert_eq!(tail, expected, "from {start}");
         }
     }

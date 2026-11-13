@@ -287,6 +287,7 @@ fn root_instrument(root: &str) -> Instrument {
         exchange: None,
         popularity: 0,
         local_name: None,
+        formula: None,
     }
 }
 
@@ -926,8 +927,8 @@ impl Provider for Continuous {
 
     /// A root the feed has a front month of, spelled for stitching,
     /// back-adjusted: a chart set to as traded asks [`routed`] for that.
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
-        let symbol = self.inner.symbol_for(instrument)?;
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
+        let symbol = self.inner.native_symbol(instrument)?;
         if instrument.kind != InstrumentKind::FutureRoot || instrument.is_contract() || symbol != instrument.symbol {
             return Some(symbol);
         }

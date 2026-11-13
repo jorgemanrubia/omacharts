@@ -204,7 +204,7 @@ Usage: add [OPTIONS] <LIST> <SYMBOL>...
 
 Arguments:
   <LIST>       a name, case-insensitive, or `id:N` when two of them share one
-  <SYMBOL>...  one or more tickers, such as NVDA or 2330.TW
+  <SYMBOL>...  one or more tickers, such as NVDA, 2330.TW, the ratio GC/SI or the spread TNX-FVX
 
 Options:
       --section <NAME>  put them in this section rather than at the top
@@ -314,7 +314,7 @@ GCAL       Goldman Sachs Dynamic California … ETF      NYSE Arca
 
 | Argument or flag | Takes |
 |---|---|
-| `QUERY` | A ticker or part of a name |
+| `QUERY` | A ticker or part of a name. A whole [formula](/manual/symbols/#arithmetic-on-symbols) or [currency pair](/manual/symbols/#currency-pairs), such as `GC/SI` or `USDEUR`, is the first row |
 | `--limit N` | How many to show; 10 when not given |
 | `--json` | The result as JSON |
 
@@ -337,7 +337,7 @@ currency  EUR
 
 | Argument or flag | Takes |
 |---|---|
-| `SYMBOL` | The ticker, or the ticker and its venue in one: `SAP.DE` |
+| `SYMBOL` | The ticker, or the ticker and its venue in one: `SAP.DE`. Or [arithmetic on symbols](/manual/symbols/#arithmetic-on-symbols), such as `GC/SI` |
 | `SUFFIX` | The venue suffix, when not part of `SYMBOL` |
 | `--json` | The result as JSON, with the symbol, suffix and local name as separate fields |
 
@@ -394,7 +394,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | Flag | Takes | Explained in |
 |---|---|---|
 | `--title TITLE` | The chart title, shown in its header; `""` for none | [Chart titles](/manual/charts/#chart-titles) |
-| `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
+| `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW`, or [arithmetic on symbols](/manual/symbols/#arithmetic-on-symbols), such as `GC/SI` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
 | `--style STYLE` | `candles`, `ohlc`, `line`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
