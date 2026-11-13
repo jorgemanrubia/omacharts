@@ -5726,8 +5726,8 @@ impl Window {
     }
 
     /// Give `added` what `from` trades with: its account, what it trades
-    /// instead and at what size, whether it marks its fills, and, with
-    /// trading on, the feed chosen for it. Splitting a chart to watch it at
+    /// instead and at what size, whether it marks its fills, and the feed
+    /// chosen for it. Splitting a chart to watch it at
     /// another resolution is still watching the same trade, so the half it
     /// makes has the same orders, position and fills, as `chart split` and
     /// a duplicated chartbook already gave it.
@@ -5735,18 +5735,13 @@ impl Window {
     /// A chart on the default account makes one on the default too, rather
     /// than one pinned to whichever account is the default today: the two
     /// stay on the same account when the default changes.
-    ///
-    /// With trading off none of it is read, and the chosen feed is left as
-    /// splitting always left it.
     fn trade_as(from: &ChartPane, added: &ChartPane) {
         added.account.replace(from.account.borrow().clone());
         added.trading_size.replace(from.trading_size.borrow().clone());
         added.trading_symbol.replace(from.trading_symbol.borrow().clone());
         added.trading_pending.replace(from.trading_pending.borrow().clone());
         added.shows_fills.set(from.shows_fills.get());
-        if crate::features::trading() {
-            added.feed.replace(from.feed.borrow().clone());
-        }
+        added.feed.replace(from.feed.borrow().clone());
     }
 
     /// Close the focused chart. The last one stays: a window with no chart in
@@ -10659,11 +10654,6 @@ impl Window {
     /// login was removed: it is on the default again, and on that
     /// account's default feed. True when it did.
     fn settle_account(&self, pane: &ChartPane) -> bool {
-        // Trading switched off knows of no account, which does not make the
-        // one a chart is on stale: it is there again when trading is.
-        if !crate::features::trading() {
-            return false;
-        }
         let stale = crate::trading::stale(&self.trading.borrow().accounts, pane.account.borrow().as_deref());
         if stale {
             pane.account.replace(None);
@@ -10790,23 +10780,11 @@ impl Window {
         self.feeds.borrow().iter().find(|feed| feed.owns(key)).cloned()
     }
 
-    /// Put trading in or take it out, in place, as the flag now says: the
-    /// same as the first login arriving or the last going. Switched off,
-    /// every session on an order plant signs out; switched on, the saved
-    /// logins sign in as they do at startup. The charts, the arrangement
+    /// Take in the flags as they now stand, in place: a trading service or
+    /// a feed behind one comes or goes with it. The charts, the arrangement
     /// and the focus stay as they are.
     pub fn adopt_features(self: &Rc<Self>) {
-        let on = crate::features::trading();
-        if !on {
-            for login in crate::trading::logins(&self.store) {
-                self.desk.end(&login.id);
-            }
-        }
         self.adopt_trading();
-        if on {
-            let logins = self.trading.borrow().logins.clone();
-            self.desk.sign_in_saved(&logins);
-        }
         self.desk.tell();
         // A feed behind a flag comes or goes with it, and its charts with it.
         self.adopt_feed();

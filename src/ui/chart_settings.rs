@@ -81,12 +81,9 @@ impl ChartSettings {
         indicators_page.set_icon_name(Some("view-list-symbolic"));
         dialog.add(&indicators_page);
 
-        let mut pages = vec![chart_page.clone(), indicators_page.clone()];
-        if crate::features::trading() {
-            let trading_page = trading_page(window);
-            dialog.add(&trading_page);
-            pages.push(trading_page);
-        }
+        let trading_page = trading_page(window);
+        dialog.add(&trading_page);
+        let pages = vec![chart_page.clone(), indicators_page.clone(), trading_page];
 
         {
             // Alt and an arrow between the pages, and the keyboard goes with

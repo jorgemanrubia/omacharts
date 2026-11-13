@@ -5,8 +5,7 @@ writes, and a broker reached through its local DTC server. Experimental,
 and off unless the `sierra` feature is on:
 
 ```sh
-omacharts features enable sierra     # the data feed
-omacharts features enable trading    # and, with both on, the broker
+omacharts features enable sierra     # the data feed and the broker
 ```
 
 With `sierra` off nothing of it exists: no feed on the Data page or in
@@ -72,7 +71,7 @@ Sierra Chart Server Settings → the *DTC Protocol Server* tab:
 | Listening Port | 11099 (the port in the dialog) |
 | Encoding | Automatic |
 | Allowed Incoming IPs | Local Computer Only |
-| Allow Trading | Yes, only once the `trading` feature is on |
+| Allow Trading | Yes |
 
 The read-only rows *DTC Protocol Server is Listening* and *DTC Protocol
 Clients* there are the first things to look at when the dialog says it is
@@ -92,7 +91,7 @@ a use for it; with the flag off it knows no such feed.
 
 ## The broker
 
-With both `sierra` and `trading` on, Preferences → Trading → Add a trading
+With `sierra` on, Preferences → Trading → Add a trading
 account offers Sierra Chart. Its dialog asks a name, the DTC server's host
 and port (this machine, 11099), and says as it is typed whether the server
 answers and allows trading; Sign in waits for one that does, and the steps

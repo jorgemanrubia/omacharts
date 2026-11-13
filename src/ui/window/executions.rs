@@ -436,26 +436,4 @@ mod tests {
             assert_eq!(on(&window, &added), Some(format!("{login}/952")));
         });
     }
-
-    /// With trading off a split is what it was: the chosen feed is not
-    /// copied, and nothing is marked. The account goes along unread, for
-    /// when trading is back.
-    #[test]
-    fn with_trading_off_a_split_leaves_the_feed_as_it_was() {
-        crate::ui::on_gtk(|| {
-            let store = Rc::new(Store::memory().expect("a store"));
-            crate::features::set(&store, crate::features::Feature::Trading, false);
-            let window = super::super::trade::tests::bare_window(&store);
-            let pane = window.focused_pane();
-            pane.feed.replace(Some("yahoo".into()));
-            pane.account.replace(Some("someone/951".into()));
-            pane.shows_fills.set(true);
-            window.split_focused(true);
-            let added = window.focused_pane();
-            assert_ne!(added.id, pane.id);
-            assert_eq!(*added.feed.borrow(), None, "the feed copied with trading off");
-            assert_eq!(added.account.borrow().as_deref(), Some("someone/951"));
-            assert!(added.view.executions().is_empty());
-        });
-    }
 }

@@ -278,8 +278,8 @@ pub struct ChartPane {
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
     /// What this chart's orders go to when it is not what it charts, MES
-    /// for a chart of ES; `None` trades what it charts. Ignored, and never
-    /// shown, while trading is off. See [`ChartPane::traded`].
+    /// for a chart of ES; `None` trades what it charts. See
+    /// [`ChartPane::traded`].
     pub trading_symbol: RefCell<Option<Instrument>>,
     /// A trading symbol kept with the chart that the catalogue could not
     /// name yet, as its symbol and suffix: the window opens on the curated
@@ -1440,16 +1440,16 @@ impl ChartPane {
         self.write_timeframe();
     }
 
-    /// The trading symbol in force: the one set for this chart while
-    /// trading is on, `None` while the chart trades what it charts.
+    /// The trading symbol in force: the one set for this chart, `None`
+    /// while the chart trades what it charts.
     pub fn trading_instead(&self) -> Option<Instrument> {
-        crate::features::trading().then(|| self.trading_symbol.borrow().clone()).flatten()
+        self.trading_symbol.borrow().clone()
     }
 
-    /// The trading symbol kept with this chart that is not known yet,
-    /// while trading is on: nothing is traded from it until it is.
+    /// The trading symbol kept with this chart that is not known yet:
+    /// nothing is traded from it until it is.
     pub fn trading_unresolved(&self) -> Option<String> {
-        crate::features::trading().then(|| self.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())).flatten()
+        self.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())
     }
 
     /// What this chart's orders, positions and P&L are of: its trading

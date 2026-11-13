@@ -10,10 +10,10 @@
 //! it.
 //!
 //! The artwork is Rithmic's own, from its developer kit, as it was supplied:
-//! `assets/rithmic/`. "Market Data by Rithmic" is the variant Rithmic offers a
-//! platform that uses it for data, which is all omacharts does with trading
-//! switched off; with trading on it is "Trading Platform by Rithmic". Each has
-//! a light and a dark version, swapped as the theme changes.
+//! `assets/rithmic/`. Omacharts trades, so it shows "Trading Platform by
+//! Rithmic" rather than the "Market Data by Rithmic" offered to a platform that
+//! uses it for data alone. Each has a light and a dark version, swapped as the
+//! theme changes.
 
 use adw::prelude::*;
 use gtk::{gdk, glib};
@@ -36,12 +36,6 @@ struct Artwork {
     aspect: (f64, f64),
 }
 
-const MARKET_DATA: Artwork = Artwork {
-    light: include_bytes!("../../assets/rithmic/market-data-by-rithmic-black.png"),
-    dark: include_bytes!("../../assets/rithmic/market-data-by-rithmic-white.png"),
-    aspect: (2940.0 / 377.0, 2940.0 / 377.0),
-};
-
 const TRADING_PLATFORM: Artwork = Artwork {
     light: include_bytes!("../../assets/rithmic/trading-platform-by-rithmic-green.png"),
     dark: include_bytes!("../../assets/rithmic/trading-platform-by-rithmic-gray.png"),
@@ -54,12 +48,9 @@ const POWERED_BY_OMNE: Artwork = Artwork {
     aspect: (961.0 / 129.0, 230.0 / 35.0),
 };
 
-/// Rithmic's logo for how omacharts uses it right now.
+/// Rithmic's logo for a platform that trades.
 fn rithmic_artwork() -> &'static Artwork {
-    match crate::features::trading() {
-        true => &TRADING_PLATFORM,
-        false => &MARKET_DATA,
-    }
+    &TRADING_PLATFORM
 }
 
 thread_local! {
@@ -190,7 +181,7 @@ mod tests {
     /// drawn squashed.
     #[test]
     fn the_artwork_is_drawn_in_its_own_proportions() {
-        for artwork in [&MARKET_DATA, &TRADING_PLATFORM, &POWERED_BY_OMNE] {
+        for artwork in [&TRADING_PLATFORM, &POWERED_BY_OMNE] {
             for (png, aspect) in [(artwork.light, artwork.aspect.0), (artwork.dark, artwork.aspect.1)] {
                 assert_eq!(&png[1..4], b"PNG");
                 let width = u32::from_be_bytes(png[16..20].try_into().unwrap()) as f64;

@@ -622,7 +622,6 @@ pub(crate) mod tests {
         use crate::trading::{self, fake::Kept, Typed};
         use omacharts_engine::providers::sierra::setup;
         crate::features::force(crate::features::Feature::Sierra, true);
-        crate::features::force(crate::features::Feature::Trading, true);
         let root = std::env::temp_dir().join(format!("omacharts-feeds-sierra-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("Data")).unwrap();

@@ -19,57 +19,25 @@ one.
 ## Charting first
 
 Omacharts has to keep appealing to people who never trade from it. Trading
-is experimental, and strictly opt-in, by two rules.
+is experimental, and is on for everybody: there is no flag to switch.
 
-**Trading is behind a feature flag, `trading`, off unless somebody switches
-it on.** Off, the app is the one it was before any of this, even with a
-broker login saved: no trading panel or toggle; no account, P&L, Buy Sell or
-Quantity in a chart's header; no order or position lines or tags on a chart;
-no orders in the chart's menu; no trading keys and no trading rows on the
-shortcuts sheet; no Preferences → Trading in the sidebar, no Trading colours
-and lines on the Theme page and no trading parts in Preferences → Charts →
-Header (a header that holds them keeps them where they were, unseen, for
-when the flag is on); no trading part typed to `config set chart_header…`;
-and nothing signs in to a broker's order plant, at startup or ever. Rithmic
-as a data feed is not trading and stays: with the flag off its login is
-typed in its own dialog from the Data page, kept as the data login, and
-signs in its data alone; the row signs it in, out and removes it like any
-other feed's.
+Trading was behind a feature flag, `trading`, until it shipped. The flag is
+gone. A store that still holds its setting, `feature.trading`, is not read
+for it, and `omacharts features enable trading` answers that trading is
+always on, with exit 0; `features disable trading` is refused with exit 5.
+The `features` command remains for the flags still being tried, which is
+`sierra`: Sierra Chart as a data feed, read from its files, and as a
+trading service through its DTC server. See [sierra.md](sierra.md).
 
-The flag is switched from a terminal, and an open window follows at once,
-in place — the trading pieces come or go as they do when the first login
-is added or the last removed, with the charts, the arrangement and the
-focus as they were. Switched off, every session on an order plant signs
-out; switched on, the saved logins sign in as at startup:
-
-```
-omacharts features                    # every flag and whether it is on
-omacharts features enable trading
-omacharts features disable trading
-```
-
-It is kept in the settings as `feature.trading`, a machine's setting that a
-restore from elsewhere leaves alone. The command is accepted and listed
-nowhere — not in `--help`, `surface --json`, the completions, the man page,
-the agent skill, the manual or `doc/cli.md` — and `config list` leaves it
-out, so that an experiment is not advertised. A flag nobody knows exits
-with code 3. More flags are a row each in `FLAGS`, in `src/features.rs`: a
-name, a default and what it switches. Checking one is a load of a bool,
-read once at startup and written when it is switched; nothing asks the
-database, and with trading off its pieces are never built.
-
-The second flag is `sierra`: Sierra Chart as a data feed, read from its
-files, and with `trading` on as well, as a broker through its DTC server.
-See [sierra.md](sierra.md).
-
-**With the flag on, trading's settings are always visible in Preferences;
-everything else is unchanged until there is an account.** Every trading
-setting is in Preferences whether or not there is a login, so it can be set
-before the first one: Preferences → Trading (its accounts, Order entry and
-Chart), the Trading colours and lines on the Theme page of a theme of one's
-own, and the header's P&L, Buy Sell and Quantity in Preferences → Charts →
-Header, listed and offered like any other part. A setting changed with no
-account changes nothing anybody sees until there is one.
+**Trading's settings are always visible in Preferences; everything else is
+unchanged until there is an account.** Every trading setting is in
+Preferences whether or not there is a login, so it can be set before the
+first one: Preferences → Trading (its accounts, Order entry and Chart), the
+Trading colours and lines on the Theme page of a theme of one's own, the
+chart's own Trading page in Chart settings, and the header's P&L, Buy Sell
+and Quantity in Preferences → Charts → Header, listed and offered like any
+other part. A setting changed with no account changes nothing anybody sees
+until there is one.
 
 Everywhere else, until somebody adds a trading account the app is the one it
 was before any of this: the same chart, header, corners, menus, panels and
@@ -233,10 +201,8 @@ Symbols use the first data feed that offers them.
   button. The last feed left offers no Remove, because with none no chart
   could draw.
 - **Add a data feed…** offers the feeds not on the list. Rithmic's login is
-  a broker's, so with trading on adding it adds a login in Preferences →
-  Trading, through the same dialog: name, user ID, password, system and
-  gateway. With trading off the same dialog opens from the Data page, and
-  the login signs in its data alone.
+  a broker's, so adding it adds a login in Preferences → Trading, through
+  the same dialog: name, user ID, password, system and gateway.
 - **A feed's row** has a handle to drag it up or down, one action (Sign in…
   or Sign out) and Remove. Its subtitle says what it serves and how it
   stands: "live", "not signed in", "session expired", or the feed's own

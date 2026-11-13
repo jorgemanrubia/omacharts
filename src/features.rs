@@ -14,21 +14,20 @@
 //! every listing on purpose — `--help`, `surface --json`, the completions,
 //! the man page, the skill and the manual — so that an experiment is not
 //! advertised: see `doc/prop-trading/spec.md`.
+//!
+//! A flag goes when its part ships. Its name stays in [`RETIRED`], so that
+//! `features enable` says what became of it, and a store that still holds
+//! its setting is not read for it. Trading was the first: it is on for
+//! everybody, with no flag.
 
 use crate::store::Store;
 
 /// A flag the app knows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Feature {
-    /// Trading on a trading service: the trading panel and its toggle, the header's
-    /// P&L, Buy Sell and Quantity, orders and positions on charts, the
-    /// chart menu's orders, the trading keys, Preferences → Trading and the
-    /// Theme page's Trading colours, and every sign-in to an order plant.
-    /// A trading service's data feed is not trading and stays without it.
-    Trading,
     /// Sierra Chart: its data feed, read from its files, on the Data page
-    /// and in `provider` commands, with `provider setup`; and, with trading
-    /// on too, its trading service. Off, nothing looks for its folder, watches a
+    /// and in `provider` commands, with `provider setup`; and its trading
+    /// service. Off, nothing looks for its folder, watches a
     /// file or connects to its DTC server.
     Sierra,
 }
@@ -43,20 +42,23 @@ pub struct Flag {
 }
 
 /// Every flag, in the order `omacharts features` lists them.
-pub const FLAGS: &[Flag] = &[
-    Flag {
-        feature: Feature::Trading,
-        name: "trading",
-        default: false,
-        about: "trading through a trading service's accounts: orders, positions, P&L and the trading panel",
-    },
-    Flag {
-        feature: Feature::Sierra,
-        name: "sierra",
-        default: false,
-        about: "Sierra Chart as a data feed, from its own files; with trading on, as a trading service too",
-    },
-];
+pub const FLAGS: &[Flag] = &[Flag {
+    feature: Feature::Sierra,
+    name: "sierra",
+    default: false,
+    about: "Sierra Chart as a data feed, from its own files, and as a trading service",
+}];
+
+/// Flags there were once, and what became of each: a name somebody may
+/// still type, answered with what it is now rather than "no such flag".
+/// Each one's setting, `feature.<name>`, may still be in a store from
+/// before, and is read by nothing.
+pub const RETIRED: &[(&str, &str)] = &[("trading", "trading is always on; it is no longer a feature flag")];
+
+/// What became of the retired flag called `name`, as typed.
+pub fn retired(name: &str) -> Option<&'static str> {
+    RETIRED.iter().find(|(old, _)| old.eq_ignore_ascii_case(name.trim())).map(|(_, now)| *now)
+}
 
 /// What every flag's setting starts with.
 pub const PREFIX: &str = "feature.";
@@ -88,7 +90,7 @@ const _: () = assert!(FLAGS.len() <= ROOM, "make ROOM larger");
 
 // The process's answer, held where a check is a load. Under test each
 // thread has its own, because libtest runs tests side by side and a window
-// test switching trading on must not reach a test running beside it.
+// test switching a flag on must not reach a test running beside it.
 #[cfg(not(test))]
 mod current {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -140,12 +142,6 @@ mod current {
 #[inline]
 pub fn on(feature: Feature) -> bool {
     current::get(feature.index())
-}
-
-/// Is trading on?
-#[inline]
-pub fn trading() -> bool {
-    on(Feature::Trading)
 }
 
 /// Is Sierra Chart on?
@@ -215,42 +211,56 @@ mod tests {
             assert_eq!(flag.name, flag.name.to_lowercase(), "typed in lower case");
             assert!(!flag.name.contains(char::is_whitespace));
             assert!(FLAGS.iter().skip(at + 1).all(|other| other.name != flag.name), "{} twice", flag.name);
+            assert!(retired(flag.name).is_none(), "{} is retired and a flag", flag.name);
             assert_eq!(flag.feature.flag().name, flag.name);
             assert_eq!(flag.feature.setting(), format!("feature.{}", flag.name));
         }
-        assert_eq!(Feature::Trading.setting(), "feature.trading");
+        assert_eq!(Feature::Sierra.setting(), "feature.sierra");
     }
 
     #[test]
-    fn trading_is_off_until_somebody_switches_it_on() {
-        assert!(!Feature::Trading.flag().default);
+    fn sierra_is_off_until_somebody_switches_it_on() {
+        assert!(!Feature::Sierra.flag().default);
         let store = Store::memory().expect("a store");
         adopt(&store);
-        assert!(!trading());
-        assert!(!stored(&store, Feature::Trading));
-        assert!(store.setting(&Feature::Trading.setting()).is_none(), "nothing written by reading");
+        assert!(!sierra());
+        assert!(!stored(&store, Feature::Sierra));
+        assert!(store.setting(&Feature::Sierra.setting()).is_none(), "nothing written by reading");
     }
 
     #[test]
     fn switching_a_flag_is_kept_and_read_back() {
         let store = Store::memory().expect("a store");
-        assert!(set(&store, Feature::Trading, true));
-        assert!(trading());
-        assert!(!set(&store, Feature::Trading, true), "already on");
+        assert!(set(&store, Feature::Sierra, true));
+        assert!(sierra());
+        assert!(!set(&store, Feature::Sierra, true), "already on");
         // Another process starting reads it from the settings.
-        current::put(&[(Feature::Trading.index(), false)]);
+        current::put(&[(Feature::Sierra.index(), false)]);
         adopt(&store);
-        assert!(trading());
-        assert!(set(&store, Feature::Trading, false));
-        assert!(!trading());
-        assert!(store.setting(&Feature::Trading.setting()).is_none(), "off is the default, so nothing is kept");
+        assert!(sierra());
+        assert!(set(&store, Feature::Sierra, false));
+        assert!(!sierra());
+        assert!(store.setting(&Feature::Sierra.setting()).is_none(), "off is the default, so nothing is kept");
+    }
+
+    /// A store from when trading was behind a flag may still say so. It
+    /// is read by nothing and stops nothing from starting.
+    #[test]
+    fn a_trading_flag_left_in_the_store_is_ignored() {
+        let store = Store::memory().expect("a store");
+        store.set_setting_bool("feature.trading", false);
+        store.set_setting_bool(&Feature::Sierra.setting(), true);
+        adopt(&store);
+        assert!(sierra());
+        assert!(named("trading").is_none());
+        assert!(retired(" Trading ").is_some_and(|now| now.contains("always on")));
     }
 
     #[test]
     fn flags_are_found_by_name_as_typed() {
-        assert_eq!(named("trading").map(|flag| flag.feature), Some(Feature::Trading));
-        assert_eq!(named(" Trading ").map(|flag| flag.feature), Some(Feature::Trading));
-        assert!(named("tradin").is_none());
+        assert_eq!(named("sierra").map(|flag| flag.feature), Some(Feature::Sierra));
+        assert_eq!(named(" Sierra ").map(|flag| flag.feature), Some(Feature::Sierra));
+        assert!(named("sierr").is_none());
         assert!(named("").is_none());
     }
 }
