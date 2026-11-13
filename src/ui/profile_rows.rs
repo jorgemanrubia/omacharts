@@ -15,16 +15,18 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::ui::controls;
+pub use crate::ui::property_rows::{
+    BACKGROUND, TRANSPARENCY, percent_row, switch_row, thickness_row, transparency_row,
+};
+#[cfg(test)]
+pub use crate::ui::property_rows::titles;
 
 pub const OUTLINE: &str = "Outline";
 pub const OUTLINE_COLOUR: &str = "Outline colour";
 pub const OUTLINE_STYLE: &str = "Outline style";
 pub const OUTLINE_THICKNESS: &str = "Outline thickness";
-pub const BACKGROUND: &str = "Background";
-pub const TRANSPARENCY: &str = "Transparency";
 pub const SHOW_POC: &str = "Show point of control";
-pub const POC_COLOUR: &str = "Point of control";
+pub const POC_COLOUR: &str = "Point of control colour";
 pub const POC_STYLE: &str = "Point of control style";
 pub const POC_THICKNESS: &str = "Point of control thickness";
 pub const STYLE: &str = "Style";
@@ -64,7 +66,8 @@ pub struct StyleRows {
 }
 
 /// The Style group, in its one order: the outline, the rows, the point of
-/// control, then how the rows are drawn. The outline's own rows are there
+/// control, then how the rows are drawn; a stroke's colour, thickness and
+/// style in that order, as on every line in every dialog. The outline's own rows are there
 /// while there is an outline, and the point of control's while it is drawn.
 pub fn style_group(rows: StyleRows) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
@@ -72,8 +75,8 @@ pub fn style_group(rows: StyleRows) -> adw::PreferencesGroup {
     group.add(&rows.outline);
     let outline_rows = [
         rows.outline_colour,
-        rows.outline_style,
         rows.outline_thickness,
+        rows.outline_style,
     ];
     for row in &outline_rows {
         group.add(row);
@@ -82,7 +85,7 @@ pub fn style_group(rows: StyleRows) -> adw::PreferencesGroup {
     group.add(&rows.background);
     group.add(&rows.transparency);
     group.add(&rows.show_poc);
-    let poc_rows = [rows.poc_colour, rows.poc_style, rows.poc_thickness];
+    let poc_rows = [rows.poc_colour, rows.poc_thickness, rows.poc_style];
     for row in &poc_rows {
         group.add(row);
     }
@@ -212,140 +215,12 @@ pub fn granularity(
     }
 }
 
-/// A share as a whole percent, between `least` and `most`, on the slider and
-/// box every bounded figure has, and the way to show it another.
-pub fn percent_row(
-    title: &str,
-    share: f64,
-    least: f64,
-    most: f64,
-    changed: impl Fn(f64) + 'static,
-) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    let quiet = Rc::new(Cell::new(false));
-    let bounded = {
-        let quiet = quiet.clone();
-        controls::bounded_row(
-            title,
-            None,
-            share * 100.0,
-            least * 100.0,
-            most * 100.0,
-            1.0,
-            0,
-            move |percent| {
-                if !quiet.get() {
-                    changed(percent / 100.0);
-                }
-            },
-        )
-    };
-    let adjustment = bounded.adjustment.clone();
-    let show: Rc<dyn Fn(f64)> = Rc::new(move |share| {
-        quiet.set(true);
-        adjustment.set_value(share * 100.0);
-        quiet.set(false);
-    });
-    (bounded.row, show)
-}
-
 /// The share of the volume the value area holds, 10 to 100%.
 pub fn value_area_row(
     share: f64,
     changed: impl Fn(f64) + 'static,
 ) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
     percent_row(VALUE_AREA, share, 0.10, 1.0, changed)
-}
-
-/// How much of the chart shows through the rows: none at 0%, where the value
-/// area is its colour, solid, and all of it at 100%.
-pub fn transparency_row(
-    share: f64,
-    changed: impl Fn(f64) + 'static,
-) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    percent_row(TRANSPARENCY, share, 0.0, 1.0, changed)
-}
-
-/// A line's thickness in pixels, 0.5 to 12 by halves, and the way to show
-/// it another.
-pub fn thickness_row(
-    title: &str,
-    width: f64,
-    changed: impl Fn(f64) + 'static,
-) -> (adw::SpinRow, Rc<dyn Fn(f64)>) {
-    use omacharts_engine::indicators::{MAX_OUTLINE_WIDTH, MIN_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP};
-    let quiet = Rc::new(Cell::new(false));
-    let row = adw::SpinRow::with_range(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP);
-    row.set_title(title);
-    row.set_digits(1);
-    row.set_value(width);
-    {
-        let quiet = quiet.clone();
-        row.connect_value_notify(move |row| {
-            if !quiet.get() {
-                changed(row.value());
-            }
-        });
-    }
-    let shown = row.clone();
-    let show: Rc<dyn Fn(f64)> = Rc::new(move |width| {
-        quiet.set(true);
-        shown.set_value(width);
-        quiet.set(false);
-    });
-    (row, show)
-}
-
-/// A switch, and the way to show it on or off without calling back.
-pub fn switch_row(
-    title: &str,
-    on: bool,
-    changed: impl Fn(bool) + 'static,
-) -> (adw::SwitchRow, Rc<dyn Fn(bool)>) {
-    let quiet = Rc::new(Cell::new(false));
-    let row = adw::SwitchRow::new();
-    row.set_title(title);
-    row.set_active(on);
-    {
-        let quiet = quiet.clone();
-        row.connect_active_notify(move |row| {
-            if !quiet.get() {
-                changed(row.is_active());
-            }
-        });
-    }
-    let shown = row.clone();
-    let show: Rc<dyn Fn(bool)> = Rc::new(move |on| {
-        quiet.set(true);
-        shown.set_active(on);
-        quiet.set(false);
-    });
-    (row, show)
-}
-
-/// The rows of each group, by title, in the order they are laid out: what a
-/// test holds both dialogs to.
-#[cfg(test)]
-pub fn titles(group: &adw::PreferencesGroup) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut child = group.first_child();
-    while let Some(widget) = child {
-        collect_titles(&widget, &mut out);
-        child = widget.next_sibling();
-    }
-    out
-}
-
-#[cfg(test)]
-fn collect_titles(widget: &gtk::Widget, out: &mut Vec<String>) {
-    if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
-        out.push(row.title().to_string());
-        return;
-    }
-    let mut child = widget.first_child();
-    while let Some(next) = child {
-        collect_titles(&next, out);
-        child = next.next_sibling();
-    }
 }
 
 #[cfg(test)]

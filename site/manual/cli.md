@@ -577,7 +577,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--add-range`, `--remove-range`, `--range`, `--name`, `--from`, `--to`, `--zone`, `--shade-alpha` | See [Session Times](#session-times) | Session Times |
 | `--color C` | A colour | The line of any indicator; a profile's bars; a Session Times range's shading |
 | `--width F` | Pixels; `0` draws no line | Any indicator with a line |
-| `--style S` | `solid`, `dashed`, `dotted` | Any indicator with a line |
+| `--line-style S` | `solid`, `dashed`, `dotted`; `--style S` is its older name | Any indicator with a line |
 | `--visible B` | `on`, `off` | Any |
 | `--legend B` | `on`, `off`; `on` for a new indicator, `off` for Session Times | Any. Whether the chart's legend names it. It is drawn either way |
 
@@ -585,7 +585,7 @@ A colour is a palette name (`Blue`, `Amber`, `Violet`, `Teal`, `Rose`,
 `Green`, `Orange`, `Cyan`, `Neutral`, capitals ignored) or `#rrggbb`. A palette name follows
 the theme; a hex does not.
 
-Volume and a volume profile are bars, not lines, so `--width` and `--style`
+Volume and a volume profile are bars, not lines, so `--width` and `--line-style`
 change nothing on them. `--color` on volume colours only its dot in the
 legend.
 
@@ -616,7 +616,7 @@ omacharts chart indicator add stochastic --k-smooth 5
 $ omacharts chart indicator add sma --period 200
 added SMA(200) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
-$ omacharts chart indicator add sma --period 50 --style dashed
+$ omacharts chart indicator add sma --period 50 --line-style dashed
 added SMA(50) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
 $ omacharts chart indicator set sma --period 100
@@ -981,7 +981,7 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--arrow WHERE` | `none`, `end`, `start`, `both` | Which ends have an arrowhead |
 | `--head SHAPE` | `filled`, `open`, `barb` | The arrowhead |
 | `--border B` | `on`, `off` | Whether a box or circle has an edge |
-| `--line-style S` | `solid`, `dashed`, `dotted` | How a line, an arrow, a zig-zag, a box's or circle's edge, or a volume profile's outline is drawn |
+| `--line-style S` | `solid`, `dashed`, `dotted` | How a line, an arrow, a zig-zag, a box's or circle's edge, a volume profile's outline, or an anchored VWAP's line is drawn |
 | `--select-by-border B` | `on`, `off` | Whether a box or circle is selected by its edge alone, leaving a click inside it to the chart; off by default |
 | `--fill C` | A colour | A box's or circle's fill |
 | `--alpha F` | 0 to 1 | How much of the fill shows: 0 none, 1 solid |
@@ -1002,7 +1002,7 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--poc B` | `on`, `off` | Whether a volume profile draws its point of control; on by default |
 | `--rows N` | `auto`, or a number of rows, held between 4 and 800 | How finely a volume profile divides its span; `auto` by default, as the study |
 | `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
-| `--style S` | `solid`, `dashed`, `dotted` | How an anchored VWAP's line is drawn |
+| `--style S` | `solid`, `dashed`, `dotted` | The older name of `--line-style` on an anchored VWAP |
 | `--bands LIST` | `1,2,3` or any of them; `none` | Which of an anchored VWAP's three bands are drawn, by place from the line out; none by default |
 | `--band N` | 1 to 3 | The band the `--band-*` flags change. Without it they change all three |
 | `--band-deviations F` | 0.1 to 6 | How far out the band sits, in standard deviations. Needs `--band` |

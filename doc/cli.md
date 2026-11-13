@@ -70,7 +70,7 @@ This is what the whole thing is for. Somebody is looking at a chart and says
 "put a 200-day average on it". No identifiers, no lookups:
 
 ```
-$ omacharts chart indicator add sma --period 200 --color Amber --style dashed
+$ omacharts chart indicator add sma --period 200 --color Amber --line-style dashed
 added SMA(200) on pos:0 AAPL 1D in "Macro"
   [exit 0]
 ```
@@ -122,8 +122,8 @@ Every indicator the app has, with every parameter it exposes:
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
-Anything that draws a line also takes `--color`, `--width` and `--style`, and
-everything takes `--visible`.
+Anything that draws a line also takes `--color`, `--width` and `--line-style`
+(`--style`, its older name, still works), and everything takes `--visible`.
 
 **A volume profile's periods can be read and merged.** `chart profile list`
 names each profile on the focused chart — its start and end, point of control
@@ -785,7 +785,7 @@ re-spanned, and it takes no words.
 `--from`, and runs from that bar to the last one, worked out again as bars
 arrive. Its properties are the VWAP study's, by the study's names where it
 has them. `--color`, `--width` (0, no line, leaves only its bands) and
-`--style` (`solid`, `dashed`, `dotted`) are its line, and `--source` the price
+`--line-style` (`solid`, `dashed`, `dotted`; `--style`, its older name, too) are its line, and `--source` the price
 each bar adds (`hlc3`, the default, `hl2`, `ohlc4` or `close`). It has the
 study's three bands, at 1, 1.5 and 2 standard deviations and all off:
 `--bands` says which are drawn, any of `1,2,3` by place, or `none`. The

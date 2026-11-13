@@ -200,7 +200,7 @@ fn range_group(
         owner,
         refresh,
         &Ink::new(String::new),
-        "Colour",
+        crate::ui::property_rows::COLOUR,
         &shown,
         range.color.clone(),
         move |indicator, choice| {

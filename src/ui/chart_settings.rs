@@ -25,6 +25,7 @@ use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::drop_line;
 use crate::ui::profile_rows;
+use crate::ui::property_rows;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
 
@@ -57,7 +58,7 @@ impl ChartSettings {
     fn open(window: &Rc<Window>, focus: Focus) {
         let dialog = adw::PreferencesDialog::new();
         dialog.set_title("Chart");
-        dialog.set_content_width(560);
+        dialog.set_content_width(DIALOG_WIDTH);
         // Most of the window's height, like the preferences: the indicator
         // list and an indicator's own page are long, and every row that fits
         // is a scroll saved. The width stays the column the rows sit in.
@@ -188,7 +189,7 @@ impl TemplateEditor {
             .unwrap_or_default();
         let dialog = adw::PreferencesDialog::new();
         dialog.set_title(&name);
-        dialog.set_content_width(560);
+        dialog.set_content_width(DIALOG_WIDTH);
         dialog.set_content_height((window.window.height() * 85 / 100).max(620));
 
         let page = adw::PreferencesPage::new();
@@ -605,8 +606,11 @@ fn sync_bars(
 /// settings and in the preferences alike.
 pub const HOLLOW_LABEL: &str = "Hollow up bars";
 pub const SWAP_LABEL: &str = "Swap up and down colours";
+/// How wide a settings dialog is, a chart's, a study's and a drawing's.
+pub const DIALOG_WIDTH: i32 = 560;
+
 /// The row for how many pixels wide OHLC bars are drawn.
-pub const THICKNESS_LABEL: &str = "Thickness";
+pub const THICKNESS_LABEL: &str = property_rows::THICKNESS;
 
 /// Whether turning `colouring` round would change what it paints, which is
 /// when the switch for it is offered. Monochrome paints a rise and a fall
@@ -1313,7 +1317,7 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         Panel::Add(was_on) => {
             let modal = adw::Dialog::new();
             modal.set_title(&indicator.label());
-            modal.set_content_width(560);
+            modal.set_content_width(DIALOG_WIDTH);
             modal.set_content_height((owner.window.height() * 85 / 100).max(620));
             modal.set_child(Some(&toolbar));
 
@@ -1448,7 +1452,7 @@ fn appearance_group(
         owner,
         refresh,
         &ink,
-        "Colour",
+        property_rows::COLOUR,
         colour,
         indicator.color.clone(),
         move |indicator, choice| indicator.color = choice,
@@ -2176,7 +2180,7 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
 }
 
 /// The volume row that says how solid its bars are.
-pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
+pub const VOLUME_OPACITY_LABEL: &str = "Opacity %";
 
 /// The colouring row a volume pane, a delta volume profile and a
 /// cumulative delta share: **Default** first, then the colourings that tell
@@ -2212,7 +2216,7 @@ const CVD_STYLE_LABEL: &str = "Style";
 pub const CVD_ESTIMATED: &str = "Estimated from bar direction: this feed has no bid and ask volume";
 
 /// The volume profile row that says how much of its room it takes.
-const PROFILE_WIDTH_LABEL: &str = "Width";
+pub const PROFILE_WIDTH_LABEL: &str = "Width %";
 
 /// The volume profile row that says what its rows measure.
 const PROFILE_METHOD_LABEL: &str = "Calculation method";
@@ -2656,14 +2660,10 @@ fn band_groups(
             _ => format!("Band {}", index + 1),
         });
 
-        let show = adw::ActionRow::new();
-        show.set_title("Show");
-        let switch = gtk::Switch::new();
-        switch.set_active(band.enabled);
-        switch.set_valign(gtk::Align::Center);
+        // Switch rows, as a drawn VWAP's bands have.
         let owner_for_show = owner.clone();
         let refresh_for_show = refresh.clone();
-        switch.connect_state_set(move |_, on| {
+        let (show, _) = property_rows::switch_row(property_rows::SHOW, band.enabled, move |on| {
             update(&owner_for_show, id, move |indicator| {
                 if let Some(band) =
                     indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
@@ -2672,9 +2672,7 @@ fn band_groups(
                 }
             });
             refresh_for_show.run();
-            glib::Propagation::Proceed
         });
-        show.add_suffix(&switch);
         group.add(&show);
 
         // Tenths, because one, one and a half and two are the figures people
@@ -2685,8 +2683,8 @@ fn band_groups(
             "Standard deviations",
             None,
             band.deviations,
-            0.1,
-            6.0,
+            omacharts_engine::drawings::MIN_VWAP_DEVIATIONS,
+            omacharts_engine::drawings::MAX_VWAP_DEVIATIONS,
             0.1,
             1,
             move |value| {
@@ -2702,15 +2700,9 @@ fn band_groups(
         );
         group.add(&deviations.row);
 
-        let shaded = adw::ActionRow::new();
-        shaded.set_title("Shaded");
-        shaded.set_subtitle("Fill the area between this band's edges");
-        let fill = gtk::Switch::new();
-        fill.set_active(band.fill);
-        fill.set_valign(gtk::Align::Center);
         let owner_for_fill = owner.clone();
         let refresh_for_fill = refresh.clone();
-        fill.connect_state_set(move |_, on| {
+        let (shaded, _) = property_rows::switch_row(property_rows::SHADED, band.fill, move |on| {
             update(&owner_for_fill, id, move |indicator| {
                 if let Some(band) =
                     indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
@@ -2719,9 +2711,7 @@ fn band_groups(
                 }
             });
             refresh_for_fill.run();
-            glib::Propagation::Proceed
         });
-        shaded.add_suffix(&fill);
         group.add(&shaded);
 
         // How much of the colour that shading gets, over the whole range the
@@ -2777,7 +2767,7 @@ fn band_groups(
             owner,
             refresh,
             &ink,
-            "Colour",
+            property_rows::COLOUR,
             &current,
             band.color.clone(),
             move |indicator, choice| {
