@@ -125,6 +125,19 @@ fn menu_credits(feed: &str) -> Option<gtk::Widget> {
     }
 }
 
+/// What a trading service has to show beside its accounts, positions and
+/// orders in the trading panel, as its terms ask: Rithmic's logos, small
+/// and side by side, for a Rithmic login. `service` is the login's trading
+/// service, by the id it is listed under.
+pub fn trading_credits(service: &str) -> Option<gtk::Widget> {
+    match service {
+        id if id == omacharts_engine::providers::rithmic::LISTED.id => {
+            Some(rithmic_attribution::logos(14, gtk::Orientation::Horizontal).upcast())
+        }
+        _ => None,
+    }
+}
+
 /// Put each feed's artwork where `popover`'s menu left room for it.
 pub fn fill_credits(popover: &gtk::PopoverMenu) {
     let Some(model) = popover.menu_model() else { return };
@@ -149,7 +162,8 @@ fn leaves_room(model: &gtk::gio::MenuModel, id: &str) -> bool {
 
 /// The fake rich feed's dialog, as a provider's own dialog would be: a
 /// member number and a token, the token into the feed's keyring; and the
-/// fake trading service's, a name, a user and a password.
+/// fake trading service's, a user and a password, the login called Fake,
+/// numbered past the names taken, as a real service's is.
 #[cfg(any(test, feature = "fakes"))]
 pub(crate) mod fake {
     use adw::prelude::*;
@@ -161,13 +175,10 @@ pub(crate) mod fake {
     pub const SIGN_IN: &str = "sign-in";
 
     /// The fake trading service's login dialog.
-    pub fn login(parent: &gtk::Widget, known: Option<&Login>, _taken: &[String], signed: Box<dyn Fn(Typed)>) {
+    pub fn login(parent: &gtk::Widget, known: Option<&Login>, taken: &[String], signed: Box<dyn Fn(Typed)>) {
         let dialog = adw::AlertDialog::new(Some("Sign in to the fake trading service"), None);
         let list = gtk::ListBox::new();
-        let name = adw::EntryRow::new();
-        name.set_title("Name");
-        name.set_text(known.map_or("", |login| login.name.as_str()));
-        list.append(&name);
+        let name = known.map_or_else(|| crate::trading::numbered("Fake", taken), |login| login.name.clone());
         let user = adw::EntryRow::new();
         user.set_title("User");
         user.set_text(known.map_or("", |login| login.user.as_str()));
@@ -183,7 +194,7 @@ pub(crate) mod fake {
             }
             signed(Typed {
                 service: "fake".into(),
-                name: name.text().to_string(),
+                name: name.clone(),
                 user: user.text().to_string(),
                 password: password.text().to_string(),
                 values: Vec::new(),
