@@ -1,4 +1,4 @@
-//! Charts from a Rithmic login: CME futures, front month, live.
+//! Charts from a Rithmic login: CME futures, continuous, live.
 //!
 //! The protocol is [`rithmic`]'s, and so is the one session every chart
 //! shares. This is the thin layer that names what Rithmic serves, asks it for
@@ -10,12 +10,16 @@
 //! whose newest bars disagree with the cached tail of the old contract,
 //! which the loader already treats as history rewritten.
 //!
-//! **Front month only, not stitched.** Rithmic replays history only for
-//! contracts it still lists: an expired month is refused with "reference
-//! data not available", so there are no earlier months to stitch a
-//! continuous series from, and a long daily chart starts where the
-//! contract's own history does. A dated contract may be asked for in
-//! either spelling, `ESZ26` or Rithmic's `ESZ6` ([`spelled`]).
+//! **Continuous, as traded.** Rithmic's history plant answers a root, `ES`,
+//! with its own continuous series: each contract's bars while it was the
+//! front month, joined at Rithmic's own roll and never adjusted, daily back
+//! to 2011. That is what a root's history is read from
+//! ([`Continuity::native`](crate::continuous::Continuity::native), as
+//! traded, like thinkorswim's and Yahoo's), while the live trades are the
+//! front month's. A month that has expired cannot be read on its own:
+//! Rithmic refuses it with "reference data not available", so there is
+//! nothing to stitch either. A dated contract may be asked for in either
+//! spelling, `ESZ26` or Rithmic's `ESZ6` ([`spelled`]).
 //!
 //! **A decade apart.** Rithmic spells a contract's year with one digit, so
 //! `ESZ6` is December 2026 and also December 2016, and its history plant
@@ -66,7 +70,7 @@ const CAPABILITIES: &[Capability] = &[
 pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "rithmic",
     label: "Rithmic",
-    serves: "CME futures, front month, from your Rithmic login",
+    serves: "CME futures, continuous, from your Rithmic login",
     covers: "CME futures, front month",
     build: || Box::new(Rithmic::new()),
     setup: Some(&session::Signing),
@@ -201,12 +205,14 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// Bars of `root`'s front month, or of the dated contract `root` names,
-/// from `from` on.
+/// Bars of `root`'s continuous series, or of the dated contract `root`
+/// names, from `from` on.
 ///
-/// For a root, asks once with the contract it remembers, and again with a
-/// fresh answer if that one has nothing: a contract that has rolled off is
-/// the likely reason, and the next front month is the cure.
+/// A root is asked for as itself, which Rithmic answers with its continuous
+/// series. Where it has none for the root, its front month stands in: asked
+/// once with the contract it remembers, and again with a fresh answer if
+/// that one has nothing, since a contract that has rolled off is the likely
+/// reason and the next front month is the cure.
 fn front_month_bars(
     client: &rithmic::Client,
     root: &str,
@@ -225,6 +231,11 @@ fn front_month_bars(
         let contract = spelled(root);
         let bars = client.bars(&contract, exchange, period, from, to).map_err(map_err)?;
         return Ok(own(&contract, bars));
+    }
+    if let Ok(bars) = client.bars(root, exchange, period, from, to)
+        && !bars.is_empty()
+    {
+        return Ok(bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect());
     }
     let contract = client.front_month(root, exchange).map_err(map_err)?;
     let first = client.bars(&contract, exchange, period, from, to);
@@ -694,6 +705,12 @@ impl Provider for Rithmic {
         CAPABILITIES
     }
 
+    /// Rithmic's own continuous series of a root, as traded: see the
+    /// module docs.
+    fn continuity(&self) -> crate::continuous::Continuity {
+        crate::continuous::Continuity::native(&[crate::continuous::Adjustment::AsTraded])
+    }
+
     fn bars(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
         period_of(timeframe)?;
         if !session::here() {
@@ -769,11 +786,12 @@ mod tests {
         assert_eq!(first_possible("ES"), None);
     }
 
-    /// A root is its front month: Rithmic refuses the history of a month
-    /// that has expired, so there are none to stitch.
+    /// A root is Rithmic's own continuous series, as traded: an expired
+    /// month cannot be read on its own, so there is nothing to stitch.
     #[test]
-    fn a_root_is_its_front_month() {
-        assert_eq!(crate::continuous::source(&Rithmic::new()), crate::continuous::Source::FrontMonth);
+    fn a_root_is_rithmics_own_continuous_series() {
+        assert_eq!(crate::continuous::source(&Rithmic::new()), crate::continuous::Source::Native);
+        assert_eq!(Rithmic::new().continuity().native, &[crate::continuous::Adjustment::AsTraded]);
     }
 
     #[test]

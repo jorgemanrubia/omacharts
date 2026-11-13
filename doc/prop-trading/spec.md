@@ -223,7 +223,7 @@ sign-in rows.
 ```
 Data feeds
 Symbols use the first data feed that offers them.
-  ⋮ Rithmic   CME futures, front month · live · through Lucid
+  ⋮ Rithmic   CME futures, continuous · live · through Lucid
   ⋮ Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed   [Remove]
   [ Add a data feed… ]
 ```
@@ -300,13 +300,15 @@ is of.
 
 #### Front month, and rolls
 
-- **A root is the contract trading now, not stitched.** Rithmic's `ES` is
-  the front month, with the history that contract has (about 90 days
-  intraday). Rithmic replays history only for contracts it still lists: an
-  expired month is refused with "reference data not available" (seen on a
-  LucidTrading login, November 2026), so there are no earlier months for
-  the engine's `continuous` module to stitch, as it does Sierra Chart's. A
-  long daily chart starts where the front month's own history does.
+- **A root's history is Rithmic's own continuous series.** The history
+  plant answers the root itself, `ES`, with each contract's bars while it
+  was front, joined at Rithmic's roll and not adjusted: daily back to
+  December 2011, intraday as far as Rithmic keeps it (about 200 days of 5m).
+  The feed declares it as its own series, as traded, as thinkorswim's and
+  Yahoo's are; live trades come from the front month. An expired month on
+  its own is refused with "reference data not available" (seen on a
+  LucidTrading login, November 2026), so there are no months to stitch, and
+  where a root has no series the front month stands in.
 - **A month is asked for as Rithmic spells it.** The stitcher names a month
   `ESZ26`; Rithmic spells it `ESZ6`, which is also December 2016, and its
   history plant answers a long request with both. A contract's bars are
