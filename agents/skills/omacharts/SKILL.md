@@ -261,8 +261,9 @@ the bars between `--from` and `--to`; only their times are read. `--color` is
 its outline, `--fill` its background, `--width` the outline's thickness,
 `--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
 `--profile-style filled|outline`, `--align
-left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`
-and `--value-area-color` the rest. The study takes
+left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`,
+`--value-area-color`, `--poc on|off` and `--rows N|auto` the rest, as the
+study's. The study takes
 `--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
 `--poc-style`, `--transparency` (0 is its colour solid, 1 invisible, 0.7 by
 default), `--highlight-value-area` and `--value-area-color` (`none` for the

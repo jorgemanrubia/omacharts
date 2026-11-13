@@ -56,6 +56,13 @@ mod updates;
 mod about;
 use trade::Trade;
 
+/// A real window on `store`, charting the synthetic feed with its clock
+/// stopped, for a test outside this module that needs one.
+#[cfg(test)]
+pub(crate) fn test_window(store: &Rc<Store>) -> Rc<Window> {
+    trade::tests::bare_window(store)
+}
+
 /// How often the rail's missing prices are looked for.
 ///
 /// Not a pacing knob — the provider owns pacing, and this never fetches. It is

@@ -436,26 +436,7 @@ pub fn compute_with(
     // quiet session is drawn as a short profile next to a busy one rather than
     // being stretched to the same height. Comparing two sessions is most of
     // what a volume profile is for.
-    //
-    // With what traded at each price, the step is the contract's own tick,
-    // a price to a row; estimated, a round step near [`TARGET_ROWS`]. Either
-    // way a period too quiet for it is split finer, and one too wide for
-    // [`MAX_ROWS`] made coarser, on the same grid.
-    let step = rows.is_none().then(|| match at_price {
-        Some(at) if at.tick_size > 0.0 && at.tick_size.is_finite() => (at.tick_size, at.tick_size),
-        _ => auto_step(bars, &periods, kind),
-    });
-
-    let grid = match step {
-        // A row a fraction of the contract's tick would hold every price or
-        // none, a comb rather than a profile: with ladders the step is whole
-        // ticks, for the estimated periods beside them too.
-        Some((step, tick)) => match at_price {
-            Some(at) => Grid::Step { step: on_ticks(step, at.tick_size), tick: tick.max(at.tick_size) },
-            None => Grid::Step { step, tick },
-        },
-        None => Grid::Rows(rows.unwrap_or(MIN_ROWS).clamp(MIN_ROWS, MAX_ROWS)),
-    };
+    let grid = grid(bars, &periods, rows, kind, at_price);
 
     let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
     for (start, end) in periods.into_iter().skip(skipped) {
@@ -521,14 +502,43 @@ pub fn of_span(
     kind: Option<InstrumentKind>,
 ) -> Option<Profile> {
     let first = bars.first()?;
-    let grid = match rows {
-        Some(rows) => Grid::Rows(rows.clamp(MIN_ROWS, MAX_ROWS)),
-        None => {
-            let (step, tick) = auto_step(bars, &[(0, bars.len())], kind);
-            Grid::Step { step, tick }
-        }
-    };
+    // The span is one period, divided by the study's own rule.
+    let grid = grid(bars, &[(0, bars.len())], rows, kind, None);
     one(bars, offset, first.ts, grid, value_area)
+}
+
+/// How a chart's periods are divided, for the study and a drawing alike:
+/// `rows` to each period when a count is chosen; left automatic, one price
+/// step for every period on the chart.
+///
+/// With what traded at each price, the step is the contract's own tick, a
+/// price to a row; estimated, a round step near [`TARGET_ROWS`]. Either way
+/// a period too quiet for it is split finer, and one too wide for
+/// [`MAX_ROWS`] made coarser, on the same grid.
+fn grid(
+    bars: &[Bar],
+    periods: &[(usize, usize)],
+    rows: Option<usize>,
+    kind: Option<InstrumentKind>,
+    at_price: Option<&AtPrice>,
+) -> Grid {
+    if let Some(rows) = rows {
+        return Grid::Rows(rows.clamp(MIN_ROWS, MAX_ROWS));
+    }
+    let (step, tick) = match at_price {
+        Some(at) if at.tick_size > 0.0 && at.tick_size.is_finite() => (at.tick_size, at.tick_size),
+        _ => auto_step(bars, periods, kind),
+    };
+    match at_price {
+        // A row a fraction of the contract's tick would hold every price or
+        // none, a comb rather than a profile: with ladders the step is whole
+        // ticks, for the estimated periods beside them too.
+        Some(at) => Grid::Step {
+            step: on_ticks(step, at.tick_size),
+            tick: tick.max(at.tick_size),
+        },
+        None => Grid::Step { step, tick },
+    }
 }
 
 /// How a period is divided up.
@@ -1270,6 +1280,105 @@ mod tests {
         assert!((48..=50).contains(&fixed.rows.len()), "{}", fixed.rows.len());
         let estimated = &compute(&bars, Reset::Session, 0, Some(60), 0.7, Some(InstrumentKind::FutureRoot), &[])[0];
         assert_eq!(estimated.rows.len(), 60);
+    }
+
+    /// A drawing over exactly one session draws the rows the study draws
+    /// for that session, automatic or counted: the two share one rule.
+    #[test]
+    fn a_drawn_span_over_one_session_is_divided_as_the_study_divides_it() {
+        let bars = session(0, 333.0, 8.0);
+        for rows in [None, Some(50)] {
+            let study = &compute(
+                &bars,
+                Reset::Session,
+                0,
+                rows,
+                0.7,
+                Some(InstrumentKind::Equity),
+                &[],
+            )[0];
+            let drawn =
+                of_span(&bars, 0, rows, 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+            assert_eq!(
+                format!("{:?}", drawn.rows),
+                format!("{:?}", study.rows),
+                "rows {rows:?}"
+            );
+            assert_eq!(
+                (drawn.poc, drawn.value_area),
+                (study.poc, study.value_area),
+                "rows {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drawn_span_takes_the_row_count_it_is_given() {
+        let bars = session(0, 333.0, 8.0);
+        let drawn =
+            of_span(&bars, 0, Some(120), 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+        assert_eq!(drawn.rows.len(), 120);
+        assert_eq!(
+            of_span(&bars, 0, Some(10_000), 0.7, None)
+                .expect("a profile")
+                .rows
+                .len(),
+            MAX_ROWS
+        );
+    }
+
+    /// Automatic on a short span is as fine as the price goes: a cent a row
+    /// on a share whose bars moved fifty cents.
+    #[test]
+    fn automatically_a_small_drawn_span_is_a_tick_a_row() {
+        let bars: Vec<Bar> = (0..20)
+            .map(|i| {
+                bar(
+                    i * 60,
+                    333.0 + (i % 5) as f64 * 0.1,
+                    333.1 + (i % 5) as f64 * 0.1,
+                    1000.0,
+                )
+            })
+            .collect();
+        let drawn = of_span(&bars, 0, None, 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+        assert!(
+            (row_height(&drawn) - 0.01).abs() < 1e-9,
+            "a cent a row, got {}",
+            row_height(&drawn)
+        );
+        assert_eq!(drawn.rows.len(), 50, "333.00 to 333.50, a row a cent");
+    }
+
+    /// Automatic on a span that covers years of a stock that grew a hundred
+    /// times over: never more rows than [`MAX_ROWS`], and every price of it
+    /// still drawn, at a round step.
+    #[test]
+    fn automatically_a_huge_drawn_span_is_capped_and_drawn_whole() {
+        let bars: Vec<Bar> = (0..5000i64)
+            .map(|i| {
+                let p = 20.0 * (1.0 + i as f64 / 50.0);
+                bar(i * DAY, p * 0.98, p * 1.02, 1_000_000.0)
+            })
+            .collect();
+        let drawn = of_span(&bars, 0, None, 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+        assert!(drawn.rows.len() <= MAX_ROWS, "{} rows", drawn.rows.len());
+        assert!(
+            drawn.rows.len() >= MAX_ROWS / 5,
+            "still a profile: {} rows",
+            drawn.rows.len()
+        );
+        let (low, high) = (drawn.rows[0].low, drawn.rows[drawn.rows.len() - 1].high);
+        assert!(
+            low <= bars[0].low && high >= bars[bars.len() - 1].high,
+            "{low}..{high}"
+        );
+        let cents = row_height(&drawn) * 100.0;
+        assert!(
+            (cents - cents.round()).abs() < 1e-6,
+            "a round step, not {}",
+            row_height(&drawn)
+        );
     }
 
     #[test]

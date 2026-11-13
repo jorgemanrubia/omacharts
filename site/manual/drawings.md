@@ -263,22 +263,26 @@ The volume profile tool draws a profile of the bars in the span you drag across:
 
 It is drawn under the bars, as the study's profiles are, so the candles stay on top. Selected, it has a grip at each corner: the left two move its start and the right two its end, sideways only, and the profile is worked out again. It cannot be moved whole or nudged with the arrow keys; a press on it that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars. A pasted copy lands a few bars to the right of the original.
 
-| Property | Does |
-|---|---|
-| **Outline** | Whether filled rows have an edge round them. Off by default; always on, and greyed, for an outline. The outline's colour, style and thickness show while it is on |
-| **Outline colour** | The edge round the rows |
-| **Outline style** | Solid, Dashed or Dotted. Solid by default |
-| **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
-| **Background** | The rows |
-| **Transparency** | How much of the candles shows through the background, 70% by default. At 0% the value area is the background colour, solid; at 100% the profile is gone. The outline fades with it |
-| **Point of control** | The line across the busiest price |
-| **Point of control style** | Solid, Dashed or Dotted. Solid by default |
-| **Point of control thickness** | The point of control, 1.5 px |
-| **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
-| **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
-| **Value area %** | The share of the span's volume the value area holds, 10 to 100% |
-| **Highlight value area** | On by default: the value area is drawn stronger than the other rows, which are a little under half as strong. Off draws every row alike |
-| **Value area colour** | The value area's own colour while it is highlighted. By default the background's; **Reset** gives it back |
+Its properties are the [Volume Profile](/manual/indicators/volume/#volume-profile) study's, with the same names, ranges and controls, in the same groups and order. It leaves out what only the study has: **Reset every** and **Only show in last period**, since the span is set by its ends; **Calculation method** and **Colouring**, since a drawing is worked out from its bars' volume alone; and **Width**, since a drawing is as wide as its span.
+
+| Group | Property | Does |
+|---|---|---|
+| **Parameters** | **Automatic**, **Rows** | Automatic by default: rows a round multiple of the instrument's price step, about 600 to the span, and a price step each on a short one. With **Automatic** off, **Rows** is the number of rows, 4 to 800. While automatic, **Rows** shows how many are drawn |
+| | **Value area %** | The share of the span's volume the value area holds, 10 to 100%, 70% by default |
+| | **Highlight value area** | On by default: the value area is drawn stronger than the other rows, which are a little under half as strong. Off draws every row alike |
+| | **Value area colour** | The value area's own colour while it is highlighted. By default the background's; **Reset** gives it back |
+| **Style** | **Outline** | Whether filled rows have an edge round them. Off by default; always on, and greyed, for an outline. The outline's colour, style and thickness show while it is on |
+| | **Outline colour** | The edge round the rows |
+| | **Outline style** | Solid, Dashed or Dotted. Solid by default |
+| | **Outline thickness** | 0.5 to 12 px. 1 px on a filled configuration, 1.5 px on an outline |
+| | **Background** | The rows |
+| | **Transparency** | How much of the candles shows through the background, 70% by default. At 0% the value area is the background colour, solid; at 100% the profile is gone. The outline fades with it |
+| | **Show point of control** | On by default. Off leaves the profile without its point of control. Its colour, style and thickness show while it is on |
+| | **Point of control** | The line across the busiest price |
+| | **Point of control style** | Solid, Dashed or Dotted. Solid by default |
+| | **Point of control thickness** | 0.5 to 12 px, 1.5 px by default |
+| | **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
+| | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
 
 | Configuration | Colour | Style | Alignment |
 |---|---|---|---|
