@@ -467,6 +467,7 @@ The header is the line at a chart's top-left and the row centred across its top.
 
 | Part | Shows |
 |---|---|
+| **Data feed** | A dot in the feed's state: orange while connecting, green once prices arrive, red when they cannot. Shown once a feed other than Yahoo Finance is set up. With more than one feed, click it for the list of every feed, in the order of Preferences › Data, to move this chart to another. A feed with nothing for the chart's symbol says *no data for* it, and choosing it leaves the chart empty with the reason, until another is chosen from the same list. The choice is the chart's own, and is kept |
 | **Symbol** | The symbol, with its venue. Click it to [find another](/manual/symbols/) |
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
 | **Daily change** | The day's move as a percentage, green for a rise and red for a fall in the theme's own tones, swapped on a chart set to red up, and in the header's text when it has not moved. The same figure as the sidebar's |

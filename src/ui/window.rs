@@ -4104,6 +4104,18 @@ fn hundredths(change_pct: f64) -> i64 {
     (change_pct * 100.0).round() as i64
 }
 
+/// A feed's row in the Data feed part's menu: its name, and when it has
+/// no data for `symbol` a short note after it, in the dot's own "feed ·
+/// how it stands" form. The row stays choosable either way: picking it
+/// shows the chart empty, saying why, and the same menu brings it back.
+/// Plain text, since a menu's item does not take markup to dim it.
+fn feed_row(label: &str, holds: bool, symbol: &str) -> String {
+    match holds {
+        true => label.to_string(),
+        false => format!("{label} · no data for {symbol}"),
+    }
+}
+
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
 /// The feed's latest trade when the chart's session leaves it out of the
@@ -6268,18 +6280,18 @@ impl Window {
         self.choose_account(id, stored);
     }
 
-    /// The feeds that could serve `pane`'s chart of `instrument`, the
-    /// default first and the rest in the order; the default's id; and the
-    /// id of the one in force, chosen or fallen back to.
-    fn feeds_serving(&self, pane: &ChartPane, instrument: &Instrument) -> (Vec<Rc<Feed>>, Option<&'static str>, Option<&'static str>) {
+    /// Every feed on the order, in the order, for `pane`'s chart of
+    /// `instrument`; the default's id; and the id of the one in force,
+    /// chosen or fallen back to.
+    ///
+    /// Every feed, and not only the ones with a name for the instrument: a
+    /// list that drops Sierra Chart for a stock leaves one feed and nothing
+    /// to click, and a list whose length and order change from one symbol to
+    /// the next is one nobody learns where to find a feed in.
+    fn feeds_offered(&self, pane: &ChartPane, instrument: &Instrument) -> (Vec<Rc<Feed>>, Option<&'static str>, Option<&'static str>) {
         let feeds = self.feeds();
         let view = self.trading.borrow();
         let account = view.account_of(pane.account.borrow().as_deref());
-        let mut serving: Vec<Rc<Feed>> =
-            providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument)
-                .into_iter()
-                .filter_map(|at| feeds.get(at).cloned())
-                .collect();
         let default = crate::trading::default_feed(
             &view,
             account,
@@ -6287,38 +6299,41 @@ impl Window {
             instrument,
         );
         drop(view);
-        // The default first, as the one nobody has to choose; the rest in
-        // the order.
-        serving.sort_by_key(|feed| Some(feed.provider.id()) != default);
         let in_force = match self.route_chosen(pane, instrument) {
             Some(Ok(routed) | Err(routed)) => Some(routed.feed.provider.id()),
             None => self.missing_from(pane, instrument).map(|feed| feed.provider.id()),
         };
-        (serving, default, in_force)
+        (feeds, default, in_force)
     }
 
-    /// The Data feed part's menu, for the chart `id` as it is now: the
-    /// feeds that serve the chart's instrument, by name, the default first
-    /// and a mark on the one in force, under how the feed stands, in the
-    /// dot's own words, only when the dot is red.
+    /// The Data feed part's menu, for the chart `id` as it is now: every
+    /// feed on the order, by name, in the order, with a mark on the one in
+    /// force and a short note on any with no data for the chart's symbol,
+    /// under how the feed stands, in the dot's own words, only when the dot
+    /// is red for anything the rows do not already say.
     fn feed_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
         let menu = gio::Menu::new();
         let Some(pane) = self.pane(id) else { return menu };
         let section = gio::Menu::new();
         let instrument = pane.instrument.borrow().clone();
         let mut credited = Vec::new();
+        // The dot red only because the feed in force has no data for the
+        // symbol: its row already says so, and a heading would say it twice.
+        let mut said_in_its_row = false;
         if let Some(instrument) = instrument {
-            let (serving, _, in_force) = self.feeds_serving(&pane, &instrument);
-            credited = serving.iter().map(|feed| feed.provider.id()).collect();
+            let (offered, _, in_force) = self.feeds_offered(&pane, &instrument);
+            credited = offered.iter().map(|feed| feed.provider.id()).collect();
             Self::mark_choice(&pane, "feed", in_force.unwrap_or_default().to_variant());
-            for feed in &serving {
+            for feed in &offered {
                 let own = feed.provider.id();
-                let item = gio::MenuItem::new(Some(feed.provider.label()), None);
+                let holds = feed.provider.symbol_for(&instrument).is_some();
+                said_in_its_row |= !holds && Some(own) == in_force;
+                let item = gio::MenuItem::new(Some(&feed_row(feed.provider.label(), holds, &instrument.symbol)), None);
                 item.set_action_and_target_value(Some("pane.feed"), Some(&own.to_variant()));
                 section.append_item(&item);
             }
         }
-        let status = pane.feed_in_trouble().then(|| pane.feed_status_words()).flatten();
+        let status = (pane.feed_in_trouble() && !said_in_its_row).then(|| pane.feed_status_words()).flatten();
         menu.append_section(status.as_deref(), &section);
         // The artwork a feed on offer has to show, under the feeds; the dot
         // fills the room left for it as the menu opens.
@@ -6332,7 +6347,7 @@ impl Window {
         let Some(pane) = self.pane(id) else { return };
         let instrument = pane.instrument.borrow().clone();
         let Some(instrument) = instrument else { return };
-        let (_, default, _) = self.feeds_serving(&pane, &instrument);
+        let (_, default, _) = self.feeds_offered(&pane, &instrument);
         let chosen = (Some(own) != default).then(|| own.to_string());
         self.choose_feed(id, chosen);
     }
@@ -9264,9 +9279,14 @@ impl Window {
         if self.drop_trading_symbol_unless(pane, &instrument) {
             self.save_soon();
         }
-        // A chart moved to something its chosen feed has no name for, or
+        // A chart moved to something its chosen feed could never chart, or
         // whose feed has gone from the order, follows the order again.
-        if self.settle_feed(pane, &instrument) {
+        let moved = pane
+            .instrument
+            .borrow()
+            .as_ref()
+            .is_some_and(|was| was.symbol != instrument.symbol || was.suffix != instrument.suffix);
+        if self.settle_feed(pane, &instrument, moved) {
             self.save_soon();
         }
         // An order from it goes to a contract whichever feed charts it.
@@ -9474,7 +9494,7 @@ impl Window {
         pane.write_readout();
         self.write_header_of(pane);
         self.write_account_of(pane);
-        let part = self.feed_part_of(pane, |part| {
+        let part = self.feed_part_of(|part| {
             part.label = Some(feed.provider.label().to_string());
             part.refused = Some(format!("no {} in its data", instrument.symbol));
         });
@@ -10432,15 +10452,22 @@ impl Window {
         Some(providers::route_chosen(usable(), Some(chosen), instrument))
     }
 
-    /// Drop a chart's chosen feed if it can no longer be chosen for
-    /// `instrument`: taken off the order, or with no name for it. The chart
-    /// goes back to following the order. True when it did.
-    fn settle_feed(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
+    /// Drop a chart's chosen feed once it has been taken off the order, or
+    /// when the chart has `moved` to an `instrument` the feed could never
+    /// chart: Sierra Chart chosen for ES does not follow the chart to NVDA.
+    /// The chart goes back to following the order. A chart that stays on
+    /// its instrument keeps its choice, empty or not: it was picked from
+    /// the dot for exactly that. True when it did.
+    fn settle_feed(&self, pane: &ChartPane, instrument: &Instrument, moved: bool) -> bool {
         let stale = match pane.feed.borrow().as_deref() {
             None => false,
             Some(id) => {
                 let feeds = self.feeds.borrow();
-                !providers::choosable(feeds.iter().map(|feed| feed.provider.as_ref()), id, instrument)
+                let providers = || feeds.iter().map(|feed| feed.provider.as_ref());
+                match moved {
+                    true => !providers::choosable(providers(), id, instrument),
+                    false => !providers().any(|provider| provider.id().eq_ignore_ascii_case(id)),
+                }
             }
         };
         if stale {
@@ -10802,7 +10829,7 @@ impl Window {
             let was = pane.served.borrow().clone();
             // A chart whose chosen feed has left the order follows it again,
             // and one whose account has gone is on the default.
-            settled |= self.settle_feed(&pane, &instrument);
+            settled |= self.settle_feed(&pane, &instrument, false);
             settled |= self.settle_account(&pane);
             match self.route_pane(&pane, &instrument) {
                 Some(routed) if was.as_deref() == Some(routed.key().as_str()) => {
@@ -11457,7 +11484,7 @@ impl Window {
     /// and Yahoo alone each says nothing and draws nothing.
     fn write_feed_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
         self.write_account_of(pane);
-        let part = self.feed_part_of(pane, |part| {
+        let part = self.feed_part_of(|part| {
             part.label = serving.map(|feed| feed.provider.label().to_string());
             part.passed = passed
                 .iter()
@@ -11471,7 +11498,7 @@ impl Window {
     /// red, "Rithmic · Not signed in" on it.
     fn write_refused_feed(&self, pane: &ChartPane, feed: &Rc<Feed>) {
         self.write_account_of(pane);
-        let part = self.feed_part_of(pane, |part| {
+        let part = self.feed_part_of(|part| {
             part.label = Some(feed.provider.label().to_string());
             part.refused = Some(feed.unusable_because.get().to_string());
         });
@@ -11493,19 +11520,17 @@ impl Window {
         pane.write_account(text.as_deref());
     }
 
-    /// The Data feed part for `pane`, when the dot is drawn at all: with
+    /// The Data feed part, when the dot is drawn at all: with
     /// more than Yahoo on the order, or a feed that connects to something.
-    /// `fill` says which feed; this says whether another can be chosen.
-    fn feed_part_of(&self, pane: &ChartPane, fill: impl FnOnce(&mut pane::FeedPart)) -> Option<pane::FeedPart> {
+    /// `fill` says which feed; this says whether another can be chosen,
+    /// which is whenever the order has more than one, whatever each holds
+    /// of the chart's symbol.
+    fn feed_part_of(&self, fill: impl FnOnce(&mut pane::FeedPart)) -> Option<pane::FeedPart> {
         let feeds = self.feeds.borrow();
         if !crate::feeds::worth_a_dot(feeds.iter().map(|feed| feed.provider.id())) {
             return None;
         }
-        let instrument = pane.instrument.borrow();
-        let serving = instrument.as_ref().map_or(0, |instrument| {
-            providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument).len()
-        });
-        let mut part = pane::FeedPart { clickable: serving > 1, ..pane::FeedPart::default() };
+        let mut part = pane::FeedPart { clickable: feeds.len() > 1, ..pane::FeedPart::default() };
         fill(&mut part);
         Some(part)
     }
