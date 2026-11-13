@@ -1976,6 +1976,18 @@ impl State {
         }
     }
 
+    /// The drawing a press at a pixel takes hold of: none where a mark's
+    /// handle is under it — an order's line, its ×, a tab — since what the
+    /// hand reaches for over an order is the order. A drawing anywhere else
+    /// is taken as ever. Hover, a press, a double-click and a right-click
+    /// all ask this, so the cursor promises what the press does.
+    fn drawing_clear_of_marks(&self, width: f64, height: f64, x: f64, y: f64) -> Option<(usize, Grip)> {
+        match self.mark_under(width, height, x, y) {
+            Some(_) => None,
+            None => self.drawing_at(width, height, x, y),
+        }
+    }
+
     /// The drawing under a pixel, topmost first, and which part of it.
     fn drawing_at(&self, width: f64, height: f64, x: f64, y: f64) -> Option<(usize, Grip)> {
         let (first, visible) = self.slice();
@@ -3258,7 +3270,7 @@ impl ChartView {
     pub fn select_at(&self, x: f64, y: f64) -> bool {
         let hit = {
             let state = self.state.borrow();
-            state.drawing_at(self.area.width() as f64, self.area.height() as f64, x, y)
+            state.drawing_clear_of_marks(self.area.width() as f64, self.area.height() as f64, x, y)
         };
         let changed = {
             let mut state = self.state.borrow_mut();
@@ -5234,7 +5246,12 @@ impl ChartView {
                     s.hover_mark = handle;
                     area.queue_draw();
                 }
-                let over = free.then(|| s.drawing_at(w, h, x, y)).flatten();
+                // Under a mark's handle no drawing is lit: the press goes
+                // to the mark.
+                let over = match over_mark {
+                    Some(_) => None,
+                    None => free.then(|| s.drawing_at(w, h, x, y)).flatten(),
+                };
                 // The grip under the hand is lit, which is a redraw of the
                 // chart — but only on the motion that reaches a grip or leaves
                 // one, not on every pixel of travel.
@@ -5698,7 +5715,30 @@ impl ChartView {
             // was selected, and pans as it always did.
             // Except Ctrl on a corner, which takes hold of it so the
             // drag that follows snaps it to a candle; Shift still adds.
-            let drawing = s.drawing_at(width, height, x, y);
+            // A draggable mark's line: taken to another price, starting
+            // where it is so nothing jumps, over any drawing under it too —
+            // an order is what the hand reaches for there. Its × too: a
+            // press there that moves on is a drag, not a close. Shift is
+            // for the drawings' selection and leaves it to them.
+            let mark = match shift_only {
+                true => None,
+                false => s.mark_under(width, height, x, y),
+            };
+            if let Some(MarkHit::Line(id) | MarkHit::Close(id)) = &mark
+                && let Some(at) = s.marks.lines.iter().find(|held| held.id == *id && held.draggable).map(|held| held.price)
+            {
+                s.drag = Some(Drag::Mark { what: Grab::Move(id.clone()), at, allowed: true });
+                s.hover_mark = None;
+                drop(s);
+                pointer.queue_draw();
+                return;
+            }
+            // Any other handle of a mark — a × that only closes — is the
+            // mark's as well, and no drawing under it is taken.
+            let drawing = match mark {
+                Some(_) => None,
+                None => s.drawing_at(width, height, x, y),
+            };
             // A drawing taken lets go of the indicator selected, which the
             // window is told once the state is free again.
             let unpicked = drawing.is_some() && s.picked.take().is_some();
@@ -5708,20 +5748,6 @@ impl ChartView {
                     view.tell_indicator(IndicatorEvent::Picked(None));
                 }
             };
-            // A draggable mark's line, under no drawing: taken to another
-            // price, starting where it is so nothing jumps. Its × too: a
-            // press there that moves on is a drag, not a close.
-            if drawing.is_none()
-                && !shift_only
-                && let Some(MarkHit::Line(id) | MarkHit::Close(id)) = s.mark_under(width, height, x, y)
-                && let Some(at) = s.marks.lines.iter().find(|mark| mark.id == id && mark.draggable).map(|mark| mark.price)
-            {
-                s.drag = Some(Drag::Mark { what: Grab::Move(id), at, allowed: true });
-                s.hover_mark = None;
-                drop(s);
-                pointer.queue_draw();
-                return;
-            }
             match drawing {
                 Some((index, grip)) if shift && (shift_only || grip == Grip::Body) => {
                     match s.selected.iter().position(|i| *i == index) {
@@ -5847,10 +5873,18 @@ impl ChartView {
                     }
                     let Some((at, _)) = s.tick_price_at(width, height, y) else { return };
                     let allowed = s.mark_allowed(&what, at);
+                    let was_off = s.mark_held_off().is_some();
                     s.drag = Some(Drag::Mark { what, at, allowed });
+                    let off = s.mark_held_off().is_some();
                     drop(s);
-                    // A preview, on the pointer layer: the chart is as it was.
+                    // A preview, on the pointer layer: the chart is as it
+                    // was, but for the mark itself, faint at its own price
+                    // once the hand has taken it off — redrawn only as it
+                    // leaves that price or comes back to it.
                     pointer.queue_draw();
+                    if was_off != off {
+                        area.queue_draw();
+                    }
                     return;
                 }
                 Drag::Place { moved } => {
@@ -6059,6 +6093,9 @@ impl ChartView {
                 Some(Drag::Mark { what, at, allowed }) => {
                     let Some(view) = view.upgrade() else { return };
                     view.pointer.queue_draw();
+                    // The mark faint while in hand is itself again; whatever
+                    // the release asks for comes with the marks it is told.
+                    view.area.queue_draw();
                     let from = state.borrow().mark_dragged(&what).map(|dragged| dragged.from);
                     // A tab pressed and let go where it was places nothing:
                     // it would be at its mark's own price.
@@ -6205,7 +6242,7 @@ impl ChartView {
             if region == Region::Plot {
                 let hit = {
                     let s = state.borrow();
-                    s.drawing_at(area.width() as f64, area.height() as f64, x, y)
+                    s.drawing_clear_of_marks(area.width() as f64, area.height() as f64, x, y)
                         .map(|(index, _)| (index, s.drawings.get(index).is_some_and(|d| d.kind.is_text())))
                 };
                 if let Some((index, text)) = hit
@@ -8327,6 +8364,15 @@ impl State {
         }
     }
 
+    /// The mark the hand has taken off its price, which is drawn faint
+    /// where it was while its copy follows the hand. Only once it has left
+    /// its price: a × pressed and let go in place never flickers.
+    fn mark_held_off(&self) -> Option<&str> {
+        let Some(Drag::Mark { what: Grab::Move(id), at, .. }) = &self.drag else { return None };
+        let mark = self.marks.lines.iter().find(|mark| mark.id == *id)?;
+        ((mark.price - at).abs() > 1e-9).then_some(mark.id.as_str())
+    }
+
     /// What the rules are asked about `dragged` in hand at `at`.
     fn drag_query<'a>(&self, dragged: &Dragged<'a>, at: f64, places: usize) -> MarkDrag<'a> {
         MarkDrag {
@@ -8592,6 +8638,9 @@ fn draw_marks(
         }
     };
     let lit = state.hover_mark.as_ref();
+    // Faint on its way, or taken off its price by the hand.
+    let held = state.mark_held_off();
+    let faint_of = |mark: &PriceMark| mark.dim || held == Some(mark.id.as_str());
     let ys = |price: f64| Some(to_y(price).round()).filter(|y| shown(*y));
     let marks: Vec<(&PriceMark, f64)> =
         state.marks.lines.iter().filter_map(|mark| Some((mark, ys(mark.price)?))).collect();
@@ -8602,7 +8651,7 @@ fn draw_marks(
     // same price, is drawn through words.
     for (mark, y) in &marks {
         if let Some(weight) = mark.line {
-            faint(cr, mark.dim, &|cr| line(cr, *y, &mark.colour, mark.style, weight));
+            faint(cr, faint_of(mark), &|cr| line(cr, *y, &mark.colour, mark.style, weight));
         }
     }
     draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
@@ -8611,13 +8660,14 @@ fn draw_marks(
     // A mark's label and its tabs.
     let label = |cr: &cairo::Context, mark: &PriceMark, y: f64| {
         let row = label_row(cr, lane, mark);
-        ground(cr, mark.dim, &|cr| {
+        let dim = faint_of(mark);
+        ground(cr, dim, &|cr| {
             row.path(cr, y);
             for (_, x, w) in &row.tabs {
                 cr.rectangle(*x, y - tab_h / 2.0, *w, tab_h);
             }
         });
-        faint(cr, mark.dim, &|cr| {
+        faint(cr, dim, &|cr| {
             let lit_cap = lit.is_some_and(|hit| matches!(hit, MarkHit::Close(id) if *id == mark.id));
             let body = mark.body.as_deref().map(|body| (body, None));
             let label = Label { colour: &mark.colour, tag: &mark.tag, body, lit: lit_cap };
@@ -8648,14 +8698,14 @@ fn draw_marks(
     for (mark, y) in marks.iter().filter(|(mark, _)| !mark.raised) {
         label(cr, mark, *y);
         if let Some(at) = &mark.chip {
-            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
+            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), faint_of(mark)));
         }
     }
     draw_link(cr, lane, &marks, ink, &faint);
     for (mark, y) in marks.iter().filter(|(mark, _)| mark.raised) {
         label(cr, mark, *y);
         if let Some(at) = &mark.chip {
-            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
+            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), faint_of(mark)));
         }
     }
     let last = last_price(state).map(|price| to_y(price).round() + 0.5).filter(|y| shown(*y));
@@ -12505,6 +12555,106 @@ mod tests {
                 assert_eq!(at(x + 3.0), ground, "theme {theme}: a tab at x {x} is clear of the line");
             }
         }
+    }
+
+    /// Where an order's handle and a drawing are both under the hand, the
+    /// order is what a press takes and what the hover lights: its line, its
+    /// × and the position's tabs. A drawing anywhere else is taken as ever,
+    /// and so is one under the position's line, which cannot be dragged.
+    #[test]
+    fn an_orders_handle_is_taken_before_a_drawing_under_it() {
+        let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            let mut state = at_the_last_price(0);
+            state.mark_labels = side;
+            let (first, visible, _) = state.view();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let lane = state.lane(&plan);
+            let cr = measuring().unwrap();
+            let order = the_mark(&state, "B1").clone();
+            let held = the_mark(&state, "position").clone();
+            let (order_y, held_y) = (to_y(order.price).round(), to_y(held.price).round());
+            let mid = (plan.plot_x + lane.end) / 2.0;
+            let ts = state.bars[first + visible / 2].ts;
+            // A horizontal line on the order's price, one on the position's,
+            // and one clear of both.
+            let clear = (order.price + held.price) / 2.0;
+            for price in [order.price, held.price, clear] {
+                state.drawings.push(Drawing::new(DrawingKind::Horizontal, Anchor::new(ts, price), Anchor::new(ts, price)));
+            }
+            let (on_order, on_held, elsewhere) = (0, 1, 2);
+            let row = label_row(&cr, lane, &order);
+            let held_row = label_row(&cr, lane, &held);
+            let (_, tab_x, tab_w) = held_row.tabs[0];
+
+            let drawing = |x: f64, y: f64| state.drawing_at(w, h, x, y).map(|(index, _)| index);
+            let taken = |x: f64, y: f64| state.drawing_clear_of_marks(w, h, x, y).map(|(index, _)| index);
+            assert_eq!(drawing(mid, order_y), Some(on_order), "{side:?}: the line is under the order");
+            assert_eq!(taken(mid, order_y), None, "{side:?}: the order's line comes first");
+            assert_eq!(taken(row.cap_x + MARK_CAP / 2.0, order_y), None, "{side:?}: so does its ×");
+            assert_eq!(taken(tab_x + tab_w / 2.0, held_y), None, "{side:?}: and the position's tab");
+            assert_eq!(taken(held_row.cap_x + 3.0, held_y), None, "{side:?}: and the position's ×");
+            assert_eq!(taken(mid, held_y), Some(on_held), "{side:?}: the position's line is not a handle");
+            assert_eq!(taken(mid, to_y(clear).round()), Some(elsewhere), "{side:?}: a drawing clear of the orders");
+            // A faint order is not taken hold of, so the drawing is.
+            mark_mut(&mut state, "B1").dim = true;
+            assert_eq!(state.drawing_clear_of_marks(w, h, mid, order_y).map(|(index, _)| index), Some(on_order));
+        }
+    }
+
+    /// An order taken to another price is drawn faint at its own price
+    /// while its copy follows the hand, and only once the hand has moved
+    /// it: pressed on its × or back where it was, it is as solid as ever.
+    /// A tab pulled out leaves its mark as it is.
+    #[test]
+    fn an_order_in_hand_is_faint_where_it_was() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = at_the_last_price(0);
+        state.hover_mark = None;
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let order = the_mark(&state, "B1").clone();
+        let y = scale.to_y(order.price, plan.price_y, plan.price_h).round() as usize;
+        let cr = measuring().unwrap();
+        let row = label_row(&cr, state.lane(&plan), &order);
+        let fill = {
+            let (r, g, b, _) = colors::rgba(&Tag::on(&order.colour).fill);
+            ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+        };
+        let tag = |state: &State| {
+            let pixels = frame(w, h, |cr| draw(cr, w, h, state));
+            let i = (y * w as usize + (row.tag_x + 4.0) as usize) * 4;
+            (pixels[i + 2], pixels[i + 1], pixels[i])
+        };
+        assert_eq!(tag(&state), fill, "solid before it is taken");
+
+        let moved = |at: f64| Some(Drag::Mark { what: Grab::Move("B1".into()), at, allowed: true });
+        state.drag = moved(order.price);
+        assert_eq!(state.mark_held_off(), None, "pressed, not yet moved");
+        assert_eq!(tag(&state), fill, "solid while it has not left its price");
+
+        state.drag = moved(order.price + 1.0);
+        assert_eq!(state.mark_held_off(), Some("B1"));
+        assert_ne!(tag(&state), fill, "faint once the hand has taken it off its price");
+        // Faint, not gone: drawn, at less than full strength.
+        assert_ne!(tag(&state), {
+            let (r, g, b, _) = colors::rgba(&state.theme.ui.background);
+            ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+        });
+        state.drag = Some(Drag::Mark { what: Grab::Move("B1".into()), at: order.price + 1.0, allowed: false });
+        assert_eq!(state.mark_held_off(), Some("B1"), "faint where it may not go too");
+
+        state.drag = Some(Drag::Mark {
+            what: Grab::Tab { mark: "position".into(), tab: "limit".into() },
+            at: order.price + 1.0,
+            allowed: true,
+        });
+        assert_eq!(state.mark_held_off(), None, "a tab pulled out moves nothing");
+        state.drag = None;
+        assert_eq!(tag(&state), fill, "solid again once let go");
     }
 
     fn save_png(mut surface: cairo::ImageSurface, path: &str) {
