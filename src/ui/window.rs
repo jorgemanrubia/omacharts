@@ -7746,7 +7746,25 @@ impl Window {
     }
 
     /// The modal for editing the strip.
+    /// The preset resolutions in a dialog over the charts, for the strip's
+    /// own menu.
     fn edit_timeframes(self: &Rc<Self>) {
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&adw::HeaderBar::new());
+        toolbar.set_content(Some(&self.timeframes_page()));
+
+        let dialog = adw::Dialog::new();
+        dialog.set_title("Resolutions");
+        dialog.set_content_width(420);
+        dialog.set_content_height(520);
+        dialog.set_child(Some(&toolbar));
+        dialog.present(Some(&self.window));
+    }
+
+    /// The preset resolutions, each with its bin, under a row to add one.
+    /// The list is the window's, since every chart offers the same; the
+    /// strip's menu shows it in a dialog and Preferences as a page of its own.
+    pub(crate) fn timeframes_page(self: &Rc<Self>) -> adw::PreferencesPage {
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
 
@@ -7820,16 +7838,7 @@ impl Window {
         });
 
         page.add(&group);
-        let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::new());
-        toolbar.set_content(Some(&page));
-
-        let dialog = adw::Dialog::new();
-        dialog.set_title("Resolutions");
-        dialog.set_content_width(420);
-        dialog.set_content_height(520);
-        dialog.set_child(Some(&toolbar));
-        dialog.present(Some(&self.window));
+        page
     }
 
     fn build_watchlist(self: &Rc<Self>) -> Rc<Watchlist> {
@@ -8602,7 +8611,6 @@ impl Window {
     /// were left.
     fn open_preferences_at(self: &Rc<Self>, at: Option<&str>) {
         let this = self.clone();
-        let editor = self.clone();
         let restorer = self.clone();
         Preferences::present(
             &self.window,
@@ -8614,7 +8622,6 @@ impl Window {
                 this.restyle();
                 this.adopt_feed();
             }),
-            Rc::new(move || editor.edit_timeframes()),
             Rc::new(move || restorer.adopt_restored()),
             self.clone(),
             at,

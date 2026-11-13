@@ -64,10 +64,6 @@ struct Context {
     theming: Rc<RefCell<Theming>>,
     /// Repaints the charts once the feed or the look has been stored.
     on_change: Rc<dyn Fn()>,
-    /// Opens the window's own resolution editor. The list belongs to the
-    /// window — every chart offers the same resolutions — so it is edited
-    /// there and merely reached from here.
-    on_edit_resolutions: Rc<dyn Fn()>,
     /// Has the window read back everything a restored backup changed.
     on_restored: Rc<dyn Fn()>,
     general_page: adw::PreferencesPage,
@@ -111,7 +107,6 @@ impl Preferences {
         store: Rc<Store>,
         theming: Rc<RefCell<Theming>>,
         on_change: Rc<dyn Fn()>,
-        on_edit_resolutions: Rc<dyn Fn()>,
         on_restored: Rc<dyn Fn()>,
         window: Rc<Window>,
         at: Option<&str>,
@@ -164,7 +159,6 @@ impl Preferences {
             store,
             theming,
             on_change,
-            on_edit_resolutions,
             on_restored,
             general_page,
             charts_page,
@@ -366,15 +360,19 @@ fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     row.set_title("Preset resolutions");
     row.set_activatable(true);
 
-    let button = gtk::Button::with_label("Edit…");
-    button.add_css_class("action-word");
-    button.set_valign(gtk::Align::Center);
-    let edit = context.on_edit_resolutions.clone();
-    button.connect_clicked(move |_| edit());
-    row.add_suffix(&button);
-
-    let edit = context.on_edit_resolutions.clone();
-    row.connect_activated(move |_| edit());
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    // A page pushed over General rather than a dialog: one over the charts
+    // opened behind this window.
+    let window = context.window.clone();
+    row.connect_activated(move |row| {
+        let Some(view) = row.ancestor(adw::NavigationView::static_type()).and_downcast::<adw::NavigationView>() else {
+            return;
+        };
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&adw::HeaderBar::new());
+        toolbar.set_content(Some(&window.timeframes_page()));
+        view.push(&adw::NavigationPage::new(&toolbar, "Preset resolutions"));
+    });
 
     group.add(&row);
 

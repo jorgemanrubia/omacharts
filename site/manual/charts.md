@@ -74,7 +74,7 @@ crop: 898,193,763,399   (the whole card, 24px layout margin)
 
 ### The preset resolutions
 
-The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › General › Chart › **Preset resolutions** › **Edit…**.
+The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › General › Chart › **Preset resolutions**.
 
 The strip is a part of [the header](#the-header). To hide it, take it off the header in Preferences › Overlays › **Header**, or leave `strip` out of `omacharts config header`. The resolutions stay: typing one, the resolution in the header and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> all still work.
 
