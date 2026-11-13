@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::formula::{self, Expr, Formula, Op};
+use crate::formula::{self, Expr, Formula};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,8 +104,7 @@ pub struct Instrument {
     /// arithmetic on symbols — the symbols it reads and what it does with
     /// them; unset for everything that trades. Every other field describes
     /// the first leg, which decides the sessions and the delay the formula
-    /// has. A currency pair turned over is one too: `USDEUR` is one over
-    /// `EURUSD`, and charted from that pair's prices.
+    /// has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub formula: Option<Box<Formula>>,
 }
@@ -146,18 +145,6 @@ pub fn split_suffix(text: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// The currencies Yahoo quotes against each other as `XXXYYY=X`: what
-/// [`SearchIndex::currency_pair`] accepts either half of a pair from.
-const CURRENCIES: &[&str] = &[
-    "AED", "ARS", "AUD", "BRL", "CAD", "CHF", "CLP", "CNH", "CNY", "COP", "CZK", "DKK", "EGP", "EUR", "GBP",
-    "HKD", "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "KWD", "MXN", "MYR", "NGN", "NOK", "NZD", "PEN",
-    "PHP", "PKR", "PLN", "QAR", "RON", "SAR", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "VND", "ZAR",
-];
-
-/// The yield indices: a rate quoted as an index, `TNX` at 4.12 for 4.12%.
-/// Only their spelling tells them from an index of prices.
-const YIELD_INDICES: &[&str] = &["TNX", "TYX", "FVX"];
-
 /// Lower-cased, and with the two spellings of the same character folded into
 /// one, so a query matches however either side happened to write it.
 ///
@@ -189,22 +176,6 @@ impl Instrument {
     /// The symbols a formula reads; none for anything that trades.
     pub fn legs(&self) -> &[Instrument] {
         self.formula.as_deref().map_or(&[], |formula| formula.legs.as_slice())
-    }
-
-    /// Whether a move is read in the series' own units rather than in
-    /// percent: a yield, or a formula that is a spread. A yield going from
-    /// 0.10 to 0.20 has doubled, and a spread crossing zero has moved an
-    /// infinite percentage; neither is how anybody reads a rate, which moved
-    /// ten basis points.
-    pub fn moves_in_units(&self) -> bool {
-        match &self.formula {
-            Some(formula) => formula.in_units(),
-            None => {
-                self.kind == InstrumentKind::Index
-                    && self.suffix.is_none()
-                    && YIELD_INDICES.contains(&self.symbol.as_str())
-            }
-        }
     }
 
     pub fn override_for(&self, adapter: &str) -> Option<&str> {
@@ -412,9 +383,6 @@ impl SearchIndex {
     /// or [`SearchIndex::spelled`] first.
     ///
     /// And a formula, `GC/SI` or `TNX-FVX`: see [`SearchIndex::formula`].
-    ///
-    /// And a currency pair nobody listed, `USDEUR` or `SEKUSD`: see
-    /// [`SearchIndex::currency_pair`].
     pub fn resolve(&self, symbol: &str, suffix: Option<&str>) -> Option<Instrument> {
         let whole = || match suffix {
             Some(suffix) => format!("{symbol}.{suffix}"),
@@ -439,7 +407,7 @@ impl SearchIndex {
         if suffix.is_some() {
             return None;
         }
-        self.contract(symbol).or_else(|| self.coin(symbol)).or_else(|| self.currency_pair(symbol))
+        self.contract(symbol).or_else(|| self.coin(symbol))
     }
 
     /// A coin as an exchange quotes it against the dollar, `BTC-USD`: the
@@ -461,93 +429,20 @@ impl SearchIndex {
         self.find(&root, None).filter(|i| i.kind == InstrumentKind::FutureRoot)?.in_month(month)
     }
 
-    /// What was typed, when it is a whole spelling rather than something to
-    /// search for: a formula, `GC/SI` or `TNX-FVX`, or a currency pair
-    /// nobody listed, `USDEUR`. Search offers none of them, so somebody who
-    /// typed one meant it, and a picker puts it first.
+    /// A formula typed whole, `GC/SI` or `TNX-FVX`, for a picker to put
+    /// first: search offers none, so somebody who typed one meant it.
+    /// Nothing at all is done for text with no operator or dash in it, which
+    /// is every plain query.
     pub fn spelled(&self, query: &str) -> Option<Instrument> {
-        let typed = query.trim().to_uppercase();
-        if formula::looks_like(&typed) {
-            return self.resolve(&typed, None);
+        let candidate = formula::looks_like(query) || query.contains('-');
+        if !candidate {
+            return None;
         }
+        let typed = query.trim().to_uppercase();
         match self.find(&typed, None) {
             Some(_) => None,
-            None => self
-                .currency_pair(&typed)
-                .or_else(|| typed.contains('-').then(|| self.formula(&typed)).flatten()),
+            None => self.resolve(&typed, None).filter(|found| found.formula.is_some()),
         }
-    }
-
-    /// `USDEUR` when the inventory lists `EURUSD`: the listed pair, turned
-    /// over. Charted from the listed pair's own prices rather than from
-    /// whatever a provider spells the other way round, so both read the
-    /// same quotes. Only a pair the inventory lists as FX, so six letters
-    /// that happen to reverse into a stock's ticker are still nothing.
-    fn turned_over(&self, pair: &str) -> Option<Instrument> {
-        if pair.len() != 6 || !pair.bytes().all(|b| b.is_ascii_uppercase()) {
-            return None;
-        }
-        let (base, quote) = pair.split_at(3);
-        let listed = self
-            .find(&format!("{quote}{base}"), None)
-            .filter(|found| found.kind == InstrumentKind::Fx)?;
-        let name = match listed.name.split_once(" / ") {
-            Some((first, second)) => format!("{second} / {first}"),
-            None => format!("1 / {}", listed.name),
-        };
-        let one_over = Expr::Bin(Op::Div, Box::new(Expr::Num(1.0)), Box::new(Expr::Leg(0)));
-        Some(Instrument {
-            symbol: pair.to_string(),
-            name,
-            suffix: None,
-            currency: Some(quote.to_string()),
-            tier: 3,
-            overrides: Vec::new(),
-            exchange: None,
-            popularity: 0,
-            local_name: None,
-            formula: Some(Box::new(Formula { legs: vec![listed.clone()], expr: one_over })),
-            ..listed.clone()
-        })
-    }
-
-    /// Any pair of currencies, `KRWUSD`, or as Yahoo spells it, `KRWUSD=X`.
-    /// The inventory lists a dozen pairs and Yahoo quotes hundreds, so one
-    /// nobody listed is charted from Yahoo's own quotes rather than refused.
-    /// The listed pair, or the listed pair turned over, comes first: the
-    /// Yahoo spelling of one is that one. Both halves have to be currency
-    /// codes, so a six-letter ticker nobody listed is still nothing.
-    fn currency_pair(&self, text: &str) -> Option<Instrument> {
-        let pair = text.strip_suffix("=X").unwrap_or(text);
-        if pair.len() != 6 || !pair.bytes().all(|b| b.is_ascii_uppercase()) {
-            return None;
-        }
-        if pair != text
-            && let Some(listed) = self.find(pair, None).filter(|found| found.kind == InstrumentKind::Fx)
-        {
-            return Some(listed.clone());
-        }
-        if let Some(turned) = self.turned_over(pair) {
-            return Some(turned);
-        }
-        let (base, quote) = pair.split_at(3);
-        if base == quote || !CURRENCIES.contains(&base) || !CURRENCIES.contains(&quote) {
-            return None;
-        }
-        Some(Instrument {
-            symbol: pair.to_string(),
-            name: format!("{base} / {quote}"),
-            kind: InstrumentKind::Fx,
-            suffix: None,
-            currency: Some(quote.to_string()),
-            tier: 3,
-            session_origin: 0,
-            overrides: Vec::new(),
-            exchange: None,
-            popularity: 0,
-            local_name: None,
-            formula: None,
-        })
     }
 
     /// One symbol as a leg of a formula: a listing spelled with a dot is
@@ -564,15 +459,13 @@ impl SearchIndex {
 
     /// Arithmetic on symbols as an instrument: `GC/SI`, `TNX-FVX`,
     /// `(2*RB+HO)*42/3-CL`, `(SPY+QQQ)/2`. Each symbol in it is resolved the
-    /// way one on its own is, so `SAN.MC/GC` and `USDEUR/GC` work too. It
-    /// is described by the first leg, named after all of them, and stored
-    /// and shown under the spelling it was asked for, tidied.
+    /// way one on its own is, so `SAN.MC/GC` works too. It is described by
+    /// the first leg, named after all of them, and stored and shown under
+    /// the spelling it was asked for, tidied.
     ///
-    /// A leg that is a formula itself — `USDEUR`, one over `EURUSD` — is
-    /// worked into this one, so the legs it carries all trade. Nothing at all
-    /// for something that does not parse, a symbol that resolves to nothing,
-    /// or arithmetic on no symbol at all; and one symbol on its own, `(SPY)`,
-    /// is that symbol.
+    /// Nothing at all for something that does not parse, a symbol that
+    /// resolves to nothing, or arithmetic on no symbol at all; and one symbol
+    /// on its own, `(SPY)`, is that symbol.
     fn formula(&self, text: &str) -> Option<Instrument> {
         let (expr, legs) = formula::parse(text, |part| self.leg(part))?;
         if expr == Expr::Leg(0) {
@@ -593,20 +486,6 @@ impl SearchIndex {
         }
         let name = expr.spell(&|at| legs.get(at).map(|leg| leg.name.clone()).unwrap_or_default(), &formula::NAMED);
 
-        // Each leg that is a formula itself, opened up into this one.
-        let mut flat: Vec<Instrument> = Vec::new();
-        let mut place = |leg: &Instrument| formula::intern(&mut flat, leg.clone(), formula::same_leg);
-        let mut inner: Vec<Expr> = Vec::with_capacity(legs.len());
-        for leg in &legs {
-            inner.push(match leg.formula.as_deref() {
-                None => Expr::Leg(place(leg)),
-                Some(nested) => {
-                    let at: Vec<usize> = nested.legs.iter().map(&mut place).collect();
-                    nested.expr.substitute(&|i| Expr::Leg(at.get(i).copied().unwrap_or(usize::MAX)))
-                }
-            });
-        }
-        let expr = expr.substitute(&|at| inner.get(at).cloned().unwrap_or(Expr::Leg(usize::MAX)));
         Some(Instrument {
             symbol,
             name,
@@ -617,7 +496,7 @@ impl SearchIndex {
             exchange: None,
             popularity: 0,
             local_name: None,
-            formula: Some(Box::new(Formula { legs: flat, expr })),
+            formula: Some(Box::new(Formula { legs, expr })),
             ..first
         })
     }
@@ -1247,75 +1126,12 @@ mod tests {
         assert_eq!(spread.kind, InstrumentKind::Index, "the first leg's kind");
         assert_eq!(spread.tier, 3, "never offered by search");
 
-        // A pair turned over is opened up into the formula it is a leg of.
-        let nested = idx.resolve("USDEUR/GC", None).expect("a turned pair as a leg");
-        assert_eq!(nested.display_symbol(), "USDEUR/GC");
-        let legs: Vec<String> = nested.legs().iter().map(Instrument::display_symbol).collect();
-        assert_eq!(legs, ["EURUSD", "GC"]);
-        let value = nested.formula.as_ref().unwrap().expr.eval(&|at| [2.0, 5.0][at]);
-        assert_eq!(value, Some(0.1), "one over two, over five");
-
         assert!(!idx.resolve("3*CL-HO*42", None).unwrap().is_contract(), "a formula ending in digits is no contract");
 
         assert_eq!(idx.spelled("tnx-fvx").map(|found| found.symbol), Some("TNX-FVX".into()));
 
         assert_eq!(spelled("BTC-USD").as_deref(), Some("BTC"), "the coin, not bitcoin less the ETF called USD");
         assert_eq!(spelled("BTC-USD/ETH-USD").as_deref(), Some("BTC/ETH"));
-    }
-
-    #[test]
-    fn a_pair_spelled_the_other_way_round_is_the_listed_one_turned_over() {
-        let idx = index();
-        let usdeur = idx.resolve("USDEUR", None).expect("one over EURUSD");
-        assert_eq!(usdeur.display_symbol(), "USDEUR", "answers to how it was typed");
-        assert_eq!(usdeur.name, "US Dollar / Euro");
-        assert_eq!(usdeur.kind, InstrumentKind::Fx);
-        assert_eq!(usdeur.currency.as_deref(), Some("EUR"), "priced in what it is quoted in");
-        let legs: Vec<String> = usdeur.legs().iter().map(Instrument::display_symbol).collect();
-        assert_eq!(legs, ["EURUSD"]);
-        assert_eq!(usdeur.tier, 3, "never offered by search");
-        assert!(idx.resolve("EURUSD", None).unwrap().formula.is_none(), "a listed pair is itself");
-
-        assert_eq!(idx.spelled(" usdeur ").map(|found| found.legs().len()), Some(1), "typed, it is offered");
-        assert!(idx.spelled("EURUSD").is_none(), "a listed pair is a search hit, not a spelling");
-        assert_eq!(idx.spelled("gc/si").map(|found| found.symbol), Some("GC/SI".into()));
-    }
-
-    #[test]
-    fn any_pair_of_currencies_is_a_pair_listed_or_not() {
-        let idx = index();
-        let sek = idx.spelled("sekusd=x").expect("Yahoo's spelling, typed");
-        assert_eq!(sek.display_symbol(), "SEKUSD", "stored without the provider's suffix");
-        assert_eq!((sek.kind, sek.currency.as_deref()), (InstrumentKind::Fx, Some("USD")));
-        assert!(sek.formula.is_none(), "charted from the provider's own quotes");
-        assert_eq!(sek.tier, 3, "never offered by search");
-        assert_eq!(idx.resolve(&sek.symbol, None).map(|i| i.name), Some(sek.name), "a restart finds it again");
-
-        let eur = idx.spelled("EURUSD=X").expect("a listed pair, spelled Yahoo's way");
-        assert!(eur.formula.is_none() && eur.tier < 3, "is the listed one");
-        let turned = idx.spelled("USDEUR=X").expect("turned over, spelled Yahoo's way");
-        assert_eq!(turned.legs().len(), 1, "still drawn from the listed pair");
-
-        for nothing in ["ABCDEF", "USDUSD", "KRWUS=X", "USDKRWX"] {
-            assert!(idx.resolve(nothing, None).is_none(), "{nothing:?}");
-        }
-    }
-
-    /// A yield moves in its own units; a share, a ratio and an index of
-    /// prices move in percent, and so does anything that cannot cross zero.
-    #[test]
-    fn a_rate_moves_in_its_own_units_and_a_price_in_percent() {
-        let idx = index();
-        let units = |typed: &str| idx.resolve(typed, None).expect(typed).moves_in_units();
-        assert!(units("TNX"), "the ten-year, quoted as an index");
-        assert!(!units("GSPC"), "an index of prices");
-        assert!(!units("AAPL"));
-        assert!(!units("TNX/TYX"), "a ratio of two rates is a ratio");
-        assert!(units("TNX-FVX"), "a spread of two is a rate");
-        assert!(units("SPY-QQQ"), "any spread can cross zero");
-        assert!(units("TNX*100"), "a rate scaled is a rate");
-        assert!(!units("(SPY+QQQ)/2"), "a basket of prices is a price");
-        assert!(!units("USDEUR"), "a pair turned over is a price");
     }
 
     #[test]

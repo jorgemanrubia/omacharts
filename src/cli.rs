@@ -551,17 +551,17 @@ pub struct Quote {
 /// Read an instrument's move from the cache.
 pub fn quote(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> Option<Quote> {
     let key = cache_key(provider, instrument)?;
-    quote_from(store, &key, instrument, &daily_bars(store, &key, instrument))
+    quote_from(store, &key, instrument, &daily_bars(store, &key, instrument.kind))
 }
 
 /// The daily bars cached under `key`, as a chart draws them.
 pub fn daily_bars(
     store: &Store,
     key: &str,
-    instrument: &Instrument,
+    kind: omacharts_engine::InstrumentKind,
 ) -> Vec<omacharts_engine::Bar> {
     let mut bars = store.load_bars(key, Timeframe::days(1));
-    omacharts_engine::drawable(&mut bars, Timeframe::days(1), instrument);
+    omacharts_engine::drawable(&mut bars, Timeframe::days(1), kind);
     bars
 }
 
@@ -968,7 +968,7 @@ fn entry_json(store: &Store, provider: Option<&dyn Provider>, instrument: &Instr
     );
     let quote = provider.and_then(|provider| quote(store, provider, instrument));
     if let Some(key) = provider.and_then(|provider| cache_key(provider, instrument)) {
-        let bars = daily_bars(store, &key, instrument);
+        let bars = daily_bars(store, &key, instrument.kind);
         let mut closes: Vec<(i64, f64)> = bars.iter().map(|bar| (bar.ts, bar.close)).collect();
         // The line ends where the price beside it does. A batch of closes is
         // usually newer than the bars: its close replaces the day it shares

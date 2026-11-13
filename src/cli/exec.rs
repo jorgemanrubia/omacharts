@@ -329,8 +329,7 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         .map(|l| l.parse().unwrap_or(10))
         .unwrap_or(10);
     let index = crate::inventory::everything();
-    // A whole spelling — a formula, a pair nobody listed — first, the way
-    // the search field offers it.
+    // A whole formula first, the way the search field offers it.
     let exact = index.spelled(query);
     let hits: Vec<&omacharts_engine::Instrument> = exact
         .iter()
