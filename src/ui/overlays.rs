@@ -686,9 +686,9 @@ fn draw_chart(cr: &gtk::cairo::Context, width: f64, height: f64, top: f64, worn:
 
 /// A line a look draws or not: its row's title, whether the look draws
 /// it, and the edit that switches it.
-pub(crate) type Line = (&'static str, fn(&ChartLook) -> bool, fn(bool) -> LookEdit);
+type Line = (&'static str, fn(&ChartLook) -> bool, fn(bool) -> LookEdit);
 
-pub(crate) const LINES: [Line; 2] = [
+const LINES: [Line; 2] = [
     ("Gridlines", |look| look.grid, LookEdit::Grid),
     ("Last price line", |look| look.price_line, LookEdit::PriceLine),
 ];

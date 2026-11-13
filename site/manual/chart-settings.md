@@ -38,8 +38,6 @@ crop: 496,176,1568,1328 (both; the whole window, 12px layout margin)
 | **Bars** › **Show bars** | Off, this chart's bars are hidden ([Hiding the bars](/manual/charts/#hiding-the-bars)). How bars are drawn, OHLC thickness included, is part of the chart's look, on the **Appearance** page |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
-| **Scales** › **Gridlines** | Draws the grid, on every chart, or on this chart alone when it has [a look of its own](/manual/charts/#a-charts-own-look). The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) |
-| **Scales** › **Last price line** | The dashed line across at the last price, on every chart, or on this chart alone when it has a look of its own. The price stays on the axis either way ([The last price line](/manual/charts/#the-last-price-line)) |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
 | **Session** › **Hours** | **Extended** or **Regular** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |

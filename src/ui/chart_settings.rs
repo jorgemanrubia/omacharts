@@ -656,9 +656,9 @@ fn defaults_group(window: &Rc<Window>, frame: &adw::Window) -> adw::PreferencesG
     group
 }
 
-/// What the two scales do: whether price fits the bars by itself, the lines the
-/// scales draw across the chart, and the way back out of a scale you have
-/// stretched into uselessness.
+/// What the two scales do: whether price fits the bars by itself, and the way
+/// back out of a scale you have stretched into uselessness. The lines drawn
+/// across the chart are its look's, on Overlays.
 ///
 /// Here because the price scale's own options were only ever reachable by
 /// right-clicking the strip of prices down the right-hand edge, which is a menu
@@ -696,17 +696,6 @@ fn scales_group(window: &Rc<Window>, log: &adw::SwitchRow) -> adw::PreferencesGr
     });
 
     group.add(log);
-
-    // The lines every chart's Overlays switches, for this chart alone.
-    let worn = window.look(false);
-    for (title, drawn, edit) in crate::ui::overlays::LINES {
-        let row = switch(title, drawn(&worn));
-        if matches!(edit(true), crate::chart_look::LookEdit::PriceLine(_)) {
-            row.set_subtitle("The price stays on the axis either way");
-        }
-        let window = window.clone();
-        row.connect_active_notify(move |row| window.change_worn_look(edit(row.is_active())));
-    }
 
     let reset = adw::ActionRow::new();
     reset.set_title("Reset chart");

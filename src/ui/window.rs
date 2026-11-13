@@ -2936,8 +2936,7 @@ mod outside_change_tests {
         (global.into_iter().next().expect("a GLOBAL choice"), local.into_iter().next().expect("a LOCAL choice"))
     }
 
-    /// The Gridlines switch on `form`'s Overlays page, rather than the Chart
-    /// page's of a chart's settings.
+    /// The Gridlines switch on `form`'s Overlays page.
     fn overlays_grid(form: &adw::Window) -> adw::SwitchRow {
         let page = rows::<gtk::Stack>(form.upcast_ref())
             .into_iter()

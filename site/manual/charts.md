@@ -350,13 +350,13 @@ The chart keeps the window until you zoom or pan. A new symbol, new bars and a r
 
 ## Gridlines
 
-Gridlines are the same on every chart, in every chartbook, and start off. <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides them. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines**, the **Gridlines** row of [Chart settings](/manual/chart-settings/), and Preferences › Overlays › **Gridlines**.
+Gridlines are the same on every chart, in every chartbook, and start off. <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides them. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines**, and Overlays › **Gridlines** in Preferences and in [Chart settings](/manual/chart-settings/).
 
 The switch changes the look the chart wears. On a chart with [a look of its own](#a-charts-own-look) that is the chart's alone. On any other it is every chart's, so the gridlines go on or off on every chart that has no look of its own. The [last price line](#the-last-price-line) works the same way.
 
 ## The last price line
 
-A dashed line runs across every chart at the last price, in every chartbook. Preferences › Overlays › **Last price line**, the row of that name in [Chart settings](/manual/chart-settings/), and `omacharts config price-line off` take it off every chart. The price itself stays on the price axis either way.
+A dashed line runs across every chart at the last price, in every chartbook. Overlays › **Last price line**, in Preferences and in [Chart settings](/manual/chart-settings/), and `omacharts config price-line off` take it off every chart. The price itself stays on the price axis either way.
 
 ## The crosshair and the last price
 
