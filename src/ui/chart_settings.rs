@@ -1062,7 +1062,6 @@ fn price_row_at(indicators: &[Indicator]) -> usize {
 fn price_row(owner: &Rc<Owner>, refresh: &Refresh) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title("Price");
-    row.set_subtitle("Candles, and everything drawn over them");
     // No handle and no dot. Every other row wears both, so their absence is
     // what says this row is the chart itself rather than another indicator —
     // and a mark here would read as the handle it is not.
