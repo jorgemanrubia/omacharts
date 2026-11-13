@@ -7226,6 +7226,30 @@ mod tests {
         assert_eq!(parsed["charts"].as_array().unwrap().len(), 2);
     }
 
+    /// `chart split` gives the new chart what the old one trades with, as
+    /// splitting in the window does: its account, what it trades instead
+    /// and at what size, and whether it marks its fills.
+    #[test]
+    fn a_split_chart_keeps_what_it_trades_with() {
+        let store = bare();
+        ok("chartbook create Desk --symbol ES --switch", &store);
+        let mut workspace = Workspace::load(&store);
+        let at = workspace.find("Desk").unwrap();
+        let pane = charts::panes_mut(workspace.book_mut(at).unwrap()).unwrap().first_mut().unwrap();
+        pane["account"] = json!("login/952");
+        pane["trading_symbol"] = json!("MES");
+        pane["trading_size"] = json!({"template": "Default", "size": 2, "contract": "MES"});
+        pane["shows_fills"] = json!(true);
+        workspace.save(&store);
+
+        ok("chart split horizontal --book Desk", &store);
+        let panes = panes_of(&store, "Desk");
+        assert_eq!(panes.len(), 2);
+        for key in ["account", "trading_symbol", "trading_size", "shows_fills"] {
+            assert_eq!(panes[1][key], panes[0][key], "{key}");
+        }
+    }
+
     fn ok(line: &str, store: &Store) -> String {
         let out = run(line, store);
         assert_eq!(out.code, 0, "{line}: {}", out.err);
