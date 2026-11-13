@@ -4459,10 +4459,10 @@ pub(super) mod tests {
             assert_eq!(feed_on(&window, &pane), None, "nothing draws it");
             assert_eq!(pane.view.trouble_said().as_deref(), Some("MES isn't in Sierra Chart's data"));
             assert_eq!(dot(&pane).map(|dot| (dot.0, dot.1)), Some(("Sierra Chart · No MES in its data".into(), "down")));
-            // Under how it stands, in the order, as on ES.
+            // In the order, as on ES, its row saying why it is empty.
             assert_eq!(
                 feeds(&window, &pane),
-                ["Sierra Chart · No MES in its data", "Sierra Chart · no data for MES ✓", "Yahoo Finance"],
+                ["Sierra Chart · no data for MES ✓", "Yahoo Finance"],
                 "still offered, and still the one"
             );
             assert!(streamed(&window).is_empty());
@@ -4500,7 +4500,7 @@ pub(super) mod tests {
             assert_eq!(pane.view.trouble_said().as_deref(), Some("NVDA isn't in Sierra Chart's data"));
             assert_eq!(
                 feeds(&window, &pane),
-                ["Sierra Chart · No NVDA in its data", "Sierra Chart · no data for NVDA ✓", "Yahoo Finance"]
+                ["Sierra Chart · no data for NVDA ✓", "Yahoo Finance"]
             );
             assert!(streamed(&window).is_empty());
 

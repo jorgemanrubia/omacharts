@@ -6310,13 +6310,16 @@ impl Window {
     /// feed on the order, by name, in the order, with a mark on the one in
     /// force and a short note on any with no data for the chart's symbol,
     /// under how the feed stands, in the dot's own words, only when the dot
-    /// is red.
+    /// is red for anything the rows do not already say.
     fn feed_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
         let menu = gio::Menu::new();
         let Some(pane) = self.pane(id) else { return menu };
         let section = gio::Menu::new();
         let instrument = pane.instrument.borrow().clone();
         let mut credited = Vec::new();
+        // The dot red only because the feed in force has no data for the
+        // symbol: its row already says so, and a heading would say it twice.
+        let mut said_in_its_row = false;
         if let Some(instrument) = instrument {
             let (offered, _, in_force) = self.feeds_offered(&pane, &instrument);
             credited = offered.iter().map(|feed| feed.provider.id()).collect();
@@ -6324,12 +6327,13 @@ impl Window {
             for feed in &offered {
                 let own = feed.provider.id();
                 let holds = feed.provider.symbol_for(&instrument).is_some();
+                said_in_its_row |= !holds && Some(own) == in_force;
                 let item = gio::MenuItem::new(Some(&feed_row(feed.provider.label(), holds, &instrument.symbol)), None);
                 item.set_action_and_target_value(Some("pane.feed"), Some(&own.to_variant()));
                 section.append_item(&item);
             }
         }
-        let status = pane.feed_in_trouble().then(|| pane.feed_status_words()).flatten();
+        let status = (pane.feed_in_trouble() && !said_in_its_row).then(|| pane.feed_status_words()).flatten();
         menu.append_section(status.as_deref(), &section);
         // The artwork a feed on offer has to show, under the feeds; the dot
         // fills the room left for it as the menu opens.
