@@ -9,7 +9,7 @@ Each chart has settings of its own. New charts open with the defaults set in Pre
 
 ## The Chart settings window
 
-Chart settings is a window of its own for the focused chart, so the chart stays in sight while you change it. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. The chart's name is under the window's title, such as **pos:0 NVDA 1D**. Focus another chart while it is open and it shows that one.
+Chart settings is a window of its own for the focused chart, so the chart stays in sight while you change it. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. Focus another chart while it is open and it shows that one.
 
 The sections down its side are the chart's own, **Chart** and **Indicators**, then **Appearance** and **Overlays** under the **VISUAL** rule, the same pages and the same rule as in [Preferences](/manual/preferences/). **GLOBAL** changes every chart. **LOCAL** changes this chart alone: the first change gives it [a look of its own](/manual/charts/#a-charts-own-look). In a split Chart settings opens on **LOCAL**, since the chart in sight is one of several; on a chart alone it opens on **GLOBAL**. Focusing another chart starts it the same way again. The choice is this window's own, so picking one here leaves Preferences on its own choice. The reset arrow after **LOCAL** works as it does in Preferences. <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves from one section to the next.
 

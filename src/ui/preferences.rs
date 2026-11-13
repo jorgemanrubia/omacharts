@@ -224,9 +224,6 @@ pub(crate) fn visual_sections(scope: &Rc<Scope>) -> Vec<Section> {
 #[derive(Clone)]
 pub(crate) struct Sections {
     pub split: adw::NavigationSplitView,
-    /// The sidebar's header bar, for a window that names something under
-    /// its title.
-    pub header: adw::HeaderBar,
     lists: [gtk::ListBox; 2],
 }
 
@@ -299,7 +296,7 @@ impl Sections {
                 glib::Propagation::Stop
             });
         }
-        let sections = Sections { split, header, lists };
+        let sections = Sections { split, lists };
         sections.select(0);
         sections
     }
