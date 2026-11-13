@@ -65,6 +65,8 @@ crop: 365,314,870,1272   (the whole search, 16px margin)
 
 Picking one puts it on the chart at its defaults and opens its settings in a dialog named after it, with **Cancel** and **Add** in the header. The chart changes as you change a setting. **Add** or <kbd>Ctrl</kbd> + <kbd>Enter</kbd> keeps the indicator. **Cancel**, <kbd>Esc</kbd> or a click outside removes it. On a chart on a template, the indicator is added to the template, and **Cancel** takes it off the template again.
 
+Numbers after the name set its lengths, in the order its legend shows them: `sma 50` is an SMA 50, `bb 20 2.5` a Bollinger over 20 bars at 2.5 deviations, `macd 8 21 5` a MACD with those three. Spaces, commas and round brackets all separate them, so `sma50` and `sma(50)` work too. Lengths left out keep their defaults. The tag on the right of each row shows what <kbd>Enter</kbd> adds, and an indicator the numbers do not fit drops out of the list. Picking one with numbers puts it straight on the chart, without opening its settings.
+
 <!-- regenerate:
 theme: tokyo-night
 window: 1600x2200 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in; tall enough that the whole dialog fits, Legend included)
