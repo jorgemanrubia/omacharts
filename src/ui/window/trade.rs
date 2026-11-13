@@ -2048,9 +2048,17 @@ pub(super) mod tests {
     use crate::trading::fake::Kept;
     use crate::trading::Session as _;
 
+    /// The moment the tests' feed stands at, 23:15 UTC on 11 November 2026:
+    /// its prices follow its clock, so on the wall clock a price ten points
+    /// under the last one was on the chart at one hour and off it at
+    /// another. Here every run charts the same bars, the last one well
+    /// inside their range.
+    const FROZEN_AT: i64 = 1_794_438_900;
+
     /// A real window on a store in memory, charting from the synthetic
-    /// feed: nothing reaches a network, a keyring or the session bus. With
-    /// trading switched on, which is what these tests are about.
+    /// feed with its clock stopped at [`FROZEN_AT`]: nothing reaches a
+    /// network, a keyring or the session bus, and nothing hangs on the
+    /// hour. With trading switched on, which is what these tests are about.
     pub(crate) fn window(store: &Rc<Store>) -> Rc<Window> {
         crate::features::set(store, crate::features::Feature::Trading, true);
         bare_window(store)
@@ -2060,7 +2068,7 @@ pub(super) mod tests {
     pub(crate) fn bare_window(store: &Rc<Store>) -> Rc<Window> {
         let _ = adw::init();
         let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
-        let feed: Arc<dyn omacharts_engine::Provider> = Arc::new(omacharts_engine::providers::Synthetic::new(None));
+        let feed: Arc<dyn omacharts_engine::Provider> = Arc::new(omacharts_engine::providers::Synthetic::frozen(FROZEN_AT));
         Window::build_with(&app, store.clone(), vec![feed])
     }
 

@@ -48,7 +48,9 @@ pub use window::Window;
 ///
 /// With no display, `gtk::init` fails, nothing runs and the answer is false,
 /// which is the usual case on CI. GTK is asked exactly once: a second attempt
-/// after a failed one segfaults inside GTK and ends the whole binary.
+/// after a failed one segfaults inside GTK and ends the whole binary. That
+/// is said once, straight to stderr past the harness's capture, so a run
+/// whose window tests all passed by not running says so.
 #[cfg(test)]
 pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
     use std::sync::{OnceLock, mpsc};
@@ -63,6 +65,8 @@ pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
                 let ok = gtk::init().is_ok();
                 let _ = ready.send(ok);
                 if !ok {
+                    use std::io::Write;
+                    let _ = writeln!(std::io::stderr(), "no display: the GTK tests are skipped, and pass without running");
                     return;
                 }
                 for (test, done) in queue {
