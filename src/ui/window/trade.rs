@@ -4459,10 +4459,10 @@ pub(super) mod tests {
             assert_eq!(feed_on(&window, &pane), None, "nothing draws it");
             assert_eq!(pane.view.trouble_said().as_deref(), Some("MES isn't in Sierra Chart's data"));
             assert_eq!(dot(&pane).map(|dot| (dot.0, dot.1)), Some(("Sierra Chart · No MES in its data".into(), "down")));
-            // Under how it stands, Yahoo first as the order's own for MES.
+            // Under how it stands, in the order, as on ES.
             assert_eq!(
                 feeds(&window, &pane),
-                ["Sierra Chart · No MES in its data", "Yahoo Finance", "Sierra Chart ✓"],
+                ["Sierra Chart · No MES in its data", "Sierra Chart · no data for MES ✓", "Yahoo Finance"],
                 "still offered, and still the one"
             );
             assert!(streamed(&window).is_empty());
@@ -4474,6 +4474,57 @@ pub(super) mod tests {
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
             assert_eq!(pane.feed.borrow().as_deref(), None, "a stock is no future");
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+        });
+    }
+
+    /// Sierra Chart over Yahoo, and a stock Sierra Chart has no name for:
+    /// the dot still opens every feed, in the order, Sierra Chart with a
+    /// short note that it has no data for it. Picked, the chart is empty
+    /// and says why, and comes back that way after a restart; picked back,
+    /// Yahoo draws it again. Moved to the stock from a chart of ES on
+    /// Sierra Chart, the chart still follows the order.
+    #[test]
+    fn every_feed_is_offered_for_a_symbol_only_one_has() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _folder, store) = sierra_over_yahoo("every-feed");
+            let nvda = window.index.find("NVDA", None).expect("NVDA");
+            window.show_in(&pane, nvda.clone());
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            assert!(dot(&pane).expect("a dot").3, "the dot opens the list");
+            assert_eq!(feeds(&window, &pane), ["Sierra Chart · no data for NVDA", "Yahoo Finance ✓"]);
+
+            pane.menu_actions.activate_action("feed", Some(&"sierra".to_variant()));
+            assert_eq!(pane.feed.borrow().as_deref(), Some("sierra"), "chosen");
+            assert_eq!(feed_on(&window, &pane), None, "nothing draws it");
+            assert_eq!(pane.view.trouble_said().as_deref(), Some("NVDA isn't in Sierra Chart's data"));
+            assert_eq!(
+                feeds(&window, &pane),
+                ["Sierra Chart · No NVDA in its data", "Sierra Chart · no data for NVDA ✓", "Yahoo Finance"]
+            );
+            assert!(streamed(&window).is_empty());
+
+            // As a restart reads it back.
+            window.save_workspace();
+            window.reload_workspace();
+            let pane = window.focused_pane();
+            assert_eq!(pane.feed.borrow().as_deref(), Some("sierra"), "the choice survives a restart");
+            assert_eq!(pane.view.trouble_said().as_deref(), Some("NVDA isn't in Sierra Chart's data"));
+            let stored = super::super::parse_workspace(&store.setting(super::super::SETTING_WORKSPACE).expect("saved")).expect("parses");
+            assert_eq!(stored.books[0].panes[0].source.as_deref(), Some("sierra"));
+
+            pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
+            assert_eq!(pane.feed.borrow().as_deref(), None, "the order's own is no choice");
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            assert_eq!(pane.view.trouble_said(), None);
+            assert_eq!(feeds(&window, &pane), ["Sierra Chart · no data for NVDA", "Yahoo Finance ✓"]);
+
+            // Sierra Chart chosen on ES does not follow the chart to NVDA.
+            let es = window.index.find("ES", None).expect("ES");
+            window.show_in(&pane, es);
+            window.choose_feed(pane.id, Some("sierra".into()));
+            window.show_in(&pane, nvda);
+            assert_eq!(pane.feed.borrow().as_deref(), None);
             assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
         });
     }
@@ -5167,13 +5218,12 @@ pub(super) mod tests {
             assert_eq!(feeds(&window, &pane), ["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
             window.feeds()[0].usable.set(true);
 
-            // A stock: Rithmic does not serve it, so there is nothing to
-            // choose, and the dot opens nothing while still saying how
-            // the feed stands.
+            // A stock: Rithmic does not serve it, and is still offered, in
+            // its place, saying so; the dot opens the list all the same.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, false)));
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓"]);
+            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, true)));
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic · no data for SPY", "[credits-rithmic]"]);
         });
     }
 
@@ -5192,12 +5242,13 @@ pub(super) mod tests {
             let (_, session) = sign_in(&window, &store, &["951"]);
 
             assert_eq!(pane.account_text(), None, "one account: nothing to choose");
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance", "[credits-rithmic]"]);
+            // In the order, whichever is the default: the mark says which.
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
             assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
 
             // Picked from the menu, through its action, as a click does.
             pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic", "Yahoo Finance ✓", "[credits-rithmic]"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic", "[credits-rithmic]"]);
             // The default chosen again is no choice: nothing is kept.
             window.choose_feed(pane.id, None);
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
@@ -5219,8 +5270,8 @@ pub(super) mod tests {
             // default moves to the order's pick.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓"]);
-            assert!(!dot(&pane).expect("a dot").3);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic · no data for SPY", "[credits-rithmic]"]);
+            assert!(dot(&pane).expect("a dot").3, "every feed is still offered");
         });
     }
 
@@ -5239,7 +5290,7 @@ pub(super) mod tests {
             let (id, session) = sign_in(&window, &store, &["951", "952"]);
             assert_eq!(pane.account_text().as_deref(), Some("951"));
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance", "[credits-rithmic]"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
             assert_eq!(pane.account_text().as_deref(), Some("951"), "the feed is the dot's, not the account's");

@@ -679,20 +679,11 @@ pub fn route<'a>(
     None
 }
 
-/// The feeds in the order that have a name for `instrument`, by place: what
-/// a chart of it can be pointed at instead of the order.
-pub fn serving<'a>(feeds: impl IntoIterator<Item = &'a dyn Provider>, instrument: &Instrument) -> Vec<usize> {
-    feeds
-        .into_iter()
-        .enumerate()
-        .filter(|(_, provider)| provider.could_serve(instrument))
-        .map(|(at, _)| at)
-        .collect()
-}
-
-/// Can a chart of `instrument` still be pointed at the feed `chosen`? Not
-/// once it is off the order, nor when it has no name for the instrument; a
-/// chart whose choice fails this goes back to following the order.
+/// Can a chart moved to `instrument` stay on the feed `chosen`? Not once it
+/// is off the order, nor when the feed could never chart the instrument; a
+/// chart moved to something its choice fails this for goes back to following
+/// the order. A chart left on the same instrument keeps any feed still on
+/// the order: chosen for it by hand, an empty chart is what was asked for.
 pub fn choosable<'a>(
     feeds: impl IntoIterator<Item = &'a dyn Provider>,
     chosen: &str,
@@ -711,19 +702,20 @@ pub enum Chosen {
     /// The chosen feed would serve it and cannot be used: the chart says so
     /// rather than going to the next feed down without telling anybody.
     Refused { at: usize, symbol: String },
-    /// The chosen feed could chart it and has nothing of it: Sierra Chart
-    /// chosen for MES with no files of MES. Said, not passed over.
+    /// The chosen feed has nothing of it: Sierra Chart chosen for MES with
+    /// no files of MES, or for a stock it has no name for. Said, not passed
+    /// over.
     Missing { at: usize },
 }
 
 /// [`route`], with the feed somebody chose for the chart first.
 ///
-/// `chosen` is a feed's id. A choice the order no longer holds, or one that
-/// could never chart the instrument, is no choice at all and the order
-/// decides — which is how a chart whose feed was taken off the list goes back
-/// to following it. A chosen feed is never passed over: when it cannot be
-/// used the chart is refused, with the place of the feed that refused it,
-/// and when it has nothing of the instrument it is [`Chosen::Missing`].
+/// `chosen` is a feed's id. A choice the order no longer holds is no choice
+/// at all and the order decides — which is how a chart whose feed was taken
+/// off the list goes back to following it. A chosen feed is never passed
+/// over: when it cannot be used the chart is refused, with the place of the
+/// feed that refused it, and when it has nothing of the instrument, or no
+/// name for it at all, it is [`Chosen::Missing`].
 pub fn route_chosen<'a>(
     feeds: impl IntoIterator<Item = (&'a dyn Provider, bool)>,
     chosen: Option<&str>,
@@ -739,8 +731,7 @@ pub fn route_chosen<'a>(
                 (None, false) if provider.could_serve(instrument) => {
                     return Some(Chosen::Refused { at, symbol: instrument.symbol.clone() });
                 }
-                (None, true) if provider.could_serve(instrument) => return Some(Chosen::Missing { at }),
-                (None, _) => {}
+                (None, _) => return Some(Chosen::Missing { at }),
             }
         }
     }
@@ -869,7 +860,6 @@ mod tests {
         let feeds = ordered(&["rithmic".to_string()]);
         let apple = instrument(InstrumentKind::Equity, "AAPL");
         assert_eq!(route(feeds.iter().map(|p| (p.as_ref(), true)), &apple), None);
-        assert!(serving(feeds.iter().map(|p| p.as_ref()), &apple).is_empty());
         let es = instrument(InstrumentKind::FutureRoot, "ES");
         assert_eq!(route(feeds.iter().map(|p| (p.as_ref(), true)), &es).map(|r| r.at), Some(0));
     }
@@ -905,20 +895,10 @@ mod tests {
         assert_eq!((routed.at, routed.passed.capacity()), (0, 0));
     }
 
-    /// Only the feeds with a name for an instrument are offered for it.
-    #[test]
-    fn a_chart_is_offered_only_the_feeds_that_serve_it() {
-        let feeds = ordered(&["tos".to_string(), "yahoo".to_string()]);
-        let offered = |instrument: &Instrument| serving(feeds.iter().map(|p| p.as_ref()), instrument);
-        assert_eq!(offered(&instrument(InstrumentKind::Equity, "AAPL")), vec![0, 1]);
-        let madrid = Instrument { suffix: Some("MC".into()), ..instrument(InstrumentKind::Equity, "SAN") };
-        assert_eq!(offered(&madrid), vec![1]);
-    }
-
     /// A chosen feed serves its chart over the order, and is never passed
-    /// over: signed out, the chart is refused rather than moved. A choice the
-    /// order no longer holds, or one with no name for the instrument, leaves
-    /// the order to decide.
+    /// over: signed out, the chart is refused rather than moved, and with no
+    /// name for the instrument it is empty rather than moved. A choice the
+    /// order no longer holds leaves the order to decide.
     #[test]
     fn a_chosen_feed_serves_its_chart_and_is_never_passed_over() {
         let feeds = ordered(&["tos".to_string(), "yahoo".to_string()]);
@@ -938,12 +918,14 @@ mod tests {
         let alone = ordered(&[]);
         let gone = route_chosen(alone.iter().map(|p| (p.as_ref(), true)), Some("tos"), &apple);
         assert!(matches!(gone, Some(Chosen::Route(Route { at: 0, .. }))), "{gone:?}");
-        // And a choice with no name for the instrument is no choice.
+        // A choice with no name for the instrument is kept, and empty: it
+        // was chosen, and the order's feed was not.
         let madrid = Instrument { suffix: Some("MC".into()), ..instrument(InstrumentKind::Equity, "SAN") };
         let unnamed = route_chosen(order(true), Some("tos"), &madrid);
-        assert!(matches!(unnamed, Some(Chosen::Route(Route { at: 1, .. }))), "{unnamed:?}");
+        assert_eq!(unnamed, Some(Chosen::Missing { at: 0 }));
 
-        // Which is why both choices are dropped rather than kept.
+        // A chart moved to something its choice could never chart, or whose
+        // choice left the order, drops it.
         assert!(choosable(feeds.iter().map(|p| p.as_ref()), "tos", &apple));
         assert!(!choosable(alone.iter().map(|p| p.as_ref()), "tos", &apple));
         assert!(!choosable(feeds.iter().map(|p| p.as_ref()), "tos", &madrid));
