@@ -44,6 +44,7 @@ mod connection;
 pub mod keyring;
 mod login;
 mod sessions;
+mod systems;
 mod trading;
 
 pub use client::{
@@ -53,6 +54,7 @@ pub use client::{
 pub use connection::{close, connection, open_data, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
 pub use sessions::{on_session, Session};
+pub use systems::systems;
 pub use trading::{
     listing, Account, AccountPnl, Book, Fill, Kind, Limits, ListReply, Listing, Order, Position, Pulse, Status, Trading,
     WorkingOrder,

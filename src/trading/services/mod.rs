@@ -9,6 +9,7 @@ use super::{TradingService, Registry};
 
 mod rithmic;
 mod rithmic_sessions;
+pub mod rithmic_systems;
 mod sierra;
 
 pub use rithmic::SIGN_OUT_WAIT;

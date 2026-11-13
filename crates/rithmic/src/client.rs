@@ -32,7 +32,7 @@ use crate::{Bar, Error, LadderMinute, Live, Period, Side, Trade, App, Credential
 const PATIENCE: Duration = Duration::from_secs(20);
 
 /// How long one ordinary request may take.
-const REQUEST: Duration = Duration::from_secs(15);
+pub(crate) const REQUEST: Duration = Duration::from_secs(15);
 
 /// How long a replay of bars may take. The history plant answers a large
 /// window in pieces, and the whole of it can take a while; past this it is
