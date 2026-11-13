@@ -781,6 +781,57 @@ impl Indicator {
         }
     }
 
+    /// One of `kind` with `numbers` written into the lengths its label
+    /// shows, in the label's order ("BB 20 2" is the period, then the
+    /// deviations), and its defaults for the rest. What the picker adds for
+    /// "sma 50".
+    ///
+    /// `None` when the label has fewer numbers than were given, or one does
+    /// not fit: a length that is not a whole number of bars, one or more, a
+    /// multiple past [`bollinger::MAX_DEVIATIONS`], a MACD whose fast average
+    /// is not below its slow one.
+    pub fn numbered(id: u32, kind: Kind, numbers: &[f64]) -> Option<Indicator> {
+        fn bars(n: f64) -> Option<usize> {
+            (n >= 1.0 && n.fract() == 0.0 && n <= u32::MAX as f64).then_some(n as usize)
+        }
+        fn lengths(slots: [&mut usize; 3], numbers: &[f64]) -> Option<()> {
+            for (slot, n) in slots.into_iter().zip(numbers) {
+                *slot = bars(*n)?;
+            }
+            Some(())
+        }
+        let mut indicator = Indicator::new(id, kind);
+        match (&mut indicator.params, numbers) {
+            (_, []) => {}
+            (
+                Params::MovingAverage { period } | Params::Rsi { period, .. } | Params::Atr { period, .. },
+                [n],
+            ) => *period = bars(*n)?,
+            (Params::Bollinger { period, bands }, [n, rest @ ..]) if rest.len() <= 1 => {
+                *period = bars(*n)?;
+                if let [deviations] = rest {
+                    if !(0.0..=bollinger::MAX_DEVIATIONS).contains(deviations) {
+                        return None;
+                    }
+                    // Adding nought makes a negative nought the positive one,
+                    // which is the one the label should write.
+                    bands.first_mut()?.deviations = deviations + 0.0;
+                }
+            }
+            (Params::Macd { fast, slow, signal, .. }, _) if numbers.len() <= 3 => {
+                lengths([&mut *fast, &mut *slow, signal], numbers)?;
+                if *fast >= *slow {
+                    return None;
+                }
+            }
+            (Params::Stochastic { period, k_smooth, d_period, .. }, _) if numbers.len() <= 3 => {
+                lengths([period, k_smooth, d_period], numbers)?
+            }
+            _ => return None,
+        }
+        Some(indicator)
+    }
+
     /// How the summary row labels it: "SMA 50", "VWAP · Session".
     ///
     /// The stored settings, which is what the settings page should show.
@@ -1449,6 +1500,31 @@ pub fn search(query: &str) -> Vec<Kind> {
     scored.into_iter().map(|(_, kind)| kind).collect()
 }
 
+/// A picker query split into the name searched for and the numbers typed
+/// after it: "sma 50", "sma50", "bb 20,2" and "macd(12 26 9)" all read.
+///
+/// The numbers are everything from the first digit on, where nothing past it
+/// is a letter; a tail that does not read as numbers ("sma 5..0") is left in
+/// the name, which then finds nothing rather than something else.
+pub fn split_query(query: &str) -> (&str, Vec<f64>) {
+    let query = query.trim();
+    let tail = |c: char| c.is_ascii_digit() || matches!(c, '.' | ',' | '(' | ')') || c.is_whitespace();
+    let Some(start) = query.find(|c: char| c.is_ascii_digit()) else { return (query, Vec::new()) };
+    if !query[start..].chars().all(tail) {
+        return (query, Vec::new());
+    }
+    let name = query[..start].trim_end_matches(|c: char| c == '(' || c.is_whitespace());
+    let numbers: Option<Vec<f64>> = query[start..]
+        .split(|c: char| matches!(c, ',' | '(' | ')') || c.is_whitespace())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.parse().ok())
+        .collect();
+    match numbers {
+        Some(numbers) => (name, numbers),
+        None => (query, Vec::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2108,6 +2184,41 @@ mod tests {
 
         assert_eq!(search("").len(), Kind::ALL.len());
         assert!(search("zzzz").is_empty());
+    }
+
+    /// Numbers typed after the name are the lengths, however they are
+    /// separated; a tail that is not numbers stays in the name.
+    #[test]
+    fn a_picker_query_splits_into_a_name_and_its_numbers() {
+        assert_eq!(split_query("sma 50"), ("sma", vec![50.0]));
+        assert_eq!(split_query(" sma50 "), ("sma", vec![50.0]));
+        assert_eq!(split_query("sma(50)"), ("sma", vec![50.0]));
+        assert_eq!(split_query("bb 20,2.5"), ("bb", vec![20.0, 2.5]));
+        assert_eq!(split_query("macd 12 26 9"), ("macd", vec![12.0, 26.0, 9.0]));
+        assert_eq!(split_query("volume profile"), ("volume profile", vec![]));
+        assert_eq!(split_query("sma 5..0"), ("sma 5..0", vec![]));
+        assert_eq!(split_query("50 sma"), ("50 sma", vec![]));
+    }
+
+    /// The numbers fill what the label shows, in its order, and a number the
+    /// label has no place for, or one that does not fit, adds nothing.
+    #[test]
+    fn typed_numbers_fill_the_lengths_the_label_shows() {
+        let label = |kind, numbers: &[f64]| Indicator::numbered(1, kind, numbers).map(|i| i.label());
+        assert_eq!(label(Kind::Sma, &[50.0]).as_deref(), Some("SMA 50"));
+        assert_eq!(label(Kind::Ema, &[]).as_deref(), Some("EMA 21"));
+        assert_eq!(label(Kind::Bollinger, &[10.0, 2.5]).as_deref(), Some("BB 10 2.5"));
+        assert_eq!(label(Kind::Bollinger, &[10.0, -0.0]).as_deref(), Some("BB 10 0"));
+        assert_eq!(label(Kind::Macd, &[5.0, 35.0, 5.0]).as_deref(), Some("MACD 5 35 5"));
+        assert_eq!(label(Kind::Macd, &[8.0]).as_deref(), Some("MACD 8 26 9"));
+        assert_eq!(label(Kind::Stochastic, &[21.0, 5.0]).as_deref(), Some("Stoch 21 5 3"));
+
+        assert_eq!(label(Kind::Sma, &[50.0, 20.0]), None, "one more than the label shows");
+        assert_eq!(label(Kind::Sma, &[0.0]), None, "no bars");
+        assert_eq!(label(Kind::Sma, &[2.5]), None, "part of a bar");
+        assert_eq!(label(Kind::Macd, &[30.0]), None, "fast not below the slow 26");
+        assert_eq!(label(Kind::Bollinger, &[20.0, 51.0]), None, "past the widest multiple");
+        assert_eq!(label(Kind::Vwap, &[1.0]), None, "no length to take it");
     }
 
     #[test]
