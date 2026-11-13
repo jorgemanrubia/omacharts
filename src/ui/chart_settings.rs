@@ -242,11 +242,12 @@ fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
     if crate::features::trading() {
         own.push(("trading", "Trading", TRADING_ICON, preferences::section_view(&trading_page(window), "Trading")));
     }
-    // Under the rule saying which charts they change: in a split this
-    // chart, which is the one in sight, on one chart every chart. A scope
+    // Under the rule saying which charts they change: in a split, or on a
+    // chart whose look already differs from every chart's, this chart; else
+    // every chart. A scope
     // of this window's own, made again for each chart it shows, so it
     // starts there whatever Preferences has picked.
-    let (scope, rule) = crate::ui::scope_rule::Scope::new(window, window.is_split());
+    let (scope, rule) = crate::ui::scope_rule::Scope::new(window, window.is_split() || window.own_look_differs());
     let every = preferences::visual_sections(&scope);
     let sidebar = preferences::Sections::new("Chart settings", [&own, &every], &rule);
     sidebar.split.set_min_sidebar_width(200.0);

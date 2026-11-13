@@ -2971,6 +2971,24 @@ mod outside_change_tests {
         });
     }
 
+    /// On a chart alone that already wears a look of its own, a chart's
+    /// settings and Preferences both open on LOCAL: that look is what they
+    /// would be changing.
+    #[test]
+    fn settings_start_local_on_a_chart_with_its_own_look() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            window.change_look(LookEdit::Grid(true), false);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            window.open_preferences_at(Some("overlays"));
+            let (_, local) = scope_choices(&chart_settings_form());
+            assert!(local.is_active(), "chart settings opened on GLOBAL");
+            let (_, local) = scope_choices(&preferences_form(&window));
+            assert!(local.is_active(), "Preferences opened on GLOBAL");
+        });
+    }
+
     /// Under LOCAL a chart's settings change the chart they are on: the
     /// first change gives it a look of its own, and every other chart, and
     /// every chart's look, stay as they were.

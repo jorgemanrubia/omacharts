@@ -29,7 +29,7 @@ crop: 436,176,1688,1588   (the whole window, 12px layout margin)
 -->
 {% include figure.html src="/assets/manual/preferences/general.png" alt="The Preferences window on General, with the Desktop, Time, Chart, Preference backups and Updates groups" caption="Preferences on General." %}
 
-Appearance, Overlays and Charts sit under the **VISUAL** rule, which says which charts they change. **GLOBAL** changes every chart. **LOCAL** changes the focused chart alone; hover it to see the chart's symbol. In a split, that chart wears its focus ring twice as wide while **LOCAL** is picked, as it does under a picker. Once the focused chart has [a look of its own](/manual/charts/#a-charts-own-look) that differs from every chart's, a reset arrow appears after **LOCAL**, under either choice: click it, **Reset to global defaults**, to put the chart back on every chart's look. Preferences opens on GLOBAL.
+Appearance, Overlays and Charts sit under the **VISUAL** rule, which says which charts they change. **GLOBAL** changes every chart. **LOCAL** changes the focused chart alone; hover it to see the chart's symbol. In a split, that chart wears its focus ring twice as wide while **LOCAL** is picked, as it does under a picker. Once the focused chart has [a look of its own](/manual/charts/#a-charts-own-look) that differs from every chart's, a reset arrow appears after **LOCAL**, under either choice: click it, **Reset to global defaults**, to put the chart back on every chart's look. Preferences opens on GLOBAL, or on LOCAL when the focused chart's look differs from every chart's.
 
 ### General
 

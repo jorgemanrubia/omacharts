@@ -146,7 +146,9 @@ impl Preferences {
         }
         // Global to begin with, whatever the arrangement: Preferences is
         // the app's, and opening it to change one chart is the exception.
-        let (scope, rule) = Scope::new(&window, false);
+        // Unless the focused chart's look already differs from every
+        // chart's: that look is the one on screen, and what would change.
+        let (scope, rule) = Scope::new(&window, window.own_look_differs());
         let mut visual = visual_sections(&scope);
         visual.push(("charts", "Charts", "utilities-system-monitor-symbolic", section_view(&charts_page, "Charts")));
         // Opened from a chart at the section it asked for, else where it was
