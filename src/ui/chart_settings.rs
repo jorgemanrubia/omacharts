@@ -1014,8 +1014,9 @@ fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &Indi
     // The price plot is a row of the list because strips can be stacked above it
     // as well as below, and a list showing only the strips could not say which
     // side of the price each one is on. A chart with no strips has no stack to
-    // describe, so it is left out there.
-    let stacked = indicators.iter().any(|i| i.kind.in_own_pane());
+    // describe, so it is left out there, and a template has no chart of its
+    // own to list.
+    let stacked = owner.template.is_none() && indicators.iter().any(|i| i.kind.in_own_pane());
     let price_at = if stacked { price_row_at(indicators) } else { usize::MAX };
     for (at, (indicator, colour)) in indicators.iter().zip(&listed.colours).enumerate() {
         if at == price_at {
