@@ -1482,7 +1482,7 @@ pub(crate) mod tests {
     /// Rithmic is told the caller's name and version, not this crate's.
     #[test]
     fn the_plants_are_told_the_app_the_caller_names() {
-        let app = App { name: "abcd:omacharts", version: "9.8.7" };
+        let app = App { name: "someapp", version: "9.8.7" };
         let credentials = Credentials {
             user: "someone".into(),
             password: "secret".into(),
@@ -1490,7 +1490,7 @@ pub(crate) mod tests {
             url: crate::TEST_URL.into(),
         };
         let config = config(app, &credentials).expect("a config");
-        assert_eq!(config.app_name, "abcd:omacharts");
+        assert_eq!(config.app_name, "someapp");
         assert_eq!(config.app_version, "9.8.7");
         assert_ne!(config.app_version, env!("CARGO_PKG_VERSION"));
     }

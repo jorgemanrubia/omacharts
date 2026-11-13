@@ -61,8 +61,8 @@ pub use trading::{
 /// The app signing in, as Rithmic is told it: its name and its version.
 ///
 /// The caller's, never this crate's. Rithmic Test takes any name;
-/// production takes only the one Rithmic registered for the app at
-/// conformance, and the version is the app's release, which a library's own
+/// production takes only the one Rithmic agreed for the app at
+/// conformance (`omacharts`), and the version is the app's release, which a library's own
 /// version is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct App {

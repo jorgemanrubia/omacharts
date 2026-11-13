@@ -61,16 +61,13 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, taken: &[Strin
     password.set_title("Password");
     list.append(&password);
 
-    // Rithmic's systems and their gateways, picked rather than typed: the
-    // ones omacharts cannot sign in to yet are listed, and Sign in is off
-    // while one of them is chosen.
+    // Rithmic's systems and their gateways, picked rather than typed.
     let saved_gateway = known.and_then(|login| login.value(GATEWAY)).unwrap_or(TEST_GATEWAY);
     let systems = Rc::new(choices(saved_system, saved_gateway));
     let system = adw::ComboRow::new();
     system.set_title("System");
     let names: Vec<&str> = systems.iter().map(|choice| choice.name.as_str()).collect();
     system.set_model(Some(&gtk::StringList::new(&names)));
-    system.set_list_factory(Some(&system_items(systems.clone())));
     list.append(&system);
 
     let gateway = adw::ComboRow::new();
@@ -88,7 +85,6 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, taken: &[Strin
             gateway.set_model(Some(&gtk::StringList::new(&names)));
             let at = picked.and_then(|url| choice.gateways.iter().position(|(_, known)| known == url)).unwrap_or(0);
             gateway.set_selected(at as u32);
-            system.set_subtitle(if choice.open { "" } else { NOT_YET });
         }
     };
     system.set_selected(at as u32);
@@ -105,16 +101,12 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, taken: &[Strin
 
     // A user ID is the least a sign-in needs, unless a development file
     // stands in for the whole login.
-    // A system omacharts cannot sign in to yet is never signed in to.
     let ready = {
         let dialog = dialog.clone();
         let user = user.clone();
-        let system = system.clone();
-        let systems = systems.clone();
         move || {
-            let open = systems.get(system.selected() as usize).is_some_and(|choice| choice.open);
             let enough = session::development() || !user.text().trim().is_empty();
-            dialog.set_response_enabled(SIGN_IN, open && enough);
+            dialog.set_response_enabled(SIGN_IN, enough);
         }
     };
     ready();
@@ -161,69 +153,55 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, taken: &[Strin
     dialog.present(Some(parent));
 }
 
-/// What a system omacharts cannot sign in to yet says, beside its name.
-const NOT_YET: &str = "Not available yet";
-
-/// The worldwide gateways of Rithmic's production systems, as Rithmic
-/// names them. Rithmic 01 and Rithmic 04 Colo have New York's too.
-const WORLDWIDE: [&str; 11] = [
-    "Chicago Area",
-    "Europe",
-    "Frankfurt",
-    "Cape Town",
-    "Mumbai",
-    "Hong Kong",
-    "Singapore",
-    "Seoul",
-    "Tokyo",
-    "Sydney",
-    "S\u{e3}o Paulo",
+/// Rithmic's production gateways, as Rithmic named them when omacharts
+/// passed its conformance: every production system, Rithmic 01 and Rithmic
+/// Paper Trading among them, is reached through any of them.
+const PRODUCTION: [(&str, &str); 13] = [
+    ("Chicago", "wss://rprotocol.rithmic.com:443"),
+    ("New York", "wss://rprotocol-nyc.rithmic.com:443"),
+    ("Colo75", "wss://rprotocol-colo75.rithmic.com:443"),
+    ("Frankfurt", "wss://rprotocol-de.rithmic.com:443"),
+    ("Ireland", "wss://rprotocol-ie.rithmic.com:443"),
+    ("Sydney", "wss://rprotocol-au.rithmic.com:443"),
+    ("S\u{e3}o Paulo", "wss://rprotocol-br.rithmic.com:443"),
+    ("Hong Kong", "wss://rprotocol-hk.rithmic.com:443"),
+    ("Mumbai", "wss://rprotocol-in.rithmic.com:443"),
+    ("Seoul", "wss://rprotocol-kr.rithmic.com:443"),
+    ("Tokyo", "wss://rprotocol-jp.rithmic.com:443"),
+    ("Singapore", "wss://rprotocol-sg.rithmic.com:443"),
+    ("Cape Town", "wss://rprotocol-za.rithmic.com:443"),
 ];
 
-/// A Rithmic system and its gateways: what was signed in to is open; the
-/// production systems are listed, for once omacharts has passed Rithmic's
-/// conformance, and cannot be signed in to before.
+/// A Rithmic system and its gateways, each gateway's name and address.
 #[derive(Debug, PartialEq)]
 struct Choice {
     name: String,
-    /// Each gateway's name and address. A system not open yet has no
-    /// addresses.
     gateways: Vec<(String, String)>,
-    open: bool,
 }
 
 /// The systems the dialog offers, Rithmic Test first, with the system and
 /// gateway a login was saved with among them: a system or gateway Rithmic
-/// does not list here is kept, open, under its own name, so no login stops
+/// does not list here is kept under its own name, so no login stops
 /// working because it is not in the list.
 fn choices(saved_system: &str, saved_gateway: &str) -> Vec<Choice> {
-    let closed = |name: &str, new_york: bool| {
-        let mut gateways: Vec<(String, String)> = WORLDWIDE.iter().map(|name| (name.to_string(), String::new())).collect();
-        if new_york {
-            gateways.insert(1, ("NYC Area".into(), String::new()));
-        }
-        Choice { name: name.into(), gateways, open: false }
+    let production = |name: &str| Choice {
+        name: name.into(),
+        gateways: PRODUCTION.iter().map(|(name, url)| (name.to_string(), url.to_string())).collect(),
     };
     let mut choices = vec![
-        Choice { name: TEST_SYSTEM.into(), gateways: vec![("Chicago Area".into(), TEST_GATEWAY.into())], open: true },
-        closed("Rithmic 01", true),
-        closed("Rithmic 04 Colo", true),
-        closed("Rithmic Paper Trading", false),
+        Choice { name: TEST_SYSTEM.into(), gateways: vec![("Chicago".into(), TEST_GATEWAY.into())] },
+        production("Rithmic 01"),
+        production("Rithmic 04 Colo"),
+        production("Rithmic Paper Trading"),
     ];
     let gateway = || (host(saved_gateway).to_string(), saved_gateway.to_string());
     match choices.iter_mut().find(|choice| choice.name == saved_system) {
-        Some(choice) if choice.open => {
+        Some(choice) => {
             if !choice.gateways.iter().any(|(_, url)| url == saved_gateway) {
                 choice.gateways.push(gateway());
             }
         }
-        // Saved on a system that is listed but not open: signed in to before
-        // the list said so, and kept that way.
-        Some(choice) => {
-            choice.open = true;
-            choice.gateways = vec![gateway()];
-        }
-        None => choices.push(Choice { name: saved_system.into(), gateways: vec![gateway()], open: true }),
+        None => choices.push(Choice { name: saved_system.into(), gateways: vec![gateway()] }),
     }
     choices
 }
@@ -233,43 +211,6 @@ fn choices(saved_system: &str, saved_gateway: &str) -> Vec<Choice> {
 fn host(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     rest.split([':', '/']).next().filter(|host| !host.is_empty()).unwrap_or(url)
-}
-
-/// The systems' list: each name, and beside one omacharts cannot sign in
-/// to yet, that it is not available.
-fn system_items(systems: Rc<Vec<Choice>>) -> gtk::SignalListItemFactory {
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let name = gtk::Label::new(None);
-        name.set_xalign(0.0);
-        name.set_hexpand(true);
-        let note = gtk::Label::new(Some(NOT_YET));
-        note.add_css_class("dim-label");
-        note.add_css_class("caption");
-        // The mark the gateways' list draws by the one chosen.
-        let mark = gtk::Image::from_icon_name("object-select-symbolic");
-        mark.set_visible(item.is_selected());
-        line.append(&name);
-        line.append(&note);
-        line.append(&mark);
-        item.connect_selected_notify(move |item| mark.set_visible(item.is_selected()));
-        item.set_child(Some(&line));
-    });
-    factory.connect_bind(move |_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let Some(line) = item.child().and_downcast::<gtk::Box>() else { return };
-        let Some(choice) = systems.get(item.position() as usize) else { return };
-        if let Some(name) = line.first_child().and_downcast::<gtk::Label>() {
-            name.set_text(&choice.name);
-            name.set_sensitive(choice.open);
-        }
-        if let Some(note) = line.first_child().and_then(|name| name.next_sibling()) {
-            note.set_visible(!choice.open);
-        }
-    });
-    factory
 }
 
 /// What was typed, with the system and gateway left empty as Rithmic
@@ -337,36 +278,35 @@ mod tests {
         });
     }
 
-    /// Rithmic Test is open and first; Rithmic 01, Rithmic 04 Colo and
-    /// Rithmic Paper Trading are listed with their gateways, and closed.
+    /// Rithmic Test is first, and the production systems follow with
+    /// Rithmic's gateways, Chicago first.
     #[test]
-    fn rithmic_test_is_open_and_production_is_listed() {
+    fn rithmic_test_is_first_and_production_follows_with_its_gateways() {
         let listed = choices(TEST_SYSTEM, TEST_GATEWAY);
         let names: Vec<&str> = listed.iter().map(|choice| choice.name.as_str()).collect();
         assert_eq!(names, ["Rithmic Test", "Rithmic 01", "Rithmic 04 Colo", "Rithmic Paper Trading"]);
-        assert!(listed[0].open && listed[1..].iter().all(|choice| !choice.open));
-        assert_eq!(listed[0].gateways, vec![("Chicago Area".to_string(), TEST_GATEWAY.to_string())]);
-        assert_eq!(listed[1].gateways.len(), 12);
-        assert_eq!(listed[3].gateways.len(), 11);
-        assert!(listed[1..].iter().all(|choice| choice.gateways.iter().all(|(_, url)| url.is_empty())));
+        assert_eq!(listed[0].gateways, vec![("Chicago".to_string(), TEST_GATEWAY.to_string())]);
+        for production in &listed[1..] {
+            assert_eq!(production.gateways.len(), 13);
+            assert_eq!(production.gateways[0], ("Chicago".to_string(), "wss://rprotocol.rithmic.com:443".to_string()));
+            assert!(production.gateways.iter().all(|(_, url)| url.starts_with("wss://rprotocol") && url.ends_with(".rithmic.com:443")));
+        }
     }
 
     /// A login saved on a system or gateway the list does not have keeps
-    /// it, open.
+    /// it.
     #[test]
     fn a_saved_system_or_gateway_is_kept() {
         let lucid = choices("LucidTrading", "wss://rprotocol.example.com:443");
         let last = lucid.last().unwrap();
         assert_eq!(last.name, "LucidTrading");
-        assert!(last.open);
         assert_eq!(last.gateways, vec![("rprotocol.example.com".to_string(), "wss://rprotocol.example.com:443".to_string())]);
 
         let elsewhere = choices(TEST_SYSTEM, "wss://other.example.com:443");
         assert_eq!(elsewhere[0].gateways.len(), 2);
         assert_eq!(elsewhere.len(), 4);
 
-        let before = choices("Rithmic Paper Trading", "wss://paper.example.com:443");
-        assert!(before[3].open);
-        assert_eq!(before[3].gateways[0].1, "wss://paper.example.com:443");
+        let paper = choices("Rithmic Paper Trading", "wss://rprotocol-de.rithmic.com:443");
+        assert_eq!(paper[3].gateways.len(), 13, "a listed gateway is not added twice");
     }
 }
