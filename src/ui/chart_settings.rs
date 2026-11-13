@@ -993,17 +993,13 @@ fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &Indi
 
     // On a template, what is being edited is the template, and the page says
     // so before anything is changed: a change here reaches every chart on it.
-    let description = match (through, owner.template.is_some(), indicators.is_empty()) {
+    let description = match (through, owner.template.is_some() || indicators.is_empty()) {
         // The heading names the template; this says only what that means.
-        (Some(_), _, _) => Some("A change here reaches every chart that uses it.".to_string()),
-        (None, true, _) => None,
-        (None, false, true) => Some("Nothing yet.".to_string()),
-        (None, false, false) => Some(
-            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
-                .to_string(),
-        ),
+        (Some(_), _) => Some("A change here reaches every chart that uses it."),
+        (None, true) => None,
+        (None, false) => Some("Drag to reorder. The list is the chart, top to bottom; colours come from the theme."),
     };
-    list.group.set_description(description.as_deref());
+    list.group.set_description(description);
     list.group.set_title(match (through, owner.template) {
         (Some(name), _) => format!("On the {name} template"),
         (None, Some(_)) => "Indicators in the template".to_string(),
@@ -1029,13 +1025,13 @@ fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &Indi
     }
 
     if indicators.is_empty() {
-        let empty = adw::ActionRow::new();
-        empty.set_title("Add an indicator");
-        empty.set_subtitle("Moving averages, VWAP, volume profile");
-        empty.set_activatable(true);
+        // A word under the heading, as Market data's Add a data feed… is.
+        let empty = gtk::Button::with_label("Add an indicator…");
+        empty.add_css_class("add-word");
+        empty.set_halign(gtk::Align::Start);
         let owner_for_empty = owner.clone();
         let refresh_for_empty = refresh.clone();
-        empty.connect_activated(move |_| {
+        empty.connect_clicked(move |_| {
             pick_indicator(&owner_for_empty, &refresh_for_empty);
         });
         list.push(&empty);

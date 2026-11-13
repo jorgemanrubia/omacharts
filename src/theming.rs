@@ -926,7 +926,11 @@ switch:checked > slider { background-color: @view_bg_color; }
    by the larger of them and its knob. */
 switch > image { color: transparent; -gtk-icon-size: 1px; }
 /* A menu of actions behind a word (Add a data feed…, Save as…) is that
-   word in the accent, as a row's action is, its chevron saying it opens. */
+   word in the accent, as a row's action is, its chevron saying it opens.
+   An Add… word under a group's rows is the same word, its text lined up
+   with the rows' text, 12px in, 8px of which is the word's own padding. */
+.add-word { margin-left: 4px; }
+button.add-word,
 menubutton > button.text-button {
   min-height: 28px;
   padding: 0 8px;
@@ -936,6 +940,7 @@ menubutton > button.text-button {
   font-weight: normal;
   color: @accent_color;
 }
+button.add-word:hover,
 menubutton > button.text-button:hover,
 menubutton > button.text-button:checked { background-color: alpha(@accent_color, 0.12); }
 /* Tabs are words: the one shown reads, underlined in the accent, the

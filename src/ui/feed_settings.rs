@@ -454,9 +454,7 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
     add.set_label("Add a data feed…");
     add.set_halign(gtk::Align::Start);
     add.set_margin_top(12);
-    // Its word under the feeds' names: a row's text sits 12px in, the
-    // button's 8px inside its own hover pill.
-    add.set_margin_start(4);
+    add.add_css_class("add-word");
     let items = missing
         .into_iter()
         .map(|feed| {

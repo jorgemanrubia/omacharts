@@ -38,7 +38,7 @@ crop: 496,176,1568,1328   (the whole window, 12px layout margin)
 
 ## Adding an indicator
 
-**Add an indicator** is a search box. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> over a chart, the **+** at the top of the [Indicators page](#the-indicators-page), or the **Add an indicator** row that page shows when the chart has none.
+**Add an indicator** is a search box. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> over a chart, the **+** at the top of the [Indicators page](#the-indicators-page), or **Add an indicator…** on that page when the chart has none.
 
 Before anything is typed, it lists every indicator under its family's heading. Typing gives one list, best match first. A name, a short name or a related word finds an indicator (`poc` finds the volume profile, `london` Session Times), and a family's name finds its members (`volume`, `time`, `session`).
 
