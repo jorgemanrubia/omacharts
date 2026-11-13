@@ -191,7 +191,6 @@ fn choices(saved_system: &str, saved_gateway: &str) -> Vec<Choice> {
     let mut choices = vec![
         Choice { name: TEST_SYSTEM.into(), gateways: vec![("Chicago".into(), TEST_GATEWAY.into())] },
         production("Rithmic 01"),
-        production("Rithmic 04 Colo"),
         production("Rithmic Paper Trading"),
     ];
     let gateway = || (host(saved_gateway).to_string(), saved_gateway.to_string());
@@ -284,7 +283,7 @@ mod tests {
     fn rithmic_test_is_first_and_production_follows_with_its_gateways() {
         let listed = choices(TEST_SYSTEM, TEST_GATEWAY);
         let names: Vec<&str> = listed.iter().map(|choice| choice.name.as_str()).collect();
-        assert_eq!(names, ["Rithmic Test", "Rithmic 01", "Rithmic 04 Colo", "Rithmic Paper Trading"]);
+        assert_eq!(names, ["Rithmic Test", "Rithmic 01", "Rithmic Paper Trading"]);
         assert_eq!(listed[0].gateways, vec![("Chicago".to_string(), TEST_GATEWAY.to_string())]);
         for production in &listed[1..] {
             assert_eq!(production.gateways.len(), 13);
@@ -304,9 +303,9 @@ mod tests {
 
         let elsewhere = choices(TEST_SYSTEM, "wss://other.example.com:443");
         assert_eq!(elsewhere[0].gateways.len(), 2);
-        assert_eq!(elsewhere.len(), 4);
+        assert_eq!(elsewhere.len(), 3);
 
         let paper = choices("Rithmic Paper Trading", "wss://rprotocol-de.rithmic.com:443");
-        assert_eq!(paper[3].gateways.len(), 13, "a listed gateway is not added twice");
+        assert_eq!(paper[2].gateways.len(), 13, "a listed gateway is not added twice");
     }
 }
