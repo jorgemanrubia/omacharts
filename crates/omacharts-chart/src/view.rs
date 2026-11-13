@@ -903,10 +903,12 @@ impl<'a> Columns<'a> {
     /// and knocked half the wicks a pixel off their bodies.
     ///
     /// Odd only while that leaves a pixel to the next candle. Neighbours land
-    /// as few as the column's width rounded down apart, and at three to four
-    /// pixels a column a three-pixel body touched them, fusing a run of
-    /// candles into one block. There the body keeps the width it had, and
-    /// the wick takes the same side of its middle on every candle.
+    /// as few as the column's width rounded down apart, so just under six
+    /// pixels a column a five-pixel body would touch them, fusing a run of
+    /// candles into one block. There the body keeps the even width it had,
+    /// and the wick takes the same side of its middle on every candle. Under
+    /// four pixels no odd body fits, which is why a candle that narrow is
+    /// drawn as its wick alone.
     fn body(&self, at: usize) -> (f64, f64) {
         let wanted = (self.bar_w * 0.68).clamp(1.0, 24.0);
         let room = (self.bar_w.floor() - 1.0).max(1.0);
@@ -7007,9 +7009,11 @@ fn candles(
         return;
     }
     let (bars, bar_w) = (&columns.bars, columns.bar_w);
-    // Below about three pixels a candle is a line; outlining it just muddies
-    // the colour.
-    let hairline = bar_w < 3.0;
+    // Below four pixels a candle is a line. The only body that leaves a
+    // pixel to its neighbour there is two pixels wide, with no middle for
+    // the wick, so the wick sat off to one side of every body; and outlining
+    // one this narrow just muddies the colour.
+    let hairline = bar_w < 4.0;
 
     for rising in [false, true] {
         let (outline, fill) = if rising {

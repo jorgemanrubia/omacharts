@@ -1408,7 +1408,7 @@ impl<'de> Deserialize<'de> for BarColouring {
 ///
 /// Direction is simply not shown. That is the whole of the trade and it is
 /// deliberate: the alternative — hollow for up, filled for down — keeps the
-/// information but costs the quiet, and it vanishes anyway below about three
+/// information but costs the quiet, and it vanishes anyway below about four
 /// pixels a bar, where candles are drawn as hairlines with no body to fill.
 /// An OHLC chart loses nothing at all, since its open and close ticks say
 /// which way the bar went without reference to colour.
