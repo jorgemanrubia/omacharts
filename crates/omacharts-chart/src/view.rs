@@ -6582,7 +6582,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
             let step = compare::grid_step(&scale, based.rebase, price_h);
             compare::draw_end_labels(cr, state, overlay, based, &columns, &plan, width, step, &to_y);
         }
-        None => draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y, tag_at),
+        None => draw_last_price(cr, state, plot_x, plot_w, (price_y, price_h), width, decimals, &to_y, tag_at),
     }
 
     if state.trouble.is_some() {
@@ -8654,7 +8654,7 @@ fn draw_marks(
             faint(cr, faint_of(mark), &|cr| line(cr, *y, &mark.colour, mark.style, weight));
         }
     }
-    draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
+    draw_last_price_line(cr, state, plot_x, plot_w, price_y, floor, to_y);
 
     let tab_h = MARK_H - 2.0;
     // A mark's label and its tabs.
@@ -8708,7 +8708,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), faint_of(mark)));
         }
     }
-    let last = last_price(state).map(|price| to_y(price).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price_y(state, price_y, floor, to_y);
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -8852,7 +8852,7 @@ fn draw_last_price(
     state: &State,
     plot_x: f64,
     plot_w: f64,
-    price_y: f64,
+    (price_y, price_h): (f64, f64),
     width: f64,
     decimals: usize,
     to_y: &impl Fn(f64) -> f64,
@@ -8860,28 +8860,31 @@ fn draw_last_price(
     tag_at: Option<f64>,
 ) {
     let Some(price) = last_price(state) else { return };
-    let y = to_y(price).round() + 0.5;
-    if y < price_y {
-        return;
-    }
+    let floor = price_y + price_h;
+    let Some(y) = last_price_y(state, price_y, floor, to_y) else { return };
     // In the last price's own colour, the line's: one thing on the chart,
     // whose rise or fall the candles and the header already say.
     let tag = &state.last_ink.tag;
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
-        draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
+        draw_last_price_line(cr, state, plot_x, plot_w, price_y, floor, to_y);
     }
 
     // The tag stops under the window's corner rather than slide beneath
-    // it; the line stays at the price.
-    draw_tag(
-        cr,
-        &grouped_decimals(price, decimals),
-        plot_x + plot_w,
-        tag_at.unwrap_or_else(|| below_cover(state, y)),
-        width,
-        tag,
-    );
+    // it, and above the plot's floor rather than hang over the strip
+    // under it, as the marks' chips do; the line stays at the price.
+    let kept = || below_cover(state, y.min((floor - AXIS_CHIP_H / 2.0).round() + 0.5));
+    draw_tag(cr, &grouped_decimals(price, decimals), plot_x + plot_w, tag_at.unwrap_or_else(kept), width, tag);
+}
+
+/// The row the last price's line and tag stand on, while it is on the
+/// price plot. Scrolled or zoomed off it, above or below, they are left
+/// out rather than drawn over a strip or the time axis, or pinned to the
+/// plot's edge, where the tag would name a price the axis beside it does
+/// not show: as the marks, the crosshair and compared markets' ends are.
+fn last_price_y(state: &State, price_y: f64, floor: f64, to_y: &impl Fn(f64) -> f64) -> Option<f64> {
+    let y = to_y(last_price(state)?).round() + 0.5;
+    (price_y..=floor).contains(&y).then_some(y)
 }
 
 /// The last price: the feed's latest trade when the bars drawn leave it
@@ -8898,13 +8901,10 @@ fn draw_last_price_line(
     plot_x: f64,
     plot_w: f64,
     price_y: f64,
+    floor: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let Some(price) = last_price(state) else { return };
-    let y = to_y(price).round() + 0.5;
-    if y < price_y {
-        return;
-    }
+    let Some(y) = last_price_y(state, price_y, floor, to_y) else { return };
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
@@ -12264,7 +12264,7 @@ mod tests {
 
         // The line and the tag stand at it.
         let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
-        let lined = frame(600.0, 400.0, |cr| draw_last_price_line(cr, &state, 0.0, 500.0, 0.0, &to_y));
+        let lined = frame(600.0, 400.0, |cr| draw_last_price_line(cr, &state, 0.0, 500.0, 0.0, 400.0, &to_y));
         let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
         let stride = 600 * 4;
         assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
@@ -12286,12 +12286,60 @@ mod tests {
         assert_eq!(state.last_ink.tag, Tag::on("#ffcc00"));
         let close = state.bars.last().unwrap().close;
         let to_y = |price: f64| 100.0 - (price - close);
-        let pixels = frame(200.0, 200.0, |cr| draw_last_price_line(cr, &state, 0.0, 200.0, 0.0, &to_y));
+        let pixels = frame(200.0, 200.0, |cr| draw_last_price_line(cr, &state, 0.0, 200.0, 0.0, 200.0, &to_y));
         let row = &pixels[100 * 200 * 4..101 * 200 * 4];
         // Cairo's bytes are blue, green, red, alpha: a yellow has no blue.
         let inked: Vec<&[u8]> = row.chunks(4).filter(|pixel| pixel[3] != 0).collect();
         assert!(!inked.is_empty(), "a line on the price's row");
         assert!(inked.iter().all(|pixel| pixel[0] == 0 && pixel[2] > pixel[1]), "in the yellow set: {:?}", inked[0]);
+    }
+
+    /// The price scrolled off the plot, below it or above: its tag is not
+    /// drawn down in the strip or on the time axis, nor its line across the
+    /// strip, and both come back once the price is on the plot again.
+    #[test]
+    fn the_last_price_off_the_plot_is_left_out() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = charted(100);
+        let fill = colors::rgba(&state.last_ink.tag.fill);
+        let byte = |c: f64| (c * 255.0).round() as i32;
+        let (r, g, b) = (byte(fill.0), byte(fill.1), byte(fill.2));
+        // Where the tag's colour is on the price axis, by row.
+        let tagged = |state: &State| -> Vec<usize> {
+            let pixels = frame(w, h, |cr| draw(cr, w, h, state));
+            let axis = (w - PRICE_AXIS_W + 2.0) as usize;
+            (0..h as usize)
+                .filter(|row| {
+                    (axis..w as usize).any(|x| {
+                        let at = (row * w as usize + x) * 4;
+                        let p = &pixels[at..at + 4];
+                        (p[2] as i32 - r).abs() <= 1 && (p[1] as i32 - g).abs() <= 1 && (p[0] as i32 - b).abs() <= 1
+                    })
+                })
+                .collect()
+        };
+        let plan = layout(&state, w, h);
+        let floor = plan.price_y + plan.price_h;
+        let on_plot = tagged(&state);
+        assert!(!on_plot.is_empty(), "a tag while the price is on the plot");
+        assert!(on_plot.iter().all(|row| (*row as f64) <= floor), "inside the plot: {on_plot:?}");
+
+        state.price_auto = false;
+        for (offset, side) in [(1.0, "below"), (-1.2, "above")] {
+            state.price_offset = offset;
+            let Frame { scale, .. } = super::frame(&state, w, h).unwrap();
+            let y = scale.to_y(last_price(&state).unwrap(), plan.price_y, plan.price_h);
+            assert!(y > floor || y < plan.price_y, "{side}: the price is off the plot at {y}, {} to {floor}", plan.price_y);
+            if offset > 0.0 {
+                assert!(y < h, "below: somewhere on the window, at {y}");
+            }
+            assert_eq!(tagged(&state), Vec::<usize>::new(), "{side}: no tag");
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let lined = frame(w, h, |cr| draw_last_price_line(cr, &state, plan.plot_x, plan.plot_w, plan.price_y, floor, &to_y));
+            assert_eq!(painted(&lined), 0, "{side}: no line");
+        }
+        state.price_offset = 0.0;
+        assert_eq!(tagged(&state), on_plot, "back on the plot, back where it was");
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
