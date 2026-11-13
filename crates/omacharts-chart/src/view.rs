@@ -5132,6 +5132,19 @@ impl ChartView {
         })
     }
 
+    /// How many rows the selected volume profile drawing is drawing, as
+    /// [`View::profile_rows`] says it of a study.
+    pub fn selected_profile_rows(&self) -> Option<usize> {
+        let state = self.state.borrow();
+        let drawing = state.primary().and_then(|i| state.drawings.get(i))?;
+        if drawing.kind != DrawingKind::Profile {
+            return None;
+        }
+        state
+            .span_profile(drawing)
+            .map(|profile| profile.rows.len())
+    }
+
     pub fn bar_count(&self) -> usize {
         self.state.borrow().bars.len()
     }
@@ -10504,6 +10517,12 @@ fn draw_profile_drawing(
     selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
     let _ = cr.stroke();
 
+    // Unless it is turned off, which leaves the rows to say it, as the
+    // study's does.
+    if !look.show_poc {
+        cr.set_dash(&[], 0.0);
+        return;
+    }
     let y = to_y(profile.poc_price()).round() + 0.5;
     colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
     cr.set_line_width(look.poc_width.max(0.5));

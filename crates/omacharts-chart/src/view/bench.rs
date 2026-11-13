@@ -185,6 +185,35 @@ impl Scene {
         self.state.marks = Marks { lines: vec![mark], rules: Box::new(AnyPrice) };
     }
 
+    /// A volume profile drawn over every bar on screen, `rows` of them or
+    /// the automatic count when `None`, as the one drawing on the chart.
+    ///
+    /// The widest span a hand draws, divided as finely as it can be: the
+    /// rows are what a frame paints, so this is the profile drawing's worst
+    /// frame.
+    pub fn draw_profile(&mut self, rows: Option<usize>) {
+        let (first, visible) = (self.state.first, self.state.visible.max(1));
+        let from = self.state.bars.get(first);
+        let to = self
+            .state
+            .bars
+            .get((first + visible - 1).min(self.state.bars.len().saturating_sub(1)));
+        let (Some(from), Some(to)) = (from, to) else {
+            return;
+        };
+        let mut drawing = Drawing::new(
+            DrawingKind::Profile,
+            Anchor::new(from.ts, from.low),
+            Anchor::new(to.ts, to.high),
+        );
+        let mut style = drawing.style(&self.state.configs).clone();
+        style.profile.rows = rows;
+        drawing.config = None;
+        drawing.style = Some(style);
+        self.state.selected = Default::default();
+        self.state.drawings = vec![drawing];
+    }
+
     /// What a pointer motion costs before anything is repainted.
     ///
     /// The three questions the cursor asks of where the hand is: is it on a

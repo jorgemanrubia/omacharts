@@ -24,6 +24,7 @@ use crate::ui::colors;
 use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::drop_line;
+use crate::ui::profile_rows;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
 
@@ -1941,7 +1942,7 @@ fn parameters_group(
         Params::VolumeProfile {
             reset, rows, value_area, method, colouring, last_only, highlight, value_area_color, ..
         } => {
-            group.add(&reset_row(owner, refresh, id, *reset));
+            let reset_row = reset_row(owner, refresh, id, *reset);
             // The newest period alone, on either method and either edge.
             let last_row = adw::SwitchRow::new();
             last_row.set_title(PROFILE_LAST_ONLY_LABEL);
@@ -1959,7 +1960,6 @@ fn parameters_group(
                     refresh.run();
                 });
             }
-            group.add(&last_row);
             let method_row = choice_row(
                 owner,
                 refresh,
@@ -1973,31 +1973,39 @@ fn parameters_group(
                     }
                 },
             );
-            group.add(&method_row);
             let colouring_row = colouring_row(owner, refresh, id, *colouring);
             colouring_row.set_visible(has_colouring(*method));
-            group.add(&colouring_row);
-            for row in rows_rows(owner, refresh, id, *rows) {
-                group.add(&row);
-            }
-            let area_row = percent_row(
-                owner,
-                refresh,
-                id,
-                "Value area %",
-                *value_area,
-                0.10,
-                1.0,
-                move |indicator, share| {
-                    if let Params::VolumeProfile { value_area, .. } = &mut indicator.params {
-                        *value_area = share;
-                    }
-                },
-            );
+            let granularity = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                let drawn: Rc<dyn Fn() -> Option<usize>> = {
+                    let owner = owner.clone();
+                    Rc::new(move || owner.profile_rows(id))
+                };
+                profile_rows::granularity(*rows, drawn, move |count| {
+                    update(&owner, id, move |indicator| {
+                        if let Params::VolumeProfile { rows, .. } = &mut indicator.params {
+                            *rows = count;
+                        }
+                    });
+                    refresh.run();
+                })
+            };
+            let (area_row, _) = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                profile_rows::value_area_row(*value_area, move |share| {
+                    update(&owner, id, |indicator| {
+                        if let Params::VolumeProfile { value_area, .. } = &mut indicator.params {
+                            *value_area = share;
+                        }
+                    });
+                    refresh.run();
+                })
+            };
             // A delta has no value area: its rows cancel each other out, so
             // a share of their sum is a share of nothing.
             area_row.set_sensitive(has_value_area(*method));
-            group.add(&area_row);
             let (highlight_row, area_colour_row) =
                 value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
             let set_apart = {
@@ -2023,8 +2031,21 @@ fn parameters_group(
                     set_apart(method);
                 }
             });
-            group.add(&highlight_row);
-            group.add(&area_colour_row);
+            profile_rows::add_parameters(
+                &group,
+                &profile_rows::ParameterRows {
+                    leading: vec![
+                        reset_row.upcast(),
+                        last_row.upcast(),
+                        method_row.upcast(),
+                        colouring_row.upcast(),
+                    ],
+                    granularity,
+                    value_area: area_row.upcast(),
+                    highlight: highlight_row,
+                    value_area_colour: area_colour_row.upcast(),
+                },
+            );
         }
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
@@ -2203,10 +2224,10 @@ fn has_value_area(method: Method) -> bool {
 
 /// The volume profile switch that sets its value area apart from its other
 /// rows.
-pub const PROFILE_HIGHLIGHT_LABEL: &str = "Highlight value area";
+pub const PROFILE_HIGHLIGHT_LABEL: &str = profile_rows::HIGHLIGHT;
 
 /// The volume profile row that paints its value area a colour of its own.
-pub const PROFILE_AREA_COLOUR_LABEL: &str = "Value area colour";
+pub const PROFILE_AREA_COLOUR_LABEL: &str = profile_rows::VALUE_AREA_COLOUR;
 
 /// Whether a volume profile sets its value area apart, and in what colour:
 /// unset, the rows' own, only stronger, as it always was.
@@ -2257,14 +2278,14 @@ pub const PROFILE_LAST_ONLY_LABEL: &str = "Only show in last period";
 
 /// The volume profile switch that draws its point of control or leaves it
 /// out.
-pub const PROFILE_POC_LABEL: &str = "Show point of control";
+pub const PROFILE_POC_LABEL: &str = profile_rows::SHOW_POC;
 
 /// The volume profile row that fades its rows, or its outline's fill.
-pub const PROFILE_TRANSPARENCY_LABEL: &str = "Transparency";
+pub const PROFILE_TRANSPARENCY_LABEL: &str = profile_rows::TRANSPARENCY;
 
 /// The volume profile row that says whether its rows are filled or drawn
 /// round.
-pub const PROFILE_STYLE_LABEL: &str = "Style";
+pub const PROFILE_STYLE_LABEL: &str = profile_rows::STYLE;
 
 /// The volume profile row that says how a delta's two sides are painted.
 const PROFILE_COLOURING_LABEL: &str = "Colouring";
@@ -2289,8 +2310,6 @@ fn profile_style(
     indicator: &Indicator,
 ) -> adw::PreferencesGroup {
     let id = indicator.id;
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Style");
     let Params::VolumeProfile {
         style,
         align,
@@ -2308,13 +2327,12 @@ fn profile_style(
         ..
     } = &indicator.params
     else {
-        return group;
+        return adw::PreferencesGroup::new();
     };
 
-    // In the order a profile drawing's properties are in: the outline, the
-    // rows, the point of control, then how it is drawn. The background has
-    // no samples to repaint; the outline's and the point of control's
-    // patterns are drawn in their colours.
+    // Laid out by `profile_rows`, in the order a profile drawing's are. The
+    // background has no samples to repaint; the outline's and the point of
+    // control's patterns are drawn in their colours.
     let unused = Ink::new(String::new);
     let params_of = {
         let owner = owner.clone();
@@ -2345,21 +2363,21 @@ fn profile_style(
     };
 
     // Filled rows wear an outline only when asked; the outline style is
-    // nothing but one, so the switch is for the filled style, and the
-    // outline's own rows are there while there is an outline.
+    // nothing but one, so the switch is for the filled style.
     let filled = *style == ProfileStyle::Filled;
     let switch = adw::SwitchRow::new();
-    switch.set_title("Outline");
+    switch.set_title(profile_rows::OUTLINE);
     switch.set_active(*outline || !filled);
     switch.set_sensitive(filled);
-    group.add(&switch);
-    let outlined = !filled || *outline;
-    let shown = outline_color.as_ref().map(|c| c.resolve(&owner.theme())).unwrap_or_else(|| colour.to_string());
+    let shown = outline_color
+        .as_ref()
+        .map(|c| c.resolve(&owner.theme()))
+        .unwrap_or_else(|| colour.to_string());
     let outline_row = colour_row(
         owner,
         refresh,
         &outline_ink,
-        "Outline colour",
+        profile_rows::OUTLINE_COLOUR,
         &shown,
         outline_color.clone(),
         move |indicator, choice| {
@@ -2369,40 +2387,43 @@ fn profile_style(
         },
         id,
     );
-    group.add(&outline_row);
-    let outline_pattern = pattern_row(owner, refresh, &outline_ink, id, "Outline style", *outline_style, |indicator, picked| {
-        if let Params::VolumeProfile { outline_style, .. } = &mut indicator.params {
-            *outline_style = picked;
-        }
-    });
-    group.add(&outline_pattern);
-    let width_row = thickness_row(owner, refresh, id, "Outline thickness", *outline_width, |indicator, width| {
-        if let Params::VolumeProfile { outline_width, .. } = &mut indicator.params {
-            *outline_width = width;
-        }
-    });
-    group.add(&width_row);
-    let outline_rows: Rc<[gtk::Widget]> =
-        Rc::new([outline_row.upcast(), outline_pattern.upcast(), width_row.upcast()]);
-    for row in outline_rows.iter() {
-        row.set_visible(outlined);
-    }
+    let outline_pattern = pattern_row(
+        owner,
+        refresh,
+        &outline_ink,
+        id,
+        profile_rows::OUTLINE_STYLE,
+        *outline_style,
+        |indicator, picked| {
+            if let Params::VolumeProfile { outline_style, .. } = &mut indicator.params {
+                *outline_style = picked;
+            }
+        },
+    );
+    let width_row = thickness_row(
+        owner,
+        refresh,
+        id,
+        profile_rows::OUTLINE_THICKNESS,
+        *outline_width,
+        |indicator, width| {
+            if let Params::VolumeProfile { outline_width, .. } = &mut indicator.params {
+                *outline_width = width;
+            }
+        },
+    );
     // Set while the Style row puts the switch right, so the switch does not
     // take that for a hand turning the outline on or off.
     let following = Rc::new(Cell::new(false));
     {
         let owner = owner.clone();
         let refresh = refresh.clone();
-        let rows = outline_rows.clone();
         let following = following.clone();
         switch.connect_active_notify(move |row| {
-            let on = row.is_active();
-            for widget in rows.iter() {
-                widget.set_visible(on);
-            }
             if following.get() {
                 return;
             }
+            let on = row.is_active();
             update(&owner, id, |indicator| {
                 if let Params::VolumeProfile { outline, .. } = &mut indicator.params {
                     *outline = on;
@@ -2412,41 +2433,47 @@ fn profile_style(
         });
     }
 
-    group.add(&colour_row(
+    let background = colour_row(
         owner,
         refresh,
         &unused,
-        "Background",
+        profile_rows::BACKGROUND,
         colour,
         indicator.color.clone(),
         move |indicator, choice| indicator.color = choice,
         id,
-    ));
-    // How much of the chart shows through the rows: none at 0%, where the
-    // value area is the colour picked, solid, and all of it at 100%. A
-    // profile saved with an older fade reads here as what it draws.
-    group.add(&percent_row(
-        owner,
-        refresh,
-        id,
-        PROFILE_TRANSPARENCY_LABEL,
-        1.0 - omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
-        0.0,
-        1.0,
-        move |indicator, share| {
-            if let Params::VolumeProfile { alpha, opacity, .. } = &mut indicator.params {
-                *alpha = (1.0 - share).clamp(0.0, 1.0);
-                *opacity = omacharts_engine::indicators::profile::opaque();
-            }
-        },
-    ));
+    );
+    // A profile saved with an older fade reads here as what it draws.
+    let (transparency, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        profile_rows::transparency_row(
+            1.0 - omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+            move |share| {
+                update(&owner, id, |indicator| {
+                    if let Params::VolumeProfile { alpha, opacity, .. } = &mut indicator.params {
+                        *alpha = (1.0 - share).clamp(0.0, 1.0);
+                        *opacity = omacharts_engine::indicators::profile::opaque();
+                    }
+                });
+                refresh.run();
+            },
+        )
+    };
 
-    // Drawn unless turned off, on either method; its own rows are there
-    // while it is, as the outline's are.
-    let poc_switch = adw::SwitchRow::new();
-    poc_switch.set_title(PROFILE_POC_LABEL);
-    poc_switch.set_active(*poc);
-    group.add(&poc_switch);
+    // Drawn unless turned off, on either method.
+    let (poc_switch, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        profile_rows::switch_row(profile_rows::SHOW_POC, *poc, move |on| {
+            update(&owner, id, |indicator| {
+                if let Params::VolumeProfile { poc, .. } = &mut indicator.params {
+                    *poc = on;
+                }
+            });
+            refresh.run();
+        })
+    };
     // Unset is not "the same as the profile": it is the next colour along the
     // theme's sequence, which is the pair that sequence keeps far apart in hue.
     let shown = owner.theme().companion_or(poc_color.as_ref(), colour);
@@ -2454,7 +2481,7 @@ fn profile_style(
         owner,
         refresh,
         &poc_ink,
-        "Point of control",
+        profile_rows::POC_COLOUR,
         &shown,
         poc_color.clone(),
         move |indicator, choice| {
@@ -2464,45 +2491,45 @@ fn profile_style(
         },
         id,
     );
-    group.add(&poc_colour_row);
-    let poc_pattern = pattern_row(owner, refresh, &poc_ink, id, "Point of control style", *poc_style, |indicator, picked| {
-        if let Params::VolumeProfile { poc_style, .. } = &mut indicator.params {
-            *poc_style = picked;
-        }
-    });
-    group.add(&poc_pattern);
-    let poc_width_row = thickness_row(owner, refresh, id, "Point of control thickness", *poc_width, |indicator, width| {
-        if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
-            *poc_width = width;
-        }
-    });
-    group.add(&poc_width_row);
-    let poc_rows: [gtk::Widget; 3] = [poc_colour_row.upcast(), poc_pattern.upcast(), poc_width_row.upcast()];
-    for row in &poc_rows {
-        row.set_visible(*poc);
-    }
-    {
-        let owner = owner.clone();
-        let refresh = refresh.clone();
-        poc_switch.connect_active_notify(move |row| {
-            let on = row.is_active();
-            for widget in &poc_rows {
-                widget.set_visible(on);
+    let poc_pattern = pattern_row(
+        owner,
+        refresh,
+        &poc_ink,
+        id,
+        profile_rows::POC_STYLE,
+        *poc_style,
+        |indicator, picked| {
+            if let Params::VolumeProfile { poc_style, .. } = &mut indicator.params {
+                *poc_style = picked;
             }
-            update(&owner, id, |indicator| {
-                if let Params::VolumeProfile { poc, .. } = &mut indicator.params {
-                    *poc = on;
-                }
-            });
-            refresh.run();
-        });
-    }
+        },
+    );
+    let poc_width_row = thickness_row(
+        owner,
+        refresh,
+        id,
+        profile_rows::POC_THICKNESS,
+        *poc_width,
+        |indicator, width| {
+            if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
+                *poc_width = width;
+            }
+        },
+    );
 
-    let shape = choice_row(owner, refresh, id, PROFILE_STYLE_LABEL, &ProfileStyle::ALL.map(ProfileStyle::label), ProfileStyle::ALL.iter().position(|s| s == style), |indicator, at| {
-        if let Params::VolumeProfile { style, .. } = &mut indicator.params {
-            *style = ProfileStyle::ALL[at];
-        }
-    });
+    let shape = choice_row(
+        owner,
+        refresh,
+        id,
+        profile_rows::STYLE,
+        &ProfileStyle::ALL.map(ProfileStyle::label),
+        ProfileStyle::ALL.iter().position(|s| s == style),
+        |indicator, at| {
+            if let Params::VolumeProfile { style, .. } = &mut indicator.params {
+                *style = ProfileStyle::ALL[at];
+            }
+        },
+    );
     // The switch follows the style at once, both ways: on and greyed while
     // the outline is all there is, and back to what it was set to, and
     // free, the moment the rows are filled again. It used to wait for the
@@ -2518,15 +2545,22 @@ fn profile_style(
             switch.set_sensitive(filled);
         });
     }
-    group.add(&shape);
-    group.add(&choice_row(owner, refresh, id, "Alignment", &Align::ALL.map(Align::label), Align::ALL.iter().position(|a| a == align), |indicator, at| {
-        if let Params::VolumeProfile { align, .. } = &mut indicator.params {
-            *align = Align::ALL[at];
-        }
-    }));
+    let alignment = choice_row(
+        owner,
+        refresh,
+        id,
+        profile_rows::ALIGNMENT,
+        &Align::ALL.map(Align::label),
+        Align::ALL.iter().position(|a| a == align),
+        |indicator, at| {
+            if let Params::VolumeProfile { align, .. } = &mut indicator.params {
+                *align = Align::ALL[at];
+            }
+        },
+    );
     // A share of the room the profile has: its period, or the empty space
     // past the last bar for the session drawn there.
-    group.add(&percent_row(
+    let width = percent_row(
         owner,
         refresh,
         id,
@@ -2539,9 +2573,23 @@ fn profile_style(
                 *width = share;
             }
         },
-    ));
+    );
 
-    group
+    profile_rows::style_group(profile_rows::StyleRows {
+        outline: switch,
+        outline_colour: outline_row.upcast(),
+        outline_style: outline_pattern.upcast(),
+        outline_thickness: width_row.upcast(),
+        background: background.upcast(),
+        transparency: transparency.upcast(),
+        show_poc: poc_switch,
+        poc_colour: poc_colour_row.upcast(),
+        poc_style: poc_pattern.upcast(),
+        poc_thickness: poc_width_row.upcast(),
+        style: shape.upcast(),
+        alignment: alignment.upcast(),
+        width: Some(width.upcast()),
+    })
 }
 
 /// A line's thickness in pixels, applied as it is spun.
@@ -2553,19 +2601,13 @@ fn thickness_row(
     current: f64,
     apply: impl Fn(&mut Indicator, f64) + 'static,
 ) -> adw::SpinRow {
-    use omacharts_engine::indicators::{MAX_OUTLINE_WIDTH, MIN_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP};
-    let row = adw::SpinRow::with_range(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP);
-    row.set_title(title);
-    row.set_digits(1);
-    row.set_value(current);
     let owner = owner.clone();
     let refresh = refresh.clone();
-    row.connect_value_notify(move |row| {
-        let width = row.value();
+    profile_rows::thickness_row(title, current, move |width| {
         update(&owner, id, |indicator| apply(indicator, width));
         refresh.run();
-    });
-    row
+    })
+    .0
 }
 
 /// A row choosing one of a few named ways, applied as soon as it is picked.
@@ -3148,72 +3190,6 @@ fn pane_height_row(
     )
 }
 
-/// How a volume profile is divided up: automatically, or by a number.
-///
-/// Two rows rather than one control, because they answer different questions.
-/// The switch decides whether the instrument's own price increment sets the
-/// row height — a nickel on a share, half a pip on a currency major — and the
-/// spin is for the rare chart where you want a specific count instead. While
-/// the switch is on the spin still shows the count being drawn, so automatic
-/// is something you can see rather than take on faith.
-fn rows_rows(
-    owner: &Rc<Owner>,
-    refresh: &Refresh,
-    id: u32,
-    rows: Option<usize>,
-) -> Vec<adw::PreferencesRow> {
-    let drawn = owner.profile_rows(id);
-
-    let spin = adw::SpinRow::with_range(4.0, 800.0, 1.0);
-    spin.set_title("Rows");
-    spin.set_value(rows.or(drawn).unwrap_or(48) as f64);
-    spin.set_sensitive(rows.is_some());
-
-    let automatic = adw::ActionRow::new();
-    automatic.set_title("Automatic");
-    let switch = gtk::Switch::new();
-    switch.set_active(rows.is_none());
-    switch.set_valign(gtk::Align::Center);
-    automatic.add_suffix(&switch);
-    automatic.set_activatable_widget(Some(&switch));
-
-    let owner_for_switch = owner.clone();
-    let refresh_for_switch = refresh.clone();
-    let spin_weak = spin.downgrade();
-    switch.connect_active_notify(move |switch| {
-        let on = switch.is_active();
-        // Turning it off hands over the count that was on screen a moment ago,
-        // so taking control does not also change the chart.
-        let taken = spin_weak.upgrade().map(|spin| spin.value() as usize).unwrap_or(48);
-        update(&owner_for_switch, id, move |indicator| {
-            if let Params::VolumeProfile { rows, .. } = &mut indicator.params {
-                *rows = if on { None } else { Some(taken) };
-            }
-        });
-        if let Some(spin) = spin_weak.upgrade() {
-            spin.set_sensitive(!on);
-            if on && let Some(drawn) = owner_for_switch.profile_rows(id) {
-                spin.set_value(drawn as f64);
-            }
-        }
-        refresh_for_switch.run();
-    });
-
-    let owner_for_spin = owner.clone();
-    let refresh_for_spin = refresh.clone();
-    spin.connect_value_notify(move |spin| {
-        let value = spin.value() as usize;
-        update(&owner_for_spin, id, move |indicator| {
-            if let Params::VolumeProfile { rows, .. } = &mut indicator.params {
-                *rows = Some(value);
-            }
-        });
-        refresh_for_spin.run();
-    });
-
-    vec![automatic.upcast(), spin.upcast()]
-}
-
 /// The colour this indicator is actually drawn in.
 ///
 /// Asked of the whole set rather than of the indicator, because that is where
@@ -3429,6 +3405,21 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
 }
 
 use gtk::glib;
+
+/// A volume profile study's settings, as the rows of each group by title in
+/// the order they are laid out: what the drawing's are held to.
+#[cfg(test)]
+pub(crate) fn profile_titles(window: &Rc<Window>) -> Vec<(String, Vec<String>)> {
+    let owner = Owner::chart(window);
+    let indicator = Indicator::new(1, Kind::VolumeProfile);
+    let colour = owner.theme().ui.accent.clone();
+    let mut groups = vec![parameters_group(&owner, &Refresh::none(), &indicator)];
+    groups.extend(appearance_group(&owner, &Refresh::none(), &colour, &indicator));
+    groups
+        .iter()
+        .map(|group| (group.title().to_string(), profile_rows::titles(group)))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

@@ -71,20 +71,20 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, in the Outline style. Its colour, style and thickness show while it is on |
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Outline thickness** | 1 px | 0.5 to 6 px |
+| **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Background** colour | The next free colour | A palette name, or a custom colour |
 | **Transparency** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
 | **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, style and thickness show while it is on |
 | **Point of control** colour | A contrasting colour from the theme | A palette name, or a custom colour |
 | **Point of control style** | Solid | Solid, Dashed, Dotted |
-| **Point of control thickness** | 1 px | 0.5 to 6 px |
+| **Point of control thickness** | 1 px | 0.5 to 12 px |
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
 | **Width** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
 **Ask volume - bid volume** draws each row as what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the up colour of its **Colouring**, rows where sellers took more in the down colour. **Default** is the colouring set in Preferences for new charts ([Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts)), and changes when that does. Pick **Vivid**, **Soft** or **Quiet** to keep this profile in that colouring. Either way it is swapped when Preferences' **Swap up and down colours** is on. Monochrome is not offered, because it paints buying and selling alike. The point of control is the row furthest either way, and there is no value area. Which side a trade took is not in a bar, so this needs a data feed with volume at price: on any other it is one line saying so, and a period from before the feed's history begins is not drawn. The legend reads **VP Δ**.
 
-**Automatic**, on a data feed with volume at price, gives each price step a row of its own. A period that would need more than 800 has its rows made 2, 5 or 10 price steps tall, and the periods beside it keep one a step. On any other feed it gives every period rows of the same height, a round multiple of the instrument's price step, about 600 to a typical period, and a period too quiet for 60 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too. With **Automatic** off, **Rows** is the number of rows each period is divided into, on either feed.
+**Automatic**, on a data feed with volume at price, gives each price step a row of its own. A period that would need more than 800 has its rows made 2, 5 or 10 price steps tall, and the periods beside it keep one a step. On any other feed it gives every period rows of the same height, a round multiple of the instrument's price step, about 600 to a typical period, and a period too quiet for 60 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too. With **Automatic** off, **Rows** is the number of rows each period is divided into, on either feed. A [volume profile drawing](/manual/drawings/#volume-profiles) has the same two rows and divides its span the same way, worked out from its bars alone.
 
 ### Composite profiles
 

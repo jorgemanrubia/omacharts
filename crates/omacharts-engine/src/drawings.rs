@@ -1469,6 +1469,10 @@ pub struct ProfileLook {
     /// drawing's fill, the same colour stronger, as it always was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_area_paint: Option<Paint>,
+    /// Whether the point of control is drawn. Missing, it is, as every
+    /// profile's was.
+    #[serde(default = "ProfileLook::shown", skip_serializing_if = "is_true")]
+    pub show_poc: bool,
     /// The point of control's thickness. The outline's is the drawing's
     /// own `width`.
     #[serde(default = "ProfileLook::poc_default")]
@@ -1508,6 +1512,7 @@ impl Default for ProfileLook {
             opacity: 1.0,
             highlight: true,
             value_area_paint: None,
+            show_poc: true,
             poc_width: DEFAULT_WIDTH,
             poc_style: LineStyle::Solid,
         }
@@ -3308,6 +3313,41 @@ mod shape_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A profile drawing stored before its rows and its point of control
+    /// could be set reads back automatic, with the point of control drawn,
+    /// and a look nobody changed is still stored without either.
+    #[test]
+    fn a_profile_stored_before_rows_and_the_point_of_control_reads_as_it_was() {
+        let mut old = serde_json::to_value(ProfileLook {
+            value_area: 0.6,
+            ..ProfileLook::default()
+        })
+        .unwrap();
+        let fields = old.as_object_mut().expect("an object");
+        fields.remove("rows");
+        fields.remove("show_poc");
+        let look: ProfileLook = serde_json::from_value(old).expect("an old profile look");
+        assert_eq!(look.rows, None);
+        assert!(look.show_poc);
+        assert_eq!(
+            look,
+            ProfileLook {
+                value_area: 0.6,
+                ..ProfileLook::default()
+            }
+        );
+        let stored = serde_json::to_string(&ProfileLook::default()).expect("stored");
+        assert!(!stored.contains("show_poc"), "{stored}");
+        let hidden = ProfileLook {
+            show_poc: false,
+            rows: Some(120),
+            ..ProfileLook::default()
+        };
+        let back: ProfileLook =
+            serde_json::from_str(&serde_json::to_string(&hidden).unwrap()).unwrap();
+        assert_eq!(back, hidden);
+    }
     use crate::omarchy;
     use crate::theme::builtin_themes;
     use std::collections::HashMap;

@@ -1081,6 +1081,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("value-area-color", "COLOUR", "a volume profile's value area, while it is set apart: a preset name, #rrggbb, or none for its background's own"),
                     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels; --width is its outline's"),
                     Flag::valued("poc-style", "STYLE", "how a volume profile's point of control is drawn").of(LINE_STYLES),
+                    Flag::valued("poc", "BOOL", "whether a volume profile draws its point of control (on unless set)").of(SWITCHES),
+                    Flag::valued("rows", "N", "volume profile rows, 4-800, or `auto` to follow the instrument's own increment, as the study does"),
                     Flag::valued("source", "PRICE", "the price an anchored VWAP weights by volume").of(VWAP_SOURCES),
                     Flag::valued("style", "STYLE", "how an anchored VWAP's line is drawn").of(LINE_STYLES),
                     Flag::valued("bands", "LIST", "which of an anchored VWAP's bands are drawn: any of 1, 2 and 3, comma-separated, or none"),

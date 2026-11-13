@@ -735,10 +735,11 @@ fn listed() -> bool {
 pub const STROKE_WIDTHS: [f64; 5] = [0.0, 1.0, 1.5, 2.5, 4.0];
 
 /// How thin and how thick a volume profile's outline and point of control
-/// may be set, and the step between: half a pixel to six, by halves.
-pub const MIN_OUTLINE_WIDTH: f64 = 0.5;
-pub const MAX_OUTLINE_WIDTH: f64 = 6.0;
-pub const OUTLINE_WIDTH_STEP: f64 = 0.5;
+/// may be set, and the step between: a profile drawing's own, half a pixel
+/// to twelve by halves, so the study and the drawing offer the same.
+pub const MIN_OUTLINE_WIDTH: f64 = crate::drawings::MIN_WIDTH;
+pub const MAX_OUTLINE_WIDTH: f64 = crate::drawings::MAX_WIDTH;
+pub const OUTLINE_WIDTH_STEP: f64 = crate::drawings::WIDTH_STEP;
 
 impl Indicator {
     /// One step thicker or thinner, as Alt+Shift with + and − asks: the
@@ -1506,12 +1507,12 @@ mod tests {
         assert_eq!(sma.stroke.width, 1.0);
 
         let mut profile = Indicator::new(2, Kind::VolumeProfile);
-        for _ in 0..20 {
+        for _ in 0..40 {
             profile.step_width(true);
         }
         let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
         assert_eq!(outline_width, MAX_OUTLINE_WIDTH);
-        for _ in 0..20 {
+        for _ in 0..40 {
             profile.step_width(false);
         }
         let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };

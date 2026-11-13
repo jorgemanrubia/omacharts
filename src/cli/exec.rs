@@ -2839,6 +2839,9 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "value_area_color": style.profile.value_area_paint.as_ref().map(|paint| paint.spell()),
             "poc_width": style.profile.poc_width,
             "poc_style": style.profile.poc_style.label().to_lowercase(),
+            "poc": style.profile.show_poc,
+            // Null while automatic, as the study's.
+            "rows": style.profile.rows,
         });
     }
     // And only an anchored VWAP has these.
@@ -2951,12 +2954,19 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                 (true, Some(paint)) => format!(" in {}", paint.spell()),
                 (true, None) => String::new(),
             };
+            let rows = match look.rows {
+                Some(rows) => format!(", {rows} rows"),
+                None => String::new(),
+            };
+            let poc = match look.show_poc {
+                true => format!("point of control {}", look.poc.spell()),
+                false => "no point of control".to_string(),
+            };
             format!(
-                "{} {}, from the {}, point of control {}, value area {:.0}%{area}, transparency {:.0}%",
+                "{} {}{rows}, from the {}, {poc}, value area {:.0}%{area}, transparency {:.0}%",
                 style.colour.spell(),
                 look.shape.key(),
                 look.align.key(),
-                look.poc.spell(),
                 look.value_area * 100.0,
                 (1.0 - style.profile_alpha()) * 100.0
             )
@@ -3040,6 +3050,10 @@ struct StyleEdits {
     /// background's.
     area_paint: Option<Option<omacharts_engine::Paint>>,
     poc_width: Option<f64>,
+    /// A profile's rows: `Some(None)` for automatic, as the study's.
+    rows: Option<Option<usize>>,
+    /// Whether a profile draws its point of control.
+    show_poc: Option<bool>,
     source: Option<omacharts_engine::drawings::VwapSource>,
     /// An anchored VWAP's line pattern.
     line: Option<LineStyle>,
@@ -3233,6 +3247,16 @@ impl StyleEdits {
             highlight: switch("highlight-value-area")?,
             area_paint,
             poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
+            rows: match arg(m, "rows") {
+                None => None,
+                Some(text) if text.eq_ignore_ascii_case("auto") => Some(None),
+                Some(text) => Some(Some(text.parse::<usize>().map_err(|_| {
+                    Fault::usage(format!(
+                        "{text:?} is not a row count; use a number or `auto`"
+                    ))
+                })?)),
+            },
+            show_poc: switch("poc")?,
             colour: paint("color")?,
             width,
             arrow,
@@ -3270,6 +3294,8 @@ impl StyleEdits {
             && self.highlight.is_none()
             && self.area_paint.is_none()
             && self.poc_width.is_none()
+            && self.rows.is_none()
+            && self.show_poc.is_none()
             && self.source.is_none()
             && self.line.is_none()
             && self.bands.is_none()
@@ -3460,6 +3486,12 @@ impl StyleEdits {
         }
         if let Some(width) = self.poc_width {
             style.profile.poc_width = width;
+        }
+        if let Some(rows) = self.rows {
+            style.profile.rows = rows;
+        }
+        if let Some(on) = self.show_poc {
+            style.profile.show_poc = on;
         }
         if let Some(source) = self.source {
             style.vwap.source = source;

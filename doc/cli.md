@@ -776,8 +776,9 @@ and `--fill` its background, `--border on|off` whether filled rows have it,
 `--width` its thickness and `--line-style` its pattern;
 `--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
 `--transparency` (0 its background solid, 0.7 by default),
-`--highlight-value-area on|off` and `--value-area-color` (or `none` for its
-background's) are the rest. It is never moved whole, only
+`--highlight-value-area on|off`, `--value-area-color` (or `none` for its
+background's), `--poc on|off` and `--rows` (a number, or `auto`, as the
+study's) are the rest. It is never moved whole, only
 re-spanned, and it takes no words.
 
 **An anchored VWAP** (`avwap`, or `vwap`) reads only the time of its anchor,

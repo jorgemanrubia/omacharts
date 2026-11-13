@@ -321,6 +321,34 @@ fn drawing(rows: &mut Vec<Row>) {
         }
     }
 
+    // A volume profile drawn over the whole screen, at the automatic count
+    // and at the finest a hand can ask for: the rows are what its frame
+    // paints, and a span this wide is where they are most. Then what
+    // dividing a span costs, over a span far wider than any screen.
+    for (count, label) in [(None, "automatic rows"), (Some(800), "800 rows")] {
+        if let Some(mut scene) = Scene::of(3_000, 1_500, &[]) {
+            scene.draw_profile(count);
+            scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+            let (surface, cr) = canvas();
+            rows.push(row(
+                "draw",
+                &format!("pan/zoom frame, drawn volume profile, {label}, 1500 bars"),
+                || {
+                    scene.view_frame(&cr, WIDTH, HEIGHT);
+                    surface.flush();
+                },
+            ));
+        }
+    }
+    let span = bench::series(100_000);
+    rows.push(row(
+        "draw",
+        "compute drawn volume profile over 100000 bars",
+        || {
+            black_box(indicators::profile::of_span(&span, 0, None, 0.7, None));
+        },
+    ));
+
     // What one indicator's arithmetic costs over a long series, which is what
     // every tick pays and what the first frame of a chart pays. A row each
     // rather than one pass over all of them, because the question a regression
