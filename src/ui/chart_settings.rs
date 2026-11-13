@@ -2219,7 +2219,6 @@ fn value_area_rows(
 ) -> (adw::SwitchRow, adw::ActionRow) {
     let switch = adw::SwitchRow::new();
     switch.set_title(PROFILE_HIGHLIGHT_LABEL);
-    switch.set_subtitle("Off, every row is drawn alike");
     switch.set_active(highlight);
     {
         let owner = owner.clone();

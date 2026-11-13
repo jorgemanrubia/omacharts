@@ -1097,7 +1097,6 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             // a colour of its own, or in the background's, only stronger.
             let highlight = adw::SwitchRow::new();
             highlight.set_title("Highlight value area");
-            highlight.set_subtitle("Off, every row is drawn alike");
             highlight.set_active(style.borrow().profile.highlight);
             group.add(&highlight);
             let area_paint = |s: &Style| s.profile.value_area_paint.clone().unwrap_or_else(|| s.fill.clone());
