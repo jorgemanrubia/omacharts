@@ -5668,14 +5668,40 @@ impl Window {
         added.view.set_show_drawings(from.view.show_drawings());
         *added.compare.borrow_mut() = from.compare.borrow().clone();
         added.shows_legend.set(from.shows_legend.get());
+        Self::trade_as(&from, &added);
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
         if let Some(instrument) = from.instrument.borrow().clone() {
             self.show_in(&added, instrument);
         }
+        self.apply_marks_to(&added);
         self.focus(added.id);
         self.save_workspace();
+    }
+
+    /// Give `added` what `from` trades with: its account, what it trades
+    /// instead and at what size, whether it marks its fills, and, with
+    /// trading on, the feed chosen for it. Splitting a chart to watch it at
+    /// another resolution is still watching the same trade, so the half it
+    /// makes has the same orders, position and fills, as `chart split` and
+    /// a duplicated chartbook already gave it.
+    ///
+    /// A chart on the default account makes one on the default too, rather
+    /// than one pinned to whichever account is the default today: the two
+    /// stay on the same account when the default changes.
+    ///
+    /// With trading off none of it is read, and the chosen feed is left as
+    /// splitting always left it.
+    fn trade_as(from: &ChartPane, added: &ChartPane) {
+        added.account.replace(from.account.borrow().clone());
+        added.trading_size.replace(from.trading_size.borrow().clone());
+        added.trading_symbol.replace(from.trading_symbol.borrow().clone());
+        added.trading_pending.replace(from.trading_pending.borrow().clone());
+        added.shows_fills.set(from.shows_fills.get());
+        if crate::features::trading() {
+            added.feed.replace(from.feed.borrow().clone());
+        }
     }
 
     /// Close the focused chart. The last one stays: a window with no chart in

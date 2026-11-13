@@ -242,6 +242,45 @@ mod tests {
         (store, window, pane, session, id)
     }
 
+    /// `login` signed in again on `window`, through a fake session with
+    /// accounts 951 and 952, ES as ESZ6, and a long bought and sold
+    /// yesterday on 952 alone: what a chart on the default, 951, has none
+    /// of.
+    fn open_two(window: &Rc<Window>, store: &Store, login: &str) -> Arc<FakeSession> {
+        let account = |number: &str| trading::Account {
+            login: login.to_string(),
+            id: number.into(),
+            name: None,
+            currency: Some("USD".into()),
+            balance: None,
+        };
+        let session = FakeSession::new(vec![account("951"), account("952")], Box::new(|| {}));
+        session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+        let day = now() - 86_400;
+        let on_952 = |order: trading::Order| trading::Order { account: "952".into(), ..order };
+        *session.past.lock().unwrap() =
+            vec![on_952(filled("P1", Side::Buy, day, 100.0)), on_952(filled("P2", Side::Sell, day + 600, 102.0))];
+        let session = Arc::new(session);
+        assert!(window.desk.begin(login));
+        window.desk.opened(login, Ok(session.clone()));
+        window.desk.note(store);
+        window.desk.tell();
+        session
+    }
+
+    /// A window with ES on its chart, signed in with [`open_two`], and the
+    /// login's id.
+    fn two_accounts() -> (Rc<Store>, Rc<Window>, Rc<ChartPane>, String) {
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = super::super::trade::tests::window(&store);
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        let pane = window.focused_pane();
+        window.show_in(&pane, es);
+        let login = trading::add_login(&store, &Kept::default(), &super::super::trade::tests::typed()).expect("a login");
+        open_two(&window, &store, &login);
+        (store, window, pane, login)
+    }
+
     /// Run the main loop until `done`, two seconds at most.
     fn settle(window: &Rc<Window>, done: impl Fn() -> bool) -> bool {
         let context = glib::MainContext::default();
@@ -329,6 +368,94 @@ mod tests {
             window.desk.refresh(&login);
             assert!(settle(&window, || pane.view.executions().marks.len() == 2), "not asked again after the refresh");
             assert_eq!(asked(), 2);
+        });
+    }
+
+    /// The author's chart: on account 952 with its fills shown, split, the
+    /// new half maximized at another resolution. The half is on 952 too and
+    /// marks the same trip, whatever its resolution and after a restart;
+    /// on main it was on the default, 951, and marked nothing.
+    #[test]
+    fn a_split_chart_trades_on_the_account_it_was_split_from() {
+        crate::ui::on_gtk(|| {
+            let (store, window, pane, login) = two_accounts();
+            let chosen = format!("{login}/952");
+            window.set_timeframe(omacharts_engine::Timeframe::minutes(5));
+            window.choose_account(pane.id, Some(chosen.clone()));
+            window.set_shows_fills(pane.id, true);
+            assert!(settle(&window, || pane.view.executions().marks.len() == 2), "the original marks no fills");
+
+            window.split_focused(true);
+            let added = window.focused_pane();
+            assert_ne!(added.id, pane.id);
+            assert_eq!(added.account.borrow().as_deref(), Some(chosen.as_str()), "the split chart is on another account");
+            assert!(window.shows_fills(added.id), "the split chart does not show fills");
+            assert!(settle(&window, || added.view.executions().marks.len() == 2), "the split chart marks no fills");
+
+            // Maximized, at another resolution, and the switch turned off
+            // and on there: still the same trip.
+            window.toggle_maximized();
+            window.set_timeframe(omacharts_engine::Timeframe::minutes(15));
+            window.set_shows_fills(added.id, false);
+            assert!(added.view.executions().is_empty());
+            window.set_shows_fills(added.id, true);
+            assert!(settle(&window, || added.view.executions().marks.len() == 2), "no fills at 15m");
+            let marks: Vec<(f64, bool)> = added.view.executions().marks.iter().map(|mark| (mark.price, mark.buy)).collect();
+            assert_eq!(marks, [(100.0, true), (102.0, false)]);
+            assert_eq!(pane.timeframe.get(), omacharts_engine::Timeframe::minutes(5), "the original moved too");
+
+            // After a restart.
+            window.save_workspace();
+            let again = super::super::trade::tests::window(&store);
+            open_two(&again, &store, &login);
+            let back = again.focused_pane();
+            assert_eq!(back.timeframe.get(), omacharts_engine::Timeframe::minutes(15), "not the split chart");
+            assert_eq!(back.account.borrow().as_deref(), Some(chosen.as_str()));
+            assert!(again.shows_fills(back.id));
+            assert!(settle(&again, || back.view.executions().marks.len() == 2), "no fills after a restart");
+        });
+    }
+
+    /// A chart on the default account splits into one on the default, not
+    /// one pinned to whichever account the default is now: change the
+    /// default and both halves move to it together.
+    #[test]
+    fn a_chart_on_the_default_account_splits_into_one_on_the_default() {
+        crate::ui::on_gtk(|| {
+            let (store, window, pane, login) = two_accounts();
+            window.split_focused(true);
+            let added = window.focused_pane();
+            assert_eq!(*added.account.borrow(), None);
+            let on = |window: &Rc<Window>, pane: &ChartPane| {
+                window.trading.borrow().account_of(pane.account.borrow().as_deref()).map(trading::Account::key)
+            };
+            assert_eq!(on(&window, &added), Some(format!("{login}/951")));
+            store.set_setting(trading::DEFAULT_ACCOUNT, &format!("{login}/952"));
+            window.adopt_trading();
+            assert_eq!(on(&window, &pane), Some(format!("{login}/952")));
+            assert_eq!(on(&window, &added), Some(format!("{login}/952")));
+        });
+    }
+
+    /// With trading off a split is what it was: the chosen feed is not
+    /// copied, and nothing is marked. The account goes along unread, for
+    /// when trading is back.
+    #[test]
+    fn with_trading_off_a_split_leaves_the_feed_as_it_was() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            crate::features::set(&store, crate::features::Feature::Trading, false);
+            let window = super::super::trade::tests::bare_window(&store);
+            let pane = window.focused_pane();
+            pane.feed.replace(Some("yahoo".into()));
+            pane.account.replace(Some("someone/951".into()));
+            pane.shows_fills.set(true);
+            window.split_focused(true);
+            let added = window.focused_pane();
+            assert_ne!(added.id, pane.id);
+            assert_eq!(*added.feed.borrow(), None, "the feed copied with trading off");
+            assert_eq!(added.account.borrow().as_deref(), Some("someone/951"));
+            assert!(added.view.executions().is_empty());
         });
     }
 }
