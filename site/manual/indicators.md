@@ -7,14 +7,9 @@ nav_order: 15
 
 An indicator is something drawn from the chart's bars, such as a moving average, an RSI or the shading of the extended hours, over the candles or in a strip of its own under the price. Each chart has its own indicators, or shows those of the [chart template](/manual/chart-templates/) it is on.
 
-The indicators come in families, each with a page that has every indicator in it and every setting:
+The indicators come in families, and each indicator has a page of its own with every setting:
 
-| Family | Indicators |
-|---|---|
-| [Averages and bands](/manual/indicators/averages-and-bands/) | Simple Moving Average, Exponential Moving Average, Volume Weighted Average Price, Bollinger Bands |
-| [Volume](/manual/indicators/volume/) | Volume, Volume Profile, Cumulative Delta |
-| [Momentum and volatility](/manual/indicators/momentum-and-volatility/) | Relative Strength Index, MACD, Average True Range, Stochastic |
-| [Sessions and time](/manual/indicators/session-times/) | Session Times |
+{% include children.html head="Family" what="Indicators" grouped=true %}
 
 <!-- regenerate:
 theme: tokyo-night
@@ -227,7 +222,7 @@ A paste is a new indicator with the same settings, on the chart that has the key
 |---|---|
 | **Period** buttons | A moving average only: 10, 20, 50, 100 or 200, the one in use ringed |
 | **Reset every** buttons | A VWAP, a volume profile or a cumulative delta only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)), and Never for a cumulative delta |
-| **Merge with previous profile** | A volume profile only, over a profile with one before it ([Composite profiles](/manual/indicators/volume/#composite-profiles)) |
+| **Merge with previous profile** | A volume profile only, over a profile with one before it ([Composite profiles](/manual/indicators/volume/volume-profile/#composite-profiles)) |
 | **Split composite profile** | A volume profile only, over a composite |
 | **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies it and removes it |
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies it |
@@ -257,7 +252,7 @@ On a chart that is on a template, every change to its indicators changes the tem
 
 ## Reset periods
 
-The [VWAP](/manual/indicators/averages-and-bands/#volume-weighted-average-price), the [volume profile](/manual/indicators/volume/#volume-profile) and the [cumulative delta](/manual/indicators/volume/#cumulative-delta) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
+The [VWAP](/manual/indicators/averages-and-bands/vwap/), the [volume profile](/manual/indicators/volume/volume-profile/) and the [cumulative delta](/manual/indicators/volume/cumulative-delta/) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
 
 | Period | Starts over |
 |---|---|

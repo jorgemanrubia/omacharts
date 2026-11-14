@@ -1,0 +1,22 @@
+{%- comment -%}
+  The pages under a page in the sidebar (include.children, from the
+  manual_children _plugins/manual.rb gives it), each with its own beneath it
+  behind a chevron, open while it or one of them is the page being read.
+{%- endcomment -%}
+{%- if include.children.size > 0 %}
+<ul class="nav-list nav-children">
+  {%- for child in include.children %}
+  {%- assign child_open = false %}
+  {%- if child.children.size > 0 %}{% if child.url == page.url or page.manual_ancestors contains child.url %}{% assign child_open = true %}{% endif %}{% endif %}
+  <li class="nav-list-item{% if child_open %} active{% endif %}">
+    {%- if child.children.size > 0 %}
+    <button class="nav-list-expander btn-reset" aria-label="{{ child.title }} pages" aria-expanded="{{ child_open }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-arrow-right"></use></svg>
+    </button>
+    {%- endif %}
+    <a href="{{ child.url | relative_url }}" class="nav-list-link{% if child.url == page.url %} active{% endif %}"{% if child.url == page.url %} aria-current="page"{% endif %}>{{ child.title }}</a>
+    {%- if child.children.size > 0 %}{% include components/nav_children.html children=child.children %}{% endif %}
+  </li>
+  {%- endfor %}
+</ul>
+{%- endif %}

@@ -536,7 +536,7 @@ see [Settings](#settings).
 on](#which-chart-a-command-acts-on)). `KIND` is the indicator's name as the
 command takes it, such as `sma`, `rsi`, `volume_profile` or `session_times`.
 Each indicator's name, what it draws, and every parameter's default and range
-are in [Indicators](/manual/indicators/) and the page of its family.
+are in [Indicators](/manual/indicators/) and the indicator's own page.
 
 | Action | Does |
 |---|---|
@@ -897,7 +897,7 @@ precision, the bar distance and the elapsed time. Bar distance counts column
 intervals; elapsed time includes market closures. With fewer than two loaded
 candles the reply has no bar distance and `bars` is `null`. A zero starting price has
 `null` for `percent_change`. The measurement is not saved or shared. The mouse
-tool is in [Measuring a move](/manual/drawings/#measuring-a-move).
+tool is in [Measure](/manual/drawings/measure/).
 
 ## Volume profiles
 
@@ -925,7 +925,7 @@ $ omacharts chart profile list --on-screen
 `omacharts chart profile merge --at WHEN` folds the focused chart's volume
 profile holding that moment into the one before it, and `omacharts chart
 profile split --at WHEN` puts a composite back into its periods
-([Composite profiles](/manual/indicators/volume/#composite-profiles)). `WHEN`
+([Composite profiles](/manual/indicators/volume/volume-profile/#composite-profiles)). `WHEN`
 is a day, a day and a time, read in the chart's time zone, or Unix seconds,
 such as `start` from `list`. `--id N` says which profile when the chart has more
 than one. A window must be open;

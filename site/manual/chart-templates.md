@@ -5,7 +5,7 @@ section: charting
 nav_order: 16
 ---
 
-A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume) and [Session Times](/manual/indicators/session-times/) with ETH. New charts open on no template until you choose one for them.
+A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/volume/) and [Session Times](/manual/indicators/session-times/) with ETH. New charts open on no template until you choose one for them.
 
 <!-- regenerate:
 theme: tokyo-night

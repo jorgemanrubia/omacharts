@@ -324,6 +324,19 @@ $rail-inset: calc(#{$gutter-spacing-sm * 1.6} + 2px);
       &:hover { color: $oc-bright; }
       &.active { color: $oc-bright; border-left-color: $oc-amber; }
     }
+
+    // A page's own pages, a step further in: Indicators › Volume › its
+    // indicators. The chevron sits a size down to match.
+    .nav-children .nav-list-item .nav-list-link {
+      padding-left: $gutter-spacing-sm + 2rem;
+      font-size: .88rem;
+
+      @media (min-width: $md) {
+        padding-left: $gutter-spacing-sm * 1.6 + 2rem;
+      }
+    }
+
+    .nav-list-item > .nav-list-expander { height: 1.95rem; padding: .5rem; }
   }
 }
 
@@ -1338,4 +1351,10 @@ $callouts: (
   .side-bar, .main-header, .chapter-nav, .page-footer, .search { display: none !important; }
   .side-bar + .main { margin-left: 0 !important; }
   body { background: #fff; color: #000; }
+}
+
+// The index a page with pages under it opens with (_includes/children.html):
+// an ordinary table, its names kept on one line where the width allows.
+.main-content .children-index td:first-child {
+  min-width: 12rem;
 }

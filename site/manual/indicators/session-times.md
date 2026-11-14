@@ -4,6 +4,7 @@ description: "Session Times shades stretches of each day behind the bars: the ex
 section: charting
 parent: indicators
 nav_order: 4
+family: "Sessions and time"
 ---
 
 Session Times shades stretches of each day behind the bars, across the price plot and every strip. It holds a list of ranges. Two follow the trading day of the chart's exchange, **ETH** for the extended hours and **RTH** for the regular session. The rest are hours of the clock, such as the London session. It draws no lines and no labels. It is the only indicator in the **Sessions and time** family.

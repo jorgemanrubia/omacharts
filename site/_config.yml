@@ -18,7 +18,10 @@ plugins:
 # /manual/<key>/ (made by _plugins/manual.rb) that lists its chapters, with
 # the description as its lede. A chapter can have pages beneath it, under
 # manual/<chapter>/, each naming it with `parent: <chapter>` as well as its
-# `section:`; the sidebar indents them under the chapter.
+# `section:`, and those pages their own, under manual/<chapter>/<page>/ with
+# `parent: <chapter>/<page>`. The sidebar indents each level, and a page with
+# pages under it opens with an index of them ({% include children.html %}),
+# from their titles and descriptions.
 manual:
   sections:
     - key: introduction

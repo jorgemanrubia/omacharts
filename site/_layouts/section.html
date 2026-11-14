@@ -9,6 +9,8 @@ layout: default
   pages themselves are made
   from site.manual.sections by _plugins/manual.rb; `section_key` says which
   part this is. Its description is the page's meta description, not shown.
+  Above the contents, the index every page with pages under it opens with
+  (_includes/children.html): each chapter and its description.
 {%- endcomment -%}
 {%- assign chapters = site.html_pages
       | where_exp: "item", "item.url contains '/manual/'"
@@ -23,13 +25,16 @@ layout: default
   <h1 class="chapter-title">{{ page.title }}{% if page.badge %} <span class="title-badge">{{ page.badge }}</span>{% endif %}</h1>
 </header>
 
+{% include children.html head="Chapter" what="What it covers" %}
+
+<h2 class="section-contents-title" id="contents">Contents</h2>
+
 <ul class="section-toc">
   {%- for chapter in chapters %}
   <li>
     <a href="{{ chapter.url | relative_url }}">{{ chapter.title }}</a>
     {{- chapter | chapter_tree: 2, 3 }}
-    {%- assign chapter_key = chapter.url | split: "/" | last %}
-    {%- assign children = subpages | where: "parent", chapter_key | sort: "nav_order" %}
+    {%- assign children = subpages | where: "parent", chapter.manual_key | sort: "nav_order" %}
     {%- if children.size > 0 %}
     <ul class="section-toc-children">
       {%- for child in children %}
