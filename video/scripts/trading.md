@@ -658,6 +658,55 @@ written; where it and this section disagree, this section is what was filmed.
 - **Volume pane.** A volume study under the chart, for the volume spikes the
   plan describes.
 - **Hit meter, key caps, cards** as in "Transitions and effects".
+- **Review pass (after the first render).** Only the edit changed; the take
+  is the same.
+  - *Order toasts.* The app's toasts sat over the volume bars at the bottom
+    of nearly every frame, with the hit meter underneath them. Redrawing the
+    pane under them was tried and left holes where short bars were, so the
+    edit now finds where each scene's toasts fall and lays a dark glass
+    capsule over that place, with the hit meter riding in it (`veil` in
+    `trailer.json`; it goes with the picture into a punch-in). The pointer
+    parked at the top middle between gestures is painted out of the take
+    with the empty header beside it.
+  - *Punch-ins chosen at the edit* (`recrop: x% y% w% a-b`, hits a to b,
+    0 for the start of the footage; they replace the take's `crop:`).
+    Scene 3 is framed on the whole dialog, title included, and no longer
+    takes in the bottom of the window. Scene 6 punches in on the panel from
+    the start of its footage to hit 9, then cuts back for the fill, since
+    at 1080p the panel was too small to read. Scene 10 punches in on the
+    terminal to hit 6, so the bracket's command and its two orders read.
+  - *The ring on LucidTrading* is placed by `ring: x% y% w% h%` (the row,
+    measured on the take) instead of the default size around the click
+    point, which ran off the list and through the text.
+  - *Scene 5's punch-in* starts eight frames after hit 2 (`punch: 2.35-5`):
+    on the drag's first frames the label flashed the app's own "Stop above
+    market not allowed" while the pointer passed the market.
+  - *Type.* The cards' second lines are 66 px at 88% (were 44 px at 70%);
+    the end card's small print 44 px (was 30). Key caps sit higher, clear
+    of the capsule.
+
+### Left for the next pass
+
+Seen at review and not fixed, with why:
+- *Scene 8's request wraps mid-word* in the terminal ("Target t / he point
+  of control."): the terminal's width, in the take. Only a new take fixes it
+  (a narrower prompt or a wider terminal); card 8 restates the request
+  whole right after, which carries it.
+- *The agent's line "The profile reads them between ticks, so I round to
+  ES's quarter point."* reads in scene 9's punch-in. It is the played
+  agent's sentence about the app's off-tick profile levels; the numbers it
+  prints are on the tick. Cutting it needs a new take without that line.
+- *The header shows the canned day's P&L in green* (+$912.50 on Lucid)
+  through scenes 1–2 and 9–10, and the agent's target fills at the end.
+  Mixed outcomes elsewhere (the stop-out, the scratch, Tradeify red) and the
+  end card's "Simulated market. Fake accounts." balance it; nothing punches
+  in on a P&L except the header scene, which the brief asks for.
+- *A dotted line across scene 1–2's chart* is the canned day's round trip
+  (fills shown, entry to exit). Real, but it reads as a stray line.
+- *The capsule* is a fixed dark pill per scene; it hides the toasts and the
+  bottom of some volume bars under them. Judge it against the toasts it
+  replaced.
+- *Order ids*: the agent's fill reads "B11"; the canned day's are B1–B6.
 
 ## Setup
 
@@ -786,6 +835,8 @@ Ctrl+F flattens.
     arrow@10: mark 54.7% 61% lucid
     crop: 30% 50% 48%
     punch: 5-11
+    recrop: 28% 27% 48% 5-11
+    ring: 57.3% 61.0% 7.4% 3.4%
     after: 0.6
     out: key Escape; wait 0.3; key Escape; wait 0.4; click 45.6% 67.7%; wait 0.6; focus app
 
@@ -835,7 +886,7 @@ starts on 6, lands on 7. Stop hit on 10.
     trail@6: drag 60% {y:stop} 60% {y:pos+0.25}
     hit@7: tape touch {pos+0.25} in @10 fill
     crop: 0% {y:pos+4} 40%
-    punch: 2-5
+    punch: 2.35-5
     after: 0.6
 
 ### 6. The panel
@@ -862,6 +913,7 @@ closes, and in the panel the row turns from Working to Filled.
     orders@7: click 18.25% 86.9%
     release@8: tape avoid off; tape touch {t6} in @10 fill
     all@9: click 89.1% 86.9%
+    recrop: 0% 61.5% 38.5% 0-9
     after: 0.6
     out: click 98.0% 84.2%; wait 0.6
 
@@ -977,6 +1029,7 @@ accounts. Held through the tail, then black (E11).
     anchors: exits@2
     base@2: tape goto {v+2} in @5
     run@5: tape avoid off; tape touch {p} in @10 fill
+    recrop: 62% 28% 38% 0-6
     after: 3.0
     out: terminal close; focus app
 

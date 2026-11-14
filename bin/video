@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --quiet --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pillow"]
+# dependencies = ["pillow", "numpy"]
 # ///
 """Render Omacharts videos from a Markdown script.
 
@@ -93,6 +93,11 @@ class Scene:
         self.crop = None
         self.punch = None
         self.anchors = {}
+        # Punch-ins chosen at the edit, which replace the take's own: fixed
+        # crops, each with the hits it holds between. And the box the arrow
+        # rings, in fractions of the frame.
+        self.recrops = []
+        self.ring = None
 
 
 class Script:
@@ -151,7 +156,12 @@ class Script:
                     elif cue == "crop":
                         scene.crop = rest.split()
                     elif cue == "punch":
-                        scene.punch = [int(v) for v in rest.strip().split("-")]
+                        scene.punch = [float(v) for v in rest.strip().split("-")]
+                    elif cue == "recrop":
+                        x, y, w, hits = rest.split()
+                        scene.recrops.append(([percent(x), percent(y), percent(w)], [int(v) for v in hits.split("-")]))
+                    elif cue == "ring":
+                        scene.ring = [percent(v) for v in rest.split()]
                     elif cue == "anchors":
                         scene.anchors = {name: int(n) for name, n in (a.split("@") for a in rest.split())}
                     else:
@@ -1773,6 +1783,83 @@ def reedit_trailer(script):
     edit_trailer(script, out / "raw.mkv", taken["offset"], hits, taken["marks"], taken["events"])
 
 
+# The app confirms every order in a toast at the bottom of the window, over
+# the volume bars, and in a trailer they pile up under nearly every frame.
+# What is under one cannot be drawn again (short bars hide whole beneath
+# it; a first try that redrew the pane left holes), so the edit finds where
+# each scene's toasts fall and the composition lays a dark glass capsule
+# over that place, with the drum's meter in it. The pointer, parked at the
+# top middle of the window between gestures, is painted out of the take.
+TOAST_ROWS = (1984, 2098)  # rows a toast and its shadow take, at 2160
+CURSOR_BOX = (1896, 36, 96, 104)  # x, y, w, h: where the parked pointer sits
+
+
+def find_toasts(recording, marks, events):
+    """Each scene's toast footprint, as fractions of the frame; and the
+    take repainted without the parked pointer."""
+    import numpy as np
+
+    W, H = SIZE
+    top, bottom = TOAST_ROWS
+    rows = bottom - top
+    spans = [(m["scene"], round((m["in"] - (0 if m["scene"] == 1 else BREATH / FPS) - 0.1) * FPS),
+              round((m["out"] + 0.1) * FPS)) for m in marks]
+    scene_of = {f: n for n, a, b in spans for f in range(max(0, a), b)}
+
+    say("finding the toasts in the take")
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(recording), "-vf", f"crop={W}:{rows}:0:{top}",
+                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    runs, f = {}, 0
+    while True:
+        chunk = proc.stdout.read(W * rows * 3)
+        if len(chunk) < W * rows * 3:
+            break
+        n = scene_of.get(f)
+        f += 1
+        if n is None:
+            continue
+        band = np.frombuffer(chunk, np.uint8).reshape(rows, W, 3).astype(np.int16)
+        grey = (np.abs(band[..., 0] - band[..., 1]) <= 6) & (np.abs(band[..., 1] - band[..., 2]) <= 8) & (band[..., 0] >= 30)
+        cols = grey.sum(0) >= 40
+        edges = np.flatnonzero(np.diff(np.concatenate(([0], cols.astype(np.int8), [0]))))
+        for a, b in zip(edges[::2], edges[1::2]):
+            if b - a >= 200:
+                lo, hi = runs.get(n, (W, 0))
+                runs[n] = (min(lo, int(a)), max(hi, int(b)))
+    proc.wait()
+    veils = {n: {"x": round((lo - 44) / W, 4), "w": round((hi - lo + 88) / W, 4), "y": round((top - 2) / H, 4),
+                 "h": round((rows + 2) / H, 4)} for n, (lo, hi) in runs.items()}
+
+    cx, cy, cw, ch = CURSOR_BOX
+    proc = subprocess.run(["ffmpeg", "-v", "error", "-i", str(recording), "-vf", f"crop={cw}:{ch}:{cx}:{cy}",
+                           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True)
+    boxes = np.frombuffer(proc.stdout, np.uint8).reshape(-1, ch, cw, 3)
+    parked = [(f, tuple(int(v) for v in box[ch - 4, 4])) for f, box in enumerate(boxes)
+              if scene_of.get(f, 99) <= 7 and (box.min(2) > 200).sum() > 15
+              and np.abs(box[[0, -1]].astype(np.int16) - box[0, 0]).max() <= 4]
+    stretches, stretch = [], []
+    for f, colour in parked:
+        if stretch and (f != stretch[-1][0] + 1 or colour != stretch[-1][1]):
+            stretches.append(stretch)
+            stretch = []
+        stretch.append((f, colour))
+    if stretch:
+        stretches.append(stretch)
+    # Painted over with the empty header just left of it, so the colour is
+    # the picture's own.
+    spans = [(s[0][0], s[-1][0]) for s in stretches if len(s) >= FPS]
+    say(f"toasts in {len(veils)} scenes; pointer parked at the top in {len(spans)} stretches")
+    if spans:
+        clean = recording.with_name("recording-clean.mp4")
+        when = "+".join(f"between(n,{a},{b})" for a, b in spans)
+        graph = (f"[0:v]split[a][b];[b]crop={cw}:{ch}:{cx - cw - 24}:{cy}[patch];"
+                 f"[a][patch]overlay={cx}:{cy}:enable='{when}',format=yuv420p")
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(recording), "-filter_complex", graph,
+             "-c:v", "libx264", "-preset", "fast", "-crf", "12", "-r", str(FPS), "-an", str(clean)])
+        clean.replace(recording)
+    return veils
+
+
 def scene_frames(number):
     if number == 1:
         return 0, 260
@@ -1792,11 +1879,12 @@ def edit_trailer(script, raw, offset, hits, marks, events):
         frame_of = lambda t: start + (t - m["in"]) / m["rate"] * FPS
         inside = lambda t: m["in"] - 0.05 <= t <= m["out"] + 0.05
         punch = []
-        if m.get("crop"):
-            a, b = scene.punch or (1, PA_HIT)
-            first = start if a <= 1 and scene.number > 1 and not scene.punch else start + round(hit_offset(scene.number, a) * FPS)
-            punch.append({"from": first, "to": start + round(hit_offset(scene.number, b) * FPS) if b < PA_HIT else end,
-                          "x": m["crop"][0], "y": max(0.0, min(1 - m["crop"][2], m["crop"][1])), "w": m["crop"][2]})
+        crops = scene.recrops or ([(m["crop"], scene.punch)] if m.get("crop") else [])
+        for crop, span in crops:
+            a, b = span or (1, PA_HIT)
+            first = start if (a <= 1 and scene.number > 1 and not span) or a <= 0 else start + round(hit_offset(scene.number, a) * FPS)
+            punch.append({"from": max(start, first), "to": start + round(hit_offset(scene.number, b) * FPS) if b < PA_HIT else end,
+                          "x": crop[0], "y": max(0.0, min(1 - crop[2], crop[1])), "w": crop[2]})
         badges, fills, arrow = [], [], None
         for e in events:
             if e.get("scene") == scene.number and e["verb"] == "key" and e["cue"] not in ("prep", "out") and "+" in e["args"][0]:
@@ -1806,11 +1894,17 @@ def edit_trailer(script, raw, offset, hits, marks, events):
                 fills.append(round(frame_of(e["t"])))
             if e.get("scene") == scene.number and e["verb"] == "mark" and e.get("name") != "punch":
                 x, y = e["at"][0] * scale[0], e["at"][1] * scale[1]
+                w, h = scene.ring[2:] if scene.ring else (None, None)
+                if scene.ring:
+                    x, y = scene.ring[:2]
                 f = round(frame_of(e["t"]))
                 for p in punch:
                     if p["from"] <= f < p["to"]:
                         x, y = (x - p["x"]) / p["w"], (y - p["y"]) / p["w"]
+                        w, h = (w / p["w"], h / p["w"]) if w else (w, h)
                 arrow = {"frame": f, "x": round(x, 4), "y": round(y, 4)}
+                if w:
+                    arrow.update(w=round(w, 4), h=round(h, 4))
         for e in events:
             if e["verb"] == "played" and inside(e["t"]):
                 n = scene.anchors.get(e["cue"])
@@ -1828,10 +1922,6 @@ def edit_trailer(script, raw, offset, hits, marks, events):
         say(line)
     cards = trailer_cards(script, scenes)
     frames = hits["frames"]
-    props = {"width": SIZE[0], "height": SIZE[1], "fps": FPS, "frames": frames, "src": "recording.mp4",
-             "hits": [{"phrase": h["phrase"], "hit": h["hit"], "frame": h["frame"]} for h in hits["hits"]],
-             "scenes": scenes, "cards": cards, "cover": "cover.png", "ribbon": "bg-ribbon.jpg", "mark": "icon.svg"}
-    (out / "trailer.json").write_text(json.dumps(props, indent=1))
     public = out / "compose-public"
     shutil.rmtree(public, ignore_errors=True)
     public.mkdir()
@@ -1839,6 +1929,13 @@ def edit_trailer(script, raw, offset, hits, marks, events):
     say("cutting the take to H.264 for the edit")
     run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{last:.3f}",
          "-c:v", "libx264", "-preset", "fast", "-crf", "12", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an", str(public / "recording.mp4")])
+    veils = find_toasts(public / "recording.mp4", marks, events)
+    for sc in scenes:
+        sc["veil"] = veils.get(sc["number"])
+    props = {"width": SIZE[0], "height": SIZE[1], "fps": FPS, "frames": frames, "src": "recording.mp4",
+             "hits": [{"phrase": h["phrase"], "hit": h["hit"], "frame": h["frame"]} for h in hits["hits"]],
+             "scenes": scenes, "cards": cards, "cover": "cover.png", "ribbon": "bg-ribbon.jpg", "mark": "icon.svg"}
+    (out / "trailer.json").write_text(json.dumps(props, indent=1))
     shutil.copy(cover(script), public / "cover.png")
     shutil.copy(ROOT / "site/assets/home/bg-ribbon.jpg", public)
     shutil.copy(ROOT / "site/icon.svg", public)

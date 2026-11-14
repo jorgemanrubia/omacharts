@@ -42,7 +42,11 @@ export type Scene = {
   arrow: Arrow | null;
   slats: boolean;
   tag: boolean;
+  veil?: Veil | null;
 };
+
+/** Where a scene's order toasts fall, as fractions of the frame: covered by a capsule. */
+export type Veil = { x: number; y: number; w: number; h: number };
 
 export type Card = {
   number: number;
@@ -176,7 +180,7 @@ export const Trailer = (props: TrailerProps) => {
             return (
               <Sequence key={c.number} from={c.pa} durationInFrames={c.letgo - c.pa} layout="none">
                 <Freeze frame={0}>
-                  <Picture src={src} trimBefore={(c.still as number) * fps} rate={1} punch={punch} />
+                  <Picture src={src} trimBefore={(c.still as number) * fps} rate={1} punch={punch} veil={next?.veil} />
                 </Freeze>
               </Sequence>
             );
@@ -194,7 +198,10 @@ export const Trailer = (props: TrailerProps) => {
         // on the PA, under the flash.
         const flashing = cards.find((c) => f >= c.pa && f < c.pa + FLASH);
         const phrase = flashing ? flashing.number : scene && !card ? scene.number : null;
-        return phrase !== null && <Meter hits={hits} phrase={phrase} f={f} fill={fillNow} unit={unit} />;
+        const ridden = scenes.find((s) => s.number === phrase);
+        const punched = ridden?.punch.some((p) => f >= p.from && f < p.to);
+        const veil = ridden?.veil && !punched && !flashing ? ridden.veil : null;
+        return phrase !== null && <Meter hits={hits} phrase={phrase} f={f} fill={fillNow} unit={unit} veil={veil} W={W} H={H} />;
       })()}
 
       {scene?.badges
@@ -233,10 +240,10 @@ export const Trailer = (props: TrailerProps) => {
 const Footage = ({ scene, src, fps, start }: { scene: Scene; src: string; fps: number; start: number }) => {
   const f = useCurrentFrame() + start;
   const punch = scene.punch.find((p) => f >= p.from && f < p.to);
-  return <Picture src={src} trimBefore={scene.at * fps} rate={scene.rate} punch={punch} />;
+  return <Picture src={src} trimBefore={scene.at * fps} rate={scene.rate} punch={punch} veil={scene.veil} />;
 };
 
-const Picture = ({ src, trimBefore, rate, punch }: { src: string; trimBefore: number; rate: number; punch?: Punch }) => {
+const Picture = ({ src, trimBefore, rate, punch, veil }: { src: string; trimBefore: number; rate: number; punch?: Punch; veil?: Veil | null }) => {
   const k = punch ? 1 / punch.w : 1;
   return (
     <AbsoluteFill
@@ -246,9 +253,31 @@ const Picture = ({ src, trimBefore, rate, punch }: { src: string; trimBefore: nu
       }}
     >
       <OffthreadVideo src={staticFile(src)} trimBefore={trimBefore} playbackRate={rate} muted style={{ width: "100%", height: "100%" }} />
+      {veil && <Capsule veil={veil} />}
     </AbsoluteFill>
   );
 };
+
+// The app's order toasts sit at the bottom of the window, over the volume
+// bars, under nearly every frame. A dark glass capsule lies over the place
+// they take in each scene, part of the picture (a punch-in carries it with
+// the crop), and the drum's meter rides in it.
+const Capsule = ({ veil }: { veil: Veil }) => (
+  <div
+    style={{
+      position: "absolute",
+      left: `${veil.x * 100}%`,
+      top: `${veil.y * 100}%`,
+      width: `${veil.w * 100}%`,
+      height: `${veil.h * 100}%`,
+      borderRadius: 9999,
+      background: "rgba(14, 16, 22, 0.97)",
+      backdropFilter: "blur(14px) saturate(0.6)",
+      border: "2px solid rgba(243, 236, 220, 0.09)",
+      boxShadow: "0 10px 40px rgba(0, 0, 0, 0.45)",
+    }}
+  />
+);
 
 // Scene 1 opens on black and the chart comes in as ten slats from the right,
 // one a hit, each in three frames behind a one-frame bright edge.
@@ -326,7 +355,9 @@ const ArrowMark = ({ arrow, f, W, H, unit }: { arrow: Arrow; f: number; W: numbe
 };
 
 // The drum made visible: ten marks and the PA's, lit as they sound.
-const Meter = ({ hits, phrase, f, fill, unit }: { hits: Hit[]; phrase: number; f: number; fill: boolean; unit: number }) => {
+const Meter = ({ hits, phrase, f, fill, unit, veil, W, H }: {
+  hits: Hit[]; phrase: number; f: number; fill: boolean; unit: number; veil: Veil | null; W: number; H: number;
+}) => {
   const mine = hits.filter((h) => h.phrase === phrase && typeof h.hit === "number") as { phrase: number; hit: number; frame: number }[];
   const lit = (n: number) => mine.find((h) => h.hit === n && f >= h.frame);
   let current = 0;
@@ -335,9 +366,9 @@ const Meter = ({ hits, phrase, f, fill, unit }: { hits: Hit[]; phrase: number; f
     <div
       style={{
         position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: 60 * unit,
+        ...(veil
+          ? { left: veil.x * W, width: veil.w * W, top: veil.y * H, height: veil.h * H }
+          : { left: 0, right: 0, bottom: 60 * unit }),
         display: "flex",
         justifyContent: "center",
         alignItems: "center",
@@ -377,7 +408,7 @@ const Meter = ({ hits, phrase, f, fill, unit }: { hits: Hit[]; phrase: number; f
 // The chord just pressed, in the keycaps of the polish pass, on the hit and
 // off again with no motion.
 const KeyCaps = ({ keys, unit }: { keys: string[]; unit: number }) => (
-  <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 150 * unit }}>
+  <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 200 * unit }}>
     <div
       style={{
         display: "flex",
@@ -425,11 +456,12 @@ const Echo = ({ text, f, echo, unit, style }: { text: string; f: number; echo: n
         style={{
           fontFamily: "Cascadia Mono, monospace",
           fontWeight: 700,
-          fontSize: 44 * unit,
-          letterSpacing: 2 * unit,
+          fontSize: 66 * unit,
+          letterSpacing: 1 * unit,
           lineHeight: 1.2,
           color: PAPER,
-          opacity: 0.7,
+          opacity: 0.88,
+          textShadow: `0 ${4 * unit}px ${24 * unit}px rgba(0,0,0,0.6)`,
           whiteSpace: "nowrap",
         }}
       >
@@ -474,7 +506,7 @@ const TextCard = ({ card, f, W, H, fps, unit }: CardArgs) => {
         </div>
         <Rule since={since} unit={unit} />
       </div>
-      <Echo text={card.second} f={f} echo={card.echo} unit={unit} style={{ left: W * 0.12, top: ruleY + 10 * unit + 44 * unit }} />
+      <Echo text={card.second} f={f} echo={card.echo} unit={unit} style={{ left: W * 0.12, top: ruleY + 10 * unit + 52 * unit }} />
     </AbsoluteFill>
   );
 };
@@ -569,20 +601,20 @@ const EndCard = ({ card, f, fps, unit, W, H, ribbon, mark }: CardArgs & { ribbon
             <div style={{ marginTop: 44 * unit }}>
               <Rule since={since} unit={unit} />
             </div>
-            <div style={{ position: "relative", marginTop: 44 * unit, height: 130 * unit }}>
+            <div style={{ position: "relative", marginTop: 48 * unit, height: 190 * unit }}>
               <Echo text={card.second} f={f} echo={card.echo} unit={unit} style={{ left: 0, top: 0 }} />
               {card.small && f >= card.echo && (
                 <div
                   style={{
                     position: "absolute",
                     left: 0,
-                    top: 80 * unit,
+                    top: 104 * unit,
                     fontFamily: "Cascadia Mono, monospace",
                     fontWeight: 700,
-                    fontSize: 30 * unit,
-                    letterSpacing: 1.5 * unit,
+                    fontSize: 44 * unit,
+                    letterSpacing: 1 * unit,
                     color: PAPER,
-                    opacity: 0.55,
+                    opacity: 0.62,
                     whiteSpace: "nowrap",
                   }}
                 >
