@@ -16,6 +16,9 @@
 //! A new conversation starts when Omacharts starts, after [`IDLE`] without
 //! a dictation, when the agent, its model or the extra context changes,
 //! after a turn fails, and when somebody says "start over". An agent that
+//! stays warm keeps one process for the conversation, stopped whenever the
+//! conversation ends and when the window closes; the first dictation starts
+//! it, and nothing runs before. An agent that
 //! dictation does not run itself is opened in a terminal by Omarchy instead,
 //! and each dictation there is a conversation of its own.
 
@@ -26,7 +29,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use agent::{Agent, Detected, Invocation, Output};
+use agent::{Agent, Detected, Invocation, Output, Session};
 
 /// The extra context, written in Preferences › Agent, put after the
 /// fixed line at the start of every conversation.
@@ -214,7 +217,13 @@ pub struct World {
     pub terminal: Box<dyn Fn(String) -> Invocation + Send>,
     /// Starts it, and leaves it running.
     pub launch: Launcher,
+    /// Starts a process that stays warm for a conversation.
+    pub warm: Warmer,
 }
+
+/// Starts an agent to take a conversation turn by turn, or says why it
+/// could not.
+pub type Warmer = Box<dyn Fn(Agent, &Invocation) -> Result<Box<dyn Session>, String> + Send>;
 
 /// Starts a command and leaves it running, or says why it could not.
 pub type Launcher = Box<dyn Fn(&Invocation) -> Result<(), String> + Send>;
@@ -275,6 +284,9 @@ impl World {
                 environment: path_with_this_omacharts().map(|path| ("PATH".to_string(), path)).into_iter().collect(),
             }),
             launch: Box::new(|invocation| agent::launch(invocation, &agent_folder().join("terminal.log"))),
+            warm: Box::new(|agent, invocation| {
+                agent::warm(agent, invocation, agent::LONGEST).map(|warm| Box::new(warm) as Box<dyn Session>)
+            }),
         }
     }
 }
@@ -304,6 +316,7 @@ fn path_with_this_omacharts() -> Option<String> {
 
 enum Job {
     Say { said: String, settings: Settings },
+    Stop,
 }
 
 /// The queue: dictations, one turn at a time, in the order they were said.
@@ -324,11 +337,32 @@ impl Dispatcher {
             .name("dictation".into())
             .spawn(move || {
                 let mut conversation = Conversation::default();
-                while let Ok(job) = queue.recv() {
+                let mut warm: Option<Box<dyn Session>> = None;
+                loop {
+                    // A warm agent is let go once the conversation is idle,
+                    // rather than kept running for nothing.
+                    let job = match warm {
+                        Some(_) => match queue.recv_timeout(IDLE) {
+                            Ok(job) => job,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                warm = None;
+                                conversation.forget(Fresh::Idle);
+                                continue;
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        },
+                        None => match queue.recv() {
+                            Ok(job) => job,
+                            Err(_) => break,
+                        },
+                    };
                     match job {
-                        Job::Say { said, settings } => turn(&world, &mut conversation, &events, said, &settings),
+                        Job::Say { said, settings } => {
+                            turn(&world, &mut conversation, &mut warm, &events, said, &settings);
+                            left.fetch_sub(1, Ordering::SeqCst);
+                        }
+                        Job::Stop => break,
                     }
-                    left.fetch_sub(1, Ordering::SeqCst);
                 }
             })
             .expect("the dictation thread starts");
@@ -344,12 +378,26 @@ impl Dispatcher {
         }
         ahead
     }
+
+    /// Stop the agent kept warm, once the turn it is on is done, and take
+    /// no more dictations.
+    pub fn stop(&self) {
+        let _ = self.jobs.send(Job::Stop);
+    }
 }
 
 /// One dictation, start to finish. Which agent is Omarchy's default is
 /// asked afresh each time, so a change there needs no restart here.
-fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), said: String, settings: &Settings) {
+fn turn(
+    world: &World,
+    conversation: &mut Conversation,
+    warm: &mut Option<Box<dyn Session>>,
+    events: &dyn Fn(Event),
+    said: String,
+    settings: &Settings,
+) {
     if is_start_over(&said) {
+        *warm = None;
         conversation.forget(Fresh::Asked);
         events(Event::StartedOver);
         return;
@@ -359,6 +407,7 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
         Detected::Known(agent) => agent,
         Detected::None => return events(Event::Failed { said, why: agent::NO_AGENT.into(), detail: None }),
         Detected::Other { name, .. } => {
+            *warm = None;
             conversation.forget(Fresh::Agent);
             let invocation = (world.terminal)(opening(&said, context));
             return match (world.launch)(&invocation) {
@@ -368,16 +417,40 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
         }
     };
     let model = settings.model(agent);
+    // A conversation is never continued without the process that holds it.
+    if agent.stays_warm() && warm.is_none() && conversation.is_going() {
+        conversation.forget(Fresh::Failed);
+    }
     let now = Instant::now();
     let fresh = conversation.fresh(agent, model, context, now).filter(|_| agent.resumes());
     let (prompt, session) = conversation.prompt(agent, model, context, &said, now);
     let session = session.or_else(|| agent.new_session());
     events(Event::Started { agent: agent.label().into(), said: said.clone(), fresh });
-    let arguments = agent.arguments(&prompt, session.as_deref(), Some(model));
-    let invocation = (world.invocation)(agent, arguments);
-    let output = match (world.run)(&invocation) {
+    // A new conversation is a new process for an agent kept warm; the one
+    // going takes the turn otherwise.
+    if fresh.is_some() || !agent.stays_warm() {
+        *warm = None;
+    }
+    let ran = match agent.stays_warm() {
+        true => {
+            if warm.is_none() {
+                let invocation = (world.invocation)(agent, agent.warm_arguments(Some(model)));
+                match (world.warm)(agent, &invocation) {
+                    Ok(started) => *warm = Some(started),
+                    Err(why) => {
+                        conversation.forget(Fresh::Failed);
+                        return events(Event::Failed { said, why: format!("{} could not run: {why}", agent.label()), detail: None });
+                    }
+                }
+            }
+            warm.as_mut().expect("started above").turn(&agent.warm_line(&prompt))
+        }
+        false => (world.run)(&(world.invocation)(agent, agent.arguments(&prompt, session.as_deref(), Some(model)))),
+    };
+    let output = match ran {
         Ok(output) => output,
         Err(why) => {
+            *warm = None;
             conversation.forget(Fresh::Failed);
             return events(Event::Failed { said, why: format!("{} could not run: {why}", agent.label()), detail: None });
         }
@@ -388,6 +461,7 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
     });
     match failure {
         Some(why) => {
+            *warm = None;
             conversation.forget(Fresh::Failed);
             let detail = Some(output.stderr.trim().to_string()).filter(|s| !s.is_empty());
             events(Event::Failed { said, why: format!("{} could not do it: {why}", agent.label()), detail });
@@ -472,10 +546,44 @@ mod tests {
         assert_eq!(Conversation::default().fresh(Agent::Claude, "", "", now), Some(Fresh::First));
     }
 
+    /// A process kept warm, in a test: each turn is answered by the
+    /// closure, as a one-off run with the process's arguments, the prompt
+    /// last, and which process it was in [`PROCESS`].
+    struct FakeWarm {
+        invocation: Invocation,
+        answer: Answer,
+        log: Arc<Mutex<Vec<Invocation>>>,
+    }
+
+    /// How a test's agent answers each turn.
+    type Answer = Arc<dyn Fn(&Invocation) -> Result<Output, String> + Send + Sync>;
+
+    /// The variable a warm turn's process number is kept in, in a test.
+    const PROCESS: &str = "process";
+
+    impl Session for FakeWarm {
+        fn turn(&mut self, line: &str) -> Result<Output, String> {
+            let message: serde_json::Value = serde_json::from_str(line).unwrap();
+            let mut asked = self.invocation.clone();
+            asked.arguments.push(message["message"]["content"].as_str().unwrap().to_string());
+            self.log.lock().unwrap().push(asked.clone());
+            (self.answer)(&asked)
+        }
+    }
+
+    /// Which process a turn was in: none for one run on its own.
+    fn process(invocation: &Invocation) -> Option<&str> {
+        invocation.environment.iter().find(|(key, _)| key == PROCESS).map(|(_, value)| value.as_str())
+    }
+
     /// A world whose agent is a closure: what it was asked, in order.
-    fn fake(agent: &'static str, answer: impl Fn(&Invocation) -> Result<Output, String> + Send + 'static) -> (World, Arc<Mutex<Vec<Invocation>>>) {
+    fn fake(agent: &'static str, answer: impl Fn(&Invocation) -> Result<Output, String> + Send + Sync + 'static) -> (World, Arc<Mutex<Vec<Invocation>>>) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let log = asked.clone();
+        let warm_log = asked.clone();
+        let answer: Answer = Arc::new(answer);
+        let warm_answer = answer.clone();
+        let started = AtomicUsize::new(0);
         let world = World {
             default_agent: Box::new(move || agent.to_string()),
             invocation: Box::new(|agent, arguments| Invocation {
@@ -490,6 +598,12 @@ mod tests {
             }),
             terminal: Box::new(|_| unreachable!("a known agent is run, not opened")),
             launch: Box::new(|_| unreachable!("a known agent is run, not opened")),
+            warm: Box::new(move |_, invocation| {
+                let mut invocation = invocation.clone();
+                let number = started.fetch_add(1, Ordering::SeqCst) + 1;
+                invocation.environment.push((PROCESS.into(), number.to_string()));
+                Ok(Box::new(FakeWarm { invocation, answer: warm_answer.clone(), log: warm_log.clone() }))
+            }),
         };
         (world, asked)
     }
@@ -554,9 +668,10 @@ mod tests {
                 "The user said: \"do c\"",
             ]
         );
-        assert!(!asked[0].arguments.contains(&"--resume".to_string()));
-        assert!(asked[1].arguments.windows(2).any(|w| w == ["--resume", "s-1"]));
-        assert!(asked[2].arguments.windows(2).any(|w| w == ["--resume", "s-1"]));
+        // One process, kept warm, takes all three.
+        assert!(asked.iter().all(|turn| process(turn) == Some("1")), "{asked:?}");
+        assert!(asked[0].arguments.windows(2).any(|w| w == ["--input-format", "stream-json"]));
+        assert!(!asked.iter().any(|turn| turn.arguments.contains(&"--resume".to_string())));
     }
 
     #[test]
@@ -572,7 +687,7 @@ mod tests {
         let asked = asked.lock().unwrap();
         assert_eq!(asked.len(), 2);
         assert!(asked[1].arguments.last().unwrap().starts_with("The user is in Omacharts"));
-        assert!(!asked[1].arguments.contains(&"--resume".to_string()));
+        assert_eq!((process(&asked[0]), process(&asked[1])), (Some("1"), Some("2")), "a new process");
     }
 
     #[test]
@@ -596,8 +711,9 @@ mod tests {
             detail: Some("API Error: overloaded".into()),
         }));
         let asked = asked.lock().unwrap();
-        assert!(asked[1].arguments.contains(&"--resume".to_string()));
-        assert!(!asked[2].arguments.contains(&"--resume".to_string()));
+        assert_eq!(process(&asked[1]), Some("1"));
+        assert_eq!(process(&asked[2]), Some("2"), "a new process after the failure");
+        assert!(asked[2].arguments.last().unwrap().starts_with("The user is in Omacharts"));
     }
 
     #[test]
@@ -626,45 +742,103 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_fake_agent_on_disk_is_run_for_real() {
-        // The whole path through a process: a script stands in for claude,
-        // writes down what it was given, and answers as claude does.
-        let folder = std::env::temp_dir().join(format!("omacharts-fake-agent-{}", std::process::id()));
+    /// A script on disk standing in for claude, kept warm: it writes down
+    /// its arguments once and every line it is given, and answers each as
+    /// claude does. `exit_after` makes it stop after that many turns.
+    fn warm_script(name: &str, exit_after: Option<usize>) -> (std::path::PathBuf, String) {
+        let folder = std::env::temp_dir().join(format!("omacharts-fake-agent-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
         let script = folder.join("claude");
-        let record = folder.join("asked");
+        let stop = exit_after.map(|n| format!("[ $n -ge {n} ] && exit 1\n")).unwrap_or_default();
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nprintf '{{\"is_error\":false,\"result\":\"ok\",\"session_id\":\"real-1\"}}\\n'\n",
-                record.display()
+                "#!/bin/sh\necho \"$$ $*\" >> started\nn=0\nwhile read -r line; do\n  printf '%s\\n' \"$line\" >> asked\n  n=$((n+1))\n  echo '{{\"type\":\"assistant\"}}'\n  printf '{{\"type\":\"result\",\"is_error\":false,\"result\":\"ok %s\",\"session_id\":\"real-1\"}}\\n' $n\n  {stop}done\necho gone >> started\n"
             ),
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let program = script.display().to_string();
-        let world = World {
+        (folder, program)
+    }
+
+    fn on_disk(folder: &std::path::Path, program: String) -> World {
+        let directory = folder.to_path_buf();
+        World {
             default_agent: Box::new(|| "claude".into()),
             invocation: Box::new(move |_, arguments| Invocation {
                 program: program.clone(),
                 arguments,
-                directory: std::env::temp_dir(),
+                directory: directory.clone(),
                 environment: vec![],
             }),
-            run: Box::new(|invocation| agent::run(invocation, Duration::from_secs(10))),
+            run: Box::new(|_| unreachable!("claude is kept warm")),
             terminal: Box::new(|_| unreachable!()),
             launch: Box::new(|_| unreachable!()),
-        };
+            warm: World::omarchy().warm,
+        }
+    }
+
+    fn read(folder: &std::path::Path, file: &str) -> String {
+        std::fs::read_to_string(folder.join(file)).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_warm_agent_on_disk_takes_every_turn_in_one_process() {
+        let (folder, program) = warm_script("warm", None);
         let (events, sink) = collect();
-        let dispatcher = Dispatcher::start(world, sink);
+        let dispatcher = Dispatcher::start(on_disk(&folder, program), sink);
         dispatcher.send("do a".into(), Settings::default());
         dispatcher.send("do b".into(), Settings::default());
         let events = wait_for(&events, 4);
-        assert_eq!(events[3], Event::Done { agent: "Claude Code".into(), said: "do b".into(), reply: Some("ok".into()) });
-        let asked = std::fs::read_to_string(&record).unwrap();
-        assert!(asked.contains("--resume\nreal-1\n"));
+        assert_eq!(events[1], Event::Done { agent: "Claude Code".into(), said: "do a".into(), reply: Some("ok 1".into()) });
+        assert_eq!(events[3], Event::Done { agent: "Claude Code".into(), said: "do b".into(), reply: Some("ok 2".into()) });
+        let started = read(&folder, "started");
+        assert_eq!(started.lines().count(), 1, "one process: {started}");
+        assert!(started.contains("-p --input-format stream-json --output-format stream-json --verbose --permission-mode auto"));
+        let asked: Vec<serde_json::Value> =
+            read(&folder, "asked").lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(asked[0]["type"], "user");
+        assert!(asked[0]["message"]["content"].as_str().unwrap().starts_with("The user is in Omacharts and said: \"do a\""));
+        assert_eq!(asked[1]["message"]["content"], "The user said: \"do b\"");
+
+        // Closing the window lets it go: its stdin closes and it ends.
+        dispatcher.stop();
+        let waited = Instant::now();
+        while !read(&folder, "started").contains("gone") {
+            assert!(waited.elapsed() < Duration::from_secs(10), "still running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_warm_agent_that_dies_is_said_and_the_next_dictation_starts_another() {
+        let (folder, program) = warm_script("dies", Some(1));
+        let (events, sink) = collect();
+        let dispatcher = Dispatcher::start(on_disk(&folder, program), sink);
+        dispatcher.send("do a".into(), Settings::default());
+        dispatcher.send("do b".into(), Settings::default());
+        dispatcher.send("do c".into(), Settings::default());
+        let events = wait_for(&events, 6);
+        assert!(matches!(&events[3], Event::Failed { said, .. } if said == "do b"), "{events:?}");
+        assert_eq!(events[4], Event::Started { agent: "Claude Code".into(), said: "do c".into(), fresh: Some(Fresh::Failed) });
+        assert_eq!(events[5], Event::Done { agent: "Claude Code".into(), said: "do c".into(), reply: Some("ok 1".into()) });
+        let started = read(&folder, "started");
+        assert_eq!(started.lines().filter(|line| !line.starts_with("gone")).count(), 2, "{started}");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn nothing_is_started_before_the_first_dictation() {
+        let (folder, program) = warm_script("idle", None);
+        let (_, sink) = collect();
+        let dispatcher = Dispatcher::start(on_disk(&folder, program), sink);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!folder.join("started").exists());
+        dispatcher.stop();
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -680,12 +854,10 @@ mod tests {
         wait_for(&events, 6);
         let asked = asked.lock().unwrap();
         assert!(asked[0].arguments.windows(2).any(|w| w == ["--model", "opus"]));
-        assert!(!asked[0].arguments.contains(&"--resume".to_string()));
-        assert!(asked[1].arguments.windows(2).any(|w| w == ["--model", "opus"]));
-        assert!(asked[1].arguments.windows(2).any(|w| w == ["--resume", "s-1"]));
-        // Back to Default: no model, and a new conversation.
+        assert_eq!(process(&asked[1]), process(&asked[0]));
+        // Back to Default: no model, and a new conversation in a new process.
         assert!(!asked[2].arguments.contains(&"--model".to_string()));
-        assert!(!asked[2].arguments.contains(&"--resume".to_string()));
+        assert_eq!(process(&asked[2]), Some("2"));
     }
 
     #[test]
@@ -733,6 +905,7 @@ mod tests {
                 log.lock().unwrap().push(invocation.clone());
                 launched.clone()
             }),
+            warm: Box::new(|_, _| unreachable!("nothing is run headless")),
         };
         (world, opened)
     }

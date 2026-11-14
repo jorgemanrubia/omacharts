@@ -116,8 +116,8 @@ for the default watchlist. Otherwise "what's X doing" means putting it on screen
 user selected first: `chart drawing list --selected --json` and `chart
 indicator list --selected --json`. With nothing selected, read the whole
 lists — ids, kinds, anchors, words, colours, parameters — and pick the one
-meant. Then `set` or `remove` it by `--id`; `--id selected` acts on the
-selected one.
+meant. Then `set` or `remove` it by `--id` alone, no kind needed
+(`chart indicator remove --id 3`); `--id selected` acts on the selected one.
 
 **The app's theme is `config set theme ID`**, changed in the open window at
 once; `config themes` lists the ids, the one in use marked, and `omarchy`

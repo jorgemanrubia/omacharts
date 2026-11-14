@@ -169,7 +169,10 @@ measure nothing and the wrong way round is the line upside down — so
 cross what the chart already holds.
 
 `set` reconfigures one already on the chart. If the chart has two of a kind it
-asks which, with `--id`. `remove` takes `--id` too, for one of two.
+asks which, with `--id`. `remove` takes `--id` too, for one of two. With
+`--id`, the id from `list` says which and the kind can be left out
+(`chart indicator remove --id 3`); a kind that is not the id's is refused.
+The same goes for `drawing set` and `drawing remove`.
 
 **What is selected in the window is `selected`.** `list` marks the indicator
 picked in the window's legend or on its line (`"selected": true`, and

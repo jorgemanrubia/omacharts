@@ -50,6 +50,11 @@ starts when:
 - The agent failed at the last request.
 - You say "start over", "start again" or "new conversation", and nothing else.
 
+Claude Code stays running for the whole conversation, so the first request
+of one takes a little longer and the ones after it start at once. It is
+stopped when the conversation ends and when the window closes. Nothing runs
+before your first request.
+
 Dictate while the agent is still working and the request waits its turn.
 None is dropped. A request the agent is still on after ten minutes is
 stopped, so the ones behind it run.
