@@ -128,73 +128,36 @@ crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right 
 
 Across the top is a picture of the drawing, tagged with its configuration, or **Custom** when it has a look of its own. Click the picture to see the nine configurations drawn as this drawing, with its own look beside them while it has one. <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> works inside the dialog too. Under a **Custom** look, **Save as…** writes the look over one of the nine configurations (the one it started from is marked `*`) and puts the drawing back on that number. Every drawing on that number changes with it.
 
-A figure (any drawing but text, a volume profile, an anchored VWAP and a Fib retracement) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them.
+A line, a level, an arrow, a zig-zag, a rectangle and a circle have two tabs, **General** for the shape and **Text** for a label on it. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. The other drawings have one page.
 
-<!-- regenerate:
-theme: tokyo-night
-window: 2560x1600 @2, scratchpad kit
-state:
-  (the state of the first figure)
-  key ctrl+shift+d
-  key Escape
-  click 960 330
-  key alt+Return
-  move 1275 795
-capture: bin/headless-window shot /tmp/props.png
-crop: 840,220,880,1160
--->
-{% include figure.html src="/assets/manual/drawings/properties-general.png" alt="The General tab of a box's properties, with a picture of the box tagged 6 across the top" caption="A box's **General** tab." %}
+The rows work the same way in every drawing's properties:
 
-| Row | Kinds | Does |
-|---|---|---|
-| **Colour** | Line, level, arrow, zig-zag | One of the [nine presets](#colours), or **Custom…** for a hex colour |
-| **Thickness** | Line, level, arrow, zig-zag | 0.5 to 12 px, by halves |
-| **Line style** | Line, level, arrow, zig-zag | **Solid**, **Dashed**, **Dotted**. The dashes and dots grow with the thickness. An arrowhead is always solid |
-| **Arrow** | Line, level, arrow, zig-zag | **None**, **At the end**, **At the start**, **Both ends**, each drawn as it would look |
-| **Arrowhead** | Line, level, arrow, zig-zag | **Filled**, **Open**, **Barb**. Greyed while there is no arrow |
-| **Background** | Rectangle, circle | The fill's colour |
-| **Transparency %** | Rectangle, circle | How much of the candles shows through the fill, 0 to 100%, on a slider with a box to type it in |
-| **Border** | Rectangle, circle | Whether it has an edge |
-| **Border colour**, **Border thickness**, **Border style** | Rectangle, circle | The edge, shown while there is one. **Border thickness** is 0.5 to 12 px, by halves; **Border style** is Solid, Dashed or Dotted |
-| **Select by border only** | Rectangle, circle | Off by default. On, only the edge selects it, whether or not a border is drawn, and a click or a <kbd>Shift</kbd> + drag inside it reaches the chart and the drawings under it |
-
-<!-- regenerate:
-theme: tokyo-night
-window: 2560x1600 @2, scratchpad kit
-state:
-  (the state of the previous figure)
-  click 706 133        # Text
-  move 1275 795
-capture: bin/headless-window shot /tmp/propt.png
-crop: 840,220,880,1160
--->
-{% include figure.html src="/assets/manual/drawings/properties-text.png" alt="The Text tab of a box's properties, with the Position grid and the label range" caption="The **Text** tab of the same box." %}
-
-| Row | Does |
+| Row | Works like this |
 |---|---|
-| **Position** | Where a figure's label sits inside it, at a corner, an edge or the centre. A line's label is placed against the part of the line on the chart, so it shows wherever the line does, at any resolution or zoom. Not on a text drawing, which sits at its point |
-| **Text** | The words. Typing here removes bold and italic; set them on the chart |
-| **Colour** | The text's colour |
-| **Font** | **System font**, the desktop's own, or any font installed on this machine. System font is the default |
-| **Font size** | 6 to 96 px; 18 by default |
+| A colour | One of the nine [presets](#colours), or **Custom…** for a hex colour |
+| **Reset** beside a colour | Puts back the colour it follows, such as the line's for a band, and is greyed while there is nothing to put back |
+| A thickness | 0.5 to 12 px in halves, in a box. On an anchored VWAP and a Fib retracement's levels it is a row of drawn samples instead: no line, 1, 1.5, 2.5 or 4 px |
+| A line style | **Solid**, **Dashed** or **Dotted**, picked from drawn samples |
+| A percentage | A slider with a box to type the number in |
+
+Each tool's page lists its properties, each with what it does and its default:
+
+| Tool | Properties |
+|---|---|
+| [Line](/manual/drawings/line/#properties), [Horizontal line](/manual/drawings/horizontal-line/#properties), [Arrow](/manual/drawings/arrow/#properties), [Zig-zag](/manual/drawings/zig-zag/#properties) | Colour, thickness, line style and arrowheads, and a label |
+| [Rectangle](/manual/drawings/rectangle/#properties), [Circle](/manual/drawings/circle/#properties) | Fill, border, selecting by the border, and a label |
+| [Text](/manual/drawings/text/#properties) | Colour, font and size |
+| [Volume profile](/manual/drawings/volume-profile/#properties) | Rows, value area, outline, point of control, style and alignment |
+| [Anchored VWAP](/manual/drawings/anchored-vwap/#properties) | Source, the line and three bands |
+| [Fib retracement](/manual/drawings/fib-retracement/#properties) | Colour, labels, and each level's look |
+
+[Measure](/manual/drawings/measure/) has no properties.
 
 ## Configurations
 
-A configuration is a saved look (colour, thickness, arrowheads, fill, font) for one kind of drawing. Each kind has nine, numbered 1 to 9. Every drawing follows one (configuration 1 unless you chose another) and changes when that configuration changes. Changing a property by hand takes the drawing off its configuration. Its look is then **Custom**, and changes to the configuration no longer reach it. Choosing a configuration puts it back on one. Changing a label does not take it off.
+A configuration is a saved look (colour, thickness, arrowheads, fill, font) for one kind of drawing. Each kind has nine, numbered 1 to 9. Every drawing follows one (configuration 1 unless you chose another) and changes when that configuration changes. Changing a property by hand takes the drawing off its configuration. Its look is then **Custom**, and changes to the configuration no longer reach it. Choosing a configuration puts it back on one. Changing a label's words or its position does not take it off.
 
-As shipped, the nine configurations are the nine [colours](#colours) in order, 1 Up, 2 Down, 3 Blue, 4 Amber, 5 Violet, 6 Teal, 7 Orange, 8 Cyan, 9 Ink, each on the kind's starting look. A volume profile's nine are its own ([Volume profile](/manual/drawings/volume-profile/)), and so are a Fib retracement's ([Fib retracement](/manual/drawings/fib-retracement/)).
-
-| Kind | Starting look |
-|---|---|
-| Line, horizontal line | 1.5 px, no arrow |
-| Arrow, zig-zag | 1.5 px, an open head at the end |
-| Rectangle, circle | Filled at 13% of the colour, with a 1 px edge of it |
-| Text | The colour, nothing else |
-| Volume profile | See [Volume profile](/manual/drawings/volume-profile/) |
-| Anchored VWAP | 1.5 px, no bands |
-| Fib retracement | See [Fib retracement](/manual/drawings/fib-retracement/) |
-
-Text in every configuration is 18 px in the system font, in the configuration's colour.
+As shipped, the nine configurations are the nine [colours](#colours) in order, 1 Up, 2 Down, 3 Blue, 4 Amber, 5 Violet, 6 Teal, 7 Orange, 8 Cyan, 9 Ink, each with the defaults its tool's page gives under Properties. A volume profile's nine are its own ([Volume profile](/manual/drawings/volume-profile/#configurations)), and so are a Fib retracement's ([Fib retracement](/manual/drawings/fib-retracement/#configurations)).
 
 To edit a tool's configurations, right-click it and choose **Line configurations…** (or the matching item for the tool). Each row is a picture and a description; a row changed from how it shipped is marked **Edited**. Click a row for the same rows the properties have, and every drawing on it changes as you go. **Restore defaults** puts all nine back as shipped. **Done** or <kbd>Ctrl</kbd> + <kbd>Enter</kbd> closes.
 
