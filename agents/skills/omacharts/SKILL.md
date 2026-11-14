@@ -38,7 +38,9 @@ Every command, every flag with its type, the values the enumerated ones accept,
 the exit codes, and a worked example each — built from the same table as the
 parser, so it cannot describe a command that does not exist. Nothing here
 repeats it; this is only what it structurally cannot say. (Working inside the
-Omacharts repo itself? Read its `AGENTS.md` instead.)
+Omacharts repo itself? Read its `AGENTS.md` instead.) It is long; when the
+shell runs nothing but `omacharts`, `omacharts NOUN VERB --help` prints one
+command's flags and its example from the same table.
 
 ## What the surface cannot tell you
 
@@ -94,8 +96,11 @@ reply says was sent. The reply is what was sent, not what the broker did;
 `trading orders --json` shows the outcome. Orders act on the chart they name,
 the focused one by default, on its account and the size it trades. A refusal
 (exit 5) is the chart's own check, such as a limit on the wrong side of the
-market; do not work around it. Passwords go into the window's dialog, typed
-by the user: `trading login` and `trading sign-in` open it and return.
+market; do not work around it. `trading exit --target --stop` places both
+exits linked, and only for a position held. Asked for an entry with its exits,
+place the entry, then keep reading `trading orders --json` until it is Filled
+and place the exits yourself, rather than handing the wait back. Passwords go
+into the window's dialog, typed by the user: `trading login` and `trading sign-in` open it and return.
 
 **Times are the chart's.** A time given to a command — a range's `--from`
 and `--to`, a drawing's `WHEN` — is read in the clock the charts read,
