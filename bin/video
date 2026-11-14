@@ -622,8 +622,10 @@ hl.config({{
         return wx + ww * percent(x), wy + wh * percent(y)
 
     def cli(self, args):
-        result = subprocess.run([str(self.binary), *split_args(args)], env=self.env, capture_output=True, text=True)
-        if result.returncode != 0:
+        # A leading "-" lets the command fail: tidying that may have nothing to do.
+        lenient = args.startswith("-")
+        result = subprocess.run([str(self.binary), *split_args(args.lstrip("-"))], env=self.env, capture_output=True, text=True)
+        if result.returncode != 0 and not lenient:
             die(f"omacharts {args}: {result.stderr.strip() or result.stdout.strip()}")
         return result.stdout.strip()
 
@@ -690,7 +692,17 @@ hl.config({{
             listed = json.loads(self.cli("chart profile list --on-screen --json"))
             profile = next(p for p in reversed(listed["profiles"]) if p.get("visible"))
             names["val"], names["poc"] = profile["value_area_low"], profile["poc"]
-        value = eval(expr, {"__builtins__": {}, "round": round, "min": min, "max": max}, names)
+        def held(name):
+            """The average price of what the account named `name` holds."""
+            listed = json.loads(self.cli("trading positions --json"))["positions"]
+            return next(p["average"] for p in listed if p["name"] == name and p["qty"])
+        def at_y(share):
+            """The price at a height on the chart, a share of the window."""
+            a, b = getattr(self, "axis", (None, None))
+            if a is None:
+                die("at_y() before calibrate")
+            return (share - b) / a
+        value = eval(expr, {"__builtins__": {}, "round": round, "min": min, "max": max, "held": held, "at_y": at_y}, names)
         return round(value / self.TICK) * self.TICK
 
     def resolve(self, text):
@@ -700,6 +712,16 @@ hl.config({{
 
         def one(m):
             expr = m[1]
+            if expr.startswith(("wx:", "wy:")):
+                # A word on an order label, on the chart's left, at the
+                # height of a price: `{wx:STP@pos}`.
+                word, _, price = expr[3:].partition("@")
+                a, b = getattr(self, "axis", (None, None))
+                if a is None:
+                    die("{wx:...} before calibrate")
+                y = a * self.evaluate(price, names) + b
+                found = self.find_word(word, (0.0, round(y - 0.04, 3), 0.35, 0.08), fallback=("10.9%", f"{y * 100:.2f}%"))
+                return found[0] if expr.startswith("wx:") else found[1]
             if expr.startswith("y:"):
                 price = self.evaluate(expr[2:], names)
                 a, b = getattr(self, "axis", (None, None))
@@ -754,12 +776,18 @@ hl.config({{
         self.axis = (a, b)
         return points
 
-    def find_word(self, word):
-        """Where `word` is in the window's top strip (the chart header), as
-        percentages of the window, read off the screen: header parts move as
-        their neighbours' text changes width."""
+    def find_word(self, word, region=(0.0, 0.0, 1.0, 0.055), fallback=None):
+        """Where `word` is on screen, as percentages of the window, read off
+        the screen inside `region` (fractions of the window: x, y, w, h; the
+        chart header by default): header parts and order labels move as the
+        text beside them changes width. Kept for a moment, since a line asks
+        once for its lead and again to act."""
         import tempfile
         from PIL import Image, ImageOps
+        cache = getattr(self, "found", {})
+        hit = cache.get((word, region))
+        if hit and time.monotonic() - hit[0] < 1.5:
+            return hit[1]
         window = self.window()
         (wx, wy), (ww, wh) = window["at"], window["size"]
         with tempfile.TemporaryDirectory() as work:
@@ -767,16 +795,29 @@ hl.config({{
             subprocess.run(["grim", "-o", "REC", str(shot)], env=self.env, check=True)
             image = Image.open(shot).convert("L")
             sx = image.width / LAYOUT[0]
-            top = int((wy + wh * 0.055) * sx)
-            ImageOps.invert(image.crop((0, 0, image.width, top))).save(Path(work) / "strip.png")
-            tsv = subprocess.run(["tesseract", str(Path(work) / "strip.png"), "-", "--psm", "11", "tsv"], capture_output=True, text=True).stdout
+            box = [int(v * sx) for v in (wx + ww * region[0], wy + wh * region[1], wx + ww * (region[0] + region[2]), wy + wh * (region[1] + region[3]))]
+            crop = ImageOps.invert(image.crop(box))
+            crop = crop.resize((crop.width * 3, crop.height * 3))
+            crop.save(Path(work) / "strip.png")
+            crop.save(OUT / "last-find.png")
+            tsv = "".join(subprocess.run(["tesseract", str(Path(work) / "strip.png"), "-", "--psm", mode, "tsv"], capture_output=True,
+                                         text=True).stdout for mode in ("11", "6"))
         for line in tsv.splitlines()[1:]:
             cells = line.split("\t")
-            if len(cells) >= 12 and cells[11].strip().lower() == word.lower():
-                left, t, w, h = (int(c) for c in cells[6:10])
-                x, y = (left + w / 2) / sx, (t + h / 2) / sx
-                return f"{(x - wx) / ww * 100:.2f}%", f"{(y - wy) / wh * 100:.2f}%"
-        die(f"no {word!r} in the chart's header")
+            text = cells[11].strip().lower() if len(cells) >= 12 else ""
+            if word.lower() in text:
+                left, t, w, h = (int(c) / 3 for c in cells[6:10])
+                # The word may be read run together with its neighbours: its
+                # share of the run, by letters.
+                at = text.index(word.lower()) + len(word) / 2
+                x, y = (box[0] + left + w * at / len(text)) / sx, (box[1] + t + h / 2) / sx
+                found = (f"{(x - wx) / ww * 100:.2f}%", f"{(y - wy) / wh * 100:.2f}%")
+                self.found = {**cache, (word, region): (time.monotonic(), found)}
+                return found
+        if fallback:
+            say(f"no {word!r} read on screen; aiming where it usually is")
+            return fallback
+        die(f"no {word!r} on screen where it was looked for")
 
     def perform(self, action, events, now=0.0, scene=None, cue=None):
         verb, *args = action

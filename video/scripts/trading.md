@@ -753,7 +753,7 @@ the label's P&L following. Ctrl+F on hit 10: flat.
 
 **Card.** PA 4: Drag your stop. Echo: Orders move with the pointer.
 
-    prep: let k4 last; tape free {k4-2} {k4+2}; move 50% 1%
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; let k4 last; tape free {k4-2} {k4+2}; move 50% 1%
     buy@2: key ctrl+b
     sell@4: key ctrl+s
     two@6: key ctrl+2
@@ -778,11 +778,11 @@ starts on 6, lands on 7. Stop hit on 10.
 
 **Card.** PA 5: One panel. Echo: Accounts. Positions. Orders.
 
-    prep: key ctrl+1; wait 0.4; key ctrl+b; wait 0.8; let pos last; tape free {pos-0.75} {pos+1}; tape avoid {pos-2}; calibrate; move 30% {y:pos-5}
-    hover@1: move 11.0% {y:pos}
-    stp@2: drag 11.0% {y:pos} 11.0% {y:pos-2}
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; calibrate; let mid at_y(0.40); tape goto {mid} in 1.2; wait 1.4; key ctrl+b; wait 0.8; let pos held("Lucid"); tape free {pos-0.75} {pos+1}; calibrate; let stop max(pos-2, at_y(0.72)); tape avoid {stop}; move 30% {y:pos-5}
+    hover@1: move {wx:STP@pos} {wy:STP@pos}
+    stp@2: drag {wx:STP@pos} {wy:STP@pos} {wx:STP@pos} {y:stop}
     lift@4: tape avoid off; tape goto {pos+3} in @6
-    trail@6: drag 60% {y:pos-2} 60% {y:pos+0.25}
+    trail@6: drag 60% {y:stop} 60% {y:pos+0.25}
     hit@7: tape touch {pos+0.25} in @10 fill
     crop: 0% {y:pos+4} 40%
     punch: 2-5
@@ -832,7 +832,7 @@ on hit 9 would break the read, so the scene stays in the crop.
 **Card.** PA 7: Agent-ready. Echo: Everything the app does, from the
 command line.
 
-    prep: let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading flatten ESZ6 --account Tradeify/TDY100-2287; let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%
     account@1: tap TDY100-2287
     lucid@2: click 77.2% 8.3%
     qty@4: tap Qty
@@ -864,7 +864,7 @@ duotone) so the market is not in frame while it is sped up.
 **Card.** PA 8: the request, in quotes, as card 8 says. Echo: Typed to an
 agent.
 
-    prep: key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.2 --think 1.5 --settle 0.9; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.2 --think 1.5 --settle 0.9; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
     ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.
     enter@10: key Return
     after: 0.4
