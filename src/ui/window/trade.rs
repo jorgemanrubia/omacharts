@@ -56,6 +56,10 @@ pub(super) struct Trade {
     pub paned: RefCell<Option<gtk::Paned>>,
     pub panel: RefCell<Option<Rc<TradingPanel>>>,
     pub toasts: RefCell<Option<adw::ToastOverlay>>,
+    /// The toast on screen, while a simulated market is being filmed: see
+    /// [`Window::toast`].
+    #[cfg(all(feature = "fakes", not(test)))]
+    pub said: RefCell<Option<(adw::Toast, std::time::Instant, bool)>>,
     /// Where the window's parts sit, to put the panel and the toasts among
     /// them and take them out again.
     pub overlay: RefCell<Option<gtk::Overlay>>,
@@ -787,6 +791,25 @@ impl Window {
         if let Some(toasts) = self.trade.toasts.borrow().as_ref() {
             let toast = adw::Toast::new(text);
             toast.set_timeout(4);
+            // A simulated market runs forty times faster than the clock, and
+            // toasts that wait their turn fall many orders behind it. Filming
+            // one, each toast takes the place of the one before, so what the
+            // window says is what has just happened. A fill keeps its place
+            // for a moment: the cancelling of the order linked to it comes
+            // in the same instant, and is the lesser news.
+            #[cfg(all(feature = "fakes", not(test)))]
+            if omacharts_engine::providers::tape::on() {
+                let fill = text.contains("Filled");
+                let mut said = self.trade.said.borrow_mut();
+                if let Some((before, when, was_fill)) = said.as_ref() {
+                    if *was_fill && !fill && when.elapsed() < std::time::Duration::from_millis(1500) {
+                        return;
+                    }
+                    before.dismiss();
+                }
+                toast.set_timeout(3);
+                *said = Some((toast.clone(), std::time::Instant::now(), fill));
+            }
             toasts.add_toast(toast);
         }
     }

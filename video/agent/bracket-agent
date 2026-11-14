@@ -11,7 +11,7 @@ Every command it shows is the real one, run against the open chart, and
 the levels are the ones the chart gives back; only the sentences around
 them are written in advance, so the video can be timed.
 
-    bracket-agent [--pace SECONDS] [--think SECONDS] [--settle SECONDS]
+    bracket-agent [--pace SECONDS] [--think SECONDS] [--settle SECONDS] [--hold SECONDS]
 
 With BRACKET_PLAYED set to a path, it appends a JSON line there as the
 profile is read, as the buy returns and as the exits return:
@@ -27,6 +27,7 @@ import time
 PACE = 0.5
 THINK = 0.0  # before its first line, as an agent takes a moment
 SETTLE = 0.0  # after the fill, before it says so
+HOLD = 0.0  # on the two levels, once they are printed
 for i, arg in enumerate(sys.argv):
     if arg == "--pace":
         PACE = float(sys.argv[i + 1])
@@ -34,6 +35,8 @@ for i, arg in enumerate(sys.argv):
         THINK = float(sys.argv[i + 1])
     if arg == "--settle":
         SETTLE = float(sys.argv[i + 1])
+    if arg == "--hold":
+        HOLD = float(sys.argv[i + 1])
 
 TICK = 0.25
 STOP_TICKS = 6
@@ -100,10 +103,53 @@ def orders():
         return []
 
 
+def asked():
+    """Take the request as it is typed, wrapping it between words the way an
+    agent's prompt does: left to the terminal, a long line breaks wherever
+    the edge falls, in the middle of a word."""
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    if not os.isatty(fd):
+        sys.stdin.readline()
+        return
+    saved = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    try:
+        column, word = 2, ""
+        while True:
+            ch = os.read(fd, 1).decode("ascii", "replace")
+            if ch in ("\r", "\n", ""):
+                break
+            # Asked at every key: the studio sizes the terminal after it opens.
+            edge = os.get_terminal_size(fd).columns - 1
+            if ch == " ":
+                word = ""
+                if column >= edge:
+                    sys.stdout.write("\r\n  ")
+                    column = 2
+                else:
+                    sys.stdout.write(" ")
+                    column += 1
+            elif ch.isprintable():
+                if column >= edge and len(word) < edge - 2:
+                    # The word no longer fits: it goes to the next line whole.
+                    sys.stdout.write("\b" * len(word) + "\033[K\r\n  " + word)
+                    column = 2 + len(word)
+                word += ch
+                sys.stdout.write(ch)
+                column += 1
+            sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    print(flush=True)
+
+
 def main():
     sys.stdout.write(f"{BOLD}{BLUE}❯{RESET} ")
     sys.stdout.flush()
-    sys.stdin.readline()
+    asked()
     out()
     time.sleep(THINK)
 
@@ -115,11 +161,11 @@ def main():
     session = [p for p in profiles if p.get("visible", True)][-1]
     val, poc = on_tick(session["value_area_low"]), on_tick(session["poc"])
     stop = val - STOP_TICKS * TICK
-    out(f"    value area low {shown(val)} · point of control {shown(poc)}", pause=PACE)
-    if val != session["value_area_low"] or poc != session["poc"]:
-        said("The profile reads them between ticks, so I round")
-        more("to ES's quarter point.")
-        out(pause=PACE * 0.6)
+    # The profile's rows are finer than ES's tick, so the levels were rounded
+    # to it above, as the agents asked for real did. The two numbers are held
+    # long enough to be read.
+    out(f"    value area low {shown(val)} · point of control {shown(poc)}", pause=PACE + HOLD)
+    out()
 
     said(f"A buy limit for 1 at {shown(val)}.")
     out(pause=PACE * 0.4)

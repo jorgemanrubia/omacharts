@@ -661,13 +661,11 @@ written; where it and this section disagree, this section is what was filmed.
 - **Review pass (after the first render).** Only the edit changed; the take
   is the same.
   - *Order toasts.* The app's toasts sat over the volume bars at the bottom
-    of nearly every frame, with the hit meter underneath them. Redrawing the
-    pane under them was tried and left holes where short bars were, so the
-    edit now finds where each scene's toasts fall and lays a dark glass
-    capsule over that place, with the hit meter riding in it (`veil` in
-    `trailer.json`; it goes with the picture into a punch-in). The pointer
-    parked at the top middle between gestures is painted out of the take
-    with the empty header beside it.
+    of nearly every frame, behind the orders they spoke of, and were
+    covered with a dark capsule. The last review took the capsule away and
+    put the toasts on time instead: see below. The pointer parked at the
+    top middle between gestures is painted out of the take with the empty
+    header beside it.
   - *Punch-ins chosen at the edit* (`recrop: x% y% w% a-b`, hits a to b,
     0 for the start of the footage; they replace the take's `crop:`).
     Scene 3 is framed on the whole dialog, title included, and no longer
@@ -685,28 +683,58 @@ written; where it and this section disagree, this section is what was filmed.
     the end card's small print 44 px (was 30). Key caps sit higher, clear
     of the capsule.
 
+- **Last review (a new take, and a second pass on the edit).**
+  - *Order notices.* The capsule is gone. The app's own toasts are in the
+    picture again, and they are on time: filming the simulated market, each
+    toast takes the place of the one before and lasts three seconds, and a
+    fill is not displaced by the cancel of the order linked to it
+    (`Window::toast` in `src/ui/window/trade.rs`, under `fakes` with the
+    tape on, like the rest of the film's market). Left to queue for four
+    seconds each at forty times the clock they ran ten seconds behind the
+    orders, which is why they were covered. Now "Lucid · Filled 1 ESZ6 at
+    …" lands on the fill, and it is how a film with no voice says so.
+  - *The beat's meter* is a line of eleven marks along the bottom edge of
+    the frame instead of a row of dashes over the picture, so it crosses
+    nothing in a full frame or a punch-in.
+  - *Scene 1* waits for the limit's own "Working" toast to go before the
+    film starts, so nothing shows cut by the slats.
+  - *Scene 3* is framed wider (`recrop: 23.5% 30.2% 56% 5-11`): the dialog
+    with its title, and the first prop firms of the list under it.
+  - *Scene 6* stays on the whole window until the click that opens the
+    panel (`recrop … 1-9`), instead of opening on a close view of the
+    volume pane with nothing in it.
+  - *Scene 8* is a strip of the terminal floated over the whole picture
+    graded down like a card (a fourth share on `recrop:` is a height), not
+    the terminal filling the frame with one line at its top. The request
+    wraps between words: `bracket-agent` takes it key by key and wraps it
+    as an agent's prompt does.
+  - *Scene 5* holds the market where it bought (`tape free` around the
+    price as the `goto` lands): left to fall back to its old band, one take
+    in three put the market under the stop before it was dragged, and the
+    app refused it.
+  - *Scene 10's* close view starts between two lines of the terminal
+    (`recrop: 62% 29.6% 38% 0-6`), not through one.
+  - *Scene 9.* The agent no longer says that it rounds the levels; it still
+    rounds them, as the agents asked for real did. The two levels are held
+    0.4 s (`--hold`), and its limit lands on hit 5.
+
 ### Left for the next pass
 
 Seen at review and not fixed, with why:
-- *Scene 8's request wraps mid-word* in the terminal ("Target t / he point
-  of control."): the terminal's width, in the take. Only a new take fixes it
-  (a narrower prompt or a wider terminal); card 8 restates the request
-  whole right after, which carries it.
-- *The agent's line "The profile reads them between ticks, so I round to
-  ES's quarter point."* reads in scene 9's punch-in. It is the played
-  agent's sentence about the app's off-tick profile levels; the numbers it
-  prints are on the tick. Cutting it needs a new take without that line.
-- *The header shows the canned day's P&L in green* (+$912.50 on Lucid)
-  through scenes 1–2 and 9–10, and the agent's target fills at the end.
-  Mixed outcomes elsewhere (the stop-out, the scratch, Tradeify red) and the
-  end card's "Simulated market. Fake accounts." balance it; nothing punches
-  in on a P&L except the header scene, which the brief asks for.
+- *The profile's levels come back off the tick* from `chart profile list`
+  (`poc` 7625.65 on a 0.25 grid). The film's agent rounds them. Worth
+  fixing in the CLI or the study, apart from the video.
+- *The header shows the canned day's P&L in green* on Lucid, and the
+  agent's target fills at the end. Mixed outcomes elsewhere (the stop-out,
+  the scratch, Tradeify red) and the end card's "Simulated market. Fake
+  accounts." balance it; nothing punches in on a P&L except the header
+  scene, which the brief asks for.
 - *A dotted line across scene 1–2's chart* is the canned day's round trip
   (fills shown, entry to exit). Real, but it reads as a stray line.
-- *The capsule* is a fixed dark pill per scene; it hides the toasts and the
-  bottom of some volume bars under them. Judge it against the toasts it
-  replaced.
 - *Order ids*: the agent's fill reads "B11"; the canned day's are B1–B6.
+- *The Orders tab's times* are the fake day's clock, not the chart's.
+- *Scene 8's footage plays at 1.27×* (the typing takes longer than its
+  phrase); the market behind the strip is graded down while it does.
 
 ## Setup
 
@@ -787,7 +815,7 @@ The corner tag reads SIMULATED MARKET.
 
 **Card.** PA 1: the cover, **Trading**. Echo: New in Omacharts 0.3 · Beta.
 
-    prep: let base last; tape goto {base+2} in 1.5; wait 1.7; let entry last-5; cli trading buy --limit {entry}; tape avoid {entry}; move 50% 1%; wait 1.0
+    prep: let base last; tape goto {base+2} in 1.5; wait 1.7; let entry last-5; cli trading buy --limit {entry}; tape avoid {entry}; move 50% 1%; wait 3.6
     start@1: tape avoid off; tape touch {entry} in @10 fill
     after: 0.6
 
@@ -835,7 +863,7 @@ Ctrl+F flattens.
     arrow@10: mark 54.7% 61% lucid
     crop: 30% 50% 48%
     punch: 5-11
-    recrop: 28% 27% 48% 5-11
+    recrop: 23.5% 30.2% 56% 5-11
     ring: 57.3% 61.0% 7.4% 3.4%
     after: 0.6
     out: key Escape; wait 0.3; key Escape; wait 0.4; click 45.6% 67.7%; wait 0.6; focus app
@@ -879,7 +907,7 @@ starts on 6, lands on 7. Stop hit on 10.
 
 **Card.** PA 5: One panel. Echo: Accounts. Positions. Orders.
 
-    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; calibrate; let mid at_y(0.40); tape goto {mid} in 1.2; wait 1.4; key ctrl+b; wait 0.8; let pos held("Lucid"); tape free {pos-0.75} {pos+1}; calibrate; let stop max(pos-2, at_y(0.72)); tape avoid {stop}; move 30% {y:pos-5}
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; calibrate; let mid at_y(0.40); tape goto {mid} in 1.2; wait 1.25; tape free {mid-0.5} {mid+1}; wait 0.3; key ctrl+b; wait 0.8; let pos held("Lucid"); tape free {pos-0.75} {pos+1}; calibrate; let stop max(pos-2, at_y(0.72)); tape avoid {stop}; move 30% {y:pos-5}
     hover@1: move {wx:STP@pos} {wy:STP@pos}
     stp@2: drag {wx:STP@pos} {wy:STP@pos} {wx:STP@pos} {y:stop}
     lift@4: tape avoid off; tape goto {pos+3} in @6
@@ -913,7 +941,7 @@ closes, and in the panel the row turns from Working to Filled.
     orders@7: click 18.25% 86.9%
     release@8: tape avoid off; tape touch {t6} in @10 fill
     all@9: click 89.1% 86.9%
-    recrop: 0% 61.5% 38.5% 0-9
+    recrop: 0% 61.5% 38.5% 1-9
     after: 0.6
     out: click 98.0% 84.2%; wait 0.6
 
@@ -967,10 +995,11 @@ duotone) so the market is not in frame while it is sped up.
 **Card.** PA 8: the request, in quotes, as card 8 says. Echo: Typed to an
 agent.
 
-    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.2 --think 1.5 --settle 0.9; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.2 --think 1.5 --settle 0.9 --hold 0.4; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
     ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.
     enter@10: key Return
     crop: 62% 0% 38%
+    recrop: 62.25% 1.15% 37.1% 11% 0-11
     after: 0.4
 
 ### 9. It reads the chart
@@ -1029,7 +1058,7 @@ accounts. Held through the tail, then black (E11).
     anchors: exits@2
     base@2: tape goto {v+2} in @5
     run@5: tape avoid off; tape touch {p} in @10 fill
-    recrop: 62% 28% 38% 0-6
+    recrop: 62% 29.6% 38% 0-6
     after: 3.0
     out: terminal close; focus app
 

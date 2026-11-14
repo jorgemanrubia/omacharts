@@ -22,8 +22,13 @@ import {
 
 export type Hit = { phrase: number; hit: number | "echo"; frame: number };
 
-/** Video frames [from, to) show the crop at (x, y), w wide, as fractions of the frame. */
-export type Punch = { from: number; to: number; x: number; y: number; w: number };
+/**
+ * Video frames [from, to) show the crop at (x, y), w wide, as fractions of
+ * the frame. With a height `h` the crop is a strip, and it floats over the
+ * rest of the picture, which is graded down behind it, instead of filling
+ * the frame.
+ */
+export type Punch = { from: number; to: number; x: number; y: number; w: number; h?: number };
 
 export type TrailerBadge = { frame: number; keys: string[] };
 
@@ -42,11 +47,7 @@ export type Scene = {
   arrow: Arrow | null;
   slats: boolean;
   tag: boolean;
-  veil?: Veil | null;
 };
-
-/** Where a scene's order toasts fall, as fractions of the frame: covered by a capsule. */
-export type Veil = { x: number; y: number; w: number; h: number };
 
 export type Card = {
   number: number;
@@ -164,6 +165,9 @@ export const Trailer = (props: TrailerProps) => {
         <filter id="trailer-grade" colorInterpolationFilters="sRGB">
           <feColorMatrix type="matrix" values={gradeMatrix(clamp01(grade))} />
         </filter>
+        <filter id="trailer-backdrop" colorInterpolationFilters="sRGB">
+          <feColorMatrix type="matrix" values={gradeMatrix(1 - clamp01(grade))} />
+        </filter>
       </svg>
 
       <AbsoluteFill style={{ transform: `translateY(${fill}px)`, filter: grade > 0 ? "url(#trailer-grade)" : undefined }}>
@@ -176,11 +180,12 @@ export const Trailer = (props: TrailerProps) => {
           .filter((c) => c.kind === "text" && c.still !== null)
           .map((c) => {
             const next = nextScene(c);
-            const punch = next?.punch.find((p) => next.start >= p.from && next.start < p.to);
+            // A card ahead of a floated strip stands on the whole picture: the strip arrives as it lets go.
+            const punch = next?.punch.find((p) => next.start >= p.from && next.start < p.to && p.h === undefined);
             return (
               <Sequence key={c.number} from={c.pa} durationInFrames={c.letgo - c.pa} layout="none">
                 <Freeze frame={0}>
-                  <Picture src={src} trimBefore={(c.still as number) * fps} rate={1} punch={punch} veil={next?.veil} />
+                  <Picture src={src} trimBefore={(c.still as number) * fps} rate={1} punch={punch} />
                 </Freeze>
               </Sequence>
             );
@@ -198,10 +203,7 @@ export const Trailer = (props: TrailerProps) => {
         // on the PA, under the flash.
         const flashing = cards.find((c) => f >= c.pa && f < c.pa + FLASH);
         const phrase = flashing ? flashing.number : scene && !card ? scene.number : null;
-        const ridden = scenes.find((s) => s.number === phrase);
-        const punched = ridden?.punch.some((p) => f >= p.from && f < p.to);
-        const veil = ridden?.veil && !punched && !flashing ? ridden.veil : null;
-        return phrase !== null && <Meter hits={hits} phrase={phrase} f={f} fill={fillNow} unit={unit} veil={veil} W={W} H={H} />;
+        return phrase !== null && <Meter hits={hits} phrase={phrase} f={f} fill={fillNow} unit={unit} />;
       })()}
 
       {scene?.badges
@@ -240,11 +242,48 @@ export const Trailer = (props: TrailerProps) => {
 const Footage = ({ scene, src, fps, start }: { scene: Scene; src: string; fps: number; start: number }) => {
   const f = useCurrentFrame() + start;
   const punch = scene.punch.find((p) => f >= p.from && f < p.to);
-  return <Picture src={src} trimBefore={scene.at * fps} rate={scene.rate} punch={punch} veil={scene.veil} />;
+  return <Picture src={src} trimBefore={scene.at * fps} rate={scene.rate} punch={punch} />;
 };
 
-const Picture = ({ src, trimBefore, rate, punch, veil }: { src: string; trimBefore: number; rate: number; punch?: Punch; veil?: Veil | null }) => {
+const FLOAT_WIDTH = 0.86; // of the frame, for a floated strip
+
+const Picture = ({ src, trimBefore, rate, punch }: { src: string; trimBefore: number; rate: number; punch?: Punch }) => {
   const k = punch ? 1 / punch.w : 1;
+  if (punch?.h !== undefined) {
+    // A strip of the picture at a fixed scale, as a pane of its own over
+    // the whole picture graded down like a card. Nothing moves.
+    const video = <OffthreadVideo src={staticFile(src)} trimBefore={trimBefore} playbackRate={rate} muted style={{ width: "100%", height: "100%" }} />;
+    const height = (punch.h / punch.w) * FLOAT_WIDTH;
+    return (
+      <AbsoluteFill>
+        <AbsoluteFill style={{ filter: "url(#trailer-backdrop)" }}>{video}</AbsoluteFill>
+        <div
+          style={{
+            position: "absolute",
+            left: `${((1 - FLOAT_WIDTH) / 2) * 100}%`,
+            top: `${(0.47 - height / 2) * 100}%`,
+            width: `${FLOAT_WIDTH * 100}%`,
+            height: `${height * 100}%`,
+            overflow: "hidden",
+            borderRadius: "1.1vw",
+            boxShadow: "0 1.6vw 5vw rgba(0, 0, 0, 0.65), 0 0 0 0.1vw rgba(243, 236, 220, 0.16)",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              width: `${100 / punch.w}%`,
+              height: `${100 / punch.h}%`,
+              left: `${(-punch.x / punch.w) * 100}%`,
+              top: `${(-punch.y / punch.h) * 100}%`,
+            }}
+          >
+            {video}
+          </div>
+        </div>
+      </AbsoluteFill>
+    );
+  }
   return (
     <AbsoluteFill
       style={{
@@ -253,31 +292,9 @@ const Picture = ({ src, trimBefore, rate, punch, veil }: { src: string; trimBefo
       }}
     >
       <OffthreadVideo src={staticFile(src)} trimBefore={trimBefore} playbackRate={rate} muted style={{ width: "100%", height: "100%" }} />
-      {veil && <Capsule veil={veil} />}
     </AbsoluteFill>
   );
 };
-
-// The app's order toasts sit at the bottom of the window, over the volume
-// bars, under nearly every frame. A dark glass capsule lies over the place
-// they take in each scene, part of the picture (a punch-in carries it with
-// the crop), and the drum's meter rides in it.
-const Capsule = ({ veil }: { veil: Veil }) => (
-  <div
-    style={{
-      position: "absolute",
-      left: `${veil.x * 100}%`,
-      top: `${veil.y * 100}%`,
-      width: `${veil.w * 100}%`,
-      height: `${veil.h * 100}%`,
-      borderRadius: 9999,
-      background: "rgba(14, 16, 22, 0.97)",
-      backdropFilter: "blur(14px) saturate(0.6)",
-      border: "2px solid rgba(243, 236, 220, 0.09)",
-      boxShadow: "0 10px 40px rgba(0, 0, 0, 0.45)",
-    }}
-  />
-);
 
 // Scene 1 opens on black and the chart comes in as ten slats from the right,
 // one a hit, each in three frames behind a one-frame bright edge.
@@ -354,10 +371,11 @@ const ArrowMark = ({ arrow, f, W, H, unit }: { arrow: Arrow; f: number; W: numbe
   );
 };
 
-// The drum made visible: ten marks and the PA's, lit as they sound.
-const Meter = ({ hits, phrase, f, fill, unit, veil, W, H }: {
-  hits: Hit[]; phrase: number; f: number; fill: boolean; unit: number; veil: Veil | null; W: number; H: number;
-}) => {
+// The beat made visible: a line along the bottom edge of the frame, ten
+// marks and the card's, lit as they sound. It lies on the edge so that it
+// crosses nothing in the picture, in a full frame or a punch-in, and leaves
+// the app's own order notices above it to be read.
+const Meter = ({ hits, phrase, f, fill, unit }: { hits: Hit[]; phrase: number; f: number; fill: boolean; unit: number }) => {
   const mine = hits.filter((h) => h.phrase === phrase && typeof h.hit === "number") as { phrase: number; hit: number; frame: number }[];
   const lit = (n: number) => mine.find((h) => h.hit === n && f >= h.frame);
   let current = 0;
@@ -366,40 +384,29 @@ const Meter = ({ hits, phrase, f, fill, unit, veil, W, H }: {
     <div
       style={{
         position: "absolute",
-        ...(veil
-          ? { left: veil.x * W, width: veil.w * W, top: veil.y * H, height: veil.h * H }
-          : { left: 0, right: 0, bottom: 60 * unit }),
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: 10 * unit,
         display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        gap: 14 * unit,
+        gap: 8 * unit,
+        background: "rgba(8, 10, 14, 0.9)",
       }}
     >
       {Array.from({ length: 11 }, (_, i) => {
         const n = i + 1;
         const h = lit(n);
         let color = PAPER;
-        let opacity = 0.18;
+        let opacity = 0.12;
         if (h) {
           color = GOLD;
-          opacity = f - h.frame < 2 ? 1 : 0.7;
+          opacity = f - h.frame < 2 ? 1 : 0.8;
         }
         if (fill && n === Math.max(1, current)) {
           color = "white";
           opacity = 1;
         }
-        return (
-          <div
-            key={n}
-            style={{
-              width: (n === 11 ? 56 : 28) * unit,
-              height: (n === 11 ? 10 : 6) * unit,
-              borderRadius: 2 * unit,
-              background: color,
-              opacity,
-            }}
-          />
-        );
+        return <div key={n} style={{ flex: n === 11 ? 2 : 1, background: color, opacity }} />;
       })}
     </div>
   );
@@ -408,7 +415,7 @@ const Meter = ({ hits, phrase, f, fill, unit, veil, W, H }: {
 // The chord just pressed, in the keycaps of the polish pass, on the hit and
 // off again with no motion.
 const KeyCaps = ({ keys, unit }: { keys: string[]; unit: number }) => (
-  <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 200 * unit }}>
+  <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 216 * unit }}>
     <div
       style={{
         display: "flex",
