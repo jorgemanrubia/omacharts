@@ -46,18 +46,22 @@ Each login is a row in Preferences › Trading › **Trading services**, with it
 
 <!-- regenerate:
 theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
-window: 2560x1440 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click the User field, type a user, Sign in   # twice: logins Fake and Fake 2
+  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
+  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
+  # the fakes build numbers each account after its user, and holds a different day for each login
   omacharts chart set --symbol ES --resolution 15m
   key ctrl+comma
-  click 214 283          # Trading
-  move 1270 710
+  click 278 290          # Trading
+  click 1050 687         # Show P&L as
+  click 1063 768         # Risk (R), for Value of 1R
+  move 1300 870
 capture: bin/headless-window shot /tmp/trading-prefs.png
-crop: 2008x1328+276+56
+crop: 1956x1528+422+138
 -->
-{% include figure.html src="/assets/manual/brokers/preferences-trading.png" alt="Preferences on Trading, with the Beta tag in the sidebar, a login and its accounts" caption="Preferences › Trading, with a login and its accounts." %}
+{% include figure.html src="/assets/manual/brokers/preferences-trading.png" alt="Preferences on Trading, with the Beta tag in the sidebar, two logins and their accounts, Order entry, and Chart down to Value of 1R" caption="Preferences › Trading, with two logins and their accounts, and P&L shown in R." %}
 
 | Button | Does |
 |---|---|

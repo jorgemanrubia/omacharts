@@ -8,7 +8,7 @@ nav_order: 36
 {: .warning }
 Trading is experimental (**Beta**). An order is sent the moment you click, press or drag: nothing asks first, on any account.
 
-A chart trades what it charts, on its account. ES charted from any feed trades the front ES contract, such as ESZ6, through the account's login ([Connecting a broker](/manual/brokers/)).
+A chart trades what it charts, on its account. ES, whichever feed draws it, trades its front month as Rithmic names it, such as ESZ6, and a chart of a dated contract, such as ESH7, trades that contract, through the account's login ([Connecting a broker](/manual/brokers/)).
 
 ## The Account part
 
@@ -16,14 +16,16 @@ With an account to trade on, the chart's top-right corner leads with its trading
 
 <!-- regenerate:
 theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
-window: 2560x1440 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click the User field, type a user, Sign in   # twice: logins Fake and Fake 2
+  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
+  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
+  # the fakes build numbers each account after its user, and holds a different day for each login
   omacharts chart set --symbol ES --resolution 15m
-  move 1270 710
+  move 1130 880           # off the chart, so its gear is hidden
 capture: bin/headless-window shot /tmp/account-part.png
-crop: 1020x88+850+4
+crop: 1000x88+1110+4
 -->
 {% include figure.html src="/assets/manual/trading-on-a-chart/account-part.png" alt="A chart's top-right corner: the account, the day's P&L, Buy, Sell, Qty and the position held" caption="The Account part of a chart holding one contract." %}
 
@@ -65,23 +67,26 @@ The menu leaves out an order that could not go at that price, such as a buy limi
 
 The label of a position has two tabs, **L** and **STP**. Drag **L** to a price for a limit that takes the profit, and **STP** for a stop that cuts the loss. Each is for the whole position.
 
-Place the second while the first is working and the two are linked: whichever fills first cancels the other, and the notice says *Linked · whichever fills first cancels the other*. A solid line joins two exits Rithmic holds linked. A dashed one means Omacharts holds the link while it runs, and says so.
+Place the second while the first is working and the two are linked: whichever fills first cancels the other, and the notice says *Linked · whichever fills first cancels the other*. A solid line joins two exits the trading service holds linked, as Rithmic does. A dashed one means Omacharts holds the link, only while it runs, and says so.
 
 <!-- regenerate:
 theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
-window: 2560x1440 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click the User field, type a user, Sign in   # twice: logins Fake and Fake 2
+  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
+  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
+  # the fakes build numbers each account after its user, and holds a different day for each login
   omacharts chart set --symbol ES --resolution 15m
   omacharts trading cancel --all
   omacharts trading exit --target 7640 --stop 7540
   omacharts trading buy --limit 7550
-  move 1270 710
+  move 1130 880
+  (wait for, or close, the notices of the day's orders)
 capture: bin/headless-window shot /tmp/orders-on-chart.png
-crop: 1990x1440+0+0
+crop: 2236x1800+0+0
 -->
-{% include figure.html src="/assets/manual/trading-on-a-chart/orders.png" alt="An ES chart with a long position, a linked target and stop, and a buy limit below the market" caption="A position with a linked target and stop, and a working buy limit." %}
+{% include figure.html src="/assets/manual/trading-on-a-chart/orders.png" alt="An ES chart with a long position, a linked target and stop, and a buy limit below the market" caption="A position with a target and a stop linked by the trading service (the solid line), and a working buy limit." %}
 
 ## Moving, cancelling and flattening
 

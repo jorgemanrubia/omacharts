@@ -12,6 +12,19 @@ The running total of what was bought at the ask less what was sold at the bid, s
 |---|---|---|---|
 | In a strip of its own | **CVD · Session** | `cvd` | `cvd` |
 
+<!-- regenerate:
+theme: tokyo-night
+window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*, no trading logins
+state:
+  omacharts chart set --symbol SPY --resolution 5m --session regular --template none
+  omacharts chart indicator add cvd
+  omacharts chart indicator set cvd --height 0.3
+  move 1110 880
+capture: bin/headless-window cli chart screenshot --output /tmp/cvd.png; magick /tmp/cvd.png -quality 88 site/assets/manual/indicators/cumulative-delta.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/indicators/cumulative-delta.jpg" alt="SPY 5m over two sessions with a cumulative delta strip under it, starting again from nought at the second session's open" caption="CVD under SPY 5m, estimated: Yahoo has no volume at price, so the legend reads CVD ≈." %}
+
 ## Settings
 
 | Setting | Default | Allowed |
