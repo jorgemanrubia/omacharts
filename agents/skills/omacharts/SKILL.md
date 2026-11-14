@@ -86,11 +86,11 @@ a timer; if it looks still, `provider status` is where to look first.
 
 **Trading is real money, and nothing asks twice.** Trading is experimental.
 `trading accounts`, `positions` and `orders` read freely. `trading buy`,
-`sell`, `exit`, `modify`, `cancel` and `flatten` act on the user's broker
+`sell`, `exit`, `modify`, `cancel` and `flatten` act on the user's trading
 account at once, with no confirmation in the window or the terminal: run one
 only when the user asked for that order in so many words, never as a step
 inside something else, and never to try a command out. Say back what the
-reply says was sent. The reply is what was sent, not what the broker did;
+reply says was sent. The reply is what was sent, not what the trading service did;
 `trading orders --json` shows the outcome. Orders act on the chart they name,
 the focused one by default, on its account and the size it trades. A refusal
 (exit 5) is the chart's own check, such as a limit on the wrong side of the
