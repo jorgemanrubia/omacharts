@@ -19,8 +19,9 @@ use crate::ticks::{Tape, Trade, DEFAULT_CAPACITY};
 
 use super::{exchange_of, map_err, session, Rithmic, CME_GROUP};
 
-/// How far back the history plant's minute ladders go, in days. On Rithmic
-/// Test a month asked came back as about fifteen days.
+/// How far back the history plant's minute ladders are asked for, in days.
+/// A month asked comes back whole. Days older than this that the store
+/// kept from earlier runs are still drawn; they are only never asked for.
 const HISTORY_DAYS: u32 = 30;
 
 /// A minute from the plant, as a ladder of whole ticks.
