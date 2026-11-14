@@ -204,6 +204,9 @@ class Market:
         # A move of a tick or more always prints: the tape keeps up with price.
         if count == 0 and abs(on_grid(self.p + self.u) - self.last) >= TICK:
             count = 1
+        # Live, something prints on every frame: the tape a screen shows.
+        if self.live and count == 0:
+            count = 1
         trades = []
         quoted = self.p + self.u
         for i in range(count):

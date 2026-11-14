@@ -620,6 +620,7 @@ the manual's `regenerate:` clicks, re-pinned for the studio's window.
     cli template default none
     cli chart set --symbol ES --resolution 1m --template none --grid off
     cli chart indicator add volume_profile --anchor session --align right
+    cli chart indicator add volume
     wait 1.5
     cli trading login fake
     wait 2.0
@@ -809,7 +810,8 @@ closes, and in the panel the row turns from Working to Filled.
     accounts@1: click 97.95% 98.4%; tape goto {t6+1} in @8
     positions@4: click 11.25% 86.9%
     orders@7: click 18.25% 86.9%
-    all@8: click 89.1% 86.9%; tape avoid off; tape touch {t6} in @10 fill
+    release@8: tape avoid off; tape touch {t6} in @10 fill
+    all@9: click 89.1% 86.9%
     after: 0.6
     out: click 98.0% 84.2%; wait 0.6
 
@@ -862,7 +864,7 @@ duotone) so the market is not in frame while it is sped up.
 **Card.** PA 8: the request, in quotes, as card 8 says. Echo: Typed to an
 agent.
 
-    prep: key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.35 --think 1.4 --settle 0.8; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
+    prep: key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.2 --think 1.5 --settle 0.9; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
     ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.
     enter@10: key Return
     after: 0.4
