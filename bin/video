@@ -837,9 +837,12 @@ hl.config({{
             # A click on a word of the header, wherever it is now.
             return self.perform(("click", *self.find_word(args[0])), events, now, scene, cue)
         if verb == "look":
-            # Read the header ahead of a tap, so the tap does not wait on it.
+            # Read the header ahead of a tap, off the timeline's thread, so
+            # neither the tap nor the lines between wait on it.
+            import threading
             self.found = {k: v for k, v in getattr(self, "found", {}).items() if k != (0.0, 0.0, 1.0, 0.055)}
-            self.find_word(args[0].split()[0])
+            word = args[0].split()[0]
+            threading.Thread(target=lambda: self.find_word(word, fallback=("0%", "0%")), daemon=True).start()
             events.append({"t": now, "scene": scene, "cue": cue, "verb": "look", "args": args})
             return
         if verb == "let":
