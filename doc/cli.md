@@ -168,7 +168,17 @@ measure nothing and the wrong way round is the line upside down — so
 cross what the chart already holds.
 
 `set` reconfigures one already on the chart. If the chart has two of a kind it
-asks which, with `--id`.
+asks which, with `--id`. `remove` takes `--id` too, for one of two.
+
+**What is selected in the window is `selected`.** `list` marks the indicator
+picked in the window's legend or on its line (`"selected": true`, and
+`· selected` in the text); `list --selected` keeps only it; and `--id
+selected` on `set` or `remove` acts on it, its kind taken from it when none is
+named. The same holds for drawings, where several can be selected: `drawing
+list --selected` lists them all, and `--id selected` takes exactly one, asking
+which (exit 4) otherwise. A command that rebuilds the charts keeps what was
+selected, so "make this red" can read the selection and change it. With no
+window, nothing is selected.
 
 A parameter an indicator has no use for is refused rather than ignored —
 `--period` on a volume profile is an error, not a no-op, because silence would
@@ -738,6 +748,8 @@ omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --
 omacharts chart drawing add text --from 2026-09-10,184 --text "gap fills here"
 omacharts chart drawing add profile --from 2026-09-08,0 --to 2026-09-12,0 --profile-style outline --align right
 omacharts chart drawing list
+omacharts chart drawing list --selected --json
+omacharts chart drawing set --id selected --color down
 omacharts chart drawing set --id 1 --color ink --width 2.5 --arrow end
 omacharts chart drawing set --id 1 --order front
 omacharts chart drawing remove --id 2
@@ -1057,6 +1069,11 @@ setting touches a command: `chart screenshot` always writes a file.
 
 Settings are read and written by name — `config list` shows every one that has
 been written, and `config set` writes any of them.
+
+`config themes` lists the ids `config set theme` takes — System (`omarchy`,
+following the desktop's theme), the shipped ones, each installed Omarchy
+theme and the user's own — with the one in use marked, `--json` too. Setting
+`theme` or `bar_scheme` changes an open window at once.
 
 Three of them have a command of their own, because what the app does with them
 is more than storing a value. Bar colours is one:
@@ -1674,19 +1691,25 @@ its `PATH`. `MODEL` is the `agent_model.<agent>` setting, left out when it is
 empty:
 
 ```
-claude -p --output-format json --permission-mode dontAsk [--resume ID] [--model MODEL] --allowedTools 'Bash(omacharts:*)' Skill -- PROMPT
-codex exec [resume] --json --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' [-m MODEL] [ID] -- PROMPT
-cursor-agent -p --output-format json --force --trust --sandbox disabled [--resume ID] [--model MODEL] agent -- PROMPT
-copilot --prompt PROMPT --silent --allow-all-tools --no-ask-user --session-id UUID [--model MODEL]
+claude -p --output-format json --permission-mode auto [--resume ID] [--model MODEL] -- PROMPT
+codex exec --approve-for-me [resume] --json --skip-git-repo-check [-m MODEL] [ID] -- PROMPT
+cursor-agent -p --output-format json --yolo --trust [--resume ID] [--model MODEL] agent -- PROMPT
+copilot --prompt PROMPT --silent --allow-all --no-ask-user --session-id UUID [--model MODEL]
 opencode run --auto --archived [-m MODEL] PROMPT
 agy --dangerously-skip-permissions [--model MODEL] --print PROMPT
 ```
 
-Claude Code may run `omacharts` and load skills, and anything else is refused
-rather than asked about, since nobody is there to answer. The others skip
-their permission prompts, as `omarchy agent` does, and Codex and Cursor run
-outside their sandboxes, which would keep `omacharts` from reaching the
-window. Claude Code and Cursor name their session in their JSON, Codex in its
+Each runs with the permission flags `omarchy-agent` gives it when it opens it
+(`--permission-mode auto`, `--approve-for-me`, `--yolo --trust`,
+`--allow-all`, `--auto`, `--dangerously-skip-permissions`), in the form its
+headless turn takes them: Codex takes `--approve-for-me` on `exec`, ahead of
+`resume`. Nothing else widens or narrows them; the agent's own settings
+decide the rest, and a command they refuse is said in its reply, in the Log.
+The models Preferences offers for each are a list kept in Omacharts, and the
+one named in "Agent's default (…)" is read from the agent's settings file
+(Claude Code's `settings.json`, Codex's `config.toml`, OpenCode's
+`opencode.json`). No agent is run for any of it: only a dictation runs one.
+Claude Code and Cursor name their session in their JSON, Codex in its
 `thread.started` event, and Copilot is given a new UUID at the start of each
 conversation. OpenCode and Antigravity name theirs only in output their help
 does not describe, so each of their turns starts a new conversation.
@@ -1728,9 +1751,9 @@ one that was queued, a conversation starting over, and the agent's whole
 answer. A toast or the corner notice appears only when something goes wrong:
 no default agent, an agent that failed, a terminal Omarchy could not open.
 
-**What the agent may do.** Any `omacharts` command, the `trading` ones
-included, with no confirmation. Nothing here guards an order that was
-dictated.
+**What the agent may do.** Whatever its permissions allow, as above: with
+Omarchy's flags that is any `omacharts` command, the `trading` ones included,
+with no confirmation. Nothing here guards an order that was dictated.
 
 ## The command groups
 

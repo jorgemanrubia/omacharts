@@ -382,7 +382,8 @@ pub const COLOUR: &str =
 const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
     Flag::valued("chart", "CHART", CHART_SELECTOR),
-    Flag::valued("id", "N", "which one, when a chart has two of a kind"),
+    Flag::valued("id", "N", "which one, when a chart has two of a kind; `selected` for the one selected in the window, kind and all"),
+    Flag::switch("selected", "with list: only what is selected in the window"),
     Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR, Bollinger; the stochastic's %K length"),
     Flag::valued("deviations", "F", "standard deviations the Bollinger bands sit at, 0-50"),
     Flag::valued("fast", "N", "bars the MACD's quick average covers"),
@@ -1072,7 +1073,8 @@ pub const SURFACE: &[Noun] = &[
                 flags: &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
-                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove"),
+                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove. `selected` for the one selected in the window"),
+                    Flag::switch("selected", "with list: only what is selected in the window"),
                     Flag::valued("from", "ANCHOR", ANCHOR),
                     Flag::valued("to", "ANCHOR", ANCHOR),
                     Flag::valued("point", "ANCHOR", POINT).repeating(),
@@ -1534,6 +1536,16 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts config set theme omarchy",
                 json: true,
                 writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "themes",
+                about: "Every theme `config set theme` takes, the one in use marked",
+                args: &[],
+                flags: &[],
+                example: "omacharts config themes --json",
+                json: true,
+                writes: false,
                 workspace: false,
             },
             Verb {

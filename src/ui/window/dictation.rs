@@ -1,6 +1,6 @@
 //! Dictation in the window: a dictation that lands here outside a text box
-//! goes to Omarchy's default agent, and what became of it is said in a
-//! toast. See [`crate::dictation`] for how it is told from a paste and how
+//! goes to Omarchy's default agent. The glow says it is working; the Log
+//! says what became of each, and a toast only when one failed. See [`crate::dictation`] for how it is told from a paste and how
 //! the agent is run.
 
 use std::cell::{Cell, OnceCell};
@@ -12,7 +12,8 @@ use omacharts_engine::log::Entry;
 
 use super::glow::Glow;
 use super::Window;
-use crate::dictation::{superwhisper, Dispatcher, Event, Settings, World};
+use crate::dictation::{superwhisper, Dispatcher, Event, Fresh, Settings, World};
+use crate::log_words;
 
 /// What the window keeps of dictation.
 #[derive(Default)]
@@ -27,9 +28,6 @@ pub(super) struct Dictation {
     /// The glow along the bottom of the window while the agent works.
     glow: Glow,
 }
-
-/// The longest a toast quotes; the Log has the rest.
-const QUOTE: usize = 80;
 
 impl Window {
     /// Ctrl+V outside a text box. A dictation Superwhisper has just pasted
@@ -76,11 +74,7 @@ impl Window {
         let ahead = dispatcher.send(said.clone(), settings);
         self.dictation.outstanding.set(self.dictation.outstanding.get() + 1);
         if ahead > 0 {
-            let waiting = match ahead {
-                1 => "after the one the agent is on".to_string(),
-                n => format!("after {n} more"),
-            };
-            self.tell(Entry::info("Agent", format!("Queued “{}” {waiting}", quoted(&said))).confirming());
+            self.tell(log_words::dictation_queued(&said, ahead));
         }
     }
 
@@ -92,7 +86,9 @@ impl Window {
             while let Ok(event) = receiver.recv().await {
                 let Some(this) = weak.upgrade() else { return };
                 this.glow_for(&event);
-                this.tell(said_of(event));
+                for entry in said_of(event) {
+                    this.tell(entry);
+                }
             }
         });
         Dispatcher::start(world, move |event| {
@@ -136,46 +132,18 @@ impl Window {
     }
 }
 
-/// How each thing that becomes of a dictation is said: a toast when it is
-/// sent and when it is done, the corner notice when it could not be.
-fn said_of(event: Event) -> Entry {
+/// How each thing that becomes of a dictation is said: in the Log, and in
+/// a toast too only when it failed.
+fn said_of(event: Event) -> Vec<Entry> {
     match event {
-        Event::Started { agent, said } => Entry::info(agent, format!("Sent “{}”", quoted(&said))).confirming(),
-        Event::Done { agent, said, reply } => {
-            let text = match reply.as_deref().and_then(first_line) {
-                Some(reply) => format!("Done · {}", quoted(reply)),
-                None => format!("Done “{}”", quoted(&said)),
-            };
-            let entry = Entry::info(agent, text).confirming();
-            match reply {
-                Some(reply) => entry.detail(format!("“{}”\n\n{reply}", said.trim())),
-                None => entry,
-            }
+        Event::Started { agent, said, fresh } => {
+            let afresh = fresh.map(|why| log_words::dictation_afresh(&agent, why.words()));
+            afresh.into_iter().chain([log_words::dictation_sent(&agent, &said)]).collect()
         }
-        Event::Opened { agent, said } => {
-            Entry::info(agent, format!("Opened in a terminal with “{}”", quoted(&said))).confirming()
-        }
-        Event::Failed { said, why, detail } => {
-            let detail = match detail {
-                Some(detail) => format!("“{}”\n\n{detail}", said.trim()),
-                None => format!("“{}”", said.trim()),
-            };
-            Entry::error("Agent", why).detail(detail)
-        }
-        Event::StartedOver => Entry::info("Agent", "Starting a new conversation").confirming(),
-    }
-}
-
-fn first_line(text: &str) -> Option<&str> {
-    text.lines().map(str::trim).find(|line| !line.is_empty())
-}
-
-/// `text` short enough for a toast.
-fn quoted(text: &str) -> String {
-    let text = text.trim();
-    match text.chars().count() > QUOTE {
-        true => format!("{}…", text.chars().take(QUOTE - 1).collect::<String>().trim_end()),
-        false => text.to_string(),
+        Event::Done { agent, said, reply } => vec![log_words::dictation_done(&agent, &said, reply.as_deref())],
+        Event::Opened { agent, said } => vec![log_words::dictation_opened(&agent, &said)],
+        Event::Failed { said, why, detail } => vec![log_words::dictation_failed(&said, &why, detail.as_deref())],
+        Event::StartedOver => vec![log_words::dictation_afresh("Agent", Fresh::Asked.words())],
     }
 }
 
@@ -195,10 +163,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// A dictation in the window: sent with the context as Preferences has
-    /// it, queued behind the one running, said in toasts, and the agent's
-    /// answer kept in the Log. The agent is a closure; nothing is launched.
+    /// it, queued behind the one running, and said in the Log with the
+    /// agent's answer, no toast. The agent is a closure; nothing is launched.
     #[test]
-    fn a_dictation_goes_to_the_agent_and_is_said_in_toasts() {
+    fn a_dictation_goes_to_the_agent_and_is_said_in_the_log() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             store.set_setting(crate::dictation::CONTEXT, "Use Sonnet.");
@@ -253,13 +221,17 @@ mod tests {
                 lines,
                 [
                     "Agent · Queued “now a MACD” after the one the agent is on",
+                    "Claude Code · New conversation · the first dictation since Omacharts started",
                     "Claude Code · Sent “add an RSI”",
                     "Claude Code · Done · Added RSI(14) on pos:0.",
                     "Claude Code · Sent “now a MACD”",
                     "Claude Code · Done · Added RSI(14) on pos:0.",
                 ]
             );
-            assert!(window.trade.toasts.borrow().is_some(), "somewhere for the toasts, with no login");
+            assert!(log.entries().iter().all(|entry| !entry.confirms), "no toast when all goes well");
+            assert!(window.trade.toasts.borrow().is_none(), "nothing toasted");
+            let done = log.entries().into_iter().find(|entry| entry.text.starts_with("Done")).unwrap();
+            assert_eq!(done.detail.as_deref(), Some("“add an RSI”\n\nAdded RSI(14) on pos:0.\nAnything else?"));
             let asked = asked.lock().unwrap();
             assert!(asked[0].arguments.last().unwrap().ends_with("\n\nUse Sonnet."));
             assert!(asked[0].arguments.windows(2).any(|pair| pair == ["--model", "haiku"]));
@@ -283,33 +255,42 @@ mod tests {
 
     #[test]
     fn what_becomes_of_a_dictation_is_said() {
-        let sent = said_of(Event::Started { agent: "Claude Code".into(), said: "add an RSI".into() });
-        assert_eq!(sent.line(), "Claude Code · Sent “add an RSI”");
-        assert!(sent.confirms);
-
-        let done = said_of(Event::Done {
-            agent: "Claude Code".into(),
-            said: "add an RSI".into(),
-            reply: Some("Added RSI(14) on pos:0 ES 5m.\n\nAnything else?".into()),
-        });
-        assert_eq!(done.line(), "Claude Code · Done · Added RSI(14) on pos:0 ES 5m.");
-        assert!(done.detail.unwrap().contains("Anything else?"));
-
-        let opened = said_of(Event::Opened { agent: "Pi".into(), said: "add an RSI".into() });
-        assert_eq!(opened.line(), "Pi · Opened in a terminal with “add an RSI”");
-        assert!(opened.confirms);
+        let lines = |event| said_of(event).iter().map(|entry| entry.line()).collect::<Vec<_>>();
+        let sent = Event::Started { agent: "Claude Code".into(), said: "add an RSI".into(), fresh: None };
+        assert_eq!(lines(sent), ["Claude Code · Sent “add an RSI”"]);
+        let afresh = Event::Started { agent: "Claude Code".into(), said: "add an RSI".into(), fresh: Some(Fresh::Idle) };
+        assert_eq!(
+            lines(afresh),
+            ["Claude Code · New conversation · nothing dictated for 30 minutes", "Claude Code · Sent “add an RSI”"]
+        );
+        assert_eq!(lines(Event::StartedOver), ["Agent · New conversation · you asked to start over"]);
+        let opened = Event::Opened { agent: "Pi".into(), said: "add an RSI".into() };
+        assert_eq!(lines(opened), ["Pi · Opened in a terminal with “add an RSI”"]);
 
         let failed = said_of(Event::Failed { said: "add an RSI".into(), why: "No default agent".into(), detail: None });
-        assert_eq!(failed.level, Level::Error);
-        assert!(!failed.confirms);
-        assert_eq!(failed.detail.as_deref(), Some("“add an RSI”"));
+        assert_eq!(failed[0].level, Level::Error);
+        assert!(failed[0].confirms, "a failure is the one thing toasted");
     }
 
+    /// A failed turn is toasted, with somewhere for the toast to show
+    /// though nobody is signed in to trade.
     #[test]
-    fn a_long_dictation_is_cut_short_in_a_toast() {
-        let long = "word ".repeat(40);
-        let quote = quoted(&long);
-        assert!(quote.chars().count() <= QUOTE);
-        assert!(quote.ends_with('…'));
+    fn a_failed_dictation_is_toasted() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = crate::ui::window::trade::tests::window(&store);
+            let log = crate::ui::window::log::tests::private(&window);
+            window.start_dictation_in(World {
+                default_agent: Box::new(String::new),
+                invocation: Box::new(|_, _| unreachable!()),
+                run: Box::new(|_| unreachable!()),
+                terminal: Box::new(|_| unreachable!()),
+                launch: Box::new(|_| unreachable!()),
+            });
+            window.dictated("add an RSI".into());
+            let failed = || log.entries().iter().any(|entry| entry.level == Level::Error);
+            assert!(crate::ui::window::trade::tests::settle(&window, failed), "{:?}", log.entries());
+            assert!(window.trade.toasts.borrow().is_some(), "somewhere for the toast");
+        });
     }
 }

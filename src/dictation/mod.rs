@@ -39,7 +39,12 @@ pub const IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// The words that open a conversation.
 pub fn opening(said: &str, context: &str) -> String {
-    let mut prompt = format!("The user is in Omacharts and said: \"{}\". Use the `omacharts` CLI to do it.", said.trim());
+    let said = said.trim();
+    let stop = match said.ends_with(['.', '!', '?', '…']) {
+        true => "",
+        false => ".",
+    };
+    let mut prompt = format!("The user is in Omacharts and said: \"{said}\"{stop} Use the `omacharts` CLI to do it.");
     let context = context.trim();
     if !context.is_empty() {
         prompt.push_str("\n\n");
@@ -71,6 +76,42 @@ pub fn is_start_over(said: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct Conversation {
     going: Option<Going>,
+    /// Why the last one ended, when it did.
+    ended: Option<Fresh>,
+}
+
+/// Why a dictation starts a new conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fresh {
+    /// The first since Omacharts started.
+    First,
+    /// Nothing dictated for [`IDLE`].
+    Idle,
+    /// Omarchy's default agent is another.
+    Agent,
+    /// Another model was chosen for it.
+    Model,
+    /// The extra context was changed.
+    Context,
+    /// The last turn failed.
+    Failed,
+    /// Somebody said "start over".
+    Asked,
+}
+
+impl Fresh {
+    /// Why, in the Log's words.
+    pub fn words(self) -> &'static str {
+        match self {
+            Fresh::First => "the first dictation since Omacharts started",
+            Fresh::Idle => "nothing dictated for 30 minutes",
+            Fresh::Agent => "the default agent changed",
+            Fresh::Model => "the model changed",
+            Fresh::Context => "the context changed",
+            Fresh::Failed => "the last request failed",
+            Fresh::Asked => "you asked to start over",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -99,9 +140,27 @@ impl Conversation {
         }
     }
 
+    /// Why `said` would start a new conversation, or nothing when it
+    /// continues the one going.
+    pub fn fresh(&self, agent: Agent, model: &str, context: &str, now: Instant) -> Option<Fresh> {
+        let Some(going) = &self.going else { return Some(self.ended.unwrap_or(Fresh::First)) };
+        if going.agent != agent {
+            Some(Fresh::Agent)
+        } else if going.model != model.trim() {
+            Some(Fresh::Model)
+        } else if going.context != context.trim() {
+            Some(Fresh::Context)
+        } else if now.saturating_duration_since(going.last) >= IDLE {
+            Some(Fresh::Idle)
+        } else {
+            None
+        }
+    }
+
     /// A turn finished, in `session` if the agent named one.
     pub fn finished(&mut self, agent: Agent, model: &str, context: &str, session: Option<String>, now: Instant) {
         let session = session.or_else(|| self.going.as_ref().map(|going| going.session.clone()));
+        self.ended = None;
         self.going = session.map(|session| Going {
             agent,
             model: model.trim().to_string(),
@@ -111,9 +170,10 @@ impl Conversation {
         });
     }
 
-    /// Start the next dictation afresh.
-    pub fn forget(&mut self) {
+    /// Start the next dictation afresh, because of `why`.
+    pub fn forget(&mut self, why: Fresh) {
         self.going = None;
+        self.ended = Some(why);
     }
 
     pub fn is_going(&self) -> bool {
@@ -124,8 +184,9 @@ impl Conversation {
 /// What became of a dictation, for the window to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The agent has started on it.
-    Started { agent: String, said: String },
+    /// The agent has started on it, in a new conversation and why when it
+    /// keeps one.
+    Started { agent: String, said: String, fresh: Option<Fresh> },
     /// The agent finished, with its last words if it had any.
     Done { agent: String, said: String, reply: Option<String> },
     /// Omarchy opened an agent dictation does not run itself, in a
@@ -289,7 +350,7 @@ impl Dispatcher {
 /// asked afresh each time, so a change there needs no restart here.
 fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), said: String, settings: &Settings) {
     if is_start_over(&said) {
-        conversation.forget();
+        conversation.forget(Fresh::Asked);
         events(Event::StartedOver);
         return;
     }
@@ -298,7 +359,7 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
         Detected::Known(agent) => agent,
         Detected::None => return events(Event::Failed { said, why: agent::NO_AGENT.into(), detail: None }),
         Detected::Other { name, .. } => {
-            conversation.forget();
+            conversation.forget(Fresh::Agent);
             let invocation = (world.terminal)(opening(&said, context));
             return match (world.launch)(&invocation) {
                 Ok(()) => events(Event::Opened { agent: name, said }),
@@ -307,15 +368,17 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
         }
     };
     let model = settings.model(agent);
-    let (prompt, session) = conversation.prompt(agent, model, context, &said, Instant::now());
+    let now = Instant::now();
+    let fresh = conversation.fresh(agent, model, context, now).filter(|_| agent.resumes());
+    let (prompt, session) = conversation.prompt(agent, model, context, &said, now);
     let session = session.or_else(|| agent.new_session());
-    events(Event::Started { agent: agent.label().into(), said: said.clone() });
+    events(Event::Started { agent: agent.label().into(), said: said.clone(), fresh });
     let arguments = agent.arguments(&prompt, session.as_deref(), Some(model));
     let invocation = (world.invocation)(agent, arguments);
     let output = match (world.run)(&invocation) {
         Ok(output) => output,
         Err(why) => {
-            conversation.forget();
+            conversation.forget(Fresh::Failed);
             return events(Event::Failed { said, why: format!("{} could not run: {why}", agent.label()), detail: None });
         }
     };
@@ -325,7 +388,7 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
     });
     match failure {
         Some(why) => {
-            conversation.forget();
+            conversation.forget(Fresh::Failed);
             let detail = Some(output.stderr.trim().to_string()).filter(|s| !s.is_empty());
             events(Event::Failed { said, why: format!("{} could not do it: {why}", agent.label()), detail });
         }
@@ -335,7 +398,7 @@ fn turn(world: &World, conversation: &mut Conversation, events: &dyn Fn(Event), 
             let session = read.session.or(session).filter(|_| agent.resumes());
             match session {
                 Some(session) => conversation.finished(agent, model, context, Some(session), Instant::now()),
-                None => conversation.forget(),
+                None => conversation.forget(Fresh::First),
             }
             events(Event::Done { agent: agent.label().into(), said, reply: read.reply });
         }
@@ -361,6 +424,12 @@ mod tests {
             opening("add an RSI", "  Use Sonnet\n"),
             "The user is in Omacharts and said: \"add an RSI\". Use the `omacharts` CLI to do it.\n\nUse Sonnet"
         );
+        assert_eq!(
+            opening("Add an RSI. ", ""),
+            "The user is in Omacharts and said: \"Add an RSI.\" Use the `omacharts` CLI to do it.",
+            "one full stop, not two"
+        );
+        assert!(opening("Is gold up?", "").contains("said: \"Is gold up?\" Use"));
     }
 
     #[test]
@@ -391,8 +460,16 @@ mod tests {
         assert_eq!(conversation.prompt(Agent::Claude, "opus", "ctx", "c", now).1, None);
         assert_eq!(conversation.prompt(Agent::Claude, "", "Use Sonnet", "c", now).1, None);
 
-        conversation.forget();
+        assert_eq!(conversation.fresh(Agent::Claude, "", "ctx", now + IDLE), Some(Fresh::Idle));
+        assert_eq!(conversation.fresh(Agent::Codex, "", "ctx", now), Some(Fresh::Agent));
+        assert_eq!(conversation.fresh(Agent::Claude, "opus", "ctx", now), Some(Fresh::Model));
+        assert_eq!(conversation.fresh(Agent::Claude, "", "Use Sonnet", now), Some(Fresh::Context));
+        assert_eq!(conversation.fresh(Agent::Claude, "", "ctx", now), None);
+
+        conversation.forget(Fresh::Asked);
         assert_eq!(conversation.prompt(Agent::Claude, "", "ctx", "c", now).1, None);
+        assert_eq!(conversation.fresh(Agent::Claude, "", "ctx", now), Some(Fresh::Asked));
+        assert_eq!(Conversation::default().fresh(Agent::Claude, "", "", now), Some(Fresh::First));
     }
 
     /// A world whose agent is a closure: what it was asked, in order.

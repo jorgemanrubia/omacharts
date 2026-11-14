@@ -233,6 +233,11 @@ pub trait Live {
     /// Write the arrangement out now, so a command about to read or change it
     /// sees what is on screen.
     fn flush_workspace(&self);
+    /// What is selected on chart `pane` of the chartbook on screen: held by
+    /// the window and nowhere else, so nothing without one.
+    fn selection(&self, _pane: u32) -> Option<Selection> {
+        None
+    }
     /// The focused chart's clock, used to read ruler anchors as the chart reads time.
     fn measurement_zone(&self) -> chrono_tz::Tz { chrono_tz::UTC }
 
@@ -1063,7 +1068,20 @@ pub fn usage() -> String {
 /// an arrangement builds widgets that hold the window, and a method that does
 /// that cannot be handed a bare reference. The alternative, recovering an `Rc`
 /// from a `&Window`, is a use-after-free waiting to happen.
+/// What somebody has selected on a chart: the drawings wearing grips, and
+/// the indicator picked in its legend or on its line. One or the other: taking
+/// an indicator lets go of the drawings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Selection {
+    pub drawings: Vec<i64>,
+    pub indicator: Option<u32>,
+}
+
 impl Live for Rc<crate::ui::Window> {
+    fn selection(&self, pane: u32) -> Option<Selection> {
+        crate::ui::Window::selection_on(self, pane)
+    }
+
     fn measurement_zone(&self) -> chrono_tz::Tz {
         crate::ui::Window::measurement_zone(self)
     }

@@ -2251,6 +2251,27 @@ mod tests {
         });
     }
 
+    /// Opening the page runs no agent: its models are the ones kept in
+    /// Omacharts and its own is read from a file. An agent's command runs
+    /// for a dictation and nothing else.
+    #[test]
+    fn opening_the_agent_page_runs_no_agent() {
+        use crate::dictation::agent::{self, Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            for each in Agent::ALL {
+                let page = agent_groups_for(&store, Detected::Known(each), agent::offered);
+                let model = page.model.expect("a model to choose");
+                let listed = each.models().len() as u32 + 1;
+                settle_until(|| model.model().is_some_and(|list| list.n_items() >= listed));
+                assert!(model.model().unwrap().n_items() >= listed, "{each:?}");
+            }
+            let spawned = agent::SPAWNED.lock().unwrap().clone();
+            let agents: Vec<&str> = Agent::ALL.iter().map(|each| each.program()).collect();
+            assert!(!spawned.iter().any(|program| agents.contains(&program.as_str())), "{spawned:?}");
+        });
+    }
+
     /// Any other agent Omarchy offers is opened by Omarchy with its own
     /// model, so there is no Model to choose; and none at all is said.
     #[test]

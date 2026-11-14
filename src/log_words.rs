@@ -251,6 +251,68 @@ pub fn unread_symbol(source: &str, symbol: &str) -> Entry {
     Entry::warning(source, format!("{symbol} · Not a contract Omacharts can chart, so what is held or working in it is on no chart"))
 }
 
+/// A dictation sent to the agent: "Sent “add an RSI”", the words whole in
+/// the details. Said in the Log only; the glow says the agent is working.
+pub fn dictation_sent(agent: &str, said: &str) -> Entry {
+    Entry::info(agent, format!("Sent “{}”", quoted(said))).detail(said.trim())
+}
+
+/// A dictation waiting for the one the agent is on, and `ahead` more.
+pub fn dictation_queued(said: &str, ahead: usize) -> Entry {
+    let waiting = match ahead {
+        1 => "after the one the agent is on".to_string(),
+        n => format!("after {n} more"),
+    };
+    Entry::info("Agent", format!("Queued “{}” {waiting}", quoted(said))).detail(said.trim())
+}
+
+/// A dictation starting a new conversation with the agent, and `why`.
+pub fn dictation_afresh(agent: &str, why: &str) -> Entry {
+    Entry::info(agent, format!("New conversation · {why}"))
+}
+
+/// The agent done with a dictation: its answer's first line, and the words
+/// and the whole answer, line by line, in the details.
+pub fn dictation_done(agent: &str, said: &str, reply: Option<&str>) -> Entry {
+    let first = reply.and_then(|reply| reply.lines().map(str::trim).find(|line| !line.is_empty()));
+    match (first, reply) {
+        (Some(first), Some(reply)) => {
+            Entry::info(agent, format!("Done · {}", quoted(first))).detail(format!("“{}”\n\n{}", said.trim(), reply.trim()))
+        }
+        _ => Entry::info(agent, format!("Done “{}”", quoted(said))).detail(said.trim()),
+    }
+}
+
+/// A dictation handed to an agent Omacharts does not run itself, in a
+/// terminal Omarchy opened.
+pub fn dictation_opened(agent: &str, said: &str) -> Entry {
+    Entry::info(agent, format!("Opened in a terminal with “{}”", quoted(said))).detail(said.trim())
+}
+
+/// A dictation that came to nothing: no default agent, a launch that
+/// failed, a turn that failed, a terminal Omarchy would not open. The one
+/// thing about dictation said in a toast, the words and what the agent said
+/// in the details.
+pub fn dictation_failed(said: &str, why: &str, detail: Option<&str>) -> Entry {
+    let detail = match detail {
+        Some(detail) => format!("“{}”\n\n{}", said.trim(), detail.trim()),
+        None => format!("“{}”", said.trim()),
+    };
+    Entry::error("Agent", why).detail(detail).confirming()
+}
+
+/// The longest a dictation's words are quoted in a line; the details have
+/// them whole.
+const QUOTE: usize = 80;
+
+fn quoted(text: &str) -> String {
+    let text = text.trim();
+    match text.chars().count() > QUOTE {
+        true => format!("{}…", text.chars().take(QUOTE - 1).collect::<String>().trim_end()),
+        false => text.to_string(),
+    }
+}
+
 fn capitalised(line: &str) -> String {
     let mut chars = line.trim().chars();
     match chars.next() {
@@ -364,5 +426,37 @@ mod tests {
         let entry = trouble("Backups", "Settings not backed up", "disk I/O error (code 10)");
         assert_eq!(entry.text, "Settings not backed up");
         assert_eq!(entry.detail.as_deref(), Some("disk I/O error (code 10)"));
+    }
+
+    #[test]
+    fn a_dictation_is_said_in_the_log_and_toasted_only_when_it_fails() {
+        let sent = dictation_sent("Claude Code", "add an RSI");
+        assert_eq!(sent.line(), "Claude Code · Sent “add an RSI”");
+        let queued = dictation_queued("now a MACD", 2);
+        assert_eq!(queued.line(), "Agent · Queued “now a MACD” after 2 more");
+        let afresh = dictation_afresh("Claude Code", "the model changed");
+        assert_eq!(afresh.line(), "Claude Code · New conversation · the model changed");
+        let done = dictation_done("Claude Code", "add an RSI", Some("\nAdded RSI(14) on pos:0 ES 5m.\n\nAnything else?"));
+        assert_eq!(done.line(), "Claude Code · Done · Added RSI(14) on pos:0 ES 5m.");
+        assert_eq!(done.detail.as_deref(), Some("“add an RSI”\n\nAdded RSI(14) on pos:0 ES 5m.\n\nAnything else?"));
+        let quiet = dictation_done("Claude Code", "add an RSI", None);
+        assert_eq!(quiet.line(), "Claude Code · Done “add an RSI”");
+        let opened = dictation_opened("Pi", "add an RSI");
+        assert_eq!(opened.line(), "Pi · Opened in a terminal with “add an RSI”");
+        for entry in [&sent, &queued, &afresh, &done, &quiet, &opened] {
+            assert_eq!(entry.level, Level::Info, "{}", entry.line());
+            assert!(!entry.confirms, "no toast for {}", entry.line());
+        }
+
+        let failed = dictation_failed("add an RSI", "No default agent", None);
+        assert_eq!(failed.level, Level::Error);
+        assert!(failed.confirms, "a failure is toasted");
+        assert_eq!(failed.detail.as_deref(), Some("“add an RSI”"));
+        let failed = dictation_failed("add an RSI", "Claude Code failed", Some("rate limited\n"));
+        assert_eq!(failed.detail.as_deref(), Some("“add an RSI”\n\nrate limited"));
+
+        let long = "word ".repeat(40);
+        let line = dictation_sent("Claude Code", &long).text;
+        assert!(line.chars().count() <= QUOTE + 8 && line.ends_with("…”"));
     }
 }

@@ -2810,6 +2810,67 @@ mod outside_change_tests {
         });
     }
 
+    /// What is selected in the window is what a command calls selected:
+    /// marked in both lists, the only rows `--selected` keeps, and what
+    /// `--id selected` changes or removes.
+    #[test]
+    fn what_is_selected_in_the_window_is_what_a_command_calls_selected() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            level(&window, "pos:0", 100.0);
+            level(&window, "pos:0", 200.0);
+            command(&window, &["chart", "indicator", "add", "sma", "--period", "20"]);
+            command(&window, &["chart", "indicator", "add", "sma", "--period", "50"]);
+            let json = |words: &[&str]| -> serde_json::Value { serde_json::from_str(&command(&window, words)).expect("JSON") };
+            let drawings = json(&["chart", "drawing", "list", "--json"]);
+            let ids: Vec<i64> = drawings["drawings"].as_array().unwrap().iter().map(|d| d["id"].as_i64().unwrap()).collect();
+            assert_eq!(ids.len(), 2);
+            assert!(drawings["drawings"].as_array().unwrap().iter().all(|d| d["selected"] == false), "nothing selected yet");
+            let refused = crate::cli::run(
+                &["omacharts", "chart", "drawing", "remove", "--id", "selected"].map(String::from),
+                &window.store,
+                Some(&window as &dyn crate::cli::Live),
+                &crate::cli::Here,
+            );
+            assert_eq!(refused.code, crate::cli::EXIT_NOT_FOUND, "{}", refused.err);
+
+            let pane = window.focused_pane();
+            let high = ids.iter().copied().find(|id| pane.view.drawings().iter().any(|d| d.id == *id && d.from.price == 200.0)).unwrap();
+            pane.view.select_ids(&[high]);
+            let selected = json(&["chart", "drawing", "list", "--selected", "--json"]);
+            assert_eq!(selected["drawings"].as_array().map(Vec::len), Some(1));
+            assert_eq!((&selected["drawings"][0]["id"], &selected["drawings"][0]["selected"]), (&serde_json::json!(high), &serde_json::json!(true)));
+            let text = command(&window, &["chart", "drawing", "list"]);
+            assert_eq!(text.lines().filter(|l| l.contains("· selected")).count(), 1, "{text}");
+            command(&window, &["chart", "drawing", "set", "--id", "selected", "--color", "#ff0000"]);
+            let after = json(&["chart", "drawing", "list", "--json"]);
+            let red = after["drawings"].as_array().unwrap().iter().find(|d| d["id"] == serde_json::json!(high)).unwrap();
+            assert_eq!(red["style"]["color"], "#ff0000");
+            command(&window, &["chart", "drawing", "remove", "--id", "selected"]);
+            assert_eq!(levels(&window.focused_pane()), vec![100.0], "the selected one went, and only it");
+
+            let all = json(&["chart", "indicator", "list", "--json"]);
+            let slow = all["indicators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["params"].to_string().contains("50"))
+                .and_then(|i| i["id"].as_u64())
+                .expect("SMA 50") as u32;
+            window.focused_pane().view.pick(Some(slow));
+            let indicators = json(&["chart", "indicator", "list", "--selected", "--json"]);
+            assert_eq!(indicators["indicators"].as_array().map(Vec::len), Some(1));
+            assert_eq!((&indicators["indicators"][0]["id"], &indicators["indicators"][0]["selected"]), (&serde_json::json!(slow), &serde_json::json!(true)));
+            command(&window, &["chart", "indicator", "set", "--id", "selected", "--period", "100"]);
+            command(&window, &["chart", "indicator", "remove", "--id", "selected"]);
+            let left = json(&["chart", "indicator", "list", "--json"]);
+            let left = left["indicators"].as_array().unwrap();
+            assert_eq!(left.len(), 1, "only the selected SMA went: {left:?}");
+            assert_ne!(left[0]["id"], serde_json::json!(slow));
+        });
+    }
+
     /// The volume pane's Opacity sits right under its Colouring, starts at
     /// 85%, reaches the pane from its slider and follows a command.
     #[test]
@@ -5528,6 +5589,15 @@ impl Window {
         self.panes.borrow().iter().find(|p| p.id == id).cloned()
     }
 
+    /// What is selected on chart `id`, for a command to act on "this one".
+    pub fn selection_on(&self, id: u32) -> Option<crate::cli::Selection> {
+        let pane = self.pane(id)?;
+        Some(crate::cli::Selection {
+            drawings: pane.view.selected_drawings().iter().map(|drawing| drawing.id).collect(),
+            indicator: pane.view.picked(),
+        })
+    }
+
     /// Bring the bars before `first`, chart `id`'s first bar, now that its
     /// view has come near it: for a stitched root, whose first load reaches
     /// back only so far, the stretch before it, read off the window's thread
@@ -6663,6 +6733,19 @@ impl Window {
             .iter()
             .filter_map(|pane| Some((pane.uid.borrow().clone(), pane.view.held_range()?)))
             .collect();
+        // And what is selected: a command that reads what is selected and
+        // then changes it, as an agent asked to "make this red" does, finds
+        // it still selected for the next one.
+        let selected: HashMap<String, (Vec<i64>, Option<u32>)> = self
+            .panes
+            .borrow()
+            .iter()
+            .map(|pane| {
+                let ids: Vec<i64> = pane.view.selected_drawings().iter().map(|d| d.id).filter(|id| *id != 0).collect();
+                (pane.uid.borrow().clone(), (ids, pane.view.picked()))
+            })
+            .filter(|(_, (ids, picked))| !ids.is_empty() || picked.is_some())
+            .collect();
 
         if !self.restore_workspace() {
             // An arrangement that cannot be rebuilt leaves the charts alone:
@@ -6679,6 +6762,14 @@ impl Window {
                 if let Some(range) = held.get(pane.uid.borrow().as_str()) {
                     pane.view.show_range(*range);
                 }
+            }
+        }
+
+        for pane in self.panes.borrow().iter() {
+            match selected.get(pane.uid.borrow().as_str()) {
+                Some((ids, _)) if !ids.is_empty() => pane.view.select_ids(ids),
+                Some((_, Some(picked))) => pane.view.pick(Some(*picked)),
+                _ => {}
             }
         }
 

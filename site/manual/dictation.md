@@ -74,19 +74,18 @@ each dictation, with the account Omarchy has selected for it.
 | Agent | Runs | Keeps the conversation | Model choice |
 |---|---|---|---|
 | Claude Code | In the background | Yes | Sonnet, Opus, Haiku |
-| Codex | In the background | Yes | The models Codex lists |
-| Cursor CLI | In the background | Yes | What `cursor-agent models` lists |
+| Codex | In the background | Yes | A short list of named models |
+| Cursor CLI | In the background | Yes | A short list of named models |
 | GitHub Copilot | In the background | Yes | Auto, and a short list of named models |
-| OpenCode | In the background | No | What `opencode models` lists |
-| Antigravity | In the background | No | What `agy models` lists |
+| OpenCode | In the background | No | A short list of named models |
+| Antigravity | In the background | No | A short list of named models |
 | Any other | In a terminal, a new one each time | No | None. It uses its own |
 
-Nobody is there to answer a question, so every agent runs with its own way
-of not asking:
-
-- **Claude Code** may run `omacharts` and load skills. Anything else is refused.
-- **The other five** run with their permission prompts skipped, Codex and Cursor outside their sandboxes too, which would keep them from reaching the window. They can run any command, not only `omacharts`.
-- **Any other agent** is opened by `omarchy agent prompt`, with the flags Omarchy gives it.
+Every agent runs with the same permissions Omarchy gives it when it launches
+it, such as Claude Code's auto mode, and nothing more. What you allow or deny
+in the agent's own settings decides the rest. A command the agent may not run
+in the background is refused, and its reply in the Log says so; allow it in
+the agent's settings if you want dictation to do it.
 
 ## Preferences
 
@@ -120,6 +119,19 @@ omacharts chart split horizontal
 omacharts chart set --chart pos:1 --symbol SI --resolution 15m
 omacharts chart indicator add rsi --chart pos:1
 ```
+
+With a line selected on the chart:
+
+> **You:** Make that one rose.
+
+```
+omacharts chart drawing list --selected --json
+omacharts chart drawing set --id selected --color Rose
+```
+
+What is selected in the window is what the agent reads first for "this" or
+"that"; with nothing selected it reads the chart's drawings and indicators
+and picks the one you meant.
 
 > **You:** Start over.
 

@@ -20,6 +20,10 @@
 //! name their session only in output whose shape their help does not give,
 //! so each of their turns is a new conversation rather than a guess.
 //!
+//! Only a dictation runs an agent's command: [`run`] for a turn, [`launch`]
+//! for Omarchy's terminal. The models Preferences offers are kept here, and
+//! the one an agent uses by default is read from its settings file.
+//!
 //! Any other agent Omarchy offers is not run here. Its dictations go to
 //! `omarchy-agent-prompt`, which opens it in a terminal, with Omarchy's own
 //! flags, its own default model and a new conversation each time.
@@ -105,17 +109,6 @@ fn omarchy_name(id: &str) -> Option<&'static str> {
     })
 }
 
-/// Where an agent's models come from, for Preferences to offer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Models {
-    /// These, by name and by what the agent takes.
-    Fixed(&'static [(&'static str, &'static str)]),
-    /// The ones Codex lists in its `models_cache.json`.
-    CodexCache,
-    /// What this command prints, one to a line.
-    Listed(&'static [&'static str]),
-}
-
 impl Agent {
     pub const ALL: [Agent; 6] =
         [Agent::Claude, Agent::Codex, Agent::Cursor, Agent::Copilot, Agent::OpenCode, Agent::Antigravity];
@@ -182,24 +175,48 @@ impl Agent {
         (self == Agent::Copilot).then(uuid)
     }
 
-    /// The models Preferences offers, after Default.
-    pub fn models(self) -> Models {
+    /// The models Preferences offers after the agent's own, by name and by
+    /// what the agent takes. Kept here rather than asked of the agent: its
+    /// command is run for a dictation and for nothing else. The ids are the
+    /// ones each agent's own help, docs or model list give.
+    pub fn models(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            // The aliases `claude --help` and its docs name, each the latest of its kind.
-            Agent::Claude => Models::Fixed(&[("Sonnet", "sonnet"), ("Opus", "opus"), ("Haiku", "haiku")]),
-            Agent::Codex => Models::CodexCache,
-            Agent::Cursor => Models::Listed(&["cursor-agent", "models"]),
-            // Copilot has no command that lists them; these are the ones
-            // its help and its docs name, with `auto` letting it choose.
-            Agent::Copilot => Models::Fixed(&[
+            // The aliases `claude --help` and its docs name, each the latest
+            // of its kind.
+            Agent::Claude => &[("Sonnet", "sonnet"), ("Opus", "opus"), ("Haiku", "haiku")],
+            Agent::Codex => &[
+                ("GPT-6 Astra", "gpt-6-astra"),
+                ("GPT-5.6 Sol", "gpt-5.6-sol"),
+                ("GPT-5.6 Terra", "gpt-5.6-terra"),
+                ("GPT-5.6 Luna", "gpt-5.6-luna"),
+                ("GPT-5.5", "gpt-5.5"),
+            ],
+            Agent::Cursor => &[
+                ("GPT-5", "gpt-5"),
+                ("Claude Sonnet 4 Thinking", "sonnet-4-thinking"),
+                ("Claude Opus 4.8", "claude-opus-4-8"),
+            ],
+            // `auto` lets Copilot choose.
+            Agent::Copilot => &[
                 ("Auto", "auto"),
                 ("GPT-6 Astra", "gpt-6-astra"),
                 ("GPT-5.6 Sol", "gpt-5.6-sol"),
                 ("GPT-5.3 Codex", "gpt-5.3-codex"),
                 ("Claude Haiku 4.5", "claude-haiku-4.5"),
-            ]),
-            Agent::OpenCode => Models::Listed(&["opencode", "models"]),
-            Agent::Antigravity => Models::Listed(&["agy", "models"]),
+            ],
+            // OpenCode's own models, `provider/model`, which need no account
+            // of another provider's.
+            Agent::OpenCode => &[
+                ("Big Pickle", "opencode/big-pickle"),
+                ("GLM 5.3 Flash", "opencode/glm-5.3-flash-free"),
+                ("DeepSeek V4.1 Flash", "opencode/deepseek-v4.1-flash-free"),
+                ("MiniMax M3.1 Flash", "opencode/minimax-m3.1-flash-free"),
+            ],
+            Agent::Antigravity => &[
+                ("Gemini 3.8 Flash (high)", "gemini-3.8-flash-high"),
+                ("Gemini 3.1 Pro (preview)", "gemini-3.1-pro-preview"),
+                ("Gemini 3.5 Flash Lite", "gemini-3.5-flash-lite"),
+            ],
         }
     }
 
@@ -210,27 +227,26 @@ impl Agent {
         let mut push = |items: &[&str]| arguments.extend(items.iter().map(|item| item.to_string()));
         let model = model.map(str::trim).filter(|model| !model.is_empty());
         match self {
-            // It may run `omacharts` and load skills, and nothing else:
-            // anything more is refused rather than asked about, since nobody
-            // is there to answer.
+            // Every agent runs with the permissions `omarchy-agent` gives it,
+            // in the form its one headless turn takes them; nothing more.
             Agent::Claude => {
-                push(&["-p", "--output-format", "json", "--permission-mode", "dontAsk"]);
+                push(&["-p", "--output-format", "json", "--permission-mode", "auto"]);
                 if let Some(session) = session {
                     push(&["--resume", session]);
                 }
                 if let Some(model) = model {
                     push(&["--model", model]);
                 }
-                push(&["--allowedTools", "Bash(omacharts:*)", "Skill", "--", prompt]);
+                push(&["--", prompt]);
             }
-            // Outside Codex's sandbox, which would keep `omacharts` from
-            // reaching the window.
+            // `--approve-for-me` belongs to `exec`, before `resume`, which
+            // does not take it.
             Agent::Codex => {
-                push(&["exec"]);
+                push(&["exec", "--approve-for-me"]);
                 if session.is_some() {
                     push(&["resume"]);
                 }
-                push(&["--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"danger-full-access\""]);
+                push(&["--json", "--skip-git-repo-check"]);
                 if let Some(model) = model {
                     push(&["-m", model]);
                 }
@@ -239,11 +255,9 @@ impl Agent {
                 }
                 push(&["--", prompt]);
             }
-            // Commands run without asking, the folder is trusted without
-            // asking, and outside its sandbox, as Codex. The agent
-            // subcommand is named, as `omarchy agent` names it.
+            // The agent subcommand is named, as `omarchy-agent` names it.
             Agent::Cursor => {
-                push(&["-p", "--output-format", "json", "--force", "--trust", "--sandbox", "disabled"]);
+                push(&["-p", "--output-format", "json", "--yolo", "--trust"]);
                 if let Some(session) = session {
                     push(&["--resume", session]);
                 }
@@ -252,10 +266,9 @@ impl Agent {
                 }
                 push(&["agent", "--", prompt]);
             }
-            // Its answer alone, every tool allowed, as `omarchy agent`
-            // allows them, and no question form nobody would answer.
+            // Its answer alone, and no question form nobody would answer.
             Agent::Copilot => {
-                push(&["--prompt", prompt, "--silent", "--allow-all-tools", "--no-ask-user"]);
+                push(&["--prompt", prompt, "--silent", "--allow-all", "--no-ask-user"]);
                 if let Some(session) = session {
                     push(&["--session-id", session]);
                 }
@@ -263,8 +276,7 @@ impl Agent {
                     push(&["--model", model]);
                 }
             }
-            // Permissions approved, as `omarchy agent` approves them, and
-            // the session kept out of the list of the person's own.
+            // The session kept out of the list of the person's own.
             Agent::OpenCode => {
                 push(&["run", "--auto", "--archived"]);
                 if let Some(model) = model {
@@ -403,6 +415,7 @@ pub const LONGEST: Duration = Duration::from_secs(10 * 60);
 
 /// Run `invocation` to the end, or until it has taken `longest`.
 pub fn run(invocation: &Invocation, longest: Duration) -> Result<Output, String> {
+    spawned(invocation);
     let mut command = Command::new(&invocation.program);
     command
         .args(&invocation.arguments)
@@ -476,11 +489,24 @@ pub fn omarchy_account_home(agent: Agent) -> Option<String> {
 }
 
 
+/// Every program [`run`] and [`launch`] started, for the tests to check
+/// that only a dictation starts an agent.
+#[cfg(test)]
+pub static SPAWNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Note that `invocation` is about to start. These two are the only places
+/// an agent's command is started, and only a dictation calls them.
+fn spawned(_invocation: &Invocation) {
+    #[cfg(test)]
+    SPAWNED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(_invocation.program.clone());
+}
+
 /// Open the agent in a terminal with `invocation`, as Omarchy does, and
 /// leave it there: an error only when the launch itself fails at once.
 /// What it says goes to `log`, rather than a pipe the terminal it opens
 /// could hold open.
 pub fn launch(invocation: &Invocation, log: &std::path::Path) -> Result<(), String> {
+    spawned(invocation);
     let stderr = std::fs::File::create(log).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
     let mut child = Command::new(&invocation.program)
         .args(&invocation.arguments)
@@ -523,30 +549,6 @@ pub fn model_setting(agent: Agent) -> String {
 /// What every agent's model setting starts with.
 pub const MODEL_PREFIX: &str = "agent_model.";
 
-/// The models to offer for `agent`, by name and by what it takes, after
-/// Default. Empty when they cannot be found out.
-pub fn available_models(agent: Agent) -> Vec<(String, String)> {
-    match agent.models() {
-        Models::Fixed(models) => models.iter().map(|(name, id)| (name.to_string(), id.to_string())).collect(),
-        Models::CodexCache => {
-            let home = account_folder(agent, ".codex");
-            codex_models(&std::fs::read_to_string(home.join("models_cache.json")).unwrap_or_default())
-        }
-        Models::Listed(command) => {
-            let invocation = Invocation {
-                program: command[0].to_string(),
-                arguments: command[1..].iter().map(|word| word.to_string()).collect(),
-                directory: std::env::temp_dir(),
-                environment: vec![],
-            };
-            match run(&invocation, Duration::from_secs(20)) {
-                Ok(output) if output.success => listed_models(&output.stdout),
-                _ => Vec::new(),
-            }
-        }
-    }
-}
-
 /// What Preferences offers for an agent: the model its own settings name,
 /// when they say, and the models to choose instead.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -558,9 +560,11 @@ pub struct Offered {
     pub models: Vec<(String, String)>,
 }
 
-/// What Preferences offers for `agent`, found out without running it.
+/// What Preferences offers for `agent`, found out without running it: its
+/// settings file read, and the list kept here.
 pub fn offered(agent: Agent) -> Offered {
-    Offered { default: default_model(agent), models: available_models(agent) }
+    let models = agent.models().iter().map(|(name, id)| (name.to_string(), id.to_string())).collect();
+    Offered { default: default_model(agent), models }
 }
 
 /// The folder an agent keeps the account Omarchy has selected in: the
@@ -631,50 +635,6 @@ pub fn default_label(offered: &Offered) -> String {
     }
 }
 
-/// The models Codex lists, from its cache of them: those it shows in its
-/// own picker, by its name for them.
-pub fn codex_models(cache: &str) -> Vec<(String, String)> {
-    let Ok(cache) = serde_json::from_str::<Value>(cache) else { return Vec::new() };
-    let Some(models) = cache.get("models").and_then(Value::as_array) else { return Vec::new() };
-    models
-        .iter()
-        .filter(|model| model.get("visibility").and_then(Value::as_str) != Some("hide"))
-        .filter_map(|model| {
-            let id = model.get("slug").and_then(Value::as_str)?;
-            let name = model.get("display_name").and_then(Value::as_str).unwrap_or(id);
-            Some((name.to_string(), id.to_string()))
-        })
-        .collect()
-}
-
-/// The models a `models` command printed: a line each, its id first,
-/// `id - Name` when it gives a name. Headings, notes and errors, which
-/// are words rather than ids, are left out.
-pub fn listed_models(text: &str) -> Vec<(String, String)> {
-    let looks_like_id = |word: &str| {
-        let mut chars = word.chars();
-        chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
-            && word.chars().all(|c| c.is_ascii_alphanumeric() || "._/-[]=,@".contains(c))
-            && word.chars().any(|c| c.is_ascii_digit() || "/-.".contains(c))
-    };
-    let mut models: Vec<(String, String)> = Vec::new();
-    for line in text.lines().map(str::trim) {
-        let (id, name) = match line.split_once(" - ") {
-            Some((id, name)) => (id.trim(), name.trim()),
-            None => (line, line),
-        };
-        let id = id.trim_start_matches("* ").trim();
-        if line.ends_with(':') || id.contains(char::is_whitespace) || !looks_like_id(id) {
-            continue;
-        }
-        let name = name.trim_end_matches("(current)").trim_end_matches("(default)").trim();
-        if !models.iter().any(|(_, known)| known == id) {
-            models.push((name.to_string(), id.to_string()));
-        }
-    }
-    models
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,10 +660,7 @@ mod tests {
         let first = Agent::Claude.arguments("--add an RSI", None, None);
         assert_eq!(
             first,
-            [
-                "-p", "--output-format", "json", "--permission-mode", "dontAsk", "--allowedTools",
-                "Bash(omacharts:*)", "Skill", "--", "--add an RSI"
-            ]
+            ["-p", "--output-format", "json", "--permission-mode", "auto", "--", "--add an RSI"]
         );
         let next = Agent::Claude.arguments("now MACD", Some("abc"), Some("opus"));
         assert_eq!(&next[5..9], ["--resume", "abc", "--model", "opus"]);
@@ -713,12 +670,12 @@ mod tests {
     #[test]
     fn codex_runs_a_turn_headless_and_resumes_the_session() {
         let first = Agent::Codex.arguments("hi", None, None);
-        assert_eq!(first[0], "exec");
+        assert_eq!(&first[..2], ["exec", "--approve-for-me"]);
         assert!(first.contains(&"--json".to_string()));
         assert!(!first.contains(&"-m".to_string()));
         assert_eq!(&first[first.len() - 2..], ["--", "hi"]);
         let next = Agent::Codex.arguments("again", Some("t-1"), Some("gpt-5.5"));
-        assert_eq!(&next[..2], ["exec", "resume"]);
+        assert_eq!(&next[..3], ["exec", "--approve-for-me", "resume"]);
         assert_eq!(&next[next.len() - 5..], ["-m", "gpt-5.5", "t-1", "--", "again"]);
     }
 
@@ -727,10 +684,10 @@ mod tests {
         let first = Agent::Cursor.arguments("hi", None, None);
         assert_eq!(
             first,
-            ["-p", "--output-format", "json", "--force", "--trust", "--sandbox", "disabled", "agent", "--", "hi"]
+            ["-p", "--output-format", "json", "--yolo", "--trust", "agent", "--", "hi"]
         );
         let next = Agent::Cursor.arguments("again", Some("c-1"), Some("sonnet-4.5"));
-        assert_eq!(&next[7..], ["--resume", "c-1", "--model", "sonnet-4.5", "agent", "--", "again"]);
+        assert_eq!(&next[5..], ["--resume", "c-1", "--model", "sonnet-4.5", "agent", "--", "again"]);
         let out = r#"{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"c-1","request_id":"r"}"#;
         assert_eq!(Agent::Cursor.read(out), Turn { session: Some("c-1".into()), reply: Some("Done.".into()), failure: None });
     }
@@ -743,7 +700,7 @@ mod tests {
         assert_ne!(Agent::Copilot.new_session(), Some(session.clone()));
         assert_eq!(Agent::Claude.new_session(), None);
         let first = Agent::Copilot.arguments("hi", Some(&session), None);
-        assert_eq!(first, ["--prompt", "hi", "--silent", "--allow-all-tools", "--no-ask-user", "--session-id", &session]);
+        assert_eq!(first, ["--prompt", "hi", "--silent", "--allow-all", "--no-ask-user", "--session-id", &session]);
         let modelled = Agent::Copilot.arguments("hi", Some(&session), Some("gpt-6-astra"));
         assert_eq!(&modelled[modelled.len() - 2..], ["--model", "gpt-6-astra"]);
         assert_eq!(Agent::Copilot.read("  Added RSI.\n").reply.as_deref(), Some("Added RSI."));
@@ -763,6 +720,44 @@ mod tests {
         );
         assert!(!Agent::OpenCode.resumes() && !Agent::Antigravity.resumes());
         assert_eq!(Agent::OpenCode.read("ok\n"), Turn { session: None, reply: Some("ok".into()), failure: None });
+    }
+
+    /// Each agent is let do what `omarchy-agent` lets it do when it opens
+    /// it, and nothing more: whatever else the person allowed or denied in
+    /// the agent's own settings decides the rest.
+    #[test]
+    fn every_agent_runs_with_omarchys_permissions_and_no_others() {
+        let omarchy: [(Agent, &[&str]); 6] = [
+            (Agent::Claude, &["--permission-mode", "auto"]),
+            (Agent::Codex, &["--approve-for-me"]),
+            (Agent::Cursor, &["--yolo", "--trust"]),
+            (Agent::Copilot, &["--allow-all"]),
+            (Agent::OpenCode, &["--auto"]),
+            (Agent::Antigravity, &["--dangerously-skip-permissions"]),
+        ];
+        let others = [
+            "dontAsk",
+            "bypassPermissions",
+            "--allowedTools",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--sandbox",
+            "-s",
+            "--force",
+            "--allow-all-tools",
+            "--allow-all-paths",
+            "--yolo-mode",
+            "--full-auto",
+        ];
+        for (agent, flags) in omarchy {
+            for session in [None, agent.resumes().then_some("s")] {
+                let arguments = agent.arguments("hi", session, Some("m"));
+                assert!(arguments.windows(flags.len()).any(|run| run == flags), "{agent:?}: {arguments:?}");
+                for other in others {
+                    assert!(!arguments.iter().any(|a| a == other), "{agent:?} has {other}: {arguments:?}");
+                }
+                assert!(!arguments.iter().any(|a| a.contains("sandbox")), "{agent:?}: {arguments:?}");
+            }
+        }
     }
 
     #[test]
@@ -795,22 +790,13 @@ mod tests {
     }
 
     #[test]
-    fn models_are_read_from_codex_and_from_a_models_command() {
-        let cache = r#"{"models":[{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list"},
-            {"slug":"gpt-reserve","display_name":"GPT-Reserve","visibility":"hide"},{"slug":"gpt-5.5","visibility":"list"}]}"#;
-        assert_eq!(
-            codex_models(cache),
-            [("GPT-6-Astra".to_string(), "gpt-6-astra".to_string()), ("gpt-5.5".into(), "gpt-5.5".into())]
-        );
-        assert!(codex_models("").is_empty());
-        let opencode = "opencode/big-pickle\nopencode/glm-5.3-flash-free\n";
-        assert_eq!(listed_models(opencode)[1], ("opencode/glm-5.3-flash-free".into(), "opencode/glm-5.3-flash-free".into()));
-        let named = "Available models\n\nauto - Auto\ngpt-5 - GPT-5 (current)\nsonnet-4.5 - Claude 4.5 Sonnet\n";
-        assert_eq!(
-            listed_models(named),
-            [("GPT-5".to_string(), "gpt-5".to_string()), ("Claude 4.5 Sonnet".into(), "sonnet-4.5".into())]
-        );
-        assert!(listed_models("Fetching available models...\nError: Please sign in to view available models.").is_empty());
+    fn every_agent_offers_models_of_its_own_kept_here() {
+        for agent in Agent::ALL {
+            let offered = offered(agent);
+            assert!(!offered.models.is_empty(), "{agent:?}");
+            assert!(offered.models.iter().all(|(name, id)| !name.is_empty() && !id.contains(' ')), "{agent:?}");
+        }
+        assert!(Agent::OpenCode.models().iter().all(|(_, id)| id.contains('/')), "provider/model");
         assert_eq!(model_setting(Agent::Cursor), "agent_model.cursor-agent");
     }
 

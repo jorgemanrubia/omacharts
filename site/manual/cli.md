@@ -540,14 +540,15 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 
 | Action | Does |
 |---|---|
-| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`. With `--json`, each one's id, kind, parameters, colour, line, visibility, and `in_legend`, whether the legend names it |
+| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`, and `· selected` after the one selected in the window. With `--json`, each one's id, kind, parameters, colour, line, visibility, `in_legend`, whether the legend names it, and `selected` |
 | `add KIND` | Adds one, at its defaults plus whatever flags are given |
-| `remove KIND` | Removes every indicator of that kind |
+| `remove KIND` | Removes every indicator of that kind, or with `--id`, that one |
 | `set KIND` | Changes the one of that kind. With two of a kind, `--id N` says which |
 
 | Flag | Takes | For |
 |---|---|---|
-| `--id N` | An id from `list --json` | `set`, on a chart with two of a kind |
+| `--id N` | An id from `list --json`, or `selected` for the one selected in the window, whose kind can then be left out | `set` and `remove` |
+| `--selected` | Nothing | `list`: only the one selected in the window |
 | `--period N` | Bars | SMA, EMA, Bollinger, RSI, ATR; the stochastic's %K length |
 | `--deviations F` | 0 to 50 | Bollinger |
 | `--fast N`, `--slow N`, `--signal N` | Bars | MACD |
@@ -961,7 +962,7 @@ chart 46: sends drawings to other charts off
 
 | Action | Does |
 |---|---|
-| `list` | Every drawing the chart shows: its id, kind, anchors, words and look. With `--json`, the symbol, whether the chart shows and sends drawings, and each drawing's anchors, corners, configuration, style, scope, order and words with their emphasis |
+| `list` | Every drawing the chart shows: its id, kind, anchors, words and look, and `· selected` after those selected in the window. With `--json`, the symbol, whether the chart shows and sends drawings, and each drawing's anchors, corners, configuration, style, scope, order, words with their emphasis, and `selected` |
 | `add KIND` | Draws one |
 | `set --id N` | Changes one: anchors, look, words, scope or order |
 | `remove --id N` | Removes one |
@@ -977,7 +978,8 @@ read in the chart's time zone, the one its time axis is labelled in
 
 | Flag | Takes | Does |
 |---|---|---|
-| `--id N` | An id from `list` | Which drawing, for `set` and `remove` |
+| `--id N` | An id from `list`, or `selected` for the one selected in the window | Which drawing, for `set` and `remove`. With more than one selected, `selected` is refused with exit 4 and the ids |
+| `--selected` | Nothing | `list`: only what is selected in the window |
 | `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing and an anchored VWAP take `--from` only |
 | `--point ANCHOR` | An anchor, repeated | A zig-zag's corners in order, two at least. `--from` and `--to` alone give it one leg |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
@@ -1762,15 +1764,24 @@ same.
 
 ### Theme
 
-`config set theme` takes `omarchy` for System, `midnight`, `carbon`, `paper`,
-`daylight`, `omarchy:everforest` for an installed Omarchy theme (its folder
-name after the colon), or the id of one of your own (`config get theme`
-prints it while that theme is chosen). The window picks the theme up when it
-next opens; Preferences changes the window in front of you.
+`config themes` lists every theme `config set theme` takes, as the Theme
+page lists them: `omarchy`, System, which follows the desktop's theme, then
+`midnight`, `carbon`, `paper` and `daylight`, every installed Omarchy theme
+as `omarchy:` and its folder name, and your own. `*` marks the one in use;
+`--json` gives each one's `id`, `name`, `mode`, `kind` (`system`, `shipped`,
+`installed` or `custom`), `follows_desktop` and `active`. An open window
+changes theme as soon as it is set.
 
 ```
-$ omacharts config set theme midnight
-set theme to midnight
+$ omacharts config themes
+* omarchy               Tokyo Night (system, dark, follows the desktop)
+  midnight              Midnight (shipped, dark)
+  paper                 Paper (shipped, light)
+  omarchy:everforest    Everforest (installed, dark)
+  [exit 0]
+
+$ omacharts config set theme paper
+set theme to paper
   [exit 0]
 ```
 

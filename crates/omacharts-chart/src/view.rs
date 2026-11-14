@@ -3902,6 +3902,17 @@ impl ChartView {
         !self.state.borrow().selected.is_empty()
     }
 
+    /// Select the drawings with these ids, and nothing else: to put a
+    /// selection back on a chart rebuilt by a command.
+    pub fn select_ids(&self, ids: &[i64]) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected =
+                state.drawings.iter().enumerate().filter(|(_, d)| ids.contains(&d.id)).map(|(at, _)| at).collect();
+        }
+        self.redraw();
+    }
+
     /// Lay `drawing` down alone and select it, for a test that needs one.
     #[doc(hidden)]
     pub fn select_only(&self, drawing: Drawing) {
