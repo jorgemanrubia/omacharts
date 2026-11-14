@@ -280,6 +280,7 @@ codes](#exit-codes).
 | `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
+| `trading` | Trading logins, accounts, positions and orders | [Trading](#trading) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
 | `cache` | The downloaded prices | [Your data](#cache) |
 | `backup` | Copies of your settings, and putting one back | [Your data](#backup) |
@@ -413,6 +414,10 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | `--show-drawings on` or `off`, `--send-drawings on` or `off` | Whether the chart shows other charts' drawings, and whether it sends its own | [Drawings](/manual/drawings/) |
+| `--account ACCOUNT` | The account the chart trades on: a name, a number, `login/number`, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
+| `--quantity N` | The quantity its Qty is set to, one its quantities offer | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
+| `--trading-symbol SYMBOL` | Trade the other size of what it charts, such as `MES` on an ES chart; `none` to trade what it charts | [Trading another size](/manual/trading-on-a-chart/#trading-another-size) |
+| `--show-fills on` or `off` | Marks the account's executions on the chart | [Executions on the chart](/manual/trading-on-a-chart/#executions-on-the-chart) |
 | `--book BOOK` | Which chartbook, by name or `id:N`; the open one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
@@ -1593,6 +1598,106 @@ streaming 2 series:
 
 With `--json` the same facts are fields: `delivery`, `subscriptions`, and
 for `provider list` `stored`, `inUse`, `needsSignIn` and `session` per feed.
+
+## Trading
+
+Trading is experimental ([Trading](/manual/trading/)). The `trading` group
+does what the Trading panel and a chart's Account part do. The settings a
+chart trades with are [`chart set`](#chart-set) flags: `--account`,
+`--quantity`, `--trading-symbol` and `--show-fills`.
+
+| Command | Does |
+|---|---|
+| `trading logins` | Each login, its service, and whether it is live and gives charts their data |
+| `trading login SERVICE` | Opens the service's sign-in dialog in the window, to add a login |
+| `trading sign-in LOGIN` | Signs a login in with its saved password, or opens its dialog when it has none |
+| `trading sign-out LOGIN` | Signs it out and forgets its password; the login stays |
+| `trading remove LOGIN [--with-feed]` | Removes the login, its password and its accounts, and with `--with-feed` the data feed that came through it |
+| `trading data LOGIN` | Charts' market data comes through this login |
+| `trading accounts` | Every account with its balance, the day's and the open P&L, its loss limit and liquidation level; `*` marks the default |
+| `trading default ACCOUNT` | The account charts trade on until given one of their own |
+| `trading positions` | What every account holds, at what average, with its open P&L |
+| `trading orders [--all]` | The day's working orders; with `--all`, the filled and cancelled ones too |
+| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N` instead of the chart's Qty |
+| `trading exit --target PRICE --stop PRICE` | A target, a stop, or both linked, for the whole of the position the chart trades |
+| `trading modify ORDER --price PRICE` | Moves a working order |
+| `trading cancel ORDER`, `trading cancel --all [--account ACCOUNT]` | Cancels one order, or every open order on an account (the default one when not given) |
+| `trading flatten [CONTRACT] [--account ACCOUNT]` | Closes the chart's position at the market and cancels its orders, as Ctrl+F does; or closes a contract held, as the Positions tab does |
+| `trading quantities [list]`, `set NAME QUANTITIES`, `remove NAME` | The quantities a chart's Qty offers; `set` takes `--applies-to stocks` or `futures` and `--symbols` |
+
+`buy`, `sell`, `exit` and `flatten` act on the chart `--book` and `--chart`
+name, the focused one by default ([Which chart a command acts
+on](#which-chart-a-command-acts-on)). An account is named by its name, its
+number, or `login/number` when two logins share a number.
+
+```
+$ omacharts trading logins
+Lucid                Rithmic          live · data
+  [exit 0]
+
+$ omacharts trading positions
+Lucid 50K          ESZ6        +1 at     6,824.25  +$37.50
+  [exit 0]
+
+$ omacharts trading buy --limit 6810 --quantity 2
+Lucid 50K: Buy Limit 2 ESZ6 at 6,810.00
+  [exit 0]
+
+$ omacharts trading exit --target 6840 --stop 6815
+Lucid 50K: Sell Stop 1 ESZ6 at 6,815.00
+Lucid 50K: Sell Limit 1 ESZ6 at 6,840.00
+  [exit 0]
+
+$ omacharts trading orders
+B4           14:31:09 Lucid 50K      ESZ6     Sell    1 Limit      6,840.00  Working
+B3           14:31:09 Lucid 50K      ESZ6     Sell    1 Stop       6,815.00  Working
+B2           14:31:07 Lucid 50K      ESZ6     Buy     2 Limit      6,810.00  Working
+  [exit 0]
+
+$ omacharts trading modify B2 --price 6805
+Lucid 50K: Move Buy Limit 2 ESZ6 to 6,805.00
+  [exit 0]
+
+$ omacharts trading flatten
+Lucid 50K: Flatten ESZ6 and cancel its orders
+  [exit 0]
+
+$ omacharts trading sell --quantity 12
+omacharts: Futures offers 1, 2, 3, 4, 5, 6, 7, 8, 9 for ES, not 12
+  [exit 5]
+
+$ omacharts trading buy --limit 6900
+omacharts: Lucid 50K: Not placed · 6,900.00 is above the market now
+  [exit 5]
+```
+
+Orders, cancels and flattens need the window, where the sessions are signed
+in; with none open they exit `6`. Each goes through the chart's own checks,
+and what the chart would refuse is refused with exit `5` in its words. There
+are no confirmations, as there are none on the chart. The reply says what was
+sent; the broker's answer reaches the Log and `trading orders`, so a script
+waiting for a fill reads `trading orders --json` until its `status` says so.
+One order per account is on its way at a time, as on the chart, and the next
+is refused until the last is answered.
+
+An order is named by its id from `trading orders`. Should two accounts have an order of the same id, `modify` and `cancel` refuse it with exit `4` until `--account` says which.
+
+`trading flatten` with the chart's position already flat says `Already flat`
+and exits `0`. `trading modify` moves the price only, and needs a chart open
+that trades the order's account and contract, since the order is moved from
+there.
+
+A password is never typed in a terminal. `trading login` and a `trading
+sign-in` without a saved password open the dialog in the window and return;
+`trading logins` says when the login is live.
+
+With `--json`, `logins` gives `logins` and the `services` on offer,
+`accounts` gives `accounts` with `balance`, `day_pnl`, `open_pnl`,
+`loss_limit`, `liquidates_at`, `max_order_qty` and `default`, `positions`
+gives `positions`, and `orders` gives `orders` with `id`, `side`, `qty`,
+`filled`, `type`, `price`, `status`, `working` and `filled_at`. An order,
+cancel or flatten gives `said`, one `{account, text}` per line the window
+said.
 
 ## Preferences
 

@@ -27,6 +27,10 @@ manual:
     - key: charting
       label: Charting
       description: The window, the charts in it, what goes on them, and the arrangements and watchlists that hold them.
+    - key: trading
+      label: Trading
+      badge: Beta
+      description: Connecting a broker, the Trading panel, and placing and managing orders from a chart. Experimental.
     - key: configuration
       label: Configuration
       description: Installing it, the theme, the data feeds, the bar widget, preferences, and where your data lives.

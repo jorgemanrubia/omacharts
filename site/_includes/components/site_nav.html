@@ -36,11 +36,13 @@
   {%- assign chapters = manual_pages | where: "section", section.key | where_exp: "item", "item.parent == nil" | sort: "nav_order" %}
   {%- assign section_page = site.html_pages | where: "section_key", section.key | first %}
   {%- if chapters.size > 0 %}
-  {%- comment -%} The label goes to the section's own page, when the plugin made one. {%- endcomment -%}
+  {%- comment -%} The label goes to the section's own page, when the plugin made one, with the section's `badge:` beside it when it has one. {%- endcomment -%}
+  {%- assign badge = "" %}
+  {%- if section.badge %}{% capture badge %} <span class="nav-badge">{{ section.badge }}</span>{% endcapture %}{% endif %}
   {%- if section_page %}
-  <a href="{{ section_page.url | relative_url }}" class="nav-category nav-category-link{% if section_page.url == page.url %} active{% endif %}"{% if section_page.url == page.url %} aria-current="page"{% endif %}>{{ section.label }}</a>
+  <a href="{{ section_page.url | relative_url }}" class="nav-category nav-category-link{% if section_page.url == page.url %} active{% endif %}"{% if section_page.url == page.url %} aria-current="page"{% endif %}>{{ section.label }}{{ badge }}</a>
   {%- else %}
-  <div class="nav-category">{{ section.label }}</div>
+  <div class="nav-category">{{ section.label }}{{ badge }}</div>
   {%- endif %}
   <ul class="nav-list">
     {%- for node in chapters %}

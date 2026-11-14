@@ -477,6 +477,8 @@ The header is the line at a chart's top-left and the row centred across its top.
 
 Out of the box the left shows the data feed, the symbol, the resolution and the daily change, and the center the chart title.
 
+With a trading account, the chart's top-right corner also leads with **Account**, **P&L**, **Buy Sell**, **Quantity** and **Current position**, before the gear ([Trading from a chart](/manual/trading-on-a-chart/#the-account-part)). They draw nothing without an account to trade on.
+
 Edit it in Preferences › Charts › **Header**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
 
 ### Chart titles

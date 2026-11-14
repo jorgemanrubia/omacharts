@@ -209,6 +209,41 @@ $rail-inset: calc(#{$gutter-spacing-sm * 1.6} + 2px);
   }
 }
 
+// A section's `badge:` from _config.yml (Trading's "Beta"): a quiet pill
+// beside its label in the rail and its title on the section page, the same
+// shape as the tag on Trading in the app's Preferences sidebar.
+%badge-pill {
+  display: inline-block;
+  font-family: $oc-mono;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  line-height: 1;
+  border-radius: 999px;
+  color: $oc-ink;
+  background: rgba($oc-bright, .1);
+  box-shadow: inset 0 0 0 1px $oc-line;
+  white-space: nowrap;
+}
+
+.side-bar .nav-badge {
+  @extend %badge-pill;
+  font-size: .58rem;
+  padding: .22rem .5rem .2rem;
+  align-self: center;
+  opacity: .85;
+}
+
+.main-content .title-badge {
+  @extend %badge-pill;
+  font-size: .8rem;
+  padding: .35rem .7rem .32rem;
+  margin-left: .5rem;
+  vertical-align: middle;
+  position: relative;
+  top: -.2em;
+}
+
 
 .side-bar .nav-list .nav-list-item {
   font-size: 1rem !important;

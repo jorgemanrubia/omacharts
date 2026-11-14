@@ -107,6 +107,10 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
 | Backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 
+### Trading
+
+Trading has a **Beta** tag in the list of sections: it is experimental. The page holds the logins and their accounts, **Edit quantities…**, **Order labels** and how charts show P&L, all in [Connecting a broker](/manual/brokers/#logins-and-accounts).
+
 ## Settings that stay with this machine
 
 The screenshot folder, the **Keep at most** limit, **Update automatically** and the sidebar width stay with this machine. Restoring another machine's backup leaves them as they were ([Restoring](/manual/your-data/#restoring)).

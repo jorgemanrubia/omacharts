@@ -36,6 +36,7 @@ crop: none (resized to 2000 wide)
 | The window's corner | Top-right of the window | The watchlist toggle and the main menu. |
 | The sidebar | Right edge | The open chartbook's watchlist. See [Watchlists](/manual/watchlists/). |
 | The drawing tools | Left edge | One column of tools. See [Drawings](/manual/drawings/). |
+| The Trading panel | Under the charts, once there is a trading login | Accounts, positions and orders. Its toggle is in the window's bottom-right corner. See [The Trading panel](/manual/trading-panel/). |
 | The chartbook strip | Bottom edge, under the sidebar too | One tab per chartbook. Shown when there are two chartbooks or more. See [Chartbooks](/manual/chartbooks/). |
 
 The sidebar and the tools push the charts aside rather than covering them. Drag the sidebar's edge to make it between 160 and 900 pixels wide. The charts keep at least 480. Whether the sidebar is shown and how wide it is are kept with each chartbook. Whether the tools are out is kept for the window.

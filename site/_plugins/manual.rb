@@ -94,6 +94,7 @@ module Omacharts
             "title" => section["label"],
             "description" => section["description"],
             "section_key" => key,
+            "badge" => section["badge"],
             "permalink" => "/manual/#{key}/",
             # Not a chapter: out of the sidebar's lists, the reading order
             # and the search, which should find chapters, not their index.

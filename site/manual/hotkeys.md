@@ -178,6 +178,20 @@ On the chart, whatever is selected:
 While a box you are typing in has the keyboard, <kbd>Ctrl</kbd> + <kbd>C</kbd>,
 <kbd>Ctrl</kbd> + <kbd>V</kbd> and the arrows belong to it.
 
+## Trading
+
+Only on a chart with a trading account, and never while typing in a box ([Trading from a chart](/manual/trading-on-a-chart/#keys)). Nothing asks before an order is sent.
+
+| Key | Does | See |
+|---|---|---|
+| <kbd>Ctrl</kbd> + <kbd>B</kbd> | Buy the chart's quantity at the market | [Placing orders](/manual/trading-on-a-chart/#placing-orders) |
+| <kbd>Ctrl</kbd> + <kbd>S</kbd> | Sell the chart's quantity at the market | [Placing orders](/manual/trading-on-a-chart/#placing-orders) |
+| <kbd>Ctrl</kbd> + <kbd>F</kbd> | Flatten the chart's contract and cancel its orders | [Moving, cancelling and flattening](/manual/trading-on-a-chart/#moving-cancelling-and-flattening) |
+| <kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the quantity, first to ninth | [Quantities](/manual/trading-on-a-chart/#quantities) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd> | Show or hide the accounts | [The Trading panel](/manual/trading-panel/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Show or hide the positions | [The Trading panel](/manual/trading-panel/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | Show or hide the orders | [The Trading panel](/manual/trading-panel/) |
+
 ## Typing on the chart
 
 While the caret is in a drawing:
