@@ -43,6 +43,9 @@ A toast says when your words are sent and when the agent is done, with the
 first line of its answer. The whole answer is in the Log. If there is no
 default agent, or it fails, the corner notice says why.
 
+While the agent works, a soft amber glow breathes along the bottom of the
+window, ending in red if it fails; with animations off it shows still.
+
 ## Your own context
 
 Whatever you write in **Preferences › Agent** is sent after that line, at the

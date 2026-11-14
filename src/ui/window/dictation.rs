@@ -10,6 +10,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::log::Entry;
 
+use super::glow::Glow;
 use super::Window;
 use crate::dictation::{superwhisper, Dispatcher, Event, World};
 
@@ -21,6 +22,10 @@ pub(super) struct Dictation {
     /// Superwhisper's number for the last dictation sent, so that pasting
     /// the same words again is a paste.
     heard: Cell<Option<u64>>,
+    /// Dictations sent and not yet done with, here on the main loop.
+    outstanding: Cell<usize>,
+    /// The glow along the bottom of the window while the agent works.
+    glow: Glow,
 }
 
 /// The longest a toast quotes; the Log has the rest.
@@ -68,6 +73,7 @@ impl Window {
         let context = self.store.setting(crate::dictation::CONTEXT).unwrap_or_default();
         let dispatcher = self.dictation.dispatcher.get_or_init(|| self.start_dictation(World::omarchy()));
         let ahead = dispatcher.send(said.clone(), context);
+        self.dictation.outstanding.set(self.dictation.outstanding.get() + 1);
         if ahead > 0 {
             let waiting = match ahead {
                 1 => "after the one the agent is on".to_string(),
@@ -84,12 +90,34 @@ impl Window {
         glib::spawn_future_local(async move {
             while let Ok(event) = receiver.recv().await {
                 let Some(this) = weak.upgrade() else { return };
+                this.glow_for(&event);
                 this.tell(said_of(event));
             }
         });
         Dispatcher::start(world, move |event| {
             let _ = sender.send_blocking(event);
         })
+    }
+
+    /// Lay the glow over the bottom of the window, in `overlay`.
+    pub(super) fn lay_glow(&self, overlay: &gtk::Overlay) {
+        overlay.add_overlay(&self.dictation.glow.widget);
+    }
+
+    /// The glow, as `event` leaves the agent's work: showing from the
+    /// first turn started until the last dictation sent is done with.
+    fn glow_for(&self, event: &Event) {
+        let glow = &self.dictation.glow;
+        if let Event::Started { .. } = event {
+            return glow.working();
+        }
+        let left = self.dictation.outstanding.get().saturating_sub(1);
+        self.dictation.outstanding.set(left);
+        match event {
+            Event::Failed { .. } => glow.failed(left > 0),
+            _ if left == 0 => glow.done(),
+            _ => {}
+        }
     }
 
     /// Say `entry`, with somewhere for a toast to show.
@@ -192,10 +220,27 @@ mod tests {
                     })
                 }),
             });
+            let glow = &window.dictation.glow;
+            assert_eq!(glow.widget.parent(), window.trade.overlay.borrow().clone().map(|overlay| overlay.upcast()));
             window.dictated("add an RSI".into());
             window.dictated("now a MACD".into());
+            let started = || log.entries().iter().any(|entry| entry.text.starts_with("Sent"));
+            assert!(crate::ui::window::trade::tests::settle(&window, started));
+            assert!(glow.showing() && glow.ticking(), "glowing while the agent works");
+            let first = || log.entries().iter().any(|entry| entry.text.starts_with("Done"));
+            assert!(crate::ui::window::trade::tests::settle(&window, first));
             let done = || log.entries().iter().filter(|entry| entry.text.starts_with("Done")).count() == 2;
-            assert!(crate::ui::window::trade::tests::settle(&window, done), "{:?}", log.entries());
+            let through = Cell::new(true);
+            let lasted = crate::ui::window::trade::tests::settle(&window, || {
+                through.set(through.get() && (done() || glow.showing()));
+                done()
+            });
+            assert!(lasted, "{:?}", log.entries());
+            assert!(through.get(), "the glow went out between two queued turns");
+            let out = || !glow.showing();
+            let settle = crate::ui::window::trade::tests::settle;
+            assert!(settle(&window, out) || settle(&window, out), "out once done");
+            assert!(!glow.ticking());
             let lines: Vec<String> = log.entries().iter().map(|entry| entry.line()).collect();
             assert_eq!(
                 lines,

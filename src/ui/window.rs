@@ -50,6 +50,7 @@ use gtk::gio;
 pub(crate) mod compare;
 mod dictation;
 mod executions;
+mod glow;
 mod log;
 mod marks;
 mod trade;
@@ -5014,6 +5015,7 @@ impl Window {
 
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&root));
+        this.lay_glow(&overlay);
         overlay.add_overlay(&corner);
         *this.trade.overlay.borrow_mut() = Some(overlay.clone());
         *this.trade.root.borrow_mut() = Some(root.clone());
