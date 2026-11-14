@@ -185,7 +185,7 @@ def find_script(name):
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
                 "terminal": None, "focus": 1, "tape": None, "run": None, "mark": 3,
-                "let": None, "calibrate": 0, "tap": 1, "beat": 0}
+                "let": None, "calibrate": 0, "tap": 1, "beat": 0, "look": None}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -776,6 +776,20 @@ hl.config({{
         self.axis = (a, b)
         return points
 
+    def seen_word(self, word, region=(0.0, 0.0, 1.0, 0.055), fresh=3.0):
+        """`word` as the last read of `region` found it, if that was recent."""
+        seen = getattr(self, "found", {}).get(region)
+        if not seen or time.monotonic() - seen[0] > fresh:
+            return None
+        for text, left, y, w, (wx, wy, ww, wh) in seen[1]:
+            if word.lower() in text:
+                # The word may be read run together with its neighbours: its
+                # share of the run, by letters.
+                at = text.index(word.lower()) + len(word) / 2
+                x = left + w * at / len(text)
+                return f"{(x - wx) / ww * 100:.2f}%", f"{(y - wy) / wh * 100:.2f}%"
+        return None
+
     def find_word(self, word, region=(0.0, 0.0, 1.0, 0.055), fallback=None):
         """Where `word` is on screen, as percentages of the window, read off
         the screen inside `region` (fractions of the window: x, y, w, h; the
@@ -784,10 +798,9 @@ hl.config({{
         once for its lead and again to act."""
         import tempfile
         from PIL import Image, ImageOps
-        cache = getattr(self, "found", {})
-        hit = cache.get((word, region))
-        if hit and time.monotonic() - hit[0] < 1.5:
-            return hit[1]
+        hit = self.seen_word(word, region)
+        if hit:
+            return hit
         window = self.window()
         (wx, wy), (ww, wh) = window["at"], window["size"]
         with tempfile.TemporaryDirectory() as work:
@@ -802,18 +815,17 @@ hl.config({{
             crop.save(OUT / "last-find.png")
             tsv = "".join(subprocess.run(["tesseract", str(Path(work) / "strip.png"), "-", "--psm", mode, "tsv"], capture_output=True,
                                          text=True).stdout for mode in ("11", "6"))
+        tokens = []
         for line in tsv.splitlines()[1:]:
             cells = line.split("\t")
             text = cells[11].strip().lower() if len(cells) >= 12 else ""
-            if word.lower() in text:
+            if text:
                 left, t, w, h = (int(c) / 3 for c in cells[6:10])
-                # The word may be read run together with its neighbours: its
-                # share of the run, by letters.
-                at = text.index(word.lower()) + len(word) / 2
-                x, y = (box[0] + left + w * at / len(text)) / sx, (box[1] + t + h / 2) / sx
-                found = (f"{(x - wx) / ww * 100:.2f}%", f"{(y - wy) / wh * 100:.2f}%")
-                self.found = {**cache, (word, region): (time.monotonic(), found)}
-                return found
+                tokens.append((text, (box[0] + left) / sx, (box[1] + t + h / 2) / sx, w / sx, (wx, wy, ww, wh)))
+        self.found = {**getattr(self, "found", {}), region: (time.monotonic(), tokens)}
+        hit = self.seen_word(word, region)
+        if hit:
+            return hit
         if fallback:
             say(f"no {word!r} read on screen; aiming where it usually is")
             return fallback
@@ -824,6 +836,12 @@ hl.config({{
         if verb == "tap":
             # A click on a word of the header, wherever it is now.
             return self.perform(("click", *self.find_word(args[0])), events, now, scene, cue)
+        if verb == "look":
+            # Read the header ahead of a tap, so the tap does not wait on it.
+            self.found = {k: v for k, v in getattr(self, "found", {}).items() if k != (0.0, 0.0, 1.0, 0.055)}
+            self.find_word(args[0].split()[0])
+            events.append({"t": now, "scene": scene, "cue": cue, "verb": "look", "args": args})
+            return
         if verb == "let":
             name, _, expr = args[0].partition(" ")
             self.vars = {**getattr(self, "vars", {}), name: self.evaluate(expr)}
@@ -1623,7 +1641,9 @@ def key_lead(chord):
 def action_lead(studio, action):
     verb = action[0]
     if verb == "tap":
-        return 0.9  # reading the header, then the glide
+        seen = studio.seen_word(action[1])
+        # Read already: the glide; else reading the header, then the glide.
+        return studio.hand.duration(*studio.at(*seen)) + 0.08 if seen else 0.9
     if verb in ("click", "rclick", "move", "drag", "scroll"):
         return studio.hand.duration(*studio.at(*(studio.resolve(a) for a in action[1:3]))) + (0.08 if verb in ("click", "rclick", "drag") else 0)
     if verb == "key":

@@ -12,7 +12,7 @@ type_ms: 62
 length: 72s
 theme: tokyo-night
 music_file: video/out/trading/drum/drum.wav
-music: one drum phrase, synthesised, repeated ten times. Ten quiet tuned tom hits that hold level and then rise, and an eleventh loud hit with kick, snare and room. No melody instrument, no generative model. The score is in "Drum score" below.
+music: an original electronic track, synthesised on the edit's grid (video/engines/drum_engine.py, which kept its name): a pluck hook, punchy drums, pumping bass, a lift into each card and a drop on "Agent-ready.", ending on a final hit that rings out. It replaced the drum score below at the author's request; see "As built".
 ---
 
 > This script is a plan written for a builder who films, edits and renders
@@ -609,6 +609,56 @@ applied:
 
 Never show an agent run that was not validated this way.
 
+## As built
+
+What the build changed from the plan above, and why. The plan is kept as
+written; where it and this section disagree, this section is what was filmed.
+
+- **Music.** The drum phrase was built, then a samba bateria, then a samba
+  tune; the author heard each and asked for something else, and finally for
+  "something good and vibrant" chosen by the builder. The music is now an
+  original electronic track synthesised on the same grid (138.46 BPM, 26
+  frames a beat): bars start on frame 52 + 104·j, every card lands on a bar
+  downbeat (frame 260 + 416·k, the old PA frames) and its second line on the
+  clap two beats later; the drop is the "Agent-ready." card, and the last
+  card is the final hit, ringing out with no fade. `hits.json` keeps its
+  schema, so the edit did not change.
+- **The app's clock.** Rather than teach the app a sim clock, the app runs
+  under `faketime` (realtime only, `FAKETIME_DONT_FAKE_MONOTONIC=1`) started
+  at the anchor at 40×, from the same moment as the tape's epoch. The time
+  axis, the session, the countdown and the Orders tab's time all read it.
+- **The tape feed** serves the chart alone when `OMACHARTS_TAPE` is set, so
+  nothing can ask Yahoo. Left alone in its band the live tape rotates; the
+  impulses are the choreography's. It prints on every frame.
+- **Prices are worked out at the take**, not written in: `let`, `{expr}` and
+  `{y:expr}` (a price's height, from the price axis read off the screen),
+  `{wx:STP@pos}` (the position label's STP tab, found by OCR), `tap WORD`
+  (a word in the chart header, found by OCR). The header and the labels move
+  as their neighbours' text changes width; fixed positions missed.
+- **Scene 3** opens the Rithmic dialog under the card (`trading login
+  rithmic`) instead of clicking Add a trading service… on camera: in the
+  studio that menu would not open. The System list is filtered by typing
+  "Lucid" in its search, rather than scrolled, and the arrow lands on the
+  one row left. Nothing is typed into User ID or Password; Sign in is never
+  pressed; the systems come from the seeded file.
+- **Scene 6** opens the panel and its tabs with the mouse (the Trading
+  toggle, the tab buttons, All): Ctrl+Shift chords did not reach the app
+  from the studio's keyboards reliably. So scene 6 has no key caps.
+- **Scene 4 to 8** each start by flattening and cancelling off camera, so a
+  missed action cannot carry a position into the next scene.
+- **Scene 5** moves the market to the middle of the chart under the card
+  before buying, so the dragged stop stays on the price pane.
+- **Scenes 8 and 9** punch in on the terminal (scene 8 whole, scene 9 from
+  hit 2 to 5), so the request and the levels read at 1080p, and scene 8's
+  1.3× footage does not show the market sped up.
+- **Agent levels.** The profile's automatic rows are finer than ES's tick,
+  so `poc` and `value_area_low` come back off the 0.25 grid; the agents and
+  `bracket-agent` round to the nearest tick. The limit is at the rounded
+  value area low, the stop 1.50 under it, the target the rounded POC.
+- **Volume pane.** A volume study under the chart, for the volume spikes the
+  plan describes.
+- **Hit meter, key caps, cards** as in "Transitions and effects".
+
 ## Setup
 
 Everything here is off camera. Two fake logins named as the manual names
@@ -832,12 +882,15 @@ on hit 9 would break the read, so the scene stays in the crop.
 **Card.** PA 7: Agent-ready. Echo: Everything the app does, from the
 command line.
 
-    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading flatten ESZ6 --account Tradeify/TDY100-2287; let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading flatten ESZ6 --account Tradeify/TDY100-2287; let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%; look TDY100-2287
     account@1: tap TDY100-2287
     lucid@2: click 77.2% 8.3%
+    peek2@3: look Qty
     qty@4: tap Qty
     three@5: click 90.4% 10.75%
+    peek3@6: look Buy
     buy@7: tap Buy
+    peek4@8: look Sell
     sell@10: tap Sell
     crop: 54% 0% 46%
     after: 0.6
