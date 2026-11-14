@@ -3488,11 +3488,13 @@ fn template_accel(n: usize) -> String {
 }
 
 /// What was last copied: drawings, or one indicator, never both, since only
-/// one of them can be selected at a time.
+/// one of them can be selected at a time. Drawings come with the price axis
+/// of the chart they were copied on, for a chart whose axis does not reach
+/// their prices.
 #[derive(Clone)]
 enum Clipboard {
     Empty,
-    Drawings(Vec<omacharts_engine::Drawing>),
+    Drawings(Vec<omacharts_engine::Drawing>, Option<crate::ui::chart::PriceWindow>),
     Indicator(Indicator),
 }
 
@@ -12959,7 +12961,7 @@ impl Window {
         }
         let copied = pane.view.copy_selected();
         if !copied.is_empty() {
-            *self.clipboard.borrow_mut() = Clipboard::Drawings(copied);
+            *self.clipboard.borrow_mut() = Clipboard::Drawings(copied, pane.view.price_window());
         }
     }
 
@@ -12984,7 +12986,7 @@ impl Window {
         let copied = self.clipboard.borrow().clone();
         match copied {
             Clipboard::Empty => false,
-            Clipboard::Drawings(drawings) => self.paste_drawings(&drawings),
+            Clipboard::Drawings(drawings, axis) => self.paste_drawings(&drawings, axis),
             Clipboard::Indicator(indicator) => {
                 self.paste_indicator(indicator);
                 true
@@ -13006,19 +13008,18 @@ impl Window {
         pane.view.pick_when_shown(id);
     }
 
-    /// Put copied drawings down on the focused chart.
-    fn paste_drawings(self: &Rc<Self>, copied: &[omacharts_engine::Drawing]) -> bool {
-        let pane = self.focused_pane();
-        // Offset only where it would otherwise land exactly on what it was
-        // copied from. Pasted onto another chart — another symbol, another
-        // resolution — the moment and the price are the whole point, and
-        // nudging them would be the one thing a paste must not do.
-        let same = pane
-            .view
-            .drawings()
-            .iter()
-            .any(|there| copied.iter().any(|copy| there.from == copy.from && there.to == copy.to));
-        pane.view.paste(copied, same)
+    /// Put copied drawings down on the focused chart: at the moment and the
+    /// price they were copied at, beside the original where it is there
+    /// too, and in sight — see `ChartView::paste`. Pasted onto another
+    /// chart — another symbol, another resolution, another chartbook — the
+    /// moment and the price are the whole point, and nudging them would be
+    /// the one thing a paste must not do.
+    fn paste_drawings(
+        self: &Rc<Self>,
+        copied: &[omacharts_engine::Drawing],
+        axis: Option<crate::ui::chart::PriceWindow>,
+    ) -> bool {
+        self.focused_pane().view.paste(copied, axis)
     }
 
     fn has_copied(&self) -> bool {
@@ -14307,5 +14308,163 @@ impl Window {
         if let Some(instrument) = found {
             self.show(instrument);
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_across_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::bare_window;
+
+    fn command(window: &Rc<Window>, words: &[&str]) -> String {
+        let args: Vec<String> = std::iter::once("omacharts").chain(words.iter().copied()).map(String::from).collect();
+        let live: &dyn crate::cli::Live = window;
+        let outcome = crate::cli::run(&args, &window.store, Some(live), &crate::cli::Here);
+        assert_eq!(outcome.code, 0, "{words:?}: {}", outcome.err);
+        outcome.out
+    }
+
+    fn at(window: &Window, position: usize) -> Rc<ChartPane> {
+        let id = window.layout.borrow().leaves()[position];
+        window.pane(id).expect("a chart there")
+    }
+
+    fn settle() {
+        let context = gtk::glib::MainContext::default();
+        while context.iteration(false) {}
+    }
+
+    /// Every chart laid out at a real size, so a paste can tell what is in
+    /// sight, and charting its bars, which arrive from the feed's thread.
+    fn lay_out(window: &Rc<Window>) {
+        window.chart_host.allocate(1600, 900, -1, None);
+        let context = gtk::glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while window.panes.borrow().iter().any(|pane| pane.view.bar_count() == 0) {
+            assert!(
+                std::time::Instant::now() < until,
+                "the bars never came: {:?}",
+                window
+                    .panes
+                    .borrow()
+                    .iter()
+                    .map(|p| (p.instrument.borrow().as_ref().map(|i| i.symbol.clone()), p.view.bar_count()))
+                    .collect::<Vec<_>>()
+            );
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        window.chart_host.allocate(1600, 900, -1, None);
+        settle();
+    }
+
+    /// A box over a stretch of what `pane` shows, recent but not the newest,
+    /// a third of the way up the plot to two thirds.
+    fn box_on(pane: &ChartPane) -> omacharts_engine::Drawing {
+        let (w, h) = (pane.view.area.width() as f64, pane.view.area.height() as f64);
+        let at = |x: f64, y: f64| {
+            let ts = pane.view.bar_time_at(x * w).expect("a bar there");
+            let price = pane.view.price_under(y * h).expect("a price there");
+            omacharts_engine::Anchor::new(ts, price)
+        };
+        omacharts_engine::Drawing::new(omacharts_engine::DrawingKind::Rect, at(0.6, 0.35), at(0.7, 0.6))
+    }
+
+    /// Select `drawing` on `pane`, the one chart there is, and copy it.
+    fn copy_from(window: &Rc<Window>, pane: &ChartPane, drawing: &omacharts_engine::Drawing) {
+        window.focus(pane.id);
+        let shown = pane.view.drawings().into_iter().find(|d| d.from == drawing.from && d.to == drawing.to);
+        pane.view.select_only(shown.expect("the drawing on its chart"));
+        window.copy();
+    }
+
+    /// Paste on `pane`, and hand back what went down, having checked it is
+    /// in sight there: Ctrl+A takes it.
+    fn paste_on(window: &Rc<Window>, pane: &ChartPane, onto: &str) -> omacharts_engine::Drawing {
+        let before = pane.view.drawings().len();
+        window.focus(pane.id);
+        assert!(window.paste(), "{onto}: nothing was pasted");
+        settle();
+        let drawings = pane.view.drawings();
+        assert_eq!(drawings.len(), before + 1, "{onto}: the paste did not go down on the chart");
+        let pasted = drawings.into_iter().max_by_key(|d| d.id).expect("the paste");
+        assert!(pasted.id > 0, "{onto}: the paste was not written down");
+        assert!(pane.view.select_visible(), "{onto}: nothing is in sight after the paste: {pasted:?}");
+        assert!(
+            pane.view.selected_drawings().iter().any(|d| d.id == pasted.id),
+            "{onto}: the paste is not in sight: {pasted:?}"
+        );
+        pasted
+    }
+
+    /// The author's report: a drawing copied on one chart did nothing when
+    /// pasted on another. It went down, at the moment and the price it was
+    /// copied at — off the other chart's plot, in time or in price, so it
+    /// looked as if the paste had not happened.
+    ///
+    /// A paste onto another chart now keeps its moments and its prices and
+    /// is in sight: on another chart of the split, on one at another
+    /// resolution, in another chartbook, and — the one place a price cannot
+    /// carry across — on a market trading at another price, where it lands
+    /// at the height it had. Pasted back onto its own chart, it is still a
+    /// little off its original.
+    #[test]
+    fn a_drawing_pastes_onto_any_chart_in_sight() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "set", "--symbol", "SPY"]);
+            command(&window, &["chart", "split", "horizontal"]);
+            // The synthetic feed prices ULVR as it does SPY, and QQQ at a
+            // quarter of that.
+            command(&window, &["chart", "set", "--symbol", "ULVR.L", "--chart", "pos:1"]);
+            lay_out(&window);
+            let source = at(&window, 0);
+            let drawing = box_on(&source);
+            source.view.paste(std::slice::from_ref(&drawing), None);
+            settle();
+            let drawing = source.view.drawings().into_iter().next().expect("the box, written down");
+            copy_from(&window, &source, &drawing);
+
+            // Another chart of the split, of a market at the same prices.
+            let pasted = paste_on(&window, &at(&window, 1), "another chart");
+            assert_eq!((pasted.from, pasted.to), (drawing.from, drawing.to), "another chart");
+
+            // Another resolution, showing only the last days: the chart
+            // goes to the box.
+            command(&window, &["chart", "drawing", "clear", "--chart", "pos:1"]);
+            command(&window, &["chart", "set", "--resolution", "1h", "--chart", "pos:1"]);
+            lay_out(&window);
+            let pasted = paste_on(&window, &at(&window, 1), "another resolution");
+            assert_eq!((pasted.from, pasted.to), (drawing.from, drawing.to), "another resolution");
+
+            // Pasted again there, it lands beside the copy already there, as
+            // on its own chart.
+            let again = paste_on(&window, &at(&window, 1), "a chart showing it");
+            assert_ne!(again.from, drawing.from, "a second paste hides behind the first");
+
+            // A market at a quarter of the price: the moments, at the
+            // height the box had.
+            command(&window, &["chart", "set", "--symbol", "QQQ", "--resolution", "1D", "--chart", "pos:1"]);
+            lay_out(&window);
+            let pasted = paste_on(&window, &at(&window, 1), "another market");
+            assert_eq!((pasted.from.ts, pasted.to.ts), (drawing.from.ts, drawing.to.ts), "another market");
+            assert!(pasted.from.price < drawing.from.price / 2.0, "left at the old price: {pasted:?}");
+
+            // Another chartbook.
+            command(&window, &["chartbook", "create", "Other", "--switch"]);
+            command(&window, &["chart", "set", "--symbol", "ULVR.L", "--chart", "pos:0"]);
+            command(&window, &["chart", "drawing", "clear", "--chart", "pos:0"]);
+            lay_out(&window);
+            let pasted = paste_on(&window, &at(&window, 0), "another chartbook");
+            assert_eq!((pasted.from, pasted.to), (drawing.from, drawing.to), "another chartbook");
+
+            // And back on its own chart, beside the original.
+            command(&window, &["chartbook", "switch", "id:0"]);
+            lay_out(&window);
+            let pasted = paste_on(&window, &at(&window, 0), "its own chart");
+            assert_ne!(pasted.from, drawing.from, "a paste on its own chart hides behind the original");
+            assert_eq!(pasted.to.ts - pasted.from.ts, drawing.to.ts - drawing.from.ts);
+        });
     }
 }

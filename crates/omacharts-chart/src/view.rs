@@ -1814,28 +1814,42 @@ impl State {
         }
     }
 
-    /// Put copies down, offset if asked, and take hold of them. Hands back
-    /// what was added, for whoever has to write it down.
-    fn paste(
-        &mut self,
-        copied: &[Drawing],
-        offset: bool,
-        width: f64,
-        height: f64,
-    ) -> Vec<Drawing> {
+    /// Put copies down and take hold of them. Hands back what was added, for
+    /// whoever has to write it down.
+    ///
+    /// At the moment and the price they were copied at, and in sight: a
+    /// paste nobody can see is one that looks as if it never happened. So
+    /// the view goes to the moment if it is off screen, and a price that is
+    /// nowhere on this chart's axis — one copied from a market trading at
+    /// another price — goes to the height it had on `from`, the axis it was
+    /// copied on. Where that would put a copy exactly on a drawing already
+    /// here, as on the chart it came from, it lands a little off instead.
+    fn paste(&mut self, copied: &[Drawing], from: Option<PriceScale>, width: f64, height: f64) -> Vec<Drawing> {
         if copied.is_empty() {
             return Vec::new();
         }
-        let (first, visible) = self.slice();
-        if visible == 0 {
+        if self.slice().1 == 0 {
             return Vec::new();
         }
         let plan = layout(self, width, height);
+        self.reveal_moments(copied, plan.plot_w);
+        let (first, visible) = self.slice();
         let Some(scale) = price_range(self, &self.bars[first..first + visible], &plan) else {
             return Vec::new();
         };
+        let mut landing = copied.to_vec();
+        if let Some(from) = from.filter(|_| !on_axis(copied, scale)) {
+            for copy in landing.iter_mut() {
+                for anchor in copy.points.iter_mut().chain([&mut copy.from, &mut copy.to]) {
+                    anchor.price = scale.price(scale.low + (from.value(anchor.price) - from.low) / from.span() * scale.span());
+                }
+            }
+        }
+        let hidden = landing
+            .iter()
+            .any(|copy| self.drawings.iter().any(|there| there.from == copy.from && there.to == copy.to));
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
-        let (by_index, by_price) = match offset {
+        let (by_index, by_price) = match hidden {
             true => (PASTE_OFFSET / bar_w, -PASTE_OFFSET / plan.price_h * scale.span()),
             false => (0.0, 0.0),
         };
@@ -1844,8 +1858,7 @@ impl State {
         self.remember();
         let mut added = Vec::new();
         let State { bars, drawings, .. } = self;
-        for copy in copied {
-            let mut copy = copy.clone();
+        for mut copy in landing {
             copy.id = 0;
             copy.order = order;
             copy.scope = scope;
@@ -1866,6 +1879,37 @@ impl State {
         let from = self.drawings.len() - added.len();
         self.selected = (from..self.drawings.len()).collect();
         added
+    }
+
+    /// The price axis as it is drawn at this size.
+    fn paste_axis(&self, width: f64, height: f64) -> Option<PriceScale> {
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        price_range(self, &self.bars[first..first + visible], &plan)
+    }
+
+    /// Bring the moments `copied` spans into view, if none of them is on
+    /// screen: the view moves to centre on them, at the zoom it has, as far
+    /// as the bars and the room past them let it.
+    fn reveal_moments(&mut self, copied: &[Drawing], plot_w: f64) {
+        let columns = self.columns() as f64;
+        if columns == 0.0 {
+            return;
+        }
+        let (mut early, mut late) = (f64::MAX, f64::MIN);
+        for anchor in copied.iter().flat_map(|d| d.points.iter().chain([&d.from, &d.to])) {
+            let at = index_of_ts(&self.bars, anchor.ts);
+            early = early.min(at);
+            late = late.max(at);
+        }
+        let left = self.left_edge() as f64;
+        if late >= left && early <= left + columns {
+            return;
+        }
+        self.pan_by((early + late) / 2.0 - (left + columns / 2.0), plot_w);
     }
 
     /// Every drawing with any of itself on the plot right now: what Ctrl+A
@@ -2673,6 +2717,25 @@ pub struct Hidden {
     pub drawings: bool,
     pub indicators: bool,
     pub bars: bool,
+}
+
+/// The prices a chart's price axis shows, bottom to top, and how it spaces
+/// them: what a copy carries to another chart, so a price that chart does
+/// not show can land at the height it had where it was copied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PriceWindow(PriceScale);
+
+/// Do any of `copied`'s prices fall on the axis `scale` shows? Taken
+/// together, so copies put down together stay where they were to each
+/// other.
+fn on_axis(copied: &[Drawing], scale: PriceScale) -> bool {
+    let (low, high) = scale.prices();
+    let (mut least, mut most) = (f64::MAX, f64::MIN);
+    for anchor in copied.iter().flat_map(|d| d.points.iter().chain([&d.from, &d.to])) {
+        least = least.min(anchor.price);
+        most = most.max(anchor.price);
+    }
+    most >= low && least <= high
 }
 
 /// How far a pasted copy lands from what it was copied from, in pixels.
@@ -4227,6 +4290,13 @@ impl ChartView {
         });
     }
 
+    /// What the price axis shows now: carried with a copy, for a paste onto
+    /// a chart whose axis does not reach its prices.
+    pub fn price_window(&self) -> Option<PriceWindow> {
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        self.state.borrow().paste_axis(width, height).map(PriceWindow)
+    }
+
     /// Everything selected, ready to be put down again.
     ///
     /// Without ids, because a copy is not the drawing it came from: the id
@@ -4245,24 +4315,26 @@ impl ChartView {
         taken
     }
 
-    /// Put a copy down on this chart, a little off where it came from, and
-    /// take hold of it.
+    /// Put a copy down on this chart, in sight, and take hold of it, with
+    /// the price axis of the chart it was copied on, if known: see
+    /// `State::paste`.
     ///
-    /// Offset so that a paste onto the chart it was copied from is a
-    /// drawing you can see rather than one hiding exactly behind another,
-    /// and so that pasting twice gives two. In pixels rather than in
-    /// moments, because what it has to clear is the drawing on screen.
+    /// Offset where it would land exactly on a drawing already here, so
+    /// that a paste onto the chart it was copied from is a drawing you can
+    /// see rather than one hiding behind another, and so that pasting twice
+    /// gives two. In pixels rather than in moments, because what it has to
+    /// clear is the drawing on screen.
     ///
     /// Says whether anything was put down, so the key can go on to whatever
     /// else it means when there is nothing to paste.
-    pub fn paste(&self, copied: &[Drawing], offset: bool) -> bool {
+    pub fn paste(&self, copied: &[Drawing], from: Option<PriceWindow>) -> bool {
         let (width, height) = (self.area.width() as f64, self.area.height() as f64);
         // One borrow, and nothing called from inside it. The first version
         // asked a getter for the chart's own sharing while holding this,
         // and a getter takes the same cell: not an error anybody sees until
         // the key is pressed, and then not a panic but an abort, because it
         // happens under a GTK callback.
-        let added = self.state.borrow_mut().paste(copied, offset, width, height);
+        let added = self.state.borrow_mut().paste(copied, from.map(|PriceWindow(axis)| axis), width, height);
         if added.is_empty() {
             return false;
         }
@@ -15034,23 +15106,25 @@ mod drawing_tests {
         let mut two = Drawing::new(DrawingKind::Line, a, b);
         two.id = 9;
 
-        let added = state.paste(&[one.clone(), two.clone()], true, w, h);
+        // On the chart they were copied from.
+        state.drawings = vec![one.clone(), two.clone()];
+        let added = state.paste(&[one.clone(), two.clone()], None, w, h);
         assert_eq!(added.len(), 2, "both copies went down");
-        assert_eq!(state.drawings.len(), 2);
+        assert_eq!(state.drawings.len(), 4);
         assert!(added.iter().all(|d| d.id == 0), "a copy is not the drawing it came from");
-        assert_eq!(state.selected, vec![0, 1], "the copies are what is in hand");
+        assert_eq!(state.selected, vec![2, 3], "the copies are what is in hand");
         assert_eq!(state.undo.len(), 1, "two drawings is still one step back");
 
         // Offset, so a copy of something on this chart is visible beside it.
-        assert_ne!(state.drawings[0].from, a, "the copy landed exactly on the original");
+        assert_ne!(state.drawings[2].from, a, "the copy landed exactly on the original");
         // And the shape is unchanged: both ends moved by the same amount.
-        let moved = &state.drawings[0];
+        let moved = &state.drawings[2];
         assert_eq!(moved.to.ts - moved.from.ts, b.ts - a.ts);
 
-        // Asked not to offset — a paste onto another chart — it lands on
-        // the moment and the price it was copied from.
+        // Onto another chart, with nothing there to hide behind, it lands
+        // on the moment and the price it was copied from.
         let mut elsewhere = charted(400);
-        elsewhere.paste(&[one.clone()], false, w, h);
+        elsewhere.paste(&[one.clone()], None, w, h);
         assert_eq!(elsewhere.drawings[0].from, a);
         assert_eq!(elsewhere.drawings[0].to, b);
     }
@@ -15072,7 +15146,7 @@ mod drawing_tests {
             Drawing::new(DrawingKind::Ellipse, a, b),
             Drawing::new(DrawingKind::Line, a, b),
         ];
-        state.paste(&copies, true, 800.0, 400.0);
+        state.paste(&copies, None, 800.0, 400.0);
         assert_eq!(state.selected, vec![1, 2, 3]);
 
         // The list comes back from the store with the copies still
@@ -15099,12 +15173,12 @@ mod drawing_tests {
 
         let mut sending = charted(400);
         sending.sends = true;
-        sending.paste(&[copy.clone()], false, w, h);
+        sending.paste(std::slice::from_ref(&copy), None, w, h);
         assert_eq!(sending.drawings[0].scope, drawings::Scope::Shared);
 
         let mut keeping = charted(400);
         keeping.sends = false;
-        keeping.paste(&[copy], false, w, h);
+        keeping.paste(&[copy], None, w, h);
         assert_eq!(keeping.drawings[0].scope, drawings::Scope::Local);
     }
 
@@ -15113,9 +15187,87 @@ mod drawing_tests {
     #[test]
     fn pasting_nothing_does_nothing() {
         let mut state = charted(400);
-        assert!(state.paste(&[], true, 800.0, 400.0).is_empty());
+        assert!(state.paste(&[], None, 800.0, 400.0).is_empty());
         assert!(state.drawings.is_empty());
         assert!(state.undo.is_empty(), "nothing happened, so there is nothing to undo");
+    }
+
+    /// The columns a state shows, first and last, as indices into its bars.
+    fn columns_shown(state: &State) -> (f64, f64) {
+        let left = state.left_edge() as f64;
+        (left, left + state.columns() as f64)
+    }
+
+    /// Pasted onto a chart of a market trading at other prices, a copy
+    /// keeps its moments and lands at the height it had on the axis it was
+    /// copied from — where it would otherwise be off the plot, and the
+    /// paste would look as if it had done nothing. Onto a chart whose axis
+    /// reaches its prices, it keeps them exactly.
+    #[test]
+    fn a_paste_onto_a_market_at_other_prices_lands_where_it_was_on_the_axis() {
+        let (w, h) = (800.0, 400.0);
+        let source = charted(400);
+        let (first, visible) = source.slice();
+        let (a, b) = (first + visible / 4, first + visible / 2);
+        let from = source.paste_axis(w, h).expect("an axis");
+        let (low, high) = from.prices();
+        let at = |share: f64| low + (high - low) * share;
+        let copy = Drawing::new(
+            DrawingKind::Rect,
+            Anchor::new(source.bars[a].ts, at(0.25)),
+            Anchor::new(source.bars[b].ts, at(0.75)),
+        );
+
+        // A hundred times the price.
+        let mut dearer = charted(400);
+        for bar in dearer.bars.iter_mut() {
+            for price in [&mut bar.open, &mut bar.high, &mut bar.low, &mut bar.close] {
+                *price *= 100.0;
+            }
+        }
+        let added = dearer.paste(std::slice::from_ref(&copy), Some(from), w, h);
+        let pasted = &added[0];
+        assert_eq!((pasted.from.ts, pasted.to.ts), (copy.from.ts, copy.to.ts), "the moments moved");
+        let to = dearer.paste_axis(w, h).expect("an axis");
+        let share = |price: f64| (price - to.low) / to.span();
+        assert!((share(pasted.from.price) - 0.25).abs() < 1e-9, "{pasted:?} on {to:?}");
+        assert!((share(pasted.to.price) - 0.75).abs() < 1e-9, "{pasted:?} on {to:?}");
+
+        // The same market on another chart: the price is the point.
+        let mut same = charted(400);
+        let added = same.paste(std::slice::from_ref(&copy), Some(from), w, h);
+        assert_eq!((added[0].from, added[0].to), (copy.from, copy.to));
+    }
+
+    /// Pasted onto a chart that is looking somewhere else in time, the copy
+    /// keeps its moments and the chart goes to them. One already in sight
+    /// moves nothing.
+    #[test]
+    fn a_paste_off_screen_brings_the_chart_to_it() {
+        let (w, h) = (800.0, 400.0);
+        let mut state = charted(400);
+        let (left, _) = columns_shown(&state);
+        assert!(left > 40.0, "the start of the bars is on screen already");
+        let copy = Drawing::new(
+            DrawingKind::Rect,
+            Anchor::new(state.bars[20].ts, 104.0),
+            Anchor::new(state.bars[30].ts, 108.0),
+        );
+        let added = state.paste(std::slice::from_ref(&copy), None, w, h);
+        assert_eq!((added[0].from, added[0].to), (copy.from, copy.to), "the paste moved, not the chart");
+        let (left, right) = columns_shown(&state);
+        assert!(left <= 20.0 && right >= 30.0, "still off screen: {left}..{right}");
+
+        let mut state = charted(400);
+        let before = columns_shown(&state);
+        let (first, visible) = state.slice();
+        let here = Drawing::new(
+            DrawingKind::Rect,
+            Anchor::new(state.bars[first + visible / 2].ts, 104.0),
+            Anchor::new(state.bars[first + visible / 2 + 5].ts, 108.0),
+        );
+        state.paste(&[here], None, w, h);
+        assert_eq!(columns_shown(&state), before, "a paste already in sight moved the chart");
     }
 
     /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3
