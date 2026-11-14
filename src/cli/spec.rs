@@ -382,7 +382,7 @@ pub const COLOUR: &str =
 const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
     Flag::valued("chart", "CHART", CHART_SELECTOR),
-    Flag::valued("id", "N", "which one, when a chart has two of a kind; `selected` for the one selected in the window, kind and all"),
+    Flag::valued("id", "N", "which one, from `indicator list`: remove and set then need no KIND; `selected` for the one selected in the window"),
     Flag::switch("selected", "with list: only what is selected in the window"),
     Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR, Bollinger; the stochastic's %K length"),
     Flag::valued("deviations", "F", "standard deviations the Bollinger bands sit at, 0-50"),
@@ -1021,7 +1021,7 @@ pub const SURFACE: &[Noun] = &[
                 about: "Add, remove, list or reconfigure a chart's indicators",
                 args: &[
                     Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
-                    Arg::opt("KIND", "the indicator, for add, remove and set").of(KINDS),
+                    Arg::opt("KIND", "the indicator: for add, and for remove and set without --id").of(KINDS),
                 ],
                 flags: INDICATOR_FLAGS,
                 example: "omacharts chart indicator add sma --period 200 --color Amber --style dashed",
@@ -1084,7 +1084,7 @@ pub const SURFACE: &[Noun] = &[
                 flags: &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
-                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove. `selected` for the one selected in the window"),
+                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove, which then need no KIND. `selected` for the one selected in the window"),
                     Flag::switch("selected", "with list: only what is selected in the window"),
                     Flag::valued("from", "ANCHOR", ANCHOR),
                     Flag::valued("to", "ANCHOR", ANCHOR),
@@ -1252,7 +1252,7 @@ pub const SURFACE: &[Noun] = &[
                 args: &[
                     Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
                     Arg::req("TEMPLATE", TEMPLATE_SELECTOR),
-                    Arg::opt("KIND", "the indicator, for add, remove and set").of(KINDS),
+                    Arg::opt("KIND", "the indicator: for add, and for remove and set without --id").of(KINDS),
                 ],
                 flags: INDICATOR_FLAGS.split_at(2).1,
                 example: "omacharts template indicator add Default rsi --period 14",

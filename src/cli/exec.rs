@@ -1929,16 +1929,8 @@ fn chart_indicator(
     // Everything is read and checked before anything is written, so a command
     // carrying one bad value leaves the chart exactly as it was.
     let wanted = wanted_indicator(m, Some(selection), pane)?;
-    let kind = match (arg(m, "KIND"), wanted) {
-        // `--id selected` and no kind: the kind of the one it names.
-        (None, Some(id)) if action != "add" => chart["indicators"]
-            .as_array()
-            .and_then(|list| list.iter().find(|i| i["id"].as_u64() == Some(id)))
-            .and_then(|i| i["kind"].as_str())
-            .and_then(|key| IndicatorKind::ALL.into_iter().find(|k| k.key() == key))
-            .ok_or_else(|| Fault::not_found(format!("chart {pane} has no indicator {id}")))?,
-        _ => indicator_kind(m, action)?,
-    };
+    let listed = chart["indicators"].as_array().cloned().unwrap_or_default();
+    let kind = wanted_kind(m, action, &listed, wanted, &format!("chart {pane}"))?;
     let edits = Edits::read(m)?;
 
     // A chart on a template shows the template's indicators, and changing
@@ -2294,6 +2286,37 @@ fn indicator_kind(m: &clap::ArgMatches, action: &str) -> Result<IndicatorKind, F
     })
 }
 
+/// The kind of indicator a verb works on, from `indicators`: the KIND
+/// given, or with `--id` and no KIND the kind of the one the id names,
+/// since the id alone says which. A KIND the id's indicator is not is
+/// refused rather than read as another indicator. `whose` names the list.
+fn wanted_kind(
+    m: &clap::ArgMatches,
+    action: &str,
+    indicators: &[Value],
+    wanted: Option<u64>,
+    whose: &str,
+) -> Result<IndicatorKind, Fault> {
+    let Some(id) = wanted.filter(|_| action != "add") else { return indicator_kind(m, action) };
+    let named = indicators
+        .iter()
+        .find(|i| i["id"].as_u64() == Some(id))
+        .and_then(|i| IndicatorKind::ALL.into_iter().find(|kind| is_kind(i, *kind)))
+        .ok_or_else(|| Fault::not_found(format!("{whose} has no indicator {id}; `indicator list` gives the ids")))?;
+    if arg(m, "KIND").is_none() {
+        return Ok(named);
+    }
+    let given = indicator_kind(m, action)?;
+    if given != named {
+        return Err(Fault::usage(format!(
+            "indicator {id} is {}, not {}; leave the kind out and --id alone says which",
+            named.short_name(),
+            given.short_name()
+        )));
+    }
+    Ok(given)
+}
+
 /// Add, remove or reconfigure one indicator in a list of them.
 ///
 /// One list, whoever it belongs to: a chart's and a template's are the same
@@ -2405,6 +2428,21 @@ fn edit_indicators(
         }
         other => return Err(Fault::usage(format!("{other:?} is not list, add, remove or set"))),
     })
+}
+
+/// A drawing `--id` names, given a KIND too: refused when it is another
+/// kind, rather than changed or removed as though it were that one. The
+/// KIND can be left out; the id alone says which.
+fn drawing_is(drawing: &omacharts_engine::drawings::Drawing, kind: Option<omacharts_engine::drawings::Kind>) -> Result<(), Fault> {
+    match kind {
+        Some(kind) if kind != drawing.kind => Err(Fault::usage(format!(
+            "drawing {} is {}, not {}; leave the kind out and --id alone says which",
+            drawing.id,
+            drawing.kind.key(),
+            kind.key()
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// What is drawn on a chart's symbol, from a terminal.
@@ -2665,6 +2703,7 @@ fn chart_drawing(
                 ));
             }
             let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
+            drawing_is(&drawing, kind)?;
             let was_local = drawing.is_local();
             if !drawing.kind.takes_text() && !words.is_empty() {
                 return Err(takes_no_text(drawing.kind));
@@ -2738,6 +2777,7 @@ fn chart_drawing(
                 return Err(Fault::usage("`drawing remove` needs --id, from `drawing list`".into()));
             };
             let found = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
+            drawing_is(&found, kind)?;
             if found.is_local() {
                 locals.retain(|d| d.id != id);
                 write_locals(workspace, at, pane, &locals)?;
@@ -5416,9 +5456,9 @@ fn template_indicator(
         return Ok(list_indicators(&list, json!({"template": template.name}), as_json));
     }
 
-    let kind = indicator_kind(m, action)?;
-    let edits = Edits::read(m)?;
     let wanted = wanted_indicator(m, None, 0)?;
+    let kind = wanted_kind(m, action, &list, wanted, &format!("chart template {:?}", template.name))?;
+    let edits = Edits::read(m)?;
     let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart template")?;
     let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
         .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
@@ -7100,6 +7140,50 @@ mod tests {
         let held = json_of(&run("template indicator list Default --json", &store));
         assert_eq!(held["indicators"][0]["params"]["period"], 21);
         assert_eq!(kinds("Macro"), vec![vec!["rsi"], vec!["rsi"]]);
+    }
+
+    /// `--id` from `indicator list` says which indicator on its own: no
+    /// kind is needed to set or remove it, on a chart or a template, and a
+    /// kind that is not the id's is refused rather than read as another.
+    #[test]
+    fn an_indicator_is_set_and_removed_by_its_id_alone() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart set --book Macro --template none", &store);
+        run("chart indicator add sma --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let ids = |line: &str| -> Vec<(u64, String)> {
+            json_of(&run(line, &store))["indicators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| (i["id"].as_u64().unwrap(), i["kind"].as_str().unwrap().to_string()))
+                .collect()
+        };
+        assert_eq!(ids("chart indicator list --book Macro --json"), [(1, "sma".into()), (2, "rsi".into())]);
+
+        let out = run("chart indicator set --book Macro --id 2 --period 21", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let out = run("chart indicator remove --book Macro sma --id 2", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert!(out.err.contains("indicator 2 is RSI, not SMA"), "{}", out.err);
+        let out = run("chart indicator remove --book Macro --id 9", &store);
+        assert_eq!(out.code, super::super::EXIT_NOT_FOUND, "{}", out.err);
+        let out = run("chart indicator remove --book Macro --id 2", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(ids("chart indicator list --book Macro --json"), [(1, "sma".into())]);
+
+        // A template's the same.
+        run("template indicator add Default rsi", &store);
+        let held = ids("template indicator list Default --json");
+        let (rsi, _) = held.iter().find(|(_, kind)| kind == "rsi").unwrap().clone();
+        let out = run(&format!("template indicator set Default --id {rsi} --period 9"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let out = run(&format!("template indicator remove Default volume --id {rsi}"), &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "{}", out.err);
+        let out = run(&format!("template indicator remove Default --id {rsi}"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(!ids("template indicator list Default --json").iter().any(|(_, kind)| kind == "rsi"));
     }
 
     #[test]
@@ -10259,6 +10343,20 @@ mod tests {
         let on_nvda = run("chart drawing list --book Macro --chart pos:1 --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&on_nvda.out).unwrap();
         assert!(parsed["drawings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_drawing_named_by_id_and_another_kind_is_refused() {
+        let store = bare();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192", &store);
+        let out = run("chart drawing set line --book Macro --id 1 --fill ink", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert!(out.err.contains("drawing 1 is rect, not line"), "{}", out.err);
+        let out = run("chart drawing remove line --book Macro --id 1", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        let out = run("chart drawing remove rect --book Macro --id 1", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
     }
 
     #[test]
