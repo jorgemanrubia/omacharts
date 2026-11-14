@@ -1071,3 +1071,7 @@ stopped by pid.
 transcripts, the tape's sanity-check pictures, which fallbacks were
 taken if any, and whatever in this script was changed at the storyboard
 and why.
+
+## Storyboard
+
+![Storyboard](../storyboards/trading.jpg)
