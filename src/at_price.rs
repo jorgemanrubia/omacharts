@@ -27,7 +27,10 @@
 //! which minutes from the chart's first bar to now it knows nothing about —
 //! [`Store::missing_ladders`] — and only those spans go to the provider, one
 //! request each, which is what spares a provider with a data quota. A span
-//! the store knows complete is never asked for again. A disconnect leaves a
+//! the store knows complete is never asked for again. The provider is asked
+//! no further back than its history goes, but the store is read as far back
+//! as the chart reaches: days kept on earlier runs, older than the provider
+//! still serves, are drawn from what traded too. A disconnect leaves a
 //! hole, and the feed coming back fills it at once: the store is asked again
 //! which minutes it is missing, and the provider's minutes replace the ones
 //! built live. The minute the feed came back in was joined part way, and is
@@ -818,13 +821,16 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
         let answer = match job {
             Job::Load { key, stored, symbol, instrument, tick_size, from, now, seq } => {
                 let days = Days::new(&instrument);
-                let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
                 let _ = store.compact_ladders(&stored, days.of(now));
                 let family = family_of(&key, &symbol);
                 if stored != family {
                     let _ = store.forget_other_months(&family, &kept_with(&family, &symbol, &stored));
                 }
-                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
+                // The provider is asked no further back than its history
+                // goes; what the store kept from before that, on earlier
+                // runs, is read all the same.
+                let reach = from.max(now - i64::from(ladders.history_days()) * 86_400);
+                let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, reach, now);
                 let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
                 Done::Loaded { key, stored, from, held: Box::new(held), asked, seq }
             }
@@ -1067,6 +1073,42 @@ mod tests {
         // The live minute read back from the store, and the two since.
         assert_eq!(back, 180 * 5 + 5 + 2 * 5);
         second.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The store kept an hour from forty days ago, further back than the
+    /// provider serves. A chart reaching past it draws it from the store,
+    /// and so does a chart that reaches it only by scrolling back later;
+    /// the provider is never asked for anything that old.
+    #[test]
+    fn days_kept_from_before_the_providers_history_are_still_drawn() {
+        const DAY: i64 = 86_400;
+        let path = scratch("kept");
+        let days = Days::new(&es());
+        let old = NOW - 40 * DAY;
+        {
+            let store = Store::open_at(&path).unwrap();
+            let minutes: Vec<Minute> = (old..old + HOUR).step_by(60).map(minute).collect();
+            store.save_ladder_history(KEY, 0.25, &days, old, old + HOUR, &minutes).unwrap();
+            // The provider's whole month known, so nothing is asked.
+            store.save_ladder_history(KEY, 0.25, &days, NOW - 30 * DAY, NOW, &[]).unwrap();
+        }
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        let old_volume = |at_price: &AtPrice| {
+            at_price.with_held(KEY, |held| held.unwrap().between(old, old + HOUR).map(|l| l.sides.volume()))
+        };
+
+        at_price.want(1, KEY, "ES", &es(), NOW - 35 * DAY);
+        settle(&at_price);
+        assert_ne!(old_volume(&at_price), Some(60 * 5), "not reached yet");
+
+        at_price.want(2, KEY, "ES", &es(), NOW - 45 * DAY);
+        settle(&at_price);
+        assert_eq!(old_volume(&at_price), Some(60 * 5), "the hour kept, drawn from what traded");
+        assert!(asked.lock().unwrap().spans.iter().all(|(a, _)| *a >= NOW - 30 * DAY), "{:?}", asked.lock().unwrap().spans);
+        at_price.shutdown();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
