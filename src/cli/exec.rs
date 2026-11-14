@@ -10433,6 +10433,15 @@ mod tests {
         assert_eq!(run("trading default A-2", &store).code, 0);
         let accounts = json_of(&run("trading accounts --json", &store));
         assert_eq!(accounts["accounts"][1]["default"], true, "{accounts}");
+        // By its login's name and its number, as the help says, in any case.
+        assert_eq!(run("trading default practice/a-1", &store).code, 0);
+        let accounts = json_of(&run("trading accounts --json", &store));
+        assert_eq!(accounts["accounts"][0]["default"], true, "{accounts}");
+        // And by the key the JSON gives.
+        let key = accounts["accounts"][1]["account"].as_str().expect("a key").to_string();
+        assert_eq!(run(&format!("trading default {key}"), &store).code, 0, "{key}");
+        assert_eq!(json_of(&run("trading accounts --json", &store))["accounts"][1]["default"], true);
+        assert_eq!(run("trading default Practice/A-9", &store).code, crate::cli::EXIT_NOT_FOUND);
         assert_eq!(run("trading default nope", &store).code, crate::cli::EXIT_NOT_FOUND);
 
         for line in [

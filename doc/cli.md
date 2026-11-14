@@ -1355,8 +1355,8 @@ service's sign-in dialog in the window, and `trading sign-in LOGIN` signs in
 with the password the keyring holds, or opens the dialog when it holds none.
 `trading sign-out` and `trading remove` forget it.
 
-A chart's trading is set with `chart set`: `--account` (a name, a number or
-`default`), `--quantity`, `--trading-symbol` (the other size of what it
+A chart's trading is set with `chart set`: `--account` (a name, a number,
+login and number such as `Lucid/1234`, or `default`), `--quantity`, `--trading-symbol` (the other size of what it
 charts, such as MES on ES, or `none`) and `--show-fills`. `chart list --json`
 reads them back. Orders, flatten and exit act on the chart that `--book` and
 `--chart` name, the focused one by default, as every chart command does.

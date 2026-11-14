@@ -305,17 +305,22 @@ fn find_login(store: &Store, text: &str) -> Result<Login, Fault> {
         })
 }
 
-/// An account by its key, `login/number`, its number, or its name here.
+/// An account by its key (as `trading accounts --json` gives it), its
+/// login's name and its number, `Lucid/1234`, its number, or its name here.
 pub fn find_account<'a>(view: &'a View, text: &str) -> Result<&'a Account, Fault> {
     let text = text.trim();
     if let Some(account) = view.accounts.iter().find(|account| account.key() == text) {
         return Ok(account);
     }
+    let login_name = |account: &Account| {
+        view.logins.iter().find(|login| login.id == account.login).map(|login| login.name.as_str())
+    };
     let fits: Vec<&Account> = view
         .accounts
         .iter()
         .filter(|account| {
             account.id.eq_ignore_ascii_case(text)
+                || login_name(account).is_some_and(|login| format!("{login}/{}", account.id).eq_ignore_ascii_case(text))
                 || view.account_name(account).eq_ignore_ascii_case(text)
                 || account.name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(text))
         })

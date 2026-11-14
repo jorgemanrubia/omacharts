@@ -414,7 +414,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | `--show-drawings on` or `off`, `--send-drawings on` or `off` | Whether the chart shows other charts' drawings, and whether it sends its own | [Drawings](/manual/drawings/) |
-| `--account ACCOUNT` | The account the chart trades on: its name, its number, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
+| `--account ACCOUNT` | The account the chart trades on: its name, its number, its login and number such as `Lucid/1234`, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
 | `--quantity N` | The quantity its Qty is set to, one its quantities offer | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
 | `--trading-symbol SYMBOL` | Trade the other size of what it charts, such as `MES` on an ES chart; `none` to trade what it charts | [Trading another size](/manual/trading-on-a-chart/#trading-another-size) |
 | `--show-fills on` or `off` | Marks the account's executions on the chart | [Executions on the chart](/manual/trading-on-a-chart/#executions-on-the-chart) |
@@ -1629,7 +1629,8 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 name, the focused one by default ([Which chart a command acts
 on](#which-chart-a-command-acts-on)), in the open chartbook: an order goes
 from a chart on screen. An account is named by its name or its number, or,
-when two logins share a number, by its `account` in `trading accounts --json`.
+when two logins share a number, by its login's name and its number, such as
+`Lucid/1234`, or by its `account` in `trading accounts --json`.
 
 ```
 $ omacharts trading logins
