@@ -35,20 +35,35 @@ Selected, it glows in its own colour, as a [selected VWAP study](/manual/indicat
 
 ## Properties
 
-Its properties are the [VWAP](/manual/indicators/averages-and-bands/vwap/) study's, in the same groups and order, with the same defaults: a line, and three bands at 1, 1.5 and 2 standard deviations, all off. When on, the first is shaded with no outline, the second dashed, the third a plain line. The deviation is weighted by volume, as the average is.
+<kbd>Alt</kbd> + <kbd>Enter</kbd> or a double-click on the line opens them. They are the [VWAP](/manual/indicators/averages-and-bands/vwap/) study's, in the same groups and order, with the same defaults: a line, and three bands at 1, 1.5 and 2 standard deviations, all off. The deviation is weighted by volume, as the average is. Defaults are those of a configuration as shipped.
 
-| Group | Row | Does | Default |
-|---|---|---|---|
-| **Parameters** | **Source** | The price each bar adds: **Typical** (high + low + close) / 3, the study's; **Median** (high + low) / 2; **Average** (open + high + low + close) / 4; or **Close** | Typical |
-| **Line** | **Colour** | One of the [nine presets](/manual/drawings/#colours), or **Custom…** | The configuration's |
-| | **Thickness** | No line, 1, 1.5, 2.5 or 4 px. No line leaves only the bands | 1.5 px |
-| | **Line style** | Solid, Dashed, Dotted | Solid |
-| **Band 1**, **Band 2**, **Band 3** | **Show** | Draws the band | Off |
-| | **Standard deviations** | How far out it sits, 0.1 to 6, in tenths | 1, 1.5, 2 |
-| | **Shaded** | Fills the area between its edges, under the candles | On for band 1 |
-| | **Shading %** | How solid that fill is, 0 to 100% | 16% |
-| | **Colour** | The band's colour. **Reset** goes back to the line's, which it follows | The line's |
-| | **Thickness**, **Line style** | Its edges. No line leaves a shaded band with no outline | No line for band 1, 1 px dashed for band 2, 1 px solid for band 3 |
+### Parameters
+
+| Property | What it does | Default |
+|---|---|---|
+| **Source** | The price each bar adds to the average: **Typical (HLC/3)**, (high + low + close) / 3, the study's; **Median (HL/2)**; **Average (OHLC/4)**; or **Close** | Typical (HLC/3) |
+
+### Line
+
+| Property | What it does | Default |
+|---|---|---|
+| **Colour** | The line's colour, and every band's that has none of its own: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour | The configuration's |
+| **Thickness** | No line, 1, 1.5, 2.5 or 4 px, picked from drawn samples. No line leaves only the bands | 1.5 px |
+| **Line style** | **Solid**, **Dashed** or **Dotted**, picked from drawn samples | Solid |
+
+### Band 1, Band 2, Band 3
+
+Each band is a pair of lines, one above the average and one below, at the same distance.
+
+| Property | What it does | Default |
+|---|---|---|
+| **Show** | Draws the band | Off |
+| **Standard deviations** | How far from the line the band sits, 0.1 to 6, in tenths | 1, 1.5 and 2 |
+| **Shaded** | Fills the area between the band's two lines, under the candles | On for band 1, off for the others |
+| **Shading %** | How solid that fill is, 0 to 100% | 16% |
+| **Colour** | The band's own colour. **Reset** goes back to the line's, which the band then follows | The line's |
+| **Thickness** | The band's two lines: no line, 1, 1.5, 2.5 or 4 px. No line leaves a shaded band with no outline | No line for band 1, 1 px for bands 2 and 3 |
+| **Line style** | **Solid**, **Dashed** or **Dotted** | Dashed for band 2, solid for bands 1 and 3 |
 
 ## Configurations
 

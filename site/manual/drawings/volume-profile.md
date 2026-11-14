@@ -34,7 +34,7 @@ Selected, it has a grip at each corner: the left two move its start and the righ
 
 ## Properties
 
-Its properties are the [Volume Profile](/manual/indicators/volume/volume-profile/) study's, with the same names, ranges and controls, in the same groups and order. It leaves out what only the study has:
+<kbd>Alt</kbd> + <kbd>Enter</kbd> or a double-click on the profile opens them. They are the [Volume Profile](/manual/indicators/volume/volume-profile/) study's, with the same names, ranges and controls, in the same two groups and order, less what only the study has:
 
 | Left out | Because |
 |---|---|
@@ -42,24 +42,34 @@ Its properties are the [Volume Profile](/manual/indicators/volume/volume-profile
 | **Calculation method**, **Colouring** | A drawing is worked out from its bars' volume alone |
 | **Width %** | A drawing is as wide as its span |
 
-| Group | Property | Does |
+Defaults are those of configuration 1 as shipped, with the other configurations' differences under [Configurations](#configurations).
+
+### Parameters
+
+| Property | What it does | Default |
 |---|---|---|
-| **Parameters** | **Automatic**, **Rows** | Automatic by default: rows a round multiple of the instrument's price step, about 600 to the span, and a price step each on a short one. With **Automatic** off, **Rows** is the number of rows, 4 to 800. While automatic, **Rows** shows how many are drawn |
-| | **Value area %** | The share of the span's volume the value area holds, 10 to 100%, 70% by default |
-| | **Highlight value area** | On by default: the value area is drawn stronger than the other rows, which are a little under half as strong. Off draws every row alike |
-| | **Value area colour** | The value area's own colour while it is highlighted. By default the background's; **Reset** gives it back |
-| **Style** | **Outline** | Whether filled rows have an edge round them. Off by default; always on, and greyed, for an outline. The outline's colour, thickness and style show while it is on |
-| | **Outline colour** | The edge round the rows |
-| | **Outline thickness** | 0.5 to 12 px. 1 px on a filled configuration, 1.5 px on an outline |
-| | **Outline style** | Solid, Dashed or Dotted. Solid by default |
-| | **Background** | The rows |
-| | **Transparency %** | How much of the candles shows through the background, 70% by default. At 0% the value area is the background colour, solid; at 100% the profile is gone. The outline fades with it |
-| | **Show point of control** | On by default. Off leaves the profile without its point of control. Its colour, thickness and style show while it is on |
-| | **Point of control colour** | The line across the busiest price |
-| | **Point of control thickness** | 0.5 to 12 px, 1.5 px by default |
-| | **Point of control style** | Solid, Dashed or Dotted. Solid by default |
-| | **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
-| | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
+| **Automatic** | Picks how many rows the profile has: each row a round multiple of the instrument's price step, about 600 rows over the span, or one price step a row on a short one. While it is on, **Rows** is greyed and shows how many rows are drawn | On |
+| **Rows** | With **Automatic** off, how many rows the span's price range is cut into, 4 to 800. Fewer rows give a coarser profile, more a finer one. Turning **Automatic** off starts from the count being drawn, so the profile only changes when you change the number | Automatic |
+| **Value area %** | The share of the span's volume the value area holds, 10 to 100% | 70% |
+| **Highlight value area** | Draws the value area's rows stronger than the others, which are a little under half as strong. Off draws every row alike | On |
+| **Value area colour** | Gives the value area a colour of its own while it is highlighted. **Reset** goes back to the background's colour. Greyed while **Highlight value area** is off | The background's |
+
+### Style
+
+| Property | What it does | Default |
+|---|---|---|
+| **Outline** | Draws an edge round the filled rows. Always on, and greyed, while **Style** is Outline, since the edge is then all there is. The three outline rows below show while it is on | Off |
+| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the background | The configuration's |
+| **Outline thickness** | How thick the edge is, 0.5 to 12 px in halves | 1 px on a filled profile, 1.5 px on an outline |
+| **Outline style** | **Solid**, **Dashed** or **Dotted** | Solid |
+| **Background** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour | The configuration's |
+| **Transparency %** | How much of the chart shows through the rows, 0 to 100%. At 0% the value area is solid; at 100% the profile is gone. The outline fades with the rows | 70% |
+| **Show point of control** | Draws a line across the price with the most volume. Off leaves the profile without it. The three rows below show while it is on | On |
+| **Point of control colour** | The colour of the line at the busiest price. Every configuration ships it in Ink, so it stands apart from the rows | Ink |
+| **Point of control thickness** | How thick the line is, 0.5 to 12 px in halves | 1.5 px |
+| **Point of control style** | **Solid**, **Dashed** or **Dotted** | Solid |
+| **Style** | **Filled** draws the rows as solid bars. **Outline** draws only their edge, which leaves the candles under it clear | Filled |
+| **Alignment** | **Left** grows the rows to the right from the start of the span. **Right** grows them to the left from its end | Left |
 
 ## Configurations
 

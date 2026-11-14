@@ -157,6 +157,43 @@ $rail-inset: calc(#{$gutter-spacing-sm * 1.6} + 2px);
   margin-top: .15rem;
 }
 
+// The tag and the app's version after it. In the top bar, where there is
+// room, they sit in a row, the version a hairline pill; in the rail, which
+// is too narrow for that row, the version stands under the tag, smaller.
+.site-tags {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+
+  @media (min-width: $md) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .2rem;
+    margin-top: .15rem;
+  }
+}
+
+.site-version {
+  font-family: $oc-mono;
+  font-size: .62rem;
+  font-weight: 400;
+  letter-spacing: .06em;
+  line-height: 1;
+  color: $oc-dim;
+  white-space: nowrap;
+  border: 1px solid rgba($oc-dim, .55);
+  border-radius: 999px;
+  padding: .18rem .42rem .14rem;
+  margin-top: .15rem;
+
+  @media (min-width: $md) {
+    border: 0;
+    padding: 0;
+    margin: 0 0 0 .1rem;
+    font-size: .6rem;
+  }
+}
+
 .side-bar .site-button {
   color: $oc-bright;
   padding: 0 $gutter-spacing-sm;

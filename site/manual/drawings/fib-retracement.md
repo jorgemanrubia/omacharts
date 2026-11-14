@@ -36,15 +36,23 @@ Selected, it has a grip at each end. Drag a grip to move that end, or the levels
 
 ## Properties
 
-| Group | Row | Does | Default |
-|---|---|---|---|
-| | **Colour** | The colour of every level that has none of its own. One of the [nine presets](/manual/drawings/#colours), or **Custom…** | The configuration's |
-| | **Fib labels** | Labels each level with its ratio, as 61.8% | On |
-| | **Price labels** | Labels each level with its price, after the ratio when both are on | Off |
-| **Levels** | **0%** … **100%** | One row a level, with a switch that shows or hides it and a picture of how it is drawn. Click the row to open it | Every level shown |
-| | **Colour** | The level's colour. **Reset** goes back to the drawing's, which it follows | The drawing's |
-| | **Thickness** | 1, 1.5, 2.5 or 4 px | 1 px |
-| | **Line style** | Solid, Dashed, Dotted | Solid |
+<kbd>Alt</kbd> + <kbd>Enter</kbd> or a double-click on a level opens them. Defaults are those of configuration 1 as shipped, with the other configurations' differences under [Configurations](#configurations).
+
+| Property | What it does | Default |
+|---|---|---|
+| **Colour** | The colour of every level that has none of its own: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Changing it recolours all of those levels at once | Ink |
+| **Fib labels** | Writes each level's ratio at its left end, as 61.8% | On |
+| **Price labels** | Writes each level's price at its left end, after the ratio when both are on | Off |
+
+### Levels
+
+One row a level, **0%** to **100%**, each with a switch that shows or hides that level and a picture of how it is drawn. Click a row to open it on three properties of its own.
+
+| Property | What it does | Default |
+|---|---|---|
+| **Colour** | The level's own colour. **Reset** goes back to the drawing's, which the level then follows | The drawing's |
+| **Thickness** | No line, 1, 1.5, 2.5 or 4 px, picked from drawn samples. No line keeps the level's label without its line | 1 px |
+| **Line style** | **Solid**, **Dashed** or **Dotted** | Solid for 0% and 100%; dashed for 50%; dotted for the rest |
 
 **Thickness** in the drawing's menu, and <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>+</kbd> / <kbd>−</kbd>, set every level at once.
 
