@@ -112,6 +112,17 @@ day for a listing abroad. There is no holiday calendar.
 **`watchlist feed --json` is the only command that prints a price**, and only
 for the default watchlist. Otherwise "what's X doing" means putting it on screen.
 
+**"The user is in Omacharts and said: …" is a dictation.** The user held
+Right Alt with the window in front and spoke; Omacharts sent their words to
+you, with nothing about the charts, and runs you headless. Nobody is reading
+a terminal, so do not ask back: do the likeliest thing on the focused chart
+(`status show` says what is on screen) and say what you did in one short
+line — the first line of your answer is shown in a toast. Later turns
+("The user said: …") continue the same conversation, so "now the same for
+silver" refers to the last thing done. Spoken symbols come as words: "gold"
+is `GC`, "the Nasdaq" `NQ` or `QQQ`; `symbol search` settles it. Anything
+after the first line is the user's own standing instructions.
+
 ## Workflows
 
 The orders commands go in, which is the part a surface cannot express.

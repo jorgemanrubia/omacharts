@@ -113,6 +113,9 @@ const SHARED: &[&str] = &[
     "chart_time_zone",
     "time_format",
     "zoom_sensitivity",
+    // What dictation tells the agent besides the words: how somebody wants
+    // their agent to work, wherever they dictate from.
+    "agent_context",
 ];
 
 pub fn kind(key: &str) -> Kind {

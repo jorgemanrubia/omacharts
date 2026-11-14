@@ -48,6 +48,7 @@ use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
 pub(crate) mod compare;
+mod dictation;
 mod executions;
 mod log;
 mod marks;
@@ -4744,6 +4745,8 @@ pub struct Window {
     trade: Trade,
     /// The Log, the corner notice and the main menu's dot.
     messages: log::Messages,
+    /// What is dictated here, on its way to the agent.
+    dictation: dictation::Dictation,
     /// The About dialog, while it is open.
     about: RefCell<Option<Rc<about::About>>>,
     /// Which feed a loader reply belongs to. Bumped by a switch, so a reply
@@ -4897,6 +4900,7 @@ impl Window {
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
             messages: log::Messages::new(omacharts_engine::log::global()),
+            dictation: Default::default(),
             about: RefCell::new(None),
             feed_generation: Cell::new(0),
             refresh_timer_on: Cell::new(false),
@@ -8738,9 +8742,8 @@ impl Window {
                 // on Ctrl+Alt+V now.
                 Key::x | Key::X => this.cut(),
                 Key::c | Key::C => this.copy(),
-                Key::v | Key::V => {
-                    this.paste();
-                }
+                // A dictation arrives as a paste, and is told apart there.
+                Key::v | Key::V => this.paste_or_dictation(),
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop

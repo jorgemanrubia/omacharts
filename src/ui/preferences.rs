@@ -76,6 +76,7 @@ struct Context {
     charts_other_page: adw::PreferencesPage,
     charts_templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
+    agent_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The window, for the chart templates: they are shown on its charts,
@@ -122,6 +123,7 @@ impl Preferences {
         let general_page = adw::PreferencesPage::new();
         let charts_page = adw::PreferencesPage::new();
         let data_page = adw::PreferencesPage::new();
+        let agent_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
 
         // General first: what the app does, before what it looks like.
@@ -173,6 +175,7 @@ impl Preferences {
             ("Charts", "utilities-system-monitor-symbolic", None, charts.upcast()),
             ("Theme", "applications-graphics-symbolic", None, page.clone().upcast()),
             ("Data", "network-server-symbolic", None, data_page.clone().upcast()),
+            ("Agent", "audio-input-microphone-symbolic", None, agent_page.clone().upcast()),
             // Experimental, and said so where it is set up.
             ("Trading", "view-list-bullet-symbolic", Some("Beta"), trading_page.clone().upcast()),
         ];
@@ -195,6 +198,7 @@ impl Preferences {
             charts_other_page,
             charts_templates_page,
             data_page,
+            agent_page,
             trading_page,
             groups: RefCell::new(Vec::new()),
             window,
@@ -1158,6 +1162,48 @@ fn build_general_page(context: &Rc<Context>) {
     build_charts_page(context);
     rebuild_templates(context);
     build_data_page(context);
+    context.agent_page.add(&agent_group(context));
+}
+
+/// What dictation tells the agent besides the words.
+///
+/// The words go with a fixed line, saying where somebody is and to use the
+/// `omacharts` command, and this after it, at the start of each conversation.
+/// Empty unless somebody writes in it. Kept as it is typed: there is no
+/// moment of "done" in a box of prose, and closing the dialog must not lose it.
+fn agent_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Dictation");
+    let agent = crate::dictation::agent::omarchy_default();
+    let to = match crate::dictation::agent::Agent::named(&agent) {
+        Ok(agent) => format!("{}, Omarchy's default agent", agent.label()),
+        Err(_) => "Omarchy's default agent".to_string(),
+    };
+    group.set_description(Some(&format!(
+        "Dictating with Omacharts in front sends what you say to {to}. \
+         What you write here is sent with it at the start of each conversation."
+    )));
+
+    let area = gtk::TextView::new();
+    area.set_wrap_mode(gtk::WrapMode::WordChar);
+    area.set_top_margin(8);
+    area.set_bottom_margin(8);
+    area.set_left_margin(8);
+    area.set_right_margin(8);
+    area.set_accepts_tab(false);
+    area.buffer().set_text(&context.store.setting(crate::dictation::CONTEXT).unwrap_or_default());
+    let frame = gtk::ScrolledWindow::new();
+    frame.set_child(Some(&area));
+    frame.set_min_content_height(120);
+    frame.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    frame.add_css_class("card");
+    group.add(&frame);
+    let store = context.store.clone();
+    area.buffer().connect_changed(move |buffer| {
+        let (start, end) = buffer.bounds();
+        store.set_setting(crate::dictation::CONTEXT, buffer.text(&start, &end, true).as_str());
+    });
+    group
 }
 
 /// The clock every chart reads, and how it writes the time.

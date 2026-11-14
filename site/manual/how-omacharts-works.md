@@ -234,7 +234,8 @@ name what they act on work without a window, over ssh too.
 
 Scripts and agents use the same command, and a skill teaches an agent when
 to use it. See [The CLI](/manual/cli/) and
-[The agent skill](/manual/agent-skill/).
+[The agent skill](/manual/agent-skill/). With Omacharts in front, Omarchy's
+dictation sends what you say to the agent ([Dictation](/manual/dictation/)).
 
 ## The Omarchy plugin
 

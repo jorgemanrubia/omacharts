@@ -1109,6 +1109,16 @@ show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `sw
 `chart_sends_drawings` and `chart_shows_legend`. Changing
 one chart never changes them.
 
+`agent_context` is what dictation sends the agent besides the words
+([Dictating to the agent](#dictating-to-the-agent)). It reads as empty until
+it is set, rather than exiting 3, and `config set agent_context ""` clears it:
+
+```
+$ omacharts config set agent_context "Use Sonnet."
+dictation sends the agent 11 characters of extra context
+  [exit 0]
+```
+
 ## Which data feed the charts come from
 
 Yahoo Finance is the default and needs nothing set up. The stored choice is a
@@ -1625,6 +1635,66 @@ nothing in them corresponds to a `relevance` signal — a Codex plugin manifest
 carries display metadata, not a discovery trigger — and Codex reads
 `$CODEX_HOME/skills/` directly. So for Codex the skill directory is the whole
 story, and adding a manifest would be a second thing to maintain for nothing.
+
+## Dictating to the agent
+
+Omarchy has dictation: hold Right Alt, speak, let go, and the words appear in
+the window in front. With Omacharts in front and no text box focused, the
+words go to Omarchy's default agent instead, which does what was asked with
+this command. How to dictate stays Omarchy's; nothing here changes the key,
+the recording or the transcription.
+
+**How the words reach the window.** Omarchy's dictation backend on this
+desktop is Superwhisper, which on Hyprland delivers text by putting it on the
+clipboard and sending Ctrl+V to the window in front. In a text box that is an
+ordinary paste, and stays one. Outside one, Ctrl+V used to paste only a copied
+drawing or indicator, so it is told apart there: the window asks Superwhisper,
+over the control socket its own bar panel reads, for its last dictation. It
+is a dictation when that finished in the last 30 seconds, did not fail, says
+the same words as the clipboard, and has not been sent already. Anything else
+is a paste, as before. The words are what make it safe: dictate elsewhere and
+then paste a drawing here, and the clipboard has been put back.
+
+**How the agent is run.** `omarchy-default-agent` names the agent, and the
+window runs that agent's own command headless, one turn per dictation, in
+`~/.local/share/omacharts/agent`, with the account Omarchy has selected for it
+and this `omacharts` first on its `PATH`:
+
+```
+claude -p --output-format json --permission-mode dontAsk [--resume ID] --allowedTools 'Bash(omacharts:*)' Skill -- PROMPT
+codex exec [resume] --json --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' [ID] -- PROMPT
+```
+
+Claude Code may run `omacharts` and load skills, and anything else is refused
+rather than asked about, since nobody is there to answer. Codex runs outside
+its sandbox, which would keep `omacharts` from reaching the window. Any other
+default agent is reported as one dictation cannot drive yet.
+
+**What it is sent.** The first dictation of a conversation goes with one fixed
+line and nothing about the charts — the agent asks `omacharts` for what it
+needs:
+
+```
+The user is in Omacharts and said: "add an RSI". Use the `omacharts` CLI to do it.
+```
+
+followed by the `agent_context` setting (Preferences › Agent) when it is not
+empty. Every dictation after that is `The user said: "…"`, resuming the same
+session, so requests build on each other.
+
+**When a conversation starts over.** When the window starts (the session id
+is kept only while it runs), after 30 minutes with no dictation, when the
+default agent or `agent_context` changes, after a turn fails, and when what
+was said is just "start over" or "new conversation".
+
+**The queue.** One turn runs at a time. A dictation that arrives while the
+agent is working waits behind it, and the toast says so; none is dropped. A
+turn still running after ten minutes is stopped, so the ones behind it run.
+
+Each is said in the window: a toast when a dictation is sent and when the
+agent is done, with the first line of its answer (the whole answer in the
+Log), and the corner notice when there is no default agent or the agent
+failed.
 
 ## The command groups
 

@@ -5919,8 +5919,12 @@ fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
 
 fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let key = required(m, "KEY")?;
+    // What dictation tells the agent is empty until somebody writes in it,
+    // and empty is an answer, not something missing.
+    let unset = (key == crate::dictation::CONTEXT).then(String::new);
     let value = store
         .setting(key)
+        .or(unset)
         .ok_or_else(|| Fault::not_found(format!("{key:?} has never been set")))?;
     match as_json {
         true => Ok(format!("{}\n", json!({"key": key, "value": value}))),
@@ -6057,6 +6061,17 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let stored = crate::feeds::stored_order(store);
         let text = format!("set {key} to {}", serde_json::to_string(&stored).unwrap_or_default());
         return said(as_json, json!({"key": key, "value": stored}), text);
+    }
+    // Prose, said back as what was stored rather than echoed whole: it can
+    // run to paragraphs. Empty clears it.
+    if key == crate::dictation::CONTEXT {
+        let value = value.trim().to_string();
+        store.set_setting(key, &value);
+        let text = match value.is_empty() {
+            true => "dictation sends the agent no extra context".to_string(),
+            false => format!("dictation sends the agent {} characters of extra context", value.chars().count()),
+        };
+        return said(as_json, json!({"key": key, "value": value}), text);
     }
     let value = value.to_string();
 
@@ -8679,6 +8694,29 @@ mod tests {
         assert_eq!(run("config get pnl_r_amount", &store).out.trim(), "262.5", "kept through the refusals");
         assert_eq!(run("config set pnl_display money", &store).code, 0);
         assert_eq!(crate::trading::chart_pnl::load(&store), crate::trading::chart_pnl::ChartPnl::Money);
+    }
+
+    /// What dictation tells the agent besides the words: empty until it is
+    /// written, written whole, read back whole, and cleared by an empty one.
+    #[test]
+    fn the_agent_context_is_set_and_read_like_any_setting() {
+        let store = bare();
+        assert_eq!(run("config get agent_context", &store).out, "\n");
+        assert_eq!(run("config get agent_context --json", &store).out.trim(), r#"{"key":"agent_context","value":""}"#);
+        let set: Vec<String> = ["omacharts", "config", "set", "agent_context", "Use Sonnet.\nKeep it brief."]
+            .map(String::from)
+            .to_vec();
+        let out = dispatch(&set, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation sends the agent 26 characters of extra context");
+        assert_eq!(run("config get agent_context", &store).out, "Use Sonnet.\nKeep it brief.\n");
+        let json: serde_json::Value = serde_json::from_str(&run("config get agent_context --json", &store).out).unwrap();
+        assert_eq!(json["value"], "Use Sonnet.\nKeep it brief.");
+        let clear: Vec<String> = ["omacharts", "config", "set", "agent_context", ""].map(String::from).to_vec();
+        let out = dispatch(&clear, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation sends the agent no extra context");
+        assert_eq!(run("config get agent_context", &store).out, "\n");
     }
 
     /// Quietly ignoring a parameter the indicator has no use for would read

@@ -10,6 +10,7 @@ pub mod at_price;
 pub mod cache;
 pub mod chart_defaults;
 pub mod clock;
+pub mod dictation;
 pub mod cli;
 pub mod features;
 pub mod feeds;

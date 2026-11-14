@@ -107,6 +107,12 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
 | Backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 
+### Agent
+
+| Group › row | Does | Chapter |
+|---|---|---|
+| Dictation › the text box | Sent to the agent after Omacharts' own line, at the start of each conversation, when you dictate with Omacharts in front. Empty by default. Saved as you type. | [Dictation](/manual/dictation/#your-own-context) |
+
 ### Trading
 
 Trading has a **Beta** tag in the list of sections: it is experimental. The page holds the logins and their accounts, **Edit quantities…**, **Order labels** and how charts show P&L, all in [Connecting a broker](/manual/brokers/#logins-and-accounts).
