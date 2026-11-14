@@ -276,11 +276,11 @@ nav_exclude: true
     outline-offset: 2px;
   }
 
-  /* How to reach the author, in the bottom corner: as quiet as the mark
-     in the top one. */
+  /* How to reach the author, at the foot: as quiet as the corner marks. */
   .contact {
     position: fixed;
-    right: calc(clamp(.75rem, 2vw, 1.5rem) + env(safe-area-inset-right, 0px));
+    left: 0;
+    right: 0;
     bottom: calc(clamp(.75rem, 2vw, 1.5rem) + env(safe-area-inset-bottom, 0px));
     margin: 0;
     font-size: clamp(.8rem, .9vw, 1rem);
