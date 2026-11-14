@@ -489,16 +489,7 @@ impl Window {
             actions.add_action(&unavailable);
         }
 
-        // Toasts lie over the whole window, rail included.
-        let overlay = self.trade.overlay.borrow().clone();
-        let root = self.trade.root.borrow().clone();
-        if let (Some(overlay), Some(root)) = (overlay, root) {
-            let toasts = adw::ToastOverlay::new();
-            overlay.set_child(None::<&gtk::Widget>);
-            toasts.set_child(Some(&root));
-            overlay.set_child(Some(&toasts));
-            *self.trade.toasts.borrow_mut() = Some(toasts);
-        }
+        self.ensure_toasts();
 
         if self.store.setting_bool(SHOW_TRADING_PANEL, false) {
             toggle.set_active(true);
@@ -783,6 +774,25 @@ impl Window {
 
     /// Say `text` in a toast over the window. Only for something asked for
     /// and done, which [`crate::ui::notice::surface`] decides.
+    /// Put the toasts over the window, if they are not there yet. Trading
+    /// is what puts them there; dictation reports in them too, with or
+    /// without a login.
+    pub(super) fn ensure_toasts(&self) {
+        if self.trade.toasts.borrow().is_some() {
+            return;
+        }
+        // Toasts lie over the whole window, rail included.
+        let overlay = self.trade.overlay.borrow().clone();
+        let root = self.trade.root.borrow().clone();
+        if let (Some(overlay), Some(root)) = (overlay, root) {
+            let toasts = adw::ToastOverlay::new();
+            overlay.set_child(None::<&gtk::Widget>);
+            toasts.set_child(Some(&root));
+            overlay.set_child(Some(&toasts));
+            *self.trade.toasts.borrow_mut() = Some(toasts);
+        }
+    }
+
     pub(super) fn toast(&self, text: &str) {
         if let Some(toasts) = self.trade.toasts.borrow().as_ref() {
             let toast = adw::Toast::new(text);

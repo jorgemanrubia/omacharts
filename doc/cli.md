@@ -168,7 +168,17 @@ measure nothing and the wrong way round is the line upside down — so
 cross what the chart already holds.
 
 `set` reconfigures one already on the chart. If the chart has two of a kind it
-asks which, with `--id`.
+asks which, with `--id`. `remove` takes `--id` too, for one of two.
+
+**What is selected in the window is `selected`.** `list` marks the indicator
+picked in the window's legend or on its line (`"selected": true`, and
+`· selected` in the text); `list --selected` keeps only it; and `--id
+selected` on `set` or `remove` acts on it, its kind taken from it when none is
+named. The same holds for drawings, where several can be selected: `drawing
+list --selected` lists them all, and `--id selected` takes exactly one, asking
+which (exit 4) otherwise. A command that rebuilds the charts keeps what was
+selected, so "make this red" can read the selection and change it. With no
+window, nothing is selected.
 
 A parameter an indicator has no use for is refused rather than ignored —
 `--period` on a volume profile is an error, not a no-op, because silence would
@@ -738,6 +748,8 @@ omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --
 omacharts chart drawing add text --from 2026-09-10,184 --text "gap fills here"
 omacharts chart drawing add profile --from 2026-09-08,0 --to 2026-09-12,0 --profile-style outline --align right
 omacharts chart drawing list
+omacharts chart drawing list --selected --json
+omacharts chart drawing set --id selected --color down
 omacharts chart drawing set --id 1 --color ink --width 2.5 --arrow end
 omacharts chart drawing set --id 1 --order front
 omacharts chart drawing remove --id 2
@@ -1058,6 +1070,11 @@ setting touches a command: `chart screenshot` always writes a file.
 Settings are read and written by name — `config list` shows every one that has
 been written, and `config set` writes any of them.
 
+`config themes` lists the ids `config set theme` takes — System (`omarchy`,
+following the desktop's theme), the shipped ones, each installed Omarchy
+theme and the user's own — with the one in use marked, `--json` too. Setting
+`theme` or `bar_scheme` changes an open window at once.
+
 Three of them have a command of their own, because what the app does with them
 is more than storing a value. Bar colours is one:
 
@@ -1108,6 +1125,27 @@ show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `sw
 `chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings`,
 `chart_sends_drawings` and `chart_shows_legend`. Changing
 one chart never changes them.
+
+`agent_context` is what dictation sends the agent besides the words
+([Dictating to the agent](#dictating-to-the-agent)). It reads as empty until
+it is set, rather than exiting 3, and `config set agent_context ""` clears it:
+
+```
+$ omacharts config set agent_context "Keep it brief."
+dictation sends the agent 14 characters of extra context
+  [exit 0]
+```
+
+`agent_model.<agent>` is the model dictation asks that agent for, one setting
+per agent dictation runs itself (`claude`, `codex`, `cursor-agent`, `copilot`,
+`opencode`, `agy`). It reads as empty, the agent's own default, until set; `""`
+goes back to it, and an agent dictation does not run is refused with exit 2:
+
+```
+$ omacharts config set agent_model.claude opus
+dictation asks Claude Code for opus
+  [exit 0]
+```
 
 ## Which data feed the charts come from
 
@@ -1625,6 +1663,97 @@ nothing in them corresponds to a `relevance` signal — a Codex plugin manifest
 carries display metadata, not a discovery trigger — and Codex reads
 `$CODEX_HOME/skills/` directly. So for Codex the skill directory is the whole
 story, and adding a manifest would be a second thing to maintain for nothing.
+
+## Dictating to the agent
+
+Omarchy has dictation: hold Right Alt, speak, let go, and the words appear in
+the window in front. With Omacharts in front and no text box focused, the
+words go to Omarchy's default agent instead, which does what was asked with
+this command. How to dictate stays Omarchy's; nothing here changes the key,
+the recording or the transcription.
+
+**How the words reach the window.** Omarchy's dictation backend on this
+desktop is Superwhisper, which on Hyprland delivers text by putting it on the
+clipboard and sending Ctrl+V to the window in front. In a text box that is an
+ordinary paste, and stays one. Outside one, Ctrl+V used to paste only a copied
+drawing or indicator, so it is told apart there: the window asks Superwhisper,
+over the control socket its own bar panel reads, for its last dictation. It
+is a dictation when that finished in the last 30 seconds, did not fail, says
+the same words as the clipboard, and has not been sent already. Anything else
+is a paste, as before. The words are what make it safe: dictate elsewhere and
+then paste a drawing here, and the clipboard has been put back.
+
+**How the agent is run.** `omarchy-default-agent` names the agent, asked
+afresh for every dictation. The agents in the table below are run headless,
+one turn per dictation, in `~/.local/share/omacharts/agent`, with the account
+Omarchy has selected for Claude Code and Codex, and this `omacharts` first on
+its `PATH`. `MODEL` is the `agent_model.<agent>` setting, left out when it is
+empty:
+
+```
+claude -p --output-format json --permission-mode auto [--resume ID] [--model MODEL] -- PROMPT
+codex exec --approve-for-me [resume] --json --skip-git-repo-check [-m MODEL] [ID] -- PROMPT
+cursor-agent -p --output-format json --yolo --trust [--resume ID] [--model MODEL] agent -- PROMPT
+copilot --prompt PROMPT --silent --allow-all --no-ask-user --session-id UUID [--model MODEL]
+opencode run --auto --archived [-m MODEL] PROMPT
+agy --dangerously-skip-permissions [--model MODEL] --print PROMPT
+```
+
+Each runs with the permission flags `omarchy-agent` gives it when it opens it
+(`--permission-mode auto`, `--approve-for-me`, `--yolo --trust`,
+`--allow-all`, `--auto`, `--dangerously-skip-permissions`), in the form its
+headless turn takes them: Codex takes `--approve-for-me` on `exec`, ahead of
+`resume`. Nothing else widens or narrows them; the agent's own settings
+decide the rest, and a command they refuse is said in its reply, in the Log.
+The models Preferences offers for each are a list kept in Omacharts, and the
+one named in "Agent's default (…)" is read from the agent's settings file
+(Claude Code's `settings.json`, Codex's `config.toml`, OpenCode's
+`opencode.json`). No agent is run for any of it: only a dictation runs one.
+Claude Code and Cursor name their session in their JSON, Codex in its
+`thread.started` event, and Copilot is given a new UUID at the start of each
+conversation. OpenCode and Antigravity name theirs only in output their help
+does not describe, so each of their turns starts a new conversation.
+
+Any other default agent is opened by Omarchy, a terminal per dictation, with
+the opening prompt below and the agent's own flags and model:
+
+```
+omarchy-agent-prompt PROMPT
+```
+
+The window says it opened, or why Omarchy could not (what it printed is in
+`~/.local/share/omacharts/agent/terminal.log`).
+
+**What it is sent.** The first dictation of a conversation goes with one fixed
+line and nothing about the charts — the agent asks `omacharts` for what it
+needs:
+
+```
+The user is in Omacharts and said: "add an RSI". Use the `omacharts` CLI to do it.
+```
+
+followed by the `agent_context` setting (Preferences › Agent) when it is not
+empty. Every dictation after that is `The user said: "…"`, resuming the same
+session, so requests build on each other.
+
+**When a conversation starts over.** When the window starts (the session id
+is kept only while it runs), after 30 minutes with no dictation, when the
+default agent, its `agent_model.<agent>` or `agent_context` changes, after a turn fails, and when what
+was said is just "start over", "start again" or "new conversation".
+
+**The queue.** One turn runs at a time. A dictation that arrives while the
+agent is working waits behind it; none is dropped. A turn still running after
+ten minutes is stopped, so the ones behind it run.
+
+**What the window says.** The glow along its bottom edge while the agent
+works, and nothing more when a turn succeeds. The Log records each dictation,
+one that was queued, a conversation starting over, and the agent's whole
+answer. A toast or the corner notice appears only when something goes wrong:
+no default agent, an agent that failed, a terminal Omarchy could not open.
+
+**What the agent may do.** Whatever its permissions allow, as above: with
+Omarchy's flags that is any `omacharts` command, the `trading` ones included,
+with no confirmation. Nothing here guards an order that was dictated.
 
 ## The command groups
 

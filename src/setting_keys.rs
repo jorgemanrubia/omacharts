@@ -113,6 +113,12 @@ const SHARED: &[&str] = &[
     "chart_time_zone",
     "time_format",
     "zoom_sensitivity",
+    // What dictation tells the agent besides the words: how somebody wants
+    // their agent to work, wherever they dictate from.
+    "agent_context",
+    // The model chosen for each agent, `agent_model.claude` and the like:
+    // as much somebody's way with their agent as the context.
+    "agent_model.",
 ];
 
 pub fn kind(key: &str) -> Kind {
@@ -148,6 +154,7 @@ mod tests {
         assert_eq!(kind("chart_header_right"), Kind::Shared);
         assert_eq!(kind("chartbook_templates"), Kind::Shared);
         assert_eq!(kind("feature.sierra"), Kind::Local);
+        assert_eq!(kind("agent_model.claude"), Kind::Shared);
     }
 
     /// Every key the app writes has been given a kind on purpose.
@@ -167,6 +174,8 @@ mod tests {
             ("link_setting(", "watchlist_link_"),
             ("sort_setting(", "watchlist_sort_"),
             ("cooldown_key(", "cooldown."),
+            ("model_setting(", "agent_model."),
+            ("crate::dictation::agent::model_setting(", "agent_model."),
         ];
         let passed_along = ["key", "&key", "&self", "KEY"];
 

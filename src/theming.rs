@@ -370,6 +370,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("omacharts_rose", &swatch("Rose", &scheme.down));
     define("omacharts_orange", &swatch("Orange", &ui.accent));
     define("omacharts_green", &swatch("Green", &scheme.up));
+    // The palette's warm one, for the agent at work on a dictation: amber,
+    // where Omarchy listening is blue.
+    define("omacharts_amber", &swatch("Amber", &swatch("Orange", &ui.accent)));
 
     // The frame around tiled charts. Derived, not taken: the engine explains
     // why in `frame.rs`, and `doc/themes/frames.html` shows the result on
@@ -379,6 +382,22 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("omacharts_focus", &frame.focus);
     // The chart's price-axis rule, for the corner that stands on it.
     define("omacharts_axis", &ui.axis);
+
+    // The agent at work on a dictation: a glow up from the window's bottom
+    // edge, strongest at the edge and gone before the charts' content, which
+    // the code fades and breathes; red for a turn that failed. A tint on a
+    // light ground carries less than light on a dark one, so it is stronger
+    // there.
+    let (edge, middle) = match theme.mode {
+        Mode::Dark => (0.6, 0.22),
+        Mode::Light => (0.9, 0.36),
+    };
+    for (selector, colour) in [(".agent-glow", "omacharts_amber"), (".agent-glow.failed", "omacharts_rose")] {
+        let _ = writeln!(
+            css,
+            "{selector} {{ background-image: linear-gradient(to top, alpha(@{colour}, {edge}), alpha(@{colour}, {middle}) 35%, alpha(@{colour}, 0)); }}"
+        );
+    }
 
     css.push_str(
         "
