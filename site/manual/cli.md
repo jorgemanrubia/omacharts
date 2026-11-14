@@ -100,6 +100,7 @@ spelled the way the other commands take them.
 ```
 $ omacharts status show
 chartbook  Desk (id:2)
+sidebar on, drawing tools off
   pos:0  NVDA       1D    follow
   pos:1  NVDA       1h    follow
   pos:2  NVDA       15m   follow
@@ -114,14 +115,17 @@ $ omacharts status show
 nothing is open; this is what was stored when the window last closed
 
 chartbook  Semis (id:1)
+sidebar on, drawing tools off
 * pos:0  AMD        1h    follow
   [exit 0]
 ```
 
+The second line says whether the sidebar and the drawing tools are out ([Showing and hiding the sidebars](#showing-and-hiding-the-sidebars)).
+
 `--json` adds every chart's settings (style, colouring, session, scales, link
-mode, whether it shows and sends drawings, indicators and chart template) and
-`windowOpen`, which says whether you are reading the window or the stored
-data.
+mode, whether it shows and sends drawings, indicators and chart template),
+`sidebar` and `drawingTools`, and `windowOpen`, which says whether you are
+reading the window or the stored data.
 
 ## Naming things
 
@@ -276,8 +280,8 @@ codes](#exit-codes).
 | `symbol` | Searching the instruments | [Symbols](#symbols) |
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
-| `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
+| `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook sidebar` under [Showing and hiding the sidebars](#showing-and-hiding-the-sidebars); `chartbook screenshot` under [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Showing and hiding the sidebars](#showing-and-hiding-the-sidebars) (`drawing-tools`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `trading` | Trading logins, accounts, positions and orders | [Trading](#trading) |
@@ -540,14 +544,15 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 
 | Action | Does |
 |---|---|
-| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`. With `--json`, each one's id, kind, parameters, colour, line, visibility, and `in_legend`, whether the legend names it |
+| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`, and `· selected` after the one selected in the window. With `--json`, each one's id, kind, parameters, colour, line, visibility, `in_legend`, whether the legend names it, and `selected` |
 | `add KIND` | Adds one, at its defaults plus whatever flags are given |
-| `remove KIND` | Removes every indicator of that kind |
+| `remove KIND` | Removes every indicator of that kind, or with `--id`, that one |
 | `set KIND` | Changes the one of that kind. With two of a kind, `--id N` says which |
 
 | Flag | Takes | For |
 |---|---|---|
-| `--id N` | An id from `list --json` | `set`, on a chart with two of a kind |
+| `--id N` | An id from `list --json`, or `selected` for the one selected in the window, whose kind can then be left out | `set` and `remove` |
+| `--selected` | Nothing | `list`: only the one selected in the window |
 | `--period N` | Bars | SMA, EMA, Bollinger, RSI, ATR; the stochastic's %K length |
 | `--deviations F` | 0 to 50 | Bollinger |
 | `--fast N`, `--slow N`, `--signal N` | Bars | MACD |
@@ -961,7 +966,7 @@ chart 46: sends drawings to other charts off
 
 | Action | Does |
 |---|---|
-| `list` | Every drawing the chart shows: its id, kind, anchors, words and look. With `--json`, the symbol, whether the chart shows and sends drawings, and each drawing's anchors, corners, configuration, style, scope, order and words with their emphasis |
+| `list` | Every drawing the chart shows: its id, kind, anchors, words and look, and `· selected` after those selected in the window. With `--json`, the symbol, whether the chart shows and sends drawings, and each drawing's anchors, corners, configuration, style, scope, order, words with their emphasis, and `selected` |
 | `add KIND` | Draws one |
 | `set --id N` | Changes one: anchors, look, words, scope or order |
 | `remove --id N` | Removes one |
@@ -977,7 +982,8 @@ read in the chart's time zone, the one its time axis is labelled in
 
 | Flag | Takes | Does |
 |---|---|---|
-| `--id N` | An id from `list` | Which drawing, for `set` and `remove` |
+| `--id N` | An id from `list`, or `selected` for the one selected in the window | Which drawing, for `set` and `remove`. With more than one selected, `selected` is refused with exit 4 and the ids |
+| `--selected` | Nothing | `list`: only what is selected in the window |
 | `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing and an anchored VWAP take `--from` only |
 | `--point ANCHOR` | An anchor, repeated | A zig-zag's corners in order, two at least. `--from` and `--to` alone give it one leg |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
@@ -1167,7 +1173,7 @@ names.
 
 | Command | Does |
 |---|---|
-| `chartbook list` | Every chartbook, its number of charts and its watchlist; `*` marks the open one. |
+| `chartbook list` | Every chartbook, its number of charts and its watchlist; `*` marks the open one. `--json` adds `sidebar`, whether it shows the sidebar. |
 | `chartbook show [BOOK]` | One chartbook's charts: id, symbol, resolution, bar style and link mode; `*` marks the focused chart. Default: the open one. |
 | `chartbook create NAME` | A chartbook with one chart, showing the default watchlist. `--symbol SYMBOL` (default `SPY`), `--template TEMPLATE` ([Chartbook templates](#chartbook-templates)), `--switch` to open it. Give it another list with `chartbook watchlist`. |
 | `chartbook rename BOOK NAME` | Renames it. |
@@ -1303,6 +1309,25 @@ Whether the pointer on one chart draws the same moment on every other chart of t
 | `chart crosshair` | Whether the crosshair is shared; prints `on` or `off`. |
 | `chart crosshair on` or `off` | Turns it on or off. |
 | `config set sync_crosshair on` or `off` | The same setting, by its key; see [Preferences](#preferences). |
+
+## Showing and hiding the sidebars
+
+The sidebar on the right and the drawing tools on the left, put out or away as their corner buttons and keys do ([The window](/manual/window/)). Without a state each prints `on` or `off`.
+
+| Command | Does |
+|---|---|
+| `chartbook sidebar [on\|off]` | Shows or hides the open chartbook's sidebar, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> but leaving the keyboard where it is. Kept with the chartbook. `--book BOOK` for another, applied when it is next opened. With no window open, `--book` is needed (exit `6`). |
+| `chart drawing-tools [on\|off]` | Puts the drawing tools out or away, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. One setting for the window. |
+
+```
+$ omacharts chartbook sidebar off
+chartbook "Desk" hides the sidebar
+  [exit 0]
+
+$ omacharts chart drawing-tools
+off
+  [exit 0]
+```
 
 ## Watchlists and sections
 
@@ -1706,7 +1731,8 @@ said.
 
 `config list` prints every setting that has been written, `config get KEY`
 one of them, and `config set KEY VALUE` writes one. A setting you have never
-changed does not appear; asking for it exits 3.
+changed does not appear; asking for it exits 3, except `agent_context` and
+`agent_model.<agent>`, which read as empty.
 
 ```
 $ omacharts config get show_grid
@@ -1756,18 +1782,29 @@ same.
 | `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |
 | `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Data › Keep at most | [Where your data lives](/manual/your-data/) |
+| `agent_context` | any text; empty sends none | empty | Agent › Context | [Dictation](/manual/dictation/#what-the-agent-is-sent) |
+| `agent_model.<agent>` | a model the agent takes, such as `opus`; empty for its default. `<agent>` is `claude`, `codex`, `cursor-agent`, `copilot`, `opencode` or `agy` | empty | Agent › Dictation › Model | [Dictation](/manual/dictation/#agents) |
 
 ### Theme
 
-`config set theme` takes `omarchy` for System, `midnight`, `carbon`, `paper`,
-`daylight`, `omarchy:everforest` for an installed Omarchy theme (its folder
-name after the colon), or the id of one of your own (`config get theme`
-prints it while that theme is chosen). The window picks the theme up when it
-next opens; Preferences changes the window in front of you.
+`config themes` lists every theme `config set theme` takes, as the Theme
+page lists them: `omarchy`, System, which follows the desktop's theme, then
+`midnight`, `carbon`, `paper` and `daylight`, every installed Omarchy theme
+as `omarchy:` and its folder name, and your own. `*` marks the one in use;
+`--json` gives each one's `id`, `name`, `mode`, `kind` (`system`, `shipped`,
+`installed` or `custom`), `follows_desktop` and `active`. An open window
+changes theme as soon as it is set.
 
 ```
-$ omacharts config set theme midnight
-set theme to midnight
+$ omacharts config themes
+* omarchy               Tokyo Night (system, dark, follows the desktop)
+  midnight              Midnight (shipped, dark)
+  paper                 Paper (shipped, light)
+  omarchy:everforest    Everforest (installed, dark)
+  [exit 0]
+
+$ omacharts config set theme paper
+set theme to paper
   [exit 0]
 ```
 
@@ -1806,6 +1843,31 @@ charts write times as 12-hour (3:30 PM)
 
 $ omacharts config set zoom_sensitivity 50%
 charts zoom at 50% sensitivity
+  [exit 0]
+```
+
+`agent_context` is said back by its length, and `""` clears it:
+
+```
+$ omacharts config set agent_context "Keep answers to one line."
+dictation sends the agent 25 characters of extra context
+  [exit 0]
+
+$ omacharts config set agent_context ""
+dictation sends the agent no extra context
+  [exit 0]
+```
+
+`agent_model.<agent>` is the model dictation asks that agent for, and `""`
+goes back to the agent's own. It is only for the agents Omacharts runs itself:
+
+```
+$ omacharts config set agent_model.claude opus
+dictation asks Claude Code for opus
+  [exit 0]
+
+$ omacharts config set agent_model.claude ""
+dictation lets Claude Code use its default model
   [exit 0]
 ```
 

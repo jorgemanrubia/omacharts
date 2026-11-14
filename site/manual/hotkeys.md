@@ -205,6 +205,12 @@ While the caret is in a drawing:
 
 A click elsewhere keeps what was typed.
 
+## Dictation
+
+| Key | Does | See |
+|---|---|---|
+| <kbd>Right Alt</kbd>, held | Omarchy's dictation. Released with no text box focused, what you said goes to the default agent | [Dictation](/manual/dictation/) |
+
 ## Dialogs and boxes
 
 | Key | Does | See |

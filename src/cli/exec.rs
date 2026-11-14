@@ -30,6 +30,7 @@ use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
 use crate::chart_defaults::ChartDefaults;
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::trading::chart_pnl;
+use crate::ui::window::{SHOW_DRAWING_TOOLS, SHOW_WATCHLIST};
 
 /// Parse and run.
 pub fn dispatch(
@@ -144,6 +145,13 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        ("chart", "drawing-tools") => drawing_tools(store, m, json, live),
+        ("chartbook", "sidebar") => {
+            if live.is_none() && !names_a_target(noun, verb, m) {
+                return Outcome::failed(Fault::no_window("open chartbook"));
+            }
+            chartbook_sidebar(store, m, json, live)
+        }
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
@@ -159,7 +167,7 @@ pub fn dispatch(
                     _ => "focused chart",
                 }));
             }
-            charts_verb(store, noun, verb, m, json)
+            charts_verb(store, noun, verb, m, json, live)
         }
 
         ("template", _) => {
@@ -220,6 +228,11 @@ pub fn dispatch(
                         live.adopt_clock()
                     }
                     Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
+                    // The theme the window wears, and the palette its bars
+                    // take from it, changed on screen as Preferences would.
+                    Ok(key) if key == crate::theming::SETTING_THEME || key == crate::theming::SETTING_BARS => {
+                        live.adopt_theming()
+                    }
                     Ok(key) if key == chart_pnl::DISPLAY || key == chart_pnl::R_AMOUNT => live.adopt_pnl(),
                     Ok(key)
                         if key == crate::ui::trading_settings::ORDER_LABELS
@@ -233,6 +246,7 @@ pub fn dispatch(
             outcome
         }
         ("config", "bars") => config_bars(store, m, json, live),
+        ("config", "themes") => config_themes(store, json),
 
         ("plugin", "status") => plugin_status(&caller.home(), json),
         ("plugin", "install") => plugin_install(&caller.home(), json),
@@ -263,7 +277,7 @@ pub fn dispatch(
             // Only after it worked, and only what it touched. Rebuilding the
             // window because a setting changed would be the kind of thing
             // that is fine with five symbols and stutters with five hundred.
-            if let Some(live) = live.filter(|_| spec.writes) {
+            if let Some(live) = live.filter(|_| spec.writes && !TELL_THE_WINDOW.contains(&(noun, verb))) {
                 match spec.workspace {
                     true => live.reload_workspace(),
                     false => live.reload_watchlists(),
@@ -273,6 +287,11 @@ pub fn dispatch(
         }
     }
 }
+
+/// The verbs that tell the window what they changed themselves, as a click
+/// would, so nothing is rebuilt after them. Putting the sidebar away is one
+/// button; rebuilding every chart for it would flicker the whole window.
+const TELL_THE_WINDOW: &[(&str, &str)] = &[("chartbook", "sidebar"), ("chart", "drawing-tools")];
 
 /// Did the command say which chartbook or chart it meant?
 ///
@@ -1117,6 +1136,7 @@ fn charts_verb(
     verb: &str,
     m: &clap::ArgMatches,
     as_json: bool,
+    live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let mut workspace = Workspace::load(store);
     let selector = arg(m, "BOOK").or_else(|| arg(m, "book"));
@@ -1131,6 +1151,7 @@ fn charts_verb(
                         "name": workspace.name_of(i),
                         "charts": charts::panes(book).len(),
                         "watchlist": book["watchlist"],
+                        "sidebar": sidebar_of(store, book),
                         "active": i == workspace.active(),
                     })
                     .to_string()
@@ -1165,9 +1186,10 @@ fn charts_verb(
             let rows: Vec<String> = charts::panes(book).iter().map(pane_json).collect();
             return Ok(match as_json {
                 true => format!(
-                    "{{\"chartbook\":{},\"watchlist\":{},\"charts\":[{}]}}\n",
+                    "{{\"chartbook\":{},\"watchlist\":{},\"sidebar\":{},\"charts\":[{}]}}\n",
                     super::json_string(&workspace.name_of(at)),
                     book["watchlist"],
+                    sidebar_of(store, book),
                     rows.join(",")
                 ),
                 false => {
@@ -1342,7 +1364,7 @@ fn charts_verb(
         ("chartbook", "template") => {
             return book_template_verb(store, m, as_json, &mut workspace, selector.map(String::as_str));
         }
-        ("chart", _) => return chart_verb(store, verb, m, as_json, &mut workspace),
+        ("chart", _) => return chart_verb(store, verb, m, as_json, &mut workspace, live),
         _ => return Err(Fault::usage(format!("no such command: {noun} {verb}"))),
     };
 
@@ -1468,11 +1490,17 @@ fn chart_verb(
     m: &clap::ArgMatches,
     as_json: bool,
     workspace: &mut Workspace,
+    live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
     let wanted = arg(m, "chart").map(String::as_str);
     let book = workspace.book(at)?.clone();
     let pane = charts::resolve_pane(&book, wanted)?;
+    // What is selected is on screen, so only the chartbook on screen has any.
+    let selection = live
+        .filter(|_| at == workspace.active())
+        .and_then(|live| live.selection(pane))
+        .unwrap_or_default();
 
     let text = match verb {
         "split" => {
@@ -1523,8 +1551,8 @@ fn chart_verb(
             format!("focused {}", chart_label(&book, id))
         }
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
-        "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
-        "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
+        "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane, &selection),
+        "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane, &selection),
         "compare" => return chart_compare(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
@@ -1876,6 +1904,7 @@ fn chart_indicator(
     workspace: &mut Workspace,
     at: usize,
     pane: u32,
+    selection: &crate::cli::Selection,
 ) -> Result<String, Fault> {
     let action = required(m, "ACTION")?.as_str();
     let book = workspace.book(at)?.clone();
@@ -1886,13 +1915,30 @@ fn chart_indicator(
         .unwrap_or_else(|| json!({}));
 
     if action == "list" {
-        let listed = chart["indicators"].as_array().cloned().unwrap_or_default();
+        let mut listed = chart["indicators"].as_array().cloned().unwrap_or_default();
+        for indicator in &mut listed {
+            let picked = selection.indicator.is_some_and(|id| indicator["id"].as_u64() == Some(id.into()));
+            indicator["selected"] = json!(picked);
+        }
+        if flag(m, "selected") {
+            listed.retain(|indicator| indicator["selected"] == true);
+        }
         return Ok(list_indicators(&listed, json!({"chart": pane}), as_json));
     }
 
     // Everything is read and checked before anything is written, so a command
     // carrying one bad value leaves the chart exactly as it was.
-    let kind = indicator_kind(m, action)?;
+    let wanted = wanted_indicator(m, Some(selection), pane)?;
+    let kind = match (arg(m, "KIND"), wanted) {
+        // `--id selected` and no kind: the kind of the one it names.
+        (None, Some(id)) if action != "add" => chart["indicators"]
+            .as_array()
+            .and_then(|list| list.iter().find(|i| i["id"].as_u64() == Some(id)))
+            .and_then(|i| i["kind"].as_str())
+            .and_then(|key| IndicatorKind::ALL.into_iter().find(|k| k.key() == key))
+            .ok_or_else(|| Fault::not_found(format!("chart {pane} has no indicator {id}")))?,
+        _ => indicator_kind(m, action)?,
+    };
     let edits = Edits::read(m)?;
 
     // A chart on a template shows the template's indicators, and changing
@@ -1904,7 +1950,7 @@ fn chart_indicator(
     {
         let mut list: Vec<Value> =
             template.indicators.iter().map(to_value).collect::<Result<_, _>>()?;
-        let text = edit_indicators(m, action, kind, &edits, &mut list, "this chart's template")?;
+        let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart's template")?;
         let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
             .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
         crate::templates::set_indicators(store, template.id, indicators.clone());
@@ -1939,7 +1985,7 @@ fn chart_indicator(
     let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
         Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
     })?;
-    let text = edit_indicators(m, action, kind, &edits, indicators, "this chart")?;
+    let text = edit_indicators(wanted, action, kind, &edits, indicators, "this chart")?;
 
     workspace.save(store);
 
@@ -2214,6 +2260,9 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
                     // Absent from an indicator stored before it could be
                     // left out, which was in the legend.
                     "in_legend": i.get("in_legend").cloned().unwrap_or(json!(true)),
+                    // Selected in the window, picked in its legend or on its
+                    // line; a chart template's list has no window to ask.
+                    "selected": i.get("selected").cloned().unwrap_or(json!(false)),
                 })
             })
             .collect();
@@ -2221,7 +2270,15 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
         out["indicators"] = Value::Array(rows);
         return format!("{out}\n");
     }
-    listed.iter().map(describe_indicator).collect::<Vec<_>>().join("\n") + "\n"
+    listed
+        .iter()
+        .map(|i| match i["selected"] == true {
+            true => format!("{} · selected", describe_indicator(i)),
+            false => describe_indicator(i),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 /// The indicator kind an `indicator` verb names.
@@ -2243,8 +2300,32 @@ fn indicator_kind(m: &clap::ArgMatches, action: &str) -> Result<IndicatorKind, F
 /// shape and take the same flags, so they are changed by the same code and
 /// cannot come to read a flag differently. `whose` is how a refusal names
 /// the list — "this chart has no RSI".
-fn edit_indicators(
+/// The indicator `--id` names: a number from `indicator list`, or
+/// `selected` for the one selected on chart `pane` in the window.
+fn wanted_indicator(
     m: &clap::ArgMatches,
+    selection: Option<&crate::cli::Selection>,
+    pane: u32,
+) -> Result<Option<u64>, Fault> {
+    match arg(m, "id").map(String::as_str) {
+        None => Ok(None),
+        Some("selected") => match selection {
+            None => Err(Fault::usage("a chart template has nothing selected; name the indicator with --id N".into())),
+            Some(selection) => selection.indicator.map(|id| Some(id.into())).ok_or_else(|| {
+                Fault::not_found(format!(
+                    "no indicator is selected on chart {pane}; `chart indicator list` gives the ids"
+                ))
+            }),
+        },
+        Some(text) => text
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| Fault::usage(format!("{text:?} is not an indicator id; a number, or selected"))),
+    }
+}
+
+fn edit_indicators(
+    wanted_id: Option<u64>,
     action: &str,
     kind: IndicatorKind,
     edits: &Edits,
@@ -2277,20 +2358,14 @@ fn edit_indicators(
         }
         "remove" => {
             let before = indicators.len();
-            indicators.retain(|i| !is_kind(i, kind));
+            // With an id, that one; without, every one of the kind.
+            indicators.retain(|i| !(is_kind(i, kind) && wanted_id.is_none_or(|id| i["id"].as_u64() == Some(id))));
             if indicators.len() == before {
                 return Err(Fault::not_found(format!("{whose} has no {}", kind.short_name())));
             }
             format!("removed {}", kind.short_name())
         }
         "set" => {
-            let wanted_id = match arg(m, "id") {
-                None => None,
-                Some(text) => Some(
-                    text.parse::<u64>()
-                        .map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?,
-                ),
-            };
             let matching: Vec<usize> = indicators
                 .iter()
                 .enumerate()
@@ -2349,6 +2424,7 @@ fn chart_drawing(
     workspace: &mut Workspace,
     at: usize,
     pane: u32,
+    selection: &crate::cli::Selection,
 ) -> Result<String, Fault> {
     use omacharts_engine::drawings::{Drawing, Kind, Scope, CONFIGURATIONS};
 
@@ -2394,15 +2470,38 @@ fn chart_drawing(
     };
 
     if action == "list" {
-        let listed = shown(store, &locals);
+        let mut listed = shown(store, &locals);
+        let selected = |d: &Drawing| d.id != 0 && selection.drawings.contains(&d.id);
+        if flag(m, "selected") {
+            listed.retain(|d| selected(d));
+        }
         return match as_json {
             true => Ok(format!(
                 "{{\"chart\":{pane},\"symbol\":{},\"shows_drawings\":{shows},\"sends_drawings\":{sends},\"drawings\":[{}]}}\n",
                 json!(spell(&symbol, suffix.as_deref())),
-                listed.iter().map(|d| drawing_json(d, &configs, zone).to_string()).collect::<Vec<_>>().join(",")
+                listed
+                    .iter()
+                    .map(|d| {
+                        let mut row = drawing_json(d, &configs, zone);
+                        row["selected"] = json!(selected(d));
+                        row.to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
             )),
+            false if listed.is_empty() && flag(m, "selected") => {
+                Ok(format!("nothing selected on {}\n", spell(&symbol, suffix.as_deref())))
+            }
             false if listed.is_empty() => Ok(format!("nothing drawn on {}\n", spell(&symbol, suffix.as_deref()))),
-            false => Ok(listed.iter().map(|d| describe_drawing(d, &configs, zone)).collect::<Vec<_>>().join("\n") + "\n"),
+            false => Ok(listed
+                .iter()
+                .map(|d| match selected(d) {
+                    true => format!("{} · selected", describe_drawing(d, &configs, zone)),
+                    false => describe_drawing(d, &configs, zone),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"),
         };
     }
 
@@ -2450,12 +2549,24 @@ fn chart_drawing(
         Some("back") => Some(false),
         Some(other) => return Err(Fault::usage(format!("{other:?} is not front or back"))),
     };
-    let id = match arg(m, "id") {
+    let id = match arg(m, "id").map(String::as_str) {
         None => None,
-        Some(text) => Some(
-            text.parse::<i64>()
-                .map_err(|_| Fault::usage(format!("--id takes a number from `drawing list`, not {text:?}")))?,
-        ),
+        // The one selected in the window: one, since a change is made to
+        // one drawing at a time here.
+        Some("selected") => match selection.drawings.as_slice() {
+            [one] => Some(*one),
+            [] => return Err(Fault::not_found(format!("no drawing is selected on chart {pane}"))),
+            many => {
+                return Err(Fault::ambiguous(format!(
+                    "{} drawings are selected on chart {pane}; say which with --id {}",
+                    many.len(),
+                    many.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(" or ")
+                )))
+            }
+        },
+        Some(text) => Some(text.parse::<i64>().map_err(|_| {
+            Fault::usage(format!("--id takes a number from `drawing list`, or selected, not {text:?}"))
+        })?),
     };
 
     // Where a drawing with this scope is kept, and the id it gets there.
@@ -5307,7 +5418,8 @@ fn template_indicator(
 
     let kind = indicator_kind(m, action)?;
     let edits = Edits::read(m)?;
-    let text = edit_indicators(m, action, kind, &edits, &mut list, "this chart template")?;
+    let wanted = wanted_indicator(m, None, 0)?;
+    let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart template")?;
     let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
         .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
     crate::templates::set_indicators(store, template.id, indicators.clone());
@@ -5391,10 +5503,12 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
     if as_json {
         return Ok(format!(
             "{{\"windowOpen\":{window_open},\"chartbook\":{},\"target\":{},\"watchlist\":{},\
-             \"focusedPosition\":{},\"charts\":[{}]}}\n",
+             \"sidebar\":{},\"drawingTools\":{},\"focusedPosition\":{},\"charts\":[{}]}}\n",
             super::json_string(&workspace.name_of(at)),
             super::json_string(&format!("id:{at}")),
             book["watchlist"],
+            sidebar_of(store, &book),
+            store.setting_bool(SHOW_DRAWING_TOOLS, false),
             match position {
                 Some(at) => at.to_string(),
                 None => "null".to_string(),
@@ -5415,6 +5529,11 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
         return Ok(out);
     }
     out.push_str(&format!("chartbook  {} (id:{at})\n", workspace.name_of(at)));
+    out.push_str(&format!(
+        "sidebar {}, drawing tools {}\n",
+        switch_word(sidebar_of(store, &book)),
+        switch_word(store.setting_bool(SHOW_DRAWING_TOOLS, false)),
+    ));
     for (i, id) in order.iter().enumerate() {
         let Some(pane) = charts::panes(&book).iter().find(|p| p["id"].as_u64() == Some(*id as u64))
         else {
@@ -5452,6 +5571,77 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
         as_json,
         json!({"crosshairSync": on}),
         format!("crosshair syncing across charts of the same symbol is {state}"),
+    )
+}
+
+fn switch_word(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// Whether a stored chartbook shows the sidebar. A book written before it
+/// remembered opens as the window's own setting says, as the window does.
+fn sidebar_of(store: &Store, book: &Value) -> bool {
+    book["sidebar_shown"].as_bool().unwrap_or_else(|| store.setting_bool(SHOW_WATCHLIST, true))
+}
+
+/// Whether the drawing tools are out down the left of the window.
+///
+/// One setting for the window rather than one per chartbook, as the key
+/// keeps it. With a window, the window puts them out or away, as the key
+/// does, and writes the setting doing it.
+fn drawing_tools(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let Some(state) = arg(m, "STATE") else {
+        let on = store.setting_bool(SHOW_DRAWING_TOOLS, false);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"drawingTools": on}))),
+            false => Ok(format!("{}\n", switch_word(on))),
+        };
+    };
+    let on = state == "on";
+    match live {
+        Some(live) => live.show_drawing_tools(on),
+        None => store.set_setting_bool(SHOW_DRAWING_TOOLS, on),
+    }
+    said(
+        as_json,
+        json!({"drawingTools": on}),
+        format!("the drawing tools are {}", if on { "out" } else { "put away" }),
+    )
+}
+
+/// Whether a chartbook shows the sidebar, its watchlist down the right.
+///
+/// Kept with each chartbook, as the corner button keeps it. The open one is
+/// shown or hidden by the window, through that button; another is written
+/// down for when it is next opened.
+fn chartbook_sidebar(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let mut workspace = Workspace::load(store);
+    let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
+    let name = workspace.name_of(at);
+    let Some(state) = arg(m, "STATE") else {
+        let on = sidebar_of(store, workspace.book(at)?);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"chartbook": name, "sidebar": on}))),
+            false => Ok(format!("{}\n", switch_word(on))),
+        };
+    };
+    let on = state == "on";
+    match live {
+        Some(live) if at == workspace.active() => live.show_sidebar(on),
+        _ => {
+            workspace.book_mut(at)?["sidebar_shown"] = json!(on);
+            workspace.save(store);
+            // The window holds every chartbook it has, and would write the
+            // old answer back over this one at its next save.
+            if let Some(live) = live {
+                live.reload_workspace();
+            }
+        }
+    }
+    said(
+        as_json,
+        json!({"chartbook": name, "sidebar": on}),
+        format!("chartbook {name:?} {} the sidebar", if on { "shows" } else { "hides" }),
     )
 }
 
@@ -5919,8 +6109,13 @@ fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
 
 fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let key = required(m, "KEY")?;
+    // What dictation tells the agent is empty until somebody writes in it,
+    // and empty is an answer, not something missing.
+    // And so is the model dictation asks an agent for: empty is its own.
+    let unset = (key == crate::dictation::CONTEXT || model_agent(key).is_some()).then(String::new);
     let value = store
         .setting(key)
+        .or(unset)
         .ok_or_else(|| Fault::not_found(format!("{key:?} has never been set")))?;
     match as_json {
         true => Ok(format!("{}\n", json!({"key": key, "value": value}))),
@@ -6058,10 +6253,45 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("set {key} to {}", serde_json::to_string(&stored).unwrap_or_default());
         return said(as_json, json!({"key": key, "value": stored}), text);
     }
+    // The model dictation asks an agent for, kept per agent: only for the
+    // agents dictation runs itself, and empty for the agent's own.
+    if let Some(agent) = key.strip_prefix(crate::dictation::agent::MODEL_PREFIX) {
+        let agent = model_agent(key).ok_or_else(|| {
+            let known: Vec<String> =
+                crate::dictation::agent::Agent::ALL.iter().map(|agent| agent.id().to_string()).collect();
+            Fault::usage(format!(
+                "dictation does not choose a model for {agent:?}; it does for {}",
+                known.join(", ")
+            ))
+        })?;
+        let value = value.trim().to_string();
+        store.set_setting(&crate::dictation::agent::model_setting(agent), &value);
+        let text = match value.is_empty() {
+            true => format!("dictation lets {} use its default model", agent.label()),
+            false => format!("dictation asks {} for {value}", agent.label()),
+        };
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
+    // Prose, said back as what was stored rather than echoed whole: it can
+    // run to paragraphs. Empty clears it.
+    if key == crate::dictation::CONTEXT {
+        let value = value.trim().to_string();
+        store.set_setting(key, &value);
+        let text = match value.is_empty() {
+            true => "dictation sends the agent no extra context".to_string(),
+            false => format!("dictation sends the agent {} characters of extra context", value.chars().count()),
+        };
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
     let value = value.to_string();
 
     store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
+}
+
+/// The agent an `agent_model.<agent>` setting is for, when dictation runs it.
+fn model_agent(key: &str) -> Option<crate::dictation::agent::Agent> {
+    key.strip_prefix(crate::dictation::agent::MODEL_PREFIX).and_then(crate::dictation::agent::Agent::named)
 }
 
 /// Where the scheme to go back to when the colour is put back is remembered.
@@ -6171,6 +6401,63 @@ fn config_bars(
     };
     let (hollow_up, swapped) = (worn.hollow_up || hollow, worn.swapped || turn_round);
     said(as_json, json!({"bars": state, "scheme": scheme, "hollow_up": hollow_up, "swapped": swapped}), text)
+}
+
+/// `config themes`: every theme on offer, as Preferences › Theme lists them
+/// — the desktop's first, followed as it changes, then the shipped ones,
+/// every Omarchy theme installed, and the user's own — the one in use
+/// marked. The ids are what `config set theme` takes.
+fn config_themes(store: &Store, as_json: bool) -> Result<String, Fault> {
+    use omacharts_engine::theme::{Mode, Source, OMARCHY_ID};
+    let theming = crate::theming::Theming::load(store);
+    let active = theming.theme().id;
+    let kind = |theme: &omacharts_engine::theme::Theme| match theme.source {
+        _ if theme.id == OMARCHY_ID => "system",
+        Source::BuiltIn => "shipped",
+        Source::Custom => "custom",
+        Source::Omarchy => "installed",
+    };
+    let mode = |mode: Mode| match mode {
+        Mode::Dark => "dark",
+        Mode::Light => "light",
+    };
+    let themes = theming.themes();
+    if as_json {
+        let rows = themes
+            .iter()
+            .map(|theme| {
+                json!({
+                    "id": theme.id,
+                    "name": theme.name,
+                    "mode": mode(theme.mode),
+                    "kind": kind(theme),
+                    "follows_desktop": theme.id == OMARCHY_ID,
+                    "active": theme.id == active,
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("themes", rows));
+    }
+    let width = themes.iter().map(|theme| theme.id.chars().count()).max().unwrap_or(0);
+    let lines: Vec<String> = themes
+        .iter()
+        .map(|theme| {
+            let follows = match theme.id == OMARCHY_ID {
+                true => ", follows the desktop",
+                false => "",
+            };
+            format!(
+                "{}{:<width$}  {} ({}, {}{follows})",
+                if theme.id == active { "* " } else { "  " },
+                theme.id,
+                theme.name,
+                kind(theme),
+                mode(theme.mode),
+            )
+        })
+        .collect();
+    Ok(lines.join("\n") + "\n")
 }
 
 /// Which of the four answers a scheme is.
@@ -8681,6 +8968,87 @@ mod tests {
         assert_eq!(crate::trading::chart_pnl::load(&store), crate::trading::chart_pnl::ChartPnl::Money);
     }
 
+    /// What dictation tells the agent besides the words: empty until it is
+    /// written, written whole, read back whole, and cleared by an empty one.
+    #[test]
+    fn the_agent_context_is_set_and_read_like_any_setting() {
+        let store = bare();
+        assert_eq!(run("config get agent_context", &store).out, "\n");
+        assert_eq!(run("config get agent_context --json", &store).out.trim(), r#"{"key":"agent_context","value":""}"#);
+        let set: Vec<String> = ["omacharts", "config", "set", "agent_context", "Use Sonnet.\nKeep it brief."]
+            .map(String::from)
+            .to_vec();
+        let out = dispatch(&set, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation sends the agent 26 characters of extra context");
+        assert_eq!(run("config get agent_context", &store).out, "Use Sonnet.\nKeep it brief.\n");
+        let json: serde_json::Value = serde_json::from_str(&run("config get agent_context --json", &store).out).unwrap();
+        assert_eq!(json["value"], "Use Sonnet.\nKeep it brief.");
+        let clear: Vec<String> = ["omacharts", "config", "set", "agent_context", ""].map(String::from).to_vec();
+        let out = dispatch(&clear, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation sends the agent no extra context");
+        assert_eq!(run("config get agent_context", &store).out, "\n");
+    }
+
+    /// The model dictation asks each agent for: the agent's own until one
+    /// is set, kept per agent, and refused for an agent it does not run.
+    #[test]
+    fn the_agent_model_is_set_and_read_per_agent() {
+        let store = bare();
+        assert_eq!(run("config get agent_model.claude", &store).out, "\n");
+        assert_eq!(
+            run("config get agent_model.claude --json", &store).out.trim(),
+            r#"{"key":"agent_model.claude","value":""}"#
+        );
+        let out = run("config set agent_model.claude opus", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation asks Claude Code for opus");
+        assert_eq!(run("config get agent_model.claude", &store).out, "opus\n");
+        assert_eq!(run("config get agent_model.codex", &store).out, "\n");
+        let json: serde_json::Value =
+            serde_json::from_str(&run("config set agent_model.codex gpt-5.5 --json", &store).out).unwrap();
+        assert_eq!(json, serde_json::json!({"key": "agent_model.codex", "value": "gpt-5.5"}));
+        let clear: Vec<String> = ["omacharts", "config", "set", "agent_model.claude", ""].map(String::from).to_vec();
+        let out = dispatch(&clear, &store, None, &super::super::Here);
+        assert_eq!(out.out.trim(), "dictation lets Claude Code use its default model");
+        assert_eq!(run("config get agent_model.claude", &store).out, "\n");
+        let refused = run("config set agent_model.pi big", &store);
+        assert_eq!(refused.code, crate::cli::EXIT_USAGE, "{}", refused.out);
+        assert!(refused.err.contains("cursor-agent"), "{}", refused.err);
+    }
+
+    /// `config themes` lists every theme `config set theme` takes, the
+    /// user's own included, with the one in use marked; and a theme set
+    /// from a terminal reaches the open window at once.
+    #[test]
+    fn the_themes_are_listed_and_one_set_reaches_the_window() {
+        let store = bare();
+        let mine = omacharts_engine::theme::builtin_themes()[0].duplicate("custom-mine", "Mine");
+        store.save_theme(&mine);
+        let listed: Value = serde_json::from_str(&run("config themes --json", &store).out).unwrap();
+        let themes = listed["themes"].as_array().unwrap();
+        let ids: Vec<&str> = themes.iter().map(|theme| theme["id"].as_str().unwrap()).collect();
+        for id in ["midnight", "carbon", "paper", "daylight", "custom-mine"] {
+            assert!(ids.contains(&id), "{id} in {ids:?}");
+        }
+        let active: Vec<&str> = themes.iter().filter(|t| t["active"] == true).map(|t| t["id"].as_str().unwrap()).collect();
+        assert_eq!(active, ["midnight"], "the default without Omarchy");
+        let paper = themes.iter().find(|theme| theme["id"] == "paper").unwrap();
+        assert_eq!((&paper["mode"], &paper["kind"], &paper["follows_desktop"]), (&json!("light"), &json!("shipped"), &json!(false)));
+        assert_eq!(themes.iter().find(|theme| theme["id"] == "custom-mine").unwrap()["kind"], "custom");
+
+        let window = Watching::default();
+        let args: Vec<String> = ["omacharts", "config", "set", "theme", "custom-mine"].map(String::from).to_vec();
+        let outcome = dispatch(&args, &store, Some(&window), &super::super::Here);
+        assert_eq!(outcome.code, 0, "{}", outcome.err);
+        assert!(window.0.borrow().contains(&"theming"), "{:?}", window.0.borrow());
+        let text = run("config themes", &store).out;
+        let marked: Vec<&str> = text.lines().filter(|line| line.starts_with("* ")).collect();
+        assert_eq!(marked.len(), 1, "{text}");
+        assert!(marked[0].starts_with("* custom-mine") && marked[0].contains("Mine (custom, dark)"), "{text}");
+    }
+
     /// Quietly ignoring a parameter the indicator has no use for would read
     /// as the command having worked.
     #[test]
@@ -8846,6 +9214,73 @@ mod tests {
         assert_eq!(run("chart crosshair", &store).out.trim(), "off");
         assert_eq!(run("chart crosshair on", &store).code, 0);
         assert_eq!(run("chart crosshair", &store).out.trim(), "on");
+    }
+
+    /// The drawing tools are one setting for the window, the one its key
+    /// writes, read back the way the crosshair's is.
+    #[test]
+    fn the_drawing_tools_can_be_read_and_set() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        assert_eq!(run("chart drawing-tools", &store).out.trim(), "off", "put away out of the box");
+        assert_eq!(run("chart drawing-tools on", &store).code, 0);
+        assert_eq!(run("chart drawing-tools", &store).out.trim(), "on");
+        assert!(store.setting_bool(SHOW_DRAWING_TOOLS, false));
+        let status: Value = serde_json::from_str(&run("status show --json", &store).out).unwrap();
+        assert_eq!(status["drawingTools"], json!(true));
+        assert_eq!(run("chart drawing-tools off", &store).code, 0);
+        assert_eq!(run("chart drawing-tools --json", &store).out.trim(), r#"{"drawingTools":false}"#);
+    }
+
+    /// Whether the sidebar is out is kept with each chartbook, and read
+    /// back wherever a chartbook is described.
+    #[test]
+    fn a_chartbooks_sidebar_can_be_read_and_set() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chartbook create Rates", &store);
+        assert_eq!(run("chartbook sidebar --book Macro", &store).out.trim(), "on", "out out of the box");
+        assert_eq!(run("chartbook sidebar off --book Rates", &store).code, 0);
+        assert_eq!(run("chartbook sidebar --book Rates", &store).out.trim(), "off");
+        assert_eq!(run("chartbook sidebar --book Macro", &store).out.trim(), "on", "one chartbook's alone");
+
+        let shown: Value = serde_json::from_str(&run("chartbook show Rates --json", &store).out).unwrap();
+        assert_eq!(shown["sidebar"], json!(false));
+        let listed: Value = serde_json::from_str(&run("chartbook list --json", &store).out).unwrap();
+        let sidebars: Vec<&Value> = listed["chartbooks"].as_array().unwrap().iter().map(|b| &b["sidebar"]).collect();
+        assert_eq!(sidebars, vec![&json!(true), &json!(false)]);
+        let status: Value = serde_json::from_str(&run("status show --json", &store).out).unwrap();
+        assert_eq!(status["sidebar"], json!(true), "the open chartbook's");
+
+        // "The open one" needs a window to be open in.
+        assert_eq!(run("chartbook sidebar off", &store).code, crate::cli::EXIT_NO_WINDOW);
+    }
+
+    /// With a window open, the open chartbook's sidebar and the drawing
+    /// tools are put out or away by the window, as a click would, and
+    /// nothing is rebuilt after it. Another chartbook's is written down, and
+    /// the window reads it back so its next save keeps it.
+    #[test]
+    fn the_window_shows_and_hides_its_sidebars_itself() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chartbook create Rates", &store);
+        let line = |text: &str| -> Vec<String> {
+            std::iter::once("omacharts".to_string()).chain(text.split_whitespace().map(String::from)).collect()
+        };
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chartbook sidebar off"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["flush", "sidebar off"]);
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chartbook sidebar off --book Rates"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["flush", "workspace"]);
+        assert_eq!(run("chartbook sidebar --book Rates", &store).out.trim(), "off");
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chart drawing-tools on"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["tools on"]);
     }
 
     #[test]
@@ -10272,6 +10707,12 @@ mod tests {
         }
         fn adopt_features(&self) {
             self.0.borrow_mut().push("features");
+        }
+        fn show_sidebar(&self, shown: bool) {
+            self.0.borrow_mut().push(if shown { "sidebar on" } else { "sidebar off" });
+        }
+        fn show_drawing_tools(&self, shown: bool) {
+            self.0.borrow_mut().push(if shown { "tools on" } else { "tools off" });
         }
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}

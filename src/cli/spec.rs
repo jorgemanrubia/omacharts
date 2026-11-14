@@ -382,7 +382,8 @@ pub const COLOUR: &str =
 const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
     Flag::valued("chart", "CHART", CHART_SELECTOR),
-    Flag::valued("id", "N", "which one, when a chart has two of a kind"),
+    Flag::valued("id", "N", "which one, when a chart has two of a kind; `selected` for the one selected in the window, kind and all"),
+    Flag::switch("selected", "with list: only what is selected in the window"),
     Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR, Bollinger; the stochastic's %K length"),
     Flag::valued("deviations", "F", "standard deviations the Bollinger bands sit at, 0-50"),
     Flag::valued("fast", "N", "bars the MACD's quick average covers"),
@@ -850,6 +851,17 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "sidebar",
+                about: "Whether a chartbook shows the sidebar, its watchlist down the right; \
+                        the corner button and Ctrl+Shift+B do the same",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[Flag::valued("book", "BOOK", "which chartbook (default: the open one)")],
+                example: "omacharts chartbook sidebar off",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
                 name: "template",
                 about: "Chartbook templates: a chartbook's layout and what each chart draws, under \
                         a name; every change to a chartbook on one reaches the others on it",
@@ -1072,7 +1084,8 @@ pub const SURFACE: &[Noun] = &[
                 flags: &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
-                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove"),
+                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove. `selected` for the one selected in the window"),
+                    Flag::switch("selected", "with list: only what is selected in the window"),
                     Flag::valued("from", "ANCHOR", ANCHOR),
                     Flag::valued("to", "ANCHOR", ANCHOR),
                     Flag::valued("point", "ANCHOR", POINT).repeating(),
@@ -1152,6 +1165,17 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("id", "N", "which volume profile, when the chart has more than one"),
                 ],
                 example: "omacharts chart profile merge --at 2026-09-02",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "drawing-tools",
+                about: "Whether the drawing tools are out down the left of the window, for every \
+                        chartbook; the corner button and Ctrl+Shift+D do the same",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts chart drawing-tools on",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -1537,6 +1561,16 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
+                name: "themes",
+                about: "Every theme `config set theme` takes, the one in use marked",
+                args: &[],
+                flags: &[],
+                example: "omacharts config themes --json",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
                 name: "bars",
                 about: "Which palette every chart paints its bars from: vivid, soft, quiet or monochrome; and whether a rise is hollow or up and down are swapped",
                 args: &[Arg::opt("STATE", "omit to read it").of(COLOURING)],
@@ -1835,7 +1869,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("focused", "chart focus", ""),
     ("panes", "chart list", ""),
     ("watchlist", "chartbook watchlist", ""),
-    ("sidebar_shown", "", "presentational: the rail is shown with a mouse or a key"),
+    ("sidebar_shown", "chartbook sidebar", ""),
     ("sidebar_width", "", "presentational: a width is dragged, never scripted"),
     ("maximized", "", "presentational: remembered so a restart finds it, but filled with a key or the corner"),
     ("book_template", "chartbook template", ""),

@@ -39,7 +39,7 @@ manual:
       description: Installing it, the theme, the data feeds, the bar widget, preferences, and where your data lives.
     - key: agents
       label: Agents
-      description: The CLI that drives everything the window does, and the skill that lets an agent reach for it.
+      description: The CLI that drives everything the window does, the skill that lets an agent reach for it, and dictating to the agent.
     - key: appendices
       label: Appendices
       description: Every key in one place.

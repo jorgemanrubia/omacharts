@@ -107,6 +107,16 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
 | Backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 
+### Agent
+
+What dictation goes with ([Dictation](/manual/dictation/)).
+
+| Group › row | Does | Chapter |
+|---|---|---|
+| Dictation › **Agent** | Names Omarchy's default agent, which dictation goes to, or says how to set one. | [Agents](/manual/dictation/#agents) |
+| Dictation › **Model** | The model dictation asks the agent for, kept for each agent. **Agent's default** leaves it to the agent. Not shown for an agent that opens in a terminal. | [Preferences](/manual/dictation/#preferences) |
+| **Context** | Text sent to the agent after Omacharts' own line, at the start of each conversation. Empty by default, and saved as you type. | [What the agent is sent](/manual/dictation/#what-the-agent-is-sent) |
+
 ### Trading
 
 Trading has a **Beta** tag in the list of sections: it is experimental. The page holds the logins and their accounts, **Edit quantities…**, **Order labels** and how charts show P&L, all in [Connecting a broker](/manual/brokers/#logins-and-accounts).

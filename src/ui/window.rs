@@ -48,7 +48,9 @@ use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
 pub(crate) mod compare;
+mod dictation;
 mod executions;
+mod glow;
 mod log;
 mod marks;
 mod trade;
@@ -2354,6 +2356,31 @@ mod sidebar_tests {
             assert_eq!(state(&window, "watchlist"), list);
         });
     }
+
+    /// A command puts each sidebar out or away by the same road as the key
+    /// and the corner button: the menu's tick follows, the setting is
+    /// written, and asking for what is already so changes nothing.
+    #[test]
+    fn a_command_shows_and_hides_each_sidebar_as_the_key_does() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+
+            for shown in [true, true, false, false] {
+                window.show_drawing_tools(shown);
+                let bar = window.drawing_bar.borrow().clone().expect("the bar");
+                assert_eq!(bar.is_shown(), shown, "the tools");
+                assert_eq!(bar.toggle.is_active(), shown, "the tools' corner button");
+                assert_eq!(state(&window, "drawing-tools"), shown, "the tools' tick");
+                assert_eq!(store.setting_bool(SHOW_DRAWING_TOOLS, false), shown, "the tools' setting");
+
+                window.show_sidebar(shown);
+                assert_eq!(window.shows_sidebar(), shown, "the rail");
+                assert_eq!(state(&window, "watchlist"), shown, "the rail's tick");
+                assert_eq!(store.setting_bool(SHOW_WATCHLIST, true), shown, "the rail's setting");
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2805,6 +2832,67 @@ mod outside_change_tests {
             assert_eq!(window.ohlc_thickness(), 1, "the slider did not reach the chart");
             command(&window, &["chart", "set", "--style", "candles"]);
             assert!(!row.get_visible());
+        });
+    }
+
+    /// What is selected in the window is what a command calls selected:
+    /// marked in both lists, the only rows `--selected` keeps, and what
+    /// `--id selected` changes or removes.
+    #[test]
+    fn what_is_selected_in_the_window_is_what_a_command_calls_selected() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            level(&window, "pos:0", 100.0);
+            level(&window, "pos:0", 200.0);
+            command(&window, &["chart", "indicator", "add", "sma", "--period", "20"]);
+            command(&window, &["chart", "indicator", "add", "sma", "--period", "50"]);
+            let json = |words: &[&str]| -> serde_json::Value { serde_json::from_str(&command(&window, words)).expect("JSON") };
+            let drawings = json(&["chart", "drawing", "list", "--json"]);
+            let ids: Vec<i64> = drawings["drawings"].as_array().unwrap().iter().map(|d| d["id"].as_i64().unwrap()).collect();
+            assert_eq!(ids.len(), 2);
+            assert!(drawings["drawings"].as_array().unwrap().iter().all(|d| d["selected"] == false), "nothing selected yet");
+            let refused = crate::cli::run(
+                &["omacharts", "chart", "drawing", "remove", "--id", "selected"].map(String::from),
+                &window.store,
+                Some(&window as &dyn crate::cli::Live),
+                &crate::cli::Here,
+            );
+            assert_eq!(refused.code, crate::cli::EXIT_NOT_FOUND, "{}", refused.err);
+
+            let pane = window.focused_pane();
+            let high = ids.iter().copied().find(|id| pane.view.drawings().iter().any(|d| d.id == *id && d.from.price == 200.0)).unwrap();
+            pane.view.select_ids(&[high]);
+            let selected = json(&["chart", "drawing", "list", "--selected", "--json"]);
+            assert_eq!(selected["drawings"].as_array().map(Vec::len), Some(1));
+            assert_eq!((&selected["drawings"][0]["id"], &selected["drawings"][0]["selected"]), (&serde_json::json!(high), &serde_json::json!(true)));
+            let text = command(&window, &["chart", "drawing", "list"]);
+            assert_eq!(text.lines().filter(|l| l.contains("· selected")).count(), 1, "{text}");
+            command(&window, &["chart", "drawing", "set", "--id", "selected", "--color", "#ff0000"]);
+            let after = json(&["chart", "drawing", "list", "--json"]);
+            let red = after["drawings"].as_array().unwrap().iter().find(|d| d["id"] == serde_json::json!(high)).unwrap();
+            assert_eq!(red["style"]["color"], "#ff0000");
+            command(&window, &["chart", "drawing", "remove", "--id", "selected"]);
+            assert_eq!(levels(&window.focused_pane()), vec![100.0], "the selected one went, and only it");
+
+            let all = json(&["chart", "indicator", "list", "--json"]);
+            let slow = all["indicators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["params"].to_string().contains("50"))
+                .and_then(|i| i["id"].as_u64())
+                .expect("SMA 50") as u32;
+            window.focused_pane().view.pick(Some(slow));
+            let indicators = json(&["chart", "indicator", "list", "--selected", "--json"]);
+            assert_eq!(indicators["indicators"].as_array().map(Vec::len), Some(1));
+            assert_eq!((&indicators["indicators"][0]["id"], &indicators["indicators"][0]["selected"]), (&serde_json::json!(slow), &serde_json::json!(true)));
+            command(&window, &["chart", "indicator", "set", "--id", "selected", "--period", "100"]);
+            command(&window, &["chart", "indicator", "remove", "--id", "selected"]);
+            let left = json(&["chart", "indicator", "list", "--json"]);
+            let left = left["indicators"].as_array().unwrap();
+            assert_eq!(left.len(), 1, "only the selected SMA went: {left:?}");
+            assert_ne!(left[0]["id"], serde_json::json!(slow));
         });
     }
 
@@ -3778,7 +3866,8 @@ const PREFETCH_WINDOW: usize = 3;
 const LAST_SYMBOL: &str = "last_symbol";
 const LAST_SUFFIX: &str = "last_suffix";
 const LAST_TIMEFRAME: &str = "last_timeframe";
-const SHOW_WATCHLIST: &str = "show_watchlist";
+/// Whether the rail is out, for a chartbook that has never said.
+pub const SHOW_WATCHLIST: &str = "show_watchlist";
 /// How wide the rail was left, in pixels.
 const SETTING_SIDEBAR_WIDTH: &str = "sidebar_width";
 /// Whether the bar widget has been put in the bar once already.
@@ -3812,7 +3901,7 @@ pub enum NotShown {
 /// The whole arrangement of charts, as one stored value.
 const SETTING_WORKSPACE: &str = "workspace";
 /// Whether the drawing tools are on screen.
-const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
+pub const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
 /// Whether a pointer on a chart draws a line on the other charts of its
 /// symbol. One switch for the app, in the preferences.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
@@ -4746,6 +4835,8 @@ pub struct Window {
     trade: Trade,
     /// The Log, the corner notice and the main menu's dot.
     messages: log::Messages,
+    /// What is dictated here, on its way to the agent.
+    dictation: dictation::Dictation,
     /// The About dialog, while it is open.
     about: RefCell<Option<Rc<about::About>>>,
     /// Which feed a loader reply belongs to. Bumped by a switch, so a reply
@@ -4899,6 +4990,7 @@ impl Window {
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
             messages: log::Messages::new(omacharts_engine::log::global()),
+            dictation: Default::default(),
             about: RefCell::new(None),
             feed_generation: Cell::new(0),
             refresh_timer_on: Cell::new(false),
@@ -5012,6 +5104,7 @@ impl Window {
 
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&root));
+        this.lay_glow(&overlay);
         overlay.add_overlay(&corner);
         *this.trade.overlay.borrow_mut() = Some(overlay.clone());
         *this.trade.root.borrow_mut() = Some(root.clone());
@@ -5522,6 +5615,15 @@ impl Window {
 
     fn pane(&self, id: u32) -> Option<Rc<ChartPane>> {
         self.panes.borrow().iter().find(|p| p.id == id).cloned()
+    }
+
+    /// What is selected on chart `id`, for a command to act on "this one".
+    pub fn selection_on(&self, id: u32) -> Option<crate::cli::Selection> {
+        let pane = self.pane(id)?;
+        Some(crate::cli::Selection {
+            drawings: pane.view.selected_drawings().iter().map(|drawing| drawing.id).collect(),
+            indicator: pane.view.picked(),
+        })
     }
 
     /// Bring the bars before `first`, chart `id`'s first bar, now that its
@@ -6659,6 +6761,19 @@ impl Window {
             .iter()
             .filter_map(|pane| Some((pane.uid.borrow().clone(), pane.view.held_range()?)))
             .collect();
+        // And what is selected: a command that reads what is selected and
+        // then changes it, as an agent asked to "make this red" does, finds
+        // it still selected for the next one.
+        let selected: HashMap<String, (Vec<i64>, Option<u32>)> = self
+            .panes
+            .borrow()
+            .iter()
+            .map(|pane| {
+                let ids: Vec<i64> = pane.view.selected_drawings().iter().map(|d| d.id).filter(|id| *id != 0).collect();
+                (pane.uid.borrow().clone(), (ids, pane.view.picked()))
+            })
+            .filter(|(_, (ids, picked))| !ids.is_empty() || picked.is_some())
+            .collect();
 
         if !self.restore_workspace() {
             // An arrangement that cannot be rebuilt leaves the charts alone:
@@ -6675,6 +6790,14 @@ impl Window {
                 if let Some(range) = held.get(pane.uid.borrow().as_str()) {
                     pane.view.show_range(*range);
                 }
+            }
+        }
+
+        for pane in self.panes.borrow().iter() {
+            match selected.get(pane.uid.borrow().as_str()) {
+                Some((ids, _)) if !ids.is_empty() => pane.view.select_ids(ids),
+                Some((_, Some(picked))) => pane.view.pick(Some(*picked)),
+                _ => {}
             }
         }
 
@@ -8740,9 +8863,8 @@ impl Window {
                 // on Ctrl+Alt+V now.
                 Key::x | Key::X => this.cut(),
                 Key::c | Key::C => this.copy(),
-                Key::v | Key::V => {
-                    this.paste();
-                }
+                // A dictation arrives as a paste, and is told apart there.
+                Key::v | Key::V => this.paste_or_dictation(),
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
@@ -12907,6 +13029,15 @@ impl Window {
         self.sync_corner_clearance();
     }
 
+    /// Put the drawing tools out or away, for a command: the key's own
+    /// toggle when they are not already where they are wanted.
+    pub fn show_drawing_tools(self: &Rc<Self>, shown: bool) {
+        let out = self.drawing_bar.borrow().as_ref().is_some_and(|bar| bar.is_shown());
+        if out != shown {
+            self.toggle_drawing_tools();
+        }
+    }
+
     /// Tick or clear a sidebar's row in the chart menu: the window's action
     /// for it holds whether it is open.
     fn mark_sidebar(&self, action: &str, shown: bool) {
@@ -14117,6 +14248,18 @@ impl Window {
         let Some(rail) = rail.filter(|rail| rail.has_focus()) else { return false };
         rail.rotate_watchlist(delta);
         true
+    }
+
+    /// Show or hide the open chartbook's rail, for a command: a click on the
+    /// corner button, so it is remembered with the chartbook as a click is.
+    /// The keyboard is left where it is, as a click leaves it, unless it was
+    /// in the rail being put away.
+    pub fn show_sidebar(self: &Rc<Self>, shown: bool) {
+        let in_rail = !shown && self.watchlist.borrow().as_ref().is_some_and(|rail| rail.has_focus());
+        self.set_rail_shown(shown);
+        if in_rail {
+            self.focused_pane().view.area.grab_focus();
+        }
     }
 
     pub fn toggle_watchlist(self: &Rc<Self>) {

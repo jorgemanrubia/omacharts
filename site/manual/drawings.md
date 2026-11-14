@@ -33,7 +33,7 @@ crop: none
 
 ## The tools
 
-<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>, the toggle in the window's bottom-left corner, or **Sidebars** → **Drawing tools** in a chart's right-click menu shows and hides the tools down the left edge. The toggle stays where it is as they come and go: left of the bottom-left chart's first date while the tools are hidden, and at their foot while they are out. A tool's key picks it whether the tools are showing or not.
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>, the toggle in the window's bottom-left corner, or **Sidebars** → **Drawing tools** in a chart's right-click menu shows and hides the tools down the left edge. The toggle stays where it is as they come and go: left of the bottom-left chart's first date while the tools are hidden, and at their foot while they are out. A tool's key picks it whether the tools are showing or not. From a terminal, `omacharts chart drawing-tools on` or `off` ([Command line](/manual/cli/#showing-and-hiding-the-sidebars)).
 
 {% include children.html head="Tool" what="What it draws" hotkey="Key" %}
 
