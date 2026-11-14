@@ -94,12 +94,17 @@ class Market:
         self.target = None
         self.activity = 1.0  # time-of-day volume
         self.events = []
+        self.live = False
 
     # Regimes
 
     def _switch(self):
         names, weights = zip(*NEXT[self.regime])
         self.regime = self.rng.choice(names, p=np.array(weights) / sum(weights))
+        # Live, the impulses are the choreography's (goto, touch): left to
+        # itself inside its band the market rotates, lulls and consolidates.
+        if self.live and self.regime == "impulse":
+            self.regime = "consolidation"
         self.left = self.rng.exponential(REGIMES[self.regime][3]) + 40
         if self.regime == "impulse":
             self.direction = self.rng.choice((-1, 1))
@@ -406,6 +411,8 @@ def serve(folder, seed, speed, epoch):
     market = Market(seed + 1, state["price"], dt)
     market.last, market.h, market.fair = state["last"], state["h"], state["fair"]
     market.band = (7618, 7630)
+    market.live = True
+    market.regime = "rotation"
     control = folder / "control"
     if not control.exists():
         os.mkfifo(control)

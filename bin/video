@@ -88,6 +88,11 @@ class Scene:
         self.voice = ""
         self.actions = {}  # cue -> [action, ...]
         self.after = DEFAULT_AFTER
+        # A trailer's scene: its punch-in crop and when it holds, and the
+        # events something else logs that the edit snaps to hits.
+        self.crop = None
+        self.punch = None
+        self.anchors = {}
 
 
 class Script:
@@ -143,6 +148,12 @@ class Script:
                     cue, _, rest = line.strip().partition(":")
                     if cue == "after":
                         scene.after = float(rest)
+                    elif cue == "crop":
+                        scene.crop = rest.split()
+                    elif cue == "punch":
+                        scene.punch = [int(v) for v in rest.strip().split("-")]
+                    elif cue == "anchors":
+                        scene.anchors = {name: int(n) for name, n in (a.split("@") for a in rest.split())}
                     else:
                         scene.actions[cue.strip()] = [parse_action(a) for a in rest.split(";") if a.strip()]
                 elif line.startswith("**Picture.**"):
@@ -173,7 +184,8 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
-                "terminal": None, "focus": 1}
+                "terminal": None, "focus": 1, "tape": None, "run": None, "mark": 3,
+                "let": None, "calibrate": 0, "tap": 1, "beat": 0}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -321,6 +333,13 @@ class Studio:
         self.runtime = Path(f"/run/user/{os.getuid()}/ocv-{os.getpid()}")
         self.pids = []
         self.build = (script.meta.get("build") if script else None) or os.environ.get("VIDEO_BUILD") or "main"
+        self.features = (script.meta.get("features") if script else None) or ""
+        # A trailer filmed on the simulated market: an empty data directory,
+        # the tape serving, and the app on the tape's clock.
+        self.trailer = bool(script and script.meta.get("kind") == "trailer")
+        self.slug = script.slug if script else None
+        self.type_ms = float(script.meta.get("type_ms", 95)) if script else 95.0
+        self.hits = {}  # the scene's hit -> monotonic time, while a trailer is taken
 
     # Bringing it up
 
@@ -336,7 +355,7 @@ class Studio:
         self.stop()
 
     def start(self):
-        self.binary = omacharts_build(self.build)
+        self.binary = omacharts_build(self.build, self.features)
         shutil.rmtree(self.work, ignore_errors=True)
         self.home = self.work / "home"
         self.data = self.work / "data"
@@ -384,7 +403,12 @@ class Studio:
         time.sleep(0.3)
         self.hand = Hand(self)
 
-        app = self.spawn([str(self.binary)], log="app.log")
+        app_env = None
+        if self.trailer:
+            self.env["OMACHARTS_TAPE"] = str(self.tape_dir)
+            self.env["BRACKET_PLAYED"] = str(self.work / "played.jsonl")
+            app_env = self._start_tape()
+        app = self.spawn([str(self.binary)], log="app.log", extra=app_env)
         self.pids.append(app.pid)
         self._wait(lambda: self.window(), "the omacharts window", timeout=30)
         time.sleep(2.5)  # charts drawn, data in
@@ -394,8 +418,10 @@ class Studio:
         self.key("Escape")
         (session_file()).write_text(json.dumps({
             "env": {k: self.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
-                                              "DBUS_SESSION_BUS_ADDRESS", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")},
+                                              "DBUS_SESSION_BUS_ADDRESS", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+                                              "OMACHARTS_TAPE", "BRACKET_PLAYED") if k in self.env},
             "binary": str(self.binary), "signature": self.signature, "runtime": str(self.runtime), "colors": self.colors,
+            "work": str(self.work),
             "pid": os.getpid()}))
 
     def _make_home(self):
@@ -422,6 +448,17 @@ class Studio:
                 (self.home / rel).symlink_to(source)
 
     def _seed_data(self):
+        if self.trailer:
+            # Nothing but the simulated market: an empty data directory, and
+            # the Rithmic dialog's list of systems (names, no secrets), fresh,
+            # so the dialog never asks Rithmic for it.
+            (self.data / "omacharts").mkdir(parents=True)
+            systems = Path.home() / ".cache/omacharts-dev-rithmic/data/omacharts/rithmic-systems.json"
+            if systems.exists():
+                listed = json.loads(systems.read_text())
+                listed["asked"] = int(time.time())
+                (self.data / "omacharts/rithmic-systems.json").write_text(json.dumps(listed, indent=2))
+            return
         # The same market data every render: a snapshot, kept outside the
         # repo, copied fresh for each run so setup always starts from it.
         base = DATA / "studio-data"
@@ -436,7 +473,7 @@ class Studio:
         omacharts.db, and a snapshot of that would start the next run on
         whatever this one left on screen."""
         base = DATA / "studio-data/omacharts"
-        if base.exists() or not (self.data / "omacharts/market.db").exists():
+        if self.trailer or base.exists() or not (self.data / "omacharts/market.db").exists():
             return
         say("keeping this run's market data as the studio snapshot")
         base.mkdir(parents=True)
@@ -484,6 +521,8 @@ hl.config({{
         studio.env = {**os.environ, **session["env"], "GDK_BACKEND": "wayland"}
         studio.binary, studio.signature = Path(session["binary"]), session["signature"]
         studio.runtime, studio.colors = Path(session["runtime"]), session["colors"]
+        studio.type_ms, studio.hits = 95.0, {}
+        studio.work = Path(session.get("work", OUT / "studio"))
         studio.hand = Hand(studio)
         return studio
 
@@ -516,9 +555,51 @@ hl.config({{
 
     # Talking to it
 
-    def spawn(self, argv, log=None):
+    def spawn(self, argv, log=None, extra=None):
         out = open(self.work / log, "w") if log else subprocess.DEVNULL
-        return subprocess.Popen(argv, env=self.env, stdout=out, stderr=out, stdin=subprocess.DEVNULL, start_new_session=True)
+        return subprocess.Popen(argv, env={**self.env, **(extra or {})}, stdout=out, stderr=out, stdin=subprocess.DEVNULL,
+                                start_new_session=True)
+
+    # The simulated market a trailer is filmed on (video/sim/tape): the
+    # history copied in, the tape started, and the app run under faketime
+    # from the same moment, 40 times faster, so the app's clock is the tape's.
+    SIM_ANCHOR = 1794494400
+    SIM_SPEED = 40
+
+    @property
+    def tape_dir(self):
+        return self.work / "tape"
+
+    def _start_tape(self):
+        source = OUT / self.slug / "sim/tape"
+        if not (source / "ES.history.csv").exists():
+            run([str(VIDEO / "sim/tape"), "make", str(source), "--seed", "7"])
+        self.tape_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("ES.history.csv", "state.json"):
+            shutil.copy(source / name, self.tape_dir)
+        epoch = time.time()
+        self.pids.append(self.spawn([str(VIDEO / "sim/tape"), "serve", str(self.tape_dir), "--epoch", f"{epoch:.6f}",
+                                     "--speed", str(self.SIM_SPEED)], log="tape.log").pid)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.SIM_ANCHOR))
+        return {"FAKETIME": f"@{stamp} x{self.SIM_SPEED}", "FAKETIME_DONT_FAKE_MONOTONIC": "1",
+                "LD_PRELOAD": "/usr/lib/faketime/libfaketime.so.1"}
+
+    def tape(self, command):
+        fifo = Path(self.env["OMACHARTS_TAPE"]) / "control"
+        for _ in range(50):
+            if fifo.exists():
+                break
+            time.sleep(0.1)
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            os.write(fd, (command.strip() + "\n").encode())
+        finally:
+            os.close(fd)
+
+    def hit_at(self, n):
+        if n not in self.hits:
+            die(f"@{n} outside a trailer scene")
+        return self.hits[n]
 
     def hyprctl(self, *args):
         env = {**os.environ, "XDG_RUNTIME_DIR": str(self.runtime), "HYPRLAND_INSTANCE_SIGNATURE": getattr(self, "signature", "")}
@@ -529,10 +610,10 @@ hl.config({{
             clients = json.loads(self.hyprctl("clients", "-j") or "[]")
         except json.JSONDecodeError:
             return None
-        for client in clients:
-            if client.get("class") == "com.jorgemanrubia.Omacharts":
-                return client
-        return None
+        # The main window, not a dialog of its own (Preferences is a window
+        # of the same class): positions are percentages of the main one.
+        mine = [c for c in clients if c.get("class") == "com.jorgemanrubia.Omacharts"]
+        return max(mine, key=lambda c: c["size"][0] * c["size"][1], default=None)
 
     def at(self, x, y):
         """A position given as percentages of the window, in layout pixels."""
@@ -571,9 +652,11 @@ hl.config({{
         # One wtype run, so one keyboard, with the gaps a hand leaves.
         argv = ["wtype", "-s", "300"]
         for ch in text:
-            name = {" ": "space", "-": "minus"}.get(ch)
+            # ⏎ is Enter, typed by the same keyboard as the words: one sent on
+            # its own reached a terminal as an escape sequence.
+            name = {" ": "space", "-": "minus", "⏎": "Return"}.get(ch)
             argv += ["-k", name] if name else [ch]
-            argv += ["-s", str(max(40, int(random.gauss(95, 30))) if ch != " " else 140)]
+            argv += ["-s", str(max(30, int(random.gauss(self.type_ms, self.type_ms / 3))) if ch != " " else int(self.type_ms * 1.4))]
         subprocess.run(argv, env=self.env, check=True)
 
     def border(self, colour):
@@ -583,8 +666,132 @@ hl.config({{
     def shot(self, path):
         subprocess.run(["grim", "-c", "-o", "REC", str(path)], env=self.env, check=True)
 
+    # Prices a trailer's lines name, worked out when they run: the market's
+    # `last`, the on-screen profile's `val` and `poc`, and what `let` set,
+    # each on the 0.25 grid. `{EXPR}` in a line is that price, and
+    # `{y:EXPR}` the height of that price on the chart, as a percentage of
+    # the window, from the price axis read off the screen (`calibrate`).
+    TICK = 0.25
+
+    def prices(self):
+        names = dict(getattr(self, "vars", {}))
+        ticks = Path(self.env.get("OMACHARTS_TAPE", "/nonexistent")) / "ES.ticks"
+        if ticks.exists():
+            with open(ticks, "rb") as f:
+                f.seek(max(0, ticks.stat().st_size - 200))
+                names["last"] = float(f.read().decode(errors="ignore").strip().splitlines()[-1].split()[1])
+        return names
+
+    def evaluate(self, expr, names=None):
+        names = names or self.prices()
+        if ("val" in expr or "poc" in expr) and "val" not in names:
+            listed = json.loads(self.cli("chart profile list --on-screen --json"))
+            profile = next(p for p in reversed(listed["profiles"]) if p.get("visible"))
+            names["val"], names["poc"] = profile["value_area_low"], profile["poc"]
+        value = eval(expr, {"__builtins__": {}, "round": round, "min": min, "max": max}, names)
+        return round(value / self.TICK) * self.TICK
+
+    def resolve(self, text):
+        if "{" not in text:
+            return text
+        names = self.prices()
+
+        def one(m):
+            expr = m[1]
+            if expr.startswith("y:"):
+                price = self.evaluate(expr[2:], names)
+                a, b = getattr(self, "axis", (None, None))
+                if a is None:
+                    die("{y:...} before calibrate")
+                return f"{(a * price + b) * 100:.2f}%"
+            return f"{self.evaluate(expr, names):.2f}"
+        return re.sub(r"\{([^{}]+)\}", one, text)
+
+    def calibrate(self):
+        """Read the price axis off the screen: its labels' prices and heights,
+        fitted to a line, so a price can be pointed at."""
+        import tempfile
+        window = self.window()
+        (wx, wy), (ww, wh) = window["at"], window["size"]
+        with tempfile.TemporaryDirectory() as work:
+            shot = Path(work) / "shot.png"
+            subprocess.run(["grim", "-o", "REC", str(shot)], env=self.env, check=True)
+            from PIL import Image, ImageOps
+            image = Image.open(shot).convert("L")
+            sx = image.width / LAYOUT[0]
+            left, right = int((wx + ww * 0.955) * sx), int((wx + ww) * sx)
+            strip = ImageOps.invert(image.crop((left, 0, right, image.height)))
+            strip = strip.resize((strip.width * 2, strip.height * 2))
+            strip.save(Path(work) / "axis.png")
+            shutil.copy(Path(work) / "axis.png", OUT / "last-axis.png")
+            shutil.copy(shot, OUT / "last-axis-shot.png")
+            tsv = subprocess.run(["tesseract", str(Path(work) / "axis.png"), "-", "--psm", "11", "tsv"], capture_output=True, text=True).stdout
+        points = []
+        for line in tsv.splitlines()[1:]:
+            cells = line.split("\t")
+            if len(cells) < 12:
+                continue
+            text = cells[11].replace(",", "").strip()
+            if re.fullmatch(r"\d{4}(\.\d{1,2})?", text):
+                top, height = int(cells[7]), int(cells[9])
+                y = ((top + height / 2) / 2 / sx - wy) / wh
+                points.append((float(text), y))
+        # The axis labels are evenly spaced: keep the ones that agree.
+        if len(points) < 3:
+            die(f"could not read the price axis ({len(points)} labels)")
+        n = len(points)
+        mx, my = sum(p for p, _ in points) / n, sum(y for _, y in points) / n
+        a = sum((p - mx) * (y - my) for p, y in points) / sum((p - mx) ** 2 for p, _ in points)
+        b = my - a * mx
+        good = [(p, y) for p, y in points if abs(a * p + b - y) < 0.01]
+        if len(good) >= 3 and len(good) < n:
+            n = len(good)
+            mx, my = sum(p for p, _ in good) / n, sum(y for _, y in good) / n
+            a = sum((p - mx) * (y - my) for p, y in good) / sum((p - mx) ** 2 for p, _ in good)
+            b = my - a * mx
+        self.axis = (a, b)
+        return points
+
+    def find_word(self, word):
+        """Where `word` is in the window's top strip (the chart header), as
+        percentages of the window, read off the screen: header parts move as
+        their neighbours' text changes width."""
+        import tempfile
+        from PIL import Image, ImageOps
+        window = self.window()
+        (wx, wy), (ww, wh) = window["at"], window["size"]
+        with tempfile.TemporaryDirectory() as work:
+            shot = Path(work) / "shot.png"
+            subprocess.run(["grim", "-o", "REC", str(shot)], env=self.env, check=True)
+            image = Image.open(shot).convert("L")
+            sx = image.width / LAYOUT[0]
+            top = int((wy + wh * 0.055) * sx)
+            ImageOps.invert(image.crop((0, 0, image.width, top))).save(Path(work) / "strip.png")
+            tsv = subprocess.run(["tesseract", str(Path(work) / "strip.png"), "-", "--psm", "11", "tsv"], capture_output=True, text=True).stdout
+        for line in tsv.splitlines()[1:]:
+            cells = line.split("\t")
+            if len(cells) >= 12 and cells[11].strip().lower() == word.lower():
+                left, t, w, h = (int(c) for c in cells[6:10])
+                x, y = (left + w / 2) / sx, (t + h / 2) / sx
+                return f"{(x - wx) / ww * 100:.2f}%", f"{(y - wy) / wh * 100:.2f}%"
+        die(f"no {word!r} in the chart's header")
+
     def perform(self, action, events, now=0.0, scene=None, cue=None):
         verb, *args = action
+        if verb == "tap":
+            # A click on a word of the header, wherever it is now.
+            return self.perform(("click", *self.find_word(args[0])), events, now, scene, cue)
+        if verb == "let":
+            name, _, expr = args[0].partition(" ")
+            self.vars = {**getattr(self, "vars", {}), name: self.evaluate(expr)}
+            events.append({"t": now, "scene": scene, "cue": cue, "verb": "let", "args": [name, self.vars[name]]})
+            return
+        if verb == "calibrate":
+            points = self.calibrate()
+            events.append({"t": now, "scene": scene, "cue": cue, "verb": "calibrate", "args": [len(points), *self.axis]})
+            return
+        args = [self.resolve(a) for a in args]
+        action = (verb, *args)
         event = {"t": now, "scene": scene, "cue": cue, "verb": verb, "args": args}
         if verb == "key":
             self.key(args[0])
@@ -611,6 +818,16 @@ hl.config({{
             event["args"] = args[0].split(maxsplit=1)
         elif verb == "focus":
             self.focus(args[0])
+        elif verb == "tape":
+            # `@N` is the wall seconds until the scene's hit N.
+            command = re.sub(r"@(\d+)", lambda m: f"{max(0.05, self.hit_at(int(m[1])) - time.monotonic()):.3f}", args[0])
+            self.tape(command)
+            event["args"] = [command]
+        elif verb == "run":
+            subprocess.run(["bash", "-c", args[0]], env=self.env, check=True)
+        elif verb == "mark":
+            event["at"] = self.at(*args[:2])
+            event["name"] = args[2]
         events.append(event)
 
     # The terminal, for a scene about the command line: a real one, tiled
@@ -712,7 +929,7 @@ def session_file():
     return DATA / (f"studio-session-{name}.json" if name else "studio-session.json")
 
 
-def omacharts_build(ref):
+def omacharts_build(ref, features=""):
     """The omacharts binary a video is made with.
 
     Videos show the app as it is on main unless the script says otherwise
@@ -721,10 +938,12 @@ def omacharts_build(ref):
     touched, or `here` for whatever this checkout has built."""
     if ref == "here":
         binary = ROOT / "target/release/omacharts"
-        say("building omacharts from this checkout")
-        run(["cargo", "build", "--release", "--quiet"], cwd=ROOT)
+        say(f"building omacharts from this checkout{' with ' + features if features else ''}")
+        run(["cargo", "build", "--release", "--quiet", *(["--features", features] if features else [])], cwd=ROOT)
         return binary
-    tree, target = DATA / "build", DATA / "build-target"
+    # A build with features has a target of its own, so the plain build's
+    # cache is not thrown away.
+    tree, target = DATA / "build", DATA / ("build-target" + (f"-{features}" if features else ""))
     run(["git", "fetch", "-q", "origin"], cwd=ROOT)
     commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"origin/{ref}^{{commit}}"], cwd=ROOT,
                             capture_output=True, text=True).stdout.strip()
@@ -739,7 +958,8 @@ def omacharts_build(ref):
         run(["git", "checkout", "-q", "--detach", commit], cwd=tree)
     title = subprocess.run(["git", "log", "-1", "--format=%h %s", commit], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     say(f"omacharts {ref} at {title} — building (incremental after the first time)")
-    run(["cargo", "build", "--release", "--quiet"], cwd=tree, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
+    run(["cargo", "build", "--release", "--quiet", *(["--features", features] if features else [])], cwd=tree,
+        env={**os.environ, "CARGO_TARGET_DIR": str(target)})
     return target / "release/omacharts"
 
 
@@ -1321,6 +1541,303 @@ def subtitles(voiced, plan, path, intro=0.0):
     path.write_text("\n".join(blocks))
 
 
+# --- Trailer ---------------------------------------------------------------------------
+#
+# A video with no voice, cut to a drum (`kind: trailer`): each scene's footage
+# is laid from the breath before its phrase to its loud last hit (the PA),
+# where a card slams. The drum's hits.json is the clock: the take schedules
+# every `name@N` line of a scene on its hit N, on the recording's own clock,
+# so the footage needs no retiming unless an action could not keep up (the
+# typing in a terminal), and the Trailer composition in video/compose lays it
+# out. trading.md is the first one and says why each piece is so.
+
+BEAT = 26  # frames
+PHRASE = 416
+BREATH = 3 * BEAT  # the scene's footage starts this long before its hit 1
+PA_HIT = 11
+
+
+def hit_offset(scene_number, n):
+    """Seconds from a scene's `in` mark to its hit `n` (11 is the PA)."""
+    breath = 0 if scene_number == 1 else BREATH
+    return (breath + (n - 1) * BEAT) / FPS
+
+
+def trailer_lines(scene):
+    """A scene's lines, in order: (name, hit or None, actions)."""
+    lines = []
+    for cue, actions in scene.actions.items():
+        name, _, n = cue.partition("@")
+        lines.append((name, int(n) if n else None, actions))
+    return lines
+
+
+def key_lead(chord):
+    """How long a chord takes to land after it is sent: what Studio.key waits."""
+    mods = chord.split("+")[:-1]
+    return 0.3 + 0.12 * len(mods) + (0.1 if any(m.lower() == "shift" for m in mods) else 0)
+
+
+def action_lead(studio, action):
+    verb = action[0]
+    if verb == "tap":
+        return 0.9  # reading the header, then the glide
+    if verb in ("click", "rclick", "move", "drag", "scroll"):
+        return studio.hand.duration(*studio.at(*(studio.resolve(a) for a in action[1:3]))) + (0.08 if verb in ("click", "rclick", "drag") else 0)
+    if verb == "key":
+        return key_lead(action[1])
+    return 0.0
+
+
+def take_scene(studio, scene, events, zero, marks):
+    """Play one scene of a trailer: its prep off camera, then its lines on
+    its hits, then its `out` lines. Returns its marks."""
+    now = lambda: time.monotonic() - zero
+    lines = trailer_lines(scene)
+    for name, n, actions in lines:
+        if name == "prep":
+            for action in actions:
+                studio.perform(action, events, now=now(), scene=scene.number, cue="prep")
+    # A crop may name a price, so it is worked out now, after the prep.
+    crop = [percent(studio.resolve(v)) for v in scene.crop] if scene.crop else None
+    time.sleep(0.25)
+    mark_in = time.monotonic()
+    studio.hits = {n: mark_in + hit_offset(scene.number, n) for n in range(1, 14)}
+    rate = 1.0
+    for name, n, actions in lines:
+        if name in ("prep", "out"):
+            continue
+        if n is not None:
+            due = studio.hits[n] - action_lead(studio, actions[0])
+            pause(due - time.monotonic())
+            late = time.monotonic() - due
+            if late > 0.15 and any(a[0] == "type" for _, _, acts in lines for a in acts):
+                # Could not keep up (typing): the footage is played faster to
+                # put this line on its hit.
+                rate = max(rate, (time.monotonic() + action_lead(studio, actions[0]) - mark_in) / hit_offset(scene.number, n))
+                say(f"scene {scene.number}: {name}@{n} {late:.2f}s late")
+        for action in actions:
+            studio.perform(action, events, now=now(), scene=scene.number, cue=name)
+    pa = mark_in + hit_offset(scene.number, PA_HIT) * rate
+    pause(pa - time.monotonic())
+    marks.append({"scene": scene.number, "in": round(mark_in - zero, 4), "out": round(pa - zero, 4), "rate": round(rate, 4),
+                  "crop": crop})
+    for name, n, actions in lines:
+        if name == "out":
+            for action in actions:
+                studio.perform(action, events, now=now(), scene=scene.number, cue="out")
+    studio.hits = {}
+
+
+def drum(script):
+    folder = script.out / "drum"
+    if not (folder / "hits.json").exists():
+        run([str(ENGINES / "drum_engine.py"), str(folder)])
+    return folder
+
+
+def render_trailer(script, upto=None):
+    out = script.out
+    hits = json.loads((drum(script) / "hits.json").read_text())
+    raw = out / "raw.mkv"
+    events, marks = [], []
+    scenes = [s for s in script.scenes if upto is None or s.number <= upto]
+    with Studio(script) as studio:
+        for action in script.setup:
+            studio.perform(action, events)
+        time.sleep(1.0)
+        say(f"recording {len(scenes)} scenes")
+        recorder = studio.spawn(["wf-recorder", "-y", "-o", "REC", "-r", str(FPS), "-c", "hevc_vaapi", "-d", "/dev/dri/renderD128",
+                                 "-p", "qp=16", "-f", str(raw)], log="wf-recorder.log")
+        time.sleep(1.0)
+        studio.border("rgb(ff00ff)")
+        marked = time.monotonic()
+        time.sleep(0.3)
+        studio.border(None)
+        time.sleep(0.4)
+        zero = time.monotonic()
+        for scene in scenes:
+            take_scene(studio, scene, events, zero, marks)
+        time.sleep(0.8)
+        recorder.send_signal(signal.SIGINT)
+        recorder.wait(timeout=60)
+        # What the take ended on, for the review: the agent's orders exactly.
+        try:
+            (out / "orders-at-end.json").write_text(studio.cli("trading orders --all --json"))
+            (out / "profile-at-end.json").write_text(studio.cli("chart profile list --on-screen --json"))
+        except SystemExit:
+            pass
+        for name in ("tape/touches.jsonl", "tape/tape.log", "played.jsonl", "app.log"):
+            if (studio.work / name).exists():
+                shutil.copy(studio.work / name, out / Path(name).name)
+    offset = find_marker(raw) + (zero - marked)
+    if os.environ.get("VIDEO_TAKE_ONLY"):
+        # A dry take: stills at the moments that matter, nothing edited.
+        dry = out / "dry"
+        shutil.rmtree(dry, ignore_errors=True)
+        dry.mkdir()
+        for m in marks:
+            for n in (1, 3, 5, 7, 9, 10):
+                t = offset + m["in"] + hit_offset(m["scene"], n) * m["rate"] + 0.1
+                run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-i", str(raw), "-frames:v", "1", "-vf", "scale=1600:-1",
+                     str(dry / f"{m['scene']:02d}-hit{n:02d}.jpg")])
+        (out / "events.json").write_text(json.dumps({"marks": marks, "events": events, "offset": offset}, indent=1))
+        say(f"dry take: stills in {dry}")
+        return
+    touches = [json.loads(line) for line in (out / "touches.jsonl").read_text().splitlines()] if (out / "touches.jsonl").exists() else []
+    played = [json.loads(line) for line in (out / "played.jsonl").read_text().splitlines()] if (out / "played.jsonl").exists() else []
+    for t in touches + played:
+        events.append({"t": round(t["mono"] - zero, 4), "scene": None, "cue": t["name"], "verb": "touch" if t in touches else "played",
+                       "args": [t.get("price")]})
+    (out / "events.json").write_text(json.dumps({"marks": marks, "events": events}, indent=1))
+    edit_trailer(script, raw, offset, hits, marks, events)
+
+
+def scene_frames(number):
+    if number == 1:
+        return 0, 260
+    return PHRASE * (number - 1) - BREATH, PHRASE * (number - 1) + 260
+
+
+def edit_trailer(script, raw, offset, hits, marks, events):
+    out = script.out
+    by_scene = {m["scene"]: m for m in marks}
+    scale = 1 / LAYOUT[0], 1 / LAYOUT[1]
+    scenes, report = [], []
+    for scene in script.scenes:
+        m = by_scene.get(scene.number)
+        if not m:
+            continue
+        start, end = scene_frames(scene.number)
+        frame_of = lambda t: start + (t - m["in"]) / m["rate"] * FPS
+        inside = lambda t: m["in"] - 0.05 <= t <= m["out"] + 0.05
+        punch = []
+        if m.get("crop"):
+            a, b = scene.punch or (1, PA_HIT)
+            first = start if a <= 1 and scene.number > 1 and not scene.punch else start + round(hit_offset(scene.number, a) * FPS)
+            punch.append({"from": first, "to": start + round(hit_offset(scene.number, b) * FPS) if b < PA_HIT else end,
+                          "x": m["crop"][0], "y": max(0.0, min(1 - m["crop"][2], m["crop"][1])), "w": m["crop"][2]})
+        badges, fills, arrow = [], [], None
+        for e in events:
+            if e.get("scene") == scene.number and e["verb"] == "key" and e["cue"] not in ("prep", "out") and "+" in e["args"][0]:
+                keys = [KEY_NAMES.get(part, KEY_NAMES.get(part.lower(), part.upper() if len(part) == 1 else part)) for part in e["args"][0].split("+")]
+                badges.append({"frame": round(frame_of(e["t"] + key_lead(e["args"][0]))), "keys": keys})
+            if e["verb"] == "touch" and e["cue"] == "fill" and inside(e["t"]):
+                fills.append(round(frame_of(e["t"])))
+            if e.get("scene") == scene.number and e["verb"] == "mark" and e.get("name") != "punch":
+                x, y = e["at"][0] * scale[0], e["at"][1] * scale[1]
+                f = round(frame_of(e["t"]))
+                for p in punch:
+                    if p["from"] <= f < p["to"]:
+                        x, y = (x - p["x"]) / p["w"], (y - p["y"]) / p["w"]
+                arrow = {"frame": f, "x": round(x, 4), "y": round(y, 4)}
+        for e in events:
+            if e["verb"] == "played" and inside(e["t"]):
+                n = scene.anchors.get(e["cue"])
+                if n:
+                    report.append(f"scene {scene.number}: {e['cue']} at {(e['t'] - m['in']) - hit_offset(scene.number, n):+.2f}s from hit {n}")
+        if not (0.85 <= m["rate"] <= 1.15):
+            report.append(f"scene {scene.number}: footage played at {m['rate']:.2f}x")
+        for f in fills:
+            nominal = start + round(hit_offset(scene.number, 10) * FPS)
+            report.append(f"scene {scene.number}: fill at frame {f}, {f - nominal:+d} from hit 10")
+        scenes.append({"number": scene.number, "start": start, "end": end, "at": round(m["in"], 4), "rate": m["rate"],
+                       "punch": punch, "badges": badges, "fills": fills, "arrow": arrow,
+                       "slats": scene.number == 1, "tag": scene.number in (1, 2)})
+    for line in report:
+        say(line)
+    cards = trailer_cards(script, scenes)
+    frames = hits["frames"]
+    props = {"width": SIZE[0], "height": SIZE[1], "fps": FPS, "frames": frames, "src": "recording.mp4",
+             "hits": [{"phrase": h["phrase"], "hit": h["hit"], "frame": h["frame"]} for h in hits["hits"]],
+             "scenes": scenes, "cards": cards, "cover": "cover.png", "ribbon": "bg-ribbon.jpg", "mark": "icon.svg"}
+    (out / "trailer.json").write_text(json.dumps(props, indent=1))
+    public = out / "compose-public"
+    shutil.rmtree(public, ignore_errors=True)
+    public.mkdir()
+    last = max(m["out"] for m in by_scene.values()) + 1.0
+    say("cutting the take to H.264 for the edit")
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{last:.3f}",
+         "-c:v", "libx264", "-preset", "fast", "-crf", "12", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an", str(public / "recording.mp4")])
+    shutil.copy(cover(script), public / "cover.png")
+    shutil.copy(ROOT / "site/assets/home/bg-ribbon.jpg", public)
+    shutil.copy(ROOT / "site/icon.svg", public)
+    shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
+    shutil.copy(archivo(), public / "archivo-800.woff2")
+    compose_dir = VIDEO / "compose"
+    if not (compose_dir / "node_modules").exists():
+        die("no Remotion; run bin/video setup")
+    picture = out / "trailer-picture.mp4"
+    say(f"the edit: {frames} frames at {SIZE[0]}x{SIZE[1]} (Remotion, several minutes)")
+    run(["npx", "remotion", "render", "src/index.ts", "Trailer", str(picture), f"--props={out / 'trailer.json'}",
+         f"--public-dir={public}", "--codec=h264", "--crf=14", f"--concurrency={max(2, (os.cpu_count() or 8) // 3)}",
+         "--log=error"], cwd=compose_dir)
+    final, preview = out / f"{script.slug}.mp4", out / f"{script.slug}-1080p.mp4"
+    music = drum(script) / "drum.wav"
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(picture), "-i", str(music), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+         "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(final)])
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
+         "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
+    review = out / "review"
+    shutil.rmtree(review, ignore_errors=True)
+    review.mkdir()
+    for p in range(1, 11):
+        base = PHRASE * (p - 1)
+        for label, f in (("hit10", base + 234), ("pa30", base + 290), ("echo10", base + 322)):
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{f / FPS:.4f}", "-i", str(preview), "-frames:v", "1",
+                 str(review / f"{p:02d}-{label}.jpg")])
+    renders = VIDEO / "renders"
+    renders.mkdir(exist_ok=True)
+    for made in (final, preview):
+        shutil.copy(made, renders / made.name)
+    say(f"video/renders/{final.name} ({frames / FPS:.1f}s), {preview.name}; review/ has hit 10, PA+30 and echo+10 of every phrase")
+
+
+def trailer_cards(script, scenes):
+    """The cards, from the script's Cards table: the first is the cover, the
+    last the end card."""
+    text = script.path.read_text()
+    table = text.split("## Cards", 1)[1].split("\n## ", 1)[0]
+    rows = []
+    for line in table.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) == 3 and cells[0].isdigit():
+            rows.append((int(cells[0]), cells[1].replace("**", ""), cells[2]))
+    at = {s["number"]: s["at"] for s in scenes}
+    cards = []
+    for number, headline, second in rows:
+        pa = PHRASE * (number - 1) + 260
+        card = {"number": number, "pa": pa, "echo": pa + 2 * BEAT, "letgo": pa + BREATH, "kind": "text",
+                "headline": headline, "second": second, "still": at.get(number + 1)}
+        if number == 1:
+            card.update(kind="cover", headline="Trading", still=None)
+        if number == len(rows):
+            card.update(kind="end", headline="Trading.", sub="In Omacharts 0.3 · Beta", second="omacharts.org",
+                        small="Simulated market. Fake accounts.", still=None, letgo=None)
+        cards.append(card)
+    frames = PHRASE * 10 + 170
+    for card in cards:
+        if card["letgo"] is None:
+            card["letgo"] = frames
+    return cards
+
+
+def archivo():
+    """Archivo 800, the cover's face, kept once: Google Fonts, as the cover
+    page loads it."""
+    path = DATA / "fonts/archivo-800.woff2"
+    if not path.exists():
+        import urllib.request
+        path.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request("https://fonts.googleapis.com/css2?family=Archivo:wght@800&display=block",
+                                         headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120"})
+        css = urllib.request.urlopen(request).read().decode()
+        latin = css.split("/* latin */")[-1]
+        url = re.search(r"url\((https://[^)]+\.woff2)\)", latin)[1]
+        path.write_bytes(urllib.request.urlopen(url).read())
+    return path
+
+
 # --- Showing it ------------------------------------------------------------------------
 
 
@@ -1489,7 +2006,10 @@ def main():
         music(need(), int(rest[1]) if len(rest) > 1 else 3)
     elif verb == "render":
         script = need()
-        render(script)
+        if script.meta.get("kind") == "trailer":
+            render_trailer(script, int(rest[rest.index("--upto") + 1]) if "--upto" in rest else None)
+        else:
+            render(script)
         if not os.environ.get("VIDEO_NO_SHOW"):
             show(script.out / f"{script.slug}-1080p.mp4")
     elif verb == "show":
@@ -1508,6 +2028,9 @@ def main():
                 for scene in script.scenes:
                     if scene.number >= upto:
                         break
+                    if script.meta.get("kind") == "trailer":
+                        take_scene(studio, scene, events, time.monotonic(), [])
+                        continue
                     for cue in re.findall(r"\{(\w+)\}", scene.voice):
                         for action in scene.actions.get(cue, []):
                             studio.perform(action, events)

@@ -1,13 +1,14 @@
 ---
 title: Trading
-stage: script
+stage: render
 kind: trailer
-build: fakes-live-market
+build: here
 features: fakes
 data: none
 cover: 0
 voice: none
 polish: off
+type_ms: 62
 length: 72s
 theme: tokyo-night
 music_file: video/out/trading/drum/drum.wav
@@ -617,32 +618,46 @@ The password field takes anything: type `x`. Sign-in dialog positions are
 the manual's `regenerate:` clicks, re-pinned for the studio's window.
 
     cli template default none
-    cli chart set --symbol ES --resolution 1m --template none
-    cli chart indicator add volume_profile --anchor session
+    cli chart set --symbol ES --resolution 1m --template none --grid off
+    cli chart indicator add volume_profile --anchor session --align right
+    wait 1.5
     cli trading login fake
-    wait 1.0
-    click 50% 38%
+    wait 2.0
+    click 50% 44.4%
+    wait 0.3
     type LT50-1043
-    click 50% 46%
-    key ctrl+a
+    click 50% 54.4%
+    key End
+    key BackSpace
+    key BackSpace
+    key BackSpace
+    key BackSpace
     type Lucid
-    click 58% 66%
+    click 54.3% 60.9%
+    wait 1.5
     wait 1.5
     cli trading login fake
-    wait 1.0
-    click 50% 38%
+    wait 2.0
+    click 50% 44.4%
+    wait 0.3
     type TDY100-2287
-    click 50% 46%
-    key ctrl+a
+    click 50% 54.4%
+    key End
+    key BackSpace
+    key BackSpace
+    key BackSpace
+    key BackSpace
     type Tradeify
-    click 58% 66%
+    click 54.3% 60.9%
     wait 1.5
-    key ctrl+shift+b
-    cli chart set --show-fills on
+    click 97% 3.2%
+    wait 0.5
+    cli chart set --show-fills on --account Lucid/LT50-1043
     cli trading cancel --all
-    cli trading flatten ESZ6
-    cli chart range 2h
+    cli trading flatten ESZ6 --account Lucid/LT50-1043
     tape free 7618 7630
+    scroll 80% 50% -4
+    move 50% 1%
     wait 2.0
 
 After Setup: ES 1m, about 80 candles on screen, the session profile on
@@ -672,8 +687,8 @@ The corner tag reads SIMULATED MARKET.
 
 **Card.** PA 1: the cover, **Trading**. Echo: New in Omacharts 0.3 · Beta.
 
-    prep: tape goto 7624.00 in 2.0; wait 2.2; cli trading buy --limit 7617.00; tape avoid 7617.00; wait 1.0
-    start@1: tape avoid off; tape touch 7617.00 in @10 fill
+    prep: let base last; tape goto {base+2} in 1.5; wait 1.7; let entry last-5; cli trading buy --limit {entry}; tape avoid {entry}; move 50% 1%; wait 1.0
+    start@1: tape avoid off; tape touch {entry} in @10 fill
     after: 0.6
 
 ### 2. A stop is hit
@@ -692,9 +707,9 @@ on it.
 **Card.** PA 2: Now with Rithmic. Echo: Futures accounts, and the prop
 firms on it.
 
-    prep: cli trading exit --target 7625.00 --stop 7613.50; tape avoid 7613.50; tape avoid 7625.00; wait 0.8
-    up@1: tape goto 7620.25 in @4
-    down@4: tape avoid off; tape touch 7613.50 in @10 fill
+    prep: cli trading exit --target {entry+8} --stop {entry-3.5}; tape avoid {entry-3.5}; tape avoid {entry+8}; wait 0.6
+    up@1: tape goto {entry+3.25} in @4
+    down@4: tape avoid off; tape touch {entry-3.5} in @10 fill
     after: 0.6
 
 ### 3. Rithmic, and the prop firms
@@ -714,17 +729,14 @@ hit 6, scroll on hits 7 and 8, arrow on hit 10.
 **Card.** PA 3: Trade from the chart. Echo: Ctrl+B buys. Ctrl+S sells.
 Ctrl+F flattens.
 
-    prep: key ctrl+comma; wait 0.8; click 14% 26%; wait 0.6; move 60% 80%
-    add@1: click 54% 22%
-    rithmic@3: click 54% 28%
-    system@5: click 50% 52%
-    cut@6: mark 50% 60% punch
-    scroll@7: scroll 50% 60% 3
-    scroll2@8: scroll 50% 60% 2
-    arrow@10: mark 50% 58% lucid
-    crop: 30% 30% 46%
+    prep: let r3 last; tape free {r3-2} {r3+2}; cli trading login rithmic; wait 1.2; move 75% 85%
+    system@3: click 54% 52.6%
+    filter@7: type Lucid
+    arrow@10: mark 54.7% 61% lucid
+    crop: 30% 50% 48%
+    punch: 5-11
     after: 0.6
-    out: key Escape; key Escape; key Escape; wait 0.5
+    out: key Escape; wait 0.3; key Escape; wait 0.4; click 45.6% 67.7%; wait 0.6; focus app
 
 ### 4. The keys
 
@@ -740,7 +752,7 @@ the label's P&L following. Ctrl+F on hit 10: flat.
 
 **Card.** PA 4: Drag your stop. Echo: Orders move with the pointer.
 
-    prep: tape free 7618 7626; move 40% 99%
+    prep: let k4 last; tape free {k4-2} {k4+2}; move 50% 1%
     buy@2: key ctrl+b
     sell@4: key ctrl+s
     two@6: key ctrl+2
@@ -765,12 +777,14 @@ starts on 6, lands on 7. Stop hit on 10.
 
 **Card.** PA 5: One panel. Echo: Accounts. Positions. Orders.
 
-    prep: key ctrl+1; wait 0.3; tape goto 7621.00 in 1.5; wait 1.7; key ctrl+b; wait 0.8; tape avoid 7619.00; tape free 7620.50 7622.50
-    stp@2: drag 90% 47% 90% 58%
-    lift@4: tape goto 7624.00 in @6
-    trail@6: drag 60% 58% 60% 46%
-    hit@7: tape avoid off; tape touch 7621.25 in @10 fill
-    crop: 66% 36% 34%
+    prep: key ctrl+1; wait 0.4; key ctrl+b; wait 0.8; let pos last; tape free {pos-0.75} {pos+1}; tape avoid {pos-2}; calibrate; move 30% {y:pos-5}
+    hover@1: move 11.0% {y:pos}
+    stp@2: drag 11.0% {y:pos} 11.0% {y:pos-2}
+    lift@4: tape avoid off; tape goto {pos+3} in @6
+    trail@6: drag 60% {y:pos-2} 60% {y:pos+0.25}
+    hit@7: tape touch {pos+0.25} in @10 fill
+    crop: 0% {y:pos+4} 40%
+    punch: 2-5
     after: 0.6
 
 ### 6. The panel
@@ -791,13 +805,13 @@ closes, and in the panel the row turns from Working to Filled.
 
 **Card.** PA 6: And the header. Echo: Account. P&L. Buy. Sell. Qty.
 
-    prep: cli chart set --account Tradeify/TDY100-2287; wait 0.5; cli trading cancel --all --account Tradeify/TDY100-2287; wait 0.4; cli trading buy --limit 7618.50 --quantity 2; tape avoid 7618.50; tape goto 7623.00 in 1.5; wait 1.8
-    accounts@1: key ctrl+shift+a; tape goto 7620.00 in @8
-    positions@4: key ctrl+shift+p
-    orders@7: key ctrl+shift+o
-    all@8: click 86% 62%; tape avoid off; tape touch 7618.50 in @10 fill
+    prep: cli chart set --account Tradeify/TDY100-2287; wait 0.5; cli trading cancel --all; wait 0.4; let t6 last-2.5; cli trading buy --limit {t6} --quantity 2; tape avoid {t6}; tape free {t6+2} {t6+4}; move 60% 55%; wait 0.8
+    accounts@1: click 97.95% 98.4%; tape goto {t6+1} in @8
+    positions@4: click 11.25% 86.9%
+    orders@7: click 18.25% 86.9%
+    all@8: click 89.1% 86.9%; tape avoid off; tape touch {t6} in @10 fill
     after: 0.6
-    out: key ctrl+shift+o; wait 0.4
+    out: click 98.0% 84.2%; wait 0.6
 
 ### 7. The header
 
@@ -816,13 +830,13 @@ on hit 9 would break the read, so the scene stays in the crop.
 **Card.** PA 7: Agent-ready. Echo: Everything the app does, from the
 command line.
 
-    prep: tape free 7620 7626; move 70% 30%
-    account@1: click 71% 4.5%
-    lucid@2: click 71% 9%
-    qty@4: click 93% 4.5%
-    three@5: click 93% 16%
-    buy@7: click 84% 4.5%
-    sell@10: click 88% 4.5%
+    prep: let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%
+    account@1: tap TDY100-2287
+    lucid@2: click 77.2% 8.3%
+    qty@4: tap Qty
+    three@5: click 90.4% 10.75%
+    buy@7: tap Buy
+    sell@10: tap Sell
     crop: 54% 0% 46%
     after: 0.6
 
@@ -848,9 +862,9 @@ duotone) so the market is not in frame while it is sped up.
 **Card.** PA 8: the request, in quotes, as card 8 says. Echo: Typed to an
 agent.
 
-    prep: key ctrl+1; cli chart range 90m; terminal open bracket-agent --pace 0.5; move 140% 97%; tape free 7619.50 7624; tape avoid 7616.00; wait 0.8
-    ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.
-    enter@10: key Return
+    prep: key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.35 --think 1.4 --settle 0.8; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
+    ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.⏎
+    enter@10: beat
     after: 0.4
 
 ### 9. It reads the chart
@@ -873,8 +887,9 @@ the fill on 10.
 **Card.** PA 9: Then it builds the bracket. Echo: Stop under the value
 area. Target at the point of control.
 
+    levels@1: let v val; let p poc
     anchors: read@2 limit@5
-    turn@6: tape avoid off; tape touch 7616.00 in @10 fill
+    turn@6: tape avoid off; tape touch {v} in @10 fill
     after: 0.4
 
 The agent paces itself (`--pace`), so `read` and `limit` (and `exits` in
@@ -902,10 +917,10 @@ than the app shows it.
 Echo: omacharts.org, and under it, small: Simulated market. Fake
 accounts. Held through the tail, then black (E11).
 
-    prep: tape avoid 7614.50; tape avoid 7624.00
+    prep: tape avoid {v-1.5}; tape avoid {p}
     anchors: exits@2
-    base@2: tape goto 7618.00 in @5
-    run@5: tape avoid off; tape touch 7624.00 in @10 fill
+    base@2: tape goto {v+2} in @5
+    run@5: tape avoid off; tape touch {p} in @10 fill
     after: 3.0
     out: terminal close; focus app
 

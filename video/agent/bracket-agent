@@ -11,7 +11,7 @@ Every command it shows is the real one, run against the open chart, and
 the levels are the ones the chart gives back; only the sentences around
 them are written in advance, so the video can be timed.
 
-    bracket-agent [--pace SECONDS]
+    bracket-agent [--pace SECONDS] [--think SECONDS] [--settle SECONDS]
 
 With BRACKET_PLAYED set to a path, it appends a JSON line there as the
 profile is read, as the buy returns and as the exits return:
@@ -25,9 +25,15 @@ import sys
 import time
 
 PACE = 0.5
+THINK = 0.0  # before its first line, as an agent takes a moment
+SETTLE = 0.0  # after the fill, before it says so
 for i, arg in enumerate(sys.argv):
     if arg == "--pace":
         PACE = float(sys.argv[i + 1])
+    if arg == "--think":
+        THINK = float(sys.argv[i + 1])
+    if arg == "--settle":
+        SETTLE = float(sys.argv[i + 1])
 
 TICK = 0.25
 STOP_TICKS = 6
@@ -99,6 +105,7 @@ def main():
     sys.stdout.flush()
     sys.stdin.readline()
     out()
+    time.sleep(THINK)
 
     said("First the levels, from the session's volume")
     more("profile on the chart.")
@@ -133,6 +140,7 @@ def main():
             out(f"    {DIM}{entry['id']} {entry['status'].lower()}{RESET}")
             return
         time.sleep(0.1)
+    time.sleep(SETTLE)
     out(f"    {DIM}{entry['id']} filled at {shown(entry['filled_at'])}{RESET}", pause=PACE * 0.6)
 
     said(f"Filled. Now the stop six ticks under, at {shown(stop)},")
