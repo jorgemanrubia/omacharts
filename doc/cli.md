@@ -1716,16 +1716,21 @@ session, so requests build on each other.
 **When a conversation starts over.** When the window starts (the session id
 is kept only while it runs), after 30 minutes with no dictation, when the
 default agent, its `agent_model.<agent>` or `agent_context` changes, after a turn fails, and when what
-was said is just "start over" or "new conversation".
+was said is just "start over", "start again" or "new conversation".
 
 **The queue.** One turn runs at a time. A dictation that arrives while the
-agent is working waits behind it, and the toast says so; none is dropped. A
-turn still running after ten minutes is stopped, so the ones behind it run.
+agent is working waits behind it; none is dropped. A turn still running after
+ten minutes is stopped, so the ones behind it run.
 
-Each is said in the window: a toast when a dictation is sent and when the
-agent is done, with the first line of its answer (the whole answer in the
-Log), and the corner notice when there is no default agent or the agent
-failed.
+**What the window says.** The glow along its bottom edge while the agent
+works, and nothing more when a turn succeeds. The Log records each dictation,
+one that was queued, a conversation starting over, and the agent's whole
+answer. A toast or the corner notice appears only when something goes wrong:
+no default agent, an agent that failed, a terminal Omarchy could not open.
+
+**What the agent may do.** Any `omacharts` command, the `trading` ones
+included, with no confirmation. Nothing here guards an order that was
+dictated.
 
 ## The command groups
 

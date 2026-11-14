@@ -1,113 +1,133 @@
 ---
 title: "Dictation"
-description: "Saying what you want with Omacharts in front, and Omarchy's default agent doing it."
+description: "Saying what you want with Omacharts in front, and Omarchy's default agent doing it with the omacharts command."
 section: agents
 nav_order: 31.5
 ---
 
-Hold <kbd>Right Alt</kbd>, say what you want, and let go. With Omacharts in
-front, what you said goes to Omarchy's default agent, and the agent does it
-with the `omacharts` command, in the open window.
+Say what you want with Omacharts in front, and Omarchy's default agent does
+it in the open window, with the `omacharts` command.
 
-> "Put gold on the 15 minute with an RSI."
+{: .warning }
+The agent can run any `omacharts` command, the [trading commands](/manual/cli/#trading) included, and nothing asks before it does. With a broker signed in, "sell two at the market" places that order. Don't dictate an order unless you mean it.
 
-## Dictating is Omarchy's
+## Dictating
 
-The key, the recording, the blue animation at the bottom of the screen and
-the transcription are Omarchy's dictation, set up in Omarchy and working as
-they do everywhere else. Omacharts changes none of it. It needs Superwhisper
-as Omarchy's dictation backend.
+1. Put Omacharts in front, with the keyboard on a chart and not in a text box.
+2. Hold <kbd>Right Alt</kbd> and say what you want.
+3. Let go. A glow along the bottom of the window shows the agent working.
 
-Dictate into a text box in Omacharts, such as the symbol search or a
-drawing's text, and the words are typed there as usual. Only what you say
-while no text box has the keyboard goes to the agent.
-
-## Which agent
-
-The agent is the one Omarchy runs as its default (`omarchy default agent`),
-with the account Omarchy has selected for it. **Preferences › Agent** shows
-which one that is.
-
-Omacharts runs these agents itself, in the background:
-
-| Agent | Model | Next dictation |
-|---|---|---|
-| Claude Code | Sonnet, Opus, Haiku | same conversation |
-| Codex | the models Codex lists | same conversation |
-| Cursor CLI | the models `cursor-agent models` lists | same conversation |
-| GitHub Copilot | Auto and the models GitHub names | same conversation |
-| OpenCode | the models `opencode models` lists | new conversation |
-| Antigravity | the models `agy models` lists | new conversation |
-
-For these, **Model** in Preferences › Agent picks the model, kept for each
-agent. The first entry, **Agent's default**, is the model you already use in
-the agent, named when its own settings say which (Claude Code's
-`settings.json`, Codex's `config.toml`, OpenCode's `opencode.json`), and it
-is what dictation uses until you pick another. Changing it starts a new
-conversation.
-
-Any other agent Omarchy offers works too, the way Omarchy opens it: each
-dictation opens the agent in a terminal, with your words as its first
-prompt and the agent's own default model. Every dictation there is a new
-conversation, and there is no Model to choose.
+The key, the recording and the transcription are Omarchy's dictation, with
+Superwhisper behind it, and Omacharts changes none of them. In a text box,
+such as the symbol search or a drawing's text, what you say is typed there
+as usual and nothing goes to the agent.
 
 ## What the agent is sent
 
-The first time, Omacharts sends one line and your words:
+One fixed line with your words in it:
 
 ```
-The user is in Omacharts and said: "Put gold on the 15 minute with an RSI.". Use the `omacharts` CLI to do it.
+The user is in Omacharts and said: "add an RSI". Use the `omacharts` CLI to do it.
 ```
 
 Nothing about your charts goes with it. The agent asks `omacharts` for what
 it needs, and the [agent skill](/manual/agent-skill/) helps it if installed.
-Claude Code may run `omacharts` and nothing else. The others run with their
-permission prompts skipped, as Omarchy runs them, and Codex and Cursor
-outside their sandboxes, which would keep them from reaching the window.
+Whatever you write in Preferences › Agent › **Context** follows that line,
+after a blank line.
 
-A toast says when your words are sent and when the agent is done, with the
-first line of its answer. The whole answer is in the Log. If there is no
-default agent, or it fails, the corner notice says why.
+Later requests in the same conversation go as `The user said: "…"` and
+nothing else.
 
-While the agent works, a soft amber glow breathes along the bottom of the
-window, ending in red if it fails; with animations off it shows still.
+## Conversations
 
-## Your own context
-
-Whatever you write in **Preferences › Agent** is sent after that line, at the
-start of each conversation. It is empty until you write in it.
-
-```
-Keep answers to one line. Prefer 5 minute charts.
-```
-
-From a terminal, it is the `agent_context` setting
-([Settings](/manual/cli/#settings)).
-
-## One conversation
-
-With an agent that keeps one conversation, what you say next continues it,
-so each request builds on the last:
-
-> "Put gold on the 15 minute with an RSI."
->
-> "Now the same for silver, beside it."
->
-> "Link them."
-
-Say something while the agent is still working and it waits its turn. A
-toast says it was queued, and nothing is dropped.
-
-A new conversation starts when:
+With an agent that keeps the conversation, each request builds on the last,
+so "now the same for silver" means what you would expect. A new conversation
+starts when:
 
 - Omacharts starts.
 - Nothing has been dictated for 30 minutes.
-- You change the default agent, its model or your context.
-- The agent could not do the last request.
-- You say "start over" or "new conversation", and nothing else.
+- The default agent, its model or your context changes.
+- The agent failed at the last request.
+- You say "start over", "start again" or "new conversation", and nothing else.
+
+Dictate while the agent is still working and the request waits its turn.
+None is dropped. A request the agent is still on after ten minutes is
+stopped, so the ones behind it run.
+
+## While the agent works
+
+A soft amber glow breathes along the bottom of the window from the first
+request until the last one waiting is done, then fades. A request that fails
+turns it red for a moment. With the desktop's animations off the glow shows
+still.
+
+Nothing else is shown when a request works. The [Log](/manual/window/#the-log)
+has every dictation, the agent's whole reply, each request that had to wait
+and each new conversation. When something goes wrong, such as no default
+agent or an agent that fails, the window says why.
+
+## Agents
+
+The agent is Omarchy's default (`omarchy default agent`), asked for again at
+each dictation, with the account Omarchy has selected for it.
+
+| Agent | Runs | Keeps the conversation | Model choice |
+|---|---|---|---|
+| Claude Code | In the background | Yes | Sonnet, Opus, Haiku |
+| Codex | In the background | Yes | The models Codex lists |
+| Cursor CLI | In the background | Yes | What `cursor-agent models` lists |
+| GitHub Copilot | In the background | Yes | Auto, and a short list of named models |
+| OpenCode | In the background | No | What `opencode models` lists |
+| Antigravity | In the background | No | What `agy models` lists |
+| Any other | In a terminal, a new one each time | No | None. It uses its own |
+
+Nobody is there to answer a question, so every agent runs with its own way
+of not asking:
+
+- **Claude Code** may run `omacharts` and load skills. Anything else is refused.
+- **The other five** run with their permission prompts skipped, Codex and Cursor outside their sandboxes too, which would keep them from reaching the window. They can run any command, not only `omacharts`.
+- **Any other agent** is opened by `omarchy agent prompt`, with the flags Omarchy gives it.
+
+## Preferences
+
+Preferences › **Agent** holds what dictation goes with.
+
+| Row | Does |
+|---|---|
+| **Agent** | Names Omarchy's default agent, or says how to set one. |
+| **Model** | The model dictation asks the agent for, kept for each agent. **Agent's default**, first and chosen until you pick another, leaves it to the agent, and names the model when the agent's own settings do, as in **Agent's default (Opus)**. Not shown for an agent that opens in a terminal. |
+| **Context** | Text sent after the fixed line at the start of each conversation, such as `Prefer 5 minute charts.` Empty by default, and saved as you type. |
+
+From a terminal these are the `agent_model.<agent>` and `agent_context`
+settings ([Settings](/manual/cli/#settings)).
+
+## An example
+
+> **You:** Put gold on the 15 minute with an RSI.
+
+Under the hood, the agent runs something like:
+
+```
+omacharts status show
+omacharts chart set --symbol GC --resolution 15m
+omacharts chart indicator add rsi
+```
+
+> **You:** Now the same for silver, beside it.
+
+```
+omacharts chart split horizontal
+omacharts chart set --chart pos:1 --symbol SI --resolution 15m
+omacharts chart indicator add rsi --chart pos:1
+```
+
+> **You:** Start over.
+
+The next request opens a new conversation.
 
 ## See also
 
 - [The agent skill](/manual/agent-skill/)
-- [The CLI](/manual/cli/)
+- [Settings in the CLI](/manual/cli/#settings)
+- [Trading with the CLI](/manual/cli/#trading)
 - [Preferences](/manual/preferences/#agent)

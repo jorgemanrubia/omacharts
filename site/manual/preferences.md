@@ -109,11 +109,13 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 
 ### Agent
 
+What dictation goes with ([Dictation](/manual/dictation/)).
+
 | Group › row | Does | Chapter |
 |---|---|---|
-| Dictation › Agent | Omarchy's default agent, which dictation goes to, or how to set one. | [Dictation](/manual/dictation/#which-agent) |
-| Dictation › Model | The model the agent uses for dictation, kept for each agent. **Agent's default**, first and chosen until you pick another, is the one you use in the agent. Only for the agents Omacharts runs itself. | [Dictation](/manual/dictation/#which-agent) |
-| Context › the text box | Sent to the agent after Omacharts' own line, at the start of each conversation, when you dictate with Omacharts in front. Empty by default. Saved as you type. | [Dictation](/manual/dictation/#your-own-context) |
+| Dictation › **Agent** | Names Omarchy's default agent, which dictation goes to, or says how to set one. | [Agents](/manual/dictation/#agents) |
+| Dictation › **Model** | The model dictation asks the agent for, kept for each agent. **Agent's default** leaves it to the agent. Not shown for an agent that opens in a terminal. | [Preferences](/manual/dictation/#preferences) |
+| **Context** | Text sent to the agent after Omacharts' own line, at the start of each conversation. Empty by default, and saved as you type. | [What the agent is sent](/manual/dictation/#what-the-agent-is-sent) |
 
 ### Trading
 

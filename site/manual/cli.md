@@ -1757,8 +1757,8 @@ same.
 | `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |
 | `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Data › Keep at most | [Where your data lives](/manual/your-data/) |
-| `agent_context` | any text; empty sends none | empty | Agent › Context | [Dictation](/manual/dictation/#your-own-context) |
-| `agent_model.<agent>` | a model the agent takes, such as `opus`; empty for its default. `<agent>` is `claude`, `codex`, `cursor-agent`, `copilot`, `opencode` or `agy` | empty | Agent › Dictation › Model | [Dictation](/manual/dictation/#which-agent) |
+| `agent_context` | any text; empty sends none | empty | Agent › Context | [Dictation](/manual/dictation/#what-the-agent-is-sent) |
+| `agent_model.<agent>` | a model the agent takes, such as `opus`; empty for its default. `<agent>` is `claude`, `codex`, `cursor-agent`, `copilot`, `opencode` or `agy` | empty | Agent › Dictation › Model | [Dictation](/manual/dictation/#agents) |
 
 ### Theme
 
