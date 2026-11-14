@@ -388,7 +388,7 @@ lands on the echo two beats later. Exact text:
 | 7 | Agent-ready. | Everything the app does, from the command line. |
 | 8 | “Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.” | Typed to an agent. |
 | 9 | Then it builds the bracket. | Stop under the value area. Target at the point of control. |
-| 10 | **Trading.** In Omacharts 0.3 · Beta | omacharts.org, and in small type under it: Simulated market. Fake accounts. |
+| 10 | **Trading.** In Omacharts 0.3 · Beta | omacharts.org |
 
 ## Transitions and effects
 
@@ -1051,8 +1051,7 @@ than the app shows it.
 **Sync.** Exits land on 2. Target fills on 10.
 
 **Card.** PA 10, the end card: **Trading.** In Omacharts 0.3 · Beta.
-Echo: omacharts.org, and under it, small: Simulated market. Fake
-accounts. Held through the tail, then black (E11).
+Echo: omacharts.org. Held through the tail, then black (E11).
 
     prep: tape avoid {v-1.5}; tape avoid {p}
     anchors: exits@2

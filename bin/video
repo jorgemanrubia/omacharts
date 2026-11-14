@@ -1959,7 +1959,7 @@ def trailer_cards(script, scenes):
             card.update(kind="cover", headline="Trading", still=None)
         if number == len(rows):
             card.update(kind="end", headline="Trading.", sub="In Omacharts 0.3 · Beta", second="omacharts.org",
-                        small="Simulated market. Fake accounts.", still=None, letgo=None)
+                        still=None, letgo=None)
         cards.append(card)
     frames = PHRASE * 10 + 170
     for card in cards:
