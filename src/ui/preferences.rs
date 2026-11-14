@@ -175,7 +175,7 @@ impl Preferences {
             ("Charts", "utilities-system-monitor-symbolic", None, charts.upcast()),
             ("Theme", "applications-graphics-symbolic", None, page.clone().upcast()),
             ("Data", "network-server-symbolic", None, data_page.clone().upcast()),
-            ("Agent", "audio-input-microphone-symbolic", None, agent_page.clone().upcast()),
+            ("Agent", agent_icon(), None, agent_page.clone().upcast()),
             // Experimental, and said so where it is set up.
             ("Trading", "view-list-bullet-symbolic", Some("Beta"), trading_page.clone().upcast()),
         ];
@@ -1162,28 +1162,111 @@ fn build_general_page(context: &Rc<Context>) {
     build_charts_page(context);
     rebuild_templates(context);
     build_data_page(context);
-    context.agent_page.add(&agent_group(context));
+    for group in agent_groups(context).groups {
+        context.agent_page.add(&group);
+    }
 }
 
-/// What dictation tells the agent besides the words.
+/// Which agent dictation goes to, its model, and what is said to it besides
+/// the words.
 ///
-/// The words go with a fixed line, saying where somebody is and to use the
-/// `omacharts` command, and this after it, at the start of each conversation.
-/// Empty unless somebody writes in it. Kept as it is typed: there is no
-/// moment of "done" in a box of prose, and closing the dialog must not lose it.
-fn agent_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+/// The agent is Omarchy's default, asked each time the dialog opens. For an
+/// agent dictation runs itself the model is chosen here, kept for that
+/// agent; any other is opened by Omarchy with its own, so there is no
+/// choice to offer. The extra context is empty unless somebody writes in
+/// it, and kept as it is typed: there is no moment of "done" in a box of
+/// prose, and closing the dialog must not lose it.
+fn agent_groups(context: &Rc<Context>) -> AgentGroups {
+    use crate::dictation::agent;
+    let detected = agent::Detected::of(&agent::omarchy_default());
+    agent_groups_for(&context.store, detected, agent::offered)
+}
+
+/// What the Agent page is made of; the rows are for its tests to look at.
+#[cfg_attr(not(test), allow(dead_code))]
+struct AgentGroups {
+    groups: Vec<adw::PreferencesGroup>,
+    agent: adw::ActionRow,
+    model: Option<adw::ComboRow>,
+}
+
+fn agent_groups_for(
+    store: &Rc<Store>,
+    detected: crate::dictation::agent::Detected,
+    offered: fn(crate::dictation::agent::Agent) -> crate::dictation::agent::Offered,
+) -> AgentGroups {
+    use crate::dictation::agent::{default_label, model_setting, Detected, Offered};
+
     let group = adw::PreferencesGroup::new();
     group.set_title("Dictation");
-    let agent = crate::dictation::agent::omarchy_default();
-    let to = match crate::dictation::agent::Agent::named(&agent) {
-        Ok(agent) => format!("{}, Omarchy's default agent", agent.label()),
-        Err(_) => "Omarchy's default agent".to_string(),
-    };
-    group.set_description(Some(&format!(
-        "Dictating with Omacharts in front sends what you say to {to}. \
-         What you write here is sent with it at the start of each conversation."
-    )));
+    let agent_row = adw::ActionRow::new();
+    agent_row.set_title("Agent");
+    agent_row.add_css_class("property");
+    agent_row.set_subtitle(&match detected.name() {
+        Some(name) => format!("{name}, from Omarchy"),
+        None => "No default agent in Omarchy. Set one with omarchy default agent.".to_string(),
+    });
+    group.add(&agent_row);
 
+    let model_row = match detected {
+        Detected::Known(agent) => {
+            let row = adw::ComboRow::new();
+            row.set_title("Model");
+            let key = model_setting(agent);
+            let chosen = store.setting(&key).unwrap_or_default().trim().to_string();
+            // The agent's own model first, chosen until another is and
+            // passing nothing, then the others, filled in once they are
+            // found out: the one chosen shows at once, listed or not.
+            let ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let filling = Rc::new(std::cell::Cell::new(false));
+            let fill = {
+                let row = row.clone();
+                let ids = ids.clone();
+                let filling = filling.clone();
+                let chosen = chosen.clone();
+                move |found: Offered| {
+                    let mut entries = vec![(default_label(&found), String::new())];
+                    entries.extend(found.models);
+                    if !chosen.is_empty() && !entries.iter().any(|(_, id)| *id == chosen) {
+                        entries.push((chosen.clone(), chosen.clone()));
+                    }
+                    let names: Vec<String> = entries.iter().map(|(name, _)| name.clone()).collect();
+                    filling.set(true);
+                    row.set_model(Some(&string_list(&names)));
+                    row.set_selected(entries.iter().position(|(_, id)| *id == chosen).unwrap_or(0) as u32);
+                    filling.set(false);
+                    *ids.borrow_mut() = entries.into_iter().map(|(_, id)| id).collect();
+                }
+            };
+            fill(Offered::default());
+            {
+                let store = store.clone();
+                let ids = ids.clone();
+                row.connect_selected_notify(move |row| {
+                    if filling.get() {
+                        return;
+                    }
+                    if let Some(id) = ids.borrow().get(row.selected() as usize) {
+                        store.set_setting(&model_setting(agent), id);
+                    }
+                });
+            }
+            let weak = row.downgrade();
+            glib::spawn_future_local(async move {
+                let found = gio::spawn_blocking(move || offered(agent)).await.unwrap_or_default();
+                if weak.upgrade().is_some() {
+                    fill(found);
+                }
+            });
+            group.add(&row);
+            Some(row)
+        }
+        _ => None,
+    };
+
+    let extra = adw::PreferencesGroup::new();
+    extra.set_title("Context");
+    extra.set_description(Some("Added to what you dictate in Omarchy while using Omacharts."));
     let area = gtk::TextView::new();
     area.set_wrap_mode(gtk::WrapMode::WordChar);
     area.set_top_margin(8);
@@ -1191,19 +1274,40 @@ fn agent_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     area.set_left_margin(8);
     area.set_right_margin(8);
     area.set_accepts_tab(false);
-    area.buffer().set_text(&context.store.setting(crate::dictation::CONTEXT).unwrap_or_default());
+    area.buffer().set_text(&store.setting(crate::dictation::CONTEXT).unwrap_or_default());
     let frame = gtk::ScrolledWindow::new();
     frame.set_child(Some(&area));
     frame.set_min_content_height(120);
     frame.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     frame.add_css_class("card");
-    group.add(&frame);
-    let store = context.store.clone();
+    extra.add(&frame);
+    let saving = store.clone();
     area.buffer().connect_changed(move |buffer| {
         let (start, end) = buffer.bounds();
-        store.set_setting(crate::dictation::CONTEXT, buffer.text(&start, &end, true).as_str());
+        saving.set_setting(crate::dictation::CONTEXT, buffer.text(&start, &end, true).as_str());
     });
-    group
+
+    AgentGroups { groups: vec![group, extra], agent: agent_row, model: model_row }
+}
+
+/// The robot the Agent section is shown by, which no icon theme has: put
+/// where the display's icon theme finds it, once, and named.
+fn agent_icon() -> &'static str {
+    const NAME: &str = "omacharts-agent-symbolic";
+    const SVG: &str = include_str!("../../assets/symbolic/omacharts-agent-symbolic.svg");
+    let Some(display) = gtk::gdk::Display::default() else { return NAME };
+    let theme = gtk::IconTheme::for_display(&display);
+    if theme.has_icon(NAME) {
+        return NAME;
+    }
+    let folder = crate::store::data_dir().join("icons");
+    let file = folder.join(format!("{NAME}.svg"));
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(SVG) {
+        let _ = std::fs::create_dir_all(&folder);
+        let _ = std::fs::write(&file, SVG);
+    }
+    theme.add_search_path(&folder);
+    NAME
 }
 
 /// The clock every chart reads, and how it writes the time.
@@ -2090,6 +2194,106 @@ fn describe_count(series: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn two_models(_: crate::dictation::agent::Agent) -> crate::dictation::agent::Offered {
+        crate::dictation::agent::Offered {
+            default: Some("opus".into()),
+            models: vec![("Opus".into(), "opus".into()), ("Haiku".into(), "haiku".into())],
+        }
+    }
+
+    fn settle_until(done: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let started = std::time::Instant::now();
+        while !done() && started.elapsed() < std::time::Duration::from_secs(5) {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// An agent dictation runs itself: named, with its models after its
+    /// own, the one chosen kept for that agent and its own kept as none.
+    #[test]
+    fn the_agent_page_offers_the_models_of_an_agent_dictation_runs() {
+        use crate::dictation::agent::{Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            store.set_setting("agent_model.claude", "haiku");
+            let page = agent_groups_for(&store, Detected::Known(Agent::Claude), two_models);
+            assert_eq!(page.agent.subtitle().unwrap(), "Claude Code, from Omarchy");
+            let model = page.model.expect("a model to choose");
+            settle_until(|| model.model().is_some_and(|list| list.n_items() == 3));
+            let names: Vec<String> = (0..3)
+                .map(|i| model.model().unwrap().downcast::<gtk::StringList>().unwrap().string(i).unwrap().to_string())
+                .collect();
+            assert_eq!(names, ["Agent's default (Opus)", "Opus", "Haiku"]);
+            assert_eq!(model.selected(), 2, "the one chosen before");
+            model.set_selected(1);
+            assert_eq!(store.setting("agent_model.claude").as_deref(), Some("opus"));
+            model.set_selected(0);
+            assert_eq!(store.setting("agent_model.claude").as_deref(), Some(""));
+            assert_eq!(store.setting("agent_model.codex"), None, "kept for that agent only");
+            assert_eq!(page.groups[1].description().unwrap(), "Added to what you dictate in Omarchy while using Omacharts.");
+        });
+    }
+
+    /// Nothing chosen yet: the agent's own model is the one selected.
+    #[test]
+    fn a_fresh_install_uses_the_agents_own_model() {
+        use crate::dictation::agent::{Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let page = agent_groups_for(&store, Detected::Known(Agent::Claude), two_models);
+            let model = page.model.expect("a model to choose");
+            settle_until(|| model.model().is_some_and(|list| list.n_items() == 3));
+            assert_eq!(model.selected(), 0);
+            assert_eq!(store.setting("agent_model.claude"), None, "nothing written by looking");
+        });
+    }
+
+    /// Any other agent Omarchy offers is opened by Omarchy with its own
+    /// model, so there is no Model to choose; and none at all is said.
+    #[test]
+    fn the_agent_page_hides_the_model_of_an_agent_omarchy_opens() {
+        use crate::dictation::agent::Detected;
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let page = agent_groups_for(&store, Detected::of("pi"), two_models);
+            assert_eq!(page.agent.subtitle().unwrap(), "Pi, from Omarchy");
+            assert!(page.model.is_none());
+            let page = agent_groups_for(&store, Detected::None, two_models);
+            assert!(page.agent.subtitle().unwrap().starts_with("No default agent in Omarchy"));
+            assert!(page.model.is_none());
+        });
+    }
+
+    /// The context box starts empty: nothing in it is sent until somebody
+    /// writes it.
+    #[test]
+    fn the_context_box_starts_empty() {
+        use crate::dictation::agent::{Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let page = agent_groups_for(&store, Detected::Known(Agent::Codex), two_models);
+            fn text_view(widget: &gtk::Widget) -> Option<gtk::TextView> {
+                if let Some(view) = widget.downcast_ref::<gtk::TextView>() {
+                    return Some(view.clone());
+                }
+                let mut child = widget.first_child();
+                while let Some(each) = child {
+                    if let Some(view) = text_view(&each) {
+                        return Some(view);
+                    }
+                    child = each.next_sibling();
+                }
+                None
+            }
+            let area = text_view(page.groups[1].upcast_ref()).expect("the context box");
+            let buffer = area.buffer();
+            assert_eq!(buffer.text(&buffer.start_iter(), &buffer.end_iter(), true), "");
+            assert_eq!(store.setting(crate::dictation::CONTEXT), None);
+        });
+    }
 
     /// A part in one section is not offered by the others, and is offered
     /// again once it is taken out; every change is the whole header.

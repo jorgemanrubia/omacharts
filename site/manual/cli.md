@@ -1706,8 +1706,8 @@ said.
 
 `config list` prints every setting that has been written, `config get KEY`
 one of them, and `config set KEY VALUE` writes one. A setting you have never
-changed does not appear; asking for it exits 3, except `agent_context`, which
-reads as empty.
+changed does not appear; asking for it exits 3, except `agent_context` and
+`agent_model.<agent>`, which read as empty.
 
 ```
 $ omacharts config get show_grid
@@ -1757,7 +1757,8 @@ same.
 | `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |
 | `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Data › Keep at most | [Where your data lives](/manual/your-data/) |
-| `agent_context` | any text; empty sends none | empty | Agent › Dictation | [Dictation](/manual/dictation/#your-own-context) |
+| `agent_context` | any text; empty sends none | empty | Agent › Context | [Dictation](/manual/dictation/#your-own-context) |
+| `agent_model.<agent>` | a model the agent takes, such as `opus`; empty for its default. `<agent>` is `claude`, `codex`, `cursor-agent`, `copilot`, `opencode` or `agy` | empty | Agent › Dictation › Model | [Dictation](/manual/dictation/#which-agent) |
 
 ### Theme
 
@@ -1814,12 +1815,25 @@ charts zoom at 50% sensitivity
 `agent_context` is said back by its length, and `""` clears it:
 
 ```
-$ omacharts config set agent_context "Use Sonnet. Keep answers to one line."
-dictation sends the agent 37 characters of extra context
+$ omacharts config set agent_context "Keep answers to one line."
+dictation sends the agent 25 characters of extra context
   [exit 0]
 
 $ omacharts config set agent_context ""
 dictation sends the agent no extra context
+  [exit 0]
+```
+
+`agent_model.<agent>` is the model dictation asks that agent for, and `""`
+goes back to the agent's own. It is only for the agents Omacharts runs itself:
+
+```
+$ omacharts config set agent_model.claude opus
+dictation asks Claude Code for opus
+  [exit 0]
+
+$ omacharts config set agent_model.claude ""
+dictation lets Claude Code use its default model
   [exit 0]
 ```
 

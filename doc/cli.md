@@ -1114,8 +1114,19 @@ one chart never changes them.
 it is set, rather than exiting 3, and `config set agent_context ""` clears it:
 
 ```
-$ omacharts config set agent_context "Use Sonnet."
-dictation sends the agent 11 characters of extra context
+$ omacharts config set agent_context "Keep it brief."
+dictation sends the agent 14 characters of extra context
+  [exit 0]
+```
+
+`agent_model.<agent>` is the model dictation asks that agent for, one setting
+per agent dictation runs itself (`claude`, `codex`, `cursor-agent`, `copilot`,
+`opencode`, `agy`). It reads as empty, the agent's own default, until set; `""`
+goes back to it, and an agent dictation does not run is refused with exit 2:
+
+```
+$ omacharts config set agent_model.claude opus
+dictation asks Claude Code for opus
   [exit 0]
 ```
 
@@ -1655,20 +1666,40 @@ the same words as the clipboard, and has not been sent already. Anything else
 is a paste, as before. The words are what make it safe: dictate elsewhere and
 then paste a drawing here, and the clipboard has been put back.
 
-**How the agent is run.** `omarchy-default-agent` names the agent, and the
-window runs that agent's own command headless, one turn per dictation, in
-`~/.local/share/omacharts/agent`, with the account Omarchy has selected for it
-and this `omacharts` first on its `PATH`:
+**How the agent is run.** `omarchy-default-agent` names the agent, asked
+afresh for every dictation. The agents in the table below are run headless,
+one turn per dictation, in `~/.local/share/omacharts/agent`, with the account
+Omarchy has selected for Claude Code and Codex, and this `omacharts` first on
+its `PATH`. `MODEL` is the `agent_model.<agent>` setting, left out when it is
+empty:
 
 ```
-claude -p --output-format json --permission-mode dontAsk [--resume ID] --allowedTools 'Bash(omacharts:*)' Skill -- PROMPT
-codex exec [resume] --json --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' [ID] -- PROMPT
+claude -p --output-format json --permission-mode dontAsk [--resume ID] [--model MODEL] --allowedTools 'Bash(omacharts:*)' Skill -- PROMPT
+codex exec [resume] --json --skip-git-repo-check -c 'sandbox_mode="danger-full-access"' [-m MODEL] [ID] -- PROMPT
+cursor-agent -p --output-format json --force --trust --sandbox disabled [--resume ID] [--model MODEL] agent -- PROMPT
+copilot --prompt PROMPT --silent --allow-all-tools --no-ask-user --session-id UUID [--model MODEL]
+opencode run --auto --archived [-m MODEL] PROMPT
+agy --dangerously-skip-permissions [--model MODEL] --print PROMPT
 ```
 
 Claude Code may run `omacharts` and load skills, and anything else is refused
-rather than asked about, since nobody is there to answer. Codex runs outside
-its sandbox, which would keep `omacharts` from reaching the window. Any other
-default agent is reported as one dictation cannot drive yet.
+rather than asked about, since nobody is there to answer. The others skip
+their permission prompts, as `omarchy agent` does, and Codex and Cursor run
+outside their sandboxes, which would keep `omacharts` from reaching the
+window. Claude Code and Cursor name their session in their JSON, Codex in its
+`thread.started` event, and Copilot is given a new UUID at the start of each
+conversation. OpenCode and Antigravity name theirs only in output their help
+does not describe, so each of their turns starts a new conversation.
+
+Any other default agent is opened by Omarchy, a terminal per dictation, with
+the opening prompt below and the agent's own flags and model:
+
+```
+omarchy-agent-prompt PROMPT
+```
+
+The window says it opened, or why Omarchy could not (what it printed is in
+`~/.local/share/omacharts/agent/terminal.log`).
 
 **What it is sent.** The first dictation of a conversation goes with one fixed
 line and nothing about the charts — the agent asks `omacharts` for what it
@@ -1684,7 +1715,7 @@ session, so requests build on each other.
 
 **When a conversation starts over.** When the window starts (the session id
 is kept only while it runs), after 30 minutes with no dictation, when the
-default agent or `agent_context` changes, after a turn fails, and when what
+default agent, its `agent_model.<agent>` or `agent_context` changes, after a turn fails, and when what
 was said is just "start over" or "new conversation".
 
 **The queue.** One turn runs at a time. A dictation that arrives while the

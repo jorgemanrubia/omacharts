@@ -5921,7 +5921,8 @@ fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     let key = required(m, "KEY")?;
     // What dictation tells the agent is empty until somebody writes in it,
     // and empty is an answer, not something missing.
-    let unset = (key == crate::dictation::CONTEXT).then(String::new);
+    // And so is the model dictation asks an agent for: empty is its own.
+    let unset = (key == crate::dictation::CONTEXT || model_agent(key).is_some()).then(String::new);
     let value = store
         .setting(key)
         .or(unset)
@@ -6062,6 +6063,25 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("set {key} to {}", serde_json::to_string(&stored).unwrap_or_default());
         return said(as_json, json!({"key": key, "value": stored}), text);
     }
+    // The model dictation asks an agent for, kept per agent: only for the
+    // agents dictation runs itself, and empty for the agent's own.
+    if let Some(agent) = key.strip_prefix(crate::dictation::agent::MODEL_PREFIX) {
+        let agent = model_agent(key).ok_or_else(|| {
+            let known: Vec<String> =
+                crate::dictation::agent::Agent::ALL.iter().map(|agent| agent.id().to_string()).collect();
+            Fault::usage(format!(
+                "dictation does not choose a model for {agent:?}; it does for {}",
+                known.join(", ")
+            ))
+        })?;
+        let value = value.trim().to_string();
+        store.set_setting(&crate::dictation::agent::model_setting(agent), &value);
+        let text = match value.is_empty() {
+            true => format!("dictation lets {} use its default model", agent.label()),
+            false => format!("dictation asks {} for {value}", agent.label()),
+        };
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
     // Prose, said back as what was stored rather than echoed whole: it can
     // run to paragraphs. Empty clears it.
     if key == crate::dictation::CONTEXT {
@@ -6077,6 +6097,11 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 
     store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
+}
+
+/// The agent an `agent_model.<agent>` setting is for, when dictation runs it.
+fn model_agent(key: &str) -> Option<crate::dictation::agent::Agent> {
+    key.strip_prefix(crate::dictation::agent::MODEL_PREFIX).and_then(crate::dictation::agent::Agent::named)
 }
 
 /// Where the scheme to go back to when the colour is put back is remembered.
@@ -8717,6 +8742,33 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(out.out.trim(), "dictation sends the agent no extra context");
         assert_eq!(run("config get agent_context", &store).out, "\n");
+    }
+
+    /// The model dictation asks each agent for: the agent's own until one
+    /// is set, kept per agent, and refused for an agent it does not run.
+    #[test]
+    fn the_agent_model_is_set_and_read_per_agent() {
+        let store = bare();
+        assert_eq!(run("config get agent_model.claude", &store).out, "\n");
+        assert_eq!(
+            run("config get agent_model.claude --json", &store).out.trim(),
+            r#"{"key":"agent_model.claude","value":""}"#
+        );
+        let out = run("config set agent_model.claude opus", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation asks Claude Code for opus");
+        assert_eq!(run("config get agent_model.claude", &store).out, "opus\n");
+        assert_eq!(run("config get agent_model.codex", &store).out, "\n");
+        let json: serde_json::Value =
+            serde_json::from_str(&run("config set agent_model.codex gpt-5.5 --json", &store).out).unwrap();
+        assert_eq!(json, serde_json::json!({"key": "agent_model.codex", "value": "gpt-5.5"}));
+        let clear: Vec<String> = ["omacharts", "config", "set", "agent_model.claude", ""].map(String::from).to_vec();
+        let out = dispatch(&clear, &store, None, &super::super::Here);
+        assert_eq!(out.out.trim(), "dictation lets Claude Code use its default model");
+        assert_eq!(run("config get agent_model.claude", &store).out, "\n");
+        let refused = run("config set agent_model.pi big", &store);
+        assert_eq!(refused.code, crate::cli::EXIT_USAGE, "{}", refused.out);
+        assert!(refused.err.contains("cursor-agent"), "{}", refused.err);
     }
 
     /// Quietly ignoring a parameter the indicator has no use for would read

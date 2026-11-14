@@ -12,7 +12,7 @@ use omacharts_engine::log::Entry;
 
 use super::glow::Glow;
 use super::Window;
-use crate::dictation::{superwhisper, Dispatcher, Event, World};
+use crate::dictation::{superwhisper, Dispatcher, Event, Settings, World};
 
 /// What the window keeps of dictation.
 #[derive(Default)]
@@ -68,11 +68,12 @@ impl Window {
         });
     }
 
-    /// Send `said` to the agent, with the extra context as it is now.
+    /// Send `said` to the agent, with the extra context and the models as
+    /// they are now.
     pub(super) fn dictated(self: &Rc<Self>, said: String) {
-        let context = self.store.setting(crate::dictation::CONTEXT).unwrap_or_default();
+        let settings = Settings::of(&self.store);
         let dispatcher = self.dictation.dispatcher.get_or_init(|| self.start_dictation(World::omarchy()));
-        let ahead = dispatcher.send(said.clone(), context);
+        let ahead = dispatcher.send(said.clone(), settings);
         self.dictation.outstanding.set(self.dictation.outstanding.get() + 1);
         if ahead > 0 {
             let waiting = match ahead {
@@ -151,6 +152,9 @@ fn said_of(event: Event) -> Entry {
                 None => entry,
             }
         }
+        Event::Opened { agent, said } => {
+            Entry::info(agent, format!("Opened in a terminal with “{}”", quoted(&said))).confirming()
+        }
         Event::Failed { said, why, detail } => {
             let detail = match detail {
                 Some(detail) => format!("“{}”\n\n{detail}", said.trim()),
@@ -198,6 +202,7 @@ mod tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             store.set_setting(crate::dictation::CONTEXT, "Use Sonnet.");
+            store.set_setting("agent_model.claude", "haiku");
             let window = crate::ui::window::trade::tests::window(&store);
             let log = crate::ui::window::log::tests::private(&window);
             let asked = Arc::new(Mutex::new(Vec::<Invocation>::new()));
@@ -219,6 +224,8 @@ mod tests {
                         stderr: String::new(),
                     })
                 }),
+                terminal: Box::new(|_| unreachable!()),
+                launch: Box::new(|_| unreachable!()),
             });
             let glow = &window.dictation.glow;
             assert_eq!(glow.widget.parent(), window.trade.overlay.borrow().clone().map(|overlay| overlay.upcast()));
@@ -255,6 +262,7 @@ mod tests {
             assert!(window.trade.toasts.borrow().is_some(), "somewhere for the toasts, with no login");
             let asked = asked.lock().unwrap();
             assert!(asked[0].arguments.last().unwrap().ends_with("\n\nUse Sonnet."));
+            assert!(asked[0].arguments.windows(2).any(|pair| pair == ["--model", "haiku"]));
             assert!(asked[1].arguments.windows(2).any(|pair| pair == ["--resume", "s"]));
         });
     }
@@ -275,17 +283,21 @@ mod tests {
 
     #[test]
     fn what_becomes_of_a_dictation_is_said() {
-        let sent = said_of(Event::Started { agent: "Claude Code", said: "add an RSI".into() });
+        let sent = said_of(Event::Started { agent: "Claude Code".into(), said: "add an RSI".into() });
         assert_eq!(sent.line(), "Claude Code · Sent “add an RSI”");
         assert!(sent.confirms);
 
         let done = said_of(Event::Done {
-            agent: "Claude Code",
+            agent: "Claude Code".into(),
             said: "add an RSI".into(),
             reply: Some("Added RSI(14) on pos:0 ES 5m.\n\nAnything else?".into()),
         });
         assert_eq!(done.line(), "Claude Code · Done · Added RSI(14) on pos:0 ES 5m.");
         assert!(done.detail.unwrap().contains("Anything else?"));
+
+        let opened = said_of(Event::Opened { agent: "Pi".into(), said: "add an RSI".into() });
+        assert_eq!(opened.line(), "Pi · Opened in a terminal with “add an RSI”");
+        assert!(opened.confirms);
 
         let failed = said_of(Event::Failed { said: "add an RSI".into(), why: "No default agent".into(), detail: None });
         assert_eq!(failed.level, Level::Error);
