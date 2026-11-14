@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn a_chart_s_trading_is_set_from_a_terminal() {
         crate::ui::on_gtk(|| {
-            let (window, pane, _, key) = long_es(trading::Linking::AfterTheFact);
+            let (window, _, _, key) = long_es(trading::Linking::AfterTheFact);
             let (code, out) = command(&window, "chart set --quantity 3 --trading-symbol MES --show-fills on");
             assert_eq!(code, 0, "{out}");
             let pane = window.focused_pane();

@@ -1,8 +1,8 @@
 //! Settings that belong to the chart rather than the app.
 //!
 //! Reached from the gear beside the legend, because that is where you are
-//! looking when you want them. Two pages: how the bars are read and scaled,
-//! and what is drawn on top of them.
+//! looking when you want them. Three pages: how the bars are read and
+//! scaled, what is drawn on top of them, and how the chart trades.
 
 mod compare;
 mod time;
@@ -83,7 +83,7 @@ impl ChartSettings {
 
         let trading_page = trading_page(window);
         dialog.add(&trading_page);
-        let pages = vec![chart_page.clone(), indicators_page.clone(), trading_page];
+        let pages = [chart_page.clone(), indicators_page.clone(), trading_page];
 
         {
             // Alt and an arrow between the pages, and the keyboard goes with
