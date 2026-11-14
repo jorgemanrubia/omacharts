@@ -8,9 +8,7 @@ nav_order: 34
 {: .warning }
 Trading is experimental (**Beta**). It places real orders on real accounts, and nothing asks before an order is sent. Try it on a demo or evaluation account first.
 
-Omacharts trades futures through Rithmic, which most futures prop firms, such as LucidTrading and Tradeify, use for their accounts. A login gives you its accounts, their positions and orders in the [Trading panel](/manual/trading-panel/), and buying and selling from a chart ([Trading from a chart](/manual/trading-on-a-chart/)).
-
-## Adding a login
+## Rithmic
 
 In Preferences › **Trading**, press **Add a trading service…** and choose **Rithmic**. Until Rithmic is a data feed, **Add a data feed…** on the Data page offers it too, and opens the same dialog.
 
@@ -36,9 +34,11 @@ crop: 792x994 around the dialog
 | **System** | **Rithmic Test**, **Rithmic 01**, **Rithmic Paper Trading**, then the prop firms Rithmic lists, alphabetically. Type to search. Until Omacharts has asked Rithmic for its list, only those three are offered. It asks again when the dialog opens on a list a week old |
 | **Gateway** | The server nearest you: Chicago, New York, Colo75, Frankfurt, Ireland, Sydney, São Paulo, Hong Kong, Mumbai, Seoul, Tokyo, Singapore or Cape Town. Rithmic Test has only Chicago |
 
-The login is named after its system, such as **Tradeify**, and **Tradeify 2** for a second one. It signs in as soon as you press **Sign in**, and again each time Omacharts starts while its password is kept. The [Log](/manual/window/#the-log) says *Signed in · 3 accounts*, or why not.
+The login is named after its system, such as **Rithmic Paper Trading**, and **Rithmic Paper Trading 2** for a second one. It signs in as soon as you press **Sign in**, and again each time Omacharts starts while its password is kept. The [Log](/manual/window/#the-log) says *Signed in · 3 accounts*, or why not.
 
 A Rithmic login also carries market data. The first one becomes a data feed, at the top of Preferences › Data, so charts of what it trades come from it ([Market data feeds](/manual/market-data/)).
+
+Most futures prop firms run their accounts on Rithmic. Choose yours under **System** and sign in with the user it gave you.
 
 ## Logins and accounts
 
