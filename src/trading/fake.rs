@@ -40,11 +40,22 @@ pub struct FakeService {
     /// What the trading service holds for a login, by the login's name, from before
     /// it signed in: a session's refresh finds it.
     pub held: Mutex<HashMap<String, Book>>,
+    /// What it holds for logins named in neither, in turn: the first login
+    /// to sign in finds the first, the second the second, and any after them
+    /// what is under no name. Made when a login signs in, so that listing
+    /// the service costs nothing.
+    pub in_turn: Vec<fn() -> Book>,
+    /// The logins signed in, in the order they first did, for `in_turn`.
+    pub seen: Mutex<Vec<String>>,
     /// Orders from before the session that only its fill history has, by
     /// the login's name, "" for any login named in neither.
     pub past: Mutex<HashMap<String, Vec<Order>>>,
     /// How long signing in takes, as a network would.
     pub takes: std::time::Duration,
+    /// Whether a login's one account is numbered after the user typed for
+    /// it, with what it holds moved onto that number, so that two logins
+    /// look like two accounts; else every login has the same.
+    pub numbered_by_user: bool,
     /// Every session it signed in, in order.
     pub sessions: Mutex<Vec<Arc<FakeSession>>>,
     pub signed_in: AtomicUsize,
@@ -73,32 +84,8 @@ impl FakeService {
 /// stage, as the trading service of a build with the `fakes` feature holds them
 /// for any login: something to look at in the panel without placing any.
 pub fn day_of_orders() -> Book {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_secs() as i64)
-        .unwrap_or(0);
-    let order = |basket: &str, ago: i64, side: Side, kind: OrderKind, price: Option<f64>, status: Status| Order {
-        account: "FAKE-1".into(),
-        basket_id: basket.into(),
-        contract: "ESZ6".into(),
-        exchange: "CME".into(),
-        side,
-        qty: 2,
-        filled: 0,
-        kind,
-        price,
-        status,
-        fill_price: None,
-        fills: Vec::new(),
-        at: now - ago * 60,
-        tag: None,
-        tick: Some(0.25),
-    };
-    let filled = |basket: &str, ago: i64, side: Side, at: f64| Order {
-        filled: 2,
-        fill_price: Some(at),
-        fills: vec![Fill { basket: basket.into(), at: now - ago * 60, qty: 2, price: at }],
-        ..order(basket, ago, side, OrderKind::Market, None, Stage::Filled.into())
+    let order = |basket: &str, ago: i64, side: Side, kind: OrderKind, price: Option<f64>, status: Status| {
+        made(basket, ago, side, 2, kind, price, status)
     };
     Book {
         orders: vec![
@@ -106,12 +93,12 @@ pub fn day_of_orders() -> Book {
             order("B5", 9, Side::Sell, OrderKind::Stop, Some(7_571.00), Stage::Working.into()),
             Order {
                 filled: 1,
-                fills: vec![Fill { basket: "B4".into(), at: now - 16 * 60, qty: 1, price: 7_636.50 }],
+                fills: vec![Fill { basket: "B4".into(), at: minutes_ago(16), qty: 1, price: 7_636.50 }],
                 ..order("B4", 17, Side::Sell, OrderKind::Limit, Some(7_636.50), Stage::PartiallyFilled.into())
             },
             order("B3", 31, Side::Buy, OrderKind::Limit, Some(7_540.00), Status::said(Stage::Cancelled, "by the trader")),
             order("B2", 48, Side::Buy, OrderKind::Limit, Some(7_000.00), Status::said(Stage::Rejected, "too far from the market")),
-            filled("B1", 63, Side::Buy, 7_612.25),
+            filled("B1", 63, Side::Buy, 2, 7_612.25),
         ],
         positions: vec![Position {
             account: "FAKE-1".into(),
@@ -132,6 +119,91 @@ pub fn day_of_orders() -> Book {
         }],
         ..Book::default()
     }
+}
+
+/// Another day, for a second login of a build with the `fakes` feature, so
+/// that two logins look like two accounts: a larger one, short, with a
+/// losing trade behind it and a target and a stop working.
+pub fn another_day() -> Book {
+    Book {
+        orders: vec![
+            made("T4", 6, Side::Buy, 2, OrderKind::Stop, Some(7_645.00), Stage::Working.into()),
+            made("T3", 6, Side::Buy, 2, OrderKind::Limit, Some(7_590.00), Stage::Working.into()),
+            filled("T2", 22, Side::Sell, 2, 7_624.50),
+            filled("T1", 74, Side::Sell, 1, 7_597.75),
+            filled("T0", 95, Side::Buy, 1, 7_613.50),
+        ],
+        positions: vec![Position {
+            account: "FAKE-1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            net: -2,
+            avg: Some(7_624.50),
+            open_pnl: Some(575.0),
+            tick: Some(0.25),
+            point: Some(50.0),
+        }],
+        accounts: vec![Money {
+            key: "FAKE-1".into(),
+            balance: Some(99_787.5),
+            unrealized: Some(575.0),
+            day_pnl: Some(-212.5),
+            limits: Some(Limits { loss_limit: Some(3_000.0), liquidate_at: Some(97_000.0), ..Limits::default() }),
+        }],
+        ..Book::default()
+    }
+}
+
+fn minutes_ago(minutes: i64) -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0);
+    now - minutes * 60
+}
+
+/// An order in ESZ6 on the one account every login has, placed `ago` minutes ago.
+fn made(basket: &str, ago: i64, side: Side, qty: u32, kind: OrderKind, price: Option<f64>, status: Status) -> Order {
+    Order {
+        account: "FAKE-1".into(),
+        basket_id: basket.into(),
+        contract: "ESZ6".into(),
+        exchange: "CME".into(),
+        side,
+        qty,
+        filled: 0,
+        kind,
+        price,
+        status,
+        fill_price: None,
+        fills: Vec::new(),
+        at: minutes_ago(ago),
+        tag: None,
+        tick: Some(0.25),
+    }
+}
+
+/// A market order filled at once, at `at`.
+fn filled(basket: &str, ago: i64, side: Side, qty: u32, at: f64) -> Order {
+    Order {
+        filled: qty,
+        fill_price: Some(at),
+        fills: vec![Fill { basket: basket.into(), at: minutes_ago(ago), qty, price: at }],
+        ..made(basket, ago, side, qty, OrderKind::Market, None, Stage::Filled.into())
+    }
+}
+
+/// What `book` and `past` hold on the one account every login has, moved
+/// onto `number`.
+fn renumber(book: &mut Book, past: &mut [Order], number: &str) {
+    let moved = |account: &mut String| {
+        if account == "FAKE-1" {
+            *account = number.to_string();
+        }
+    };
+    book.orders.iter_mut().chain(past.iter_mut()).for_each(|order| moved(&mut order.account));
+    book.positions.iter_mut().for_each(|position| moved(&mut position.account));
+    book.accounts.iter_mut().for_each(|money| moved(&mut money.key));
 }
 
 /// Where a build with the `fakes` feature reads the fills its fake account
@@ -677,18 +749,49 @@ impl TradingService for FakeService {
             std::thread::sleep(self.takes);
         }
         self.signed_in.fetch_add(1, Ordering::AcqRel);
-        let named = self.accounts.lock().unwrap().get(&login.name).cloned();
-        let accounts = named.unwrap_or_else(|| self.every_login.clone());
-        let accounts = accounts.into_iter().map(|a| Account { login: login.id.clone(), ..a }).collect();
-        let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::told(accounts, changed) };
-        *session.contracts.lock().unwrap() = self.contracts.clone();
+        let turn = {
+            let mut seen = self.seen.lock().unwrap();
+            seen.iter().position(|id| *id == login.id).unwrap_or_else(|| {
+                seen.push(login.id.clone());
+                seen.len() - 1
+            })
+        };
         let held = self.held.lock().unwrap();
-        // What a login named in neither holds is under no name at all.
-        *session.held.lock().unwrap() = held.get(&login.name).or_else(|| held.get("")).cloned().unwrap_or_default();
+        // What a login named in neither holds is its turn's, or under no name at all.
+        let mut book = held
+            .get(&login.name)
+            .cloned()
+            .or_else(|| self.in_turn.get(turn).map(|day| day()))
+            .or_else(|| held.get("").cloned())
+            .unwrap_or_default();
         drop(held);
         let past = self.past.lock().unwrap();
-        *session.past.lock().unwrap() = past.get(&login.name).or_else(|| past.get("")).cloned().unwrap_or_default();
+        let mut before = past.get(&login.name).or_else(|| past.get("")).cloned().unwrap_or_default();
         drop(past);
+        let named = self.accounts.lock().unwrap().get(&login.name).cloned();
+        let accounts = named.unwrap_or_else(|| self.every_login.clone());
+        let number = Some(login.user.trim()).filter(|user| self.numbered_by_user && !user.is_empty());
+        // Numbered, an account is listed with what it opened the day with, as held.
+        let opened = |account: &Account| {
+            let money = book.accounts.iter().find(|money| money.key == account.id)?;
+            Some(money.balance? - money.day_pnl.unwrap_or(0.0))
+        };
+        let accounts: Vec<Account> = accounts
+            .into_iter()
+            .map(|a| Account {
+                login: login.id.clone(),
+                balance: number.and_then(|_| opened(&a)).or(a.balance),
+                id: number.map_or(a.id.clone(), str::to_string),
+                ..a
+            })
+            .collect();
+        if let Some(number) = number {
+            renumber(&mut book, &mut before, number);
+        }
+        let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::told(accounts, changed) };
+        *session.contracts.lock().unwrap() = self.contracts.clone();
+        *session.held.lock().unwrap() = book;
+        *session.past.lock().unwrap() = before;
         let session = Arc::new(session);
         self.sessions.lock().unwrap().push(session.clone());
         Ok(session)
@@ -785,6 +888,45 @@ pub(crate) mod tests {
 
     /// The tests' session moves a working order and refuses one that is
     /// not; linked orders go together, by a cancel or a fill.
+    /// Numbered by the user, each login's account is its own, and what the
+    /// service held for it is on that number; otherwise every login has
+    /// FAKE-1.
+    #[test]
+    fn a_login_s_account_is_numbered_after_its_user_when_asked() {
+        let fake = FakeService { numbered_by_user: true, ..FakeService::listed() };
+        fake.held.lock().unwrap().insert(String::new(), day_of_orders());
+        let login = Login { service: "fake".into(), user: " LT50-1043 ".into(), ..test_login("l1", "Lucid", TEST_SYSTEM) };
+        let session = fake.sign_in(&login, Box::new(|_| {})).expect("signed in");
+        assert_eq!(session.accounts().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["LT50-1043"]);
+        assert_eq!(session.accounts()[0].balance, Some(50_000.0));
+        let held = fake.sessions.lock().unwrap()[0].held.lock().unwrap().clone();
+        assert!(held.orders.iter().all(|order| order.account == "LT50-1043"));
+        assert!(held.positions.iter().all(|position| position.account == "LT50-1043"));
+        assert!(held.accounts.iter().all(|money| money.key == "LT50-1043"));
+
+        let plain = FakeService::listed();
+        let session = plain.sign_in(&login, Box::new(|_| {})).expect("signed in");
+        assert_eq!(session.accounts()[0].id, "FAKE-1");
+    }
+
+    /// Held in turn, the first login finds the first day and the second the
+    /// second, again when it signs in again; a third finds what is under no name.
+    #[test]
+    fn logins_find_what_is_held_in_turn() {
+        let fake = FakeService { in_turn: vec![day_of_orders, another_day], ..FakeService::listed() };
+        fake.held.lock().unwrap().insert(String::new(), Book::default());
+        let held_for = |id: &str| {
+            fake.sign_in(&test_login(id, id, TEST_SYSTEM), Box::new(|_| {})).expect("signed in");
+            let sessions = fake.sessions.lock().unwrap();
+            let held = sessions.last().unwrap().held.lock().unwrap().clone();
+            held.positions.iter().map(|position| position.net).collect::<Vec<_>>()
+        };
+        assert_eq!(held_for("l1"), [1]);
+        assert_eq!(held_for("l2"), [-2]);
+        assert_eq!(held_for("l1"), [1]);
+        assert!(held_for("l3").is_empty());
+    }
+
     #[test]
     fn the_tests_session_moves_links_and_cancels_together() {
         let session = FakeSession::new(vec![account("1", "951")], Box::new(|| {}));

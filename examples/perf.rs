@@ -474,6 +474,9 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
     use std::sync::Arc;
 
     let store = Store::open_at(&home.join("trading.db")).expect("a database");
+    // Harness only: bin/perf-compare runs this file on older revisions too, which read this setting before trading.
+    store.set_setting_bool("feature.trading", true);
+    omacharts::features::adopt(&store);
     let typed = |name: &str| Typed {
         service: "fake".into(),
         name: name.into(),

@@ -33,6 +33,7 @@ pub mod exec;
 pub mod parser;
 pub mod skill;
 pub mod spec;
+pub mod trading;
 pub mod transfer;
 
 /// What the shell is told. Documented in `doc/cli.md` and in the JSON
@@ -332,6 +333,36 @@ pub trait Live {
     /// streams. Empty for one that does not, and with no window at all.
     fn streaming(&self) -> Vec<crate::live::Report> {
         Vec::new()
+    }
+
+    /// Trading as the window has it: the logins, their accounts and the
+    /// book its sessions keep, and how each login stands, by id. None with
+    /// no window, where nothing is signed in.
+    fn trading_view(&self) -> Option<(crate::trading::View, Vec<(String, crate::trading::Standing)>)> {
+        None
+    }
+    /// The trading services a login can be added for, by id and label.
+    fn trading_services(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// Open the sign-in dialog for a new login of `service` in the window.
+    fn add_login(&self, _service: &str) -> Result<(), Fault> {
+        Err(trading::no_window())
+    }
+    /// Sign the login `id` in with its saved password; true when it has
+    /// none and its dialog opened for one instead.
+    fn sign_in_login(&self, _id: &str) -> Result<bool, Fault> {
+        Err(trading::no_window())
+    }
+    /// End the login `id`'s session, before it is signed out or removed.
+    fn end_session(&self, _id: &str) {}
+    /// Read Trading again after a command changed it in the store: the
+    /// logins, the default account, the quantities, the order labels.
+    fn adopt_trading(&self) {}
+    /// Carry out `act` on an account, as the chart or the Trading panel
+    /// would, and say what was said doing it.
+    fn trade(&self, _act: trading::Act) -> Result<trading::Said, Fault> {
+        Err(trading::no_window())
     }
 }
 
@@ -1116,6 +1147,34 @@ impl Live for Rc<crate::ui::Window> {
 
     fn streaming(&self) -> Vec<crate::live::Report> {
         crate::ui::Window::streaming(self)
+    }
+
+    fn trading_view(&self) -> Option<(crate::trading::View, Vec<(String, crate::trading::Standing)>)> {
+        Some(crate::ui::Window::trading_now(self))
+    }
+
+    fn trading_services(&self) -> Vec<(String, String)> {
+        crate::ui::Window::trading_services(self)
+    }
+
+    fn add_login(&self, service: &str) -> Result<(), Fault> {
+        crate::ui::Window::ask_login(self, service).map_err(Fault::refused)
+    }
+
+    fn sign_in_login(&self, id: &str) -> Result<bool, Fault> {
+        crate::ui::Window::sign_in_login(self, id).map_err(Fault::refused)
+    }
+
+    fn end_session(&self, id: &str) {
+        crate::ui::Window::desk(self).end(id);
+    }
+
+    fn adopt_trading(&self) {
+        crate::ui::Window::adopt_trading_settings(self);
+    }
+
+    fn trade(&self, act: trading::Act) -> Result<trading::Said, Fault> {
+        crate::ui::Window::trade_command(self, act)
     }
 
     fn show_range(

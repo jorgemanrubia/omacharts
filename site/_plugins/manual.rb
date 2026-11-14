@@ -94,6 +94,7 @@ module Omacharts
             "title" => section["label"],
             "description" => section["description"],
             "section_key" => key,
+            "badge" => section["badge"],
             "permalink" => "/manual/#{key}/",
             # Not a chapter: out of the sidebar's lists, the reading order
             # and the search, which should find chapters, not their index.
@@ -101,6 +102,71 @@ module Omacharts
             "search_exclude" => true
           )
           site.pages << page
+        end
+      end
+    end
+
+    # The manual as a tree, worked out once so the sidebar, the trail above
+    # a title, the neighbours below the text and a page's index of what is
+    # under it all agree. A page's key is its path under /manual/
+    # ("indicators/volume"); a page under another names that key in
+    # `parent:`, at any depth. Each manual page gets:
+    #
+    #   manual_key       its key
+    #   manual_children  the pages under it, in nav_order, as {url, title,
+    #                    description, family, hotkey, children}, children nested
+    #   manual_trail     the pages above it, outermost first, as {url, title}
+    #   manual_ancestors the urls of those, for marking the sidebar open
+    #   manual_prev, manual_next  its neighbours in reading order, {url, title}
+    #
+    # A section's page gets manual_children too: its chapters, nested.
+    class Tree < Jekyll::Generator
+      safe true
+      priority :low
+
+      def generate(site)
+        pages = site.pages.select do |page|
+          page.url.start_with?("/manual/") && page.data["title"] && !page.data["nav_exclude"]
+        end
+        key = ->(page) { page.url.delete_prefix("/manual/").delete_suffix("/") }
+        by_key = pages.to_h { |page| [key[page], page] }
+        under = pages.group_by { |page| page.data["parent"] }
+        ordered = ->(list) { Array(list).sort_by { |page| [page.data["nav_order"] || Float::INFINITY, page.data["title"]] } }
+        entry = lambda do |page|
+          {
+            "url" => page.url, "title" => page.data["title"],
+            "description" => page.data["description"], "family" => page.data["family"],
+            "hotkey" => page.data["hotkey"],
+            "children" => ordered[under[key[page]]].map(&entry)
+          }
+        end
+
+        pages.each do |page|
+          page.data["manual_key"] = key[page]
+          page.data["manual_children"] = ordered[under[key[page]]].map(&entry)
+          trail = []
+          up = page.data["parent"]
+          while up && (above = by_key[up]) && trail.size < 8
+            trail.unshift({ "url" => above.url, "title" => above.data["title"] })
+            up = above.data["parent"]
+          end
+          page.data["manual_trail"] = trail
+          page.data["manual_ancestors"] = trail.map { |crumb| crumb["url"] }
+        end
+
+        # Reading order: the letter, then each section's chapters, each
+        # followed depth first by the pages under it.
+        walk = ->(page) { [page] + ordered[under[key[page]]].flat_map(&walk) }
+        reading = ordered[pages.select { |page| page.data["section"].nil? && page.data["parent"].nil? }]
+        Array(site.config.dig("manual", "sections")).each do |section|
+          chapters = ordered[pages.select { |page| page.data["section"] == section["key"] && page.data["parent"].nil? }]
+          site.pages.find { |page| page.data["section_key"] == section["key"] }&.data&.[]=("manual_children", chapters.map(&entry))
+          reading.concat(chapters.flat_map(&walk))
+        end
+        reading.each_with_index do |page, i|
+          neighbour = ->(other) { other && { "url" => other.url, "title" => other.data["title"] } }
+          page.data["manual_prev"] = neighbour[i.positive? ? reading[i - 1] : nil]
+          page.data["manual_next"] = neighbour[reading[i + 1]]
         end
       end
     end

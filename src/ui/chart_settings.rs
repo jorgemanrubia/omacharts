@@ -1,8 +1,8 @@
 //! Settings that belong to the chart rather than the app.
 //!
 //! Reached from the gear beside the legend, because that is where you are
-//! looking when you want them. Two pages: how the bars are read and scaled,
-//! and what is drawn on top of them.
+//! looking when you want them. Three pages: how the bars are read and
+//! scaled, what is drawn on top of them, and how the chart trades.
 
 mod compare;
 mod time;
@@ -81,12 +81,9 @@ impl ChartSettings {
         indicators_page.set_icon_name(Some("view-list-symbolic"));
         dialog.add(&indicators_page);
 
-        let mut pages = vec![chart_page.clone(), indicators_page.clone()];
-        if crate::features::trading() {
-            let trading_page = trading_page(window);
-            dialog.add(&trading_page);
-            pages.push(trading_page);
-        }
+        let trading_page = trading_page(window);
+        dialog.add(&trading_page);
+        let pages = [chart_page.clone(), indicators_page.clone(), trading_page];
 
         {
             // Alt and an arrow between the pages, and the keyboard goes with
@@ -324,7 +321,7 @@ pub const SHOW_FILLS_LABEL: &str = "Show fills";
 /// from the lists the other tabs wear.
 pub const TRADING_ICON: &str = "network-transmit-receive-symbolic";
 
-/// What the chart trades, when trading is on: none, its own symbol, until
+/// What the chart trades: none, its own symbol, until
 /// one is picked, MES for a chart of ES. Its data stays what it charts.
 fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();

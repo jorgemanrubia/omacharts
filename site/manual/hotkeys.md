@@ -125,17 +125,17 @@ Tools and configurations:
 | Key | Does | See |
 |---|---|---|
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Shows or hides the drawing tools | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>L</kbd> | A line: click where it starts, then where it ends | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>H</kbd> | A horizontal line | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>A</kbd> | An arrow | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>Z</kbd> | A zig-zag: click each corner, then click the last one again, double-click or press <kbd>Enter</kbd> to end it | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>R</kbd> | A rectangle | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>C</kbd> | A circle, dragged to any shape | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>T</kbd> | Text: click, then type | [Drawings](/manual/drawings/) |
-| <kbd>Alt</kbd> + <kbd>V</kbd> | A volume profile of the span dragged across | [Drawings](/manual/drawings/#volume-profiles) |
-| <kbd>Alt</kbd> + <kbd>W</kbd> | An anchored VWAP from the bar clicked | [Drawings](/manual/drawings/#anchored-vwap) |
-| <kbd>Alt</kbd> + <kbd>F</kbd> | A Fib retracement of the swing dragged across | [Drawings](/manual/drawings/#fib-retracement) |
-| <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Drawings](/manual/drawings/#measuring-a-move) |
+| <kbd>Alt</kbd> + <kbd>L</kbd> | A line: click where it starts, then where it ends | [Line](/manual/drawings/line/) |
+| <kbd>Alt</kbd> + <kbd>H</kbd> | A horizontal line | [Horizontal line](/manual/drawings/horizontal-line/) |
+| <kbd>Alt</kbd> + <kbd>A</kbd> | An arrow | [Arrow](/manual/drawings/arrow/) |
+| <kbd>Alt</kbd> + <kbd>Z</kbd> | A zig-zag: click each corner, then click the last one again, double-click or press <kbd>Enter</kbd> to end it | [Zig-zag](/manual/drawings/zig-zag/) |
+| <kbd>Alt</kbd> + <kbd>R</kbd> | A rectangle | [Rectangle](/manual/drawings/rectangle/) |
+| <kbd>Alt</kbd> + <kbd>C</kbd> | A circle, dragged to any shape | [Circle](/manual/drawings/circle/) |
+| <kbd>Alt</kbd> + <kbd>T</kbd> | Text: click, then type | [Text](/manual/drawings/text/) |
+| <kbd>Alt</kbd> + <kbd>V</kbd> | A volume profile of the span dragged across | [Volume profile](/manual/drawings/volume-profile/) |
+| <kbd>Alt</kbd> + <kbd>W</kbd> | An anchored VWAP from the bar clicked | [Anchored VWAP](/manual/drawings/anchored-vwap/) |
+| <kbd>Alt</kbd> + <kbd>F</kbd> | A Fib retracement of the swing dragged across | [Fib retracement](/manual/drawings/fib-retracement/) |
+| <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Measure](/manual/drawings/measure/) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Configuration N, for the selected drawing or the one about to be drawn | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd>, held | A point being placed or dragged snaps to the open, high, low or close of the candle under it | [Drawings](/manual/drawings/) |
 
@@ -173,10 +173,24 @@ On the chart, whatever is selected:
 | <kbd>Ctrl</kbd> + <kbd>A</kbd> | Selects every drawing on the plot | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Undoes the last change to this chart's drawings | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd> + <kbd>Y</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Redoes it | [Drawings](/manual/drawings/) |
-| <kbd>Enter</kbd> | While a zig-zag is being drawn, ends it at the last corner | [Drawings](/manual/drawings/) |
+| <kbd>Enter</kbd> | While a zig-zag is being drawn, ends it at the last corner | [Zig-zag](/manual/drawings/zig-zag/) |
 
 While a box you are typing in has the keyboard, <kbd>Ctrl</kbd> + <kbd>C</kbd>,
 <kbd>Ctrl</kbd> + <kbd>V</kbd> and the arrows belong to it.
+
+## Trading
+
+Only once there is a trading login ([Trading from a chart](/manual/trading-on-a-chart/#keys)). The keys that trade act on the focused chart, and never while typing in a box. Nothing asks before an order is sent.
+
+| Key | Does | See |
+|---|---|---|
+| <kbd>Ctrl</kbd> + <kbd>B</kbd> | Buy the chart's quantity at the market | [Placing orders](/manual/trading-on-a-chart/#placing-orders) |
+| <kbd>Ctrl</kbd> + <kbd>S</kbd> | Sell the chart's quantity at the market | [Placing orders](/manual/trading-on-a-chart/#placing-orders) |
+| <kbd>Ctrl</kbd> + <kbd>F</kbd> | Flatten the chart's contract and cancel its working orders | [Moving, cancelling and flattening](/manual/trading-on-a-chart/#moving-cancelling-and-flattening) |
+| <kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the quantity, first to ninth | [Quantities](/manual/trading-on-a-chart/#quantities) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd> | Show or hide the accounts | [The Trading panel](/manual/trading-panel/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Show or hide the positions | [The Trading panel](/manual/trading-panel/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | Show or hide the orders | [The Trading panel](/manual/trading-panel/) |
 
 ## Typing on the chart
 

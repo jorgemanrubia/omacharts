@@ -3,12 +3,14 @@
   the top, then each section from site.manual.sections with the chapters
   that name it in `section:`, in nav_order.
 
-  A chapter can have pages of its own beneath it: a page under
-  manual/<chapter>/ that says `parent: <chapter>` in its front matter, with
-  its own nav_order. They are listed indented under the chapter, open while
-  the chapter or one of them is the page being read, and behind the
-  chapter's chevron otherwise (the theme's own expander, which its script
-  toggles).
+  A chapter can have pages beneath it, and they pages of their own: a page
+  under manual/<chapter>/ says `parent: <chapter>`, one under
+  manual/<chapter>/<page>/ says `parent: <chapter>/<page>`, each with its
+  own nav_order. _plugins/manual.rb hangs them on the chapter as
+  manual_children. They are listed indented, a level open while it or a page
+  under it is being read (manual_ancestors), and behind its chevron otherwise
+  (the theme's own expander, which its script toggles). The levels are
+  components/nav_children.html, which includes itself for the next.
 
   Replaces the theme's site_nav, so the theme's activation stylesheet (which
   guesses the active link from its own markup) is blanked in
@@ -19,7 +21,6 @@
       | where_exp: "item", "item.title != nil"
       | where_exp: "item", "item.nav_exclude != true" -%}
 {%- assign letters = manual_pages | where_exp: "item", "item.section == nil" | sort: "nav_order" -%}
-{%- assign children_of = manual_pages | where_exp: "item", "item.parent != nil" -%}
 
 <nav aria-label="Manual" id="site-nav" class="site-nav">
   {%- if letters.size > 0 %}
@@ -36,34 +37,26 @@
   {%- assign chapters = manual_pages | where: "section", section.key | where_exp: "item", "item.parent == nil" | sort: "nav_order" %}
   {%- assign section_page = site.html_pages | where: "section_key", section.key | first %}
   {%- if chapters.size > 0 %}
-  {%- comment -%} The label goes to the section's own page, when the plugin made one. {%- endcomment -%}
+  {%- comment -%} The label goes to the section's own page, when the plugin made one, with the section's `badge:` beside it when it has one. {%- endcomment -%}
+  {%- assign badge = "" %}
+  {%- if section.badge %}{% capture badge %} <span class="nav-badge">{{ section.badge }}</span>{% endcapture %}{% endif %}
   {%- if section_page %}
-  <a href="{{ section_page.url | relative_url }}" class="nav-category nav-category-link{% if section_page.url == page.url %} active{% endif %}"{% if section_page.url == page.url %} aria-current="page"{% endif %}>{{ section.label }}</a>
+  <a href="{{ section_page.url | relative_url }}" class="nav-category nav-category-link{% if section_page.url == page.url %} active{% endif %}"{% if section_page.url == page.url %} aria-current="page"{% endif %}>{{ section.label }}{{ badge }}</a>
   {%- else %}
-  <div class="nav-category">{{ section.label }}</div>
+  <div class="nav-category">{{ section.label }}{{ badge }}</div>
   {%- endif %}
   <ul class="nav-list">
     {%- for node in chapters %}
-    {%- assign node_key = node.url | split: "/" | last %}
-    {%- assign children = children_of | where: "parent", node_key | sort: "nav_order" %}
     {%- assign expanded = false %}
-    {%- if children.size > 0 and node.url == page.url or page.parent == node_key %}{% assign expanded = true %}{% endif %}
+    {%- if node.manual_children.size > 0 %}{% if node.url == page.url or page.manual_ancestors contains node.url %}{% assign expanded = true %}{% endif %}{% endif %}
     <li class="nav-list-item{% if expanded %} active{% endif %}">
-      {%- if children.size > 0 %}
+      {%- if node.manual_children.size > 0 %}
       <button class="nav-list-expander btn-reset" aria-label="{{ node.title }} pages" aria-expanded="{{ expanded }}">
         <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-arrow-right"></use></svg>
       </button>
       {%- endif %}
       <a href="{{ node.url | relative_url }}" class="nav-list-link{% if node.url == page.url %} active{% endif %}"{% if node.url == page.url %} aria-current="page"{% endif %}>{{ node.title }}</a>
-      {%- if children.size > 0 %}
-      <ul class="nav-list nav-children">
-        {%- for child in children %}
-        <li class="nav-list-item">
-          <a href="{{ child.url | relative_url }}" class="nav-list-link{% if child.url == page.url %} active{% endif %}"{% if child.url == page.url %} aria-current="page"{% endif %}>{{ child.title }}</a>
-        </li>
-        {%- endfor %}
-      </ul>
-      {%- endif %}
+      {%- include components/nav_children.html children=node.manual_children %}
     </li>
     {%- endfor %}
   </ul>

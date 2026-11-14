@@ -30,11 +30,17 @@ pub fn registry() -> Registry {
     let mut services: Vec<Arc<dyn TradingService>> = vec![Arc::new(rithmic::Rithmic), Arc::new(sierra::Sierra)];
     #[cfg(any(test, feature = "fakes"))]
     {
-        let fake = super::fake::FakeService::listed();
-        // A build with the feature has a day of orders to look at; the
-        // tests start from nothing.
+        #[allow(unused_mut)]
+        let mut fake = super::fake::FakeService::listed();
+        // A build with the feature has a day of orders to look at, a
+        // different one for its second login, on an account numbered after
+        // the user typed; the tests start from nothing, on FAKE-1.
         #[cfg(not(test))]
-        fake.held.lock().unwrap().insert(String::new(), super::fake::day_of_orders());
+        {
+            fake.numbered_by_user = true;
+            fake.in_turn = vec![super::fake::day_of_orders, super::fake::another_day];
+            fake.held.lock().unwrap().insert(String::new(), super::fake::day_of_orders());
+        }
         #[cfg(not(test))]
         if let Some(path) = std::env::var_os(super::fake::PAST_FILLS_ENV) {
             fake.past.lock().unwrap().insert(String::new(), super::fake::past_fills(std::path::Path::new(&path)));

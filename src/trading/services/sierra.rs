@@ -4,9 +4,7 @@
 //! with "Allow Trading" on, relays orders to whichever it is. So a login is
 //! where the server is — on this machine, port 11099 — and its accounts are
 //! whatever Sierra Chart trades: its simulated `Sim1`, `Sim2`, and the
-//! trading service's own. Behind both the `sierra` and the `trading` flags: closed
-//! while `sierra` is off, and nothing signs in to a trading service while `trading`
-//! is.
+//! trading service's own. Behind the `sierra` flag: closed while it is off.
 //!
 //! The server sends no CME market data, so a session prices nothing: its
 //! positions are marked to the charts of their contracts, as the desk does

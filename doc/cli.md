@@ -1323,6 +1323,44 @@ provider is unreachable, `provider status` says `Session expired`, and signing
 in again is the fix. All of this is also in Preferences → Market data →
 Provider, which is the same four facts with a button.
 
+## Trading from a terminal
+
+Trading is experimental. The `trading` group does what the Trading panel and
+a chart's Account part do, and the reference is [the CLI page of the
+manual](../site/manual/cli.md#trading). Three things shape it.
+
+Orders go through the window. The sessions are signed in there, so `buy`,
+`sell`, `exit`, `modify`, `cancel` and `flatten` exit `6` with no window
+open, and each runs the chart's own checks: a limit on the wrong side of the
+market, a quantity the chart's Qty does not offer, or a second order while
+the last is still on its way is refused with exit `5` and the words the chart
+would show. A reply says what was sent, not what the broker did with it:
+
+```
+$ omacharts trading buy --limit 6810 --quantity 2
+Lucid 50K: Buy Limit 2 ESZ6 at 6,810.00
+  [exit 0]
+
+$ omacharts trading orders
+B2           14:31:07 Lucid 50K      ESZ6     Buy     2 Limit      6,810.00  Working
+  [exit 0]
+```
+
+The broker's answer lands in the Log and in `trading orders`, so a script
+that needs the fill reads `trading orders --json` until the status says so.
+There are no confirmations, as there are none on the chart.
+
+A password is never typed into a terminal. `trading login SERVICE` opens the
+service's sign-in dialog in the window, and `trading sign-in LOGIN` signs in
+with the password the keyring holds, or opens the dialog when it holds none.
+`trading sign-out` and `trading remove` forget it.
+
+A chart's trading is set with `chart set`: `--account` (a name, a number,
+login and number such as `Lucid/1234`, or `default`), `--quantity`, `--trading-symbol` (the other size of what it
+charts, such as MES on ES, or `none`) and `--show-fills`. `chart list --json`
+reads them back. Orders, flatten and exit act on the chart that `--book` and
+`--chart` name, the focused one by default, as every chart command does.
+
 ## The widget in the Omarchy bar
 
 The bar widget is a plugin folder plus an entry in the shell's layout. The
@@ -1600,6 +1638,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `chart` | the charts inside a chartbook |
 | `template` | chart templates: named sets of indicators that charts share |
 | `provider` | the data feed, and signing in to one that needs it |
+| `trading` | trading logins, accounts, positions and orders (experimental) |
 | `config` | stored preferences |
 | `cache` | the cached market data |
 | `backup` | copies of your settings, and putting one back |

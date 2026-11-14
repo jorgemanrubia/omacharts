@@ -16,7 +16,8 @@ description: >-
   price data. Also for marking a chart up — "draw the trendline", "box the
   range", "circle that gap", "mark the breakout", "label this high" — which
   is lines, horizontal levels, arrows, zig-zags, boxes, circles, words and
-  volume profiles of a span.
+  volume profiles of a span. Also for the trading accounts, positions and
+  orders it shows, and orders placed through it (experimental).
   Use it for any mention of omacharts, and whenever the user speaks about
   charts, watchlists, chartbooks or linked charts as things already on their
   screen.
@@ -82,6 +83,19 @@ feed delivers bars — polled on a timer, or streamed as each print arrives —
 and, for a feed that streams, what the open window holds a subscription to and
 whether anything has ticked. A chart on a streamed feed is never refetched on
 a timer; if it looks still, `provider status` is where to look first.
+
+**Trading is real money, and nothing asks twice.** Trading is experimental.
+`trading accounts`, `positions` and `orders` read freely. `trading buy`,
+`sell`, `exit`, `modify`, `cancel` and `flatten` act on the user's broker
+account at once, with no confirmation in the window or the terminal: run one
+only when the user asked for that order in so many words, never as a step
+inside something else, and never to try a command out. Say back what the
+reply says was sent. The reply is what was sent, not what the broker did;
+`trading orders --json` shows the outcome. Orders act on the chart they name,
+the focused one by default, on its account and the size it trades. A refusal
+(exit 5) is the chart's own check, such as a limit on the wrong side of the
+market; do not work around it. Passwords go into the window's dialog, typed
+by the user: `trading login` and `trading sign-in` open it and return.
 
 **Times are the chart's.** A time given to a command — a range's `--from`
 and `--to`, a drawing's `WHEN` — is read in the clock the charts read,

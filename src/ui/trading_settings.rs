@@ -52,10 +52,9 @@ impl Secrets for Keyring {
     }
 }
 
-/// The keyring `service`'s passwords go in: what the Data page keeps a
-/// trading service's data login in while trading is switched off.
-pub(crate) fn keyring(service: &str) -> impl Secrets {
-    Keyring(trading::service_for(service).and_then(|service| service.keyring()))
+/// Where the passwords of `service`'s logins are kept: its keyring.
+pub(crate) fn keyring_for(service: &str) -> Rc<dyn Secrets> {
+    Rc::new(Keyring(trading::service_for(service).and_then(|service| service.keyring())))
 }
 
 /// Ask for a login of the trading service `service` over `anchor` — a new one, or
@@ -175,7 +174,7 @@ impl Panel {
     fn secrets(&self, service: &str) -> Rc<dyn Secrets> {
         match &self.secrets {
             Some(secrets) => secrets.clone(),
-            None => Rc::new(Keyring(trading::service_for(service).and_then(|service| service.keyring()))),
+            None => keyring_for(service),
         }
     }
 
@@ -926,7 +925,6 @@ mod tests {
     #[test]
     fn a_second_service_signs_in_and_trades_without_being_named() {
         crate::ui::on_gtk(|| {
-            crate::features::force(crate::features::Feature::Trading, true);
             let store = Rc::new(Store::memory().unwrap());
             let desk = Rc::new(Desk::new(trading::registry()));
             let fake = desk.services().get("fake").expect("the fake trading service is in the registry");
@@ -984,7 +982,6 @@ mod tests {
     #[test]
     fn the_log_names_a_login_and_never_its_user_id() {
         crate::ui::on_gtk(|| {
-            crate::features::force(crate::features::Feature::Trading, true);
             const USER: &str = "trader-77421-planted";
             let store = Rc::new(Store::memory().unwrap());
             let desk = Rc::new(Desk::new(trading::registry()));

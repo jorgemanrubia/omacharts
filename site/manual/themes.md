@@ -95,7 +95,7 @@ A swatch opens the colour chooser. The colour applies as you pick it. **Rename**
 | Other | **Last price** | The last price's tag and its dashed line across the chart. Until set, a pale tint of the palette's Cyan on a dark theme and a deeper one that reads on a light theme, or the first of Amber, Teal, Blue and Violet when Cyan is near a candle's colour. |
 | Other | **Accent** | A selected row, a switch that is on, the button a dialog suggests. |
 
-Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)). Vivid, soft, quiet or monochrome bars, hollow rises, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
+Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/volume/)). Vivid, soft, quiet or monochrome bars, hollow rises, and up and down swapped, are the chart's **Colouring**, not the theme's ([Colouring](/manual/charts/#colouring)); the soft pair is a slate and a sand from the theme's palette, the quiet pair two greys made from its text, and neither is a colour a theme sets.
 
 <!-- regenerate:
 theme: paper

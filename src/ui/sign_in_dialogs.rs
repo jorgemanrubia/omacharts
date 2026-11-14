@@ -163,7 +163,8 @@ fn leaves_room(model: &gtk::gio::MenuModel, id: &str) -> bool {
 /// The fake rich feed's dialog, as a provider's own dialog would be: a
 /// member number and a token, the token into the feed's keyring; and the
 /// fake trading service's, a user and a password, the login called Fake,
-/// numbered past the names taken, as a real service's is.
+/// numbered past the names taken, as a real service's is, or what its Name
+/// row says.
 #[cfg(any(test, feature = "fakes"))]
 pub(crate) mod fake {
     use adw::prelude::*;
@@ -186,15 +187,25 @@ pub(crate) mod fake {
         let password = adw::PasswordEntryRow::new();
         password.set_title("Password");
         list.append(&password);
+        // What the login is called, Fake unless renamed, so a look at the
+        // panel can show logins named as a prop firm's are.
+        let named = adw::EntryRow::new();
+        named.set_title("Name");
+        named.set_text(&name);
+        list.append(&named);
         dialog.set_extra_child(Some(&list));
         dialog.add_responses(&[("cancel", "Cancel"), (SIGN_IN, "Sign in")]);
         dialog.connect_response(None, move |_, response| {
             if response != SIGN_IN {
                 return;
             }
+            let name = match named.text().trim() {
+                "" => name.clone(),
+                typed => typed.to_string(),
+            };
             signed(Typed {
                 service: "fake".into(),
-                name: name.clone(),
+                name,
                 user: user.text().to_string(),
                 password: password.text().to_string(),
                 values: Vec::new(),
