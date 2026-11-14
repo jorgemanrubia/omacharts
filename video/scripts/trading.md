@@ -882,15 +882,13 @@ on hit 9 would break the read, so the scene stays in the crop.
 **Card.** PA 7: Agent-ready. Echo: Everything the app does, from the
 command line.
 
-    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading flatten ESZ6 --account Tradeify/TDY100-2287; let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%; look TDY100-2287
+    prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading flatten ESZ6 --account Tradeify/TDY100-2287; let h7 last; tape free {h7-1.5} {h7+1.5}; move 70% 30%; look TDY100-2287; wait 0.8
     account@1: tap TDY100-2287
     lucid@2: click 77.2% 8.3%
-    peek2@3: look Qty
     qty@4: tap Qty
     three@5: click 90.4% 10.75%
-    peek3@6: look Buy
     buy@7: tap Buy
-    peek4@8: look Sell
+    peek@7: wait 0.3; look Sell
     sell@10: tap Sell
     crop: 54% 0% 46%
     after: 0.6

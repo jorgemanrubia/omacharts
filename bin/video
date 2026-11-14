@@ -798,7 +798,7 @@ hl.config({{
         once for its lead and again to act."""
         import tempfile
         from PIL import Image, ImageOps
-        hit = self.seen_word(word, region)
+        hit = self.seen_word(word, region, fresh=10.0)
         if hit:
             return hit
         window = self.window()
@@ -842,7 +842,8 @@ hl.config({{
             import threading
             self.found = {k: v for k, v in getattr(self, "found", {}).items() if k != (0.0, 0.0, 1.0, 0.055)}
             word = args[0].split()[0]
-            threading.Thread(target=lambda: self.find_word(word, fallback=("0%", "0%")), daemon=True).start()
+            self.looking = threading.Thread(target=lambda: self.find_word(word, fallback=("0%", "0%")), daemon=True)
+            self.looking.start()
             events.append({"t": now, "scene": scene, "cue": cue, "verb": "look", "args": args})
             return
         if verb == "let":
@@ -1644,7 +1645,12 @@ def key_lead(chord):
 def action_lead(studio, action):
     verb = action[0]
     if verb == "tap":
-        seen = studio.seen_word(action[1])
+        # A read of the header still under way is waited for: it is quicker
+        # than reading it again.
+        looking = getattr(studio, "looking", None)
+        if looking and looking.is_alive():
+            looking.join(timeout=3)
+        seen = studio.seen_word(action[1], fresh=10.0)
         # Read already: the glide; else reading the header, then the glide.
         return studio.hand.duration(*studio.at(*seen)) + 0.08 if seen else 0.9
     if verb in ("click", "rclick", "move", "drag", "scroll"):
