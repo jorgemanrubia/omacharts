@@ -408,6 +408,18 @@ pub trait Ladders: Send + Sync {
     /// further back than this.
     fn history_days(&self) -> u32;
 
+    /// Where the history of `symbol` that is its chart's own begins, at
+    /// unix time `now`, for a feed that reads a root only as the month front
+    /// now and charts the root as each month was while it was front: where
+    /// that month took over. Before it the month was a thin back month at
+    /// prices of its own, so nothing from before it is asked for, and a
+    /// period there is drawn from what the store kept while its own month
+    /// was front, or else estimated. Offline. `None` for a feed whose
+    /// history of a symbol is the chart's all the way back.
+    fn history_since(&self, _symbol: &str, _now: i64) -> Option<i64> {
+        None
+    }
+
     /// The contract `symbol` is served from now, when a root is served as
     /// its front month and that month rolls: the ladders of one month are
     /// not another's, so what is kept is kept by contract. `None` for a feed

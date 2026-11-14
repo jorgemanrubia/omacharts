@@ -870,6 +870,16 @@ pub fn roll_cuts(symbol: &str, from: i64, to: i64) -> Vec<i64> {
     cuts
 }
 
+/// Where `root`'s front month at unix time `at` took over from the month
+/// before it, by the app's own rule: the first minute of the trading day it
+/// rolled on, where a stitched series cuts too. `None` for a root with no
+/// front month.
+pub fn front_since(root: &str, at: i64) -> Option<i64> {
+    let front = contracts::front(root, contracts::date_at(at))?;
+    let (_, starts) = schedule(root, front.month).next()?;
+    Some(cut(root, starts, Timeframe::minutes(1)))
+}
+
 /// The contract a stitched symbol is drawn up to, `ESZ26`, as the feed was
 /// asked for it when the chart was shown: what its last price is a price
 /// of, whatever month is front by now. `None` for any other symbol.
@@ -1128,6 +1138,15 @@ impl Ladders for Continuous {
 
     fn history_days(&self) -> u32 {
         self.inner.ladders().map_or(0, |ladders| ladders.history_days())
+    }
+
+    /// A stitched root reads each span from its own month; anything else
+    /// is the feed's to say.
+    fn history_since(&self, symbol: &str, now: i64) -> Option<i64> {
+        match Spelled::parse(symbol) {
+            Some(_) => None,
+            None => self.inner.ladders()?.history_since(symbol, now),
+        }
     }
 
     /// A stitched root's own spelling names its front month already, and so
