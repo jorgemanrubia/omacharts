@@ -11,7 +11,7 @@ moved:
   cumulative-delta: /manual/indicators/volume/cumulative-delta/
 ---
 
-The volume indicators show how much traded: Volume bar by bar in a strip under the price, the volume profile at each price, over the price, and the cumulative delta, who was buying and who was selling, in a strip of its own. Volume and the volume profile are drawn as bars and have no thickness or line style.
+The volume indicators show how much traded: bar by bar, at each price, and by who was buying and who was selling. Volume and the volume profile are drawn as bars and have no thickness or line style.
 
 {% include children.html head="Indicator" what="What it shows" %}
 

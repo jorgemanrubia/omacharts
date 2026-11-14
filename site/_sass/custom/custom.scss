@@ -1354,7 +1354,18 @@ $callouts: (
 }
 
 // The index a page with pages under it opens with (_includes/children.html):
-// an ordinary table, its names kept on one line where the width allows.
-.main-content .children-index td:first-child {
-  min-width: 12rem;
+// an ordinary table, its names and keys kept on one line where there is the
+// width for it. On a phone the names wrap, so the other column keeps most
+// of the line, and the keys, of no use there, are left out.
+.main-content .children-index {
+  .children-index-key {
+    display: none;
+    white-space: nowrap;
+
+    @media (min-width: $md) { display: table-cell; }
+  }
+
+  @media (min-width: $md) {
+    td:first-child { white-space: nowrap; padding-right: 2rem; }
+  }
 }

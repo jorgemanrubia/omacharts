@@ -6,13 +6,13 @@ nav_order: 34
 ---
 
 {: .warning }
-Trading is experimental, and marked **Beta** in Preferences and here. It places real orders on real accounts, and nothing asks before an order is sent. Try it on a demo or evaluation account first.
+Trading is experimental (**Beta**). It places real orders on real accounts, and nothing asks before an order is sent. Try it on a demo or evaluation account first.
 
 Omacharts trades futures through Rithmic, which most futures prop firms, such as LucidTrading and Tradeify, use for their accounts. A login gives you its accounts, their positions and orders in the [Trading panel](/manual/trading-panel/), and buying and selling from a chart ([Trading from a chart](/manual/trading-on-a-chart/)).
 
 ## Adding a login
 
-In Preferences › **Trading**, press **Add a trading service…** and choose **Rithmic**. The same list is under **Add a data feed…** on the Data page.
+In Preferences › **Trading**, press **Add a trading service…** and choose **Rithmic**. Until Rithmic is a data feed, **Add a data feed…** on the Data page offers it too, and opens the same dialog.
 
 <!-- regenerate:
 theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
@@ -33,7 +33,7 @@ crop: 792x994 around the dialog
 |---|---|
 | **User ID** | The user your broker or prop firm gave you. **Sign in** stays greyed out until it is filled in |
 | **Password** | Kept in the desktop keyring and sent only to Rithmic. Left empty when signing in again, the kept one is used |
-| **System** | **Rithmic Test**, **Rithmic 01**, **Rithmic Paper Trading**, then the prop firms Rithmic lists, alphabetically. Type to search. Until Omacharts has asked Rithmic once, only Rithmic 01 and Paper Trading are offered. The list is asked for again once a week old |
+| **System** | **Rithmic Test**, **Rithmic 01**, **Rithmic Paper Trading**, then the prop firms Rithmic lists, alphabetically. Type to search. Until Omacharts has asked Rithmic for its list, only those three are offered. It asks again when the dialog opens on a list a week old |
 | **Gateway** | The server nearest you: Chicago, New York, Colo75, Frankfurt, Ireland, Sydney, São Paulo, Hong Kong, Mumbai, Seoul, Tokyo, Singapore or Cape Town. Rithmic Test has only Chicago |
 
 The login is named after its system, such as **Tradeify**, and **Tradeify 2** for a second one. It signs in as soon as you press **Sign in**, and again each time Omacharts starts while its password is kept. The [Log](/manual/window/#the-log) says *Signed in · 3 accounts*, or why not.
@@ -42,7 +42,7 @@ A Rithmic login also carries market data. The first one becomes a data feed, at 
 
 ## Logins and accounts
 
-Each login is a row in Preferences › Trading › **Trading services**, with its system and how it stands: **signing in**, **live**, **not signed in**, or Rithmic's own words when it refused. **data** is added on the login charts get their prices from.
+Each login is a row in Preferences › Trading › **Trading services**, with its system and how it stands: *signing in*, *live*, *not signed in*, or Rithmic's own words when it refused. The login charts get their prices from adds *data*.
 
 <!-- regenerate:
 theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
@@ -65,11 +65,13 @@ crop: 2008x1328+276+56
 | **Sign in** | Signs in again with the kept password |
 | **Sign in…** | Opens the dialog again, filled in but for the password |
 | **Use for data** | Charts take their prices from this login instead. Offered when there are several |
-| **Remove** | Removes the login, its password and its accounts, after asking. When it was the data feed, it asks whether the feed goes too |
+| **Remove** | Removes the login, its password and its accounts, after asking. When it is the last login the data feed comes through, it asks whether the feed goes too |
 
 Under each login are its accounts, each with its currency and balance. One account is the **Default**: a chart trades on it until you give the chart one of its own. **Make default** on another moves it.
 
-## The rest of the page
+## Orders and P&L on charts
+
+The rest of Preferences › Trading sets how charts trade and what they show.
 
 | Row | Does |
 |---|---|
@@ -78,11 +80,11 @@ Under each login are its accounts, each with its currency and balance. One accou
 | Chart › **Show P&L as** | **Money**, or **Risk (R)**: multiples of what one unit of risk is worth. Only what the charts show follows it; the Trading panel always shows money |
 | Chart › **Value of 1R** | What 1R is worth, in the account's currency; 500 until changed. Shown with Risk (R) |
 
-The colours of orders, positions and P&L are in Preferences › Theme › **Trading**.
+The colours of orders, positions and P&L are in Preferences › Theme › **Trading**, on a theme of your own ([Themes and colours](/manual/themes/)).
 
 ## From the CLI
 
-`omacharts trading logins`, `trading login rithmic`, `trading sign-in`, `trading sign-out`, `trading remove`, `trading data`, `trading accounts` and `trading default` do the same from a terminal. A password is only ever typed in the window's dialog ([The CLI › Trading](/manual/cli/#trading)).
+`omacharts trading logins`, `login rithmic`, `sign-in`, `sign-out`, `remove`, `data`, `accounts` and `default` do the same from a terminal. A password is only ever typed in the window's dialog ([The CLI › Trading](/manual/cli/#trading)).
 
 ## See also
 

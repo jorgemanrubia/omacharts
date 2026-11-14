@@ -35,9 +35,9 @@ crop: none
 
 <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>, the toggle in the window's bottom-left corner, or **Sidebars** → **Drawing tools** in a chart's right-click menu shows and hides the tools down the left edge. The toggle stays where it is as they come and go: left of the bottom-left chart's first date while the tools are hidden, and at their foot while they are out. A tool's key picks it whether the tools are showing or not.
 
-{% include children.html head="Tool" what="What it draws" %}
+{% include children.html head="Tool" what="What it draws" hotkey="Key" %}
 
-Each tool's key is on its page and in [Keyboard shortcuts](/manual/hotkeys/#drawing). <kbd>Esc</kbd> is the pointer, no tool, which selects, moves and resizes drawings.
+<kbd>Esc</kbd> is the pointer, no tool, which selects, moves and resizes drawings. Each tool's page says how it is placed.
 
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
@@ -127,6 +127,7 @@ crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right 
 <kbd>Alt</kbd> + <kbd>Enter</kbd>, **Properties…**, or a double-click on any drawing but text, opens the properties of the selected drawings. With kinds mixed nothing opens. Each change applies as you make it, with the chart visible behind the dialog. **Done**, <kbd>Ctrl</kbd> + <kbd>Enter</kbd> or <kbd>Esc</kbd> closes it.
 
 Across the top is a picture of the drawing, tagged with its configuration, or **Custom** when it has a look of its own. Click the picture to see the nine configurations drawn as this drawing, with its own look beside them while it has one. <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> works inside the dialog too. Under a **Custom** look, **Save as…** writes the look over one of the nine configurations (the one it started from is marked `*`) and puts the drawing back on that number. Every drawing on that number changes with it.
+
 A figure (any drawing but text, a volume profile, an anchored VWAP and a Fib retracement) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them.
 
 <!-- regenerate:
@@ -283,4 +284,5 @@ New charts take their defaults from Preferences › Charts › Defaults › **Dr
 
 ## See also
 
+- [Hotkeys](/manual/hotkeys/#drawing)
 - [Drawing from the CLI](/manual/cli/#drawings)

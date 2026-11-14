@@ -4,13 +4,20 @@ description: "Words at a point on the chart"
 section: charting
 parent: drawings
 nav_order: 8
+hotkey: "Alt + T"
 ---
 
-<kbd>Alt</kbd> + <kbd>T</kbd>. Click where the text goes, then type.
+Words at a point on the chart.
 
-A text drawing is text at a point. It has no tabs in its [properties](/manual/drawings/#properties), only **Colour**, **Font** and **Font size**. The keys for typing on the chart are in [Text and labels](/manual/drawings/#text-and-labels).
+| Key | Placing it | CLI |
+|---|---|---|
+| <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type ([Text and labels](/manual/drawings/#text-and-labels)) | `text` |
+
+## Properties
+
+**Colour**, **Font** and **Font size**, with no tabs ([Properties](/manual/drawings/#properties)). New text is 18 px in the system font, in its configuration's colour ([Configurations](/manual/drawings/#configurations)).
 
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings), as `text`
+- [Drawing from the CLI](/manual/cli/#drawings)

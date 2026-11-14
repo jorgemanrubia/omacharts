@@ -35,7 +35,9 @@ crop: 1020x88+850+4
 | **Qty** | The quantity orders are sent with. Click it for the others on offer and **Edit quantities…** |
 | **Current position** | What the account holds in the contract, with its open P&L, such as *+1 (+$37.50)* |
 
-A chart with no account of its own trades on the default one, and follows it when the default changes. Choosing the default account in the picker leaves it that way. These parts are header parts, moved or removed in Preferences › Charts › **Header** ([The header](/manual/charts/#the-header)).
+A chart with no account of its own trades on the default one, and follows it when the default changes. Choosing the default account in the picker leaves it that way.
+
+These are header parts, moved or removed in Preferences › Charts › **Header** ([The header](/manual/charts/#the-header)).
 
 ### Quantities
 
@@ -45,18 +47,19 @@ A chart with no account of its own trades on the default one, and follows it whe
 
 ### Trading another size
 
-A chart can trade the other size of what it charts: MES on an ES chart, so the chart reads the full-size market and the orders go in micros. Set it in the chart's settings › **Trading** › **Trading symbol**; its clear button trades the chart's own symbol again. Only a symbol that moves with the chart's is accepted.
+A chart can trade the other size of what it charts: MES on an ES chart, so the chart reads the full-size market and the orders go in micros. Set it in the chart's settings › **Trading** › **Trading symbol**; its clear button trades the chart's own symbol again. Only the other size of the chart's market, or one of its contract months, is accepted.
 
 ## Placing orders
 
 | How | Sends |
 |---|---|
-| **Buy** or **Sell** in the header, <kbd>Ctrl</kbd> + <kbd>B</kbd>, <kbd>Ctrl</kbd> + <kbd>S</kbd> | The chart's quantity at the market |
+| **Buy** or **Sell** in the header | The chart's quantity at the market |
+| <kbd>Ctrl</kbd> + <kbd>B</kbd>, <kbd>Ctrl</kbd> + <kbd>S</kbd> | The same, from the keyboard |
 | Right-click the chart at a price | The menu offers a buy and a sell at the market, then the limit and the stop orders that price allows, such as **Sell Limit 2 ESZ6 at 6,840.00** above the market and **Sell Stop 2 ESZ6 at 6,800.00** below it |
 
-An order on its way shows beside the last price, such as *Buying 2…*. What happens next is a short notice on the chart and a line in the [Log](/manual/window/#the-log): *Working*, *Filled 1 ESZ6 at 6,824.25*, or a rejection, which is an error and stays in the corner.
+A market order on its way shows beside the last price, such as *Buying 2…*, and a limit or a stop faint at its own price. What happens next is a short notice over the window and a line in the [Log](/manual/window/#the-log): *Working · Sell Limit 2 ESZ6 at 6,840.00*, *Filled 1 ESZ6 at 6,824.25*, or a rejection, which is an error.
 
-The menu leaves out an order that could not go at that price, such as a buy limit above the market or past the day's price limit. One request per account is on its way at a time: another is refused with *Not sent · the last order is still on its way*.
+The menu leaves out an order that could not go at that price, such as a buy limit above the market or past the day's price limit. On a chart that cannot trade it has one greyed row that says why. One request per account is on its way at a time: another is refused with *Not sent · the last order is still on its way*.
 
 ## Exits
 
@@ -84,11 +87,11 @@ crop: 1990x1440+0+0
 
 | To | Do |
 |---|---|
-| Move an order | Drag its line. While dragging, the label says where it goes and how far, such as *6,840.00 · +11 ticks*, or *not allowed* where it could not go |
-| Cancel an order | The **×** on its line, or **Cancel** on its line in the right-click menu |
-| Flatten | The **×** on the position, or <kbd>Ctrl</kbd> + <kbd>F</kbd>, which also cancels the contract's working orders |
+| Move an order | Drag its line. While dragging, the label says where it goes and how far, such as *6,840.00 · +11 ticks*, an exit says the P&L it would close at, and either says why where it could not go, such as *Stop above market · not allowed* |
+| Cancel an order | The **×** on its line, or its **Cancel** item, such as **Cancel Sell Limit 2 ESZ6 at 6,840.00**, in the right-click menu on the line |
+| Flatten | The **×** on the position closes it at the market and cancels its exits. <kbd>Ctrl</kbd> + <kbd>F</kbd> closes it and cancels every working order in the contract |
 
-Whether order labels sit at the chart's left or right is Preferences › Trading › **Order labels**. **Show P&L as** there writes the P&L on the chart in money or in R ([Connecting a broker](/manual/brokers/#the-rest-of-the-page)).
+Whether order labels sit at the chart's left or right is Preferences › Trading › **Order labels**. **Show P&L as** there writes the P&L on the chart in money or in R ([Orders and P&L on charts](/manual/brokers/#orders-and-pl-on-charts)).
 
 ## Executions on the chart
 
@@ -100,15 +103,15 @@ Turn on the chart's settings › **Trading** › **Show fills** to mark the acco
 |---|---|
 | <kbd>Ctrl</kbd> + <kbd>B</kbd> | Buy the chart's quantity at the market |
 | <kbd>Ctrl</kbd> + <kbd>S</kbd> | Sell the chart's quantity at the market |
-| <kbd>Ctrl</kbd> + <kbd>F</kbd> | Flatten the chart's contract and cancel its orders |
+| <kbd>Ctrl</kbd> + <kbd>F</kbd> | Flatten the chart's contract and cancel its working orders |
 | <kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the quantity, first to ninth |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd>, <kbd>P</kbd>, <kbd>O</kbd> | Show or hide the accounts, positions or orders ([The Trading panel](/manual/trading-panel/)) |
 
-They work only on a chart with an account, and never while you are typing in a box.
+The first four act on the focused chart, and never while you are typing in a box. Until there is a trading login, none of these keys does anything.
 
 ## From the CLI
 
-`omacharts trading buy`, `sell`, `exit`, `modify`, `cancel` and `flatten` act on a chart as these do, through the same checks. `chart set --account`, `--quantity`, `--trading-symbol` and `--show-fills` set a chart's trading, and `trading quantities` the templates ([The CLI › Trading](/manual/cli/#trading)).
+`omacharts trading buy`, `sell`, `exit`, `modify`, `cancel` and `flatten` act as the chart does, through the same checks. `chart set --account`, `--quantity`, `--trading-symbol` and `--show-fills` set a chart's trading, and `trading quantities` the templates ([The CLI › Trading](/manual/cli/#trading)).
 
 ## See also
 

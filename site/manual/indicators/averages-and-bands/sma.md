@@ -6,11 +6,11 @@ parent: indicators/averages-and-bands
 nav_order: 1
 ---
 
-Drawn over the price. The average close of the last *period* bars. It has no value until there are that many.
+The average close of the last *period* bars. It has no value until there are that many.
 
-| Setting | Default | Allowed |
-|---|---|---|
-| **Period** | 50 | 1 to 500 |
+| Drawn | Legend | Type to add | CLI |
+|---|---|---|---|
+| Over the price | **SMA 50** | `sma`, or `sma 200` for the period | `sma` |
 
 <!-- regenerate:
 theme: tokyo-night
@@ -26,7 +26,15 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/indicators/sma.jpg" alt="SPY daily with a 50-day average in blue and a 200-day average in amber" caption="SPY daily with SMA 50 and SMA 200." %}
 
+## Settings
+
+| Setting | Default | Allowed |
+|---|---|---|
+| **Period** | 50 | 1 to 500 |
+| **Colour**, **Thickness**, **Line style** | The next free colour, 1.5 px, solid | See [Colours and lines](/manual/indicators/#colours-and-lines) |
+
 ## See also
 
 - [Averages and bands](/manual/indicators/averages-and-bands/)
+- [Adding an indicator](/manual/indicators/#adding-an-indicator)
 - [Indicators from the CLI](/manual/cli/#indicators)

@@ -9,13 +9,15 @@
   With grouped=true each row is a page that has its own pages, and the
   second column links those instead of describing it: Family | Indicators.
   A page with none under it stands as its own one, under its `family:`.
+  With hotkey="Key" a column between the two shows each page's `hotkey:`
+  ("Alt + L"), a keycap a key: Tool | Key | What it draws.
   `of` takes another page's children (a section's page passes its own).
 {%- endcomment -%}
 {%- assign rows = include.of | default: page.manual_children -%}
 {%- if rows.size > 0 %}
 <table class="children-index">
   <thead>
-    <tr><th>{{ include.head | default: "Page" }}</th><th>{{ include.what | default: "What it covers" }}</th></tr>
+    <tr><th>{{ include.head | default: "Page" }}</th>{% if include.hotkey %}<th class="children-index-key">{{ include.hotkey }}</th>{% endif %}<th>{{ include.what | default: "What it covers" }}</th></tr>
   </thead>
   <tbody>
     {%- for row in rows %}
@@ -30,7 +32,14 @@
       {%- endif %}
       {%- else %}
       <td><a href="{{ row.url | relative_url }}">{{ row.title }}</a></td>
-      <td>{{ row.description | markdownify | remove: "<p>" | remove: "</p>" | strip }}</td>
+      {%- if include.hotkey %}
+      <td class="children-index-key">{% assign keys = row.hotkey | split: " + " %}{% for key in keys %}<kbd>{{ key }}</kbd>{% unless forloop.last %} + {% endunless %}{% endfor %}</td>
+      {%- endif %}
+      {%- comment -%} A description ends a sentence; a cell, like every other table's, does not. {%- endcomment -%}
+      {%- assign what = row.description | markdownify | remove: "<p>" | remove: "</p>" | strip %}
+      {%- assign last = what | slice: -1 %}
+      {%- if last == "." %}{% assign cut = what | size | minus: 1 %}{% assign what = what | slice: 0, cut %}{% endif %}
+      <td>{{ what }}</td>
       {%- endif %}
     </tr>
     {%- endfor %}

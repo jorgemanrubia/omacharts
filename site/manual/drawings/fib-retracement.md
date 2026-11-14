@@ -4,13 +4,14 @@ description: "A level at each Fibonacci ratio of a swing"
 section: charting
 parent: drawings
 nav_order: 11
+hotkey: "Alt + F"
 ---
 
-<kbd>Alt</kbd> + <kbd>F</kbd>. Press where the swing starts, release where it ends.
+A level at each Fibonacci ratio between two prices: 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6% and 100%, across the time between the two points.
 
-The Fib retracement tool draws a level at each Fibonacci ratio between two prices: press where a swing starts, drag, and release where it ends. The levels run across the time between the two points, at 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6% and 100%. 0% is where you released and 100% where you pressed, so 61.8% is how far a move has come back once it has given up 61.8% of the swing. Drag up from a low to a high for the pullback from that high, or down from a high to a low for the bounce from that low.
-
-A dashed line joins the two points, and each level is labelled at its left end with its ratio, as a percentage. **Price labels** adds the price beside it. Every level is the drawing's one colour unless you give it one of its own.
+| Key | Placing it | CLI |
+|---|---|---|
+| <kbd>Alt</kbd> + <kbd>F</kbd> | Press where the swing starts, drag, and release where it ends | `fib`, `fibonacci`, `retracement` |
 
 <!-- regenerate:
 theme: tokyo-night
@@ -27,7 +28,13 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/drawings/fib-retracement.jpg" alt="SPY daily with two Fib retracements in a soft grey: one drawn up the summer rally, solid, and one drawn down the fall from the October high, its middle levels dashed and dotted" caption="Two retracements: configuration 2, every level solid, dragged up a rally, and configuration 1, as a new one is drawn, dragged down a later fall." %}
 
+0% is where you released and 100% where you pressed, so 61.8% is how far a move has come back once it has given up 61.8% of the swing. Drag up from a low to a high for the pullback from that high, or down from a high to a low for the bounce from that low.
+
+A dashed line joins the two points, and each level is labelled at its left end with its ratio, as a percentage. **Price labels** adds the price beside it. Every level is the drawing's one colour unless you give it one of its own.
+
 Selected, it has a grip at each end. Drag a grip to move that end, or the levels or the dashed line to move the whole drawing. The arrow keys nudge it. It takes no text. A press between two levels goes to the chart under it.
+
+## Properties
 
 | Group | Row | Does | Default |
 |---|---|---|---|
@@ -40,23 +47,6 @@ Selected, it has a grip at each end. Drag a grip to move that end, or the levels
 | | **Line style** | Solid, Dashed, Dotted | Solid |
 
 **Thickness** in the drawing's menu, and <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>+</kbd> / <kbd>−</kbd>, set every level at once.
-
-<!-- regenerate:
-theme: catppuccin-latte
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
-state:
-  omacharts config set theme omarchy:catppuccin-latte   (before the window opens)
-  (the state of the Fib retracement figure above, its two drawings)
-  key Escape
-  key alt+f
-  drag 307 182 349 339
-  omacharts chart drawing set --id 2 --level 0.618 --level-color amber --level-width 2.5 --level-style dashed --price-labels on
-  omacharts chart drawing set --id 1 --fib-labels off
-  move 1270 1000
-capture: bin/headless-window cli chart screenshot --output /tmp/fiblight.png; magick /tmp/fiblight.png -quality 88 site/assets/manual/drawings/fib-levels-light.jpg
-crop: none
--->
-{% include figure.html src="/assets/manual/drawings/fib-levels-light.jpg" alt="SPY daily on a light theme with three retracements in a mid grey: the summer rally's with no labels, a short June fall drawn with the mouse, and the October fall labelled with ratios and prices and its 61.8% level a thicker dashed amber" caption="On a light theme: no labels on the first, and on the last prices beside the ratios and its 61.8% level in Amber, 2.5 px, dashed." %}
 
 <!-- regenerate:
 theme: tokyo-night
@@ -84,6 +74,25 @@ crop: 817,17,926,1406
 -->
 {% include figure.html src="/assets/manual/drawings/fib-level-properties.png" alt="The same properties with the 61.8% level open on its Colour, Thickness and Line style, dotted" caption="A level open: its own colour, thickness and line style." %}
 
+<!-- regenerate:
+theme: catppuccin-latte
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  omacharts config set theme omarchy:catppuccin-latte   (before the window opens)
+  (the state of the Fib retracement figure above, its two drawings)
+  key Escape
+  key alt+f
+  drag 307 182 349 339
+  omacharts chart drawing set --id 2 --level 0.618 --level-color amber --level-width 2.5 --level-style dashed --price-labels on
+  omacharts chart drawing set --id 1 --fib-labels off
+  move 1270 1000
+capture: bin/headless-window cli chart screenshot --output /tmp/fiblight.png; magick /tmp/fiblight.png -quality 88 site/assets/manual/drawings/fib-levels-light.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/drawings/fib-levels-light.jpg" alt="SPY daily on a light theme with three retracements in a mid grey: the summer rally's with no labels, a short June fall drawn with the mouse, and the October fall labelled with ratios and prices and its 61.8% level a thicker dashed amber" caption="On a light theme: no labels on the first, and on the last prices beside the ratios and its 61.8% level in Amber, 2.5 px, dashed." %}
+
+## Configurations
+
 Its nine configurations are one colour each, with no fills. None is Up or Down: a retracement is drawn over a move either way.
 
 | Configuration | Is |
@@ -93,9 +102,9 @@ Its nine configurations are one colour each, with no fills. None is Up or Down: 
 | 3 to 8 | Blue, Amber, Violet, Teal, Orange and Cyan, every level solid |
 | 9 | Ink, without 23.6% and 78.6% |
 
-Every property is part of the configuration, so **Save as…** keeps each level's colour, thickness and line style, and whether it is shown.
+Every property is part of the configuration, so **Save as…** keeps each level's colour, thickness and line style, and whether it is shown ([Configurations](/manual/drawings/#configurations)).
 
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings), as `fib`
+- [Drawing from the CLI](/manual/cli/#drawings)

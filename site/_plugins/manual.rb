@@ -114,7 +114,7 @@ module Omacharts
     #
     #   manual_key       its key
     #   manual_children  the pages under it, in nav_order, as {url, title,
-    #                    description, family, children}, children nested
+    #                    description, family, hotkey, children}, children nested
     #   manual_trail     the pages above it, outermost first, as {url, title}
     #   manual_ancestors the urls of those, for marking the sidebar open
     #   manual_prev, manual_next  its neighbours in reading order, {url, title}
@@ -136,6 +136,7 @@ module Omacharts
           {
             "url" => page.url, "title" => page.data["title"],
             "description" => page.data["description"], "family" => page.data["family"],
+            "hotkey" => page.data["hotkey"],
             "children" => ordered[under[key[page]]].map(&entry)
           }
         end

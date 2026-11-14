@@ -6,15 +6,11 @@ parent: indicators/averages-and-bands
 nav_order: 4
 ---
 
-Drawn over the price. A simple average of closes with a band a multiple of their standard deviation either side, shaded and outlined.
+A simple average of closes with a band a multiple of their standard deviation either side, shaded and outlined.
 
-| Setting | Default | Allowed |
-|---|---|---|
-| **Period** | 20 | 1 to 500 |
-| **Standard deviations** | 2 | 0.1 to 6 |
-| **Band** | On | See [Bands](/manual/indicators/averages-and-bands/#bands) |
-
-The label includes the multiple, as in **BB 20 2** and **BB 20 2.5**.
+| Drawn | Legend | Type to add | CLI |
+|---|---|---|---|
+| Over the price | **BB 20 2** | `bb`, or `bb 20 2.5` for the period and the multiple | `bollinger` |
 
 <!-- regenerate:
 theme: tokyo-night
@@ -29,7 +25,19 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/indicators/bollinger.jpg" alt="SPY daily with shaded Bollinger Bands around the candles" caption="SPY daily with BB 20 2." %}
 
+## Settings
+
+| Setting | Default | Allowed |
+|---|---|---|
+| **Period** | 20 | 1 to 500 |
+| **Standard deviations** | 2 | 0.1 to 6 |
+| **Band** | On | See [Bands](/manual/indicators/averages-and-bands/#bands) |
+| **Colour**, **Thickness**, **Line style** | The next free colour, 1.5 px, solid | See [Colours and lines](/manual/indicators/#colours-and-lines) |
+
+The legend includes the multiple, as in **BB 20 2** and **BB 20 2.5**.
+
 ## See also
 
 - [Averages and bands](/manual/indicators/averages-and-bands/)
+- [Adding an indicator](/manual/indicators/#adding-an-indicator)
 - [Indicators from the CLI](/manual/cli/#indicators)
