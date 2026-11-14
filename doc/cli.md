@@ -96,6 +96,7 @@ To find out what is open before changing it:
 ```
 $ omacharts status show
 chartbook  Macro (id:0)
+sidebar on, drawing tools off
 * pos:0  AAPL       1D    focus
 ```
 
@@ -388,6 +389,19 @@ crosshair across charts, or the key `sync_crosshair`:
 
 ```
 omacharts chart crosshair off
+```
+
+## The sidebar and the drawing tools
+
+The sidebar and the drawing tools are put out or away as their corner buttons
+and keys do. The sidebar is kept with each chartbook, the tools for the whole
+window. Without `on` or `off` each prints which it is, and `status show` says
+both:
+
+```
+omacharts chartbook sidebar off
+omacharts chartbook sidebar on --book Energy
+omacharts chart drawing-tools on
 ```
 
 ## Worked example: the top US semiconductors in their own watchlist

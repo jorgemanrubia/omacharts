@@ -2356,6 +2356,31 @@ mod sidebar_tests {
             assert_eq!(state(&window, "watchlist"), list);
         });
     }
+
+    /// A command puts each sidebar out or away by the same road as the key
+    /// and the corner button: the menu's tick follows, the setting is
+    /// written, and asking for what is already so changes nothing.
+    #[test]
+    fn a_command_shows_and_hides_each_sidebar_as_the_key_does() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+
+            for shown in [true, true, false, false] {
+                window.show_drawing_tools(shown);
+                let bar = window.drawing_bar.borrow().clone().expect("the bar");
+                assert_eq!(bar.is_shown(), shown, "the tools");
+                assert_eq!(bar.toggle.is_active(), shown, "the tools' corner button");
+                assert_eq!(state(&window, "drawing-tools"), shown, "the tools' tick");
+                assert_eq!(store.setting_bool(SHOW_DRAWING_TOOLS, false), shown, "the tools' setting");
+
+                window.show_sidebar(shown);
+                assert_eq!(window.shows_sidebar(), shown, "the rail");
+                assert_eq!(state(&window, "watchlist"), shown, "the rail's tick");
+                assert_eq!(store.setting_bool(SHOW_WATCHLIST, true), shown, "the rail's setting");
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -3839,7 +3864,8 @@ const PREFETCH_WINDOW: usize = 3;
 const LAST_SYMBOL: &str = "last_symbol";
 const LAST_SUFFIX: &str = "last_suffix";
 const LAST_TIMEFRAME: &str = "last_timeframe";
-const SHOW_WATCHLIST: &str = "show_watchlist";
+/// Whether the rail is out, for a chartbook that has never said.
+pub const SHOW_WATCHLIST: &str = "show_watchlist";
 /// How wide the rail was left, in pixels.
 const SETTING_SIDEBAR_WIDTH: &str = "sidebar_width";
 /// Whether the bar widget has been put in the bar once already.
@@ -3873,7 +3899,7 @@ pub enum NotShown {
 /// The whole arrangement of charts, as one stored value.
 const SETTING_WORKSPACE: &str = "workspace";
 /// Whether the drawing tools are on screen.
-const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
+pub const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
 /// Whether a pointer on a chart draws a line on the other charts of its
 /// symbol. One switch for the app, in the preferences.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
@@ -13001,6 +13027,15 @@ impl Window {
         self.sync_corner_clearance();
     }
 
+    /// Put the drawing tools out or away, for a command: the key's own
+    /// toggle when they are not already where they are wanted.
+    pub fn show_drawing_tools(self: &Rc<Self>, shown: bool) {
+        let out = self.drawing_bar.borrow().as_ref().is_some_and(|bar| bar.is_shown());
+        if out != shown {
+            self.toggle_drawing_tools();
+        }
+    }
+
     /// Tick or clear a sidebar's row in the chart menu: the window's action
     /// for it holds whether it is open.
     fn mark_sidebar(&self, action: &str, shown: bool) {
@@ -14212,6 +14247,18 @@ impl Window {
         let Some(rail) = rail.filter(|rail| rail.has_focus()) else { return false };
         rail.rotate_watchlist(delta);
         true
+    }
+
+    /// Show or hide the open chartbook's rail, for a command: a click on the
+    /// corner button, so it is remembered with the chartbook as a click is.
+    /// The keyboard is left where it is, as a click leaves it, unless it was
+    /// in the rail being put away.
+    pub fn show_sidebar(self: &Rc<Self>, shown: bool) {
+        let in_rail = !shown && self.watchlist.borrow().as_ref().is_some_and(|rail| rail.has_focus());
+        self.set_rail_shown(shown);
+        if in_rail {
+            self.focused_pane().view.area.grab_focus();
+        }
     }
 
     pub fn toggle_watchlist(self: &Rc<Self>) {

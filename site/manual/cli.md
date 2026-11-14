@@ -100,6 +100,7 @@ spelled the way the other commands take them.
 ```
 $ omacharts status show
 chartbook  Desk (id:2)
+sidebar on, drawing tools off
   pos:0  NVDA       1D    follow
   pos:1  NVDA       1h    follow
   pos:2  NVDA       15m   follow
@@ -114,14 +115,17 @@ $ omacharts status show
 nothing is open; this is what was stored when the window last closed
 
 chartbook  Semis (id:1)
+sidebar on, drawing tools off
 * pos:0  AMD        1h    follow
   [exit 0]
 ```
 
+The second line says whether the sidebar and the drawing tools are out ([Showing and hiding the sidebars](#showing-and-hiding-the-sidebars)).
+
 `--json` adds every chart's settings (style, colouring, session, scales, link
-mode, whether it shows and sends drawings, indicators and chart template) and
-`windowOpen`, which says whether you are reading the window or the stored
-data.
+mode, whether it shows and sends drawings, indicators and chart template),
+`sidebar` and `drawingTools`, and `windowOpen`, which says whether you are
+reading the window or the stored data.
 
 ## Naming things
 
@@ -276,8 +280,8 @@ codes](#exit-codes).
 | `symbol` | Searching the instruments | [Symbols](#symbols) |
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
-| `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
+| `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook sidebar` under [Showing and hiding the sidebars](#showing-and-hiding-the-sidebars); `chartbook screenshot` under [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Showing and hiding the sidebars](#showing-and-hiding-the-sidebars) (`drawing-tools`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `trading` | Trading logins, accounts, positions and orders | [Trading](#trading) |
@@ -1169,7 +1173,7 @@ names.
 
 | Command | Does |
 |---|---|
-| `chartbook list` | Every chartbook, its number of charts and its watchlist; `*` marks the open one. |
+| `chartbook list` | Every chartbook, its number of charts and its watchlist; `*` marks the open one. `--json` adds `sidebar`, whether it shows the sidebar. |
 | `chartbook show [BOOK]` | One chartbook's charts: id, symbol, resolution, bar style and link mode; `*` marks the focused chart. Default: the open one. |
 | `chartbook create NAME` | A chartbook with one chart, showing the default watchlist. `--symbol SYMBOL` (default `SPY`), `--template TEMPLATE` ([Chartbook templates](#chartbook-templates)), `--switch` to open it. Give it another list with `chartbook watchlist`. |
 | `chartbook rename BOOK NAME` | Renames it. |
@@ -1305,6 +1309,25 @@ Whether the pointer on one chart draws the same moment on every other chart of t
 | `chart crosshair` | Whether the crosshair is shared; prints `on` or `off`. |
 | `chart crosshair on` or `off` | Turns it on or off. |
 | `config set sync_crosshair on` or `off` | The same setting, by its key; see [Preferences](#preferences). |
+
+## Showing and hiding the sidebars
+
+The sidebar on the right and the drawing tools on the left, put out or away as their corner buttons and keys do ([The window](/manual/window/)). Without a state each prints `on` or `off`.
+
+| Command | Does |
+|---|---|
+| `chartbook sidebar [on\|off]` | Shows or hides the open chartbook's sidebar, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> but leaving the keyboard where it is. Kept with the chartbook. `--book BOOK` for another, applied when it is next opened. With no window open, `--book` is needed (exit `6`). |
+| `chart drawing-tools [on\|off]` | Puts the drawing tools out or away, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. One setting for the window. |
+
+```
+$ omacharts chartbook sidebar off
+chartbook "Desk" hides the sidebar
+  [exit 0]
+
+$ omacharts chart drawing-tools
+off
+  [exit 0]
+```
 
 ## Watchlists and sections
 

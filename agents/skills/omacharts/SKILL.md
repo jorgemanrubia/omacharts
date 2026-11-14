@@ -124,6 +124,11 @@ once; `config themes` lists the ids, the one in use marked, and `omarchy`
 follows the desktop's. Omarchy's own theme commands change the whole
 desktop, not Omacharts alone.
 
+**The sidebar and the drawing tools show and hide by command.** "Hide the
+watchlist" is `chartbook sidebar off`, kept with the open chartbook; "show the
+drawing tools" is `chart drawing-tools on`, for the whole window. Bare, each
+prints `on` or `off`, and `status show` says both.
+
 **"The user is in Omacharts and said: …" is a dictation.** The user held
 Right Alt with the window in front and spoke; Omacharts sent their words to
 you, with nothing about the charts, and runs you headless. Nobody is reading

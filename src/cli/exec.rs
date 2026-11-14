@@ -30,6 +30,7 @@ use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
 use crate::chart_defaults::ChartDefaults;
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::trading::chart_pnl;
+use crate::ui::window::{SHOW_DRAWING_TOOLS, SHOW_WATCHLIST};
 
 /// Parse and run.
 pub fn dispatch(
@@ -144,6 +145,13 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        ("chart", "drawing-tools") => drawing_tools(store, m, json, live),
+        ("chartbook", "sidebar") => {
+            if live.is_none() && !names_a_target(noun, verb, m) {
+                return Outcome::failed(Fault::no_window("open chartbook"));
+            }
+            chartbook_sidebar(store, m, json, live)
+        }
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
@@ -269,7 +277,7 @@ pub fn dispatch(
             // Only after it worked, and only what it touched. Rebuilding the
             // window because a setting changed would be the kind of thing
             // that is fine with five symbols and stutters with five hundred.
-            if let Some(live) = live.filter(|_| spec.writes) {
+            if let Some(live) = live.filter(|_| spec.writes && !TELL_THE_WINDOW.contains(&(noun, verb))) {
                 match spec.workspace {
                     true => live.reload_workspace(),
                     false => live.reload_watchlists(),
@@ -279,6 +287,11 @@ pub fn dispatch(
         }
     }
 }
+
+/// The verbs that tell the window what they changed themselves, as a click
+/// would, so nothing is rebuilt after them. Putting the sidebar away is one
+/// button; rebuilding every chart for it would flicker the whole window.
+const TELL_THE_WINDOW: &[(&str, &str)] = &[("chartbook", "sidebar"), ("chart", "drawing-tools")];
 
 /// Did the command say which chartbook or chart it meant?
 ///
@@ -1138,6 +1151,7 @@ fn charts_verb(
                         "name": workspace.name_of(i),
                         "charts": charts::panes(book).len(),
                         "watchlist": book["watchlist"],
+                        "sidebar": sidebar_of(store, book),
                         "active": i == workspace.active(),
                     })
                     .to_string()
@@ -1172,9 +1186,10 @@ fn charts_verb(
             let rows: Vec<String> = charts::panes(book).iter().map(pane_json).collect();
             return Ok(match as_json {
                 true => format!(
-                    "{{\"chartbook\":{},\"watchlist\":{},\"charts\":[{}]}}\n",
+                    "{{\"chartbook\":{},\"watchlist\":{},\"sidebar\":{},\"charts\":[{}]}}\n",
                     super::json_string(&workspace.name_of(at)),
                     book["watchlist"],
+                    sidebar_of(store, book),
                     rows.join(",")
                 ),
                 false => {
@@ -5488,10 +5503,12 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
     if as_json {
         return Ok(format!(
             "{{\"windowOpen\":{window_open},\"chartbook\":{},\"target\":{},\"watchlist\":{},\
-             \"focusedPosition\":{},\"charts\":[{}]}}\n",
+             \"sidebar\":{},\"drawingTools\":{},\"focusedPosition\":{},\"charts\":[{}]}}\n",
             super::json_string(&workspace.name_of(at)),
             super::json_string(&format!("id:{at}")),
             book["watchlist"],
+            sidebar_of(store, &book),
+            store.setting_bool(SHOW_DRAWING_TOOLS, false),
             match position {
                 Some(at) => at.to_string(),
                 None => "null".to_string(),
@@ -5512,6 +5529,11 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
         return Ok(out);
     }
     out.push_str(&format!("chartbook  {} (id:{at})\n", workspace.name_of(at)));
+    out.push_str(&format!(
+        "sidebar {}, drawing tools {}\n",
+        switch_word(sidebar_of(store, &book)),
+        switch_word(store.setting_bool(SHOW_DRAWING_TOOLS, false)),
+    ));
     for (i, id) in order.iter().enumerate() {
         let Some(pane) = charts::panes(&book).iter().find(|p| p["id"].as_u64() == Some(*id as u64))
         else {
@@ -5549,6 +5571,77 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
         as_json,
         json!({"crosshairSync": on}),
         format!("crosshair syncing across charts of the same symbol is {state}"),
+    )
+}
+
+fn switch_word(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// Whether a stored chartbook shows the sidebar. A book written before it
+/// remembered opens as the window's own setting says, as the window does.
+fn sidebar_of(store: &Store, book: &Value) -> bool {
+    book["sidebar_shown"].as_bool().unwrap_or_else(|| store.setting_bool(SHOW_WATCHLIST, true))
+}
+
+/// Whether the drawing tools are out down the left of the window.
+///
+/// One setting for the window rather than one per chartbook, as the key
+/// keeps it. With a window, the window puts them out or away, as the key
+/// does, and writes the setting doing it.
+fn drawing_tools(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let Some(state) = arg(m, "STATE") else {
+        let on = store.setting_bool(SHOW_DRAWING_TOOLS, false);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"drawingTools": on}))),
+            false => Ok(format!("{}\n", switch_word(on))),
+        };
+    };
+    let on = state == "on";
+    match live {
+        Some(live) => live.show_drawing_tools(on),
+        None => store.set_setting_bool(SHOW_DRAWING_TOOLS, on),
+    }
+    said(
+        as_json,
+        json!({"drawingTools": on}),
+        format!("the drawing tools are {}", if on { "out" } else { "put away" }),
+    )
+}
+
+/// Whether a chartbook shows the sidebar, its watchlist down the right.
+///
+/// Kept with each chartbook, as the corner button keeps it. The open one is
+/// shown or hidden by the window, through that button; another is written
+/// down for when it is next opened.
+fn chartbook_sidebar(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let mut workspace = Workspace::load(store);
+    let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
+    let name = workspace.name_of(at);
+    let Some(state) = arg(m, "STATE") else {
+        let on = sidebar_of(store, workspace.book(at)?);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"chartbook": name, "sidebar": on}))),
+            false => Ok(format!("{}\n", switch_word(on))),
+        };
+    };
+    let on = state == "on";
+    match live {
+        Some(live) if at == workspace.active() => live.show_sidebar(on),
+        _ => {
+            workspace.book_mut(at)?["sidebar_shown"] = json!(on);
+            workspace.save(store);
+            // The window holds every chartbook it has, and would write the
+            // old answer back over this one at its next save.
+            if let Some(live) = live {
+                live.reload_workspace();
+            }
+        }
+    }
+    said(
+        as_json,
+        json!({"chartbook": name, "sidebar": on}),
+        format!("chartbook {name:?} {} the sidebar", if on { "shows" } else { "hides" }),
     )
 }
 
@@ -9123,6 +9216,73 @@ mod tests {
         assert_eq!(run("chart crosshair", &store).out.trim(), "on");
     }
 
+    /// The drawing tools are one setting for the window, the one its key
+    /// writes, read back the way the crosshair's is.
+    #[test]
+    fn the_drawing_tools_can_be_read_and_set() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        assert_eq!(run("chart drawing-tools", &store).out.trim(), "off", "put away out of the box");
+        assert_eq!(run("chart drawing-tools on", &store).code, 0);
+        assert_eq!(run("chart drawing-tools", &store).out.trim(), "on");
+        assert!(store.setting_bool(SHOW_DRAWING_TOOLS, false));
+        let status: Value = serde_json::from_str(&run("status show --json", &store).out).unwrap();
+        assert_eq!(status["drawingTools"], json!(true));
+        assert_eq!(run("chart drawing-tools off", &store).code, 0);
+        assert_eq!(run("chart drawing-tools --json", &store).out.trim(), r#"{"drawingTools":false}"#);
+    }
+
+    /// Whether the sidebar is out is kept with each chartbook, and read
+    /// back wherever a chartbook is described.
+    #[test]
+    fn a_chartbooks_sidebar_can_be_read_and_set() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chartbook create Rates", &store);
+        assert_eq!(run("chartbook sidebar --book Macro", &store).out.trim(), "on", "out out of the box");
+        assert_eq!(run("chartbook sidebar off --book Rates", &store).code, 0);
+        assert_eq!(run("chartbook sidebar --book Rates", &store).out.trim(), "off");
+        assert_eq!(run("chartbook sidebar --book Macro", &store).out.trim(), "on", "one chartbook's alone");
+
+        let shown: Value = serde_json::from_str(&run("chartbook show Rates --json", &store).out).unwrap();
+        assert_eq!(shown["sidebar"], json!(false));
+        let listed: Value = serde_json::from_str(&run("chartbook list --json", &store).out).unwrap();
+        let sidebars: Vec<&Value> = listed["chartbooks"].as_array().unwrap().iter().map(|b| &b["sidebar"]).collect();
+        assert_eq!(sidebars, vec![&json!(true), &json!(false)]);
+        let status: Value = serde_json::from_str(&run("status show --json", &store).out).unwrap();
+        assert_eq!(status["sidebar"], json!(true), "the open chartbook's");
+
+        // "The open one" needs a window to be open in.
+        assert_eq!(run("chartbook sidebar off", &store).code, crate::cli::EXIT_NO_WINDOW);
+    }
+
+    /// With a window open, the open chartbook's sidebar and the drawing
+    /// tools are put out or away by the window, as a click would, and
+    /// nothing is rebuilt after it. Another chartbook's is written down, and
+    /// the window reads it back so its next save keeps it.
+    #[test]
+    fn the_window_shows_and_hides_its_sidebars_itself() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chartbook create Rates", &store);
+        let line = |text: &str| -> Vec<String> {
+            std::iter::once("omacharts".to_string()).chain(text.split_whitespace().map(String::from)).collect()
+        };
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chartbook sidebar off"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["flush", "sidebar off"]);
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chartbook sidebar off --book Rates"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["flush", "workspace"]);
+        assert_eq!(run("chartbook sidebar --book Rates", &store).out.trim(), "off");
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chart drawing-tools on"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["tools on"]);
+    }
+
     #[test]
     fn sizes_are_read_the_way_people_write_them() {
         assert_eq!(parse_bytes("1GB"), Some(1024 * 1024 * 1024));
@@ -10547,6 +10707,12 @@ mod tests {
         }
         fn adopt_features(&self) {
             self.0.borrow_mut().push("features");
+        }
+        fn show_sidebar(&self, shown: bool) {
+            self.0.borrow_mut().push(if shown { "sidebar on" } else { "sidebar off" });
+        }
+        fn show_drawing_tools(&self, shown: bool) {
+            self.0.borrow_mut().push(if shown { "tools on" } else { "tools off" });
         }
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}

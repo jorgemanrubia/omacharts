@@ -851,6 +851,17 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "sidebar",
+                about: "Whether a chartbook shows the sidebar, its watchlist down the right; \
+                        the corner button and Ctrl+Shift+B do the same",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[Flag::valued("book", "BOOK", "which chartbook (default: the open one)")],
+                example: "omacharts chartbook sidebar off",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
                 name: "template",
                 about: "Chartbook templates: a chartbook's layout and what each chart draws, under \
                         a name; every change to a chartbook on one reaches the others on it",
@@ -1154,6 +1165,17 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("id", "N", "which volume profile, when the chart has more than one"),
                 ],
                 example: "omacharts chart profile merge --at 2026-09-02",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "drawing-tools",
+                about: "Whether the drawing tools are out down the left of the window, for every \
+                        chartbook; the corner button and Ctrl+Shift+D do the same",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts chart drawing-tools on",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -1847,7 +1869,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("focused", "chart focus", ""),
     ("panes", "chart list", ""),
     ("watchlist", "chartbook watchlist", ""),
-    ("sidebar_shown", "", "presentational: the rail is shown with a mouse or a key"),
+    ("sidebar_shown", "chartbook sidebar", ""),
     ("sidebar_width", "", "presentational: a width is dragged, never scripted"),
     ("maximized", "", "presentational: remembered so a restart finds it, but filled with a key or the corner"),
     ("book_template", "chartbook template", ""),

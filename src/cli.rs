@@ -286,6 +286,13 @@ pub trait Live {
     /// Put in or take out what the feature flags now switch, in place.
     /// Nothing to do without a window.
     fn adopt_features(&self) {}
+    /// Show or hide the open chartbook's sidebar as its corner button does,
+    /// which is also what remembers it with the chartbook. Nothing to do
+    /// without a window.
+    fn show_sidebar(&self, _shown: bool) {}
+    /// Put the drawing tools out or away as Ctrl+Shift+D does, which is also
+    /// what remembers it. Nothing to do without a window.
+    fn show_drawing_tools(&self, _shown: bool) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -1139,6 +1146,14 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_features(&self) {
         crate::ui::Window::adopt_features(self);
+    }
+
+    fn show_sidebar(&self, shown: bool) {
+        crate::ui::Window::show_sidebar(self, shown);
+    }
+
+    fn show_drawing_tools(&self, shown: bool) {
+        crate::ui::Window::show_drawing_tools(self, shown);
     }
 
     fn screenshot(
