@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""An agent's turn, played in the studio's terminal for a video.
+
+Asked to buy 1 ES at the value area low, stop six ticks under it and
+target the point of control, it does what an agent with the Omacharts
+skill did when it was asked for real, on the simulated market: reads the
+session's volume profile on screen, rounds its value area low and point of
+control to ES's quarter-point tick, rests a buy limit for 1 at the first,
+waits for it to fill, and then places the stop and the target, linked.
+Every command it shows is the real one, run against the open chart, and
+the levels are the ones the chart gives back; only the sentences around
+them are written in advance, so the video can be timed.
+
+    bracket-agent [--pace SECONDS]
+
+With BRACKET_PLAYED set to a path, it appends a JSON line there as the
+profile is read, as the buy returns and as the exits return:
+{"name": "read" | "limit" | "exits", "mono": time.monotonic()}.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+PACE = 0.5
+for i, arg in enumerate(sys.argv):
+    if arg == "--pace":
+        PACE = float(sys.argv[i + 1])
+
+TICK = 0.25
+STOP_TICKS = 6
+DIM, BOLD, BLUE, GREEN, RESET = "\033[2m", "\033[1m", "\033[34m", "\033[32m", "\033[0m"
+
+
+def out(text="", pause=0.0):
+    print(text, flush=True)
+    if pause:
+        time.sleep(pause)
+
+
+def slowly(text, speed=0.012):
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(speed)
+    print(flush=True)
+
+
+def said(text):
+    slowly(f"{GREEN}●{RESET} {text}")
+
+
+def more(text):
+    slowly(f"  {text}")
+
+
+def mark(name):
+    path = os.environ.get("BRACKET_PLAYED")
+    if path:
+        with open(path, "a") as f:
+            f.write(json.dumps({"name": name, "mono": time.monotonic()}) + "\n")
+
+
+def omacharts(*args, show=True):
+    if show:
+        out(f"  {DIM}$ omacharts {' '.join(args)}{RESET}")
+    run = subprocess.run(["omacharts", *args], capture_output=True, text=True)
+    return run.stdout
+
+
+def reply(text):
+    for line in text.strip().splitlines()[:3]:
+        out(f"    {DIM}{line[:54]}{RESET}")
+
+
+def on_tick(price):
+    return round(price / TICK) * TICK
+
+
+def arg(price):
+    return f"{price:.2f}".rstrip("0").rstrip(".")
+
+
+def shown(price):
+    return f"{price:,.2f}"
+
+
+def orders():
+    try:
+        return json.loads(omacharts("trading", "orders", "--all", "--json", show=False))["orders"]
+    except (ValueError, KeyError):
+        return []
+
+
+def main():
+    sys.stdout.write(f"{BOLD}{BLUE}❯{RESET} ")
+    sys.stdout.flush()
+    sys.stdin.readline()
+    out()
+
+    said("First the levels, from the session's volume")
+    more("profile on the chart.")
+    out(pause=PACE * 0.4)
+    profiles = json.loads(omacharts("chart", "profile", "list", "--on-screen", "--json"))["profiles"]
+    mark("read")
+    session = [p for p in profiles if p.get("visible", True)][-1]
+    val, poc = on_tick(session["value_area_low"]), on_tick(session["poc"])
+    stop = val - STOP_TICKS * TICK
+    out(f"    value area low {shown(val)} · point of control {shown(poc)}", pause=PACE)
+    if val != session["value_area_low"] or poc != session["poc"]:
+        said("The profile reads them between ticks, so I round")
+        more("to ES's quarter point.")
+        out(pause=PACE * 0.6)
+
+    said(f"A buy limit for 1 at {shown(val)}.")
+    out(pause=PACE * 0.4)
+    before = {(o["id"], o["at"]) for o in orders()}  # ids repeat across days
+    reply(omacharts("trading", "buy", "--limit", arg(val), "--quantity", "1"))
+    mark("limit")
+    out(pause=PACE)
+
+    said("The stop and the target need a position, so I")
+    more("wait for the fill.")
+    out(f"  {DIM}$ omacharts trading orders --all --json{RESET}")
+    out(f"    {DIM}waiting for the fill…{RESET}")
+    entry = None
+    while entry is None or entry["status"] != "Filled":
+        mine = [o for o in orders() if (o["id"], o["at"]) not in before and o["side"] == "buy"]
+        entry = mine[0] if mine else None
+        if entry is not None and entry["status"] in ("Cancelled", "Rejected"):
+            out(f"    {DIM}{entry['id']} {entry['status'].lower()}{RESET}")
+            return
+        time.sleep(0.1)
+    out(f"    {DIM}{entry['id']} filled at {shown(entry['filled_at'])}{RESET}", pause=PACE * 0.6)
+
+    said(f"Filled. Now the stop six ticks under, at {shown(stop)},")
+    more("and the target at the point of control, linked.")
+    out(pause=PACE * 0.4)
+    reply(omacharts("trading", "exit", "--target", arg(poc), "--stop", arg(stop)))
+    mark("exits")
+    out(pause=PACE)
+
+    said(f"Long 1 at {shown(entry['filled_at'])}. Stop {shown(stop)} and target")
+    more(f"{shown(poc)} working; whichever fills cancels the other.")
+    out()
+
+
+if __name__ == "__main__":
+    main()
