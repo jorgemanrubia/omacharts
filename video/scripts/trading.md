@@ -863,8 +863,8 @@ duotone) so the market is not in frame while it is sped up.
 agent.
 
     prep: key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.35 --think 1.4 --settle 0.8; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
-    ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.⏎
-    enter@10: beat
+    ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.
+    enter@10: key Return
     after: 0.4
 
 ### 9. It reads the chart

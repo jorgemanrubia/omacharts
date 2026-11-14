@@ -637,7 +637,9 @@ hl.config({{
         # Shift over a letter needs a keyboard with a real keymap: wtype's
         # one-level keys make GTK match no accelerator with Shift in it
         # (studio.md, "Driving it").
-        if "shift" in (m.lower() for m in mods) and len(key) == 1 and key.isalpha():
+        # So does Return: from wtype's keymap a terminal read it as Return
+        # with a modifier held, and printed its escape sequence.
+        if ("shift" in (m.lower() for m in mods) and len(key) == 1 and key.isalpha()) or chord == "Return":
             subprocess.run([str(ROOT / "bin/virtual-keyboard"), chord], env=self.env, check=True)
             return
         argv = ["wtype", "-s", "300"]
@@ -868,9 +870,8 @@ hl.config({{
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(f"""font=JetBrainsMono Nerd Font:size=12.5
 pad=18x14
-[cursor]
-color={c('background', '#1a1b26')} {c('foreground', '#a9b1d6')}
-[colors]
+[colors-dark]
+cursor={c('background', '#1a1b26')} {c('foreground', '#a9b1d6')}
 background={c('background', '#1a1b26')}
 foreground={c('foreground', '#a9b1d6')}
 regular0={c('dark_background', '#13141c')}
@@ -1689,8 +1690,17 @@ def render_trailer(script, upto=None):
     for t in touches + played:
         events.append({"t": round(t["mono"] - zero, 4), "scene": None, "cue": t["name"], "verb": "touch" if t in touches else "played",
                        "args": [t.get("price")]})
-    (out / "events.json").write_text(json.dumps({"marks": marks, "events": events}, indent=1))
+    (out / "events.json").write_text(json.dumps({"marks": marks, "events": events, "offset": offset}, indent=1))
     edit_trailer(script, raw, offset, hits, marks, events)
+
+
+def reedit_trailer(script):
+    """The edit again from the last take, without filming it again: for a
+    change to the composition, the cards or the music."""
+    out = script.out
+    taken = json.loads((out / "events.json").read_text())
+    hits = json.loads((drum(script) / "hits.json").read_text())
+    edit_trailer(script, out / "raw.mkv", taken["offset"], hits, taken["marks"], taken["events"])
 
 
 def scene_frames(number):
@@ -2006,7 +2016,9 @@ def main():
         music(need(), int(rest[1]) if len(rest) > 1 else 3)
     elif verb == "render":
         script = need()
-        if script.meta.get("kind") == "trailer":
+        if script.meta.get("kind") == "trailer" and "--edit-only" in rest:
+            reedit_trailer(script)
+        elif script.meta.get("kind") == "trailer":
             render_trailer(script, int(rest[rest.index("--upto") + 1]) if "--upto" in rest else None)
         else:
             render(script)
