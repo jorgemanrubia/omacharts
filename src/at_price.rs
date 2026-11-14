@@ -30,7 +30,13 @@
 //! the store knows complete is never asked for again. The provider is asked
 //! no further back than its history goes, but the store is read as far back
 //! as the chart reaches: days kept on earlier runs, older than the provider
-//! still serves, are drawn from what traded too. A disconnect leaves a
+//! still serves, are drawn from what traded too. Nor is a root asked for
+//! from before its front month took over, where the feed reads it as that
+//! month alone ([`omacharts_engine::Ladders::history_since`]): that month
+//! was a thin back month then, at prices of its own, under bars drawn from
+//! the month that was front. Those days are drawn from what the store kept
+//! while their own month was front, or estimated, and a day there that an
+//! earlier build read from the month after is let go. A disconnect leaves a
 //! hole, and the feed coming back fills it at once: the store is asked again
 //! which minutes it is missing, and the provider's minutes replace the ones
 //! built live. The minute the feed came back in was joined part way, and is
@@ -812,6 +818,14 @@ fn fill(
     asked
 }
 
+/// The earliest minute of a chart from `from` on to ask the provider for:
+/// no further back than its history goes, nor than the month it reads a
+/// root as took over.
+fn asks_from(ladders: &dyn omacharts_engine::Ladders, symbol: &str, from: i64, now: i64) -> i64 {
+    let deepest = now - i64::from(ladders.history_days()) * 86_400;
+    from.max(deepest).max(ladders.history_since(symbol, now).unwrap_or(i64::MIN))
+}
+
 /// The registry's thread: one connection to the store, and the jobs in the
 /// order they were given.
 fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<Job>, done: &async_channel::Sender<Done>) {
@@ -826,17 +840,22 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
                 if stored != family {
                     let _ = store.forget_other_months(&family, &kept_with(&family, &symbol, &stored));
                 }
+                // A day before the front month took over, read from it by a
+                // build that asked it for everything, is a thin back month's.
+                if let Some(since) = ladders.history_since(&symbol, now) {
+                    let _ = store.forget_ladders_read_late(&stored, since);
+                }
                 // The provider is asked no further back than its history
                 // goes; what the store kept from before that, on earlier
                 // runs, is read all the same.
-                let reach = from.max(now - i64::from(ladders.history_days()) * 86_400);
+                let reach = asks_from(ladders, &symbol, from, now);
                 let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, reach, now);
                 let held = store.load_ladder_held(&stored, &days, days.of(from), days.of(now) + 1);
                 Done::Loaded { key, stored, from, held: Box::new(held), asked, seq }
             }
             Job::Fill { key, stored, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
-                let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
+                let from = asks_from(ladders, &symbol, from, now);
                 let asked = fill(&store, ladders, &stored, &symbol, tick_size, &days, from, now);
                 let mut numbers: Vec<i64> = asked.iter().flat_map(|(a, b)| days.of(*a)..=days.of(b - 1)).collect();
                 numbers.sort_unstable();
@@ -900,6 +919,9 @@ mod tests {
     struct Asked {
         spans: Vec<(i64, i64)>,
         sinks: Vec<LadderSink>,
+        /// Where its front month took over, for a feed that reads a root
+        /// as that month alone.
+        since: Option<i64>,
     }
 
     struct Fake(Arc<Mutex<Asked>>);
@@ -922,6 +944,9 @@ mod tests {
         }
         fn history_days(&self) -> u32 {
             30
+        }
+        fn history_since(&self, _: &str, _: i64) -> Option<i64> {
+            self.0.lock().unwrap().since
         }
         fn minutes(&self, _: &str, _: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
             self.0.lock().unwrap().spans.push((from, to));
@@ -1108,6 +1133,104 @@ mod tests {
         settle(&at_price);
         assert_eq!(old_volume(&at_price), Some(60 * 5), "the hour kept, drawn from what traded");
         assert!(asked.lock().unwrap().spans.iter().all(|(a, _)| *a >= NOW - 30 * DAY), "{:?}", asked.lock().unwrap().spans);
+        at_price.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The front month took over ten days ago. The store kept a day from
+    /// before that which an earlier build read from it, as a thin back
+    /// month, and one sealed live while the month before was front. A
+    /// chart reaching back a month asks the provider from the roll on and
+    /// nothing older; the day read late is let go, to the estimate, and the
+    /// one of its own month is drawn.
+    #[test]
+    fn a_root_is_asked_no_further_back_than_its_front_month_took_over() {
+        const DAY: i64 = 86_400;
+        let path = scratch("since");
+        let days = Days::new(&es());
+        let since = days.start(days.of(NOW - 10 * DAY));
+        let (late, own) = (NOW - 20 * DAY, NOW - 15 * DAY);
+        {
+            let store = Store::open_at(&path).unwrap();
+            // Written now, long after the roll.
+            let minutes: Vec<Minute> = (late..late + HOUR).step_by(60).map(minute).collect();
+            store.save_ladder_history(KEY, 0.25, &days, late, late + HOUR, &minutes).unwrap();
+            // Sealed live then; the load folds its tail into its row.
+            for ts in (own..own + HOUR).step_by(60) {
+                store.append_ladder_minute(KEY, 0.25, days.of(ts), &minute(ts), Some((own, ts + 60))).unwrap();
+            }
+        }
+        let asked = Arc::new(Mutex::new(Asked { since: Some(since), ..Asked::default() }));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        at_price.want(1, KEY, "ES", &es(), NOW - 30 * DAY);
+        settle(&at_price);
+        assert_eq!(asked.lock().unwrap().spans, vec![(since, NOW)], "from the roll, and nothing older");
+        let volume = |a: i64| at_price.with_held(KEY, |held| held.unwrap().between(a, a + HOUR).map(|l| l.sides.volume()));
+        assert_eq!(volume(own), Some(60 * 5), "sealed while its own month was front");
+        assert_ne!(volume(late), Some(60 * 5), "read late, from a month not front yet");
+        at_price.shutdown();
+
+        // The next start asks for nothing before the roll either, the hole
+        // the day read late left among them.
+        asked.lock().unwrap().spans.clear();
+        let again = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        again.set_clock(later);
+        again.want(1, KEY, "ES", &es(), NOW - 30 * DAY);
+        settle(&again);
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW, NOW + 180)], "only the minutes since");
+        again.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// What ninety days of ES minute ladders cost once loaded: a chart
+    /// holds each day's total, not its minutes, so a quarter of sessions is
+    /// a megabyte or two however many minutes went into it. Run with
+    /// `--nocapture` for the numbers.
+    #[test]
+    fn ninety_days_of_minute_ladders_are_held_as_day_totals() {
+        const DAY: i64 = 86_400;
+        let path = scratch("ninety");
+        let days = Days::new(&es());
+        let from = days.start(days.of(NOW - 90 * DAY));
+        // A session some 400 ticks from low to high, each minute ten ticks
+        // wide, every minute of every day, the break too: a busy quarter.
+        let busy = |ts: i64| {
+            let into = (ts - days.start(days.of(ts))) as f64 / DAY as f64;
+            let low = 30_000 + (200.0 * (std::f64::consts::TAU * into).sin()) as i32 + days.of(ts) as i32 % 40;
+            let mut minute = Minute::opening(ts, f64::from(low) * 0.25);
+            for tick in low..low + 10 {
+                minute.add_trade(tick, f64::from(tick) * 0.25, 40, Side::Buy, 9);
+                minute.add_trade(tick, f64::from(tick) * 0.25, 38, Side::Sell, 8);
+            }
+            // As a feed builds it, to the size it holds.
+            minute.ladder.levels.shrink_to_fit();
+            minute
+        };
+        let minutes: Vec<Minute> = (from..NOW).step_by(60).map(busy).collect();
+        let level = std::mem::size_of::<omacharts_engine::ladders::Level>();
+        let fetched: usize = minutes.iter().map(|m| std::mem::size_of::<Minute>() + m.ladder.levels.capacity() * level).sum();
+        {
+            let store = Store::open_at(&path).unwrap();
+            store.save_ladder_history(KEY, 0.25, &days, from, NOW, &minutes).unwrap();
+        }
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        at_price.want(1, KEY, "ES", &es(), from);
+        settle(&at_price);
+        let (held, count) = at_price.with_held(KEY, |held| {
+            let held = held.unwrap();
+            (held.bytes(), held.days.len())
+        });
+        eprintln!(
+            "{} minutes over {count} days: {:.1} MB as fetched, on the ladders' thread; {:.2} MB held by the charts",
+            minutes.len(),
+            fetched as f64 / 1e6,
+            held as f64 / 1e6,
+        );
+        assert!(count >= 60, "{count} days");
+        assert!(held < 4 << 20, "{held} bytes held");
         at_price.shutdown();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
