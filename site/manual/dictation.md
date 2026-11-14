@@ -9,7 +9,7 @@ Say what you want with Omacharts in front, and Omarchy's default agent does
 it in the open window, with the `omacharts` command.
 
 {: .warning }
-The agent can run any `omacharts` command, the [trading commands](/manual/cli/#trading) included, and nothing asks before it does. With a broker signed in, "sell two at the market" places that order. Don't dictate an order unless you mean it.
+The agent can run any `omacharts` command, the [trading commands](/manual/cli/#trading) included, and nothing asks before it does. With a trading service signed in, "sell two at the market" places that order. Don't dictate an order unless you mean it.
 
 ## Dictating
 

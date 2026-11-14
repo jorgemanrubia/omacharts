@@ -5,7 +5,7 @@ section: trading
 nav_order: 35
 ---
 
-The Trading panel sits under the charts once there is a login ([Connecting a broker](/manual/brokers/)). It shows every account of every login at once, whichever chart is focused.
+The Trading panel sits under the charts once there is a login ([Trading services](/manual/brokers/)). It shows every account of every login at once, whichever chart is focused.
 
 {: .warning }
 Trading is experimental (**Beta**). Nothing in the panel asks before it acts.
@@ -41,9 +41,9 @@ crop: 2800x220+0+1504
 | Column | Shows |
 |---|---|
 | **Account** | Which account |
-| **Currency**, **Balance** | As the broker reports them |
+| **Currency**, **Balance** | As the trading service reports them |
 | **Day P&L**, **Open P&L** | The day's profit or loss, and that of what is held now |
-| **Loss limit**, **Liquidates at** | The limits a prop firm sets, when the broker reports them |
+| **Loss limit**, **Liquidates at** | The limits a prop firm sets, when the trading service reports them |
 
 ## Positions
 
@@ -110,4 +110,4 @@ crop: 2800x640+0+1040
 ## See also
 
 - [Trading from a chart](/manual/trading-on-a-chart/)
-- [Connecting a broker](/manual/brokers/)
+- [Trading services](/manual/brokers/)

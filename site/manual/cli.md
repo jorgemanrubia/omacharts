@@ -1703,7 +1703,7 @@ in, and so do `positions`, `orders`, `login` and `sign-in`; with none open
 they exit `6`. Each goes through the chart's own checks,
 and what the chart would refuse is refused with exit `5` in its words. There
 are no confirmations, as there are none on the chart. The reply says what was
-sent; the broker's answer reaches the Log and `trading orders`, so a script
+sent; the trading service's answer reaches the Log and `trading orders`, so a script
 waiting for a fill reads `trading orders --json` until its `status` says so.
 One order per account is on its way at a time, as on the chart, and the next
 is refused until the last is answered.

@@ -8,7 +8,7 @@ nav_order: 36
 {: .warning }
 Trading is experimental (**Beta**). An order is sent the moment you click, press or drag: nothing asks first, on any account.
 
-A chart trades what it charts, on its account. ES, whichever feed draws it, trades its front month as Rithmic names it, such as ESZ6, and a chart of a dated contract, such as ESH7, trades that contract, through the account's login ([Connecting a broker](/manual/brokers/)).
+A chart trades what it charts, on its account. ES, whichever feed draws it, trades its front month as Rithmic names it, such as ESZ6, and a chart of a dated contract, such as ESH7, trades that contract, through the account's login ([Trading services](/manual/brokers/)).
 
 ## The Account part
 
@@ -121,5 +121,5 @@ The first four act on the focused chart, and never while you are typing in a box
 ## See also
 
 - [The Trading panel](/manual/trading-panel/)
-- [Connecting a broker](/manual/brokers/)
+- [Trading services](/manual/brokers/)
 - [Hotkeys](/manual/hotkeys/#trading)

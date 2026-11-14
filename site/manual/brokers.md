@@ -1,5 +1,5 @@
 ---
-title: "Connecting a broker"
+title: "Trading services"
 description: "Signing in to Rithmic for a futures account or a prop firm, the accounts that come with it, and the default account."
 section: trading
 nav_order: 34

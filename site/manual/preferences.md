@@ -119,7 +119,7 @@ What dictation goes with ([Dictation](/manual/dictation/)).
 
 ### Trading
 
-Trading has a **Beta** tag in the list of sections: it is experimental. The page holds the logins and their accounts, **Edit quantities…**, **Order labels** and how charts show P&L, all in [Connecting a broker](/manual/brokers/#logins-and-accounts).
+Trading has a **Beta** tag in the list of sections: it is experimental. The page holds the logins and their accounts, **Edit quantities…**, **Order labels** and how charts show P&L, all in [Trading services](/manual/brokers/#logins-and-accounts).
 
 ## Settings that stay with this machine
 

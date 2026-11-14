@@ -1386,7 +1386,7 @@ Orders go through the window. The sessions are signed in there, so `buy`,
 open, and each runs the chart's own checks: a limit on the wrong side of the
 market, a quantity the chart's Qty does not offer, or a second order while
 the last is still on its way is refused with exit `5` and the words the chart
-would show. A reply says what was sent, not what the broker did with it:
+would show. A reply says what was sent, not what the trading service did with it:
 
 ```
 $ omacharts trading buy --limit 6810 --quantity 2
@@ -1398,7 +1398,7 @@ B2           14:31:07 Lucid 50K      ESZ6     Buy     2 Limit      6,810.00  Wor
   [exit 0]
 ```
 
-The broker's answer lands in the Log and in `trading orders`, so a script
+The trading service's answer lands in the Log and in `trading orders`, so a script
 that needs the fill reads `trading orders --json` until the status says so.
 There are no confirmations, as there are none on the chart.
 
