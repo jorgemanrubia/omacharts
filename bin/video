@@ -1825,8 +1825,10 @@ def edit_trailer(script, raw, offset, hits, marks, events):
          "--log=error"], cwd=compose_dir)
     final, preview = out / f"{script.slug}.mp4", out / f"{script.slug}-1080p.mp4"
     music = drum(script) / "drum.wav"
+    # The music is mastered to -1 dBTP; AAC overshoots that by about half
+    # a decibel, so it goes in a touch quieter.
     run(["ffmpeg", "-v", "error", "-y", "-i", str(picture), "-i", str(music), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-         "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(final)])
+         "-af", "volume=-0.7dB", "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(final)])
     run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
          "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
     review = out / "review"

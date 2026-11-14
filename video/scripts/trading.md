@@ -867,6 +867,7 @@ agent.
     prep: cli -trading flatten ESZ6 --account Lucid/LT50-1043; cli -trading cancel --all; key ctrl+1; let v8 val; tape goto {v8+4} in 1.2; terminal open bracket-agent --pace 0.2 --think 1.5 --settle 0.9; move 140% 97%; tape free {v8+2.5} {v8+5}; tape avoid {v8+0.25}; wait 0.6
     ask: type Buy 1 ES at the value area low. Stop six ticks under it. Target the point of control.
     enter@10: key Return
+    crop: 62% 0% 38%
     after: 0.4
 
 ### 9. It reads the chart
@@ -892,6 +893,8 @@ area. Target at the point of control.
     levels@1: let v val; let p poc
     anchors: read@2 limit@5
     turn@6: tape avoid off; tape touch {v} in @10 fill
+    crop: 62% 0% 38%
+    punch: 2-5
     after: 0.4
 
 The agent paces itself (`--pace`), so `read` and `limit` (and `exits` in
