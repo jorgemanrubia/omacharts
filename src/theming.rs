@@ -400,6 +400,17 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   color: @accent_color;
 }
 
+/* A word beside a section's title in Preferences, Beta: quiet, in the
+   row's own ink, so it reads on a selected row as on any other. */
+.section-tag {
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: alpha(currentColor, 0.12);
+  opacity: 0.8;
+}
+
 /* The readout above the chart. Tabular figures so values do not jitter as the
    crosshair moves. */
 .readout { font-size: 0.85em; }

@@ -194,6 +194,8 @@ pub fn dispatch(
             outcome
         }
 
+        ("trading", _) => super::trading::run(store, verb, m, json, live),
+
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
         ("config", "set") => {
@@ -219,6 +221,12 @@ pub fn dispatch(
                     }
                     Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
                     Ok(key) if key == chart_pnl::DISPLAY || key == chart_pnl::R_AMOUNT => live.adopt_pnl(),
+                    Ok(key)
+                        if key == crate::ui::trading_settings::ORDER_LABELS
+                            || key == crate::trading::sizes::SIZE_TEMPLATES =>
+                    {
+                        live.adopt_trading()
+                    }
                     _ => {}
                 }
             }
@@ -1627,6 +1635,9 @@ fn chart_set(
         Some(text) => Some(Some(find_template(store, text)?)),
     };
 
+    let shows_fills = switch("show-fills")?;
+    let trading = chart_trading(store, m, workspace.book(at)?, pane)?;
+
     // Which mode it was in, read before anything is written: only becoming
     // Follow leads the Follow charts. Re-stating the mode a chart is already
     // in is not somebody asking for four charts to move.
@@ -1772,6 +1783,48 @@ fn chart_set(
             changed.push("no chart template, and no indicators".to_string());
         }
     }
+    if let Some(shows) = shows_fills {
+        if shows {
+            chart["shows_fills"] = json!(true);
+        } else if let Some(fields) = chart.as_object_mut() {
+            fields.remove("shows_fills");
+        }
+        changed.push(format!("fills {}", if shows { "marked" } else { "not marked" }));
+    }
+    let ChartTrading { account, symbol: traded, size } = trading;
+    if let Some(fields) = chart.as_object_mut() {
+        match account {
+            None => {}
+            Some(None) => {
+                fields.remove("account");
+                changed.push("on the default account".to_string());
+            }
+            Some(Some((key, name))) => {
+                fields.insert("account".into(), json!(key));
+                changed.push(format!("on {name}"));
+            }
+        }
+        match traded {
+            None => {}
+            Some(None) => {
+                fields.remove("trading_symbol");
+                fields.remove("trading_suffix");
+                changed.push("trades what it charts".to_string());
+            }
+            Some(Some((symbol, suffix))) => {
+                changed.push(format!("trades {}", spell(&symbol, suffix.as_deref())));
+                fields.insert("trading_symbol".into(), json!(symbol));
+                match suffix {
+                    Some(suffix) => fields.insert("trading_suffix".into(), json!(suffix)),
+                    None => fields.remove("trading_suffix"),
+                };
+            }
+        }
+        if let Some(picked) = size {
+            changed.push(format!("quantity {}", picked.size));
+            fields.insert("trading_size".into(), to_value(&picked)?);
+        }
+    }
     // What the chart ends up showing, which is what it leads its new group
     // with. Read after the writes above, so `--symbol X --link N` leads with X
     // rather than with whatever the chart had before.
@@ -1782,7 +1835,8 @@ fn chart_set(
         return Err(Fault::usage(
             "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
              --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --indicators, \
-             --drawings, --show-drawings, --send-drawings or --template"
+             --drawings, --show-drawings, --send-drawings, --template, --account, --quantity, \
+             --trading-symbol or --show-fills"
                 .into(),
         ));
     }
@@ -4734,6 +4788,82 @@ fn shown_style(pane: &Value) -> &str {
     }
 }
 
+/// What `chart set` changes about how a chart trades, checked before
+/// anything is written: the account, by key and name, or the default
+/// again; the symbol traded instead, or none; the quantity picked.
+struct ChartTrading {
+    account: Option<Option<(String, String)>>,
+    symbol: Option<Option<(String, Option<String>)>>,
+    size: Option<crate::trading::sizes::Picked>,
+}
+
+fn chart_trading(store: &Store, m: &clap::ArgMatches, book: &Value, pane: u32) -> Result<ChartTrading, Fault> {
+    let stored = charts::panes(book).iter().find(|chart| chart["id"].as_u64() == Some(pane.into()));
+    let account = match arg(m, "account") {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("default") => Some(None),
+        Some(text) => {
+            let view = crate::trading::View::load(store);
+            let account = super::trading::find_account(&view, text)?;
+            Some(Some((account.key(), view.account_name(account))))
+        }
+    };
+    let wants_symbol = arg(m, "trading-symbol");
+    let quantity = arg(m, "quantity");
+    if wants_symbol.is_none() && quantity.is_none() {
+        return Ok(ChartTrading { account, symbol: None, size: None });
+    }
+    // What the chart charts, as the symbol or the trading symbol is judged
+    // against: what `--symbol` makes it, if it is changing too.
+    let index = crate::inventory::everything();
+    let (symbol, suffix) = match arg(m, "symbol") {
+        Some(text) => listing(&index, text, arg(m, "suffix").map(|s| s.to_uppercase())),
+        None => (
+            stored.and_then(|chart| chart["symbol"].as_str()).unwrap_or("").to_string(),
+            stored.and_then(|chart| chart["suffix"].as_str()).map(String::from),
+        ),
+    };
+    let charted = index.resolve(&symbol, suffix.as_deref());
+    let symbol = match wants_symbol {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("none") || text.is_empty() => Some(None),
+        Some(text) => {
+            let (traded, traded_suffix) = listing(&index, text, None);
+            let instrument = index.resolve(&traded, traded_suffix.as_deref()).ok_or_else(|| {
+                Fault::not_found(format!("no instrument called {}; try `omacharts symbol search {traded}`", spell(&traded, traded_suffix.as_deref())))
+            })?;
+            if !charted.as_ref().is_some_and(|charted| charted.tracks(&instrument)) {
+                return Err(Fault::refused(format!(
+                    "{} does not move with {}: a chart trades the other size of what it charts, MES on ES",
+                    instrument.display_symbol(),
+                    spell(&symbol, suffix.as_deref())
+                )));
+            }
+            Some(Some((instrument.symbol.clone(), instrument.suffix.clone())))
+        }
+    };
+    let size = match quantity {
+        None => None,
+        Some(text) => {
+            let n = text.trim().parse::<u32>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                Fault::usage(format!("--quantity is a whole number above 0, not {text:?}"))
+            })?;
+            // What the chart trades once this command is done.
+            let traded = match &symbol {
+                Some(Some((traded, traded_suffix))) => index.resolve(traded, traded_suffix.as_deref()),
+                Some(None) => charted.clone(),
+                None => stored
+                    .and_then(|chart| chart["trading_symbol"].as_str())
+                    .and_then(|traded| index.resolve(traded, stored.and_then(|chart| chart["trading_suffix"].as_str())))
+                    .or_else(|| charted.clone()),
+            };
+            let traded = traded.ok_or_else(|| Fault::refused("this chart charts nothing to trade".into()))?;
+            Some(super::trading::picked(store, &traded, n)?)
+        }
+    };
+    Ok(ChartTrading { account, symbol, size })
+}
+
 fn pane_json(pane: &Value) -> String {
     json!({
         "id": pane["id"],
@@ -4780,6 +4910,13 @@ fn pane_json(pane: &Value) -> String {
         // The markets compared with it, in the order they were added; empty
         // for a chart that compares nothing.
         "compare": stored_compare(pane).symbols.iter().map(|c| c.spelled()).collect::<Vec<_>>(),
+        // How it trades: on the default account while it has none of its
+        // own, what it charts while it trades nothing else, and the
+        // quantity its Qty shows when one was picked.
+        "account": pane["account"],
+        "trading_symbol": pane["trading_symbol"].as_str().map(|symbol| spell(symbol, pane["trading_suffix"].as_str())),
+        "quantity": pane["trading_size"]["size"],
+        "shows_fills": pane["shows_fills"].as_bool().unwrap_or(false),
     })
     .to_string()
 }
@@ -10285,5 +10422,78 @@ mod tests {
         assert!(!run("surface --man", &store).out.contains("features"));
         assert!(crate::cli::is_command(&["omacharts".into(), "features".into()]));
         assert_eq!(run("features list", &store).code, 0);
+    }
+
+    /// With no window, what the store keeps of Trading is read and
+    /// changed, and everything a session does is refused as needing the
+    /// window: nothing is signed in without one.
+    #[test]
+    fn trading_without_a_window_is_the_store_s_and_orders_need_one() {
+        use crate::trading::{self, fake::Kept};
+        let store = bare();
+        assert!(run("trading logins", &store).out.contains("no trading services yet"));
+        let typed = trading::Typed {
+            service: "fake".into(),
+            name: "Practice".into(),
+            user: "someone".into(),
+            password: String::new(),
+            values: Vec::new(),
+        };
+        let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
+        let account = |number: &str| trading::Account {
+            login: id.clone(),
+            id: number.into(),
+            name: None,
+            currency: Some("USD".into()),
+            balance: Some(50_000.0),
+        };
+        trading::cache_accounts(&store, &id, vec![account("A-1"), account("A-2")]);
+
+        let logins = json_of(&run("trading logins --json", &store));
+        assert_eq!(logins["logins"][0]["name"], "Practice", "{logins}");
+        assert_eq!(logins["logins"][0]["live"], false, "{logins}");
+        assert!(logins["services"].as_array().unwrap().iter().any(|service| service["id"] == "fake"), "{logins}");
+
+        let accounts = json_of(&run("trading accounts --json", &store));
+        assert_eq!(accounts["accounts"][0]["balance"], 50_000.0, "{accounts}");
+        assert_eq!(accounts["accounts"][0]["default"], true, "{accounts}");
+        assert_eq!(run("trading default A-2", &store).code, 0);
+        let accounts = json_of(&run("trading accounts --json", &store));
+        assert_eq!(accounts["accounts"][1]["default"], true, "{accounts}");
+        assert_eq!(run("trading default nope", &store).code, crate::cli::EXIT_NOT_FOUND);
+
+        for line in [
+            "trading positions",
+            "trading orders",
+            "trading buy",
+            "trading sell --limit 7600",
+            "trading exit --stop 7590",
+            "trading modify B1 --price 7600",
+            "trading cancel --all",
+            "trading flatten",
+            "trading sign-in Practice",
+            "trading login fake",
+        ] {
+            assert_eq!(run(line, &store).code, crate::cli::EXIT_NO_WINDOW, "{line}");
+        }
+        assert_eq!(run("trading buy --limit 1 --stop 2", &store).code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("trading exit", &store).code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("trading login nope", &store).code, crate::cli::EXIT_NOT_FOUND);
+
+        // The quantities a chart's Qty offers.
+        let out = run("trading quantities set Micros 1,2,5,10 --symbols MES,MNQ", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("trading quantities list --json", &store));
+        let micros = &listed["templates"][2];
+        assert_eq!(micros["quantities"], json!([1, 2, 5, 10]), "{listed}");
+        assert_eq!(micros["symbols"], json!(["MES", "MNQ"]), "{listed}");
+        assert_eq!(run("trading quantities set Micros 0", &store).code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("trading quantities remove Micros", &store).code, 0);
+        assert_eq!(json_of(&run("trading quantities --json", &store))["templates"].as_array().unwrap().len(), 2);
+
+        assert_eq!(run("trading sign-out Practice", &store).code, 0);
+        assert!(trading::logins(&store)[0].signed_out);
+        assert_eq!(run("trading remove Practice", &store).code, 0);
+        assert!(trading::logins(&store).is_empty());
     }
 }

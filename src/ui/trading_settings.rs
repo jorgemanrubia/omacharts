@@ -52,6 +52,11 @@ impl Secrets for Keyring {
     }
 }
 
+/// Where the passwords of `service`'s logins are kept: its keyring.
+pub(crate) fn keyring_for(service: &str) -> Rc<dyn Secrets> {
+    Rc::new(Keyring(trading::service_for(service).and_then(|service| service.keyring())))
+}
+
 /// Ask for a login of the trading service `service` over `anchor` — a new one, or
 /// `known` again — in the trading service's own dialog.
 fn ask(anchor: &gtk::Widget, panel: &Panel, service: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
@@ -169,7 +174,7 @@ impl Panel {
     fn secrets(&self, service: &str) -> Rc<dyn Secrets> {
         match &self.secrets {
             Some(secrets) => secrets.clone(),
-            None => Rc::new(Keyring(trading::service_for(service).and_then(|service| service.keyring()))),
+            None => keyring_for(service),
         }
     }
 

@@ -168,12 +168,13 @@ impl Preferences {
             LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
         });
 
-        let sections: Vec<(&str, &str, gtk::Widget)> = vec![
-            ("General", "preferences-system-symbolic", general_page.clone().upcast()),
-            ("Charts", "utilities-system-monitor-symbolic", charts.upcast()),
-            ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
-            ("Data", "network-server-symbolic", data_page.clone().upcast()),
-            ("Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()),
+        let sections: Vec<Section> = vec![
+            ("General", "preferences-system-symbolic", None, general_page.clone().upcast()),
+            ("Charts", "utilities-system-monitor-symbolic", None, charts.upcast()),
+            ("Theme", "applications-graphics-symbolic", None, page.clone().upcast()),
+            ("Data", "network-server-symbolic", None, data_page.clone().upcast()),
+            // Experimental, and said so where it is set up.
+            ("Trading", "view-list-bullet-symbolic", Some("Beta"), trading_page.clone().upcast()),
         ];
         let start = match (charts_tab, at_trading) {
             (_, true) => sections.len() - 1,
@@ -286,15 +287,19 @@ fn header_sections(
 /// A sidebar rather than the preferences dialog's own view switcher, because
 /// the dialog fills most of the window and a switcher across its top leaves
 /// that width to margins.
+/// A section of the sidebar: its title, its icon, a tag beside the title
+/// when it has one, and its page.
+type Section = (&'static str, &'static str, Option<&'static str>, gtk::Widget);
+
 fn split_view(
     dialog: &adw::Dialog,
-    sections: &[(&str, &str, gtk::Widget)],
+    sections: &[Section],
     start: usize,
 ) -> adw::NavigationSplitView {
     let content = adw::NavigationView::new();
     // A section with tabs of its own shows them in its header, where the
     // title would be.
-    let section_page = |(title, _, page): &(&str, &str, gtk::Widget)| {
+    let section_page = |(title, _, _, page): &Section| {
         let header = adw::HeaderBar::new();
         // Words alone: a switcher that insists on an icon per tab draws a
         // placeholder for every tab that has none.
@@ -311,10 +316,18 @@ fn split_view(
 
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
-    for (title, icon, _) in sections {
+    for (title, icon, tag, _) in sections {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         row.append(&gtk::Image::from_icon_name(icon));
         row.append(&gtk::Label::new(Some(title)));
+        if let Some(tag) = tag {
+            let tag = gtk::Label::new(Some(tag));
+            tag.add_css_class("section-tag");
+            tag.set_valign(gtk::Align::Center);
+            // Close to its title, not spaced like the icon.
+            tag.set_margin_start(-6);
+            row.append(&tag);
+        }
         list.append(&row);
     }
 

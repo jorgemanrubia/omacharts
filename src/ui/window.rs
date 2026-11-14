@@ -52,6 +52,7 @@ mod executions;
 mod log;
 mod marks;
 mod trade;
+mod trade_cli;
 mod updates;
 mod about;
 use trade::Trade;
