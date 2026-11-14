@@ -38,7 +38,7 @@ pub fn registry() -> Registry {
         #[cfg(not(test))]
         {
             fake.numbered_by_user = true;
-            fake.in_turn = vec![super::fake::day_of_orders(), super::fake::another_day()];
+            fake.in_turn = vec![super::fake::day_of_orders, super::fake::another_day];
             fake.held.lock().unwrap().insert(String::new(), super::fake::day_of_orders());
         }
         #[cfg(not(test))]

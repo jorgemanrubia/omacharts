@@ -42,8 +42,9 @@ pub struct FakeService {
     pub held: Mutex<HashMap<String, Book>>,
     /// What it holds for logins named in neither, in turn: the first login
     /// to sign in finds the first, the second the second, and any after them
-    /// what is under no name.
-    pub in_turn: Vec<Book>,
+    /// what is under no name. Made when a login signs in, so that listing
+    /// the service costs nothing.
+    pub in_turn: Vec<fn() -> Book>,
     /// The logins signed in, in the order they first did, for `in_turn`.
     pub seen: Mutex<Vec<String>>,
     /// Orders from before the session that only its fill history has, by
@@ -759,9 +760,9 @@ impl TradingService for FakeService {
         // What a login named in neither holds is its turn's, or under no name at all.
         let mut book = held
             .get(&login.name)
-            .or_else(|| self.in_turn.get(turn))
-            .or_else(|| held.get(""))
             .cloned()
+            .or_else(|| self.in_turn.get(turn).map(|day| day()))
+            .or_else(|| held.get("").cloned())
             .unwrap_or_default();
         drop(held);
         let past = self.past.lock().unwrap();
@@ -912,7 +913,7 @@ pub(crate) mod tests {
     /// second, again when it signs in again; a third finds what is under no name.
     #[test]
     fn logins_find_what_is_held_in_turn() {
-        let fake = FakeService { in_turn: vec![day_of_orders(), another_day()], ..FakeService::listed() };
+        let fake = FakeService { in_turn: vec![day_of_orders, another_day], ..FakeService::listed() };
         fake.held.lock().unwrap().insert(String::new(), Book::default());
         let held_for = |id: &str| {
             fake.sign_in(&test_login(id, id, TEST_SYSTEM), Box::new(|_| {})).expect("signed in");
