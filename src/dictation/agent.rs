@@ -20,6 +20,13 @@
 //! name their session only in output whose shape their help does not give,
 //! so each of their turns is a new conversation rather than a guess.
 //!
+//! Claude Code is instead kept running for the whole conversation, warm:
+//! `claude -p --input-format stream-json --output-format stream-json`
+//! takes each dictation as a line on its stdin and ends each turn with a
+//! `result` event, so a follow-up starts without booting it again. [`Warm`]
+//! is that process. The others have no such mode in their help that a turn
+//! can be read back from, and run one process a turn as above.
+//!
 //! Only a dictation runs an agent's command: [`run`] for a turn, [`launch`]
 //! for Omarchy's terminal. The models Preferences offers are kept here, and
 //! the one an agent uses by default is read from its settings file.
@@ -31,8 +38,10 @@
 //! The account Omarchy has selected for the agent is used, as `omarchy agent`
 //! uses it.
 
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -167,6 +176,54 @@ impl Agent {
     /// Does a turn continue the one before it? The others start afresh.
     pub fn resumes(self) -> bool {
         !matches!(self, Agent::OpenCode | Agent::Antigravity)
+    }
+
+    /// Is it kept running for the whole conversation, a turn a line on its
+    /// stdin, rather than started for every turn?
+    pub fn stays_warm(self) -> bool {
+        self == Agent::Claude
+    }
+
+    /// The arguments for the process that takes a whole conversation, turn
+    /// after turn, with `model` if one was chosen; empty for an agent that
+    /// does not stay warm.
+    pub fn warm_arguments(self, model: Option<&str>) -> Vec<String> {
+        let model = model.map(str::trim).filter(|model| !model.is_empty());
+        match self {
+            // `--verbose` is what `--output-format stream-json` asks for
+            // with `-p`.
+            Agent::Claude => {
+                let mut arguments: Vec<String> = [
+                    "-p",
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--permission-mode",
+                    "auto",
+                ]
+                .iter()
+                .map(|item| item.to_string())
+                .collect();
+                if let Some(model) = model {
+                    arguments.extend(["--model".to_string(), model.to_string()]);
+                }
+                arguments
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// `prompt` as the line a warm process takes for its next turn.
+    pub fn warm_line(self, prompt: &str) -> String {
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": prompt}}).to_string()
+    }
+
+    /// Does `line`, printed by a warm process, end the turn it is on?
+    pub fn ends_turn(self, line: &str) -> bool {
+        serde_json::from_str::<Value>(line.trim())
+            .is_ok_and(|event| event.get("type").and_then(Value::as_str) == Some("result"))
     }
 
     /// The session to start a conversation with, for an agent that takes
@@ -461,6 +518,132 @@ pub fn run(invocation: &Invocation, longest: Duration) -> Result<Output, String>
     })
 }
 
+/// A turn after turn on one process: what [`Warm`] is, and what a test can
+/// stand in for.
+pub trait Session: Send {
+    /// Take `line` as the next turn and wait for it to end: what it printed
+    /// for that turn, and whether it is still running after it.
+    fn turn(&mut self, line: &str) -> Result<Output, String>;
+}
+
+/// An agent kept running for a conversation, taking a turn a line on its
+/// stdin. Dropping it stops it.
+pub struct Warm {
+    agent: Agent,
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: mpsc::Receiver<String>,
+    stderr: Arc<Mutex<String>>,
+    longest: Duration,
+}
+
+/// Start `invocation`, to be given its turns one by one, each allowed
+/// `longest`.
+pub fn warm(agent: Agent, invocation: &Invocation, longest: Duration) -> Result<Warm, String> {
+    spawned(invocation);
+    let mut child = Command::new(&invocation.program)
+        .args(&invocation.arguments)
+        .current_dir(&invocation.directory)
+        .envs(invocation.environment.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => format!("{} is not installed", invocation.program),
+            _ => format!("could not start {}: {error}", invocation.program),
+        })?;
+    let (sender, lines) = mpsc::channel();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    // Read while it runs, or a chatty agent fills the pipe and waits on it.
+    let stderr = Arc::new(Mutex::new(String::new()));
+    if let Some(mut pipe) = child.stderr.take() {
+        let said = stderr.clone();
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            while let Ok(read) = std::io::Read::read(&mut pipe, &mut buffer) {
+                if read == 0 {
+                    break;
+                }
+                said.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push_str(&String::from_utf8_lossy(&buffer[..read]));
+            }
+        });
+    }
+    let stdin = child.stdin.take();
+    Ok(Warm { agent, child, stdin, lines, stderr, longest })
+}
+
+impl Warm {
+    /// What it said on stderr so far, taken.
+    fn take_stderr(&self) -> String {
+        std::mem::take(&mut *self.stderr.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    /// It stopped of itself: what it printed and said up to then.
+    fn ended(&mut self, stdout: String) -> Output {
+        let _ = self.child.wait();
+        // What it said last, written as it went.
+        std::thread::sleep(Duration::from_millis(50));
+        Output { success: false, stdout, stderr: self.take_stderr() }
+    }
+}
+
+impl Session for Warm {
+    fn turn(&mut self, line: &str) -> Result<Output, String> {
+        self.take_stderr();
+        let written = self.stdin.as_mut().map(|stdin| writeln!(stdin, "{line}").and_then(|()| stdin.flush()));
+        if !matches!(written, Some(Ok(()))) {
+            return Ok(self.ended(String::new()));
+        }
+        let mut stdout = String::new();
+        let started = Instant::now();
+        loop {
+            let left = self.longest.saturating_sub(started.elapsed());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => {
+                    stdout.push_str(&line);
+                    stdout.push('\n');
+                    if self.agent.ends_turn(&line) {
+                        return Ok(Output { success: true, stdout, stderr: self.take_stderr() });
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(self.ended(stdout)),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Err(format!("it was still going after {} minutes, and was stopped", self.longest.as_secs() / 60));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Warm {
+    /// Its stdin closed, which ends it between turns; stopped if it does
+    /// not end of itself soon after.
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            match self.child.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 /// Omarchy's default agent, by its name: `claude`, `codex`, … Empty when
 /// none has been chosen, or this is not Omarchy.
 pub fn omarchy_default() -> String {
@@ -489,12 +672,12 @@ pub fn omarchy_account_home(agent: Agent) -> Option<String> {
 }
 
 
-/// Every program [`run`] and [`launch`] started, for the tests to check
+/// Every program [`run`], [`warm`] and [`launch`] started, for the tests to check
 /// that only a dictation starts an agent.
 #[cfg(test)]
 pub static SPAWNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// Note that `invocation` is about to start. These two are the only places
+/// Note that `invocation` is about to start. These three are the only places
 /// an agent's command is started, and only a dictation calls them.
 fn spawned(_invocation: &Invocation) {
     #[cfg(test)]
@@ -668,6 +851,66 @@ mod tests {
     }
 
     #[test]
+    fn claude_stays_warm_and_takes_a_turn_a_line() {
+        assert!(Agent::Claude.stays_warm());
+        assert!(Agent::ALL.iter().filter(|agent| agent.stays_warm()).eq([&Agent::Claude]));
+        assert_eq!(
+            Agent::Claude.warm_arguments(Some(" opus ")),
+            [
+                "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                "--permission-mode", "auto", "--model", "opus"
+            ]
+        );
+        assert!(!Agent::Claude.warm_arguments(Some("")).contains(&"--model".to_string()));
+        let line = Agent::Claude.warm_line("say \"hi\"\nnow");
+        assert!(!line.contains('\n'), "one line");
+        let message: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(message["type"], "user");
+        assert_eq!(message["message"]["role"], "user");
+        assert_eq!(message["message"]["content"], "say \"hi\"\nnow");
+        assert!(Agent::Claude.ends_turn(r#"{"type":"result","subtype":"success","result":"ok"}"#));
+        assert!(!Agent::Claude.ends_turn(r#"{"type":"assistant","message":{}}"#));
+        assert!(!Agent::Claude.ends_turn("result"));
+    }
+
+    #[test]
+    fn a_warm_process_takes_turn_after_turn_and_ends_with_its_stdin() {
+        let invocation = Invocation {
+            program: "sh".into(),
+            arguments: vec![
+                "-c".into(),
+                "while read -r line; do echo '{\"type\":\"assistant\"}'; echo \"{\\\"type\\\":\\\"result\\\",\\\"result\\\":\\\"$line\\\"}\"; done; echo bye >&2".into(),
+            ],
+            directory: std::env::temp_dir(),
+            environment: vec![],
+        };
+        let mut warm = warm(Agent::Claude, &invocation, Duration::from_secs(10)).unwrap();
+        let first = warm.turn("one").unwrap();
+        assert!(first.success);
+        assert_eq!(first.stdout.lines().count(), 2);
+        assert_eq!(Agent::Claude.read(&first.stdout).reply.as_deref(), Some("one"));
+        assert_eq!(Agent::Claude.read(&warm.turn("two").unwrap().stdout).reply.as_deref(), Some("two"));
+        drop(warm);
+    }
+
+    #[test]
+    fn a_warm_process_that_ends_or_hangs_is_said() {
+        let quits = Invocation {
+            program: "sh".into(),
+            arguments: vec!["-c".into(), "read -r line; echo 'API Error: overloaded' >&2; exit 1".into()],
+            directory: std::env::temp_dir(),
+            environment: vec![],
+        };
+        let output = warm(Agent::Claude, &quits, Duration::from_secs(10)).unwrap().turn("one").unwrap();
+        assert!(!output.success);
+        assert_eq!(output.stderr.trim(), "API Error: overloaded");
+        let hangs = Invocation { arguments: vec!["-c".into(), "sleep 30".into()], ..quits };
+        let started = Instant::now();
+        assert!(warm(Agent::Claude, &hangs, Duration::from_millis(300)).unwrap().turn("one").is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
     fn codex_runs_a_turn_headless_and_resumes_the_session() {
         let first = Agent::Codex.arguments("hi", None, None);
         assert_eq!(&first[..2], ["exec", "--approve-for-me"]);
@@ -756,6 +999,11 @@ mod tests {
                     assert!(!arguments.iter().any(|a| a == other), "{agent:?} has {other}: {arguments:?}");
                 }
                 assert!(!arguments.iter().any(|a| a.contains("sandbox")), "{agent:?}: {arguments:?}");
+            }
+            if agent.stays_warm() {
+                let arguments = agent.warm_arguments(Some("m"));
+                assert!(arguments.windows(flags.len()).any(|run| run == flags), "{agent:?}: {arguments:?}");
+                assert!(!others.iter().any(|other| arguments.iter().any(|a| a == other)), "{agent:?}: {arguments:?}");
             }
         }
     }

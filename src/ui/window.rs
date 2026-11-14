@@ -10521,6 +10521,7 @@ impl Window {
         self.window.connect_close_request(move |_| {
             this.retire_feeds();
             this.desk.sign_out_all(crate::trading::SIGN_OUT_WAIT);
+            this.stop_dictation();
             glib::Propagation::Proceed
         });
     }

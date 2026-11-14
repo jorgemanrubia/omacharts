@@ -96,6 +96,13 @@ impl Window {
         })
     }
 
+    /// Stop the agent kept warm for dictation, if one is.
+    pub(super) fn stop_dictation(&self) {
+        if let Some(dispatcher) = self.dictation.dispatcher.get() {
+            dispatcher.stop();
+        }
+    }
+
     /// Lay the glow over the bottom of the window, in `overlay`.
     pub(super) fn lay_glow(&self, overlay: &gtk::Overlay) {
         overlay.add_overlay(&self.dictation.glow.widget);
@@ -157,7 +164,7 @@ fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictation::agent::{Invocation, Output};
+    use crate::dictation::agent::{Invocation, Output, Session};
     use crate::store::Store;
     use omacharts_engine::log::Level;
     use std::sync::{Arc, Mutex};
@@ -175,6 +182,8 @@ mod tests {
             let log = crate::ui::window::log::tests::private(&window);
             let asked = Arc::new(Mutex::new(Vec::<Invocation>::new()));
             let seen = asked.clone();
+            let warmed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let warms = warmed.clone();
             window.start_dictation_in(World {
                 default_agent: Box::new(|| "claude".into()),
                 invocation: Box::new(|agent, arguments| Invocation {
@@ -183,17 +192,13 @@ mod tests {
                     directory: std::env::temp_dir(),
                     environment: vec![],
                 }),
-                run: Box::new(move |invocation| {
-                    seen.lock().unwrap().push(invocation.clone());
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    Ok(Output {
-                        success: true,
-                        stdout: r#"{"is_error":false,"result":"Added RSI(14) on pos:0.\nAnything else?","session_id":"s"}"#.into(),
-                        stderr: String::new(),
-                    })
-                }),
+                run: Box::new(|_| unreachable!("claude is kept warm")),
                 terminal: Box::new(|_| unreachable!()),
                 launch: Box::new(|_| unreachable!()),
+                warm: Box::new(move |_, invocation| {
+                    warms.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Box::new(Answers { invocation: invocation.clone(), seen: seen.clone() }) as Box<dyn Session>)
+                }),
             });
             let glow = &window.dictation.glow;
             assert_eq!(glow.widget.parent(), window.trade.overlay.borrow().clone().map(|overlay| overlay.upcast()));
@@ -233,10 +238,34 @@ mod tests {
             let done = log.entries().into_iter().find(|entry| entry.text.starts_with("Done")).unwrap();
             assert_eq!(done.detail.as_deref(), Some("“add an RSI”\n\nAdded RSI(14) on pos:0.\nAnything else?"));
             let asked = asked.lock().unwrap();
-            assert!(asked[0].arguments.last().unwrap().ends_with("\n\nUse Sonnet."));
+            assert!(asked[0].arguments.last().unwrap().ends_with("\\n\\nUse Sonnet.\"}}"), "{asked:?}");
             assert!(asked[0].arguments.windows(2).any(|pair| pair == ["--model", "haiku"]));
-            assert!(asked[1].arguments.windows(2).any(|pair| pair == ["--resume", "s"]));
+            assert_eq!(asked.len(), 2);
+            assert!(asked[1].arguments.last().unwrap().contains("The user said: \\\"now a MACD\\\""), "{asked:?}");
+            assert_eq!(warmed.load(std::sync::atomic::Ordering::SeqCst), 1, "one process for both");
         });
+    }
+
+    /// Claude kept warm, in a test: each turn answered the same, and what
+    /// it was asked written down, the process's arguments and then the
+    /// line it was given.
+    struct Answers {
+        invocation: Invocation,
+        seen: Arc<Mutex<Vec<Invocation>>>,
+    }
+
+    impl Session for Answers {
+        fn turn(&mut self, line: &str) -> Result<Output, String> {
+            let mut asked = self.invocation.clone();
+            asked.arguments.push(line.to_string());
+            self.seen.lock().unwrap().push(asked);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            Ok(Output {
+                success: true,
+                stdout: r#"{"type":"result","is_error":false,"result":"Added RSI(14) on pos:0.\nAnything else?","session_id":"s"}"#.into(),
+                stderr: String::new(),
+            })
+        }
     }
 
     /// No Superwhisper listening: Ctrl+V outside a text box pastes what was
@@ -286,6 +315,7 @@ mod tests {
                 run: Box::new(|_| unreachable!()),
                 terminal: Box::new(|_| unreachable!()),
                 launch: Box::new(|_| unreachable!()),
+                warm: Box::new(|_, _| unreachable!()),
             });
             window.dictated("add an RSI".into());
             let failed = || log.entries().iter().any(|entry| entry.level == Level::Error);
