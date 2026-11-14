@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(kind("chart_header_center"), Kind::Shared);
         assert_eq!(kind("chart_header_right"), Kind::Shared);
         assert_eq!(kind("chartbook_templates"), Kind::Shared);
-        assert_eq!(kind("feature.trading"), Kind::Local);
+        assert_eq!(kind("feature.sierra"), Kind::Local);
     }
 
     /// Every key the app writes has been given a kind on purpose.

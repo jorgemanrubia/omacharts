@@ -19,15 +19,11 @@ one.
 ## Charting first
 
 Omacharts has to keep appealing to people who never trade from it. Trading
-is experimental, and is on for everybody: there is no flag to switch.
+is experimental, marked Beta, and there for everybody.
 
-Trading was behind a feature flag, `trading`, until it shipped. The flag is
-gone. A store that still holds its setting, `feature.trading`, is not read
-for it, and `omacharts features enable trading` answers that trading is
-always on, with exit 0; `features disable trading` is refused with exit 5.
-The `features` command remains for the flags still being tried, which is
-`sierra`: Sierra Chart as a data feed, read from its files, and as a
-trading service through its DTC server. See [sierra.md](sierra.md).
+Sierra Chart, as a data feed read from its files and as a trading service
+through its DTC server, is behind the `sierra` flag, switched with
+`omacharts features`. See [sierra.md](sierra.md).
 
 **Trading's settings are always visible in Preferences; everything else is
 unchanged until there is an account.** Every trading setting is in

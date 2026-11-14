@@ -15,10 +15,8 @@
 //! the man page, the skill and the manual — so that an experiment is not
 //! advertised: see `doc/prop-trading/spec.md`.
 //!
-//! A flag goes when its part ships. Its name stays in [`RETIRED`], so that
-//! `features enable` says what became of it, and a store that still holds
-//! its setting is not read for it. Trading was the first: it is on for
-//! everybody, with no flag.
+//! A flag goes when its part ships, and with it every mention of it. A
+//! `feature.<name>` setting no flag is called by is read by nothing.
 
 use crate::store::Store;
 
@@ -48,17 +46,6 @@ pub const FLAGS: &[Flag] = &[Flag {
     default: false,
     about: "Sierra Chart as a data feed, from its own files, and as a trading service",
 }];
-
-/// Flags there were once, and what became of each: a name somebody may
-/// still type, answered with what it is now rather than "no such flag".
-/// Each one's setting, `feature.<name>`, may still be in a store from
-/// before, and is read by nothing.
-pub const RETIRED: &[(&str, &str)] = &[("trading", "trading is always on; it is no longer a feature flag")];
-
-/// What became of the retired flag called `name`, as typed.
-pub fn retired(name: &str) -> Option<&'static str> {
-    RETIRED.iter().find(|(old, _)| old.eq_ignore_ascii_case(name.trim())).map(|(_, now)| *now)
-}
 
 /// What every flag's setting starts with.
 pub const PREFIX: &str = "feature.";
@@ -211,7 +198,6 @@ mod tests {
             assert_eq!(flag.name, flag.name.to_lowercase(), "typed in lower case");
             assert!(!flag.name.contains(char::is_whitespace));
             assert!(FLAGS.iter().skip(at + 1).all(|other| other.name != flag.name), "{} twice", flag.name);
-            assert!(retired(flag.name).is_none(), "{} is retired and a flag", flag.name);
             assert_eq!(flag.feature.flag().name, flag.name);
             assert_eq!(flag.feature.setting(), format!("feature.{}", flag.name));
         }
@@ -243,17 +229,16 @@ mod tests {
         assert!(store.setting(&Feature::Sierra.setting()).is_none(), "off is the default, so nothing is kept");
     }
 
-    /// A store from when trading was behind a flag may still say so. It
-    /// is read by nothing and stops nothing from starting.
+    /// A `feature.` setting no flag is called by is read by nothing and
+    /// stops nothing from starting.
     #[test]
-    fn a_trading_flag_left_in_the_store_is_ignored() {
+    fn a_setting_no_flag_is_called_by_is_ignored() {
         let store = Store::memory().expect("a store");
-        store.set_setting_bool("feature.trading", false);
+        store.set_setting_bool("feature.bananas", false);
         store.set_setting_bool(&Feature::Sierra.setting(), true);
         adopt(&store);
         assert!(sierra());
-        assert!(named("trading").is_none());
-        assert!(retired(" Trading ").is_some_and(|now| now.contains("always on")));
+        assert!(named("bananas").is_none());
     }
 
     #[test]

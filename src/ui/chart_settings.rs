@@ -321,7 +321,7 @@ pub const SHOW_FILLS_LABEL: &str = "Show fills";
 /// from the lists the other tabs wear.
 pub const TRADING_ICON: &str = "network-transmit-receive-symbolic";
 
-/// What the chart trades, when trading is on: none, its own symbol, until
+/// What the chart trades: none, its own symbol, until
 /// one is picked, MES for a chart of ES. Its data stays what it charts.
 fn trading_page(window: &Rc<Window>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();

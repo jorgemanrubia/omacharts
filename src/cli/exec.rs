@@ -5882,15 +5882,6 @@ fn features_set(
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let name = required(m, "FEATURE")?;
-    // A flag whose part has shipped: switching it on is what is already so,
-    // and switching it off is not something it can do any more.
-    if let Some(now) = crate::features::retired(name) {
-        let name = name.trim().to_lowercase();
-        return match on {
-            true => said(as_json, json!({"name": name, "on": true, "changed": false}), now.to_string()),
-            false => Err(Fault::refused(format!("{now}, and cannot be switched off"))),
-        };
-    }
     let Some(flag) = crate::features::named(name) else {
         let known: Vec<&str> = crate::features::FLAGS.iter().map(|flag| flag.name).collect();
         return Err(Fault::not_found(format!("no feature called {name:?}; the features are {}", known.join(", "))));
@@ -10335,8 +10326,7 @@ mod tests {
     }
 
     /// `features` lists the flags, every one off on a fresh profile, and
-    /// switches one by name; a name nobody knows is not found, and one
-    /// retired says what became of it.
+    /// switches one by name; a name nobody knows is not found.
     #[test]
     fn features_are_listed_and_switched_by_name() {
         let store = bare();
@@ -10347,7 +10337,6 @@ mod tests {
             assert_eq!(out.code, 0, "{}", out.err);
             assert!(out.out.starts_with(name), "{}", out.out);
             assert!(out.out.lines().next().unwrap().contains(" off "), "{}", out.out);
-            assert!(!out.out.lines().any(|line| line.starts_with("trading")), "{}", out.out);
         }
         let listed = json_of(&run("features list --json", &store));
         assert_eq!(listed["features"][0]["name"], name);
@@ -10373,22 +10362,6 @@ mod tests {
         run(&format!("features enable {name}"), &store);
         assert!(!run("config list", &store).out.contains("feature."));
         crate::features::force(feature, false);
-    }
-
-    /// Trading was a flag and is not one now: enabling it says so and
-    /// succeeds, since it is on; disabling it is refused. Nothing is written.
-    #[test]
-    fn the_trading_flag_says_trading_is_always_on() {
-        let store = bare();
-        let out = run("features enable trading", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "trading is always on; it is no longer a feature flag\n");
-        let out = json_of(&run("features enable Trading --json", &store));
-        assert_eq!(out, json!({"name": "trading", "on": true, "changed": false}));
-        let out = run("features disable trading", &store);
-        assert_eq!(out.code, crate::cli::EXIT_REFUSED, "{}", out.out);
-        assert!(out.err.contains("always on"), "{}", out.err);
-        assert_eq!(store.setting("feature.trading"), None);
     }
 
     /// Switched with a window open, the window is told, so what the flag
