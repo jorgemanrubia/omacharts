@@ -818,7 +818,7 @@ hl.config({{
         tokens = []
         for line in tsv.splitlines()[1:]:
             cells = line.split("\t")
-            text = cells[11].strip().lower() if len(cells) >= 12 else ""
+            text = cells[11].strip().lower() if len(cells) >= 12 and cells[6].isdigit() else ""
             if text:
                 left, t, w, h = (int(c) / 3 for c in cells[6:10])
                 tokens.append((text, (box[0] + left) / sx, (box[1] + t + h / 2) / sx, w / sx, (wx, wy, ww, wh)))
