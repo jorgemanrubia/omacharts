@@ -125,6 +125,12 @@ pub fn launch_order(feed: &'static Listed) -> Vec<String> {
 /// The order this process charts from: the launch flag's, otherwise what
 /// is stored.
 pub fn order(store: &Store) -> Vec<String> {
+    // A build with the `fakes` feature, filming a simulated tape, charts
+    // from the tape alone, so nothing on screen can be a real quote.
+    #[cfg(all(feature = "fakes", not(test)))]
+    if omacharts_engine::providers::tape::on() {
+        return vec![omacharts_engine::providers::tape::LISTED.id.to_string()];
+    }
     match for_this_launch() {
         Some(feed) => launch_order(feed),
         None => stored_order(store),

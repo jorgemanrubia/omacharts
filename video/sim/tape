@@ -1,0 +1,516 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["numpy", "matplotlib"]
+# ///
+"""A simulated ES tape for the fakes build: the market the Trading video is
+filmed on. Nothing here is real data, and nothing here is shipped.
+
+    tape make DIR [--seed N]        the history before the film: DIR/ES.history.csv
+                                    (1m bars) and DIR/check.png, a plot of its last
+                                    three hours
+    tape serve DIR [--seed N] [--speed 40] [--epoch WALL]
+                                    trade live: append to DIR/ES.ticks, one line per
+                                    trade, `ts_ms price size side`, and take commands
+                                    on the FIFO DIR/control
+
+Sim time runs `speed` times faster than the wall from the anchor, Thursday 12
+November 2026 14:40 UTC: sim = ANCHOR + speed * (wall - epoch). `--epoch` is
+the wall moment the anchor stands at (default: when serve starts), so the app,
+run under faketime from the same moment, keeps the same clock.
+
+Commands, one per line on the FIFO:
+
+    free LOW HIGH                 wander inside a band, the default state
+    goto PRICE in SECONDS [NAME]  be trading at PRICE in SECONDS of wall time
+    touch PRICE in SECONDS NAME   trade through PRICE (one tick past) at that moment, not before
+    avoid PRICE                   never trade at or through PRICE until `avoid off`
+    quit
+
+Every goto and touch that completes appends {"name", "mono", "wall", "price"}
+to DIR/touches.jsonl (`mono` is time.monotonic()).
+
+The process between waypoints is stochastic; waypoints only bend it. The
+efficient price is a random walk whose volatility clusters (a GARCH-style
+recursion) under a small Markov chain of regimes — lull, rotation, impulse,
+consolidation — and trades print at the bid or the ask around it, so the last
+price flickers inside a forming candle. A goto pulls the walk along a Brownian
+bridge to its target: the noise stays, the end is pinned. A touch does the
+same to a tick or three short of its level, jitters there, and trades through
+on its moment. An avoid reflects the walk before its level.
+"""
+
+import json
+import math
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+
+TICK = 0.25
+ANCHOR = 1794494400  # Thu 12 Nov 2026 14:40:00 UTC, 09:40 in New York
+SLOT_RATE = 60  # slots per wall second, one per video frame
+ROOT = "ES"
+
+# Calibrated so that a one-minute bar averages two to three points of range in
+# rotation and six to nine in an impulse, with a lognormal-tailed print size.
+BASE_SIGMA = 0.11  # points per sqrt(sim second)
+REGIMES = {
+    #               vol   trades/s(sim)  size×   mean length (sim s)
+    "lull":        (0.45, 0.20, 0.6, 150),
+    "rotation":    (1.00, 1.25, 1.0, 420),
+    "impulse":     (1.90, 1.90, 2.3, 260),
+    "consolidation": (0.70, 0.80, 0.9, 240),
+}
+NEXT = {
+    "lull": [("rotation", 0.7), ("impulse", 0.15), ("consolidation", 0.15)],
+    "rotation": [("lull", 0.25), ("impulse", 0.35), ("consolidation", 0.40)],
+    "impulse": [("consolidation", 0.75), ("rotation", 0.25)],
+    "consolidation": [("rotation", 0.45), ("impulse", 0.30), ("lull", 0.25)],
+}
+
+
+def on_grid(price):
+    return round(price / TICK) * TICK
+
+
+class Market:
+    def __init__(self, seed, price, dt):
+        self.rng = np.random.default_rng(seed)
+        self.dt = dt  # sim seconds per slot
+        self.p = price
+        self.last = on_grid(price)
+        self.h = 1.0  # GARCH variance multiplier, mean 1
+        self.u = 0.0  # the transient around the efficient price: wicks, chop
+        self.regime, self.left = "rotation", 300.0
+        self.direction = 1
+        self.pullback = 0.0
+        self.fair = price
+        self.band = None
+        self.avoids = []  # (level, side): side +1 keeps prices above, -1 below
+        self.target = None
+        self.activity = 1.0  # time-of-day volume
+        self.events = []
+
+    # Regimes
+
+    def _switch(self):
+        names, weights = zip(*NEXT[self.regime])
+        self.regime = self.rng.choice(names, p=np.array(weights) / sum(weights))
+        self.left = self.rng.exponential(REGIMES[self.regime][3]) + 40
+        if self.regime == "impulse":
+            self.direction = self.rng.choice((-1, 1))
+            if self.band:
+                mid = sum(self.band) / 2
+                self.direction = -1 if self.p > mid + 1 else 1 if self.p < mid - 1 else self.direction
+            self.speed = self.rng.uniform(0.06, 0.11)  # points per sim second
+        if self.regime in ("rotation", "consolidation"):
+            self.fair = self.p
+
+    # One slot
+
+    def step(self, slot_index):
+        dt = self.dt
+        if self.target is None:
+            self.left -= dt
+            if self.left <= 0:
+                self._switch()
+        vol, rate, size_x, _ = REGIMES[self.regime]
+        # Volatility clusters: a GARCH(1,1)-style recursion on the slot's shock.
+        z = self.rng.standard_normal()
+        self.h = 0.004 + 0.003 * z * z + 0.993 * self.h
+        sigma = BASE_SIGMA * vol * math.sqrt(self.h) * math.sqrt(dt)
+        drift = 0.0
+        hold = None
+        if self.target:
+            t = self.target
+            n = max(1, t["end"] - slot_index)
+            goal = t["price"] if t["kind"] == "goto" else t["short"]
+            if t["kind"] == "touch" and slot_index >= t["hold_from"]:
+                hold = goal
+            remaining = goal - self.p
+            # A Brownian bridge: the noise stays, the end is pinned.
+            drift = remaining / n
+            sigma *= math.sqrt(max(0.0, (n - 1) / n))
+            speed = abs(remaining) / (n * dt) if n else 0
+            vol_needed = min(3.0, 1.0 + speed / 0.05)
+            rate = max(rate, REGIMES["rotation"][1] * vol_needed)
+            size_x = max(size_x, 0.8 + 0.6 * vol_needed)
+        elif self.regime == "impulse":
+            # One-way trade, with a pullback of a third to a half now and then.
+            if self.pullback > 0:
+                self.pullback -= dt
+                drift = -self.direction * self.speed * 0.6 * dt
+            else:
+                drift = self.direction * self.speed * dt
+                if self.rng.random() < dt / 90:
+                    self.pullback = self.rng.uniform(25, 60)
+        else:
+            self.fair += self.rng.standard_normal() * 0.02 * math.sqrt(dt)
+            drift = -(self.p - self.fair) * 0.004 * dt
+        if self.band and not self.target:
+            lo, hi = self.band
+            if self.p < lo:
+                drift += (lo - self.p) * 0.02 * dt + 0.01 * dt
+            elif self.p > hi:
+                drift += (hi - self.p) * 0.02 * dt - 0.01 * dt
+            if self.regime == "impulse" and not (lo - 1 < self.p < hi + 1):
+                self.direction = 1 if self.p < lo else -1
+        self.p += drift + sigma * z
+        # Orders come and go around the fair price: a fast mean-reverting
+        # transient, which is what draws wicks and overlapping bodies.
+        decay = math.exp(-dt / 12.0)
+        spread = 0.55 * vol ** 0.5 * math.sqrt(self.h)
+        if self.target and self.target["kind"] == "touch" and slot_index >= self.target["hold_from"] - 30:
+            spread *= 0.2
+        self.u = self.u * decay + spread * math.sqrt(1 - decay * decay) * self.rng.standard_normal()
+        if hold is not None:
+            # In front of the level: a tick or so of jitter, never reaching it.
+            side = self.target["side"]
+            self.p = hold + side * abs(self.rng.normal(0, 0.12))
+        self._reflect()
+        return self._prints(rate * self.activity, size_x, drift)
+
+    def _reflect(self):
+        for level, side in self.avoids:
+            edge = level + side * 2 * TICK
+            if (self.p - edge) * side < 0:
+                self.p = edge + (edge - self.p) * 0.5
+        if self.target and self.target["kind"] == "touch":
+            level, side = self.target["price"], self.target["side"]
+            edge = level + side * TICK
+            if (self.p - edge) * side < 0:
+                self.p = edge + side * abs(self.rng.normal(0, 0.1))
+
+    def _allowed(self, price):
+        for level, side in self.avoids:
+            if (price - level) * side <= 0:
+                return False
+        if self.target and self.target["kind"] == "touch":
+            if (price - self.target["price"]) * self.target["side"] <= 0:
+                return False
+        return True
+
+    def _prints(self, rate, size_x, drift):
+        count = self.rng.poisson(rate * self.dt)
+        # A move of a tick or more always prints: the tape keeps up with price.
+        if count == 0 and abs(on_grid(self.p + self.u) - self.last) >= TICK:
+            count = 1
+        trades = []
+        quoted = self.p + self.u
+        for i in range(count):
+            bid = math.floor(quoted / TICK) * TICK
+            lean = 0.5 + max(-0.3, min(0.3, (quoted - (bid + TICK / 2)) / TICK * 0.4 + (0.18 if drift > 0 else -0.18 if drift < 0 else 0)))
+            buy = self.rng.random() < lean
+            price = bid + TICK if buy else bid
+            if not self._allowed(price):
+                price = bid if buy else bid + TICK
+                if not self._allowed(price):
+                    continue
+            trades.extend(self._walk_to(price, buy, size_x, i / max(1, count)))
+        return trades
+
+    def _walk_to(self, price, buy, size_x, frac):
+        """Prints from the last price to `price`, never more than three ticks
+        apart, as a sweep through the book prints."""
+        out = []
+        while abs(price - self.last) > 3 * TICK + 1e-9:
+            self.last = on_grid(self.last + math.copysign(3 * TICK, price - self.last))
+            out.append((frac, self.last, self._size(size_x * 1.4), "B" if price > self.last else "S"))
+        self.last = on_grid(price)
+        out.append((frac, self.last, self._size(size_x), "B" if buy else "S"))
+        return out
+
+    def _size(self, size_x):
+        if self.rng.random() < 0.6:
+            base = self.rng.integers(1, 6)
+        else:
+            base = math.exp(self.rng.normal(3.3, 0.9))
+        return int(max(1, min(150, round(base * size_x))))
+
+    # Commands
+
+    def through(self, price, side):
+        """The touch's moment: trade at the level, then a tick past it."""
+        self.target = None
+        out = []
+        out.extend(self._walk_to(price, side < 0, 1.5, 0.0))
+        out.extend(self._walk_to(price - side * TICK, side < 0, 1.8, 0.5))
+        self.p = price - side * TICK * 1.5
+        self.u = 0.0
+        return out
+
+
+def anchor_text(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%a %d %b %Y %H:%M UTC")
+
+
+# --- The history ------------------------------------------------------------------
+
+# Where the history is pinned, in sim minutes before the anchor: the fills of
+# the two fake days sit on candles.
+PINS = [(-95, 7613.50), (-74, 7597.75), (-63, 7612.25), (-22, 7624.50), (-16, 7636.50), (0, 7621.00)]
+
+
+def activity_at(ts):
+    """ES's day: thin overnight, busy at the cash open, steady after."""
+    t = datetime.fromtimestamp(ts, timezone.utc)
+    minutes = t.hour * 60 + t.minute
+    if 13 * 60 + 30 <= minutes < 14 * 60 + 15:
+        return 1.7
+    if 13 * 60 + 30 <= minutes < 20 * 60 + 15:
+        return 1.0
+    if 7 * 60 <= minutes < 13 * 60 + 30:
+        return 0.45
+    return 0.28
+
+
+def in_halt(ts):
+    t = datetime.fromtimestamp(ts, timezone.utc)
+    return t.hour == 22  # 17:00 to 18:00 in New York
+
+
+def make(folder, seed):
+    folder.mkdir(parents=True, exist_ok=True)
+    dt = 40 / SLOT_RATE
+    # Three sessions: from Monday's 18:00 in New York to the anchor.
+    start = ANCHOR - ((3 * 24 - 1) * 60 + 40) * 60 + 60 * 60  # Mon 23:00 UTC
+    start = 1794265200  # Mon 9 Nov 2026 23:00 UTC
+    market = Market(seed, 7588.0, dt)
+    # The overnight and the open of the anchor's session, steered so its
+    # profile has its point of control near 7,624 and its value area low near
+    # 7,616; the days before wander more.
+    plan = [
+        (1794265200, "free", 7570, 7612),
+        (1794351600, "free", 7596, 7640),
+        (1794438000, "free", 7612, 7632),  # Wed 23:00 UTC: the anchor's session
+        (1794474000, "free", 7618, 7630),  # its European morning
+    ]
+    pins = [(ANCHOR + m * 60, p) for m, p in PINS]
+    bars = {}
+    slot, ts = 0, float(start)
+    plan_i, pin_i = 0, 0
+    sim_end = ANCHOR
+    while ts < sim_end:
+        while plan_i < len(plan) and ts >= plan[plan_i][0]:
+            _, _, lo, hi = plan[plan_i]
+            market.band = (lo, hi)
+            plan_i += 1
+        if pin_i < len(pins) and market.target is None and ts >= pins[pin_i][0] - 9 * 60:
+            when, price = pins[pin_i]
+            n = int((when - ts) / dt)
+            market.target = {"kind": "goto", "price": price, "end": slot + max(1, n), "name": f"pin{pin_i}"}
+        if in_halt(ts):
+            ts += dt
+            slot += 1
+            continue
+        market.activity = activity_at(ts)
+        if market.target and slot >= market.target["end"]:
+            market.target = None
+            pin_i += 1
+        for frac, price, size, side in market.step(slot):
+            t = ts + frac * dt
+            minute = int(t // 60) * 60
+            bar = bars.get(minute)
+            if bar is None:
+                bars[minute] = [price, price, price, price, size]
+            else:
+                bar[1] = max(bar[1], price)
+                bar[2] = min(bar[2], price)
+                bar[3] = price
+                bar[4] += size
+        ts += dt
+        slot += 1
+    rows = sorted(bars.items())
+    with open(folder / f"{ROOT}.history.csv", "w") as f:
+        f.write("ts,open,high,low,close,volume\n")
+        for minute, (o, h, l, c, v) in rows:
+            f.write(f"{minute},{o:.2f},{h:.2f},{l:.2f},{c:.2f},{v}\n")
+    state = {"price": market.p, "last": market.last, "h": market.h, "fair": market.fair}
+    (folder / "state.json").write_text(json.dumps(state))
+    check(folder, rows)
+    report(rows)
+
+
+def report(rows):
+    session = [r for r in rows if r[0] >= 1794438000]
+    poc, val, vah = profile(session)
+    ranges = [h - l for _, (o, h, l, c, v) in rows[-180:]]
+    vols = [v for _, (o, h, l, c, v) in rows[-180:]]
+    dojis = sum(1 for _, (o, h, l, c, v) in rows[-180:] if abs(c - o) <= 0.25)
+    print(f"tape: {len(rows)} bars to {anchor_text(ANCHOR)}, last {rows[-1][1][3]:.2f}")
+    print(f"tape: anchor session POC {poc:.2f}, VAL {val:.2f}, VAH {vah:.2f}, volume {sum(r[1][4] for r in session):,}")
+    print(f"tape: last 3h: range mean {np.mean(ranges):.2f} (p90 {np.percentile(ranges, 90):.2f}, max {max(ranges):.2f}), "
+          f"volume mean {np.mean(vols):.0f} (max {max(vols)}), dojis {dojis}/180")
+
+
+def profile(rows):
+    """Session volume by price, its point of control and 70% value area,
+    spreading each bar's volume evenly over its range in ticks."""
+    volume = {}
+    for _, (o, h, l, c, v) in rows:
+        n = int(round((h - l) / TICK)) + 1
+        for i in range(n):
+            price = round(l + i * TICK, 2)
+            volume[price] = volume.get(price, 0) + v / n
+    prices = sorted(volume)
+    poc = max(prices, key=lambda p: volume[p])
+    total = sum(volume.values())
+    i = j = prices.index(poc)
+    inside = volume[poc]
+    while inside < 0.7 * total and (i > 0 or j < len(prices) - 1):
+        below = volume[prices[i - 1]] if i > 0 else -1
+        above = volume[prices[j + 1]] if j < len(prices) - 1 else -1
+        if above >= below:
+            j += 1
+            inside += above
+        else:
+            i -= 1
+            inside += below
+    return poc, prices[i], prices[j]
+
+
+def check(folder, rows):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    last = rows[-180:]
+    fig, (ax, av) = plt.subplots(2, 1, figsize=(16, 9), sharex=True, gridspec_kw={"height_ratios": [4, 1]}, facecolor="#1a1b26")
+    for a in (ax, av):
+        a.set_facecolor("#1a1b26")
+        a.tick_params(colors="#a9b1d6")
+    for i, (_, (o, h, l, c, v)) in enumerate(last):
+        colour = "#9ece6a" if c >= o else "#f7768e"
+        ax.vlines(i, l, h, color=colour, linewidth=1)
+        ax.add_patch(plt.Rectangle((i - 0.35, min(o, c)), 0.7, max(abs(c - o), 0.05), color=colour))
+        av.bar(i, v, color=colour, width=0.7)
+    ax.set_title(f"Simulated ES 1m, the three hours to {anchor_text(ANCHOR)}", color="#c0caf5")
+    fig.tight_layout()
+    fig.savefig(folder / "check.png", dpi=110)
+
+
+# --- Serving ------------------------------------------------------------------------
+
+
+def serve(folder, seed, speed, epoch):
+    history = folder / f"{ROOT}.history.csv"
+    if not history.exists():
+        sys.exit("tape: no history; run tape make first")
+    state = json.loads((folder / "state.json").read_text())
+    dt = speed / SLOT_RATE
+    market = Market(seed + 1, state["price"], dt)
+    market.last, market.h, market.fair = state["last"], state["h"], state["fair"]
+    market.band = (7618, 7630)
+    control = folder / "control"
+    if not control.exists():
+        os.mkfifo(control)
+    fifo = os.open(control, os.O_RDWR | os.O_NONBLOCK)
+    pending = b""
+    ticks = open(folder / f"{ROOT}.ticks", "a", buffering=1)
+    touches = open(folder / "touches.jsonl", "a", buffering=1)
+    log = open(folder / "tape.log", "a", buffering=1)
+    epoch = epoch or time.time()
+    mono0 = time.monotonic() - (time.time() - epoch)
+    slot = 0
+    say = lambda text: log.write(f"{time.time() - epoch:9.3f} {text}\n")
+    say(f"serving from {anchor_text(ANCHOR)} at {market.last:.2f}, x{speed}")
+    while True:
+        # The slot's moment on the wall, from the monotonic clock.
+        due = mono0 + slot / SLOT_RATE
+        wait = due - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        elif wait < -0.5:
+            # Fell behind (the machine was busy): skip ahead rather than burst.
+            slot = int((time.monotonic() - mono0) * SLOT_RATE)
+            continue
+        try:
+            pending += os.read(fifo, 4096)
+        except BlockingIOError:
+            pass
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            text = line.decode().strip()
+            if text:
+                answer = command(market, text, slot, dt)
+                say(f"{text} -> {answer}")
+                if answer == "quit":
+                    return
+        sim = ANCHOR + (slot / SLOT_RATE) * speed
+        trades = market.step(slot)
+        t = market.target
+        if t and slot >= t["end"]:
+            name = t.get("name")
+            if t["kind"] == "touch":
+                trades += market.through(t["price"], t["side"])
+            market.target = None
+            if name:
+                touches.write(json.dumps({"name": name, "mono": time.monotonic(), "wall": time.time(), "price": t["price"]}) + "\n")
+                say(f"{t['kind']} {name} at {t['price']:.2f}")
+        for frac, price, size, side in trades:
+            ts_ms = int((sim + frac * dt) * 1000)
+            ticks.write(f"{ts_ms} {price:.2f} {size} {side}\n")
+        slot += 1
+
+
+def command(market, text, slot, dt):
+    words = text.split()
+    verb = words[0]
+    try:
+        if verb == "quit":
+            return "quit"
+        if verb == "free":
+            market.band = (float(words[1]), float(words[2]))
+            market.target = None
+            return "ok"
+        if verb == "avoid":
+            if words[1] == "off":
+                market.avoids.clear()
+                return "ok"
+            level = float(words[1])
+            side = 1 if market.p > level else -1
+            market.avoids.append((level, side))
+            return f"ok, kept {'above' if side > 0 else 'below'}"
+        if verb in ("goto", "touch"):
+            price, seconds = float(words[1]), float(words[3])
+            name = words[4] if len(words) > 4 else None
+            if abs(price / TICK - round(price / TICK)) > 1e-6:
+                return "refused: off the 0.25 grid"
+            n = max(1, int(round(seconds * SLOT_RATE)))
+            sim_minutes = n * dt / 60
+            if sim_minutes > 6 and abs(price - market.p) / sim_minutes > 4:
+                return "refused: faster than 4 points a minute for more than 6 minutes"
+            target = {"kind": verb, "price": price, "end": slot + n, "name": name}
+            if verb == "touch":
+                side = 1 if market.p > price else -1  # +1: coming down onto it
+                short = price + side * TICK * int(market.rng.integers(1, 4))
+                hold = int(round(market.rng.uniform(0.3, 0.6) * SLOT_RATE))
+                target.update(side=side, short=short, hold_from=slot + max(1, n - hold))
+            market.target = target
+            return "ok"
+        return "unknown"
+    except (IndexError, ValueError) as error:
+        return f"refused: {error}"
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) < 2 or args[0] not in ("make", "serve"):
+        print(__doc__)
+        sys.exit(1)
+    verb, folder = args[0], Path(args[1])
+    opt = lambda name, default: type(default)(args[args.index(name) + 1]) if name in args else default
+    seed = opt("--seed", 20261114)
+    if verb == "make":
+        make(folder, seed)
+    else:
+        serve(folder, seed, opt("--speed", 40.0), opt("--epoch", 0.0))
+
+
+if __name__ == "__main__":
+    main()

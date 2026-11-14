@@ -57,8 +57,9 @@ sha2 = "0.10.9"
 flate2 = "1.1.10"
 
 [features]
-# The fake broker, `trading::fake`, outside the tests too.
-fakes = []
+# The fake broker, `trading::fake`, outside the tests too, and the engine's
+# fake feeds, among them the simulated tape a video is filmed on.
+fakes = ["omacharts-engine/fakes"]
 
 [dev-dependencies]
 # The fake feeds the tests prove the boundary with, never in a release.

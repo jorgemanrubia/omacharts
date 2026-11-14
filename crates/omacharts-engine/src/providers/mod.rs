@@ -38,6 +38,8 @@ pub mod fake;
 pub mod rithmic;
 pub mod sierra;
 pub mod synthetic;
+#[cfg(any(test, feature = "fakes"))]
+pub mod tape;
 pub mod tos;
 pub mod yahoo;
 
@@ -455,7 +457,7 @@ pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED, rithmic::LISTED, sie
 /// and so routed to and drawn on the Data page once an order names one, but
 /// never offered. Built only into tests.
 #[cfg(any(test, feature = "fakes"))]
-const FAKES: &[Listed] = &[fake::LISTED];
+const FAKES: &[Listed] = &[fake::LISTED, tape::LISTED];
 #[cfg(not(any(test, feature = "fakes")))]
 const FAKES: &[Listed] = &[];
 

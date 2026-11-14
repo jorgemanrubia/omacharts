@@ -323,7 +323,19 @@ pub struct FakeSession {
     pub holds: std::sync::atomic::AtomicBool,
     /// The next cancel goes through, but its answer is lost on the way:
     /// the order is cancelled and the cancel says nothing came back.
-    pub cancel_lost: std::sync::atomic::AtomicBool,
+    pub cancel_lost: std::sync::atomic::AtomicBool,    /// Trading against a simulated market ([`FakeSession::traded`]): working
+    /// orders fill when the market trades through them, positions average
+    /// by size and book what they make when they close, and everything is
+    /// stamped with the market's time. Off, the session is the tests'.
+    pub live: std::sync::atomic::AtomicBool,
+    /// The market's time, in seconds, as its last trade said.
+    pub now: std::sync::atomic::AtomicI64,
+    /// Lots traded at a resting limit's price since it rested, by basket:
+    /// its place in the queue.
+    pub queued: Mutex<HashMap<String, f64>>,
+    /// What each account opened the day with and has closed since, by
+    /// account, once the market has traded.
+    pub day: Mutex<HashMap<String, (f64, f64)>>,
 }
 
 impl FakeSession {
@@ -364,6 +376,10 @@ impl FakeSession {
             silent: Default::default(),
             holds: Default::default(),
             cancel_lost: Default::default(),
+            live: Default::default(),
+            now: Default::default(),
+            queued: Mutex::default(),
+            day: Mutex::default(),
         }
     }
 
@@ -426,7 +442,7 @@ impl FakeSession {
         order.fills.push(Fill { basket: basket.clone(), at: 0, qty, price: order.price.unwrap_or(0.0) });
         let order = order.clone();
         let bought = if order.side == Side::Buy { qty as i32 } else { -(qty as i32) };
-        FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
+        self.held(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
         match order.status.working() {
             false => self.end_linked(&mut book, &basket),
             // The other of a pair placed together is for as much less.
@@ -474,10 +490,18 @@ impl FakeSession {
         order.fills.push(Fill { basket: basket.into(), at: 0, qty: left, price: order.fill_price.unwrap_or(last) });
         let order = order.clone();
         let bought = if order.side == Side::Buy { left as i32 } else { -(left as i32) };
-        FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.fill_price.unwrap_or(last));
+        self.held(&mut book, &order.account, &order.contract, &order.exchange, bought, order.fill_price.unwrap_or(last));
         self.end_linked(&mut book, basket);
         drop(book);
         self.moved();
+    }
+
+    /// [`FakeSession::hold`], or for a live session [`FakeSession::hold_live`].
+    fn held(&self, book: &mut Book, account: &str, contract: &str, exchange: &str, bought: i32, at: f64) {
+        match self.live.load(Ordering::Acquire) {
+            true => self.hold_live(book, account, contract, exchange, bought, at),
+            false => FakeSession::hold(book, account, contract, exchange, bought, at),
+        }
     }
 
     fn hold(book: &mut Book, account: &str, contract: &str, exchange: &str, bought: i32, at: f64) {
@@ -498,6 +522,199 @@ impl FakeSession {
             }),
         }
         book.positions.retain(|held| held.net != 0);
+    }
+}
+
+/// Lots that must trade at a resting limit's price before it fills there
+/// without the market trading through it: its place in the queue.
+pub const QUEUE: f64 = 40.0;
+
+impl FakeSession {
+    /// The time an order or a fill is stamped with: the market's, when it
+    /// trades, else none, as the tests' session always had.
+    fn stamp(&self) -> i64 {
+        match self.live.load(Ordering::Acquire) {
+            true => self.now.load(Ordering::Acquire),
+            false => 0,
+        }
+    }
+
+    /// A position moved by `bought` at `at`, the way an account keeps it: an
+    /// average by size while it grows, and what the part closed made booked
+    /// into the account's day and balance.
+    fn hold_live(&self, book: &mut Book, account: &str, contract: &str, exchange: &str, bought: i32, at: f64) {
+        let point = omacharts_engine::specs::point(omacharts_engine::specs::root_of(contract)).unwrap_or(50.0);
+        let mut realised = 0.0;
+        match book.positions.iter_mut().find(|held| held.account == account && held.contract == contract) {
+            Some(held) => {
+                let avg = held.avg.unwrap_or(at);
+                let net = held.net + bought;
+                if held.net.signum() == bought.signum() {
+                    held.avg = Some((avg * held.net.abs() as f64 + at * bought.abs() as f64) / net.abs() as f64);
+                } else {
+                    let closed = bought.abs().min(held.net.abs());
+                    realised = (at - avg) * held.net.signum() as f64 * closed as f64 * point;
+                    // Turned through flat: the rest is a new position at `at`.
+                    held.avg = match net.signum() == held.net.signum() || net == 0 {
+                        true => Some(avg),
+                        false => Some(at),
+                    };
+                }
+                held.net = net;
+            }
+            None => book.positions.push(Position {
+                account: account.into(),
+                contract: contract.into(),
+                exchange: exchange.into(),
+                net: bought,
+                avg: Some(at),
+                open_pnl: Some(0.0),
+                tick: Some(0.25),
+                point: Some(point),
+            }),
+        }
+        book.positions.retain(|held| held.net != 0);
+        if realised != 0.0 {
+            self.opened(book, account);
+            if let Some(day) = self.day.lock().unwrap().get_mut(account) {
+                day.1 += realised;
+            }
+        }
+        self.mark(book, at);
+    }
+
+    /// What `account` opened the day with and had closed by the time the
+    /// market first traded, from what its money said then.
+    fn opened(&self, book: &Book, account: &str) {
+        let mut day = self.day.lock().unwrap();
+        if day.contains_key(account) {
+            return;
+        }
+        let money = book.accounts.iter().find(|money| money.key == account);
+        let open_pnl: f64 = book.positions.iter().filter(|p| p.account == account).filter_map(|p| p.open_pnl).sum();
+        let day_pnl = money.and_then(|m| m.day_pnl).unwrap_or(0.0);
+        let balance = money.and_then(|m| m.balance).or_else(|| self.accounts.iter().find(|a| a.id == account)?.balance).unwrap_or(0.0);
+        day.insert(account.to_string(), (balance - day_pnl, day_pnl - money.and_then(|m| m.unrealized).unwrap_or(open_pnl)));
+    }
+
+    /// Positions marked to `price`, and every account's money with them.
+    fn mark(&self, book: &mut Book, price: f64) {
+        for held in book.positions.iter_mut() {
+            if let Some(avg) = held.avg {
+                held.open_pnl = Some((price - avg) * held.net as f64 * held.point.unwrap_or(50.0));
+            }
+        }
+        let accounts: Vec<String> = self.accounts.iter().map(|a| a.id.clone()).collect();
+        for account in accounts {
+            self.opened(book, &account);
+            let (opened, closed) = self.day.lock().unwrap()[&account];
+            let open: f64 = book.positions.iter().filter(|p| p.account == account).filter_map(|p| p.open_pnl).sum();
+            let money = match book.accounts.iter_mut().find(|money| money.key == account) {
+                Some(money) => money,
+                None => {
+                    book.accounts.push(Money { key: account.clone(), ..Money::default() });
+                    book.accounts.last_mut().unwrap()
+                }
+            };
+            money.unrealized = Some(open);
+            money.day_pnl = Some(closed + open);
+            money.balance = Some(opened + closed + open);
+        }
+    }
+
+    /// The working order `basket` fills whole at `price`, at the market's
+    /// time, and whatever is linked to it is cancelled.
+    fn fill_at(&self, book: &mut Book, basket: &str, price: f64) {
+        let at = self.stamp();
+        let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status.working()) else {
+            return;
+        };
+        let left = order.qty - order.filled;
+        order.status = Stage::Filled.into();
+        order.filled = order.qty;
+        order.fill_price = Some(price);
+        order.fills.push(Fill { basket: basket.into(), at, qty: left, price });
+        let order = order.clone();
+        let bought = if order.side == Side::Buy { left as i32 } else { -(left as i32) };
+        self.hold_live(book, &order.account, &order.contract, &order.exchange, bought, price);
+        self.end_linked(book, basket);
+        self.queued.lock().unwrap().remove(basket);
+    }
+
+    /// The market traded `size` lots of `root` at `price`, at `ts` seconds:
+    /// what it is now, and every working order it trades through filled,
+    /// as an exchange would. A limit fills at its price when the market
+    /// trades past it, or once [`QUEUE`] lots have traded at it since it
+    /// rested; a stop triggers on a trade at its price or past it and fills
+    /// at that trade's price. True when anything filled.
+    pub fn traded(&self, root: &str, price: f64, size: f64, ts: i64) -> bool {
+        self.live.store(true, Ordering::Release);
+        self.now.store(ts, Ordering::Release);
+        *self.last.lock().unwrap() = price;
+        *self.market.lock().unwrap() = Some(price);
+        let mut book = self.book.lock().unwrap();
+        let mut filled = Vec::new();
+        {
+            let mut queued = self.queued.lock().unwrap();
+            for order in book.orders.iter().filter(|o| o.status.working() && omacharts_engine::specs::root_of(&o.contract) == root) {
+                let Some(at) = order.price else { continue };
+                let through = match (order.kind, order.side) {
+                    (OrderKind::Limit, Side::Buy) => price < at,
+                    (OrderKind::Limit, Side::Sell) => price > at,
+                    (OrderKind::Stop, Side::Buy) => price >= at,
+                    (OrderKind::Stop, Side::Sell) => price <= at,
+                    _ => false,
+                };
+                let queue = queued.entry(order.basket_id.clone()).or_insert(0.0);
+                if order.kind == OrderKind::Limit && (price - at).abs() < 1e-9 {
+                    *queue += size;
+                }
+                let fills_at = match order.kind {
+                    OrderKind::Stop => price,
+                    _ => at,
+                };
+                if through || (order.kind == OrderKind::Limit && *queue >= QUEUE) {
+                    filled.push((order.basket_id.clone(), fills_at));
+                }
+            }
+        }
+        for (basket, at) in &filled {
+            self.fill_at(&mut book, basket, *at);
+        }
+        self.mark(&mut book, price);
+        !filled.is_empty()
+    }
+
+    /// Listen to the simulated market for `session`, for as long as it is
+    /// signed in: its trades of `root` are [`FakeSession::traded`].
+    pub fn follow_tape(session: &Arc<FakeSession>, root: &str) {
+        let Some(mut tail) = omacharts_engine::providers::tape::Tail::from_end(root) else { return };
+        session.live.store(true, Ordering::Release);
+        let weak = Arc::downgrade(session);
+        let root = root.to_string();
+        let _ = std::thread::Builder::new().name(format!("fake market {root}")).spawn(move || {
+            let mut told = std::time::Instant::now();
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(8));
+                let Some(session) = weak.upgrade() else { return };
+                if session.gone.load(Ordering::Acquire) {
+                    return;
+                }
+                let trades = tail.read();
+                if trades.is_empty() {
+                    continue;
+                }
+                let mut moved = false;
+                for trade in &trades {
+                    moved |= session.traded(&root, trade.price, trade.size, trade.ts_ms.div_euclid(1000));
+                }
+                // A fill at once; the money's moves a few times a second.
+                if moved || told.elapsed() > std::time::Duration::from_millis(120) {
+                    told = std::time::Instant::now();
+                    session.moved();
+                }
+            }
+        });
     }
 }
 
@@ -547,6 +764,13 @@ impl Session for FakeSession {
     fn refresh(&self) -> Result<(), String> {
         if self.gone.load(Ordering::Acquire) {
             return Err("the session was signed out".into());
+        }
+        // Live, the book is the session's own once it has been brought in:
+        // what it held from before was taken then.
+        if self.live.load(Ordering::Acquire) && self.book.lock().unwrap().refreshed {
+            self.refreshes.fetch_add(1, Ordering::AcqRel);
+            self.moved();
+            return Ok(());
         }
         let held = self.held.lock().unwrap().clone();
         let mut book = self.book.lock().unwrap();
@@ -619,17 +843,17 @@ impl Session for FakeSession {
                 },
                 fill_price: filled.then_some(last),
                 fills: match filled {
-                    true => vec![Fill { basket: basket.clone(), at: 0, qty: order.qty, price: last }],
+                    true => vec![Fill { basket: basket.clone(), at: self.stamp(), qty: order.qty, price: last }],
                     false => Vec::new(),
                 },
-                at: 0,
+                at: self.stamp(),
                 tag: Some(order.tag.clone()),
                 tick: Some(0.25),
             },
         );
         if filled {
             let bought = if order.side == Side::Buy { order.qty as i32 } else { -(order.qty as i32) };
-            FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, last);
+            self.held(&mut book, &order.account, &order.contract, &order.exchange, bought, last);
         }
         drop(book);
         self.moved();
@@ -715,7 +939,7 @@ impl Session for FakeSession {
             }
         }
         let net = book.position(account, contract).map_or(0, |held| held.net);
-        FakeSession::hold(&mut book, account, contract, exchange, -net, last);
+        self.held(&mut book, account, contract, exchange, -net, last);
         drop(book);
         self.moved();
         Ok(self.uncancelled.swap(0, Ordering::AcqRel))
@@ -793,6 +1017,11 @@ impl TradingService for FakeService {
         *session.held.lock().unwrap() = book;
         *session.past.lock().unwrap() = before;
         let session = Arc::new(session);
+        // Filming a simulated market, the session trades against it.
+        #[cfg(all(feature = "fakes", not(test)))]
+        if omacharts_engine::providers::tape::on() {
+            FakeSession::follow_tape(&session, "ES");
+        }
         self.sessions.lock().unwrap().push(session.clone());
         Ok(session)
     }
@@ -960,5 +1189,99 @@ pub(crate) mod tests {
         assert_eq!(session.book().order(&target).map(|o| o.status.stage), Some(Stage::Cancelled));
         *session.refuse.lock().unwrap() = Some("price out of band".into());
         assert_eq!(session.cancel("951", &target), Err(Failure::Refused("price out of band".into())));
+    }
+
+    fn live_session() -> FakeSession {
+        let session = FakeSession::new(vec![account("1", "951")], Box::new(|| {}));
+        session.traded("ES", 7_620.0, 1.0, 1_000);
+        session
+    }
+
+    fn placed(session: &FakeSession, side: Side, kind: OrderKind, price: Option<f64>) -> String {
+        session
+            .place(&OrderRequest {
+                account: "951".into(),
+                contract: "ESZ6".into(),
+                exchange: "CME".into(),
+                side,
+                qty: 1,
+                kind,
+                price,
+                tag: new_tag(),
+            })
+            .unwrap()
+    }
+
+    fn stage(session: &FakeSession, basket: &str) -> Stage {
+        session.book().order(basket).map(|o| o.status.stage).unwrap()
+    }
+
+    #[test]
+    fn a_resting_limit_fills_when_the_market_trades_through_it_and_not_on_a_touch() {
+        let session = live_session();
+        let buy = placed(&session, Side::Buy, OrderKind::Limit, Some(7_618.0));
+        session.traded("ES", 7_618.0, 10.0, 1_001);
+        session.traded("ES", 7_618.0, 10.0, 1_002);
+        assert_eq!(stage(&session, &buy), Stage::Working, "touched, but the queue ahead of it is not through");
+        session.traded("ES", 7_617.75, 1.0, 1_003);
+        assert_eq!(stage(&session, &buy), Stage::Filled);
+        let order = session.book().order(&buy).cloned().unwrap();
+        assert_eq!(order.fill_price, Some(7_618.0));
+        assert_eq!(order.fills[0].at, 1_003);
+        assert_eq!(session.book().position("951", "ESZ6").map(|p| (p.net, p.avg)), Some((1, Some(7_618.0))));
+    }
+
+    #[test]
+    fn a_limit_fills_at_its_price_once_its_queue_has_traded() {
+        let session = live_session();
+        let buy = placed(&session, Side::Buy, OrderKind::Limit, Some(7_618.0));
+        session.traded("ES", 7_618.0, QUEUE, 1_001);
+        assert_eq!(stage(&session, &buy), Stage::Filled);
+    }
+
+    #[test]
+    fn a_stop_triggers_at_its_price_and_fills_at_the_trade_s() {
+        let session = live_session();
+        let stop = placed(&session, Side::Sell, OrderKind::Stop, Some(7_615.0));
+        session.traded("ES", 7_615.25, 3.0, 1_001);
+        assert_eq!(stage(&session, &stop), Stage::Working);
+        session.traded("ES", 7_614.75, 3.0, 1_002);
+        assert_eq!(stage(&session, &stop), Stage::Filled);
+        assert_eq!(session.book().order(&stop).and_then(|o| o.fill_price), Some(7_614.75), "slipped a tick in the burst");
+    }
+
+    #[test]
+    fn a_linked_exit_that_fills_cancels_the_other() {
+        let session = live_session();
+        placed(&session, Side::Buy, OrderKind::Market, None);
+        let target = placed(&session, Side::Sell, OrderKind::Limit, Some(7_624.0));
+        let stop = placed(&session, Side::Sell, OrderKind::Stop, Some(7_616.0));
+        session.link("951", &[target.clone(), stop.clone()]).unwrap();
+        session.traded("ES", 7_624.25, 2.0, 1_100);
+        assert_eq!(stage(&session, &target), Stage::Filled);
+        assert_eq!(stage(&session, &stop), Stage::Cancelled);
+        assert!(session.book().position("951", "ESZ6").is_none(), "flat");
+    }
+
+    #[test]
+    fn a_round_trip_books_what_it_made() {
+        let session = live_session();
+        let opened = session.book().accounts.iter().find(|m| m.key == "951").and_then(|m| m.day_pnl).unwrap();
+        placed(&session, Side::Buy, OrderKind::Market, None);
+        session.traded("ES", 7_622.0, 1.0, 1_010);
+        placed(&session, Side::Sell, OrderKind::Market, None);
+        session.traded("ES", 7_622.0, 1.0, 1_011);
+        let money = session.book().accounts.iter().find(|m| m.key == "951").cloned().unwrap();
+        assert_eq!(money.day_pnl, Some(opened + 2.0 * 50.0));
+        assert_eq!(money.unrealized, Some(0.0));
+    }
+
+    #[test]
+    fn without_a_market_nothing_fills_by_itself() {
+        let session = FakeSession::new(vec![account("1", "951")], Box::new(|| {}));
+        let buy = placed(&session, Side::Buy, OrderKind::Limit, Some(7_618.0));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(stage(&session, &buy), Stage::Working);
+        assert_eq!(session.book().order(&buy).map(|o| o.at), Some(0));
     }
 }
