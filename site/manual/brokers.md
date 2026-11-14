@@ -5,6 +5,8 @@ section: trading
 nav_order: 34
 ---
 
+For now, Rithmic is the only trading service Omacharts supports.
+
 {: .warning }
 Trading is experimental (**Beta**). It places real orders on real accounts, and nothing asks before an order is sent. Try it on a demo or evaluation account first.
 
