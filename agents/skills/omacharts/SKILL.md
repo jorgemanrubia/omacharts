@@ -16,7 +16,8 @@ description: >-
   price data. Also for marking a chart up — "draw the trendline", "box the
   range", "circle that gap", "mark the breakout", "label this high" — which
   is lines, horizontal levels, arrows, zig-zags, boxes, circles, words and
-  volume profiles of a span.
+  volume profiles of a span. Also for the trading accounts, positions and
+  orders it shows, and orders placed through it (experimental).
   Use it for any mention of omacharts, and whenever the user speaks about
   charts, watchlists, chartbooks or linked charts as things already on their
   screen.
@@ -83,6 +84,19 @@ and, for a feed that streams, what the open window holds a subscription to and
 whether anything has ticked. A chart on a streamed feed is never refetched on
 a timer; if it looks still, `provider status` is where to look first.
 
+**Trading is real money, and nothing asks twice.** Trading is experimental.
+`trading accounts`, `positions` and `orders` read freely. `trading buy`,
+`sell`, `exit`, `modify`, `cancel` and `flatten` act on the user's trading
+account at once, with no confirmation in the window or the terminal: run one
+only when the user asked for that order in so many words, never as a step
+inside something else, and never to try a command out. Say back what the
+reply says was sent. The reply is what was sent, not what the trading service did;
+`trading orders --json` shows the outcome. Orders act on the chart they name,
+the focused one by default, on its account and the size it trades. A refusal
+(exit 5) is the chart's own check, such as a limit on the wrong side of the
+market; do not work around it. Passwords go into the window's dialog, typed
+by the user: `trading login` and `trading sign-in` open it and return.
+
 **Times are the chart's.** A time given to a command — a range's `--from`
 and `--to`, a drawing's `WHEN` — is read in the clock the charts read,
 `config get chart_time_zone` (New York unless set; `exchange` means each
@@ -97,6 +111,35 @@ day for a listing abroad. There is no holiday calendar.
 
 **`watchlist feed --json` is the only command that prints a price**, and only
 for the default watchlist. Otherwise "what's X doing" means putting it on screen.
+
+**"This", "that line", "my VWAP" are on the focused chart.** Read what the
+user selected first: `chart drawing list --selected --json` and `chart
+indicator list --selected --json`. With nothing selected, read the whole
+lists — ids, kinds, anchors, words, colours, parameters — and pick the one
+meant. Then `set` or `remove` it by `--id` alone, no kind needed
+(`chart indicator remove --id 3`); `--id selected` acts on the selected one.
+
+**The app's theme is `config theme NAME`**, changed in the open window at
+once; `config theme` alone lists the names, the one in use marked, and
+`system` follows the desktop's. Omarchy's own theme commands change the whole
+desktop, not Omacharts alone.
+
+**The sidebar and the drawing tools show and hide by command.** "Hide the
+watchlist" is `chartbook sidebar off`, kept with the open chartbook; "show the
+drawing tools" is `chart drawing-tools on`, for the whole window. Bare, each
+prints `on` or `off`, and `status show` says both.
+
+**"The user is in Omacharts and said: …" is a dictation.** The user held
+Right Alt with the window in front and spoke; Omacharts sent their words to
+you, with nothing about the charts, and runs you headless. Nobody is reading
+a terminal, so do not ask back: do the likeliest thing on the focused chart
+(`status show` says what is on screen) and say what you did in one short
+line — your answer goes to the Omacharts Log, and nothing pops up when it
+goes well. Later turns
+("The user said: …") continue the same conversation, so "now the same for
+silver" refers to the last thing done. Spoken symbols come as words: "gold"
+is `GC`, "the Nasdaq" `NQ` or `QQQ`; `symbol search` settles it. Anything
+after the first line is the user's own standing instructions.
 
 ## Workflows
 
@@ -148,6 +191,28 @@ omacharts template indicator set Default session_times --range 2 --color Blue --
 
 A chart on no template gets its own with `chart indicator add session_times`,
 which starts with ETH.
+
+**How did gold, the Nasdaq and bitcoin do against SPY this year?** Compare
+them on the SPY chart. The lines are percent from one bar: the first on screen
+unless `--from` pins it, so pin it to read a fixed period. `chart compare list
+--json` says what a chart compares; the window's legend ranks them.
+
+```
+omacharts chart set --chart pos:0 --symbol SPY --resolution 1D
+omacharts chart compare add --chart pos:0 GC NQ BTC-USD
+omacharts chart compare set --chart pos:0 --from 2026-01-02 --lines-only on
+```
+
+**Gold over silver, or the ten-year less the five-year?** Any symbol takes
+arithmetic — `+ - * /`, numbers, parentheses — so a ratio, a spread or a
+basket is one symbol, charted and listed like any other. Quote it for the
+shell. A dash that names a ticker is the ticker; space a minus to subtract.
+
+```
+omacharts chart set --chart pos:0 --symbol 'TNX-FVX' --resolution 1D
+omacharts watchlist create Spreads
+omacharts watchlist add Spreads 'GC/SI' '(SPY+QQQ)/2' '3*CL - HO*42'
+```
 
 **Each chart has a link mode**, which is what a click in the watchlist does
 to it. `focus` (the default) takes the click only while it is the focused
@@ -206,7 +271,9 @@ to that chart, `--show-drawings off` keeps it clear of what others drew — and
 both are on unless somebody turned one off. Anchors are a moment and a price. A drawing follows one of nine
 configurations — `--config N`, shipped as the nine theme presets in order, 1
 being the up colour and 2 the down colour — or gets a look of its own from
-`--color`, `--width`, `--arrow`, `--head`, `--fill`, `--alpha`, `--border`. Prefer a
+`--color`, `--width`, `--line-style solid|dashed|dotted`, `--arrow`, `--head`,
+`--fill`, `--alpha`, `--border`, and `--select-by-border on` for a box or an
+ellipse taken by its edge alone, its inside left to the chart. Prefer a
 configuration or a preset name to a hex, so the drawing keeps following the
 desktop theme:
 
@@ -245,10 +312,17 @@ matter.
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is
-its outline, `--fill` its background, `--width` the outline's thickness, and
-`--poc-color`, `--poc-width`, `--profile-style filled|outline`, `--align
-left|right`, `--value-area` and `--transparency` the rest. The study takes
-`--outline-color`, `--outline-width` and `--poc-width` the same way. It takes no `--text`. The study's own profiles are read and merged with
+its outline, `--fill` its background, `--width` the outline's thickness,
+`--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
+`--profile-style filled|outline`, `--align
+left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`,
+`--value-area-color`, `--poc on|off` and `--rows N|auto` the rest, as the
+study's. The study takes
+`--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
+`--poc-style`, `--transparency` (0 is its colour solid, 1 invisible, 0.7 by
+default), `--highlight-value-area` and `--value-area-color` (`none` for the
+rows' own) the same way; a MACD's signal line
+takes `--signal-style` and a stochastic's %D `--d-style`. It takes no `--text`. The study's own profiles are read and merged with
 `chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds
 the one starting there into the one before it — read again after each merge,
@@ -265,7 +339,7 @@ volume-weighted average price from the bar at `--from` (its price is not
 read) to the last bar, never reset and worked out again as bars arrive:
 anchor it where a move began, an earnings gap or a swing low, to see the
 average cost of everyone who bought since. Its properties are the VWAP
-study's: `--style` is its line's pattern, `--source hlc3|hl2|ohlc4|close`
+study's: `--line-style` is its line's pattern (`--style` still works), `--source hlc3|hl2|ohlc4|close`
 the price each bar adds, and `--bands 1,2,3` (or `none`) which of its three
 bands are drawn, at 1, 1.5 and 2 standard deviations. `--band N` with
 `--band-deviations`, `--band-shaded`, `--band-alpha`, `--band-color`,

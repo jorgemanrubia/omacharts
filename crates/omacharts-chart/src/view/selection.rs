@@ -240,16 +240,20 @@ pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
 
 /// Of the plot, how much a profile at 100% takes past the last bar.
 pub(super) const SLOT_SHARE: f64 = 0.25;
-/// Of the plot, the space before each profile past the last bar: off the
-/// last bar, and off the one before it.
+/// Of the plot, the space between two profiles past the last bar, and the
+/// least left off the last bar when a hand has squeezed the room they are
+/// drawn in. At rest the room off the last bar is the chart's resting
+/// margin, as wide as with no profile there.
 pub(super) const SLOT_GAP_SHARE: f64 = 0.01;
 /// The most of the plot the profiles past the last bar may take between
 /// them, so a stack of wide ones still leaves the bars most of it.
 pub(super) const MARGIN_MAX_SHARE: f64 = 0.6;
 
-/// How much of the plot the empty space past the last bar has to be for
-/// the live session of every right-aligned profile on screen to sit in it
-/// side by side, each as wide as its width says: none when there is none.
+/// How much of the plot the live session of every right-aligned profile on
+/// screen takes past the last bar, side by side, each as wide as its width
+/// says, with a gap between each two: none when there is none. The chart
+/// leaves its resting margin before them on top of this, so the room off the
+/// last bar is the same with the profiles as without.
 pub(super) fn margin_share(state: &State) -> f64 {
     let len = state.bars.len();
     let (mut total, mut count) = (0.0, 0usize);
@@ -261,9 +265,15 @@ pub(super) fn margin_share(state: &State) -> f64 {
             count += 1;
         }
     }
+    block_share(total, count)
+}
+
+/// Of the plot, how much `count` profiles whose widths come to `total` take
+/// side by side past the last bar: their slots and the gaps between them.
+fn block_share(total: f64, count: usize) -> f64 {
     match count {
         0 => 0.0,
-        _ => (total * SLOT_SHARE + count as f64 * SLOT_GAP_SHARE).min(MARGIN_MAX_SHARE),
+        _ => (total * SLOT_SHARE + (count - 1) as f64 * SLOT_GAP_SHARE).min(MARGIN_MAX_SHARE),
     }
 }
 
@@ -341,18 +351,21 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, look: &ProfileLo
 /// Where in the empty space past the last bar a right-aligned profile's
 /// live session is drawn back from, and how far it reaches.
 ///
-/// Each is given a gap and then its slot, the last in the legend against
-/// the price axis. A slot is its width's share of a profile's room at
-/// 100%, [`SLOT_SHARE`] of the plot, or of the whole space when a hand has
-/// opened more than that, so one profile takes the share of the space its
-/// width says, as on its own; slots that come to more than the space are
-/// squeezed alike until they fit.
+/// They sit side by side against the price axis, the last in the legend
+/// there, a gap between each two. A slot is its width's share of a
+/// profile's room at 100%, [`SLOT_SHARE`] of the plot, whatever room is
+/// open: whatever there is past what they take is empty, between the last
+/// bar and the first of them, as it would be with none there. Squeezed by a
+/// hand into less than they take, they keep a gap off the last bar and are
+/// narrowed alike until they fit.
 fn in_margin(columns: &Columns, room: f64, look: &ProfileLook) -> (f64, f64) {
     let plot_w = (columns.end - columns.plot_x).max(1.0);
     let gap = plot_w * SLOT_GAP_SHARE;
-    let usable = (room - gap * look.count as f64).max(room * 0.5);
     let total = look.total.max(f64::EPSILON);
-    let unit = (usable / total).min((plot_w * SLOT_SHARE).max(usable / total.max(1.0)));
+    let taken = plot_w * block_share(total, look.count);
+    let block = taken.min((room - gap).max(room * 0.5));
+    let between = gap * look.count.saturating_sub(1) as f64;
+    let unit = (block - between).max(block * 0.5) / total;
     let edge = columns.end - unit * look.after - gap * look.later as f64;
     (edge, unit * look.width)
 }
@@ -854,7 +867,11 @@ mod tests {
     fn a_right_aligned_session_that_is_over_ends_where_it_does() {
         let state = profiled(profile::Align::Right, 0.4);
         let all = boxes(&state);
-        for (_, area, start, end) in &all[..all.len() - 1] {
+        // The periods on screen: the margin past the last bar leaves the
+        // oldest of them off it.
+        let past: Vec<_> = all[..all.len() - 1].iter().filter(|(_, area, ..)| area.span > 0.0).collect();
+        assert!(!past.is_empty(), "a period that is over on screen");
+        for (_, area, start, end) in past {
             assert_eq!(area.edge, *end, "at the end of its own period");
             assert!((area.span - (end - start) * 0.4).abs() < 1e-9, "{} of {}", area.span, end - start);
         }
@@ -951,8 +968,8 @@ mod tests {
     }
 
     /// The empty space past the last bar at rest: the resting margin with
-    /// no profile aligned right, widened by what each one's live session
-    /// takes, and narrowed again as they go. One aligned left adds nothing.
+    /// no profile aligned right, and what each one's live session takes on
+    /// top, taken off again as they go. One aligned left adds nothing.
     #[test]
     fn the_margin_is_widened_for_each_profile_aligned_right_and_only_for_them() {
         use profile::Align::{Left, Right};
@@ -965,14 +982,16 @@ mod tests {
         assert_eq!(margin(&[]).0, super::super::RIGHT_MARGIN);
 
         let needed = |widths: f64, count: f64| {
-            (columns as f64 * (widths * super::SLOT_SHARE + count * super::SLOT_GAP_SHARE)).ceil() as usize
+            let taken = (columns as f64 * (widths * super::SLOT_SHARE + (count - 1.0) * super::SLOT_GAP_SHARE)).ceil();
+            super::super::RIGHT_MARGIN + taken as usize
         };
         let (one, _) = margin(&[(Right, 1.0), (Left, 0.4)]);
         assert_eq!(one, needed(1.0, 1.0));
         let (two, _) = margin(&[(Right, 1.0), (Right, 0.8), (Left, 0.4)]);
         assert_eq!(two, needed(1.8, 2.0));
-        // Narrower than the resting margin needs, the resting margin it is.
-        assert_eq!(margin(&[(Right, 0.2)]).0, super::super::RIGHT_MARGIN);
+        // However narrow, it is room on top of the resting margin.
+        assert_eq!(margin(&[(Right, 0.2)]).0, needed(0.2, 1.0));
+        assert!(margin(&[(Right, 0.2)]).0 > super::super::RIGHT_MARGIN);
         assert!(two > one && one > none, "{none} < {one} < {two}");
 
         // Taken off, the room goes with it.
@@ -983,7 +1002,8 @@ mod tests {
         assert_eq!(state.overhang_now(), super::super::RIGHT_MARGIN);
         // However many there are, the bars keep most of the plot.
         let crowd = stacked(&[(Right, 1.0); 5]);
-        assert!(crowd.overhang_now() as f64 <= crowd.columns() as f64 * super::MARGIN_MAX_SHARE + 1.0);
+        let most = crowd.columns() as f64 * super::MARGIN_MAX_SHARE + 1.0 + super::super::RIGHT_MARGIN as f64;
+        assert!(crowd.overhang_now() as f64 <= most);
     }
 
     /// Their live sessions sit side by side past the last bar, in legend
@@ -1017,7 +1037,12 @@ mod tests {
     /// columns across, at rest at the live edge.
     fn long_stacked() -> State {
         use profile::Align::Right;
-        let mut state = stacked(&[(Right, 1.0), (Right, 0.8)]);
+        long_with(&[(Right, 1.0), (Right, 0.8)])
+    }
+
+    /// [`long_stacked`] with a volume profile for each of `looks`.
+    fn long_with(looks: &[(profile::Align, f64)]) -> State {
+        let mut state = stacked(looks);
         state.bars = (0..2000)
             .map(|i| {
                 let mid = 100.0 + (i % 7) as f64;
@@ -1038,10 +1063,65 @@ mod tests {
         (frame.columns.room_after(), bar)
     }
 
-    /// Zooming the bars in and out leaves the room past the last bar as wide
-    /// on screen as it was, at rest and as a hand left it alike: the bars
-    /// zoom around it, the last bar stays where it was, and the profiles in
-    /// it keep their size.
+    /// Past the last bar on screen: the empty room before the first
+    /// profile there, what the profiles take from there to the price axis,
+    /// and a bar's width. All of it is empty room with none.
+    fn margin_px(state: &State) -> (f64, f64, f64) {
+        let frame = frame(state, W, H).expect("a frame");
+        let bar = (frame.columns.end - frame.columns.plot_x) / state.columns() as f64;
+        let room = frame.columns.room_after();
+        let first = period_boxes(state, state.bars.len()).into_iter().map(|(from, _)| from).reduce(f64::min);
+        match first {
+            None => (room, 0.0, bar),
+            Some(from) => (from - last_bar_end(state), frame.columns.end - from, bar),
+        }
+    }
+
+    /// The empty room between the last bar and the first profile past it is
+    /// the room a chart with no profile has there, the resting margin: with
+    /// none, one or two profiles aligned right, at rest, zoomed, dragged left
+    /// and back from history. What the profiles take is on top of it and
+    /// keeps its width on screen.
+    #[test]
+    fn the_room_before_the_profiles_is_the_room_with_none() {
+        use profile::Align::Right;
+        let rests = |state: &State, taken: f64, what: &str| {
+            let (gap, block, bar) = margin_px(state);
+            let resting = super::super::RIGHT_MARGIN as f64 * bar;
+            assert!(state.anchored && !state.overhang_by_hand, "{what}: at rest at the live edge");
+            assert!((gap - resting).abs() <= bar + 1e-6, "{what}: {gap} off the last bar, {resting} with none");
+            assert!(gap >= resting - 1e-6, "{what}: never less than with none");
+            assert!((block - taken).abs() <= bar + 1e-6, "{what}: the profiles take {block}, took {taken}");
+        };
+        for looks in [&[][..], &[(Right, 1.0)][..], &[(Right, 1.0), (Right, 0.8)][..]] {
+            let mut state = long_with(looks);
+            let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
+            let (_, taken, _) = margin_px(&state);
+            assert_eq!(taken > 0.0, !looks.is_empty());
+            rests(&state, taken, &format!("{} at rest", looks.len()));
+            for factor in [0.5, 0.5, 4.0, 1.5, 0.25] {
+                state.zoom_time(factor, 0.5, plot_w);
+                rests(&state, taken, &format!("{} zoomed to {} columns", looks.len(), state.columns()));
+            }
+            if looks.is_empty() {
+                continue;
+            }
+            // Dragged left, the view stops where it rests.
+            let columns = state.columns() as f64;
+            state.pan_by(columns, plot_w);
+            rests(&state, taken, &format!("{} dragged left", looks.len()));
+            state.pan_by(-2.0 * columns, plot_w);
+            assert!(!state.anchored, "into history");
+            state.pan_by(3.0 * columns, plot_w);
+            rests(&state, taken, &format!("{} back from history", looks.len()));
+        }
+    }
+
+    /// Zooming the bars in and out leaves what the profiles take past the
+    /// last bar as wide on screen as it was, and the resting margin before
+    /// them as many bars as with no profile: the bars zoom around them, and
+    /// the profiles keep their size. Room a hand left is kept as wide on
+    /// screen.
     #[test]
     fn zooming_keeps_the_margin_as_wide_on_screen() {
         for by_hand in [false, true] {
@@ -1052,12 +1132,17 @@ mod tests {
                 assert!(state.overhang_by_hand && state.anchored);
             }
             let (wide, _) = room_px(&state);
+            let (_, taken, _) = margin_px(&state);
             assert!(wide > 0.0);
             for factor in [0.5, 0.5, 4.0, 1.5, 0.25] {
                 state.zoom_time(factor, 0.5, plot_w);
                 let (now, bar) = room_px(&state);
-                assert!((now - wide).abs() <= bar + 1e-6, "by hand {by_hand}, {} columns: {now} vs {wide}", state.columns());
+                let (_, block, _) = margin_px(&state);
                 assert!(state.anchored, "the last bar stays on screen");
+                assert!((block - taken).abs() <= bar + 1e-6, "by hand {by_hand}: the profiles take {block}, took {taken}");
+                if state.overhang_by_hand {
+                    assert!((now - wide).abs() <= bar + 1e-6, "{} columns: {now} vs {wide}", state.columns());
+                }
             }
         }
     }
@@ -1069,9 +1154,9 @@ mod tests {
     fn scrolling_back_to_the_live_edge_finds_the_margin_as_it_was() {
         let mut state = long_stacked();
         let plot_w = frame(&state, W, H).expect("a frame").plan.plot_w;
-        let (wide, _) = room_px(&state);
         for factor in [0.5, 2.5] {
             state.zoom_time(factor, 0.5, plot_w);
+            let (wide, _) = room_px(&state);
             let columns = state.columns() as f64;
             state.pan_by(columns, plot_w);
             let (now, bar) = room_px(&state);
@@ -1104,7 +1189,7 @@ mod tests {
         state.pan_by(2.0, plot_w);
         assert_eq!(state.overhang_now(), 7, "and part way open again");
         state.reset_view();
-        assert_eq!(state.overhang_now(), state.margin_floor().max(super::super::RIGHT_MARGIN));
+        assert_eq!(state.overhang_now(), state.margin_floor() + super::super::RIGHT_MARGIN);
     }
 
     /// Profiles aligned to the same edge of a period sit side by side from

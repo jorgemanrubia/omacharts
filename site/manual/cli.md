@@ -100,6 +100,7 @@ spelled the way the other commands take them.
 ```
 $ omacharts status show
 chartbook  Desk (id:2)
+sidebar on, drawing tools off
   pos:0  NVDA       1D    follow
   pos:1  NVDA       1h    follow
   pos:2  NVDA       15m   follow
@@ -114,14 +115,17 @@ $ omacharts status show
 nothing is open; this is what was stored when the window last closed
 
 chartbook  Semis (id:1)
+sidebar on, drawing tools off
 * pos:0  AMD        1h    follow
   [exit 0]
 ```
 
+The second line says whether the sidebar and the drawing tools are out ([Showing and hiding the sidebars](#showing-and-hiding-the-sidebars)).
+
 `--json` adds every chart's settings (style, session, scales, link
-mode, whether it shows and sends drawings, indicators and chart template) and
-`windowOpen`, which says whether you are reading the window or the stored
-data.
+mode, whether it shows and sends drawings, indicators and chart template),
+`sidebar` and `drawingTools`, and `windowOpen`, which says whether you are
+reading the window or the stored data.
 
 ## Naming things
 
@@ -204,7 +208,7 @@ Usage: add [OPTIONS] <LIST> <SYMBOL>...
 
 Arguments:
   <LIST>       a name, case-insensitive, or `id:N` when two of them share one
-  <SYMBOL>...  one or more tickers, such as NVDA or 2330.TW
+  <SYMBOL>...  one or more tickers, such as NVDA, 2330.TW, the ratio GC/SI or the spread TNX-FVX
 
 Options:
       --section <NAME>  put them in this section rather than at the top
@@ -276,10 +280,11 @@ codes](#exit-codes).
 | `symbol` | Searching the instruments | [Symbols](#symbols) |
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
-| `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `look`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
+| `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook sidebar` under [Showing and hiding the sidebars](#showing-and-hiding-the-sidebars); `chartbook screenshot` under [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `look`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Showing and hiding the sidebars](#showing-and-hiding-the-sidebars) (`drawing-tools`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feeds, their order, and signing in to one | [Market data](#market-data) |
+| `trading` | Trading logins, accounts, positions and orders | [Trading](#trading) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars`, `config grid` and `config price-line` under [Charts](#config-bars) |
 | `cache` | The downloaded prices | [Your data](#cache) |
 | `backup` | Copies of your settings, and putting one back | [Your data](#backup) |
@@ -314,7 +319,7 @@ GCAL       Goldman Sachs Dynamic California … ETF      NYSE Arca
 
 | Argument or flag | Takes |
 |---|---|
-| `QUERY` | A ticker or part of a name |
+| `QUERY` | A ticker or part of a name. A whole [formula](/manual/symbols/#arithmetic-on-symbols), such as `GC/SI`, is the first row |
 | `--limit N` | How many to show; 10 when not given |
 | `--json` | The result as JSON |
 
@@ -337,7 +342,7 @@ currency  EUR
 
 | Argument or flag | Takes |
 |---|---|
-| `SYMBOL` | The ticker, or the ticker and its venue in one: `SAP.DE` |
+| `SYMBOL` | The ticker, or the ticker and its venue in one: `SAP.DE`. Or [arithmetic on symbols](/manual/symbols/#arithmetic-on-symbols), such as `GC/SI` |
 | `SUFFIX` | The venue suffix, when not part of `SYMBOL` |
 | `--json` | The result as JSON, with the symbol, suffix and local name as separate fields |
 
@@ -394,7 +399,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | Flag | Takes | Explained in |
 |---|---|---|
 | `--title TITLE` | The chart title, shown in its header; `""` for none | [Chart titles](/manual/charts/#chart-titles) |
-| `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
+| `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW`, or [arithmetic on symbols](/manual/symbols/#arithmetic-on-symbols), such as `GC/SI` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
 | `--bars on` or `off` | Shows the chart's bars, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
@@ -407,6 +412,10 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | `--show-drawings on` or `off`, `--send-drawings on` or `off` | Whether the chart shows other charts' drawings, and whether it sends its own | [Drawings](/manual/drawings/) |
+| `--account ACCOUNT` | The account the chart trades on: its name, its number, its login and number such as `Lucid/1234`, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
+| `--quantity N` | The quantity its Qty is set to, one its quantities offer | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
+| `--trading-symbol SYMBOL` | Trade the other size of what it charts, such as `MES` on an ES chart; `none` to trade what it charts | [Trading another size](/manual/trading-on-a-chart/#trading-another-size) |
+| `--show-fills on` or `off` | Marks the account's executions on the chart | [Executions on the chart](/manual/trading-on-a-chart/#executions-on-the-chart) |
 | `--book BOOK` | Which chartbook, by name or `id:N`; the open one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
@@ -594,24 +603,27 @@ A part named twice, or a word that is not a place or a part, is refused and chan
 on](#which-chart-a-command-acts-on)). `KIND` is the indicator's name as the
 command takes it, such as `sma`, `rsi`, `volume_profile` or `session_times`.
 Each indicator's name, what it draws, and every parameter's default and range
-are in [Indicators](/manual/indicators/) and the page of its family.
+are in [Indicators](/manual/indicators/) and the indicator's own page.
 
 | Action | Does |
 |---|---|
-| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`. With `--json`, each one's id, kind, parameters, colour, line, visibility, and `in_legend`, whether the legend names it |
+| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`, and `· selected` after the one selected in the window. With `--json`, each one's id, kind, parameters, colour, line, visibility, `in_legend`, whether the legend names it, and `selected` |
 | `add KIND` | Adds one, at its defaults plus whatever flags are given |
-| `remove KIND` | Removes every indicator of that kind |
+| `remove KIND` | Removes every indicator of that kind, or with `--id`, that one |
 | `set KIND` | Changes the one of that kind. With two of a kind, `--id N` says which |
 
 | Flag | Takes | For |
 |---|---|---|
-| `--id N` | An id from `list --json` | `set`, on a chart with two of a kind |
+| `--id N` | An id from `list --json`, or `selected` for the one selected in the window, whose kind can then be left out | `set` and `remove` |
+| `--selected` | Nothing | `list`: only the one selected in the window |
 | `--period N` | Bars | SMA, EMA, Bollinger, RSI, ATR; the stochastic's %K length |
 | `--deviations F` | 0 to 50 | Bollinger |
 | `--fast N`, `--slow N`, `--signal N` | Bars | MACD |
 | `--signal-color C` | A colour | MACD |
+| `--signal-style S` | `solid`, `dashed`, `dotted`; the MACD line's when not given | MACD |
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
+| `--d-style S` | `solid`, `dashed`, `dotted`; %K's when not given | Stochastic |
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, cumulative delta; `never` only for cumulative delta |
 | `--cvd-style S` | `candles`, `line` | Cumulative delta |
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
@@ -623,7 +635,11 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--align A` | `left`, `right` | Volume profile |
 | `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
 | `--outline-color C` | A colour | Volume profile |
-| `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
+| `--outline-width F`, `--poc-width F` | 0.5 to 12 | Volume profile |
+| `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile |
+| `--transparency F` | 0 to 1; 0.7 when not given | Volume profile: how much of the chart shows through its rows and outline. 0 is its colour solid, 1 invisible |
+| `--highlight-value-area B` | `on`, `off` | Volume profile: whether its value area is set apart from its other rows; on when not given |
+| `--value-area-color C` | A colour, or `none` | Volume profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
@@ -633,7 +649,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--add-range`, `--remove-range`, `--range`, `--name`, `--from`, `--to`, `--zone`, `--shade-alpha` | See [Session Times](#session-times) | Session Times |
 | `--color C` | A colour | The line of any indicator; a profile's bars; a Session Times range's shading |
 | `--width F` | Pixels; `0` draws no line | Any indicator with a line |
-| `--style S` | `solid`, `dashed`, `dotted` | Any indicator with a line |
+| `--line-style S` | `solid`, `dashed`, `dotted`; `--style S` is its older name | Any indicator with a line |
 | `--visible B` | `on`, `off` | Any |
 | `--legend B` | `on`, `off`; `on` for a new indicator, `off` for Session Times | Any. Whether the chart's legend names it. It is drawn either way |
 
@@ -641,7 +657,7 @@ A colour is a palette name (`Blue`, `Amber`, `Violet`, `Teal`, `Rose`,
 `Green`, `Orange`, `Cyan`, `Foreground`, capitals ignored) or `#rrggbb`. A palette name follows
 the theme; a hex does not.
 
-Volume and a volume profile are bars, not lines, so `--width` and `--style`
+Volume and a volume profile are bars, not lines, so `--width` and `--line-style`
 change nothing on them. `--color` on volume colours only its dot in the
 legend.
 
@@ -672,7 +688,7 @@ omacharts chart indicator add stochastic --k-smooth 5
 $ omacharts chart indicator add sma --period 200
 added SMA(200) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
-$ omacharts chart indicator add sma --period 50 --style dashed
+$ omacharts chart indicator add sma --period 50 --line-style dashed
 added SMA(50) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
 $ omacharts chart indicator set sma --period 100
@@ -867,6 +883,64 @@ created chart template "Trend" (id:5) from the indicator on pos:0 SPY 1D in "Cha
   [exit 0]
 ```
 
+## Comparing markets
+
+`omacharts chart compare ACTION [SYMBOL…]` draws other markets on a chart as
+lines in percent. What comparing is, and how it looks, is in
+[Comparing markets](/manual/comparing/). `--book BOOK` and `--chart CHART` pick
+the chart as under [Which chart a command acts on](#which-chart-a-command-acts-on).
+
+| Action | Does |
+|---|---|
+| `list` | The markets the chart compares, where they are measured from, and whether it is lines only. |
+| `add SYMBOL…` | Compares one or more markets. A market already compared is said and left alone. The chart's own symbol is refused, exit `5`. `BTC-USD` is the coin listed as `BTC`. |
+| `remove SYMBOL…` | Stops comparing them. A market the chart does not compare is refused, exit `3`. |
+| `set` | Changes only the flags below. |
+| `clear` | Stops comparing anything. Lines only and the base go with the markets. |
+
+| Flag | Does |
+|---|---|
+| `--from WHEN` | The bar every line is 0% at: a date `2026-01-02`, a moment `2026-01-02T14:30` in the chart's time zone, or unix seconds. On daily and longer bars a date is that day's bar. `left` measures from the first bar on screen again |
+| `--lines-only on`, `off` | Draws the chart's own symbol as a line instead of its bars |
+| `--color COLOUR` | The colour of the markets named on the line: a palette name, `#rrggbb`, or `auto` for the theme's |
+| `--json` | Returns the chart, `compare` (each market's `symbol` and `color`), `from` in unix seconds or `null`, `lines_only` and `message` |
+
+Every symbol is checked before anything is written, so a command naming one
+unknown symbol (exit `3`) compares none of them. `--from`, `--lines-only` and
+`--color` on a chart that compares nothing are refused, exit `5`.
+
+```
+$ omacharts chart compare add GC NQ BTC-USD
+compared GC, NQ, BTC on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare set --from 2026-01-02
+from 2026-01-02 on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare set GC --color Rose
+GC coloured Rose on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare list
+pos:0 SPY 1D compared with GC, NQ, BTC, from 2026-01-02
+  [exit 0]
+
+$ omacharts chart compare add SPY
+omacharts: pos:0 SPY 1D is SPY; compare it with another market
+  [exit 5]
+
+$ omacharts chart compare set --lines-only on --from left
+from the left edge, lines only on pos:0 SPY 1D in "Macro"
+  [exit 0]
+
+$ omacharts chart compare clear
+stopped comparing anything on pos:0 SPY 1D in "Macro"
+  [exit 0]
+```
+
+`chart list --json` gives each chart's compared markets as `compare`.
+
 ## Measuring a move
 
 `omacharts chart measure` displays a temporary ruler on the focused chart and
@@ -890,7 +964,7 @@ precision, the bar distance and the elapsed time. Bar distance counts column
 intervals; elapsed time includes market closures. With fewer than two loaded
 candles the reply has no bar distance and `bars` is `null`. A zero starting price has
 `null` for `percent_change`. The measurement is not saved or shared. The mouse
-tool is in [Measuring a move](/manual/drawings/#measuring-a-move).
+tool is in [Measure](/manual/drawings/measure/).
 
 ## Volume profiles
 
@@ -918,7 +992,7 @@ $ omacharts chart profile list --on-screen
 `omacharts chart profile merge --at WHEN` folds the focused chart's volume
 profile holding that moment into the one before it, and `omacharts chart
 profile split --at WHEN` puts a composite back into its periods
-([Composite profiles](/manual/indicators/volume/#composite-profiles)). `WHEN`
+([Composite profiles](/manual/indicators/volume/volume-profile/#composite-profiles)). `WHEN`
 is a day, a day and a time, read in the chart's time zone, or Unix seconds,
 such as `start` from `list`. `--id N` says which profile when the chart has more
 than one. A window must be open;
@@ -954,7 +1028,7 @@ chart 46: sends drawings to other charts off
 
 | Action | Does |
 |---|---|
-| `list` | Every drawing the chart shows: its id, kind, anchors, words and look. With `--json`, the symbol, whether the chart shows and sends drawings, and each drawing's anchors, corners, configuration, style, scope, order and words with their emphasis |
+| `list` | Every drawing the chart shows: its id, kind, anchors, words and look, and `· selected` after those selected in the window. With `--json`, the symbol, whether the chart shows and sends drawings, and each drawing's anchors, corners, configuration, style, scope, order, words with their emphasis, and `selected` |
 | `add KIND` | Draws one |
 | `set --id N` | Changes one: anchors, look, words, scope or order |
 | `remove --id N` | Removes one |
@@ -970,7 +1044,8 @@ read in the chart's time zone, the one its time axis is labelled in
 
 | Flag | Takes | Does |
 |---|---|---|
-| `--id N` | An id from `list` | Which drawing, for `set` and `remove` |
+| `--id N` | An id from `list`, or `selected` for the one selected in the window | Which drawing, for `set` and `remove`. With more than one selected, `selected` is refused with exit 4 and the ids |
+| `--selected` | Nothing | `list`: only what is selected in the window |
 | `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing and an anchored VWAP take `--from` only |
 | `--point ANCHOR` | An anchor, repeated | A zig-zag's corners in order, two at least. `--from` and `--to` alone give it one leg |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
@@ -979,6 +1054,8 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--arrow WHERE` | `none`, `end`, `start`, `both` | Which ends have an arrowhead |
 | `--head SHAPE` | `filled`, `open`, `barb` | The arrowhead |
 | `--border B` | `on`, `off` | Whether a box or circle has an edge |
+| `--line-style S` | `solid`, `dashed`, `dotted` | How a line, an arrow, a zig-zag, a box's or circle's edge, a volume profile's outline, or an anchored VWAP's line is drawn |
+| `--select-by-border B` | `on`, `off` | Whether a box or circle is selected by its edge alone, leaving a click inside it to the chart; off by default |
 | `--fill C` | A colour | A box's or circle's fill |
 | `--alpha F` | 0 to 1 | How much of the fill shows: 0 none, 1 solid |
 | `--text WORDS` | Words; `""` | The whole of a text drawing; a label on any other. The empty string removes a label. `**bold**`, `*italic*` and `***both***` are read as emphasis, `\*` as an asterisk |
@@ -990,10 +1067,15 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--profile-style S` | `filled`, `outline` | A volume profile's rows, or only their edge |
 | `--align A` | `left`, `right` | The edge of its span a volume profile grows from |
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
-| `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
+| `--transparency F` | 0 to 1 | How much of the chart shows through a volume profile's background and outline: 0 solid, 1 invisible; 0.7 by default |
+| `--highlight-value-area B` | `on`, `off` | Whether a volume profile's value area is set apart from its other rows; on by default |
+| `--value-area-color C` | A colour, or `none` | A volume profile's value area while it is set apart; `none` for its background's colour |
 | `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
+| `--poc-style S` | `solid`, `dashed`, `dotted` | How a volume profile's point of control is drawn; `--line-style` is its outline's |
+| `--poc B` | `on`, `off` | Whether a volume profile draws its point of control; on by default |
+| `--rows N` | `auto`, or a number of rows, held between 4 and 800 | How finely a volume profile divides its span; `auto` by default, as the study |
 | `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
-| `--style S` | `solid`, `dashed`, `dotted` | How an anchored VWAP's line is drawn |
+| `--style S` | `solid`, `dashed`, `dotted` | The older name of `--line-style` on an anchored VWAP |
 | `--bands LIST` | `1,2,3` or any of them; `none` | Which of an anchored VWAP's three bands are drawn, by place from the line out; none by default |
 | `--band N` | 1 to 3 | The band the `--band-*` flags change. Without it they change all three |
 | `--band-deviations F` | 0.1 to 6 | How far out the band sits, in standard deviations. Needs `--band` |
@@ -1016,7 +1098,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--poc-width`, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--poc-style`, `--poc`, `--rows`, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 
@@ -1153,7 +1235,7 @@ names.
 
 | Command | Does |
 |---|---|
-| `chartbook list` | Every chartbook, its number of charts and its watchlist; `*` marks the open one. |
+| `chartbook list` | Every chartbook, its number of charts and its watchlist; `*` marks the open one. `--json` adds `sidebar`, whether it shows the sidebar. |
 | `chartbook show [BOOK]` | One chartbook's charts: id, symbol, resolution, bar style and link mode; `*` marks the focused chart. Default: the open one. |
 | `chartbook create NAME` | A chartbook with one chart, showing the default watchlist. `--symbol SYMBOL` (default `SPY`), `--template TEMPLATE` ([Chartbook templates](#chartbook-templates)), `--switch` to open it. Give it another list with `chartbook watchlist`. |
 | `chartbook rename BOOK NAME` | Renames it. |
@@ -1289,6 +1371,25 @@ Whether the pointer on one chart draws the same moment on every other chart of t
 | `chart crosshair` | Whether the crosshair is shared; prints `on` or `off`. |
 | `chart crosshair on` or `off` | Turns it on or off. |
 | `config set sync_crosshair on` or `off` | The same setting, by its key; see [Preferences](#preferences). |
+
+## Showing and hiding the sidebars
+
+The sidebar on the right and the drawing tools on the left, put out or away as their corner buttons and keys do ([The window](/manual/window/)). Without a state each prints `on` or `off`.
+
+| Command | Does |
+|---|---|
+| `chartbook sidebar [on\|off]` | Shows or hides the open chartbook's sidebar, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> but leaving the keyboard where it is. Kept with the chartbook. `--book BOOK` for another, applied when it is next opened. With no window open, `--book` is needed (exit `6`). |
+| `chart drawing-tools [on\|off]` | Puts the drawing tools out or away, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. One setting for the window. |
+
+```
+$ omacharts chartbook sidebar off
+chartbook "Desk" hides the sidebar
+  [exit 0]
+
+$ omacharts chart drawing-tools
+off
+  [exit 0]
+```
 
 ## Watchlists and sections
 
@@ -1604,11 +1705,115 @@ streaming 2 series:
 With `--json` the same facts are fields: `delivery`, `subscriptions`, and
 for `provider list` `stored`, `inUse`, `needsSignIn` and `session` per feed.
 
+## Trading
+
+Trading is experimental ([Trading](/manual/trading/)). The `trading` group
+does what the Trading panel and a chart's Account part do. The settings a
+chart trades with are [`chart set`](#chart-set) flags: `--account`,
+`--quantity`, `--trading-symbol` and `--show-fills`.
+
+| Command | Does |
+|---|---|
+| `trading logins` | Each login, its service, and whether it is live and gives charts their data |
+| `trading login SERVICE` | Opens the service's sign-in dialog in the window, to add a login |
+| `trading sign-in LOGIN` | Signs a login in with its saved password, or opens its dialog when it has none |
+| `trading sign-out LOGIN` | Signs it out and forgets its password; the login stays |
+| `trading remove LOGIN [--with-feed]` | Removes the login, its password and its accounts, and with `--with-feed` the data feed that came through it |
+| `trading data LOGIN` | Charts' market data comes through this login |
+| `trading accounts` | Every account with its balance, the day's and the open P&L, its loss limit and liquidation level; `*` marks the default |
+| `trading default ACCOUNT` | The account charts trade on until given one of their own |
+| `trading positions` | What every account holds, at what average, with its open P&L |
+| `trading orders [--all]` | The day's working orders; with `--all`, the filled and cancelled ones too |
+| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N` instead of the chart's Qty |
+| `trading exit --target PRICE --stop PRICE` | A target, a stop, or both linked, for the whole of the position the chart trades |
+| `trading modify ORDER --price PRICE` | Moves a working order |
+| `trading cancel ORDER`, `trading cancel --all [--account ACCOUNT]` | Cancels one order, or every open order on an account (the default one when not given) |
+| `trading flatten`, `trading flatten CONTRACT [--account ACCOUNT]` | Closes the chart's position at the market and cancels its orders, as Ctrl+F does; or, with a contract, closes what an account holds in it and leaves its orders, as the Positions tab does |
+| `trading quantities [list]`, `set NAME QUANTITIES`, `remove NAME` | The quantities a chart's Qty offers; `set` takes `--applies-to stocks` or `futures` and `--symbols` |
+
+`buy`, `sell`, `exit` and `flatten` act on the chart `--book` and `--chart`
+name, the focused one by default ([Which chart a command acts
+on](#which-chart-a-command-acts-on)), in the open chartbook: an order goes
+from a chart on screen. An account is named by its name or its number, or,
+when two logins share a number, by its login's name and its number, such as
+`Lucid/1234`, or by its `account` in `trading accounts --json`.
+
+```
+$ omacharts trading logins
+Lucid                Rithmic                live · data
+  [exit 0]
+
+$ omacharts trading positions
+Lucid              ESZ6        +1 at     6,824.25  +$37.50
+  [exit 0]
+
+$ omacharts trading buy --limit 6810 --quantity 2
+Lucid: Buy Limit 2 ESZ6 at 6,810.00
+  [exit 0]
+
+$ omacharts trading exit --target 6840 --stop 6815
+Lucid: Sell Stop 1 ESZ6 at 6,815.00
+Lucid: Sell Limit 1 ESZ6 at 6,840.00
+  [exit 0]
+
+$ omacharts trading orders
+B4           14:31:09 Lucid          ESZ6     Sell    1 Limit      6,840.00  Working
+B3           14:31:09 Lucid          ESZ6     Sell    1 Stop       6,815.00  Working
+B2           14:31:07 Lucid          ESZ6     Buy     2 Limit      6,810.00  Working
+  [exit 0]
+
+$ omacharts trading modify B2 --price 6805
+Lucid: Move Buy Limit 2 ESZ6 to 6,805.00
+  [exit 0]
+
+$ omacharts trading flatten
+Lucid: Flatten ESZ6 and cancel its orders
+  [exit 0]
+
+$ omacharts trading sell --quantity 12
+omacharts: Futures offers 1, 2, 3, 4, 5, 6, 7, 8, 9 for ES, not 12
+  [exit 5]
+
+$ omacharts trading buy --limit 6900
+omacharts: Lucid: Not placed · 6,900.00 is above the market now
+  [exit 5]
+```
+
+Orders, cancels and flattens need the window, where the sessions are signed
+in, and so do `positions`, `orders`, `login` and `sign-in`; with none open
+they exit `6`. Each goes through the chart's own checks,
+and what the chart would refuse is refused with exit `5` in its words. There
+are no confirmations, as there are none on the chart. The reply says what was
+sent; the trading service's answer reaches the Log and `trading orders`, so a script
+waiting for a fill reads `trading orders --json` until its `status` says so.
+One order per account is on its way at a time, as on the chart, and the next
+is refused until the last is answered.
+
+An order is named by its id from `trading orders`. Should two accounts have an order of the same id, `modify` and `cancel` refuse it with exit `4` until `--account` says which.
+
+`trading flatten` with the chart's position already flat says `Already flat
+in ESZ6` and exits `0`. `trading modify` moves the price only, and needs a chart open
+that trades the order's account and contract, since the order is moved from
+there.
+
+A password is never typed in a terminal. `trading login` and a `trading
+sign-in` without a saved password open the dialog in the window and return;
+`trading logins` says when the login is live.
+
+With `--json`, `logins` gives `logins` and the `services` on offer,
+`accounts` gives `accounts` with `balance`, `day_pnl`, `open_pnl`,
+`loss_limit`, `liquidates_at`, `max_order_qty` and `default`, `positions`
+gives `positions`, and `orders` gives `orders` with `id`, `side`, `qty`,
+`filled`, `type`, `price`, `status`, `working` and `filled_at`. An order,
+cancel or flatten gives `said`, one `{account, text}` per line the window
+said.
+
 ## Preferences
 
 `config list` prints every setting that has been written, `config get KEY`
 one of them, and `config set KEY VALUE` writes one. A setting you have never
-changed does not appear; asking for it exits 3.
+changed does not appear; asking for it exits 3, except `agent_context` and
+`agent_model.<agent>`, which read as empty.
 
 ```
 $ omacharts config get show_grid
@@ -1657,6 +1862,8 @@ same.
 | `provider` | `yahoo`, `tos` | `yahoo` | Market data › Data feed | [Market data feeds](/manual/market-data/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | where Omarchy saves screenshots; `<Pictures>/Omacharts` without Omarchy | None | [Screenshots](/manual/screenshots/) |
 | `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Market data › Keep at most | [Where your data lives](/manual/your-data/) |
+| `agent_context` | any text; empty sends none | empty | Agent › Context | [Dictation](/manual/dictation/#what-the-agent-is-sent) |
+| `agent_model.<agent>` | a model the agent takes, such as `opus`; empty for its default. `<agent>` is `claude`, `codex`, `cursor-agent`, `copilot`, `opencode` or `agy` | empty | Agent › Dictation › Model | [Dictation](/manual/dictation/#agents) |
 
 ### Theme
 
@@ -1710,6 +1917,31 @@ charts write times as 12-hour (3:30 PM)
 
 $ omacharts config set zoom_sensitivity 50%
 charts zoom at 50% sensitivity
+  [exit 0]
+```
+
+`agent_context` is said back by its length, and `""` clears it:
+
+```
+$ omacharts config set agent_context "Keep answers to one line."
+dictation sends the agent 25 characters of extra context
+  [exit 0]
+
+$ omacharts config set agent_context ""
+dictation sends the agent no extra context
+  [exit 0]
+```
+
+`agent_model.<agent>` is the model dictation asks that agent for, and `""`
+goes back to the agent's own. It is only for the agents Omacharts runs itself:
+
+```
+$ omacharts config set agent_model.claude opus
+dictation asks Claude Code for opus
+  [exit 0]
+
+$ omacharts config set agent_model.claude ""
+dictation lets Claude Code use its default model
   [exit 0]
 ```
 

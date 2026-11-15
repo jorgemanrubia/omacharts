@@ -456,3 +456,11 @@ next writer needs the case. One dated line each, newest last.
   or three sentences (jump to a date and keep the window, or set the window
   as a span or a custom range, in a few keystrokes); the `3w` versus
   `3 weeks ago` distinction and the resolution rule are stated once, briefly.
+- 2026-11-14 — On a drawing's page whose Properties only linked to a shared
+  section on the Drawings page: "every drawing page" gets its own
+  `## Properties` with every property its dialog has, in the dialog's order
+  and groups, each explained in a plain sentence that says what it changes on
+  the chart, with its range, choices and default. "Come on, we need this
+  better." The Drawings page's Properties keeps only what is common to every
+  drawing (opening the dialog, the configuration picture, how the shared
+  rows behave) and links to each tool's page; no tool-specific tables there.

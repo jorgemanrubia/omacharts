@@ -20,8 +20,14 @@
 //! drag at the frame rate.
 
 pub mod bench;
+mod compare;
+mod executions;
+mod pulse;
 mod selection;
+pub use executions::{ExecutionMark, Executions, TripLine};
+pub use compare::{CompareLine, Comparing, Reading, Readout};
 pub use selection::ProfileSpot;
+pub use pulse::PULSE_LAYER;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -197,9 +203,10 @@ struct State {
     /// the room a hand dragged open. Kept as new bars arrive, so the margin
     /// stays what it was set to. `RIGHT_MARGIN` at rest.
     overhang: usize,
-    /// Whether a hand set `overhang`, panning. At rest it is widened to
-    /// fit the live sessions of the right-aligned volume profiles, and
-    /// narrowed back as they go; set by hand, it is what the hand left.
+    /// Whether a hand set `overhang`, panning. At rest the room the live
+    /// sessions of the right-aligned volume profiles take is added to it,
+    /// and taken off as they go, so the empty room before them is the same
+    /// as with none; set by hand, it is what the hand left.
     overhang_by_hand: bool,
     /// The share of the columns a hand left `overhang` at, short of the
     /// profiles' margin: what zooming keeps it at, so it stays as wide on
@@ -268,6 +275,9 @@ struct State {
     marks: Marks,
     /// Which end of their lines the marks' labels sit at.
     mark_labels: LabelSide,
+    /// Past fills and the round trips joining them, laid over the chart
+    /// by whoever embeds it; empty unless somebody asks for them.
+    executions: Executions,
     /// The step a mark is dragged on, set by whoever lays the marks: the
     /// contract it trades, which need not step as the series charted does
     /// — a 6E chart trading M6E. The series' own step when unset.
@@ -400,6 +410,12 @@ struct State {
     /// editor is told where to sit after every keystroke, and tells the
     /// chart here.
     editing_at: Option<(f64, f64, f64, f64)>,
+    /// The other markets drawn over this one, rebased, while there are any.
+    /// Nothing at all otherwise, so a chart that compares nothing pays for
+    /// nothing.
+    compare: Option<Box<compare::Overlay>>,
+    /// Told what the compared markets read at the bar in question.
+    on_compare_readout: Handler<dyn Fn(Readout)>,
 }
 
 /// What happened to the selected indicator, for the window, which owns the
@@ -873,10 +889,12 @@ impl<'a> Columns<'a> {
     /// and knocked half the wicks a pixel off their bodies.
     ///
     /// Odd only while that leaves a pixel to the next candle. Neighbours land
-    /// as few as the column's width rounded down apart, and at three to four
-    /// pixels a column a three-pixel body touched them, fusing a run of
-    /// candles into one block. There the body keeps the width it had, and
-    /// the wick takes the same side of its middle on every candle.
+    /// as few as the column's width rounded down apart, so just under six
+    /// pixels a column a five-pixel body would touch them, fusing a run of
+    /// candles into one block. There the body keeps the even width it had,
+    /// and the wick takes the same side of its middle on every candle. Under
+    /// four pixels no odd body fits, which is why a candle that narrow is
+    /// drawn as its wick alone.
     fn body(&self, at: usize) -> (f64, f64) {
         let width = self.body_width();
         (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
@@ -1045,6 +1063,13 @@ fn index_of_ts(bars: &[Bar], ts: i64) -> f64 {
     (at - 1) as f64 + (ts - before) as f64 / gap as f64
 }
 
+/// The box a drawing's label is placed against: a line's is only the part
+/// of it inside the plot, so its words show wherever it does. See
+/// [`Projected::label_bounds`].
+fn label_bounds(plan: &Layout, projected: &Projected) -> (f64, f64, f64, f64) {
+    projected.label_bounds(plan.plot_x, plan.plot_x + plan.plot_w)
+}
+
 /// How prices become heights on the price plot, and back.
 ///
 /// `low` and `high` are in the scale's own units: prices on a linear axis,
@@ -1200,6 +1225,10 @@ fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale>
         let (bar_low, bar_high) = if line { (b.close, b.close) } else { (b.low, b.high) };
         low = low.min(bar_low);
         high = high.max(bar_high);
+    }
+    if let Some(compare) = &state.compare {
+        let (first, _) = state.slice();
+        (low, high) = compare.fit(&state.bars, first, bars.len(), low, high);
     }
     // The latest trade the bars leave out, while the chart shows its end:
     // its line would otherwise run off the plot, out of hours, the moment
@@ -1384,6 +1413,7 @@ impl State {
             trouble_words: None,
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
+            executions: Executions::default(),
             mark_tick: None,
             hover_mark: None,
             loading: false,
@@ -1416,6 +1446,8 @@ impl State {
             sends: true,
             undo: Vec::new(),
             redo: Vec::new(),
+            compare: None,
+            on_compare_readout: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -1522,9 +1554,12 @@ impl State {
         self.locate_with(width, height, x, y, false)
     }
 
-    /// Whether the price is drawn as one line through the closes.
+    /// Whether the chart's own bars are drawn as one line through the
+    /// closes: the Line style, or a comparison drawing every market as a
+    /// line. Hidden bars are drawn as nothing.
     fn draws_a_line(&self) -> bool {
-        self.bar_style == BarStyle::Line
+        !self.bars_hidden
+            && (self.bar_style == BarStyle::Line || self.compare.as_ref().is_some_and(|overlay| overlay.spec.lines_only))
     }
 
     /// What a snapped anchor can land on: the prices the chart draws of a
@@ -1752,7 +1787,8 @@ impl State {
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
-        };
+        }
+        .with_edge_only(drawing.style(&self.configs).edge_only);
         // Measured here, for every caller, because the words are part of
         // the drawing and not only part of the picture of it: a label is
         // what the pointer takes hold of when it sits clear of the stroke,
@@ -1764,14 +1800,14 @@ impl State {
         // nothing, which is most of them.
         match drawing.has_text() {
             false => projected,
-            true => self.with_words(projected, drawing),
+            true => self.with_words(plan, projected, drawing),
         }
     }
 
-    fn with_words(&self, projected: Projected, drawing: &Drawing) -> Projected {
+    fn with_words(&self, plan: &Layout, projected: Projected, drawing: &Drawing) -> Projected {
         match crate::text::block(
             drawing.kind,
-            projected.bounds(),
+            label_bounds(plan, &projected),
             &drawing.text,
             drawing.style(&self.configs),
         ) {
@@ -1780,28 +1816,42 @@ impl State {
         }
     }
 
-    /// Put copies down, offset if asked, and take hold of them. Hands back
-    /// what was added, for whoever has to write it down.
-    fn paste(
-        &mut self,
-        copied: &[Drawing],
-        offset: bool,
-        width: f64,
-        height: f64,
-    ) -> Vec<Drawing> {
+    /// Put copies down and take hold of them. Hands back what was added, for
+    /// whoever has to write it down.
+    ///
+    /// At the moment and the price they were copied at, and in sight: a
+    /// paste nobody can see is one that looks as if it never happened. So
+    /// the view goes to the moment if it is off screen, and a price that is
+    /// nowhere on this chart's axis — one copied from a market trading at
+    /// another price — goes to the height it had on `from`, the axis it was
+    /// copied on. Where that would put a copy exactly on a drawing already
+    /// here, as on the chart it came from, it lands a little off instead.
+    fn paste(&mut self, copied: &[Drawing], from: Option<PriceScale>, width: f64, height: f64) -> Vec<Drawing> {
         if copied.is_empty() {
             return Vec::new();
         }
-        let (first, visible) = self.slice();
-        if visible == 0 {
+        if self.slice().1 == 0 {
             return Vec::new();
         }
         let plan = layout(self, width, height);
+        self.reveal_moments(copied, plan.plot_w);
+        let (first, visible) = self.slice();
         let Some(scale) = price_range(self, &self.bars[first..first + visible], &plan) else {
             return Vec::new();
         };
+        let mut landing = copied.to_vec();
+        if let Some(from) = from.filter(|_| !on_axis(copied, scale)) {
+            for copy in landing.iter_mut() {
+                for anchor in copy.points.iter_mut().chain([&mut copy.from, &mut copy.to]) {
+                    anchor.price = scale.price(scale.low + (from.value(anchor.price) - from.low) / from.span() * scale.span());
+                }
+            }
+        }
+        let hidden = landing
+            .iter()
+            .any(|copy| self.drawings.iter().any(|there| there.from == copy.from && there.to == copy.to));
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
-        let (by_index, by_price) = match offset {
+        let (by_index, by_price) = match hidden {
             true => (PASTE_OFFSET / bar_w, -PASTE_OFFSET / plan.price_h * scale.span()),
             false => (0.0, 0.0),
         };
@@ -1810,8 +1860,7 @@ impl State {
         self.remember();
         let mut added = Vec::new();
         let State { bars, drawings, .. } = self;
-        for copy in copied {
-            let mut copy = copy.clone();
+        for mut copy in landing {
             copy.id = 0;
             copy.order = order;
             copy.scope = scope;
@@ -1832,6 +1881,37 @@ impl State {
         let from = self.drawings.len() - added.len();
         self.selected = (from..self.drawings.len()).collect();
         added
+    }
+
+    /// The price axis as it is drawn at this size.
+    fn paste_axis(&self, width: f64, height: f64) -> Option<PriceScale> {
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        price_range(self, &self.bars[first..first + visible], &plan)
+    }
+
+    /// Bring the moments `copied` spans into view, if none of them is on
+    /// screen: the view moves to centre on them, at the zoom it has, as far
+    /// as the bars and the room past them let it.
+    fn reveal_moments(&mut self, copied: &[Drawing], plot_w: f64) {
+        let columns = self.columns() as f64;
+        if columns == 0.0 {
+            return;
+        }
+        let (mut early, mut late) = (f64::MAX, f64::MIN);
+        for anchor in copied.iter().flat_map(|d| d.points.iter().chain([&d.from, &d.to])) {
+            let at = index_of_ts(&self.bars, anchor.ts);
+            early = early.min(at);
+            late = late.max(at);
+        }
+        let left = self.left_edge() as f64;
+        if late >= left && early <= left + columns {
+            return;
+        }
+        self.pan_by((early + late) / 2.0 - (left + columns / 2.0), plot_w);
     }
 
     /// Every drawing with any of itself on the plot right now: what Ctrl+A
@@ -1943,6 +2023,18 @@ impl State {
             // arrow's tip shows exactly where it will land, which a hand or a
             // cross of arrows would cover.
             _ => "default",
+        }
+    }
+
+    /// The drawing a press at a pixel takes hold of: none where a mark's
+    /// handle is under it — an order's line, its ×, a tab — since what the
+    /// hand reaches for over an order is the order. A drawing anywhere else
+    /// is taken as ever. Hover, a press, a double-click and a right-click
+    /// all ask this, so the cursor promises what the press does.
+    fn drawing_clear_of_marks(&self, width: f64, height: f64, x: f64, y: f64) -> Option<(usize, Grip)> {
+        match self.mark_under(width, height, x, y) {
+            Some(_) => None,
+            None => self.drawing_at(width, height, x, y),
         }
     }
 
@@ -2204,6 +2296,11 @@ impl State {
         let was = self.left_edge();
         let left = was + bars.round() as i64;
         let left = left.clamp(-room, (len - columns as i64 + ahead).max(-room));
+        // Held at the stop, nothing moved: at rest the margin stays the
+        // resting margin it is, with the profiles' room still on top.
+        if left == was {
+            return;
+        }
         let right = left + columns as i64;
         self.lead = (-left).max(0) as usize;
         self.overhang = (right - len).max(0) as usize;
@@ -2211,21 +2308,19 @@ impl State {
         self.anchored = right >= len;
         // Moving the view is choosing where to look: whatever range it was
         // holding to, this is it now.
-        if left != was {
-            self.range = None;
-            self.overhang_by_hand = true;
-            self.overhang_share = self.overhang as f64 / columns as f64;
-        }
+        self.range = None;
+        self.overhang_by_hand = true;
+        self.overhang_share = self.overhang as f64 / columns as f64;
         self.settle_at_stop();
     }
 
     /// The room past the last bar the view stops at while right-aligned
-    /// profiles keep a margin there: the resting margin, widened for them.
-    /// None without such profiles, when the view may run on as far as
-    /// `OVERHANG_PX`.
+    /// profiles keep a margin there: the resting margin, with the room they
+    /// take on top. None without such profiles, when the view may run on as
+    /// far as `OVERHANG_PX`.
     fn profile_stop(&self) -> Option<usize> {
         let floor = self.margin_floor();
-        (floor > 0).then(|| floor.max(RIGHT_MARGIN))
+        (floor > 0).then(|| floor + RIGHT_MARGIN)
     }
 
     /// Back at rest once the view reaches the profiles' margin, so it is
@@ -2276,13 +2371,19 @@ impl State {
     fn trim_room(&mut self, plot_w: f64) {
         let room = self.max_overhang(plot_w);
         self.lead = self.lead.min(room);
-        self.overhang = self.overhang.min(room.max(self.margin_floor()));
+        // At rest it is the resting margin alone, trimmed as with no
+        // profiles; set by hand it may reach as far as the view stops.
+        let most = match self.overhang_by_hand {
+            true => room.max(self.profile_stop().unwrap_or(0)),
+            false => room,
+        };
+        self.overhang = self.overhang.min(most);
     }
 
-    /// The fewest empty columns past the last bar at rest: room for the
-    /// live sessions of the right-aligned volume profiles on screen, side by
-    /// side, and none when there are none. A share of the columns, so it is
-    /// the same share of the plot at any zoom.
+    /// The columns past the last bar the live sessions of the right-aligned
+    /// volume profiles on screen take, side by side, and none when there are
+    /// none: added to the resting margin at rest. A share of the columns, so
+    /// it is the same share of the plot at any zoom.
     fn margin_floor(&self) -> usize {
         let share = selection::margin_share(self);
         if share <= 0.0 {
@@ -2292,11 +2393,13 @@ impl State {
     }
 
     /// The empty columns past the last bar, while anchored: what a hand
-    /// left, or at rest the resting margin widened to the floor.
+    /// left, or at rest the resting margin with the profiles' room on top,
+    /// so the room between the last bar and the first of them is the room a
+    /// chart with none has.
     fn overhang_now(&self) -> usize {
         match self.overhang_by_hand {
             true => self.overhang,
-            false => self.overhang.max(self.margin_floor()),
+            false => self.overhang + self.margin_floor(),
         }
     }
 
@@ -2442,6 +2545,9 @@ impl State {
         self.bars = bars;
         self.instrument = Some(instrument);
         self.timeframe = timeframe;
+        if let Some(compare) = self.compare.as_mut() {
+            compare.realign(&self.bars, timeframe);
+        }
         if changed {
             // A measured range belongs to the series it was measured on.
             self.ruler = None;
@@ -2558,6 +2664,17 @@ impl State {
     /// The view: the first bar in it, how many bars, and how many empty
     /// columns stand before the first. The room at either end is capped at
     /// one column short of the view, so a bar always stays on screen.
+    /// The bar `frac` of the way across the plot, `None` in the room open
+    /// before the first bar or past the last.
+    fn bar_at_fraction(&self, frac: f64) -> Option<usize> {
+        let (first, visible, lead) = self.view();
+        if visible == 0 {
+            return None;
+        }
+        let index = (first as f64 - lead as f64 + frac * self.columns() as f64).floor();
+        (index >= 0.0 && (index as usize) < self.bars.len()).then_some(index as usize)
+    }
+
     fn view(&self) -> (usize, usize, usize) {
         let columns = self.columns();
         if columns == 0 {
@@ -2587,6 +2704,25 @@ pub struct Hidden {
     pub drawings: bool,
     pub indicators: bool,
     pub bars: bool,
+}
+
+/// The prices a chart's price axis shows, bottom to top, and how it spaces
+/// them: what a copy carries to another chart, so a price that chart does
+/// not show can land at the height it had where it was copied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PriceWindow(PriceScale);
+
+/// Do any of `copied`'s prices fall on the axis `scale` shows? Taken
+/// together, so copies put down together stay where they were to each
+/// other.
+fn on_axis(copied: &[Drawing], scale: PriceScale) -> bool {
+    let (low, high) = scale.prices();
+    let (mut least, mut most) = (f64::MAX, f64::MIN);
+    for anchor in copied.iter().flat_map(|d| d.points.iter().chain([&d.from, &d.to])) {
+        least = least.min(anchor.price);
+        most = most.max(anchor.price);
+    }
+    most >= low && least <= high
 }
 
 /// How far a pasted copy lands from what it was copied from, in pixels.
@@ -2636,6 +2772,12 @@ pub struct ChartView {
     pub area: gtk::DrawingArea,
     /// The crosshair and the rest of what follows the pointer, over the top.
     pointer: gtk::DrawingArea,
+    /// The breath of a mark that asks for one, between the two: made the
+    /// first time a mark asks, so a chart with none has no layer at all.
+    pulse: Rc<RefCell<Option<pulse::PulseLayer>>>,
+    /// How many frames of the chart itself were drawn, for the tests.
+    #[cfg(test)]
+    drawn: Rc<Cell<u64>>,
     /// The editor open on the chart, if any.
     ///
     /// It hangs straight off [`root`], placed by its margins, and is there
@@ -2722,6 +2864,9 @@ impl ChartView {
         let view = Rc::new(ChartView {
             area,
             pointer,
+            pulse: Rc::default(),
+            #[cfg(test)]
+            drawn: Rc::default(),
             editing: RefCell::new(None),
             root,
             state,
@@ -3188,7 +3333,7 @@ impl ChartView {
     pub fn select_at(&self, x: f64, y: f64) -> bool {
         let hit = {
             let state = self.state.borrow();
-            state.drawing_at(self.area.width() as f64, self.area.height() as f64, x, y)
+            state.drawing_clear_of_marks(self.area.width() as f64, self.area.height() as f64, x, y)
         };
         let changed = {
             let mut state = self.state.borrow_mut();
@@ -3807,6 +3952,17 @@ impl ChartView {
         !self.state.borrow().selected.is_empty()
     }
 
+    /// Select the drawings with these ids, and nothing else: to put a
+    /// selection back on a chart rebuilt by a command.
+    pub fn select_ids(&self, ids: &[i64]) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.selected =
+                state.drawings.iter().enumerate().filter(|(_, d)| ids.contains(&d.id)).map(|(at, _)| at).collect();
+        }
+        self.redraw();
+    }
+
     /// Lay `drawing` down alone and select it, for a test that needs one.
     #[doc(hidden)]
     pub fn select_only(&self, drawing: Drawing) {
@@ -3911,8 +4067,9 @@ impl ChartView {
             let projected = state.project(&plan, &scale, drawing);
             // The drawing's own box, not the label's: a figure is placed in
             // by its shape, and a text drawing hangs from its anchor, which
-            // `text_origin` reads off the degenerate box either way.
-            let origin = drawings::text_origin(drawing.kind, projected.bounds(), size, at);
+            // `text_origin` reads off the degenerate box either way. A line's
+            // is the part of it on screen, as when the label is drawn.
+            let origin = drawings::text_origin(drawing.kind, label_bounds(&plan, &projected), size, at);
             (origin, size, style.text.clamped_size())
         };
         editing.place(placed.0, placed.1, placed.2);
@@ -4131,6 +4288,13 @@ impl ChartView {
         });
     }
 
+    /// What the price axis shows now: carried with a copy, for a paste onto
+    /// a chart whose axis does not reach its prices.
+    pub fn price_window(&self) -> Option<PriceWindow> {
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        self.state.borrow().paste_axis(width, height).map(PriceWindow)
+    }
+
     /// Everything selected, ready to be put down again.
     ///
     /// Without ids, because a copy is not the drawing it came from: the id
@@ -4149,24 +4313,26 @@ impl ChartView {
         taken
     }
 
-    /// Put a copy down on this chart, a little off where it came from, and
-    /// take hold of it.
+    /// Put a copy down on this chart, in sight, and take hold of it, with
+    /// the price axis of the chart it was copied on, if known: see
+    /// `State::paste`.
     ///
-    /// Offset so that a paste onto the chart it was copied from is a
-    /// drawing you can see rather than one hiding exactly behind another,
-    /// and so that pasting twice gives two. In pixels rather than in
-    /// moments, because what it has to clear is the drawing on screen.
+    /// Offset where it would land exactly on a drawing already here, so
+    /// that a paste onto the chart it was copied from is a drawing you can
+    /// see rather than one hiding behind another, and so that pasting twice
+    /// gives two. In pixels rather than in moments, because what it has to
+    /// clear is the drawing on screen.
     ///
     /// Says whether anything was put down, so the key can go on to whatever
     /// else it means when there is nothing to paste.
-    pub fn paste(&self, copied: &[Drawing], offset: bool) -> bool {
+    pub fn paste(&self, copied: &[Drawing], from: Option<PriceWindow>) -> bool {
         let (width, height) = (self.area.width() as f64, self.area.height() as f64);
         // One borrow, and nothing called from inside it. The first version
         // asked a getter for the chart's own sharing while holding this,
         // and a getter takes the same cell: not an error anybody sees until
         // the key is pressed, and then not a panic but an abort, because it
         // happens under a GTK callback.
-        let added = self.state.borrow_mut().paste(copied, offset, width, height);
+        let added = self.state.borrow_mut().paste(copied, from.map(|PriceWindow(axis)| axis), width, height);
         if added.is_empty() {
             return false;
         }
@@ -4440,6 +4606,10 @@ impl ChartView {
             for bar in tail {
                 omacharts_engine::stream::upsert(&mut state.bars, *bar);
             }
+            let state = &mut *state;
+            if let Some(compare) = state.compare.as_mut() {
+                compare.realign(&state.bars, state.timeframe);
+            }
             state.trouble = None;
             state.trouble_words = None;
             state.loading = false;
@@ -4504,6 +4674,41 @@ impl ChartView {
 
     /// Stop drawing the bars, or start again. Only the bars go: the scale
     /// still fits them, and what is drawn from them stays where it was.
+    /// Compare other markets on this chart, or stop comparing with `None`.
+    /// Handed whole each time, bars and all: a line whose bars just arrived
+    /// is the same call as the first.
+    pub fn set_comparing(&self, comparing: Option<Comparing>) {
+        {
+            let mut state = self.state.borrow_mut();
+            let state = &mut *state;
+            let handler = state.on_compare_readout.clone();
+            state.compare = comparing
+                .map(|spec| Box::new(compare::Overlay::new(spec, &state.bars, state.timeframe, handler)));
+        }
+        self.redraw();
+    }
+
+    /// Whether the chart is comparing markets, and so drawn in percent.
+    pub fn comparing(&self) -> bool {
+        self.state.borrow().compare.is_some()
+    }
+
+    /// Told what every compared market reads at the hovered bar, or at the
+    /// last on screen with none hovered, whenever that changes.
+    pub fn set_compare_readout_handler(&self, handler: impl Fn(Readout) + 'static) {
+        *self.state.borrow().on_compare_readout.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// The time of the bar at `x` of the chart: what "Compare from here"
+    /// pins the base to. `None` in the room before the first bar or past
+    /// the last, where there is no bar to measure from.
+    pub fn bar_time_at(&self, x: f64) -> Option<i64> {
+        let state = self.state.borrow();
+        let plot_w = (self.area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
+        let at = state.bar_at_fraction(((x - PAD) / plot_w).clamp(0.0, 1.0))?;
+        state.bars.get(at).map(|bar| bar.ts)
+    }
+
     pub fn set_bars_hidden(&self, hidden: bool) {
         self.state.borrow_mut().bars_hidden = hidden;
         self.hidden_changed();
@@ -4770,7 +4975,55 @@ impl ChartView {
                 state.drag = None;
             }
         }
+        self.breathe();
         self.redraw();
+    }
+
+    /// Put the layer the breath is drawn on between the chart and the
+    /// pointer's layer, the first time a mark asks for one.
+    fn breathe(&self) {
+        if self.pulse.borrow().is_some() || !self.state.borrow().marks.lines.iter().any(|mark| mark.pulse) {
+            return;
+        }
+        let (state, held) = (Rc::downgrade(&self.state), Rc::downgrade(&self.state));
+        let layer = pulse::PulseLayer::new(
+            move |width, height| state.upgrade().and_then(|state| pulse_band(&*state.try_borrow().ok()?, width, height)),
+            // The hand is on the chart: a pan, an axis pulled, a mark or a
+            // drawing in hand.
+            move || held.upgrade().is_none_or(|state| state.try_borrow().map_or(true, |state| state.drag.is_some())),
+        );
+        self.root.add_overlay(&layer);
+        layer.insert_before(&self.root, Some(&self.pointer));
+        *self.pulse.borrow_mut() = Some(layer);
+    }
+
+    /// Whether a mark's line is breathing: its timer running.
+    pub fn breathing(&self) -> bool {
+        self.pulse.borrow().as_ref().is_some_and(|layer| layer.ticking())
+    }
+
+    /// How strong the breath is drawn now, 0 to 1, with no layer for it at
+    /// all as `None`.
+    pub fn breath(&self) -> Option<f64> {
+        self.pulse.borrow().as_ref().map(|layer| layer.level())
+    }
+
+    /// Mark `executions` on the chart: past fills and the round trips
+    /// joining them. Redrawn only when they change.
+    pub fn set_executions(&self, executions: Executions) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.executions == executions {
+                return;
+            }
+            state.executions = executions;
+        }
+        self.redraw();
+    }
+
+    /// The fills the chart marks, as they were given.
+    pub fn executions(&self) -> Executions {
+        self.state.borrow().executions.clone()
     }
 
     /// The marks the chart is laid over with, as they were given.
@@ -4961,6 +5214,19 @@ impl ChartView {
         })
     }
 
+    /// How many rows the selected volume profile drawing is drawing, as
+    /// [`View::profile_rows`] says it of a study.
+    pub fn selected_profile_rows(&self) -> Option<usize> {
+        let state = self.state.borrow();
+        let drawing = state.primary().and_then(|i| state.drawings.get(i))?;
+        if drawing.kind != DrawingKind::Profile {
+            return None;
+        }
+        state
+            .span_profile(drawing)
+            .map(|profile| profile.rows.len())
+    }
+
     pub fn bar_count(&self) -> usize {
         self.state.borrow().bars.len()
     }
@@ -5056,10 +5322,20 @@ impl ChartView {
     fn wire_drawing(&self) {
         let state = self.state.clone();
         let on_history = self.on_history.clone();
+        let pulse = self.pulse.clone();
+        #[cfg(test)]
+        let drawn = self.drawn.clone();
         self.area.set_draw_func(move |_, cr, width, height| {
+            #[cfg(test)]
+            drawn.set(drawn.get() + 1);
             let older = {
                 let state = state.borrow();
                 draw(cr, width as f64, height as f64, &state);
+                // Drawn before the layer over it in the same frame, so the
+                // halo moves with the line rather than a frame after it.
+                if let Some(layer) = pulse.borrow().as_ref() {
+                    layer.chart_drawn(state.marks.lines.iter().any(|mark| mark.pulse));
+                }
                 state.wants_older()
             };
             if let (Some(first), Some(handler)) = (older, on_history.borrow().as_ref()) {
@@ -5116,7 +5392,12 @@ impl ChartView {
                     s.hover_mark = handle;
                     area.queue_draw();
                 }
-                let over = free.then(|| s.drawing_at(w, h, x, y)).flatten();
+                // Under a mark's handle no drawing is lit: the press goes
+                // to the mark.
+                let over = match over_mark {
+                    Some(_) => None,
+                    None => free.then(|| s.drawing_at(w, h, x, y)).flatten(),
+                };
                 // The grip under the hand is lit, which is a redraw of the
                 // chart — but only on the motion that reaches a grip or leaves
                 // one, not on every pixel of travel.
@@ -5580,7 +5861,30 @@ impl ChartView {
             // was selected, and pans as it always did.
             // Except Ctrl on a corner, which takes hold of it so the
             // drag that follows snaps it to a candle; Shift still adds.
-            let drawing = s.drawing_at(width, height, x, y);
+            // A draggable mark's line: taken to another price, starting
+            // where it is so nothing jumps, over any drawing under it too —
+            // an order is what the hand reaches for there. Its × too: a
+            // press there that moves on is a drag, not a close. Shift is
+            // for the drawings' selection and leaves it to them.
+            let mark = match shift_only {
+                true => None,
+                false => s.mark_under(width, height, x, y),
+            };
+            if let Some(MarkHit::Line(id) | MarkHit::Close(id)) = &mark
+                && let Some(at) = s.marks.lines.iter().find(|held| held.id == *id && held.draggable).map(|held| held.price)
+            {
+                s.drag = Some(Drag::Mark { what: Grab::Move(id.clone()), at, allowed: true });
+                s.hover_mark = None;
+                drop(s);
+                pointer.queue_draw();
+                return;
+            }
+            // Any other handle of a mark — a × that only closes — is the
+            // mark's as well, and no drawing under it is taken.
+            let drawing = match mark {
+                Some(_) => None,
+                None => s.drawing_at(width, height, x, y),
+            };
             // A drawing taken lets go of the indicator selected, which the
             // window is told once the state is free again.
             let unpicked = drawing.is_some() && s.picked.take().is_some();
@@ -5590,20 +5894,6 @@ impl ChartView {
                     view.tell_indicator(IndicatorEvent::Picked(None));
                 }
             };
-            // A draggable mark's line, under no drawing: taken to another
-            // price, starting where it is so nothing jumps. Its × too: a
-            // press there that moves on is a drag, not a close.
-            if drawing.is_none()
-                && !shift_only
-                && let Some(MarkHit::Line(id) | MarkHit::Close(id)) = s.mark_under(width, height, x, y)
-                && let Some(at) = s.marks.lines.iter().find(|mark| mark.id == id && mark.draggable).map(|mark| mark.price)
-            {
-                s.drag = Some(Drag::Mark { what: Grab::Move(id), at, allowed: true });
-                s.hover_mark = None;
-                drop(s);
-                pointer.queue_draw();
-                return;
-            }
             match drawing {
                 Some((index, grip)) if shift && (shift_only || grip == Grip::Body) => {
                     match s.selected.iter().position(|i| *i == index) {
@@ -5729,10 +6019,18 @@ impl ChartView {
                     }
                     let Some((at, _)) = s.tick_price_at(width, height, y) else { return };
                     let allowed = s.mark_allowed(&what, at);
+                    let was_off = s.mark_held_off().is_some();
                     s.drag = Some(Drag::Mark { what, at, allowed });
+                    let off = s.mark_held_off().is_some();
                     drop(s);
-                    // A preview, on the pointer layer: the chart is as it was.
+                    // A preview, on the pointer layer: the chart is as it
+                    // was, but for the mark itself, faint at its own price
+                    // once the hand has taken it off — redrawn only as it
+                    // leaves that price or comes back to it.
                     pointer.queue_draw();
+                    if was_off != off {
+                        area.queue_draw();
+                    }
                     return;
                 }
                 Drag::Place { moved } => {
@@ -5941,6 +6239,9 @@ impl ChartView {
                 Some(Drag::Mark { what, at, allowed }) => {
                     let Some(view) = view.upgrade() else { return };
                     view.pointer.queue_draw();
+                    // The mark faint while in hand is itself again; whatever
+                    // the release asks for comes with the marks it is told.
+                    view.area.queue_draw();
                     let from = state.borrow().mark_dragged(&what).map(|dragged| dragged.from);
                     // A tab pressed and let go where it was places nothing:
                     // it would be at its mark's own price.
@@ -6087,7 +6388,7 @@ impl ChartView {
             if region == Region::Plot {
                 let hit = {
                     let s = state.borrow();
-                    s.drawing_at(area.width() as f64, area.height() as f64, x, y)
+                    s.drawing_clear_of_marks(area.width() as f64, area.height() as f64, x, y)
                         .map(|(index, _)| (index, s.drawings.get(index).is_some_and(|d| d.kind.is_text())))
                 };
                 if let Some((index, text)) = hit
@@ -6352,7 +6653,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     // the gridlines, so they read as the chart's ground rather than as
     // something drawn on it.
     draw_time_ground(cr, state, &columns, &plan);
-    draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
+    let compared = state.compare.as_deref().and_then(|overlay| Some((overlay, overlay.based(&state.bars, columns.first)?)));
+    match &compared {
+        Some((_, based)) => compare::draw_grid(cr, state, based, plot_x, plot_w, price_y, price_h, &scale, &to_y),
+        None => draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y),
+    }
     draw_time_axis(cr, state, &columns.bars, columns.bars_each(), plot_x, plot_w, height, bar_w, bars_x - columns.shift());
     draw_goto_day(cr, state, &columns, &plan, height);
     // Shaded things go under the candles; lines go over. A band drawn on top
@@ -6367,8 +6672,16 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     cr.clip();
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_drawings(cr, state, &plan, &scale, true);
-    draw_candles(cr, state, &columns, &to_y);
+    // A line of the chart's own goes over the compared ones, so it is drawn
+    // with them instead.
+    if !(state.draws_a_line() && compared.is_some()) {
+        draw_candles(cr, state, &columns, &to_y);
+    }
     draw_indicator_lines(cr, state, &columns, &to_y);
+    executions::draw(cr, state, &plan, &scale);
+    if let Some((overlay, based)) = &compared {
+        compare::draw_lines(cr, state, overlay, based, &columns, &plan, &to_y);
+    }
     draw_unmet(cr, state, plot_x, price_y + price_h);
     cr.restore().ok();
     draw_drawings(cr, state, &plan, &scale, false);
@@ -6399,7 +6712,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                 draw_pane_name(cr, state, drawn, plot_x, row.top);
             }
             Output::Pane(pane) => {
-                draw_pane(cr, state, pane, drawn, &columns, plot_w, row.top, row.height, width)
+                draw_pane(cr, state, pane, drawn, &columns, &plan, row.top, row.height, width)
             }
             _ => {}
         }
@@ -6410,7 +6723,13 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
 
     draw_axis_fade(cr, state, plot_x + plot_w, width);
     let tag_at = draw_marks(cr, state, state.lane(&plan), price_y, price_y + price_h, width, &to_y);
-    draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y, tag_at);
+    match &compared {
+        Some((overlay, based)) => {
+            let step = compare::grid_step(&scale, based.rebase, price_h);
+            compare::draw_end_labels(cr, state, overlay, based, &columns, &plan, width, step, &to_y);
+        }
+        None => draw_last_price(cr, state, plot_x, plot_w, (price_y, price_h), width, decimals, &to_y, tag_at),
+    }
 
     if state.trouble.is_some() {
         draw_trouble_dot(cr, state, width);
@@ -6579,6 +6898,16 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
             width, height, bar_w, first as i64 - lead as i64, &scale,
         );
         draw_pane_value(cr, state, &plan, px, py, first, visible, width);
+    }
+
+    if let Some(overlay) = state.compare.as_deref() {
+        let hovered = state
+            .pointer
+            .filter(|(px, _)| *px >= plan.plot_x && *px <= plan.plot_x + plan.plot_w)
+            .map(|(px, _)| ((px - bars_x) / bar_w).floor())
+            .filter(|at| *at >= 0.0)
+            .map(|at| first + at as usize);
+        compare::draw_pointer(cr, state, overlay, &plan, &scale, first, visible, hovered, bar_w, bars_x);
     }
 
     // Another chart's pointer, if nothing is pointing at this one. The real
@@ -6932,9 +7261,11 @@ fn candles(
         return;
     }
     let (bars, bar_w) = (&columns.bars, columns.bar_w);
-    // Below about three pixels a candle is a line; outlining it just muddies
-    // the colour.
-    let hairline = bar_w < 3.0;
+    // Below four pixels a candle is a line. The only body that leaves a
+    // pixel to its neighbour there is two pixels wide, with no middle for
+    // the wick, so the wick sat off to one side of every body; and outlining
+    // one this narrow just muddies the colour.
+    let hairline = bar_w < 4.0;
     // A border takes a pixel off each side of the body. Under five pixels
     // that leaves the colour one pixel or none, and every candle reads as
     // the border colour, so a candle that narrow keeps its direction's own
@@ -7279,6 +7610,16 @@ fn signal_colour(state: &State, drawn: &Drawn) -> String {
     state.theme.companion_or(chosen, &drawn.color)
 }
 
+/// The pattern of a strip's second line, if somebody set it apart from the
+/// first's.
+fn signal_style(drawn: &Drawn) -> Option<LineStyle> {
+    match &drawn.indicator.params {
+        omacharts_engine::Params::Stochastic { d_style, .. } => *d_style,
+        omacharts_engine::Params::Macd { signal_style, .. } => *signal_style,
+        _ => None,
+    }
+}
+
 /// The part of a per-bar series that is on screen.
 fn on_screen<T>(series: &[T], first: usize, visible: usize) -> &[T] {
     &series[first.min(series.len())..(first + visible).min(series.len())]
@@ -7392,12 +7733,15 @@ fn draw_pane(
     pane: &omacharts_engine::indicators::Pane,
     drawn: &Drawn,
     columns: &Columns,
-    plot_w: f64,
+    plan: &Layout,
     top: f64,
     height: f64,
     width: f64,
 ) {
-    let plot_x = columns.plot_x;
+    // The strip's own box, where its name, guides and scale go. The bars
+    // can start further in, past room dragged open before the first one,
+    // and only the lines follow them, through `columns`.
+    let (plot_x, plot_w) = (plan.plot_x, plan.plot_w);
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
     let lit = state.picked == Some(drawn.indicator.id);
@@ -7564,6 +7908,7 @@ fn draw_pane(
     }
     stroke_pane_line(cr, stroke, &drawn.color, values, columns, &strip);
     if let Some((signal, colour)) = &signal {
+        let stroke = indicators::Stroke::new(stroke.width, signal_style(drawn).unwrap_or(stroke.style));
         stroke_pane_line(cr, stroke, colour, on_screen(signal, first, visible), columns, &strip);
     }
     if lit {
@@ -8227,6 +8572,15 @@ impl State {
         }
     }
 
+    /// The mark the hand has taken off its price, which is drawn faint
+    /// where it was while its copy follows the hand. Only once it has left
+    /// its price: a × pressed and let go in place never flickers.
+    fn mark_held_off(&self) -> Option<&str> {
+        let Some(Drag::Mark { what: Grab::Move(id), at, .. }) = &self.drag else { return None };
+        let mark = self.marks.lines.iter().find(|mark| mark.id == *id)?;
+        ((mark.price - at).abs() > 1e-9).then_some(mark.id.as_str())
+    }
+
     /// What the rules are asked about `dragged` in hand at `at`.
     fn drag_query<'a>(&self, dragged: &Dragged<'a>, at: f64, places: usize) -> MarkDrag<'a> {
         MarkDrag {
@@ -8492,6 +8846,9 @@ fn draw_marks(
         }
     };
     let lit = state.hover_mark.as_ref();
+    // Faint on its way, or taken off its price by the hand.
+    let held = state.mark_held_off();
+    let faint_of = |mark: &PriceMark| mark.dim || held == Some(mark.id.as_str());
     let ys = |price: f64| Some(to_y(price).round()).filter(|y| shown(*y));
     let marks: Vec<(&PriceMark, f64)> =
         state.marks.lines.iter().filter_map(|mark| Some((mark, ys(mark.price)?))).collect();
@@ -8502,22 +8859,23 @@ fn draw_marks(
     // same price, is drawn through words.
     for (mark, y) in &marks {
         if let Some(weight) = mark.line {
-            faint(cr, mark.dim, &|cr| line(cr, *y, &mark.colour, mark.style, weight));
+            faint(cr, faint_of(mark), &|cr| line(cr, *y, &mark.colour, mark.style, weight));
         }
     }
-    draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
+    draw_last_price_line(cr, state, plot_x, plot_w, price_y, floor, to_y);
 
     let tab_h = MARK_H - 2.0;
     // A mark's label and its tabs.
     let label = |cr: &cairo::Context, mark: &PriceMark, y: f64| {
         let row = label_row(cr, lane, mark);
-        ground(cr, mark.dim, &|cr| {
+        let dim = faint_of(mark);
+        ground(cr, dim, &|cr| {
             row.path(cr, y);
             for (_, x, w) in &row.tabs {
                 cr.rectangle(*x, y - tab_h / 2.0, *w, tab_h);
             }
         });
-        faint(cr, mark.dim, &|cr| {
+        faint(cr, dim, &|cr| {
             let lit_cap = lit.is_some_and(|hit| matches!(hit, MarkHit::Close(id) if *id == mark.id));
             let body = mark.body.as_deref().map(|body| (body, None));
             let label = Label { colour: &mark.colour, tag: &mark.tag, body, lit: lit_cap };
@@ -8548,17 +8906,17 @@ fn draw_marks(
     for (mark, y) in marks.iter().filter(|(mark, _)| !mark.raised) {
         label(cr, mark, *y);
         if let Some(at) = &mark.chip {
-            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
+            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), faint_of(mark)));
         }
     }
     draw_link(cr, lane, &marks, ink, &faint);
     for (mark, y) in marks.iter().filter(|(mark, _)| mark.raised) {
         label(cr, mark, *y);
         if let Some(at) = &mark.chip {
-            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
+            chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), faint_of(mark)));
         }
     }
-    let last = last_price(state).map(|(price, _)| to_y(price).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price_y(state, price_y, floor, to_y);
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -8582,6 +8940,74 @@ fn draw_marks(
     }
     cr.restore().ok();
     moved
+}
+
+/// Where the halo of the mark that breathes goes on a chart `width` by
+/// `height`: either side of its line, along the stretches of it no label
+/// or tab sits on — its own or another mark's at about the same price — so
+/// that nothing with words on it ever changes. Nothing for a mark that is
+/// faint, in hand, off the price plot, or with no line.
+fn pulse_band(state: &State, width: f64, height: f64) -> Option<pulse::Band> {
+    let mark = state.marks.lines.iter().find(|mark| mark.pulse)?;
+    let weight = mark.line?;
+    if mark.dim || state.mark_held_off() == Some(mark.id.as_str()) {
+        return None;
+    }
+    let (first, visible, _) = state.view();
+    if visible == 0 {
+        return None;
+    }
+    let plan = layout(state, width, height);
+    let scale = price_range(state, &state.bars[first..first + visible], &plan)?;
+    let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h).round();
+    let (top, bottom) = (plan.price_y, plan.price_y + plan.price_h);
+    let y = to_y(mark.price);
+    if y < top || y > bottom {
+        return None;
+    }
+    let lane = state.lane(&plan);
+    let mut spans = vec![pulse::Span { from: lane.start(), to: lane.end, fade_in: pulse::END_FADE, fade_out: pulse::END_FADE }];
+    let cr = measuring()?;
+    // Clear of a label by the room between its pieces.
+    let clear = MARK_GAP;
+    let near = MARK_H / 2.0 + pulse::REACH + weight;
+    for other in &state.marks.lines {
+        let at = to_y(other.price);
+        if (at - y).abs() > near || at < top || at > bottom {
+            continue;
+        }
+        let row = label_row(&cr, lane, other);
+        let pieces = std::iter::once((row.left(), row.right())).chain(row.tabs.iter().map(|(_, x, w)| (*x, x + w)));
+        for (left, right) in pieces {
+            spans = spans
+                .into_iter()
+                .flat_map(|span| {
+                    let (before, after) = (left - clear, right + clear);
+                    if span.to <= before || span.from >= after {
+                        return vec![span];
+                    }
+                    let mut kept = Vec::with_capacity(2);
+                    if before > span.from {
+                        kept.push(pulse::Span { to: before, fade_out: pulse::LABEL_FADE, ..span });
+                    }
+                    if after < span.to {
+                        kept.push(pulse::Span { from: after, fade_in: pulse::LABEL_FADE, ..span });
+                    }
+                    kept
+                })
+                .collect();
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    // Light on a dark ground carries further than a tint on a light one.
+    let (r, g, b, _) = colors::rgba(&state.theme.ui.background);
+    let peak = match 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 {
+        true => pulse::PEAK_LIGHT,
+        false => pulse::PEAK_DARK,
+    };
+    Some(pulse::Band { y, half: weight / 2.0, spans, colour: colors::parse(&mark.colour), peak, top, bottom })
 }
 
 /// The line joining linked marks, on the side of their labels that faces
@@ -8702,7 +9128,7 @@ fn draw_last_price(
     state: &State,
     plot_x: f64,
     plot_w: f64,
-    price_y: f64,
+    (price_y, price_h): (f64, f64),
     width: f64,
     decimals: usize,
     to_y: &impl Fn(f64) -> f64,
@@ -8710,29 +9136,32 @@ fn draw_last_price(
     tag_at: Option<f64>,
 ) {
     let Some((price, rising)) = last_price(state) else { return };
-    let y = to_y(price).round() + 0.5;
-    if y < price_y {
-        return;
-    }
+    let floor = price_y + price_h;
+    let Some(y) = last_price_y(state, price_y, floor, to_y) else { return };
     let tag = match rising {
         true => &state.price_tags.last_up,
         false => &state.price_tags.down,
     };
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
-        draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
+        draw_last_price_line(cr, state, plot_x, plot_w, price_y, floor, to_y);
     }
 
     // The tag stops under the window's corner rather than slide beneath
-    // it; the line stays at the price.
-    draw_tag(
-        cr,
-        &grouped_decimals(price, decimals),
-        plot_x + plot_w,
-        tag_at.unwrap_or_else(|| below_cover(state, y)),
-        width,
-        tag,
-    );
+    // it, and above the plot's floor rather than hang over the strip
+    // under it, as the marks' chips do; the line stays at the price.
+    let kept = || below_cover(state, y.min((floor - AXIS_CHIP_H / 2.0).round() + 0.5));
+    draw_tag(cr, &grouped_decimals(price, decimals), plot_x + plot_w, tag_at.unwrap_or_else(kept), width, tag);
+}
+
+/// The row the last price's line and tag stand on, while it is on the
+/// price plot. Scrolled or zoomed off it, above or below, they are left
+/// out rather than drawn over a strip or the time axis, or pinned to the
+/// plot's edge, where the tag would name a price the axis beside it does
+/// not show: as the marks, the crosshair and compared markets' ends are.
+fn last_price_y(state: &State, price_y: f64, floor: f64, to_y: &impl Fn(f64) -> f64) -> Option<f64> {
+    let y = to_y(last_price(state)?.0).round() + 0.5;
+    (price_y..=floor).contains(&y).then_some(y)
 }
 
 /// The last price, and whether it rose: the feed's latest trade when the
@@ -8753,16 +9182,14 @@ fn draw_last_price_line(
     plot_x: f64,
     plot_w: f64,
     price_y: f64,
+    floor: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
     if !state.price_line {
         return;
     }
-    let Some((price, rising)) = last_price(state) else { return };
-    let y = to_y(price).round() + 0.5;
-    if y < price_y {
-        return;
-    }
+    let Some((_, rising)) = last_price(state) else { return };
+    let Some(y) = last_price_y(state, price_y, floor, to_y) else { return };
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
@@ -8854,10 +9281,15 @@ fn draw_crosshair(
     // not while a mark is dragged: its own price is on the axis then.
     let dragging = matches!(state.drag, Some(Drag::Mark { .. }));
     if py >= price_y && py <= price_y + price_h && !dragging {
+        // In percent while markets are compared: the change at that height.
+        let text = match state.compare.as_deref().and_then(|overlay| overlay.based(&state.bars, state.slice().0)) {
+            Some(based) => compare::crosshair_label(&based, scale, price_h, scale.price_at(py, price_y, price_h)),
+            None => price_under_pointer(state, scale, py, price_y, price_h),
+        };
         label_on_axis(
             cr,
             state,
-            &price_under_pointer(state, scale, py, price_y, price_h),
+            &text,
             plot_x + plot_w,
             below_cover(state, py.round() + 0.5),
             width,
@@ -9321,14 +9753,23 @@ fn draw_drawing(
             // width *past* the tip — a stub poking out of the arrowhead,
             // and the thicker the line the worse it looks.
             cr.set_line_join(cairo::LineJoin::Round);
+            // One path through every leg, so a dash runs on round a
+            // zig-zag's corner rather than starting again at each one.
+            // Round-capped, as the line is: a dot is a cap on its own.
+            cr.set_dash(&style.line_style.round_dashes(style.width), 0.0);
             let legs = projected.segments();
             let last = legs.len().saturating_sub(1);
             for (n, (a, b)) in legs.iter().enumerate() {
                 let (from, to) = headless_leg(*a, *b, style, n == 0, n == last);
-                cr.move_to(from.0, from.1);
+                if n == 0 {
+                    cr.move_to(from.0, from.1);
+                }
                 cr.line_to(to.0, to.1);
             }
             let _ = cr.stroke();
+            // A head is solid whatever the line is: a dashed arrowhead
+            // is not one.
+            cr.set_dash(&[], 0.0);
             if let (Some(first), Some((a, b))) = (legs.first(), legs.last()) {
                 if style.arrow.at_end() {
                     arrowhead(cr, *a, *b, style.width, style.head);
@@ -9356,6 +9797,9 @@ fn draw_drawing(
                 let half = width / 2.0;
                 colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                 cr.set_line_width(width);
+                // Square ends on whole pixels, as the edge is: a hairline's
+                // dots are single pixels, not smudged discs.
+                set_edge_pattern(cr, style.line_style, width, x.round() + half);
                 cr.rectangle(
                     x.round() + half,
                     y.round() + half,
@@ -9363,6 +9807,7 @@ fn draw_drawing(
                     (h.round() - width).max(1.0),
                 );
                 let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
             }
         }
         // The same fill under the same edge as a box, in an ellipse drawn
@@ -9397,8 +9842,10 @@ fn draw_drawing(
                 let width = style.width.max(1.0);
                 colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                 cr.set_line_width(width);
+                set_edge_pattern(cr, style.line_style, width, 0.0);
                 ellipse(cr, width / 2.0);
                 let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
             }
         }
         // Nothing but the words, which the label pass below draws for every
@@ -9435,6 +9882,18 @@ fn draw_drawing(
         }
         draw_grips(cr, state, projected, drawing, lit, &colour);
     }
+}
+
+/// An edge's pattern: butt-capped, and scaled to the edge's width as a
+/// line's is.
+///
+/// `start` is where along x the path begins, drawn rightwards: the pattern
+/// is moved by its fraction of a pixel, so on an edge set on the pixel grid
+/// every dash and every dot begins and ends on a whole pixel rather than
+/// half across one, at one pixel to the point and at two.
+fn set_edge_pattern(cr: &cairo::Context, pattern: drawings::LineStyle, width: f64, start: f64) {
+    cr.set_line_cap(cairo::LineCap::Butt);
+    cr.set_dash(&pattern.dashes(width), start.rem_euclid(1.0));
 }
 
 /// The squares at a selected drawing's grips, the one under the hand lit.
@@ -9938,9 +10397,10 @@ fn profile_inks(
     }
 }
 
-/// How strongly a delta's rows are filled: all as strongly as a total's
-/// value area, a delta having none to set apart.
-const DELTA_ROW_ALPHA: f64 = 0.30;
+/// How strongly a delta's rows are filled as designed: all as strongly as a
+/// total's value area, a delta having none to set apart. Its Transparency
+/// moves them as it moves a total's value area.
+const DELTA_ROW_ALPHA: f64 = omacharts_engine::indicators::profile::DESIGNED_ALPHA;
 
 /// One histogram per period, anchored where its period begins.
 fn draw_profiles(
@@ -9958,8 +10418,27 @@ fn draw_profiles(
         } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
         _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
+    let (outline_style, poc_style, alpha, highlight, area_choice) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile {
+            outline_style, poc_style, alpha, opacity, highlight, value_area_color, ..
+        } => (
+            *outline_style,
+            *poc_style,
+            omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+            *highlight,
+            value_area_color.as_ref(),
+        ),
+        _ => (LineStyle::Solid, LineStyle::Solid, DELTA_ROW_ALPHA, true, None),
+    };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
+    // The value area in a colour of its own, when it is set apart and has
+    // one; otherwise the rows' own.
+    let area_fill = match (method, highlight, area_choice) {
+        (Method::Total, true, Some(choice)) => Some(choice.resolve(&state.theme)),
+        _ => None,
+    };
+    let (inside, outside) = omacharts_engine::indicators::profile::row_alphas(alpha, highlight);
     let look = selection::placed_look(state, drawn);
     let style = look.style;
 
@@ -9973,42 +10452,71 @@ fn draw_profiles(
         match style {
             omacharts_engine::indicators::profile::Style::Filled => {
                 let (area_low, area_high) = profile.value_area_bounds();
-                for row in &profile.rows {
-                    let Some(ink) = inks.iter().find(|ink| ink.side.length(row.volume) > 0.0) else {
-                        continue;
-                    };
-                    let (from, to) = area.row(row.volume.abs() / profile.max_volume);
-                    let top = to_y(row.high);
-                    let height = (to_y(row.low) - top).max(1.0);
-                    let alpha = match method {
-                        Method::Total if row.low >= area_low && row.high <= area_high => 0.30,
-                        Method::Total => 0.14,
-                        Method::Delta => DELTA_ROW_ALPHA,
-                    };
-                    colors::set_source_alpha(cr, &ink.fill, alpha);
-                    cr.rectangle(from, top, to - from, height);
-                    let _ = cr.fill();
+                // Which pass a row is painted in: the value area's, or the
+                // rest's. A delta has no value area, and every row of it is
+                // painted as the value area of a total is.
+                let in_area = |row: &omacharts_engine::indicators::ProfileRow| match method {
+                    Method::Total => row.low >= area_low && row.high <= area_high,
+                    Method::Delta => true,
+                };
+                let passes: &[bool] = match method {
+                    Method::Total => &[true, false],
+                    Method::Delta => &[true],
+                };
+                // One path and one fill for every row of an ink at a
+                // strength, rather than a fill a row: a tick a row is
+                // hundreds of rows a period, and a fill is most of what a
+                // row costs. The rows of one pass are side by side, never
+                // over each other, so they composite as they did one by one.
+                for (at, ink) in inks.iter().enumerate() {
+                    for &pass in passes {
+                        let mut any = false;
+                        for row in &profile.rows {
+                            let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
+                            if !mine || in_area(row) != pass {
+                                continue;
+                            }
+                            let (from, to) = area.row(row.volume.abs() / profile.max_volume);
+                            let top = to_y(row.high);
+                            let height = (to_y(row.low) - top).max(1.0);
+                            cr.rectangle(from, top, to - from, height);
+                            any = true;
+                        }
+                        if any {
+                            let (fill, strength) = match pass {
+                                true => (area_fill.as_deref().unwrap_or(ink.fill.as_str()), inside),
+                                false => (ink.fill.as_str(), outside),
+                            };
+                            colors::set_source_alpha(cr, fill, strength);
+                            let _ = cr.fill();
+                        }
+                    }
                 }
                 if edged {
                     cr.set_line_width(outline_width.max(0.5));
                     cr.set_line_join(cairo::LineJoin::Miter);
+                    set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
                     for ink in &inks {
                         colors::set_source_alpha(cr, &ink.edge, drawings::PROFILE_EDGE_ALPHA);
                         selection::profile_path(cr, &area, profile, to_y, ink.side);
                         let _ = cr.stroke();
                     }
+                    cr.set_dash(&[], 0.0);
                 }
             }
             // Only the shape the rows make, so the candles under it stay
-            // as plain as they are without it.
+            // as plain as they are without it. With no rows to fade, the
+            // transparency fades the outline, which is all there is.
             omacharts_engine::indicators::profile::Style::Outline => {
                 cr.set_line_width(outline_width.max(0.5));
                 cr.set_line_join(cairo::LineJoin::Miter);
+                set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
                 for ink in &inks {
-                    colors::set_source_alpha(cr, &ink.edge, 0.75);
+                    colors::set_source_alpha(cr, &ink.edge, omacharts_engine::indicators::profile::line_alpha(0.75, alpha));
                     selection::profile_path(cr, &area, profile, to_y, ink.side);
                     let _ = cr.stroke();
                 }
+                cr.set_dash(&[], 0.0);
             }
         }
 
@@ -10021,9 +10529,12 @@ fn draw_profiles(
             let (from, to) = area.row(1.0);
             colors::set_source_alpha(cr, &poc, 0.9);
             cr.set_line_width(poc_width.max(0.5));
-            cr.move_to(from, y);
-            cr.line_to(to, y);
+            let (left, right) = (from.min(to), from.max(to));
+            set_edge_pattern(cr, poc_style, poc_width.max(0.5), left);
+            cr.move_to(left, y);
+            cr.line_to(right, y);
             let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
         }
 
         if state.picked == Some(drawn.indicator.id) {
@@ -10057,42 +10568,71 @@ fn draw_profile_drawing(
         Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
         Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
     };
-    let opacity = look.opacity.clamp(0.0, 1.0);
+    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    let alpha = style.profile_alpha();
     match look.shape {
         Shape::Filled => {
             let fill = style.fill.hex(&state.theme);
+            // The value area in a colour of its own, when it is set apart and
+            // has one; otherwise the rows' own.
+            let area_fill = match (look.highlight, &look.value_area_paint) {
+                (true, Some(paint)) => paint.hex(&state.theme),
+                _ => fill.clone(),
+            };
+            let (inside_alpha, outside_alpha) = row_alphas(alpha, look.highlight);
             let (area_low, area_high) = profile.value_area_bounds();
-            for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
-                let (from, to) = area.row(row.volume / profile.max_volume);
-                let top = to_y(row.high);
-                let height = (to_y(row.low) - top).max(1.0);
-                let inside = row.low >= area_low && row.high <= area_high;
-                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                colors::set_source_alpha(cr, &fill, alpha * opacity);
-                cr.rectangle(from, top, to - from, height);
-                let _ = cr.fill();
+            // The value area's rows in one fill and the rest in another, as
+            // the study's are: a fill a row is most of what a row costs.
+            for in_area in [true, false] {
+                let mut any = false;
+                for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
+                    let inside = row.low >= area_low && row.high <= area_high;
+                    if inside != in_area {
+                        continue;
+                    }
+                    let (from, to) = area.row(row.volume / profile.max_volume);
+                    let top = to_y(row.high);
+                    let height = (to_y(row.low) - top).max(1.0);
+                    cr.rectangle(from, top, to - from, height);
+                    any = true;
+                }
+                if any {
+                    let (paint, strength) = if in_area { (&area_fill, inside_alpha) } else { (&fill, outside_alpha) };
+                    colors::set_source_alpha(cr, paint, strength);
+                    let _ = cr.fill();
+                }
             }
             // An edge the drawing can go without: off, the rows are all of it.
             let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, colour, edge * opacity);
+            colors::set_source_alpha(cr, colour, line_alpha(edge, alpha));
             cr.set_line_width(style.width.max(0.5));
         }
         Shape::Outline => {
-            colors::set_source_alpha(cr, colour, opacity);
+            colors::set_source_alpha(cr, colour, line_alpha(1.0, alpha));
             cr.set_line_width(style.width.max(0.5));
         }
     }
     cr.set_line_join(cairo::LineJoin::Miter);
+    set_edge_pattern(cr, style.line_style, style.width.max(0.5), 0.0);
     selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
     let _ = cr.stroke();
 
+    // Unless it is turned off, which leaves the rows to say it, as the
+    // study's does.
+    if !look.show_poc {
+        cr.set_dash(&[], 0.0);
+        return;
+    }
     let y = to_y(profile.poc_price()).round() + 0.5;
     colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
     cr.set_line_width(look.poc_width.max(0.5));
     let (from, to) = area.row(1.0);
-    cr.move_to(from, y);
-    cr.line_to(to, y);
+    let (left, right) = (from.min(to), from.max(to));
+    set_edge_pattern(cr, look.poc_style, look.poc_width.max(0.5), left);
+    cr.move_to(left, y);
+    cr.line_to(right, y);
     let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
 }
 
 /// A Fibonacci retracement: a level across its span at each ratio it
@@ -11729,6 +12269,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         }
     }
 
@@ -11977,10 +12518,60 @@ mod tests {
 
         // The line and the tag stand at it.
         let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
-        let lined = frame(600.0, 400.0, |cr| draw_last_price_line(cr, &state, 0.0, 500.0, 0.0, &to_y));
+        let lined = frame(600.0, 400.0, |cr| draw_last_price_line(cr, &state, 0.0, 500.0, 0.0, 400.0, &to_y));
         let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
         let stride = 600 * 4;
         assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
+    }
+
+    /// The price scrolled off the plot, below it or above: its tag is not
+    /// drawn down in the strip or on the time axis, nor its line across the
+    /// strip, and both come back once the price is on the plot again.
+    #[test]
+    fn the_last_price_off_the_plot_is_left_out() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = charted(100);
+        let (_, rising) = last_price(&state).unwrap();
+        let tag = if rising { &state.price_tags.last_up } else { &state.price_tags.down };
+        let fill = colors::rgba(&tag.fill);
+        let byte = |c: f64| (c * 255.0).round() as i32;
+        let (r, g, b) = (byte(fill.0), byte(fill.1), byte(fill.2));
+        // Where the tag's colour is on the price axis, by row.
+        let tagged = |state: &State| -> Vec<usize> {
+            let pixels = frame(w, h, |cr| draw(cr, w, h, state));
+            let axis = (w - PRICE_AXIS_W + 2.0) as usize;
+            (0..h as usize)
+                .filter(|row| {
+                    (axis..w as usize).any(|x| {
+                        let at = (row * w as usize + x) * 4;
+                        let p = &pixels[at..at + 4];
+                        (p[2] as i32 - r).abs() <= 1 && (p[1] as i32 - g).abs() <= 1 && (p[0] as i32 - b).abs() <= 1
+                    })
+                })
+                .collect()
+        };
+        let plan = layout(&state, w, h);
+        let floor = plan.price_y + plan.price_h;
+        let on_plot = tagged(&state);
+        assert!(!on_plot.is_empty(), "a tag while the price is on the plot");
+        assert!(on_plot.iter().all(|row| (*row as f64) <= floor), "inside the plot: {on_plot:?}");
+
+        state.price_auto = false;
+        for (offset, side) in [(1.0, "below"), (-1.2, "above")] {
+            state.price_offset = offset;
+            let Frame { scale, .. } = super::frame(&state, w, h).unwrap();
+            let y = scale.to_y(last_price(&state).unwrap().0, plan.price_y, plan.price_h);
+            assert!(y > floor || y < plan.price_y, "{side}: the price is off the plot at {y}, {} to {floor}", plan.price_y);
+            if offset > 0.0 {
+                assert!(y < h, "below: somewhere on the window, at {y}");
+            }
+            assert_eq!(tagged(&state), Vec::<usize>::new(), "{side}: no tag");
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let lined = frame(w, h, |cr| draw_last_price_line(cr, &state, plan.plot_x, plan.plot_w, plan.price_y, floor, &to_y));
+            assert_eq!(painted(&lined), 0, "{side}: no line");
+        }
+        state.price_offset = 0.0;
+        assert_eq!(tagged(&state), on_plot, "back on the plot, back where it was");
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
@@ -12243,6 +12834,106 @@ mod tests {
                 assert_eq!(at(x + 3.0), ground, "theme {theme}: a tab at x {x} is clear of the line");
             }
         }
+    }
+
+    /// Where an order's handle and a drawing are both under the hand, the
+    /// order is what a press takes and what the hover lights: its line, its
+    /// × and the position's tabs. A drawing anywhere else is taken as ever,
+    /// and so is one under the position's line, which cannot be dragged.
+    #[test]
+    fn an_orders_handle_is_taken_before_a_drawing_under_it() {
+        let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            let mut state = at_the_last_price(0);
+            state.mark_labels = side;
+            let (first, visible, _) = state.view();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let lane = state.lane(&plan);
+            let cr = measuring().unwrap();
+            let order = the_mark(&state, "B1").clone();
+            let held = the_mark(&state, "position").clone();
+            let (order_y, held_y) = (to_y(order.price).round(), to_y(held.price).round());
+            let mid = (plan.plot_x + lane.end) / 2.0;
+            let ts = state.bars[first + visible / 2].ts;
+            // A horizontal line on the order's price, one on the position's,
+            // and one clear of both.
+            let clear = (order.price + held.price) / 2.0;
+            for price in [order.price, held.price, clear] {
+                state.drawings.push(Drawing::new(DrawingKind::Horizontal, Anchor::new(ts, price), Anchor::new(ts, price)));
+            }
+            let (on_order, on_held, elsewhere) = (0, 1, 2);
+            let row = label_row(&cr, lane, &order);
+            let held_row = label_row(&cr, lane, &held);
+            let (_, tab_x, tab_w) = held_row.tabs[0];
+
+            let drawing = |x: f64, y: f64| state.drawing_at(w, h, x, y).map(|(index, _)| index);
+            let taken = |x: f64, y: f64| state.drawing_clear_of_marks(w, h, x, y).map(|(index, _)| index);
+            assert_eq!(drawing(mid, order_y), Some(on_order), "{side:?}: the line is under the order");
+            assert_eq!(taken(mid, order_y), None, "{side:?}: the order's line comes first");
+            assert_eq!(taken(row.cap_x + MARK_CAP / 2.0, order_y), None, "{side:?}: so does its ×");
+            assert_eq!(taken(tab_x + tab_w / 2.0, held_y), None, "{side:?}: and the position's tab");
+            assert_eq!(taken(held_row.cap_x + 3.0, held_y), None, "{side:?}: and the position's ×");
+            assert_eq!(taken(mid, held_y), Some(on_held), "{side:?}: the position's line is not a handle");
+            assert_eq!(taken(mid, to_y(clear).round()), Some(elsewhere), "{side:?}: a drawing clear of the orders");
+            // A faint order is not taken hold of, so the drawing is.
+            mark_mut(&mut state, "B1").dim = true;
+            assert_eq!(state.drawing_clear_of_marks(w, h, mid, order_y).map(|(index, _)| index), Some(on_order));
+        }
+    }
+
+    /// An order taken to another price is drawn faint at its own price
+    /// while its copy follows the hand, and only once the hand has moved
+    /// it: pressed on its × or back where it was, it is as solid as ever.
+    /// A tab pulled out leaves its mark as it is.
+    #[test]
+    fn an_order_in_hand_is_faint_where_it_was() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = at_the_last_price(0);
+        state.hover_mark = None;
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let order = the_mark(&state, "B1").clone();
+        let y = scale.to_y(order.price, plan.price_y, plan.price_h).round() as usize;
+        let cr = measuring().unwrap();
+        let row = label_row(&cr, state.lane(&plan), &order);
+        let fill = {
+            let (r, g, b, _) = colors::rgba(&Tag::on(&order.colour).fill);
+            ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+        };
+        let tag = |state: &State| {
+            let pixels = frame(w, h, |cr| draw(cr, w, h, state));
+            let i = (y * w as usize + (row.tag_x + 4.0) as usize) * 4;
+            (pixels[i + 2], pixels[i + 1], pixels[i])
+        };
+        assert_eq!(tag(&state), fill, "solid before it is taken");
+
+        let moved = |at: f64| Some(Drag::Mark { what: Grab::Move("B1".into()), at, allowed: true });
+        state.drag = moved(order.price);
+        assert_eq!(state.mark_held_off(), None, "pressed, not yet moved");
+        assert_eq!(tag(&state), fill, "solid while it has not left its price");
+
+        state.drag = moved(order.price + 1.0);
+        assert_eq!(state.mark_held_off(), Some("B1"));
+        assert_ne!(tag(&state), fill, "faint once the hand has taken it off its price");
+        // Faint, not gone: drawn, at less than full strength.
+        assert_ne!(tag(&state), {
+            let (r, g, b, _) = colors::rgba(&state.theme.ui.background);
+            ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+        });
+        state.drag = Some(Drag::Mark { what: Grab::Move("B1".into()), at: order.price + 1.0, allowed: false });
+        assert_eq!(state.mark_held_off(), Some("B1"), "faint where it may not go too");
+
+        state.drag = Some(Drag::Mark {
+            what: Grab::Tab { mark: "position".into(), tab: "limit".into() },
+            at: order.price + 1.0,
+            allowed: true,
+        });
+        assert_eq!(state.mark_held_off(), None, "a tab pulled out moves nothing");
+        state.drag = None;
+        assert_eq!(tag(&state), fill, "solid again once let go");
     }
 
     fn save_png(mut surface: cairo::ImageSurface, path: &str) {
@@ -12851,6 +13542,38 @@ mod tests {
         }
     }
 
+    /// One stroke through the closes, shaded by where each sits in the range
+    /// drawn: the highest close in the scheme's high colour, the lowest in its
+    /// low colour, whichever way the bars went.
+    #[test]
+    fn a_line_is_one_stroke_through_the_closes_shaded_from_low_to_high() {
+        let mut state = charted(1);
+        state.bar_style = BarStyle::Line;
+        state.scheme.line_low = "#0000ff".into();
+        state.scheme.line_high = "#ff0000".into();
+        // Opening low and closing high, and the reverse: a line that took
+        // its colour from the direction would show it.
+        let bars = [
+            Bar { ts: 0, open: 20.0, high: 90.0, low: 10.0, close: 80.0, volume: 0.0 },
+            Bar { ts: 60, open: 80.0, high: 90.0, low: 10.0, close: 20.0, volume: 0.0 },
+        ];
+        let to_y = |price: f64| 100.0 - price;
+        let columns = Columns::of(&bars, 0, 2, 0.0, 20.0);
+        let drawn = frame(40.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+        let pixel = |x: usize, y: usize| &drawn[(y * 40 + x) * 4..(y * 40 + x) * 4 + 4];
+        let (left, right) = (columns.x(0).round() as usize, columns.x(1).round() as usize);
+        assert_eq!(pixel(left, 10)[3], 0, "the high is not drawn");
+        // Cairo's bytes are blue, green, red, alpha.
+        // The inked pixels of rows near either end of the line.
+        let inked = |rows: std::ops::Range<usize>| -> Vec<&[u8]> {
+            rows.flat_map(|y| (left..=right).map(move |x| (x, y))).map(|(x, y)| pixel(x, y)).filter(|p| p[3] > 128).collect()
+        };
+        let (top, bottom) = (inked(18..26), inked(74..82));
+        assert!(!top.is_empty() && !bottom.is_empty(), "the line is drawn end to end");
+        assert!(top.iter().all(|p| p[2] > p[0]), "the higher close leans red: {top:?}");
+        assert!(bottom.iter().all(|p| p[0] > p[2]), "the lower close leans blue: {bottom:?}");
+    }
+
     #[test]
     fn a_hollow_body_has_no_wick_through_it() {
         let mut state = charted(1);
@@ -13141,6 +13864,322 @@ mod tests {
         });
     }
 
+    /// A long held a little under the last price with its target and its
+    /// stop working, in the trading look of the theme at `theme`: the
+    /// position breathing when `pulse`.
+    fn held_long(theme: usize, pulse: bool) -> (State, Vec<PriceMark>, Exits) {
+        let mut state = at_the_last_price(theme);
+        state.hover_mark = None;
+        let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::TradingLook::default(), &omacharts_engine::theme::BarLook::default());
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, 600.0, 400.0);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let (low, high) = scale.prices();
+        let last = state.bars.last().unwrap().close;
+        let up = state.scheme.up.clone();
+        let down = state.scheme.down.clone();
+        let avg = last - (high - low) * 0.08;
+        let mut held = position(avg, "▼ 2", "+0.25R", &look.profit, Vec::new());
+        held.tag = "▲ 2".into();
+        held.style = look.position;
+        held.tabs = vec![exit(false, &up, look.limit, 2), exit(true, &down, look.stop, 2)];
+        held.pulse = pulse;
+        let order = |id: &str, stop: bool, tag: &str, at: f64, colour: &str, style, money: f64| PriceMark {
+            body: Some(Exits::money(money)),
+            chip: Some(AxisChip { text: grouped_decimals(at, 2), filled: true }),
+            ..order_mark(id, at, tag, stop, colour, style)
+        };
+        let (tp, sl) = (last + (high - last) * 0.6, avg - (high - low) * 0.2);
+        let lines = vec![
+            order("TP", false, "L 2", tp, &look.profit, look.limit, (tp - avg) * 100.0),
+            order("SL", true, "STP 2", sl, &look.loss, look.stop, (sl - avg) * 100.0),
+            held,
+        ];
+        let mut rules = rules_of(&state);
+        rules.avg = avg;
+        rules.net = 2;
+        rules.orders = vec![("TP".into(), true, false, 2), ("SL".into(), true, true, 2)];
+        rules.profit = look.profit.clone();
+        rules.loss = look.loss.clone();
+        state.marks.lines.clear();
+        (state, lines, rules)
+    }
+
+    /// A window holding a chart of [`held_long`], drawn and on screen.
+    fn breathing_window(theme: usize, pulse: bool) -> (gtk::Window, Rc<ChartView>) {
+        let (state, lines, rules) = held_long(theme, pulse);
+        let view = ChartView::new(state.theme.clone(), state.scheme.clone());
+        *view.state.borrow_mut() = state;
+        view.set_marks(lines, rules);
+        let window = gtk::Window::new();
+        window.set_default_size(900, 560);
+        window.set_child(Some(&view.root));
+        window.present();
+        // The clock is every chart's, and an earlier test's left it
+        // wherever it was: from the start of a breath, so each starts alike.
+        if let Some(layer) = view.pulse.borrow().as_ref() {
+            layer.restart();
+        }
+        run_for(400);
+        (window, view)
+    }
+
+    /// The main loop turned for `ms` milliseconds, as a window open that
+    /// long would turn it.
+    fn run_for(ms: u64) {
+        let context = glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < until {
+            while context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn layer(view: &ChartView) -> pulse::PulseLayer {
+        view.pulse.borrow().clone().expect("a layer for the breath")
+    }
+
+    /// Animation allowed again however a test ends.
+    struct Animations;
+
+    impl Animations {
+        fn off() -> Animations {
+            gtk::Settings::default().expect("settings").set_gtk_enable_animations(false);
+            Animations
+        }
+    }
+
+    impl Drop for Animations {
+        fn drop(&mut self) {
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_enable_animations(true);
+            }
+        }
+    }
+
+    /// An open position's line breathes: the halo's strength moves over a
+    /// breath, on its own layer, a frame of it at most every 50 ms — and the
+    /// chart under it is not drawn again once, however many frames of the
+    /// breath go by.
+    #[test]
+    fn a_position_breathes_on_its_own_layer_without_redrawing_the_chart() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            assert!(view.breathing(), "no clock held for a position on screen");
+            let layer = layer(&view);
+            assert!(layer.band().is_some(), "no halo for the line");
+            let (drawn, frames) = (view.drawn.get(), layer.frames());
+            let mut levels = Vec::new();
+            for _ in 0..30 {
+                run_for(100);
+                levels.push(view.breath().expect("a level"));
+            }
+            let spread = levels.iter().cloned().fold(f64::MIN, f64::max) - levels.iter().cloned().fold(f64::MAX, f64::min);
+            assert!(spread > 0.5, "the breath hardly moved over three seconds: {levels:?}");
+            assert_eq!(view.drawn.get(), drawn, "the chart was drawn again for the breath");
+            let breathed = layer.frames() - frames;
+            assert!(breathed >= 8, "only {breathed} frames of the breath in three seconds");
+            assert!(breathed <= 3_000 / 50 + 2, "{breathed} frames of the breath in three seconds");
+            window.destroy();
+        });
+    }
+
+    /// The layer over the chart takes nothing from the hand: whatever is
+    /// under the line, the chart is what a pointer finds there.
+    #[test]
+    fn the_breath_takes_no_pointer_input() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            let layer = layer(&view);
+            assert!(!layer.can_target() && !layer.can_focus());
+            assert_eq!((layer.width(), layer.height()), (view.area.width(), view.area.height()));
+            let band = layer.band().expect("a halo");
+            for span in &band.spans {
+                for y in [band.y - band.half - 2.0, band.y, band.y + band.half + 2.0] {
+                    let picked = view.root.pick((span.from + span.to) / 2.0, y, gtk::PickFlags::DEFAULT).expect("something there");
+                    assert_eq!(picked, view.area.clone().upcast::<gtk::Widget>(), "the breath took the pointer at {y}");
+                }
+            }
+            window.destroy();
+        });
+    }
+
+    /// A chart with no position has no layer for a breath and holds no
+    /// clock; the position closed, or the window hidden, lets go of it and
+    /// draws no more frames of it.
+    #[test]
+    fn a_flat_chart_holds_no_clock_and_draws_no_breath() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, false);
+            run_for(300);
+            assert_eq!(view.breath(), None, "a layer for a breath nobody asked for");
+            assert!(!view.breathing());
+            window.destroy();
+
+            let (window, view) = breathing_window(0, true);
+            assert!(view.breathing());
+            window.set_visible(false);
+            run_for(100);
+            assert!(!view.breathing(), "a hidden window holds the clock");
+            window.set_visible(true);
+            run_for(300);
+            assert!(view.breathing(), "back on screen and not breathing");
+
+            let orders: Vec<PriceMark> = view.price_marks().into_iter().filter(|mark| !mark.pulse).collect();
+            let rules = rules_of(&view.state.borrow());
+            view.set_marks(orders, rules);
+            run_for(200);
+            assert!(!view.breathing(), "flat and still holding the clock");
+            let frames = layer(&view).frames();
+            run_for(500);
+            assert_eq!(layer(&view).frames(), frames, "frames of a breath on a flat chart");
+            window.destroy();
+        });
+    }
+
+    /// With animation turned off on the desktop the line is still: no clock
+    /// held and no halo drawn. Turned on, it breathes; off again, it stops.
+    #[test]
+    fn no_breath_while_the_desktop_turns_animation_off() {
+        crate::on_gtk(|| {
+            let animations = Animations::off();
+            let (window, view) = breathing_window(0, true);
+            run_for(300);
+            assert!(!view.breathing(), "a clock held with animation off");
+            assert_eq!(view.breath(), Some(0.0));
+            assert_eq!(layer(&view).frames(), 0, "a halo drawn with animation off");
+            drop(animations);
+            run_for(300);
+            assert!(view.breathing(), "animation on and no breath");
+            let _off = Animations::off();
+            run_for(100);
+            assert!(!view.breathing(), "animation off and still breathing");
+            window.destroy();
+        });
+    }
+
+    /// The rest between breaths is as long as it says, though the clock
+    /// sleeps through it: the next breath comes up on time.
+    #[test]
+    fn the_next_breath_comes_after_the_rest() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            // From 0.4 s in to the rest, which ends at 5.2 s.
+            run_for(4_300);
+            let mut after = Vec::new();
+            for _ in 0..12 {
+                run_for(100);
+                after.push(view.breath().unwrap_or(0.0));
+            }
+            assert!(after.iter().any(|level| *level > 0.0), "no breath after the rest: {after:?}");
+            window.destroy();
+        });
+    }
+
+    /// While the hand is on the chart the breath holds where it is rather
+    /// than asking for frames beside the chart's.
+    #[test]
+    fn the_breath_holds_while_the_chart_is_dragged() {
+        crate::on_gtk(|| {
+            let (window, view) = breathing_window(0, true);
+            run_for(600);
+            view.state.borrow_mut().drag = Some(Drag::Pan { left: 0, offset: 0.0, strip: None });
+            run_for(100);
+            let (level, frames) = (view.breath(), layer(&view).frames());
+            run_for(800);
+            assert_eq!(view.breath(), level, "the breath moved under the hand");
+            assert_eq!(layer(&view).frames(), frames);
+            view.state.borrow_mut().drag = None;
+            run_for(800);
+            assert_ne!(layer(&view).frames(), frames, "the breath did not come back after the hand");
+            window.destroy();
+        });
+    }
+
+    /// The halo runs either side of the line and nowhere near a label or a
+    /// tab, the position's own or another mark's beside it; and there is
+    /// none for a position that is faint, or off the price plot.
+    #[test]
+    fn the_halo_keeps_clear_of_every_label() {
+        let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            let (mut state, mut lines, rules) = held_long(0, true);
+            state.mark_labels = side;
+            // An order a hair from the position, its label across the line.
+            let avg = lines[2].price;
+            lines[0].price = avg + state.tick().unwrap_or(0.01);
+            state.marks = Marks { lines, rules: Box::new(rules) };
+            let band = pulse_band(&state, w, h).expect("a halo");
+            let plan = layout(&state, w, h);
+            let lane = state.lane(&plan);
+            let cr = measuring().unwrap();
+            assert!(band.spans.iter().all(|span| span.from >= lane.start() && span.to <= lane.end), "{side:?}");
+            for mark in [&state.marks.lines[0], &state.marks.lines[2]] {
+                let row = label_row(&cr, lane, mark);
+                let pieces = std::iter::once((row.left(), row.right())).chain(row.tabs.iter().map(|(_, x, w)| (*x, x + w)));
+                for (left, right) in pieces {
+                    for span in &band.spans {
+                        assert!(span.to <= left - MARK_GAP || span.from >= right + MARK_GAP, "{side:?}: over {}", mark.id);
+                    }
+                }
+            }
+            assert!(!band.spans.is_empty());
+
+            mark_mut(&mut state, "position").dim = true;
+            assert_eq!(pulse_band(&state, w, h), None, "{side:?}: a faint position breathes");
+            mark_mut(&mut state, "position").dim = false;
+            mark_mut(&mut state, "position").price = 1e9;
+            assert_eq!(pulse_band(&state, w, h), None, "{side:?}: a position off the plot breathes");
+        }
+    }
+
+    /// The breath as pictures, for a person to look at: one breath of the
+    /// real thing on screen, six frames of it through the compositor; and
+    /// its top in three strengths, the chosen one between a fainter and a
+    /// stronger. Written only when asked for, to the folder in
+    /// `OMACHARTS_PULSE_SHOTS`.
+    #[test]
+    fn the_breath_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_PULSE_SHOTS") else { return };
+        crate::on_gtk(move || {
+            for (theme, name) in [(0, "dark"), (3, "light")] {
+                let (window, view) = breathing_window(theme, true);
+                let layer = layer(&view);
+                let render = |file: &str| {
+                    let (w, h) = (view.root.width(), view.root.height());
+                    let snapshot = gtk::Snapshot::new();
+                    snapshot.scale(2.0, 2.0);
+                    view.root.snapshot_child(&view.area, &snapshot);
+                    view.root.snapshot_child(&layer, &snapshot);
+                    let node = snapshot.to_node().expect("a picture");
+                    let renderer = window.renderer().expect("a renderer");
+                    let viewport = gtk::graphene::Rect::new(0.0, 0.0, 2.0 * w as f32, 2.0 * h as f32);
+                    renderer.render_texture(node, Some(&viewport)).save_to_png(format!("{folder}/{file}")).unwrap();
+                };
+                // The fainter one is about 0.08 of the line's colour on a
+                // dark ground, the stronger about 0.15.
+                for (times, strength) in [(0.0, "none"), (0.72, "fainter"), (1.0, "chosen"), (1.36, "stronger")] {
+                    layer.show(1.0, times);
+                    render(&format!("peak-{name}-{strength}.png"));
+                }
+                if name == "dark" {
+                    // The real thing: the clock taken up again from the
+                    // start of a breath, and the screen read six times over
+                    // one of them.
+                    layer.show(0.0, 1.0);
+                    layer.restart();
+                    run_for(100);
+                    for n in 0..6 {
+                        let file = format!("{folder}/breath-{n}.png");
+                        let _ = std::process::Command::new("grim").arg(&file).status();
+                        run_for(5_200 / 6);
+                    }
+                }
+                window.destroy();
+            }
+        });
+    }
+
     /// Alt+Shift with + and − step every selected drawing's stroke at once,
     /// whatever the kind calls it — an anchored VWAP's line, a box's edge, a
     /// profile's outline — by half a pixel, held to 0.5 to 12, and give each
@@ -13288,6 +14327,7 @@ mod tests {
                     exchange: None,
                     popularity: 0,
                     local_name: None,
+                    formula: None,
                 },
                 Timeframe::days(1),
                 ramp(200),
@@ -14131,23 +15171,25 @@ mod drawing_tests {
         let mut two = Drawing::new(DrawingKind::Line, a, b);
         two.id = 9;
 
-        let added = state.paste(&[one.clone(), two.clone()], true, w, h);
+        // On the chart they were copied from.
+        state.drawings = vec![one.clone(), two.clone()];
+        let added = state.paste(&[one.clone(), two.clone()], None, w, h);
         assert_eq!(added.len(), 2, "both copies went down");
-        assert_eq!(state.drawings.len(), 2);
+        assert_eq!(state.drawings.len(), 4);
         assert!(added.iter().all(|d| d.id == 0), "a copy is not the drawing it came from");
-        assert_eq!(state.selected, vec![0, 1], "the copies are what is in hand");
+        assert_eq!(state.selected, vec![2, 3], "the copies are what is in hand");
         assert_eq!(state.undo.len(), 1, "two drawings is still one step back");
 
         // Offset, so a copy of something on this chart is visible beside it.
-        assert_ne!(state.drawings[0].from, a, "the copy landed exactly on the original");
+        assert_ne!(state.drawings[2].from, a, "the copy landed exactly on the original");
         // And the shape is unchanged: both ends moved by the same amount.
-        let moved = &state.drawings[0];
+        let moved = &state.drawings[2];
         assert_eq!(moved.to.ts - moved.from.ts, b.ts - a.ts);
 
-        // Asked not to offset — a paste onto another chart — it lands on
-        // the moment and the price it was copied from.
+        // Onto another chart, with nothing there to hide behind, it lands
+        // on the moment and the price it was copied from.
         let mut elsewhere = charted(400);
-        elsewhere.paste(&[one.clone()], false, w, h);
+        elsewhere.paste(&[one.clone()], None, w, h);
         assert_eq!(elsewhere.drawings[0].from, a);
         assert_eq!(elsewhere.drawings[0].to, b);
     }
@@ -14169,7 +15211,7 @@ mod drawing_tests {
             Drawing::new(DrawingKind::Ellipse, a, b),
             Drawing::new(DrawingKind::Line, a, b),
         ];
-        state.paste(&copies, true, 800.0, 400.0);
+        state.paste(&copies, None, 800.0, 400.0);
         assert_eq!(state.selected, vec![1, 2, 3]);
 
         // The list comes back from the store with the copies still
@@ -14196,12 +15238,12 @@ mod drawing_tests {
 
         let mut sending = charted(400);
         sending.sends = true;
-        sending.paste(&[copy.clone()], false, w, h);
+        sending.paste(std::slice::from_ref(&copy), None, w, h);
         assert_eq!(sending.drawings[0].scope, drawings::Scope::Shared);
 
         let mut keeping = charted(400);
         keeping.sends = false;
-        keeping.paste(&[copy], false, w, h);
+        keeping.paste(&[copy], None, w, h);
         assert_eq!(keeping.drawings[0].scope, drawings::Scope::Local);
     }
 
@@ -14210,9 +15252,87 @@ mod drawing_tests {
     #[test]
     fn pasting_nothing_does_nothing() {
         let mut state = charted(400);
-        assert!(state.paste(&[], true, 800.0, 400.0).is_empty());
+        assert!(state.paste(&[], None, 800.0, 400.0).is_empty());
         assert!(state.drawings.is_empty());
         assert!(state.undo.is_empty(), "nothing happened, so there is nothing to undo");
+    }
+
+    /// The columns a state shows, first and last, as indices into its bars.
+    fn columns_shown(state: &State) -> (f64, f64) {
+        let left = state.left_edge() as f64;
+        (left, left + state.columns() as f64)
+    }
+
+    /// Pasted onto a chart of a market trading at other prices, a copy
+    /// keeps its moments and lands at the height it had on the axis it was
+    /// copied from — where it would otherwise be off the plot, and the
+    /// paste would look as if it had done nothing. Onto a chart whose axis
+    /// reaches its prices, it keeps them exactly.
+    #[test]
+    fn a_paste_onto_a_market_at_other_prices_lands_where_it_was_on_the_axis() {
+        let (w, h) = (800.0, 400.0);
+        let source = charted(400);
+        let (first, visible) = source.slice();
+        let (a, b) = (first + visible / 4, first + visible / 2);
+        let from = source.paste_axis(w, h).expect("an axis");
+        let (low, high) = from.prices();
+        let at = |share: f64| low + (high - low) * share;
+        let copy = Drawing::new(
+            DrawingKind::Rect,
+            Anchor::new(source.bars[a].ts, at(0.25)),
+            Anchor::new(source.bars[b].ts, at(0.75)),
+        );
+
+        // A hundred times the price.
+        let mut dearer = charted(400);
+        for bar in dearer.bars.iter_mut() {
+            for price in [&mut bar.open, &mut bar.high, &mut bar.low, &mut bar.close] {
+                *price *= 100.0;
+            }
+        }
+        let added = dearer.paste(std::slice::from_ref(&copy), Some(from), w, h);
+        let pasted = &added[0];
+        assert_eq!((pasted.from.ts, pasted.to.ts), (copy.from.ts, copy.to.ts), "the moments moved");
+        let to = dearer.paste_axis(w, h).expect("an axis");
+        let share = |price: f64| (price - to.low) / to.span();
+        assert!((share(pasted.from.price) - 0.25).abs() < 1e-9, "{pasted:?} on {to:?}");
+        assert!((share(pasted.to.price) - 0.75).abs() < 1e-9, "{pasted:?} on {to:?}");
+
+        // The same market on another chart: the price is the point.
+        let mut same = charted(400);
+        let added = same.paste(std::slice::from_ref(&copy), Some(from), w, h);
+        assert_eq!((added[0].from, added[0].to), (copy.from, copy.to));
+    }
+
+    /// Pasted onto a chart that is looking somewhere else in time, the copy
+    /// keeps its moments and the chart goes to them. One already in sight
+    /// moves nothing.
+    #[test]
+    fn a_paste_off_screen_brings_the_chart_to_it() {
+        let (w, h) = (800.0, 400.0);
+        let mut state = charted(400);
+        let (left, _) = columns_shown(&state);
+        assert!(left > 40.0, "the start of the bars is on screen already");
+        let copy = Drawing::new(
+            DrawingKind::Rect,
+            Anchor::new(state.bars[20].ts, 104.0),
+            Anchor::new(state.bars[30].ts, 108.0),
+        );
+        let added = state.paste(std::slice::from_ref(&copy), None, w, h);
+        assert_eq!((added[0].from, added[0].to), (copy.from, copy.to), "the paste moved, not the chart");
+        let (left, right) = columns_shown(&state);
+        assert!(left <= 20.0 && right >= 30.0, "still off screen: {left}..{right}");
+
+        let mut state = charted(400);
+        let before = columns_shown(&state);
+        let (first, visible) = state.slice();
+        let here = Drawing::new(
+            DrawingKind::Rect,
+            Anchor::new(state.bars[first + visible / 2].ts, 104.0),
+            Anchor::new(state.bars[first + visible / 2 + 5].ts, 108.0),
+        );
+        state.paste(&[here], None, w, h);
+        assert_eq!(columns_shown(&state), before, "a paste already in sight moved the chart");
     }
 
     /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3
@@ -14331,6 +15451,216 @@ mod drawing_tests {
         );
         assert_ne!(inside, outside, "the box painted nothing");
         assert_ne!(inside, solid, "the box is opaque");
+    }
+
+    /// The chart at `scale` pixels to the point, as rows of pixels.
+    fn shot_at(state: &State, (w, h): (f64, f64), scale: f64) -> (Vec<u8>, usize) {
+        let mut surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, (w * scale) as i32, (h * scale) as i32).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            cr.scale(scale, scale);
+            draw(&cr, w, h, state);
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        (surface.data().unwrap().to_vec(), stride)
+    }
+
+    /// A box with a look of its own, from (200, 150) to (500, 250).
+    fn styled_box(state: &mut State, (w, h): (f64, f64), style: drawings::Style) {
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        let mut drawing = Drawing::new(DrawingKind::Rect, a, b);
+        drawing.config = None;
+        drawing.style = Some(style);
+        state.drawings = vec![drawing];
+    }
+
+    /// A dashed or dotted edge is crisp at one pixel to the point and at
+    /// two: along the top of a box every pixel of the edge is either the
+    /// solid edge's or no edge's, with nothing smudged between, the edge is
+    /// as many rows as its width, and the dashes and gaps are the pattern's
+    /// lengths, scaled with the width.
+    #[test]
+    fn a_patterned_edge_is_crisp_at_both_scales() {
+        let size = (800.0, 400.0);
+        for scale in [1.0, 2.0] {
+            for (pattern, on, off) in [(drawings::LineStyle::Dashed, 3.0, 3.0), (drawings::LineStyle::Dotted, 1.0, 2.0)] {
+                let mut state = charted(400);
+                let base = drawings::Style::rect(drawings::Preset::Blue);
+                styled_box(&mut state, size, drawings::Style { border: false, ..base.clone() });
+                let (bare, stride) = shot_at(&state, size, scale);
+                styled_box(&mut state, size, base.clone());
+                let (solid, _) = shot_at(&state, size, scale);
+                styled_box(&mut state, size, drawings::Style { line_style: pattern, ..base.clone() });
+                let (patterned, _) = shot_at(&state, size, scale);
+                let pixel = |data: &[u8], x: usize, y: usize| -> [u8; 4] {
+                    let i = y * stride + x * 4;
+                    [data[i], data[i + 1], data[i + 2], data[i + 3]]
+                };
+                // The top edge, clear of its corners.
+                let (x0, x1) = ((260.0 * scale) as usize, (440.0 * scale) as usize);
+                let rows: Vec<usize> = (0..(200.0 * scale) as usize)
+                    .filter(|&y| (x0..x1).any(|x| pixel(&solid, x, y) != pixel(&bare, x, y)))
+                    .collect();
+                assert_eq!(rows.len(), scale as usize, "{pattern:?} at {scale}x: the edge is {} rows", rows.len());
+                let y = rows[0];
+                let mut runs: Vec<(bool, usize)> = Vec::new();
+                for x in x0..x1 {
+                    let (now, edge, none) = (pixel(&patterned, x, y), pixel(&solid, x, y), pixel(&bare, x, y));
+                    assert!(now == edge || now == none, "{pattern:?} at {scale}x: a smudged pixel at {x}: {now:?}");
+                    for other in &rows {
+                        assert_eq!(pixel(&patterned, x, *other) == pixel(&solid, x, *other), now == edge, "rows agree");
+                    }
+                    match runs.last_mut() {
+                        Some((drawn, length)) if *drawn == (now == edge) => *length += 1,
+                        _ => runs.push((now == edge, 1)),
+                    }
+                }
+                // The first and last runs are cut by where we looked.
+                for (drawn, length) in &runs[1..runs.len() - 1] {
+                    let wanted = (if *drawn { on } else { off }) * scale;
+                    assert_eq!(*length as f64, wanted, "{pattern:?} at {scale}x: {runs:?}");
+                }
+            }
+        }
+    }
+
+    /// The pattern follows the width: a two-pixel dashed edge's dashes are
+    /// twice a hairline's.
+    #[test]
+    fn a_pattern_is_scaled_with_the_width() {
+        assert_eq!(drawings::LineStyle::Dashed.dashes(2.0), vec![6.0, 6.0]);
+        assert_eq!(drawings::LineStyle::Dotted.dashes(2.0), vec![2.0, 4.0]);
+        assert_eq!(drawings::LineStyle::Dashed.round_dashes(2.0), vec![4.0, 8.0]);
+        assert_eq!(drawings::LineStyle::Dotted.round_dashes(2.0), vec![0.0, 4.0]);
+        assert!(drawings::LineStyle::Solid.dashes(3.0).is_empty());
+    }
+
+    /// A dashed line and a dotted zig-zag are drawn with gaps in them, and
+    /// a solid one without.
+    #[test]
+    fn a_line_and_a_zigzag_are_drawn_in_their_pattern() {
+        let size = (800.0, 400.0);
+        let mut state = charted(400);
+        let a = state.locate(size.0, size.1, 150.0, 200.0).unwrap();
+        let b = state.locate(size.0, size.1, 650.0, 200.0).unwrap();
+        let horizontal = |pattern| {
+            let mut drawing = Drawing::new(DrawingKind::Line, a, Anchor { price: a.price, ..b });
+            drawing.config = None;
+            drawing.style = Some(drawings::Style { line_style: pattern, width: 2.0, ..drawings::Style::line(drawings::Preset::Blue) });
+            drawing
+        };
+        state.drawings = Vec::new();
+        let (bare, stride) = shot_at(&state, size, 1.0);
+        let mut inked = |pattern| {
+            state.drawings = vec![horizontal(pattern)];
+            let (data, _) = shot_at(&state, size, 1.0);
+            (300..500).filter(|x| (199..=201).any(|y: usize| data[y * stride + x * 4..][..4] != bare[y * stride + x * 4..][..4])).count()
+        };
+        let solid = inked(drawings::LineStyle::Solid);
+        let dashed = inked(drawings::LineStyle::Dashed);
+        let dotted = inked(drawings::LineStyle::Dotted);
+        assert!(solid >= 198, "solid runs the whole way: {solid}");
+        assert!(dashed < solid * 3 / 4 && dashed > solid / 4, "dashed has gaps: {dashed} of {solid}");
+        assert!(dotted < solid * 4 / 5 && dotted > solid / 4, "dotted has gaps: {dotted} of {solid}");
+
+        // A zig-zag's legs are one path, so its pattern runs round the
+        // corners; dotted, it is still dots, not a line.
+        let mut zig = Drawing::new(DrawingKind::Zigzag, a, b);
+        zig.points = vec![a, state.locate(size.0, size.1, 400.0, 120.0).unwrap(), b];
+        zig.config = None;
+        zig.style = Some(drawings::Style { line_style: drawings::LineStyle::Dotted, ..drawings::Style::line(drawings::Preset::Amber) });
+        let mut solid_zig = zig.clone();
+        solid_zig.style = Some(drawings::Style::line(drawings::Preset::Amber));
+        state.drawings = vec![solid_zig];
+        let (solid, _) = shot_at(&state, size, 2.0);
+        state.drawings = vec![zig];
+        let (dotted, _) = shot_at(&state, size, 2.0);
+        state.drawings = Vec::new();
+        let (bare, _) = shot_at(&state, size, 2.0);
+        let differs = |data: &[u8]| data.chunks(4).zip(bare.chunks(4)).filter(|(p, q)| p != q).count();
+        assert!(differs(&dotted) > 0 && differs(&dotted) < differs(&solid) * 3 / 4, "{} of {}", differs(&dotted), differs(&solid));
+    }
+
+    /// A labelled level that reaches far past both edges of the plot — one
+    /// drawn on a slower chart, seen on a faster one — has its words on the
+    /// plot, wherever it is zoomed or scrolled to, while any of it shows.
+    #[test]
+    fn a_line_s_words_show_wherever_the_line_does() {
+        crate::on_gtk(|| {
+            let size = (800.0, 400.0);
+            let (w, h) = size;
+            let mut state = charted(400);
+            let price = state.locate(w, h, 400.0, 200.0).unwrap().price;
+            let first = state.bars[0].ts;
+            let step = state.bars[1].ts - state.bars[0].ts;
+            let last = state.bars.last().unwrap().ts;
+            // From long before the first bar to long after the last.
+            let mut level = Drawing::new(
+                DrawingKind::Horizontal,
+                Anchor::new(first - 5000 * step, price),
+                Anchor::new(last + 5000 * step, price),
+            );
+            level.text = omacharts_engine::drawings::Text::plain("Weekly PoC");
+            state.drawings = vec![level];
+            let words = |state: &State| {
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                let projected = state.project(&plan, &scale, &state.drawings[0]);
+                let (x, _, width, _) = projected.words.expect("words");
+                (x, width, plan.plot_x, plan.plot_x + plan.plot_w)
+            };
+            for zoom in [0.25, 1.0, 4.0] {
+                state.zoom_time(zoom, 0.5, w);
+                let (x, width, left, right) = words(&state);
+                assert!(x >= left && x + width <= right, "at {zoom}x the words are at {x}, the plot {left}..{right}");
+            }
+        });
+    }
+
+    /// A large box selected by its border alone gives a click inside it to
+    /// what is under it — another drawing there, or the chart — and is
+    /// still taken on its edge; off, it takes the click as it always did.
+    #[test]
+    fn a_box_selected_by_its_border_lets_the_inside_through() {
+        let size = (800.0, 400.0);
+        let (w, h) = size;
+        let mut state = charted(400);
+        let a = state.locate(w, h, 100.0, 60.0).unwrap();
+        let b = state.locate(w, h, 700.0, 340.0).unwrap();
+        let line_from = state.locate(w, h, 300.0, 200.0).unwrap();
+        let line_to = state.locate(w, h, 500.0, 200.0).unwrap();
+        let mut line = Drawing::new(DrawingKind::Line, line_from, line_to);
+        line.id = 1;
+        let mut region = Drawing::new(DrawingKind::Rect, a, b);
+        region.id = 2;
+        region.config = None;
+        region.style = Some(drawings::Style { edge_only: true, ..drawings::Style::rect(drawings::Preset::Teal) });
+        // The box on top.
+        state.drawings = vec![line.clone(), region.clone()];
+        let projected = {
+            let (first, visible) = state.slice();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            state.project(&plan, &scale, &region)
+        };
+        let (left, top, _, _) = projected.bounds();
+
+        assert_eq!(state.drawing_at(w, h, 400.0, 200.0), Some((0, Grip::Body)), "the line inside is the one taken");
+        assert_eq!(state.drawing_at(w, h, 250.0, 280.0), None, "an empty inside is the chart's");
+        assert_eq!(state.drawing_at(w, h, left + 1.0, 200.0), Some((1, Grip::Body)), "the edge is the box's");
+        assert_eq!(state.drawing_at(w, h, 400.0, top - 2.0), Some((1, Grip::Body)), "either side of it");
+        // A marquee dragged inside it takes what is in there, not the box.
+        assert_eq!(state.drawings_in(w, h, (280.0, 180.0, 240.0, 40.0)), vec![0]);
+        // Even with no border drawn, the edge is still where it ends.
+        state.drawings[1].style.as_mut().unwrap().border = false;
+        assert_eq!(state.drawing_at(w, h, left + 1.0, 200.0), Some((1, Grip::Body)), "a hidden border still takes");
+
+        state.drawings[1].style.as_mut().unwrap().edge_only = false;
+        assert_eq!(state.drawing_at(w, h, 250.0, 280.0), Some((1, Grip::Body)), "off, the inside is the box's");
     }
 
     /// An anchored VWAP is the engine's line from the bar it is anchored to,

@@ -121,6 +121,20 @@ Like Appearance: every chart's under **GLOBAL**, the focused chart's under **LOC
 
 Right-clicking a chart's header and choosing **Edit header…** opens this page. A header with every part taken off has nothing to right-click, so this page is the way back to it.
 
+### Agent
+
+What dictation goes with ([Dictation](/manual/dictation/)).
+
+| Group › row | Does | Chapter |
+|---|---|---|
+| Dictation › **Agent** | Names Omarchy's default agent, which dictation goes to, or says how to set one. | [Agents](/manual/dictation/#agents) |
+| Dictation › **Model** | The model dictation asks the agent for, kept for each agent. **Agent's default** leaves it to the agent. Not shown for an agent that opens in a terminal. | [Preferences](/manual/dictation/#preferences) |
+| **Context** | Text sent to the agent after Omacharts' own line, at the start of each conversation. Empty by default, and saved as you type. | [What the agent is sent](/manual/dictation/#what-the-agent-is-sent) |
+
+### Trading
+
+Trading has a **Beta** tag in the list of sections: it is experimental. The page holds the logins and their accounts, **Edit quantities…**, **Order labels** and how charts show P&L, all in [Trading services](/manual/brokers/#logins-and-accounts).
+
 ## Settings that stay with this machine
 
 The **Keep at most** limit, **Update automatically**, the sidebar width and the screenshot folder (the `screenshot_folder` setting, [Where it goes](/manual/screenshots/#where-it-goes)) stay with this machine. Restoring another machine's backup leaves them as they were ([Restoring](/manual/your-data/#restoring)).

@@ -70,7 +70,7 @@ This is what the whole thing is for. Somebody is looking at a chart and says
 "put a 200-day average on it". No identifiers, no lookups:
 
 ```
-$ omacharts chart indicator add sma --period 200 --color Amber --style dashed
+$ omacharts chart indicator add sma --period 200 --color Amber --line-style dashed
 added SMA(200) on pos:0 AAPL 1D in "Macro"
   [exit 0]
 ```
@@ -96,6 +96,7 @@ To find out what is open before changing it:
 ```
 $ omacharts status show
 chartbook  Macro (id:0)
+sidebar on, drawing tools off
 * pos:0  AAPL       1D    focus
 ```
 
@@ -114,16 +115,16 @@ Every indicator the app has, with every parameter it exposes:
 | `sma`, `ema` | `--period` |
 | `bollinger` | `--period`, `--deviations`, `--bands` (`1` or `none`), `--band-alpha` |
 | `rsi` | `--period`, `--overbought`, `--oversold`, `--height` |
-| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
+| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--signal-style`, `--height` |
 | `atr` | `--period`, `--height` |
-| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
+| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color`, `--d-style` |
 | `volume` | `--height`, `--opacity`, `--up-color`, `--down-color` |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
-Anything that draws a line also takes `--color`, `--width` and `--style`, and
-everything takes `--visible`.
+Anything that draws a line also takes `--color`, `--width` and `--line-style`
+(`--style`, its older name, still works), and everything takes `--visible`.
 
 **A volume profile's periods can be read and merged.** `chart profile list`
 names each profile on the focused chart — its start and end, point of control
@@ -168,7 +169,20 @@ measure nothing and the wrong way round is the line upside down — so
 cross what the chart already holds.
 
 `set` reconfigures one already on the chart. If the chart has two of a kind it
-asks which, with `--id`.
+asks which, with `--id`. `remove` takes `--id` too, for one of two. With
+`--id`, the id from `list` says which and the kind can be left out
+(`chart indicator remove --id 3`); a kind that is not the id's is refused.
+The same goes for `drawing set` and `drawing remove`.
+
+**What is selected in the window is `selected`.** `list` marks the indicator
+picked in the window's legend or on its line (`"selected": true`, and
+`· selected` in the text); `list --selected` keeps only it; and `--id
+selected` on `set` or `remove` acts on it, its kind taken from it when none is
+named. The same holds for drawings, where several can be selected: `drawing
+list --selected` lists them all, and `--id selected` takes exactly one, asking
+which (exit 4) otherwise. A command that rebuilds the charts keeps what was
+selected, so "make this red" can read the selection and change it. With no
+window, nothing is selected.
 
 A parameter an indicator has no use for is refused rather than ignored —
 `--period` on a volume profile is an error, not a no-op, because silence would
@@ -392,6 +406,19 @@ across Follow charts, or the key `sync_crosshair`:
 
 ```
 omacharts chart crosshair off
+```
+
+## The sidebar and the drawing tools
+
+The sidebar and the drawing tools are put out or away as their corner buttons
+and keys do. The sidebar is kept with each chartbook, the tools for the whole
+window. Without `on` or `off` each prints which it is, and `status show` says
+both:
+
+```
+omacharts chartbook sidebar off
+omacharts chartbook sidebar on --book Energy
+omacharts chart drawing-tools on
 ```
 
 ## Worked example: the top US semiconductors in their own watchlist
@@ -756,6 +783,8 @@ omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --
 omacharts chart drawing add text --from 2026-09-10,184 --text "gap fills here"
 omacharts chart drawing add profile --from 2026-09-08,0 --to 2026-09-12,0 --profile-style outline --align right
 omacharts chart drawing list
+omacharts chart drawing list --selected --json
+omacharts chart drawing set --id selected --color down
 omacharts chart drawing set --id 1 --color ink --width 2.5 --arrow end
 omacharts chart drawing set --id 1 --order front
 omacharts chart drawing remove --id 2
@@ -775,9 +804,10 @@ refused rather than written down invisible.
 **A drawing follows a configuration, or has a look of its own.** Each kind
 has nine configurations, 1 to 9; a drawing that follows one looks like it and
 changes with it. `--config N` puts a drawing on configuration N. Any property
-given by hand — `--color`, `--width`, `--arrow` and `--head` (filled, open
-or barb) for a line; `--fill`,
-`--alpha`, `--border`, `--width`, `--color` for a box's edge — takes the
+given by hand — `--color`, `--width`, `--line-style`, `--arrow` and `--head`
+(filled, open or barb) for a line; `--fill`,
+`--alpha`, `--border`, `--width`, `--color`, `--line-style` for a box's edge,
+and `--select-by-border on` to take it by its edge alone — takes the
 drawing off its configuration and gives it that look, which no later change
 to the configuration touches. The configurations themselves:
 
@@ -790,16 +820,19 @@ omacharts chart drawing reset-configs rect
 **A volume profile drawing** (`profile`, or `vp`) reads only the times of its
 anchors: its height is the prices its bars reached. `--color` is its outline
 and `--fill` its background, `--border on|off` whether filled rows have it,
-`--width` its thickness;
-`--poc-color`, `--poc-width`, `--profile-style`, `--align`, `--value-area` and
-`--transparency` are the rest. It is never moved whole, only
+`--width` its thickness and `--line-style` its pattern;
+`--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
+`--transparency` (0 its background solid, 0.7 by default),
+`--highlight-value-area on|off`, `--value-area-color` (or `none` for its
+background's), `--poc on|off` and `--rows` (a number, or `auto`, as the
+study's) are the rest. It is never moved whole, only
 re-spanned, and it takes no words.
 
 **An anchored VWAP** (`avwap`, or `vwap`) reads only the time of its anchor,
 `--from`, and runs from that bar to the last one, worked out again as bars
 arrive. Its properties are the VWAP study's, by the study's names where it
 has them. `--color`, `--width` (0, no line, leaves only its bands) and
-`--style` (`solid`, `dashed`, `dotted`) are its line, and `--source` the price
+`--line-style` (`solid`, `dashed`, `dotted`; `--style`, its older name, too) are its line, and `--source` the price
 each bar adds (`hlc3`, the default, `hl2`, `ohlc4` or `close`). It has the
 study's three bands, at 1, 1.5 and 2 standard deviations and all off:
 `--bands` says which are drawn, any of `1,2,3` by place, or `none`. The
@@ -890,7 +923,8 @@ omacharts chart set --show-drawings off
 `--send-drawings off` keeps what is drawn on that chart to that chart —
 useful for sketching on one view without it appearing on every other.
 `--show-drawings off` keeps the chart clear of what is already drawn on the
-symbol; its own are still there either way (`--drawings off` hides both).
+symbol; its own, the ones it sent included, are still there either way
+(`--drawings off` hides both).
 The two are independent: a chart that shows but does not send is a reference
 view.
 
@@ -933,6 +967,70 @@ own font and ink. Enter commits and Shift+Enter is a newline; Escape leaves
 it as it was; Ctrl+B and Ctrl+I set the selection — or the word the caret is
 in — bold or italic. Ctrl+= and Ctrl+− grow and shrink the selected
 drawing's text, which on a figure is its label rather than the figure.
+
+## Comparing markets on one chart
+
+`chart compare` draws other markets over a chart as lines in percent, each 0%
+at the same bar, and turns the price axis into percent while it does:
+
+```sh
+omacharts chart compare add GC NQ BTC-USD
+# compared GC, NQ, BTC on pos:0 SPY 1D in "Macro"
+omacharts chart compare set --from 2026-01-02 --lines-only on
+omacharts chart compare set GC --color Rose
+omacharts chart compare list --json
+omacharts chart compare remove NQ
+omacharts chart compare clear
+```
+
+The base is the first bar on screen unless `--from` pins it to a date, a
+moment or unix seconds; `--from left` lets it follow the screen again.
+`--lines-only on` draws the chart's own symbol as a line too. Each market is
+read at the chart's resolution from the feed that would chart it, and laid on
+the chart's bars by carrying its last close forward over its closed hours.
+What a chart compares is saved with it and in chartbook templates.
+
+## Arithmetic on symbols
+
+Anywhere a symbol goes, arithmetic on symbols goes too: `+ - * /`, numbers
+and parentheses, with the usual precedence. A ratio, a spread, a basket and a
+crack spread are each one symbol, charted, listed and linked like any other.
+
+```
+$ omacharts watchlist add Spreads TNX-FVX GC/SI '(2*RB + HO)*42/3 - CL' '(SPY+QQQ)/2'
+added 4 to "Spreads": TNX-FVX GC/SI (2*RB+HO)*42/3-CL (SPY+QQQ)/2
+  [exit 0]
+
+$ omacharts symbol show '(2*RB + HO)*42/3 - CL'
+(2*RB+HO)*42/3-CL
+(2 × RBOB Gasoline + Heating Oil) × 42 / 3 − Crude Oil WTI
+kind      Futures
+exchange  unknown
+currency  unknown
+  [exit 0]
+```
+
+Quote it: to a shell, `*` and parentheses mean something.
+
+**A dash is a symbol's first.** Tickers can have dashes in them, so a run
+with a dash in it is the symbol it names, and a minus only when it names
+nothing: `TNX-FVX` subtracts. Spaces round a minus always subtract, and a
+formula that would read back as a symbol is shown with them.
+
+**Each leg is fetched, then the arithmetic is done on the bars.** The first
+symbol in the formula is its clock: every other leg is taken at its latest
+bar at or before each of the first's, so a stock over a future, which print
+at different hours, still line up. Open is the formula on the opens and close
+on the closes; high and low are the formula on the highs and on the lows,
+whichever is larger, widened to hold the open and close. A bar that divides
+by zero is left out, and a formula has no volume.
+
+A spread can go below zero, where a log scale has nothing to show, so a chart
+of one that does is drawn on a linear scale.
+
+Every leg is anything that charts on its own: a listing abroad, `SAN.MC`, or
+a futures contract. A feed that streams, such as thinkorswim, offers no
+formulas: a stream is one subscription per symbol, and nothing combines them.
 
 ## Measuring a move
 
@@ -1251,6 +1349,27 @@ on
   [exit 0]
 ```
 
+`agent_context` is what dictation sends the agent besides the words
+([Dictating to the agent](#dictating-to-the-agent)). It reads as empty until
+it is set, rather than exiting 3, and `config set agent_context ""` clears it:
+
+```
+$ omacharts config set agent_context "Keep it brief."
+dictation sends the agent 14 characters of extra context
+  [exit 0]
+```
+
+`agent_model.<agent>` is the model dictation asks that agent for, one setting
+per agent dictation runs itself (`claude`, `codex`, `cursor-agent`, `copilot`,
+`opencode`, `agy`). It reads as empty, the agent's own default, until set; `""`
+goes back to it, and an agent dictation does not run is refused with exit 2:
+
+```
+$ omacharts config set agent_model.claude opus
+dictation asks Claude Code for opus
+  [exit 0]
+```
+
 ## Which data feed the charts come from
 
 Yahoo Finance is the default and needs nothing set up. The stored choice is a
@@ -1479,6 +1598,44 @@ Sessions expire. When one does, charts say so rather than claiming the
 provider is unreachable, `provider status` says `Session expired`, and signing
 in again is the fix. All of this is also in Preferences → Market data →
 Provider, which is the same four facts with a button.
+
+## Trading from a terminal
+
+Trading is experimental. The `trading` group does what the Trading panel and
+a chart's Account part do, and the reference is [the CLI page of the
+manual](../site/manual/cli.md#trading). Three things shape it.
+
+Orders go through the window. The sessions are signed in there, so `buy`,
+`sell`, `exit`, `modify`, `cancel` and `flatten` exit `6` with no window
+open, and each runs the chart's own checks: a limit on the wrong side of the
+market, a quantity the chart's Qty does not offer, or a second order while
+the last is still on its way is refused with exit `5` and the words the chart
+would show. A reply says what was sent, not what the trading service did with it:
+
+```
+$ omacharts trading buy --limit 6810 --quantity 2
+Lucid 50K: Buy Limit 2 ESZ6 at 6,810.00
+  [exit 0]
+
+$ omacharts trading orders
+B2           14:31:07 Lucid 50K      ESZ6     Buy     2 Limit      6,810.00  Working
+  [exit 0]
+```
+
+The trading service's answer lands in the Log and in `trading orders`, so a script
+that needs the fill reads `trading orders --json` until the status says so.
+There are no confirmations, as there are none on the chart.
+
+A password is never typed into a terminal. `trading login SERVICE` opens the
+service's sign-in dialog in the window, and `trading sign-in LOGIN` signs in
+with the password the keyring holds, or opens the dialog when it holds none.
+`trading sign-out` and `trading remove` forget it.
+
+A chart's trading is set with `chart set`: `--account` (a name, a number,
+login and number such as `Lucid/1234`, or `default`), `--quantity`, `--trading-symbol` (the other size of what it
+charts, such as MES on ES, or `none`) and `--show-fills`. `chart list --json`
+reads them back. Orders, flatten and exit act on the chart that `--book` and
+`--chart` name, the focused one by default, as every chart command does.
 
 ## The widget in the Omarchy bar
 
@@ -1745,6 +1902,97 @@ carries display metadata, not a discovery trigger — and Codex reads
 `$CODEX_HOME/skills/` directly. So for Codex the skill directory is the whole
 story, and adding a manifest would be a second thing to maintain for nothing.
 
+## Dictating to the agent
+
+Omarchy has dictation: hold Right Alt, speak, let go, and the words appear in
+the window in front. With Omacharts in front and no text box focused, the
+words go to Omarchy's default agent instead, which does what was asked with
+this command. How to dictate stays Omarchy's; nothing here changes the key,
+the recording or the transcription.
+
+**How the words reach the window.** Omarchy's dictation backend on this
+desktop is Superwhisper, which on Hyprland delivers text by putting it on the
+clipboard and sending Ctrl+V to the window in front. In a text box that is an
+ordinary paste, and stays one. Outside one, Ctrl+V used to paste only a copied
+drawing or indicator, so it is told apart there: the window asks Superwhisper,
+over the control socket its own bar panel reads, for its last dictation. It
+is a dictation when that finished in the last 30 seconds, did not fail, says
+the same words as the clipboard, and has not been sent already. Anything else
+is a paste, as before. The words are what make it safe: dictate elsewhere and
+then paste a drawing here, and the clipboard has been put back.
+
+**How the agent is run.** `omarchy-default-agent` names the agent, asked
+afresh for every dictation. The agents in the table below are run headless,
+one turn per dictation, in `~/.local/share/omacharts/agent`, with the account
+Omarchy has selected for Claude Code and Codex, and this `omacharts` first on
+its `PATH`. `MODEL` is the `agent_model.<agent>` setting, left out when it is
+empty:
+
+```
+claude -p --output-format json --permission-mode auto [--resume ID] [--model MODEL] -- PROMPT
+codex exec --approve-for-me [resume] --json --skip-git-repo-check [-m MODEL] [ID] -- PROMPT
+cursor-agent -p --output-format json --yolo --trust [--resume ID] [--model MODEL] agent -- PROMPT
+copilot --prompt PROMPT --silent --allow-all --no-ask-user --session-id UUID [--model MODEL]
+opencode run --auto --archived [-m MODEL] PROMPT
+agy --dangerously-skip-permissions [--model MODEL] --print PROMPT
+```
+
+Each runs with the permission flags `omarchy-agent` gives it when it opens it
+(`--permission-mode auto`, `--approve-for-me`, `--yolo --trust`,
+`--allow-all`, `--auto`, `--dangerously-skip-permissions`), in the form its
+headless turn takes them: Codex takes `--approve-for-me` on `exec`, ahead of
+`resume`. Nothing else widens or narrows them; the agent's own settings
+decide the rest, and a command they refuse is said in its reply, in the Log.
+The models Preferences offers for each are a list kept in Omacharts, and the
+one named in "Agent's default (…)" is read from the agent's settings file
+(Claude Code's `settings.json`, Codex's `config.toml`, OpenCode's
+`opencode.json`). No agent is run for any of it: only a dictation runs one.
+Claude Code and Cursor name their session in their JSON, Codex in its
+`thread.started` event, and Copilot is given a new UUID at the start of each
+conversation. OpenCode and Antigravity name theirs only in output their help
+does not describe, so each of their turns starts a new conversation.
+
+Any other default agent is opened by Omarchy, a terminal per dictation, with
+the opening prompt below and the agent's own flags and model:
+
+```
+omarchy-agent-prompt PROMPT
+```
+
+The window says it opened, or why Omarchy could not (what it printed is in
+`~/.local/share/omacharts/agent/terminal.log`).
+
+**What it is sent.** The first dictation of a conversation goes with one fixed
+line and nothing about the charts — the agent asks `omacharts` for what it
+needs:
+
+```
+The user is in Omacharts and said: "add an RSI". Use the `omacharts` CLI to do it.
+```
+
+followed by the `agent_context` setting (Preferences › Agent) when it is not
+empty. Every dictation after that is `The user said: "…"`, resuming the same
+session, so requests build on each other.
+
+**When a conversation starts over.** When the window starts (the session id
+is kept only while it runs), after 30 minutes with no dictation, when the
+default agent, its `agent_model.<agent>` or `agent_context` changes, after a turn fails, and when what
+was said is just "start over", "start again" or "new conversation".
+
+**The queue.** One turn runs at a time. A dictation that arrives while the
+agent is working waits behind it; none is dropped. A turn still running after
+ten minutes is stopped, so the ones behind it run.
+
+**What the window says.** The glow along its bottom edge while the agent
+works, and nothing more when a turn succeeds. The Log records each dictation,
+one that was queued, a conversation starting over, and the agent's whole
+answer. A toast or the corner notice appears only when something goes wrong:
+no default agent, an agent that failed, a terminal Omarchy could not open.
+
+**What the agent may do.** Whatever its permissions allow, as above: with
+Omarchy's flags that is any `omacharts` command, the `trading` ones included,
+with no confirmation. Nothing here guards an order that was dictated.
+
 ## The command groups
 
 | Group | What it covers |
@@ -1757,6 +2005,8 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `chart` | the charts inside a chartbook |
 | `template` | chart templates: named sets of indicators that charts share |
 | `provider` | the data feeds, their order, and signing in to one that needs it |
+| `provider` | the data feed, and signing in to one that needs it |
+| `trading` | trading logins, accounts, positions and orders (experimental) |
 | `config` | stored preferences |
 | `cache` | the cached market data |
 | `backup` | copies of your settings, and putting one back |

@@ -13,6 +13,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::formula::{self, Expr, Formula};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstrumentKind {
@@ -98,6 +100,13 @@ pub struct Instrument {
     /// same row answers whichever language somebody types in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_name: Option<String>,
+    /// For a formula — a ratio, `GC/SI`, a spread, `TNX-FVX`, any
+    /// arithmetic on symbols — the symbols it reads and what it does with
+    /// them; unset for everything that trades. Every other field describes
+    /// the first leg, which decides the sessions and the delay the formula
+    /// has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula: Option<Box<Formula>>,
 }
 
 /// Yahoo-style venue suffixes this inventory knows, and the venue each names.
@@ -164,6 +173,11 @@ fn unspaced(c: char) -> bool {
 }
 
 impl Instrument {
+    /// The symbols a formula reads; none for anything that trades.
+    pub fn legs(&self) -> &[Instrument] {
+        self.formula.as_deref().map_or(&[], |formula| formula.legs.as_slice())
+    }
+
     pub fn override_for(&self, adapter: &str) -> Option<&str> {
         self.overrides
             .iter()
@@ -210,9 +224,10 @@ impl Instrument {
         }
     }
 
-    /// Is this a dated contract rather than a continuous root?
+    /// Is this a dated contract rather than a continuous root? Not a
+    /// formula on futures, whose spelling can end in digits: `3*CL-HO*42`.
     pub fn is_contract(&self) -> bool {
-        self.kind == InstrumentKind::FutureRoot && crate::specs::root_of(&self.symbol) != self.symbol
+        self.formula.is_none() && self.kind == InstrumentKind::FutureRoot && crate::specs::root_of(&self.symbol) != self.symbol
     }
 
     /// This root's contract of `month`: the same instrument, named `ESH7`
@@ -365,19 +380,125 @@ impl SearchIndex {
     /// root it has: `ESH7` is March 2027 of `ES`, whether or not anybody
     /// wrote it down. Only a contract spelled the exchange's way, which is
     /// how it was stored; what somebody types goes through [`crate::contracts::parse`]
-    /// first.
+    /// or [`SearchIndex::spelled`] first.
+    ///
+    /// And a formula, `GC/SI` or `TNX-FVX`: see [`SearchIndex::formula`].
     pub fn resolve(&self, symbol: &str, suffix: Option<&str>) -> Option<Instrument> {
+        let whole = || match suffix {
+            Some(suffix) => format!("{symbol}.{suffix}"),
+            None => symbol.to_string(),
+        };
+        if formula::looks_like(symbol) {
+            return self.formula(&whole());
+        }
+        // A dash is a symbol's first, `BRK-B`, and a subtraction only
+        // when the whole of it names nothing.
+        self.plain(symbol, suffix).or_else(|| match symbol.contains('-') {
+            true => self.formula(&whole()),
+            false => None,
+        })
+    }
+
+    /// [`SearchIndex::resolve`] for one symbol, no arithmetic in it.
+    fn plain(&self, symbol: &str, suffix: Option<&str>) -> Option<Instrument> {
         if let Some(found) = self.find(symbol, suffix) {
             return Some(found.clone());
         }
         if suffix.is_some() {
             return None;
         }
+        self.contract(symbol).or_else(|| self.coin(symbol))
+    }
+
+    /// A coin as an exchange quotes it against the dollar, `BTC-USD`: the
+    /// coin the listings call `BTC`. Before arithmetic gets to it, where it
+    /// would be bitcoin less the ETF whose ticker is `USD`.
+    fn coin(&self, symbol: &str) -> Option<Instrument> {
+        let coin = symbol.strip_suffix("-USD")?;
+        self.find(coin, None).filter(|i| i.kind == InstrumentKind::Crypto).cloned()
+    }
+
+    /// A dated contract spelled the exchange's way, `ESH7`, as its root's
+    /// instrument in that month. Nothing for a root the inventory lacks, or
+    /// for the same contract spelled any other way.
+    fn contract(&self, symbol: &str) -> Option<Instrument> {
         let (root, month) = crate::contracts::parse(symbol, crate::contracts::today())?;
         if crate::contracts::symbol(&root, month) != symbol {
             return None;
         }
         self.find(&root, None).filter(|i| i.kind == InstrumentKind::FutureRoot)?.in_month(month)
+    }
+
+    /// A formula typed whole, `GC/SI` or `TNX-FVX`, for a picker to put
+    /// first: search offers none, so somebody who typed one meant it.
+    /// Nothing at all is done for text with no operator or dash in it, which
+    /// is every plain query.
+    pub fn spelled(&self, query: &str) -> Option<Instrument> {
+        let candidate = formula::looks_like(query) || query.contains('-');
+        if !candidate {
+            return None;
+        }
+        let typed = query.trim().to_uppercase();
+        match self.find(&typed, None) {
+            Some(_) => None,
+            None => self.resolve(&typed, None).filter(|found| found.formula.is_some()),
+        }
+    }
+
+    /// One symbol as a leg of a formula: a listing spelled with a dot is
+    /// itself before it is a ticker on a venue — `BRK.B` is Berkshire's B
+    /// shares, not something called BRK on a venue called B. Never
+    /// arithmetic, so a dash is only ever part of it.
+    fn leg(&self, part: &str) -> Option<Instrument> {
+        if let Some(found) = self.find(part, None) {
+            return Some(found.clone());
+        }
+        let (ticker, venue) = split_suffix(part);
+        self.plain(ticker, venue)
+    }
+
+    /// Arithmetic on symbols as an instrument: `GC/SI`, `TNX-FVX`,
+    /// `(2*RB+HO)*42/3-CL`, `(SPY+QQQ)/2`. Each symbol in it is resolved the
+    /// way one on its own is, so `SAN.MC/GC` works too. It is described by
+    /// the first leg, named after all of them, and stored and shown under
+    /// the spelling it was asked for, tidied.
+    ///
+    /// Nothing at all for something that does not parse, a symbol that
+    /// resolves to nothing, or arithmetic on no symbol at all; and one symbol
+    /// on its own, `(SPY)`, is that symbol.
+    fn formula(&self, text: &str) -> Option<Instrument> {
+        let (expr, legs) = formula::parse(text, |part| self.leg(part))?;
+        if expr == Expr::Leg(0) {
+            return legs.into_iter().next();
+        }
+        let first = legs.first()?.clone();
+        let shown = |at: usize| legs.get(at).map(Instrument::display_symbol).unwrap_or_default();
+        // Tight, `TNX-FVX`, unless that would read back as something else:
+        // `BRK - B`, which tight is Berkshire.
+        let mut symbol = expr.spell(&shown, &formula::TYPED);
+        let reads_back = || {
+            formula::parse(&symbol, |part| self.leg(part)).is_some_and(|(again, found)| {
+                again == expr && found.iter().map(Instrument::display_symbol).eq(legs.iter().map(Instrument::display_symbol))
+            })
+        };
+        if symbol.contains('-') && !reads_back() {
+            symbol = expr.spell(&shown, &formula::SPACED);
+        }
+        let name = expr.spell(&|at| legs.get(at).map(|leg| leg.name.clone()).unwrap_or_default(), &formula::NAMED);
+
+        Some(Instrument {
+            symbol,
+            name,
+            suffix: None,
+            currency: None,
+            tier: 3,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+            formula: Some(Box::new(Formula { legs, expr })),
+            ..first
+        })
     }
 
     /// The curated majors, for an empty search field.
@@ -601,6 +722,7 @@ pub fn parse_seed(text: &str) -> Vec<Instrument> {
             exchange: f.get(8).copied().and_then(blank),
             popularity: f.get(9).and_then(|v| v.parse().ok()).unwrap_or(0),
             local_name: f.get(10).copied().and_then(blank),
+            formula: None,
         });
     }
     out
@@ -628,6 +750,7 @@ mod tests {
             exchange: Some("NASDAQ".into()),
             popularity,
             local_name: None,
+            formula: None,
         }
     }
 
@@ -685,6 +808,7 @@ mod tests {
             exchange: Some("NASDAQ".into()),
             popularity: 0,
             local_name: None,
+            formula: None,
         });
         let idx = SearchIndex::new(items);
         assert_eq!(idx.get(idx.search("dax", 5)[0].index).unwrap().symbol, "GDAXI");
@@ -749,6 +873,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         };
         let rival = Instrument {
             symbol: "ZZZA".into(),
@@ -962,6 +1087,51 @@ mod tests {
         // The Madrid listing must not answer a lookup for a US one.
         assert!(idx.find("SAN", None).is_none());
         assert!(idx.find("NOPE", None).is_none());
+    }
+
+    #[test]
+    fn a_ratio_resolves_to_its_legs_and_answers_to_how_it_was_typed() {
+        let idx = index();
+        let ratio = idx.resolve("GC/SI", None).expect("gold over silver");
+        assert_eq!(ratio.display_symbol(), "GC/SI");
+        assert_eq!(ratio.name, "Gold / Silver");
+        assert_eq!(ratio.kind, InstrumentKind::FutureRoot, "the numerator's kind");
+        let legs: Vec<String> = ratio.legs().iter().map(Instrument::display_symbol).collect();
+        assert_eq!(legs, ["GC", "SI"]);
+        assert_eq!(ratio.tier, 3, "never offered by search");
+
+        let foreign = idx.resolve("GC/SAN", Some("MC")).expect("a suffix split off the end");
+        assert_eq!(foreign.display_symbol(), "GC/SAN.MC");
+        assert_eq!(idx.resolve("GC/SAN.MC", None), Some(foreign));
+
+        assert!(idx.resolve("GC/NOPE", None).is_none(), "both legs must exist");
+        assert!(idx.resolve("GC/", None).is_none());
+    }
+
+    #[test]
+    fn any_arithmetic_on_symbols_is_a_formula() {
+        let idx = index();
+        let spelled = |typed: &str| idx.resolve(typed, None).map(|found| found.display_symbol());
+        assert_eq!(spelled("TNX-FVX").as_deref(), Some("TNX-FVX"));
+        assert_eq!(spelled("3 * CL - HO*42").as_deref(), Some("3*CL-HO*42"));
+        assert_eq!(spelled("(SPY+QQQ)/2").as_deref(), Some("(SPY+QQQ)/2"));
+        assert_eq!(spelled("GC/SI/ES").as_deref(), Some("GC/SI/ES"), "as deep as it is spelled");
+        assert_eq!(spelled("(SPY)").as_deref(), Some("SPY"), "one symbol is that symbol");
+        assert!(idx.resolve("(SPY)", None).unwrap().formula.is_none());
+        assert!(idx.resolve("SPY-NOPE", None).is_none(), "every leg must exist");
+        assert!(idx.resolve("2*3", None).is_none(), "arithmetic on nothing charts nothing");
+
+        let spread = idx.resolve("TNX-FVX", None).expect("a curve spread");
+        assert_eq!(spread.name, "US 10 Year Treasury Yield − US 5 Year Treasury Yield");
+        assert_eq!(spread.kind, InstrumentKind::Index, "the first leg's kind");
+        assert_eq!(spread.tier, 3, "never offered by search");
+
+        assert!(!idx.resolve("3*CL-HO*42", None).unwrap().is_contract(), "a formula ending in digits is no contract");
+
+        assert_eq!(idx.spelled("tnx-fvx").map(|found| found.symbol), Some("TNX-FVX".into()));
+
+        assert_eq!(spelled("BTC-USD").as_deref(), Some("BTC"), "the coin, not bitcoin less the ETF called USD");
+        assert_eq!(spelled("BTC-USD/ETH-USD").as_deref(), Some("BTC/ETH"));
     }
 
     #[test]

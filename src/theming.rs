@@ -507,6 +507,9 @@ fn named_colours(theme: &Theme, scheme: &BarScheme) -> Vec<(&'static str, String
     define("omacharts_rose", &swatch("Rose", &scheme.down));
     define("omacharts_orange", &swatch("Orange", &ui.accent));
     define("omacharts_green", &swatch("Green", &scheme.up));
+    // The palette's warm one, for the agent at work on a dictation: amber,
+    // where Omarchy listening is blue.
+    define("omacharts_amber", &swatch("Amber", &swatch("Orange", &ui.accent)));
 
     // The frame around tiled charts. Derived, not taken: the engine explains
     // why in `frame.rs`, and `doc/themes/frames.html` shows the result on
@@ -566,6 +569,22 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     // Everything after the root block is rules, whoever adds them, and
     // reads the colours as properties.
     let rules_from = css.len();
+    // The agent at work on a dictation: a glow up from the window's bottom
+    // edge, strongest at the edge and gone before the charts' content, which
+    // the code fades and breathes; red for a turn that failed. A tint on a
+    // light ground carries less than light on a dark one, so it is stronger
+    // there.
+    let (edge, middle) = match theme.mode {
+        Mode::Dark => (0.6, 0.22),
+        Mode::Light => (0.9, 0.36),
+    };
+    for (selector, colour) in [(".agent-glow", "omacharts_amber"), (".agent-glow.failed", "omacharts_rose")] {
+        let _ = writeln!(
+            css,
+            "{selector} {{ background-image: linear-gradient(to top, alpha(@{colour}, {edge}), alpha(@{colour}, {middle}) 35%, alpha(@{colour}, 0)); }}"
+        );
+    }
+
     css.push_str(
         "
 .change-up { color: @omacharts_up; }
@@ -584,6 +603,17 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   border-radius: 6px;
   background: alpha(@accent_bg_color, 0.18);
   color: @accent_color;
+}
+
+/* A word beside a section's title in Preferences, Beta: quiet, in the
+   row's own ink, so it reads on a selected row as on any other. */
+.section-tag {
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: alpha(currentColor, 0.12);
+  opacity: 0.8;
 }
 
 /* The readout above the chart. Tabular figures so values do not jitter as the
@@ -1777,6 +1807,20 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 }
 .legend-row:hover .legend-button { opacity: 0.55; }
 .legend-button:hover { opacity: 1; }
+
+/* Markets compared on the chart, in the order they were added: the
+   symbol, then its change in figures that keep their width as they move
+   under the pointer. */
+.compare-legend { margin-bottom: 2px; }
+.compare-symbol { font-size: 0.78em; font-weight: 600; opacity: 0.85; }
+.compare-value { font-size: 0.78em; font-feature-settings: 'tnum'; opacity: 0.85; }
+.compare-pin { font-size: 0.78em; opacity: 0.6; }
+/* The way back from a pinned base is always there, quietly: it is the
+   only sign the pin can be taken off. */
+.legend-button.compare-unpin { opacity: 0.55; }
+.legend-button.compare-unpin:hover { opacity: 1; }
+/* Asked for and not answered yet, or answered with a failure. */
+.legend-row.compare-pending { opacity: 0.45; transition: opacity 160ms ease-out; }
 
 /* One box for every glyph button along the top of the window: a chart's
    link, gear and maximize, the window's toggle and menu, the rail's list

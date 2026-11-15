@@ -3410,6 +3410,7 @@ mod tests {
                 exchange: None,
                 popularity: 0,
                 local_name: None,
+                formula: None,
             },
             cells: Vec::new(),
         };
@@ -3653,6 +3654,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         };
         let quote: QuoteLookup = Rc::new(|instrument: &Instrument| {
             match instrument.symbol.as_str() {
@@ -3688,6 +3690,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         };
         // Row 1 is a section header, so the rows and the walk disagree.
         let rows = [(0, "SPY"), (2, "EURUSD"), (3, "CCJ"), (4, "EURUSD")];

@@ -23,7 +23,8 @@ use omacharts_engine::drawings::{Anchor, Drawing, Kind as DrawingKind};
 use omacharts_engine::indicators::{self, Kind};
 use omacharts_engine::{theme, Bar, Indicator, Timeframe};
 
-use super::{draw, draw_pointer, layout, Drawn, State};
+use super::{draw, draw_pointer, layout, Drawn, Marks, State};
+use crate::marks::{AnyPrice, PriceMark};
 
 /// A chart set up to be drawn, with no window under it.
 pub struct Scene {
@@ -166,6 +167,51 @@ impl Scene {
         }
         self.state.selected = drawings.len().checked_sub(1).into_iter().collect();
         self.state.drawings = drawings;
+    }
+
+    /// Hold a position at the last close: the line, its label and its tabs
+    /// as the trading window lays them.
+    ///
+    /// Built from [`PriceMark::new`] and the fields every revision with
+    /// marks has, so the file still grafts onto one from before a field
+    /// this branch added.
+    pub fn hold_position(&mut self) {
+        let Some(last) = self.state.bars.last().copied() else { return };
+        let mut mark = PriceMark::new("position", last.close, "\u{25b2} 1", "#5fb878");
+        mark.body = Some("+$125.00".into());
+        mark.closable = true;
+        mark.draggable = true;
+        mark.raised = true;
+        self.state.marks = Marks { lines: vec![mark], rules: Box::new(AnyPrice) };
+    }
+
+    /// A volume profile drawn over every bar on screen, `rows` of them or
+    /// the automatic count when `None`, as the one drawing on the chart.
+    ///
+    /// The widest span a hand draws, divided as finely as it can be: the
+    /// rows are what a frame paints, so this is the profile drawing's worst
+    /// frame.
+    pub fn draw_profile(&mut self, rows: Option<usize>) {
+        let (first, visible) = (self.state.first, self.state.visible.max(1));
+        let from = self.state.bars.get(first);
+        let to = self
+            .state
+            .bars
+            .get((first + visible - 1).min(self.state.bars.len().saturating_sub(1)));
+        let (Some(from), Some(to)) = (from, to) else {
+            return;
+        };
+        let mut drawing = Drawing::new(
+            DrawingKind::Profile,
+            Anchor::new(from.ts, from.low),
+            Anchor::new(to.ts, to.high),
+        );
+        let mut style = drawing.style(&self.state.configs).clone();
+        style.profile.rows = rows;
+        drawing.config = None;
+        drawing.style = Some(style);
+        self.state.selected = Default::default();
+        self.state.drawings = vec![drawing];
     }
 
     /// What a pointer motion costs before anything is repainted.

@@ -176,8 +176,10 @@ pub fn price_marks(position: Option<&PositionMark>, held: &[PositionMark], order
             tabs: Vec::new(),
             link: order.link.map(|link| MarkLink { dashed: link.holder == Holder::App, pending: link.pending }),
             raised: false,
+            pulse: false,
         });
     }
+    // Only the chart's own position breathes, and not while it is faint.
     let held_mark = |held: &PositionMark, id: String, chip: bool, raised: bool| PriceMark {
         id,
         price: held.price,
@@ -193,6 +195,7 @@ pub fn price_marks(position: Option<&PositionMark>, held: &[PositionMark], order
         tabs: held.exits.iter().map(|tab| exit_tab(tab, held.net)).collect(),
         link: None,
         raised,
+        pulse: raised && !held.dim,
     };
     for held in held {
         marks.push(held_mark(held, format!("{HELD}{}", held.contract), true, false));

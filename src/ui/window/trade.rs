@@ -99,6 +99,8 @@ pub(super) struct Trade {
     /// Whether the charts write P&L as money or in R, read when trading
     /// comes in and again whenever Preferences or a command changes it.
     pub pnl: Cell<trading::chart_pnl::ChartPnl>,
+    /// The accounts' fills, for the charts that mark them.
+    pub fills: super::executions::Fills,
 }
 
 /// How often at most the positions are marked to a moving market.
@@ -183,7 +185,7 @@ fn order_in_words(order: &trading::Order) -> String {
 
 /// What cancelling `order` asks for: "Cancel Buy Limit 1 ESZ6 at
 /// 7,620.00".
-fn cancel_words(order: &trading::Order) -> String {
+pub(super) fn cancel_words(order: &trading::Order) -> String {
     format!("Cancel {}", order_in_words(order))
 }
 
@@ -487,16 +489,7 @@ impl Window {
             actions.add_action(&unavailable);
         }
 
-        // Toasts lie over the whole window, rail included.
-        let overlay = self.trade.overlay.borrow().clone();
-        let root = self.trade.root.borrow().clone();
-        if let (Some(overlay), Some(root)) = (overlay, root) {
-            let toasts = adw::ToastOverlay::new();
-            overlay.set_child(None::<&gtk::Widget>);
-            toasts.set_child(Some(&root));
-            overlay.set_child(Some(&toasts));
-            *self.trade.toasts.borrow_mut() = Some(toasts);
-        }
+        self.ensure_toasts();
 
         if self.store.setting_bool(SHOW_TRADING_PANEL, false) {
             toggle.set_active(true);
@@ -534,8 +527,10 @@ impl Window {
         self.trade.placed.borrow_mut().clear();
         self.trade.pending.borrow_mut().clear();
         self.trade.linking.borrow_mut().clear();
+        self.trade.fills.clear();
         for pane in self.panes.borrow().iter() {
             pane.view.set_marks(Vec::new(), super::marks::TradeRules::default());
+            pane.view.set_executions(Default::default());
             self.write_size_of(pane);
         }
     }
@@ -779,6 +774,25 @@ impl Window {
 
     /// Say `text` in a toast over the window. Only for something asked for
     /// and done, which [`crate::ui::notice::surface`] decides.
+    /// Put the toasts over the window, if they are not there yet. Trading
+    /// is what puts them there; dictation reports in them too, with or
+    /// without a login.
+    pub(super) fn ensure_toasts(&self) {
+        if self.trade.toasts.borrow().is_some() {
+            return;
+        }
+        // Toasts lie over the whole window, rail included.
+        let overlay = self.trade.overlay.borrow().clone();
+        let root = self.trade.root.borrow().clone();
+        if let (Some(overlay), Some(root)) = (overlay, root) {
+            let toasts = adw::ToastOverlay::new();
+            overlay.set_child(None::<&gtk::Widget>);
+            toasts.set_child(Some(&root));
+            overlay.set_child(Some(&toasts));
+            *self.trade.toasts.borrow_mut() = Some(toasts);
+        }
+    }
+
     pub(super) fn toast(&self, text: &str) {
         if let Some(toasts) = self.trade.toasts.borrow().as_ref() {
             let toast = adw::Toast::new(text);
@@ -1101,14 +1115,32 @@ impl Window {
     /// Nothing asks first, on any account: confirmations are off for now.
     fn order_from_chart(self: &Rc<Self>, (side, kind, account, price): (Side, OrderKind, String, Option<f64>)) {
         let pane = self.focused_pane();
+        self.order_on(&pane, side, kind, Some(&account), price, None);
+    }
+
+    /// An order from `pane`, on its account, checked as the menu checks
+    /// one: `account` is the account the menu offered it on, when it did,
+    /// and `size` what it is for when it is not the chart's own quantity.
+    pub(super) fn order_on(
+        self: &Rc<Self>,
+        pane: &ChartPane,
+        side: Side,
+        kind: OrderKind,
+        account: Option<&str>,
+        price: Option<f64>,
+        size: Option<trading::Quantity>,
+    ) {
         // Resolved again: the chart, its account or the login may have
         // changed since the menu opened.
-        let target = match self.order_target(&pane) {
+        let target = match self.order_target(pane) {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
-        if target.account.key() != account {
+        if account.is_some_and(|account| target.account.key() != account) {
             return self.refuse_on(&target, "Not placed · the chart's account changed");
+        }
+        if !target.capabilities.kinds.contains(&kind) {
+            return self.refuse_on(&target, &format!("Not placed · {} takes no {} orders", target.login.name, kind.key()));
         }
         if let Some(why) = self.wrong_month(&pane, &target) {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
@@ -1127,7 +1159,7 @@ impl Window {
         if let Some(why) = price.and_then(|price| self.past_limit(&pane, &target, price)) {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
-        let size = self.size_of(&pane);
+        let size = size.unwrap_or_else(|| self.size_of(&pane));
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
             Ok(order) => self.place(target, order),
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
@@ -1213,7 +1245,7 @@ impl Window {
 
     /// An order's ×: cancel it. Faint at once, gone when the book says so,
     /// back if the trading service refuses.
-    fn cancel_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str) {
+    pub(super) fn cancel_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not cancelled · {why}")),
@@ -1242,40 +1274,10 @@ impl Window {
     /// A tab pulled out to `price`: an exit of `kind` for the whole of the
     /// position, linked to the other exit when there is one and the trading service
     /// links orders.
-    fn exit_mark(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) {
-        let target = match self.order_target(pane) {
-            Ok(target) => target,
-            Err(why) => return self.refuse(&format!("Not placed · {why}")),
-        };
-        if let Some(why) = self.wrong_month(pane, &target) {
-            return self.refuse_on(&target, &format!("Not placed · {why}"));
-        }
-        let price = Self::traded_price(pane, &target, price);
+    pub(super) fn exit_mark(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) {
+        let Some((target, order)) = self.exit_request(pane, kind, price) else { return };
         let key = target.account.key();
-        let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
-        let Some(held) = held else { return self.refuse_on(&target, "Not placed · nothing held") };
-        if !target.capabilities.kinds.contains(&kind) {
-            return self.refuse_on(&target, &format!("Not placed · {} takes no {} orders", target.login.name, kind.key()));
-        }
-        if let Some(why) = self.unpriced(pane, &target) {
-            return self.refuse_on(&target, &format!("Not placed · {why}"));
-        }
-        if let Some(last) = self.market_price(pane, &target)
-            && !trading::exit_allowed(kind, held.net, price, last)
-        {
-            return self.refuse_on(&target, &format!("Not placed · {}", trading::wrong_side_text(kind, price, last)));
-        }
-        if let Some(why) = self.past_limit(pane, &target, price) {
-            return self.refuse_on(&target, &format!("Not placed · {why}"));
-        }
-        let side = trading::exit_side(held.net);
-        // The whole of what is held, whatever the chart's size: an exit
-        // closes the position.
-        let Some(size) = trading::Quantity::new(held.net.unsigned_abs()) else { return };
-        let order = match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, Some(price)) {
-            Ok(order) => order,
-            Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
-        };
+        let side = order.side;
         // Linked to the other exit working on the position, however the
         // trading service can: the plan knows how.
         let sibling = {
@@ -1300,11 +1302,79 @@ impl Window {
         self.run_plan(target, plan);
     }
 
+    /// A stop and a target for the whole of the position `pane` trades,
+    /// placed together and linked: the two exits pulled out of the
+    /// position at once. Only while neither is working: one that is is
+    /// moved, or cancelled first.
+    pub(super) fn bracket_mark(self: &Rc<Self>, pane: &ChartPane, stop: f64, target_price: f64) {
+        let Some((target, stop)) = self.exit_request(pane, OrderKind::Stop, stop) else { return };
+        let Some((_, take)) = self.exit_request(pane, OrderKind::Limit, target_price) else { return };
+        let key = target.account.key();
+        let working = {
+            let view = self.trading.borrow();
+            let exits = [(OrderKind::Stop, &stop), (OrderKind::Limit, &take)];
+            exits.iter().any(|(kind, order)| {
+                trading::sibling_exit(view.book.working(&key, &target.contract), &target.contract, order.side, *kind).is_some()
+            })
+        };
+        if working {
+            return self.refuse_on(&target, "Not placed · an exit is already working: move it, or cancel it first");
+        }
+        let plan = trading::Plan::bracket(target.capabilities.link, stop, take);
+        self.run_plan(target, plan);
+    }
+
+    /// An exit of `kind` at `price` for the whole of what `pane`'s account
+    /// holds in what it trades, checked as a tab pulled out is: said and
+    /// none when it cannot go.
+    fn exit_request(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) -> Option<(trading::Target, trading::OrderRequest)> {
+        let target = match self.order_target(pane) {
+            Ok(target) => target,
+            Err(why) => {
+                self.refuse(&format!("Not placed · {why}"));
+                return None;
+            }
+        };
+        let refuse = |text: String| {
+            self.refuse_on(&target, &text);
+            None
+        };
+        if let Some(why) = self.wrong_month(pane, &target) {
+            return refuse(format!("Not placed · {why}"));
+        }
+        let price = Self::traded_price(pane, &target, price);
+        let key = target.account.key();
+        let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
+        let Some(held) = held.filter(|held| held.net != 0) else { return refuse("Not placed · nothing held".into()) };
+        if !target.capabilities.kinds.contains(&kind) {
+            return refuse(format!("Not placed · {} takes no {} orders", target.login.name, kind.key()));
+        }
+        if let Some(why) = self.unpriced(pane, &target) {
+            return refuse(format!("Not placed · {why}"));
+        }
+        if let Some(last) = self.market_price(pane, &target)
+            && !trading::exit_allowed(kind, held.net, price, last)
+        {
+            return refuse(format!("Not placed · {}", trading::wrong_side_text(kind, price, last)));
+        }
+        if let Some(why) = self.past_limit(pane, &target, price) {
+            return refuse(format!("Not placed · {why}"));
+        }
+        let side = trading::exit_side(held.net);
+        // The whole of what is held, whatever the chart's size: an exit
+        // closes the position.
+        let size = trading::Quantity::new(held.net.unsigned_abs())?;
+        match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, Some(price)) {
+            Ok(order) => Some((target, order)),
+            Err(why) => refuse(format!("Not placed · {why}")),
+        }
+    }
+
     /// Carry out `plan` on `target`'s account: every order it places drawn
     /// faint at once, the one it cancels first faint too, the link it makes
     /// drawn pending; each solid, or gone with the trading service's reason, as the
     /// trading service answers.
-    fn run_plan(self: &Rc<Self>, target: trading::Target, plan: trading::Plan) {
+    pub(super) fn run_plan(self: &Rc<Self>, target: trading::Target, plan: trading::Plan) {
         let key = target.account.key();
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
@@ -1406,7 +1476,7 @@ impl Window {
     /// An order's line let go at `price`: move it there. Drawn faint at its
     /// new price until the book has it there; back where it was, and said,
     /// if the trading service refuses.
-    fn move_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str, price: f64) {
+    pub(super) fn move_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str, price: f64) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not moved · {why}")),
@@ -1419,7 +1489,7 @@ impl Window {
             return self.refuse_on(&target, &format!("Not moved · {} cannot move orders", target.login.name));
         }
         let key = target.account.key();
-        let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
+        let order = self.trading.borrow().book.orders.iter().find(|order| order.basket_id == basket && order.account == key).cloned();
         let Some(order) = order.filter(|order| order.status.working()) else {
             return self.refuse_on(&target, "Not moved · filled meanwhile");
         };
@@ -1550,7 +1620,13 @@ impl Window {
     /// until the book says so.
     pub(super) fn flat_from_keys(self: &Rc<Self>) {
         let pane = self.focused_pane();
-        let target = match self.order_target(&pane) {
+        self.flat_on(&pane);
+    }
+
+    /// Nothing left in the contract `pane` trades, on its account: Ctrl+F
+    /// on that chart.
+    pub(super) fn flat_on(self: &Rc<Self>, pane: &ChartPane) {
+        let target = match self.order_target(pane) {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not flattened · {why}")),
         };
@@ -1806,6 +1882,7 @@ impl Window {
             return;
         }
         self.write_size_of(pane);
+        self.apply_fills_to(pane);
         pane.view.set_mark_labels(self.trade.order_labels.get());
         let Ok(target) = self.order_target(pane) else {
             pane.view.set_mark_tick(None);
@@ -2049,11 +2126,18 @@ pub(super) mod tests {
     use crate::trading::fake::Kept;
     use crate::trading::Session as _;
 
+    /// The moment the tests' feed stands at, 23:15 UTC on 11 November 2026:
+    /// its prices follow its clock, so on the wall clock a price ten points
+    /// under the last one was on the chart at one hour and off it at
+    /// another. Here every run charts the same bars, the last one well
+    /// inside their range.
+    const FROZEN_AT: i64 = 1_794_438_900;
+
     /// A real window on a store in memory, charting from the synthetic
-    /// feed: nothing reaches a network, a keyring or the session bus. With
-    /// trading switched on, which is what these tests are about.
+    /// feed with its clock stopped at [`FROZEN_AT`]: nothing reaches a
+    /// network, a keyring or the session bus, and nothing hangs on the
+    /// hour.
     pub(crate) fn window(store: &Rc<Store>) -> Rc<Window> {
-        crate::features::set(store, crate::features::Feature::Trading, true);
         bare_window(store)
     }
 
@@ -2061,7 +2145,7 @@ pub(super) mod tests {
     pub(crate) fn bare_window(store: &Rc<Store>) -> Rc<Window> {
         let _ = adw::init();
         let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
-        let feed: Arc<dyn omacharts_engine::Provider> = Arc::new(omacharts_engine::providers::Synthetic::new(None));
+        let feed: Arc<dyn omacharts_engine::Provider> = Arc::new(omacharts_engine::providers::Synthetic::frozen(FROZEN_AT));
         Window::build_with(&app, store.clone(), vec![feed])
     }
 
@@ -2168,29 +2252,6 @@ pub(super) mod tests {
         });
     }
 
-    /// Every trading setting is in Preferences with no login, ready for
-    /// the first: the Trading page's colours and lines of orders and
-    /// positions, the header's P&L, Buy Sell and Quantity in its picture on
-    /// Overlays, and the Trading page's own groups.
-    #[test]
-    fn preferences_show_every_trading_setting_without_a_login() {
-        crate::ui::on_gtk(|| {
-            let store = Rc::new(Store::memory().expect("a store"));
-            let window = window(&store);
-            assert!(!window.trading.borrow().trades());
-            let words = preferences_words(&window);
-            for group in ["Orders and positions", "Header", "Order entry"] {
-                assert!(words.groups.iter().any(|title| title == group), "no {group} group in {:?}", words.groups);
-            }
-            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "Order labels"] {
-                assert!(words.rows.iter().any(|title| title == row), "no {row} row in {:?}", words.rows);
-            }
-            for part in ["P&L", "Buy Sell", "Quantity"] {
-                assert!(words.parts.iter().any(|name| name == part), "no {part} in the header's {:?}", words.parts);
-            }
-        });
-    }
-
     /// What the Preferences a window opens say: the sidebar's sections,
     /// every group's and every row's title, and the parts the header's
     /// picture shows or offers.
@@ -2253,64 +2314,26 @@ pub(super) mod tests {
         words
     }
 
-    /// Trading switched off, as it ships, is the app before trading even
-    /// with a login saved: no toggle, no panel, no keys, no orders, no
-    /// sign-in, and no Trading page, colours or header parts in
-    /// Preferences. Switched on with the window open, it comes in place
-    /// and the saved login signs in; switched off again, it goes, and the
-    /// charts are as they were throughout.
+    /// Every trading setting is in Preferences with no login, ready for
+    /// the first: the Trading page's colours and lines of orders and
+    /// positions, the header's P&L, Buy Sell and Quantity in its picture on
+    /// Overlays, and the Trading page's own groups.
     #[test]
-    fn trading_switched_off_is_nowhere_and_comes_and_goes_in_place() {
+    fn preferences_show_every_trading_setting_without_a_login() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            let kept = Kept::default();
-            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
-            let window = bare_window(&store);
-            let off = |window: &Rc<Window>| {
-                !window.trading.borrow().trades()
-                    && window.trade.toggle.borrow().is_none()
-                    && window.trade.panel.borrow().is_none()
-                    && window.window.lookup_action("trading-panel").is_none()
-                    && window.trade.toasts.borrow().is_none()
-                    && window.desk.sessions_open() == 0
-                    && !window.desk.opening(&id)
-            };
-            assert!(off(&window), "trading built with the flag off");
-            assert!(window.order_section(10.0).is_none(), "orders in the chart menu");
+            let window = window(&store);
+            assert!(!window.trading.borrow().trades());
             let words = preferences_words(&window);
-            assert!(!words.sections.iter().any(|section| section == "Trading"), "a Trading section in {:?}", words.sections);
-            for group in ["Orders and positions", "Trading services", "Order entry"] {
-                assert!(!words.groups.iter().any(|title| title == group), "a {group} group in {:?}", words.groups);
+            for group in ["Orders and positions", "Header", "Order entry"] {
+                assert!(words.groups.iter().any(|title| title == group), "no {group} group in {:?}", words.groups);
             }
-            for row in ["Profit", "Loss", "Order labels"] {
-                assert!(!words.rows.iter().any(|title| title == row), "a {row} row in {:?}", words.rows);
+            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "Order labels"] {
+                assert!(words.rows.iter().any(|title| title == row), "no {row} row in {:?}", words.rows);
             }
-            for part in ["P&L", "Buy Sell", "Quantity", "Account"] {
-                assert!(!words.parts.iter().any(|name| name == part), "{part} in the header's {:?}", words.parts);
+            for part in ["P&L", "Buy Sell", "Quantity"] {
+                assert!(words.parts.iter().any(|name| name == part), "no {part} in the header's {:?}", words.parts);
             }
-            assert!(words.parts.iter().any(|name| name == "Symbol"), "no header picture to look in");
-
-            let charts = |window: &Rc<Window>| {
-                window.panes.borrow().iter().map(|pane| (pane.id, pane.instrument.borrow().clone())).collect::<Vec<_>>()
-            };
-            let before = charts(&window);
-            let focused = window.focused_pane().id;
-            crate::features::set(&store, crate::features::Feature::Trading, true);
-            window.adopt_features();
-            assert!(window.trading.borrow().trades());
-            assert!(window.trade.toggle.borrow().is_some(), "no toggle switched on");
-            assert!(window.window.lookup_action("trading-panel").is_some());
-            assert!(window.desk.opening(&id) || window.desk.live(&id), "the saved login is not signing in");
-            assert_eq!(charts(&window), before, "the charts were rebuilt");
-            assert_eq!(window.focused_pane().id, focused);
-            let sections = preferences_words(&window).sections;
-            assert!(sections.iter().any(|section| section == "Trading"), "no Trading section in {sections:?}");
-
-            crate::features::set(&store, crate::features::Feature::Trading, false);
-            window.adopt_features();
-            assert!(off(&window), "trading left behind switched off");
-            assert_eq!(charts(&window), before, "the charts were rebuilt");
-            assert_eq!(window.focused_pane().id, focused);
         });
     }
 
@@ -2623,7 +2646,7 @@ pub(super) mod tests {
     /// A window on the synthetic feed with ES on its chart, signed in to
     /// the tests' session on account 951, which trades ES as ESZ6 and
     /// links orders as `linking`; long one at 7,612.25.
-    fn long_es(linking: trading::Linking) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
+    pub(in crate::ui::window) fn long_es(linking: trading::Linking) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
         long_es_with(linking, false)
     }
 
@@ -2801,7 +2824,7 @@ pub(super) mod tests {
     /// which. A session moves on its own thread, so `done` can come true
     /// just after the window last read the book: it reads it once more
     /// then, and what the test does next sees what `done` saw.
-    fn settle(window: &Rc<Window>, done: impl Fn() -> bool) -> bool {
+    pub(in crate::ui::window) fn settle(window: &Rc<Window>, done: impl Fn() -> bool) -> bool {
         let context = glib::MainContext::default();
         for _ in 0..200 {
             if done() {
@@ -2862,6 +2885,63 @@ pub(super) mod tests {
             settle(&window, || pane.view.mark_states().0.is_none());
             assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
             assert!(pane.view.mark_states().0.is_none());
+        });
+    }
+
+    /// The open position's line breathes on a chart on screen, and nothing
+    /// else does: not a position whose price is off the chart, not a
+    /// working order alone, and not the chart once the position is flat.
+    /// With animation turned off on the desktop the position's line is
+    /// still.
+    #[test]
+    fn only_the_open_position_s_line_breathes() {
+        crate::ui::on_gtk(|| {
+            use super::super::marks::TradeEvent;
+            let (window, pane, session, _) = long_es(trading::Linking::AfterTheFact);
+            window.window.present();
+            assert!(settle_for(&window, 10, || pane.view.last_price().is_some()), "no last price");
+            let last = pane.view.last_price().expect("a last price");
+            settle_for(&window, 1, || false);
+            assert!(!pane.view.breathing(), "a position far off the chart's prices breathes");
+            let flat = |pane: &Rc<ChartPane>| pane.view.mark_states().0.is_none();
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert!(settle_for(&window, 10, || flat(&pane)), "not flattened");
+
+            // Bought at the chart's own price, so its line is on the chart.
+            *session.last.lock().unwrap() = last.floor();
+            session.place(&resting(Side::Buy, OrderKind::Market, None)).unwrap();
+            window.desk.tell();
+            assert!(settle_for(&window, 10, || pane.view.breathing()), "an open position's line does not breathe");
+            let levels = RefCell::new(Vec::new());
+            settle_for(&window, 3, || {
+                levels.borrow_mut().push(pane.view.breath().unwrap_or(0.0));
+                false
+            });
+            let (low, high) = levels.borrow().iter().fold((f64::MAX, f64::MIN), |(low, high), at| (low.min(*at), high.max(*at)));
+            assert!(high - low > 0.5, "the breath hardly moved: {low} to {high}");
+
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert!(settle_for(&window, 10, || flat(&pane)), "not flattened");
+            assert!(settle_for(&window, 2, || !pane.view.breathing()), "a flat chart breathes");
+
+            session.place(&resting(Side::Buy, OrderKind::Limit, Some((last - 10.0).floor()))).unwrap();
+            window.desk.tell();
+            assert!(settle_for(&window, 5, || !pane.view.mark_states().1.is_empty()), "no working order");
+            settle_for(&window, 1, || false);
+            assert!(!pane.view.breathing(), "a working order breathes");
+
+            let settings = gtk::Settings::default().expect("settings");
+            settings.set_gtk_enable_animations(false);
+            session.place(&resting(Side::Buy, OrderKind::Market, None)).unwrap();
+            window.desk.tell();
+            let held = settle_for(&window, 10, || !flat(&pane));
+            settle_for(&window, 1, || false);
+            let still = !pane.view.breathing() && pane.view.breath().is_none_or(|level| level == 0.0);
+            settings.set_gtk_enable_animations(true);
+            assert!(held, "no position on the chart");
+            assert!(still, "a position breathes with animation off");
+            assert!(settle_for(&window, 5, || pane.view.breathing()), "animation back on and still");
+            window.window.close();
         });
     }
 
@@ -3773,7 +3853,7 @@ pub(super) mod tests {
         fn delay_minutes(&self, _: omacharts_engine::InstrumentKind) -> u32 {
             0
         }
-        fn symbol_for(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
+        fn native_symbol(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
             let future = instrument.kind == omacharts_engine::InstrumentKind::FutureRoot;
             (future || !self.futures_only).then(|| instrument.symbol.clone())
         }
@@ -3802,7 +3882,6 @@ pub(super) mod tests {
     /// A window charting from Yahoo then Rithmic, both usable whatever
     /// this machine has saved, or from Yahoo alone.
     fn window_on(store: &Rc<Store>, both: bool) -> Rc<Window> {
-        crate::features::set(store, crate::features::Feature::Trading, true);
         let _ = adw::init();
         let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
         let mut feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false)];
@@ -3826,7 +3905,6 @@ pub(super) mod tests {
         typed: &trading::Typed,
     ) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String, String) {
         let store = Rc::new(Store::memory().expect("a store"));
-        crate::features::set(&store, crate::features::Feature::Trading, true);
         crate::features::set(&store, crate::features::Feature::Sierra, true);
         let _ = adw::init();
         let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
@@ -3861,7 +3939,6 @@ pub(super) mod tests {
         use omacharts_engine::providers::sierra::setup;
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            crate::features::set(&store, crate::features::Feature::Trading, true);
             crate::features::set(&store, crate::features::Feature::Sierra, true);
             crate::features::adopt(&store);
             let root = std::env::temp_dir().join(format!("omacharts-window-sierra-{}", std::process::id()));
@@ -4039,7 +4116,6 @@ pub(super) mod tests {
         crate::ui::on_gtk(|| {
             let fake = dtc::fake::Fake::builder().account("Sim1").rithmic_symbols().position("Sim1", "ESZ6.CME", -2, 7_578.0).start();
             let store = Rc::new(Store::memory().expect("a store"));
-            crate::features::set(&store, crate::features::Feature::Trading, true);
             crate::features::set(&store, crate::features::Feature::Sierra, true);
             crate::features::adopt(&store);
             let folder = SierraFolder::on_rithmic("on-rithmic");
@@ -4198,7 +4274,6 @@ pub(super) mod tests {
         use omacharts_engine::providers::sierra::setup;
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            crate::features::set(&store, crate::features::Feature::Trading, true);
             crate::features::set(&store, crate::features::Feature::Sierra, true);
             let _folder = SierraFolder::set_up(&store, "trading-mes");
             let typed = trading::Typed {
@@ -4349,7 +4424,6 @@ pub(super) mod tests {
         use omacharts_engine::providers::sierra::setup;
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            crate::features::set(&store, crate::features::Feature::Trading, true);
             let (window, pane) = on_yahoo_alone(&store);
             let _folder = SierraFolder::set_up(&store, "as-a-service");
             let typed = trading::Typed {
@@ -4457,10 +4531,10 @@ pub(super) mod tests {
             assert_eq!(feed_on(&window, &pane), None, "nothing draws it");
             assert_eq!(pane.view.trouble_said().as_deref(), Some("MES isn't in Sierra Chart's data"));
             assert_eq!(dot(&pane).map(|dot| (dot.0, dot.1)), Some(("Sierra Chart · No MES in its data".into(), "down")));
-            // Under how it stands, Yahoo first as the order's own for MES.
+            // In the order, as on ES, its row saying why it is empty.
             assert_eq!(
                 feeds(&window, &pane),
-                ["Sierra Chart · No MES in its data", "Yahoo Finance", "Sierra Chart ✓"],
+                ["Sierra Chart · no data for MES ✓", "Yahoo Finance"],
                 "still offered, and still the one"
             );
             assert!(streamed(&window).is_empty());
@@ -4472,6 +4546,57 @@ pub(super) mod tests {
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
             assert_eq!(pane.feed.borrow().as_deref(), None, "a stock is no future");
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+        });
+    }
+
+    /// Sierra Chart over Yahoo, and a stock Sierra Chart has no name for:
+    /// the dot still opens every feed, in the order, Sierra Chart with a
+    /// short note that it has no data for it. Picked, the chart is empty
+    /// and says why, and comes back that way after a restart; picked back,
+    /// Yahoo draws it again. Moved to the stock from a chart of ES on
+    /// Sierra Chart, the chart still follows the order.
+    #[test]
+    fn every_feed_is_offered_for_a_symbol_only_one_has() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _folder, store) = sierra_over_yahoo("every-feed");
+            let nvda = window.index.find("NVDA", None).expect("NVDA");
+            window.show_in(&pane, nvda.clone());
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            assert!(dot(&pane).expect("a dot").3, "the dot opens the list");
+            assert_eq!(feeds(&window, &pane), ["Sierra Chart · no data for NVDA", "Yahoo Finance ✓"]);
+
+            pane.menu_actions.activate_action("feed", Some(&"sierra".to_variant()));
+            assert_eq!(pane.feed.borrow().as_deref(), Some("sierra"), "chosen");
+            assert_eq!(feed_on(&window, &pane), None, "nothing draws it");
+            assert_eq!(pane.view.trouble_said().as_deref(), Some("NVDA isn't in Sierra Chart's data"));
+            assert_eq!(
+                feeds(&window, &pane),
+                ["Sierra Chart · no data for NVDA ✓", "Yahoo Finance"]
+            );
+            assert!(streamed(&window).is_empty());
+
+            // As a restart reads it back.
+            window.save_workspace();
+            window.reload_workspace();
+            let pane = window.focused_pane();
+            assert_eq!(pane.feed.borrow().as_deref(), Some("sierra"), "the choice survives a restart");
+            assert_eq!(pane.view.trouble_said().as_deref(), Some("NVDA isn't in Sierra Chart's data"));
+            let stored = super::super::parse_workspace(&store.setting(super::super::SETTING_WORKSPACE).expect("saved")).expect("parses");
+            assert_eq!(stored.books[0].panes[0].source.as_deref(), Some("sierra"));
+
+            pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
+            assert_eq!(pane.feed.borrow().as_deref(), None, "the order's own is no choice");
+            assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
+            assert_eq!(pane.view.trouble_said(), None);
+            assert_eq!(feeds(&window, &pane), ["Sierra Chart · no data for NVDA", "Yahoo Finance ✓"]);
+
+            // Sierra Chart chosen on ES does not follow the chart to NVDA.
+            let es = window.index.find("ES", None).expect("ES");
+            window.show_in(&pane, es);
+            window.choose_feed(pane.id, Some("sierra".into()));
+            window.show_in(&pane, nvda);
+            assert_eq!(pane.feed.borrow().as_deref(), None);
             assert_eq!(feed_on(&window, &pane).as_deref(), Some("yahoo"));
         });
     }
@@ -4584,7 +4709,6 @@ pub(super) mod tests {
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
             let store = Rc::new(Store::open_at(&root.join("omacharts.db")).expect("a store"));
-            crate::features::set(&store, crate::features::Feature::Trading, true);
             let _ = adw::init();
             let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
             let months = Arc::new(Months::all());
@@ -4982,11 +5106,8 @@ pub(super) mod tests {
     }
 
     /// The trading symbol is the chart's, kept with it across a restart.
-    /// With trading off there is no Trading page, the header says ES alone
-    /// and orders would be of ES: the one kept is ignored, not lost, and
-    /// back when trading is.
     #[test]
-    fn a_trading_symbol_is_kept_with_its_chart_and_ignored_with_trading_off() {
+    fn a_trading_symbol_is_kept_with_its_chart() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
@@ -4999,17 +5120,6 @@ pub(super) mod tests {
             window.set_trading_symbol(pane.id, Some(mes));
             window.save_workspace();
 
-            crate::features::set(&store, crate::features::Feature::Trading, false);
-            let off = bare_window(&store);
-            let pane = off.focused_pane();
-            assert_eq!(pane.instrument.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("ES"));
-            assert_eq!(pane.trading_symbol.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("MES"));
-            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
-            assert_eq!(pane.traded().map(|i| i.symbol), Some("ES".into()));
-            let (sections, row) = chart_settings_offer(&off);
-            assert!(!sections.contains(&"trading".to_string()) && !row, "{sections:?}");
-            off.save_workspace();
-
             let on = self::window(&store);
             assert_eq!(on.focused_pane().symbol_button.label().as_deref(), Some("ES/MES"), "not kept");
         });
@@ -5017,7 +5127,7 @@ pub(super) mod tests {
 
     /// Sign in a login with `numbers` as its accounts, through a fake
     /// session, and tell the window. Its id and the session.
-    fn sign_in(window: &Rc<Window>, store: &Rc<Store>, numbers: &[&str]) -> (String, Arc<trading::fake::FakeSession>) {
+    pub(in crate::ui::window) fn sign_in(window: &Rc<Window>, store: &Rc<Store>, numbers: &[&str]) -> (String, Arc<trading::fake::FakeSession>) {
         sign_in_as(window, store, &typed(), numbers)
     }
 
@@ -5172,13 +5282,12 @@ pub(super) mod tests {
             assert_eq!(feeds(&window, &pane), ["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
             window.feeds()[0].usable.set(true);
 
-            // A stock: Rithmic does not serve it, so there is nothing to
-            // choose, and the dot opens nothing while still saying how
-            // the feed stands.
+            // A stock: Rithmic does not serve it, and is still offered, in
+            // its place, saying so; the dot opens the list all the same.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, false)));
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓"]);
+            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, true)));
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic · no data for SPY", "[credits-rithmic]"]);
         });
     }
 
@@ -5197,12 +5306,13 @@ pub(super) mod tests {
             let (_, session) = sign_in(&window, &store, &["951"]);
 
             assert_eq!(pane.account_text(), None, "one account: nothing to choose");
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance", "[credits-rithmic]"]);
+            // In the order, whichever is the default: the mark says which.
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
             assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
 
             // Picked from the menu, through its action, as a click does.
             pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic", "Yahoo Finance ✓", "[credits-rithmic]"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic", "[credits-rithmic]"]);
             // The default chosen again is no choice: nothing is kept.
             window.choose_feed(pane.id, None);
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
@@ -5224,8 +5334,8 @@ pub(super) mod tests {
             // default moves to the order's pick.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓"]);
-            assert!(!dot(&pane).expect("a dot").3);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic · no data for SPY", "[credits-rithmic]"]);
+            assert!(dot(&pane).expect("a dot").3, "every feed is still offered");
         });
     }
 
@@ -5244,7 +5354,7 @@ pub(super) mod tests {
             let (id, session) = sign_in(&window, &store, &["951", "952"]);
             assert_eq!(pane.account_text().as_deref(), Some("951"));
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance", "[credits-rithmic]"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
             assert_eq!(pane.account_text().as_deref(), Some("951"), "the feed is the dot's, not the account's");

@@ -173,17 +173,33 @@ impl Window {
     /// Start the installed binary again, to come up once this one is gone,
     /// and close every window the way closing it by hand would: what a quit
     /// saves is saved, and the new process restores it as any launch does.
+    ///
+    /// A dialog open over the window goes first: while one is up, closing
+    /// the window only closes the dialog, and the new process, waiting for
+    /// this one to be gone, would give up and hand its launch to this window.
     pub(super) fn restart_to_update(&self) {
         if let Err(error) = update::spawn_restart() {
             self.say(crate::log_words::trouble("Updates", "Could not restart", &error));
             return;
         }
+        self.close_dialogs();
         let Some(app) = self.window.application() else { return };
         let main: gtk::Window = self.window.clone().upcast();
         for window in app.windows().into_iter().filter(|window| *window != main) {
             window.close();
         }
         self.window.close();
+    }
+
+    /// Every dialog open over the window, at once and without asking.
+    fn close_dialogs(&self) {
+        while let Some(dialog) = self.window.visible_dialog() {
+            dialog.force_close();
+            // Gone at once; were it still up, trying again would not help.
+            if self.window.visible_dialog().as_ref() == Some(&dialog) {
+                break;
+            }
+        }
     }
 
     #[cfg(test)]
@@ -212,6 +228,30 @@ mod tests {
             assert!(window.update_notice().is_none(), "dismissed stays dismissed");
             window.offer_restart(Version(0, 2, 16));
             assert_eq!(window.update_notice().unwrap().text(), "Omacharts 0.2.16 is ready");
+        });
+    }
+
+    #[test]
+    fn the_restart_closes_the_about_dialog_so_the_window_can_close() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(crate::store::Store::memory().expect("a store"));
+            let window = crate::ui::window::trade::tests::bare_window(&store);
+            window.window.present();
+
+            // What went wrong: with About open, closing the window closes
+            // the dialog and nothing else.
+            window.show_about();
+            window.window.close();
+            assert!(window.about().is_none());
+            assert!(window.window.is_visible(), "the dialog took the close");
+
+            window.show_about();
+            assert!(window.window.visible_dialog().is_some());
+            window.close_dialogs();
+            assert!(window.window.visible_dialog().is_none());
+            assert!(window.about().is_none());
+            window.window.close();
+            assert!(!window.window.is_visible(), "nothing left to take the close");
         });
     }
 }

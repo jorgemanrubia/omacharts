@@ -37,7 +37,7 @@ crop: 2000,0,560,800
 keyboard in it ([The window](/manual/window/)), as does **Sidebars** › **Watchlist** in the
 chart menu. Drag its edge to make it
 wider or narrower. Whether it is open, and how wide, is saved with each
-chartbook.
+chartbook. From a terminal, `omacharts chartbook sidebar on` or `off` ([Command line](/manual/cli/#showing-and-hiding-the-sidebars)).
 
 Across its top are the button for the
 [page of watchlists](#the-page-of-watchlists), the list's name, and **+**,

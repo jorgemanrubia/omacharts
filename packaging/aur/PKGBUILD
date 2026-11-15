@@ -1,6 +1,6 @@
 # Maintainer: Jorge Manrubia <jorge@37signals.com>
 pkgname=omacharts
-pkgver=0.2.20
+pkgver=0.3.2
 pkgrel=1
 pkgdesc='Fast, beautiful charting software for Omarchy'
 arch=('x86_64' 'aarch64')
@@ -16,7 +16,7 @@ makedepends=('cargo')
 # linker does not read, and every one of their symbols comes back undefined.
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('6857fa8c23b1b7d1709503977b9fb66f4005ca939962408b09e6a4cfb2fe5e02')
+sha256sums=('ec87c605f158cc1f65d64f351a97c66f0c63868c831af272d7ca9539e4ab2a86')
 
 prepare() {
   cd "$pkgname-$pkgver"

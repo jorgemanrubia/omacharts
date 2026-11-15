@@ -97,10 +97,7 @@ impl ChartLook {
             LookEdit::Thickness(direction, px) => *self.bars.side_mut(direction).thickness = px,
             LookEdit::LineLow(colour) => self.bars.line_low = colour,
             LookEdit::LineHigh(colour) => self.bars.line_high = colour,
-            LookEdit::Header(mut layout) => {
-                layout.keep_hidden(&self.header);
-                self.header = layout;
-            }
+            LookEdit::Header(layout) => self.header = layout,
             LookEdit::Grid(on) => self.grid = on,
             LookEdit::PriceLine(on) => self.price_line = on,
         }
@@ -135,7 +132,7 @@ impl ChartLook {
             self.spell_bars(),
             on_off(self.grid),
             on_off(self.price_line),
-            header::spell(&self.header.seen()),
+            header::spell(&self.header),
             self.theme.as_deref().map_or(WINDOW_THEME, theming::spell_theme),
         )
     }
@@ -154,10 +151,7 @@ impl LookEdit {
                 // Every chart already wears the window's.
                 LookEdit::Theme(None) => {}
                 LookEdit::Style(style) => store.set_setting(SETTING_BAR_STYLE, style.key()),
-                LookEdit::Header(mut layout) => {
-                    layout.keep_hidden(&header::load(store));
-                    header::save(store, &layout);
-                }
+                LookEdit::Header(layout) => header::save(store, &layout),
                 LookEdit::Grid(on) => store.set_setting_bool(SETTING_SHOW_GRID, on),
                 LookEdit::PriceLine(on) => store.set_setting_bool(SETTING_PRICE_LINE, on),
                 edit @ (LookEdit::Colour(..)
@@ -298,8 +292,6 @@ mod tests {
     /// Each answer goes to its own row, so the others stay as they were.
     #[test]
     fn an_edit_for_every_chart_writes_its_row_and_no_other() {
-        // On, so the header typed is the whole header.
-        crate::features::force(crate::features::Feature::Trading, true);
         let store = Store::memory().unwrap();
         LookEdit::save_global([LookEdit::Colour(Direction::Up, ColorChoice::swatch("Blue"))], &store);
         LookEdit::save_global([LookEdit::Grid(false)], &store);
@@ -314,7 +306,6 @@ mod tests {
 
     #[test]
     fn a_look_is_written_down_as_it_is_typed_and_comes_back_whole() {
-        crate::features::force(crate::features::Feature::Trading, true);
         let mut look = ChartLook::default();
         look.set(LookEdit::Style(BarStyle::Ohlc));
         look.set(LookEdit::Colour(Direction::Down, ColorChoice::Fixed { hex: "#e66100".to_string() }));

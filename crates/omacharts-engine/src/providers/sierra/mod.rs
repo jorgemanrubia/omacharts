@@ -427,7 +427,7 @@ impl Provider for Sierra {
 
     /// A futures root, or a dated contract, Sierra Chart has files of.
     /// Read from the listing of its data folder, never from a file.
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         if let Some(explicit) = instrument.override_for(LISTED.id) {
             return Some(explicit.to_string());
         }
@@ -440,6 +440,9 @@ impl Provider for Sierra {
 
     /// Any futures root, files of it here or not.
     fn could_serve(&self, instrument: &Instrument) -> bool {
+        if instrument.formula.is_some() {
+            return instrument.legs().iter().all(|leg| self.could_serve(leg));
+        }
         instrument.override_for(LISTED.id).is_some() || instrument.kind == InstrumentKind::FutureRoot
     }
 
@@ -580,6 +583,7 @@ fn trading_day(root: &str, ts: i64) -> i64 {
         exchange: None,
         popularity: 0,
         local_name: None,
+        formula: None,
     };
     crate::exchanges::registry()
         .for_instrument(&instrument)

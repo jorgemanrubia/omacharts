@@ -409,7 +409,7 @@ impl Provider for Yahoo {
         }
     }
 
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         if let Some(explicit) = instrument.override_for(self.id()) {
             return Some(explicit.to_string());
         }
@@ -831,6 +831,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         }
     }
 

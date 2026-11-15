@@ -39,6 +39,10 @@ crop: 496,176,1568,1328 (both; the whole window, 12px layout margin)
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
+| **Compare** › each market | Its colour, and the bin to stop comparing it ([Comparing markets](/manual/comparing/)) |
+| **Compare** › **Compare with…** | Closes the dialog and opens the search to add a market |
+| **Compare** › **Lines only** | Draws the chart's own symbol as a line. Only while the chart compares something |
+| **Compare** › **Measured from** | **Left edge**, or the day the lines are pinned to, with a **Left edge** button to unpin |
 | **Session** › **Hours** | **Extended** or **Regular** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
 | **Drawings** › **Send drawings to other charts** | Off, what is drawn on this chart stays on this chart ([Sharing drawings between charts](/manual/drawings/#sharing-drawings-between-charts)) |

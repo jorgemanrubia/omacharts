@@ -145,6 +145,10 @@ pub struct ChartPane {
     /// only, like the strip: four charts each listing their moving averages
     /// over the drawing is the noise the strip already learned to avoid.
     pub indicator_legend: gtk::Box,
+    /// One row per market while the chart compares any, its own included,
+    /// ranked by how far each has come. On every chart, focused or not: it
+    /// is what a comparison is read from.
+    pub compare_legend: gtk::Box,
     pub gear: gtk::Button,
     /// The drawings, the indicators and the bars, one glyph each after the
     /// header, shown only while that one is hidden: struck through, so a
@@ -279,8 +283,8 @@ pub struct ChartPane {
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
     /// What this chart's orders go to when it is not what it charts, MES
-    /// for a chart of ES; `None` trades what it charts. Ignored, and never
-    /// shown, while trading is off. See [`ChartPane::traded`].
+    /// for a chart of ES; `None` trades what it charts. See
+    /// [`ChartPane::traded`].
     pub trading_symbol: RefCell<Option<Instrument>>,
     /// A trading symbol kept with the chart that the catalogue could not
     /// name yet, as its symbol and suffix: the window opens on the curated
@@ -289,6 +293,10 @@ pub struct ChartPane {
     pub trading_pending: RefCell<Option<(String, Option<String>)>>,
     /// The instrument's name, under the line rather than on it.
     name_label: gtk::Label,
+    /// Whether the chart marks its account's fills in what it trades, past
+    /// and live. Off until somebody turns it on, and ignored while trading
+    /// is off.
+    pub shows_fills: Cell<bool>,
     /// Whether its bars are hidden. How they are drawn when they are not is
     /// its look's answer.
     pub bars_hidden: Cell<bool>,
@@ -319,6 +327,10 @@ pub struct ChartPane {
     /// The volume profile periods merged on this chart, kept with it: a
     /// composite is a study of this chart's, not of the indicator's.
     pub profile_merges: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
+    /// The markets compared on this chart, as they are kept.
+    pub compare: RefCell<omacharts_engine::compare::Compare>,
+    /// Their bars as they arrive, one for each in `compare`, in its order.
+    pub compared: RefCell<Vec<crate::ui::window::compare::Loaded>>,
     /// What each cumulative delta on this chart worked out last, so a tick
     /// works out only its newest bars again.
     pub cvd_memos: omacharts_engine::indicators::cvd::Memos,
@@ -615,8 +627,14 @@ impl ChartPane {
         legend.set_valign(gtk::Align::Start);
         legend.set_margin_start(LEGEND_MARGIN);
         legend.set_margin_top(6);
+        let compare_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        compare_legend.set_halign(gtk::Align::Start);
+        compare_legend.add_css_class("compare-legend");
+        compare_legend.set_visible(false);
+
         legend.append(&zones[0]);
         legend.append(&zones[3]);
+        legend.append(&compare_legend);
         legend.append(&indicator_legend);
 
         // The centre of both rows, across the top of its own chart: the
@@ -769,6 +787,7 @@ impl ChartPane {
             timeframe_menu,
             timeframe_label,
             indicator_legend,
+            compare_legend,
             gear,
             hidden_glyphs,
             link,
@@ -825,6 +844,7 @@ impl ChartPane {
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
             name_label,
+            shows_fills: Cell::new(false),
             bars_hidden: Cell::new(false),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),
@@ -835,6 +855,8 @@ impl ChartPane {
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             profile_merges: RefCell::new(Vec::new()),
+            compare: RefCell::new(Default::default()),
+            compared: RefCell::new(Vec::new()),
             cvd_memos: omacharts_engine::indicators::cvd::Memos::new(),
             estimated: RefCell::new(Vec::new()),
             link_colour,
@@ -1457,16 +1479,16 @@ impl ChartPane {
         self.sync_rows();
     }
 
-    /// The trading symbol in force: the one set for this chart while
-    /// trading is on, `None` while the chart trades what it charts.
+    /// The trading symbol in force: the one set for this chart, `None`
+    /// while the chart trades what it charts.
     pub fn trading_instead(&self) -> Option<Instrument> {
-        crate::features::trading().then(|| self.trading_symbol.borrow().clone()).flatten()
+        self.trading_symbol.borrow().clone()
     }
 
-    /// The trading symbol kept with this chart that is not known yet,
-    /// while trading is on: nothing is traded from it until it is.
+    /// The trading symbol kept with this chart that is not known yet:
+    /// nothing is traded from it until it is.
     pub fn trading_unresolved(&self) -> Option<String> {
-        crate::features::trading().then(|| self.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())).flatten()
+        self.trading_pending.borrow().as_ref().map(|(symbol, _)| symbol.clone())
     }
 
     /// What this chart's orders, positions and P&L are of: its trading
@@ -1673,7 +1695,7 @@ pub const LEGEND_DOT: i32 = 12;
 /// same column when the data feed's dot leads it (the stylesheet's
 /// `.feed-part.lead`), so the symbol's first letter is the first letter of
 /// every name under it, and its dot stands over theirs.
-const LEGEND_GAP: i32 = 5;
+pub const LEGEND_GAP: i32 = 5;
 
 /// A row of the legend under the header: an indicator's dot and its name,
 /// the buttons that act on it appended after.

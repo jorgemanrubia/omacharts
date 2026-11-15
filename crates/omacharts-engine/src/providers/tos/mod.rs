@@ -313,7 +313,7 @@ impl Provider for Tos {
         0
     }
 
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         tos_symbol(instrument)
     }
 
@@ -385,6 +385,7 @@ mod tests {
             exchange: None,
             popularity: 0,
             local_name: None,
+            formula: None,
         }
     }
 

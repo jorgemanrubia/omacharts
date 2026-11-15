@@ -63,6 +63,28 @@ impl LineStyle {
             LineStyle::Dotted => vec![unit, unit * 2.0],
         }
     }
+
+    /// The same pattern for a line drawn with round caps, as a drawing's
+    /// strokes are. A round cap adds half the width to each end of a dash,
+    /// so every dash is a width shorter and every gap a width longer than
+    /// [`dashes`] says, to come out the same on screen; and a dot is a
+    /// dash of no length, a cap on its own, which is a round dot exactly
+    /// the line's width where a short butt-capped dash is a square.
+    ///
+    /// [`dashes`]: LineStyle::dashes
+    pub fn round_dashes(self, width: f64) -> Vec<f64> {
+        let unit = width.max(1.0);
+        match self {
+            LineStyle::Solid => Vec::new(),
+            LineStyle::Dashed => vec![unit * 2.0, unit * 4.0],
+            LineStyle::Dotted => vec![0.0, unit * 2.0],
+        }
+    }
+
+    /// The pattern a line has unless somebody chose another.
+    pub fn is_solid(&self) -> bool {
+        *self == LineStyle::Solid
+    }
 }
 
 /// A line's weight and pattern.
@@ -353,9 +375,15 @@ impl Kind {
                 style: profile::Style::Filled,
                 outline: false,
                 outline_color: None,
+                outline_style: LineStyle::Solid,
                 outline_width: 1.0,
                 poc_width: 1.0,
+                poc_style: LineStyle::Solid,
                 poc: true,
+                alpha: profile::DESIGNED_ALPHA,
+                opacity: 1.0,
+                highlight: true,
+                value_area_color: None,
                 last_only: false,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
@@ -381,7 +409,7 @@ impl Kind {
             // Twelve, twenty-six and nine, which is what Appel published and
             // what `ta.macd` defaults to.
             Kind::Macd => {
-                Params::Macd { fast: 12, slow: 26, signal: 9, height: 0.16, signal_color: None }
+                Params::Macd { fast: 12, slow: 26, signal: 9, height: 0.16, signal_color: None, signal_style: None }
             }
             // TradingView's: fourteen bars, %K and %D each smoothed over three,
             // overbought at eighty and oversold at twenty.
@@ -393,6 +421,7 @@ impl Kind {
                 overbought: 80.0,
                 oversold: 20.0,
                 d_color: None,
+                d_style: None,
             },
             // The extended hours, set back: what most charts of a market with
             // a regular session want, and the one range that needs no clock.
@@ -463,16 +492,45 @@ pub enum Params {
         /// The outline's colour. Unset is the profile's own.
         #[serde(default)]
         outline_color: Option<ColorChoice>,
+        /// The outline's pattern. Missing, solid, as it always was.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        outline_style: LineStyle,
         /// The outline's thickness, in pixels.
         #[serde(default = "profile::hairline")]
         outline_width: f64,
         /// The point of control's thickness, in pixels.
         #[serde(default = "profile::hairline")]
         poc_width: f64,
+        /// The point of control's pattern. Missing, solid.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        poc_style: LineStyle,
         /// Whether the point of control is drawn. Missing, it is, as every
         /// profile drew it before it could be turned off.
         #[serde(default = "profile::shown")]
         poc: bool,
+        /// How solid the value area's rows are: 0 is nothing, 1 is the
+        /// colour itself. The Transparency row, the other way up; the rest
+        /// of the rows follow it, and on the outline style, which has no
+        /// rows, the outline does. Missing, the strength the rows were
+        /// designed at, as every profile was drawn before this was stored.
+        /// See [`profile::drawn_alpha`].
+        #[serde(default = "profile::designed_alpha", skip_serializing_if = "profile::is_designed_alpha")]
+        alpha: f64,
+        /// A fade over `alpha`, from before the Transparency row set the
+        /// strength itself: 1 draws `alpha` as it is. A profile stored with
+        /// one is drawn as it was; the row folds it into `alpha` on the
+        /// next change. Missing, 1.
+        #[serde(default = "profile::opaque", skip_serializing_if = "profile::is_opaque")]
+        opacity: f64,
+        /// Whether the value area is set apart from the other rows. Off,
+        /// every row is drawn alike. Missing, it is, as every profile was.
+        #[serde(default = "profile::shown", skip_serializing_if = "profile::is_shown")]
+        highlight: bool,
+        /// The value area's own colour, while it is highlighted. Unset is
+        /// the background's, so the value area is the same colour stronger,
+        /// which is what it always was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_color: Option<ColorChoice>,
         /// Whether only the newest period's profile is drawn, the ones
         /// before it left out. Missing, every period is, as before it could
         /// be chosen.
@@ -549,6 +607,10 @@ pub enum Params {
         /// as a stochastic's %D is.
         #[serde(default)]
         signal_color: Option<ColorChoice>,
+        /// The signal line's pattern. Unset is the MACD line's own, which is
+        /// what it was drawn in before it could be set apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal_style: Option<LineStyle>,
     },
     Stochastic {
         /// Bars whose range the close is placed in: %K's length.
@@ -564,6 +626,10 @@ pub enum Params {
         /// two lines are told apart without anybody having to choose.
         #[serde(default)]
         d_color: Option<ColorChoice>,
+        /// The %D line's pattern. Unset is %K's own, as it was drawn before
+        /// it could be set apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        d_style: Option<LineStyle>,
     },
     SessionTimes {
         /// The stretches of each day it shades, each in its own colour,
@@ -648,10 +714,11 @@ fn listed() -> bool {
 pub const STROKE_WIDTHS: [f64; 5] = [0.0, 1.0, 1.5, 2.5, 4.0];
 
 /// How thin and how thick a volume profile's outline and point of control
-/// may be set, and the step between: half a pixel to six, by halves.
-pub const MIN_OUTLINE_WIDTH: f64 = 0.5;
-pub const MAX_OUTLINE_WIDTH: f64 = 6.0;
-pub const OUTLINE_WIDTH_STEP: f64 = 0.5;
+/// may be set, and the step between: a profile drawing's own, half a pixel
+/// to twelve by halves, so the study and the drawing offer the same.
+pub const MIN_OUTLINE_WIDTH: f64 = crate::drawings::MIN_WIDTH;
+pub const MAX_OUTLINE_WIDTH: f64 = crate::drawings::MAX_WIDTH;
+pub const OUTLINE_WIDTH_STEP: f64 = crate::drawings::WIDTH_STEP;
 
 impl Indicator {
     /// One step thicker or thinner, as Alt+Shift with + and − asks: the
@@ -692,6 +759,57 @@ impl Indicator {
             above_price: false,
             in_legend: kind.in_legend_by_default(),
         }
+    }
+
+    /// One of `kind` with `numbers` written into the lengths its label
+    /// shows, in the label's order ("BB 20 2" is the period, then the
+    /// deviations), and its defaults for the rest. What the picker adds for
+    /// "sma 50".
+    ///
+    /// `None` when the label has fewer numbers than were given, or one does
+    /// not fit: a length that is not a whole number of bars, one or more, a
+    /// multiple past [`bollinger::MAX_DEVIATIONS`], a MACD whose fast average
+    /// is not below its slow one.
+    pub fn numbered(id: u32, kind: Kind, numbers: &[f64]) -> Option<Indicator> {
+        fn bars(n: f64) -> Option<usize> {
+            (n >= 1.0 && n.fract() == 0.0 && n <= u32::MAX as f64).then_some(n as usize)
+        }
+        fn lengths(slots: [&mut usize; 3], numbers: &[f64]) -> Option<()> {
+            for (slot, n) in slots.into_iter().zip(numbers) {
+                *slot = bars(*n)?;
+            }
+            Some(())
+        }
+        let mut indicator = Indicator::new(id, kind);
+        match (&mut indicator.params, numbers) {
+            (_, []) => {}
+            (
+                Params::MovingAverage { period } | Params::Rsi { period, .. } | Params::Atr { period, .. },
+                [n],
+            ) => *period = bars(*n)?,
+            (Params::Bollinger { period, bands }, [n, rest @ ..]) if rest.len() <= 1 => {
+                *period = bars(*n)?;
+                if let [deviations] = rest {
+                    if !(0.0..=bollinger::MAX_DEVIATIONS).contains(deviations) {
+                        return None;
+                    }
+                    // Adding nought makes a negative nought the positive one,
+                    // which is the one the label should write.
+                    bands.first_mut()?.deviations = deviations + 0.0;
+                }
+            }
+            (Params::Macd { fast, slow, signal, .. }, _) if numbers.len() <= 3 => {
+                lengths([&mut *fast, &mut *slow, signal], numbers)?;
+                if *fast >= *slow {
+                    return None;
+                }
+            }
+            (Params::Stochastic { period, k_smooth, d_period, .. }, _) if numbers.len() <= 3 => {
+                lengths([period, k_smooth, d_period], numbers)?
+            }
+            _ => return None,
+        }
+        Some(indicator)
     }
 
     /// How the summary row labels it: "SMA 50", "VWAP · Session".
@@ -1362,9 +1480,63 @@ pub fn search(query: &str) -> Vec<Kind> {
     scored.into_iter().map(|(_, kind)| kind).collect()
 }
 
+/// A picker query split into the name searched for and the numbers typed
+/// after it: "sma 50", "sma50", "bb 20,2" and "macd(12 26 9)" all read.
+///
+/// The numbers are everything from the first digit on, where nothing past it
+/// is a letter; a tail that does not read as numbers ("sma 5..0") is left in
+/// the name, which then finds nothing rather than something else.
+pub fn split_query(query: &str) -> (&str, Vec<f64>) {
+    let query = query.trim();
+    let tail = |c: char| c.is_ascii_digit() || matches!(c, '.' | ',' | '(' | ')') || c.is_whitespace();
+    let Some(start) = query.find(|c: char| c.is_ascii_digit()) else { return (query, Vec::new()) };
+    if !query[start..].chars().all(tail) {
+        return (query, Vec::new());
+    }
+    let name = query[..start].trim_end_matches(|c: char| c == '(' || c.is_whitespace());
+    let numbers: Option<Vec<f64>> = query[start..]
+        .split(|c: char| matches!(c, ',' | '(' | ')') || c.is_whitespace())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.parse().ok())
+        .collect();
+    match numbers {
+        Some(numbers) => (name, numbers),
+        None => (query, Vec::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A volume profile stored before its strength, highlight and value
+    /// area colour could be set reads as it was drawn, its old fade kept;
+    /// a new one writes none of the three, and one set writes them back.
+    #[test]
+    fn a_stored_volume_profile_reads_as_it_was_drawn() {
+        let fresh = Indicator::new(1, Kind::VolumeProfile);
+        let mut stored = serde_json::to_value(&fresh).unwrap();
+        let params = stored["params"].as_object_mut().unwrap();
+        for key in ["alpha", "opacity", "highlight", "value_area_color"] {
+            assert!(!params.contains_key(key), "{key} written by default: {params:?}");
+        }
+        params.insert("opacity".into(), serde_json::json!(0.4));
+        let read: Indicator = serde_json::from_value(stored).unwrap();
+        let Params::VolumeProfile { alpha, opacity, highlight, value_area_color, .. } = &read.params else {
+            panic!("{read:?}")
+        };
+        assert!((profile::drawn_alpha(*alpha, *opacity) - 0.30 * 0.4).abs() < 1e-12);
+        assert!(*highlight && value_area_color.is_none());
+
+        let mut chosen = fresh.clone();
+        if let Params::VolumeProfile { alpha, highlight, value_area_color, .. } = &mut chosen.params {
+            *alpha = 1.0;
+            *highlight = false;
+            *value_area_color = Some(ColorChoice::swatch("Foreground"));
+        }
+        let back: Indicator = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+        assert_eq!(back, chosen);
+    }
 
     /// Alt+Shift with + and − walks a study's line along the thicknesses
     /// its settings offer and stops at the ends, never at no line; a volume
@@ -1390,12 +1562,12 @@ mod tests {
         assert_eq!(sma.stroke.width, 1.0);
 
         let mut profile = Indicator::new(2, Kind::VolumeProfile);
-        for _ in 0..20 {
+        for _ in 0..40 {
             profile.step_width(true);
         }
         let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
         assert_eq!(outline_width, MAX_OUTLINE_WIDTH);
-        for _ in 0..20 {
+        for _ in 0..40 {
             profile.step_width(false);
         }
         let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
@@ -1829,6 +2001,50 @@ mod tests {
         assert_eq!(width, 0.4);
     }
 
+    /// A profile, a MACD and a stochastic stored before their lines could be
+    /// patterned or the profile faded are drawn as they were — solid, the
+    /// second line as the first, the profile as designed — and write none of
+    /// it back until it is chosen.
+    #[test]
+    fn line_patterns_and_a_profile_s_opacity_default_to_what_there_was() {
+        let profile: Indicator = serde_json::from_str(
+            r#"{"id": 1, "kind": "volume_profile", "visible": true,
+                "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7}}"#,
+        )
+        .expect("an older profile");
+        let Params::VolumeProfile { outline_style, poc_style, opacity, .. } = &profile.params else { unreachable!() };
+        assert_eq!((*outline_style, *poc_style, *opacity), (LineStyle::Solid, LineStyle::Solid, 1.0));
+        let written = serde_json::to_value(&profile).unwrap();
+        for key in ["outline_style", "poc_style", "opacity"] {
+            assert!(written["params"].get(key).is_none(), "{key} written back: {written}");
+        }
+
+        let macd: Indicator = serde_json::from_str(
+            r#"{"id": 2, "kind": "macd", "visible": true,
+                "params": {"kind": "macd", "fast": 12, "slow": 26, "signal": 9, "height": 0.16}}"#,
+        )
+        .expect("an older MACD");
+        assert!(matches!(macd.params, Params::Macd { signal_style: None, .. }));
+        assert!(serde_json::to_value(&macd).unwrap()["params"].get("signal_style").is_none());
+
+        let stochastic: Indicator = serde_json::from_str(
+            r#"{"id": 3, "kind": "stochastic", "visible": true,
+                "params": {"kind": "stochastic", "period": 14, "k_smooth": 3, "d_period": 3,
+                           "height": 0.16, "overbought": 80, "oversold": 20}}"#,
+        )
+        .expect("an older stochastic");
+        assert!(matches!(stochastic.params, Params::Stochastic { d_style: None, .. }));
+        assert!(serde_json::to_value(&stochastic).unwrap()["params"].get("d_style").is_none());
+
+        let mut faded = profile.clone();
+        if let Params::VolumeProfile { opacity, outline_style, .. } = &mut faded.params {
+            *opacity = 0.4;
+            *outline_style = LineStyle::Dotted;
+        }
+        let back: Indicator = serde_json::from_value(serde_json::to_value(&faded).unwrap()).unwrap();
+        assert!(matches!(back.params, Params::VolumeProfile { opacity: 0.4, outline_style: LineStyle::Dotted, .. }));
+    }
+
     /// A profile stored before it could measure anything else measures what
     /// it always did, and is named as it always was.
     #[test]
@@ -1941,6 +2157,41 @@ mod tests {
 
         assert_eq!(search("").len(), Kind::ALL.len());
         assert!(search("zzzz").is_empty());
+    }
+
+    /// Numbers typed after the name are the lengths, however they are
+    /// separated; a tail that is not numbers stays in the name.
+    #[test]
+    fn a_picker_query_splits_into_a_name_and_its_numbers() {
+        assert_eq!(split_query("sma 50"), ("sma", vec![50.0]));
+        assert_eq!(split_query(" sma50 "), ("sma", vec![50.0]));
+        assert_eq!(split_query("sma(50)"), ("sma", vec![50.0]));
+        assert_eq!(split_query("bb 20,2.5"), ("bb", vec![20.0, 2.5]));
+        assert_eq!(split_query("macd 12 26 9"), ("macd", vec![12.0, 26.0, 9.0]));
+        assert_eq!(split_query("volume profile"), ("volume profile", vec![]));
+        assert_eq!(split_query("sma 5..0"), ("sma 5..0", vec![]));
+        assert_eq!(split_query("50 sma"), ("50 sma", vec![]));
+    }
+
+    /// The numbers fill what the label shows, in its order, and a number the
+    /// label has no place for, or one that does not fit, adds nothing.
+    #[test]
+    fn typed_numbers_fill_the_lengths_the_label_shows() {
+        let label = |kind, numbers: &[f64]| Indicator::numbered(1, kind, numbers).map(|i| i.label());
+        assert_eq!(label(Kind::Sma, &[50.0]).as_deref(), Some("SMA 50"));
+        assert_eq!(label(Kind::Ema, &[]).as_deref(), Some("EMA 21"));
+        assert_eq!(label(Kind::Bollinger, &[10.0, 2.5]).as_deref(), Some("BB 10 2.5"));
+        assert_eq!(label(Kind::Bollinger, &[10.0, -0.0]).as_deref(), Some("BB 10 0"));
+        assert_eq!(label(Kind::Macd, &[5.0, 35.0, 5.0]).as_deref(), Some("MACD 5 35 5"));
+        assert_eq!(label(Kind::Macd, &[8.0]).as_deref(), Some("MACD 8 26 9"));
+        assert_eq!(label(Kind::Stochastic, &[21.0, 5.0]).as_deref(), Some("Stoch 21 5 3"));
+
+        assert_eq!(label(Kind::Sma, &[50.0, 20.0]), None, "one more than the label shows");
+        assert_eq!(label(Kind::Sma, &[0.0]), None, "no bars");
+        assert_eq!(label(Kind::Sma, &[2.5]), None, "part of a bar");
+        assert_eq!(label(Kind::Macd, &[30.0]), None, "fast not below the slow 26");
+        assert_eq!(label(Kind::Bollinger, &[20.0, 51.0]), None, "past the widest multiple");
+        assert_eq!(label(Kind::Vwap, &[1.0]), None, "no length to take it");
     }
 
     #[test]
@@ -2132,6 +2383,7 @@ mod tests {
                 exchange: None,
                 popularity: 0,
                 local_name: None,
+                formula: None,
             }
         }
 

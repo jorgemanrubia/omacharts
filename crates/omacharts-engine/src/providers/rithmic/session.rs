@@ -26,9 +26,9 @@ use crate::providers::{Access, How, Sessions, SignIn};
 /// The app name Rithmic is told, the one place it is set.
 ///
 /// Rithmic Test takes any name; production takes only the one Rithmic
-/// registers for the app when it passes conformance, prefixed with four
-/// characters of theirs (`abcd:omacharts`). That name goes here. A build
-/// can set it instead with `OMACHARTS_RITHMIC_APP_NAME`.
+/// agreed for the app when it passed conformance, which is `omacharts`,
+/// with no prefix. A build can set another with
+/// `OMACHARTS_RITHMIC_APP_NAME`.
 pub const APP_NAME: &str = match option_env!("OMACHARTS_RITHMIC_APP_NAME") {
     Some(name) => name,
     None => "omacharts",
@@ -472,4 +472,16 @@ pub fn places() -> Vec<(&'static str, String)> {
         places.push(("Development login", std::path::PathBuf::from(path).display().to_string()));
     }
     places
+}
+
+#[cfg(test)]
+mod tests {
+    /// Production is told `omacharts`, the name Rithmic agreed at
+    /// conformance, unless a build names another.
+    #[test]
+    fn rithmic_is_told_the_name_agreed_at_conformance() {
+        if option_env!("OMACHARTS_RITHMIC_APP_NAME").is_none() {
+            assert_eq!(super::APP_NAME, "omacharts");
+        }
+    }
 }

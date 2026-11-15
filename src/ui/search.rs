@@ -494,6 +494,11 @@ fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today:
                 }));
             }
         }
+        // A formula, `GC/SI` or `TNX-FVX`: nothing the search matches is
+        // spelled that way, so somebody who typed one meant it.
+        None if !futures_only => {
+            rows.extend(index.spelled(query).map(|instrument| Row::Listed { instrument, open: None }));
+        }
         None => {}
     }
 
@@ -568,6 +573,7 @@ fn unlisted(query: &str) -> Option<Instrument> {
         exchange: None,
         popularity: 0,
         local_name: None,
+        formula: None,
     })
 }
 

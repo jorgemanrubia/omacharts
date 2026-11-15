@@ -8,7 +8,7 @@ nav_order: 20
 A chartbook template is a saved arrangement of charts under a name. It holds
 the splits, where the dividers sit, and each chart's resolution and
 [chart template](/manual/chart-templates/), or its own indicators when it has
-none. Put several chartbooks on the same template and they all have that
+none, and the markets it [compares](/manual/comparing/). Put several chartbooks on the same template and they all have that
 arrangement. Change the arrangement in any one of them and the others follow.
 Symbols and link modes are not part of a template; each chartbook keeps its
 own.

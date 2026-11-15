@@ -1,6 +1,7 @@
-//! The dialog a Sierra Chart trading login is added in: a name, and where
-//! its DTC server is, asked as it is typed whether it is there and allows
-//! trading.
+//! The dialog a Sierra Chart trading login is added in: where its DTC
+//! server is, asked as it is typed whether it is there and allows trading.
+//! A new login is called Sierra Chart, numbered past the names taken; one
+//! signed in again keeps its name.
 //!
 //! There is no password. Sierra Chart is signed in to its trading service itself,
 //! and its server, set to "Local Computer Only", answers this machine
@@ -40,10 +41,7 @@ pub fn ask(parent: &gtk::Widget, known: Option<&Login>, taken: &[String], signed
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk::SelectionMode::None);
 
-    let name = adw::EntryRow::new();
-    name.set_title("Name");
-    name.set_text(known.map_or(default.as_str(), |login| login.name.as_str()));
-    list.append(&name);
+    let name = known.map_or(default, |login| login.name.clone());
 
     let host = adw::EntryRow::new();
     host.set_title("Host");
@@ -131,20 +129,20 @@ pub fn ask(parent: &gtk::Widget, known: Option<&Login>, taken: &[String], signed
         if response != SIGN_IN {
             return;
         }
-        signed(typed(&name.text(), &default, &host.text(), &port.text()));
+        signed(typed(&name, &host.text(), &port.text()));
     });
     dialog.present(Some(parent));
 }
 
-/// What was typed, a login with no name called `default`.
-fn typed(name: &str, default: &str, host: &str, port: &str) -> Typed {
+/// What was typed, for a login called `name`.
+fn typed(name: &str, host: &str, port: &str) -> Typed {
     let or = |text: &str, fallback: &str| match text.trim() {
         "" => fallback.to_string(),
         text => text.to_string(),
     };
     Typed {
         service: feed::LISTED.id.to_string(),
-        name: or(name, default),
+        name: name.to_string(),
         user: String::new(),
         password: String::new(),
         values: vec![
@@ -159,35 +157,31 @@ mod tests {
     use super::*;
 
     /// Left empty, a login is this machine's server on Sierra Chart's
-    /// port, called Sierra Chart, with no password.
+    /// port, with no password.
     #[test]
     fn what_is_left_empty_is_this_machines_server() {
-        let empty = typed(" ", "Sierra Chart", "", "");
+        let empty = typed("Sierra Chart", "", "");
         assert_eq!((empty.service.as_str(), empty.name.as_str(), empty.password.as_str()), ("sierra", "Sierra Chart", ""));
         assert_eq!(empty.values, vec![("host".to_string(), "127.0.0.1".to_string()), ("port".to_string(), "11099".to_string())]);
-        let named = typed("Sim", "Sierra Chart", "10.0.0.2", "11100");
-        assert_eq!((named.name.as_str(), named.values[1].1.as_str()), ("Sim", "11100"));
+        let elsewhere = typed("Sierra Chart", "10.0.0.2", "11100");
+        assert_eq!(elsewhere.values[1].1.as_str(), "11100");
     }
 
-    /// A new login's name starts as Sierra Chart, numbered past the names
-    /// taken; cleared, it is that again, and a login signed in again keeps
-    /// its own.
+    /// There is no name to type: a new login is called Sierra Chart,
+    /// numbered past the names taken, and one signed in again keeps its own.
     #[test]
     fn a_new_login_is_called_sierra_chart_numbered_past_the_names_taken() {
         crate::ui::on_gtk(|| {
-            let name_of = |dialog: &adw::AlertDialog| {
-                super::super::row_titled::<adw::EntryRow>(dialog.upcast_ref(), "Name").expect("its name")
+            let signed_name = |known: Option<&Login>, taken: &[&str]| {
+                let (dialog, signed) = super::super::opened(ask, known, taken);
+                assert!(super::super::row_titled::<adw::EntryRow>(dialog.upcast_ref(), "Name").is_none(), "no name");
+                dialog.set_response_enabled(SIGN_IN, true);
+                dialog.emit_by_name::<()>("response", &[&SIGN_IN]);
+                dialog.force_close();
+                signed.borrow().as_ref().map(|typed| typed.name.clone())
             };
-            let (dialog, _) = super::super::opened(ask, None, &[]);
-            assert_eq!(name_of(&dialog).text(), "Sierra Chart");
-            dialog.force_close();
-
-            let (dialog, signed) = super::super::opened(ask, None, &["Sierra Chart", "sierra chart 2"]);
-            assert_eq!(name_of(&dialog).text(), "Sierra Chart 3");
-            name_of(&dialog).set_text(" ");
-            dialog.emit_by_name::<()>("response", &[&SIGN_IN]);
-            assert_eq!(signed.borrow().as_ref().map(|typed| typed.name.clone()).as_deref(), Some("Sierra Chart 3"));
-            dialog.force_close();
+            assert_eq!(signed_name(None, &[]).as_deref(), Some("Sierra Chart"));
+            assert_eq!(signed_name(None, &["Sierra Chart", "sierra chart 2"]).as_deref(), Some("Sierra Chart 3"));
 
             let known = Login {
                 id: "a".into(),
@@ -197,9 +191,7 @@ mod tests {
                 values: Vec::new(),
                 signed_out: false,
             };
-            let (dialog, _) = super::super::opened(ask, Some(&known), &["Sierra Chart"]);
-            assert_eq!(name_of(&dialog).text(), "Sim");
-            dialog.force_close();
+            assert_eq!(signed_name(Some(&known), &["Sierra Chart"]).as_deref(), Some("Sim"));
         });
     }
 }

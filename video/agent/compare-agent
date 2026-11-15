@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""An agent's turn, played in the studio's terminal for a video.
+
+Asked to compare SPY, QQQ, gold and SMH over the long term and mark the
+great selloffs, it does what an agent with the Omacharts skill did when
+it was asked for real, off camera: puts SPY on monthly bars on a log
+scale, compares the other three on it from the first bar the feed has,
+draws every market as a line, and marks each selloff with a shaded band
+and its name, kept to this chart, the labels at two heights so they do
+not run into each other. Every command it shows is the real one, run
+against the open chart, which changes as it goes; only the sentences
+around them, and the events it picked, are written in advance, so the
+video can be timed.
+
+    compare-agent [--pace SECONDS]
+"""
+
+import subprocess
+import sys
+import time
+
+PACE = 0.9
+for i, arg in enumerate(sys.argv):
+    if arg == "--pace":
+        PACE = float(sys.argv[i + 1])
+
+DIM, BOLD, BLUE, GREEN, RESET = "\033[2m", "\033[1m", "\033[34m", "\033[32m", "\033[0m"
+
+# Where the labels sit, as SPY prices on the chart: high, and a row below.
+HIGH, LOW = 5000, 2600
+
+# The selloffs, as the agent picked them: from, to, label height, name, and
+# where the label sits in its band.
+EVENTS = [
+    ("2007-10-01", "2009-03-31", LOW, "2008 financial crisis", "top-left"),
+    ("2011-07-01", "2011-10-31", LOW, "2011 US downgrade", "top-left"),
+    ("2015-08-01", "2016-02-29", HIGH, "2015 China selloff", "top-left"),
+    ("2018-10-01", "2018-12-31", LOW, "2018 Fed selloff", "top-left"),
+    ("2020-02-01", "2020-03-31", HIGH, "2020 COVID crash", "top-left"),
+    ("2022-01-01", "2022-10-31", LOW, "2022 rate hikes", "top-left"),
+    ("2025-02-01", "2025-04-30", HIGH, "2025 tariffs", "top-right"),
+]
+
+
+def out(text="", pause=0.0):
+    print(text, flush=True)
+    if pause:
+        time.sleep(pause)
+
+
+def slowly(text, speed=0.012):
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(speed)
+    print(flush=True)
+
+
+def shown(text):
+    out(f"  {DIM}$ {text}{RESET}")
+
+
+def omacharts(*args, show=True):
+    if show:
+        shown("omacharts " + " ".join(f'"{a}"' if " " in a else a for a in args))
+    subprocess.run(["omacharts", *args], capture_output=True, text=True)
+
+
+def band(start, end, top, name, at):
+    # The shell function the agent defined, run as the command it stands for.
+    shown(f'band {start} {end} {top} "{name}"' + (f" {at}" if at != "top-left" else ""))
+    subprocess.run(["omacharts", "chart", "drawing", "add", "rect", "--scope", "local",
+                    "--from", f"{start},60", "--to", f"{end},{top}", "--config", "2", "--alpha", "0.12",
+                    "--border", "off", "--text-color", "ink", "--font-size", "14",
+                    "--text", f"**{name}**", "--text-at", at], capture_output=True, text=True)
+
+
+def main():
+    sys.stdout.write(f"{BOLD}{BLUE}❯{RESET} ")
+    sys.stdout.flush()
+    sys.stdin.readline()
+    out()
+    # Wrapped short: the terminal is a third of the screen, at a size that
+    # reads at 1080p.
+    slowly(f"{GREEN}●{RESET} SPY on monthly bars, with QQQ, GLD for gold and SMH")
+    slowly("  compared on it, on a log scale so twenty years fit, and")
+    slowly("  every market drawn as a line.")
+    out(pause=PACE * 0.5)
+    omacharts("chart", "set", "--symbol", "SPY", "--resolution", "1M", "--log-scale", "on")
+    time.sleep(PACE * 0.4)
+    omacharts("chart", "compare", "add", "QQQ", "GLD", "SMH")
+    time.sleep(PACE)
+    omacharts("chart", "compare", "set", "--from", "2006-11-01", "--lines-only", "on")
+    time.sleep(PACE * 0.6)
+    omacharts("chart", "range", "2006-11:")
+    out(pause=PACE)
+    slowly(f"{GREEN}●{RESET} The feed's history starts in November 2006, so the lines")
+    slowly("  are measured from there. Now the selloffs: a shaded band")
+    slowly("  over each, with its name, kept to this chart, the labels at")
+    slowly("  two heights so they don't run into each other.")
+    out(pause=PACE * 0.5)
+    shown("band() { omacharts chart drawing add rect --scope local \\")
+    out(f'  {DIM}    --from "$1,60" --to "$2,$3" --config 2 --alpha 0.12 \\{RESET}')
+    out(f'  {DIM}    --border off --text-color ink --font-size 14 \\{RESET}')
+    out(f'  {DIM}    --text "**$4**" --text-at "${{5:-top-left}}"; }}{RESET}')
+    time.sleep(PACE * 0.6)
+    for event in EVENTS:
+        band(*event)
+        time.sleep(PACE)
+    out()
+    slowly(f"{GREEN}●{RESET} Seven selloffs marked. I left out the shorter ones: the")
+    slowly("  2010 flash crash, the 2013 taper tantrum, early 2018 and")
+    slowly("  the 2024 yen unwind.")
+    out()
+
+
+if __name__ == "__main__":
+    main()

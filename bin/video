@@ -640,7 +640,9 @@ hl.config({{
         home = Path(self.env["HOME"])
         tools = home / ".local/bin"
         tools.mkdir(parents=True, exist_ok=True)
-        for name, target in (("omacharts", self.binary), ("vp-agent", ROOT / "video/agent/vp-agent")):
+        # This studio's omacharts, and every played agent in video/agent.
+        agents = sorted(p for p in (ROOT / "video/agent").iterdir() if p.is_file() and os.access(p, os.X_OK))
+        for name, target in (("omacharts", self.binary), *((a.name, a) for a in agents)):
             link = tools / name
             if not link.exists():
                 link.symlink_to(target)
@@ -1113,7 +1115,7 @@ def polish_plan(events, total):
     asked = [e for e in events if e.get("scene") is not None and e["verb"] == "zoom" and e.get("at")]
     for i, event in enumerate(asked):
         later = [e["t"] for e in events if e.get("scene") is not None and e["t"] > event["t"] + 0.5
-                 and e["verb"] in ("key", "type", "cli", "zoom", "terminal", *POINTER)]
+                 and e["verb"] in ("key", "type", "cli", "zoom", "terminal", "move", *POINTER)]
         end = min([event["t"] + 8.0, total, *later[:1]])
         if end - event["t"] >= 1.5:
             zooms.append({"start": round(max(0.0, event["t"] - 0.2), 3), "end": round(end, 3),

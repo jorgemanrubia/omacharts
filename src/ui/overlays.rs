@@ -55,10 +55,8 @@ pub fn page(scope: Rc<Scope>, store: Rc<Store>) -> adw::PreferencesPage {
 ///
 /// It changes the header in scope: every chart's, or under Local the
 /// focused chart's. The account, Buy and Sell, the quantity and the day's
-/// P&L are shown and offered while trading is switched on, with or without
-/// a login, like every trading setting: they draw nothing on a chart until
-/// there is an account to trade on. Switched off, they are neither shown nor
-/// offered, and stay where they were.
+/// P&L are offered with or without a login: they draw nothing on a chart
+/// until there is an account to trade on.
 ///
 /// Its parts' handlers hold it weakly, since it holds the parts.
 struct HeaderCard {
@@ -66,8 +64,6 @@ struct HeaderCard {
     store: Rc<Store>,
     /// The look in scope, its header the one the card shows.
     worn: RefCell<Worn>,
-    /// Whether trading was on, which decides the parts on offer.
-    trading: Cell<bool>,
     card: gtk::Box,
     chart: gtk::DrawingArea,
     /// The six places, in the order of [`Zone::ALL`].
@@ -141,7 +137,6 @@ impl HeaderCard {
 
         let this = Rc::new(HeaderCard {
             worn: RefCell::new(scope.worn()),
-            trading: Cell::new(crate::features::trading()),
             scope,
             store,
             card,
@@ -187,20 +182,18 @@ impl HeaderCard {
     }
 
     /// Show the look in scope as it is now: the parts placed again when
-    /// the header, the bars' colours they are written in or trading
-    /// changed, and the picture behind them redrawn when anything did.
+    /// the header or the bars' colours they are written in changed, and the
+    /// picture behind them redrawn when anything did.
     fn follow(self: &Rc<Self>) {
         let now = self.scope.worn();
-        let trading = crate::features::trading();
         let replace = {
             let was = self.worn.borrow();
-            if *was == now && self.trading.get() == trading {
+            if *was == now {
                 return;
             }
-            was.look.header != now.look.header || was.scheme != now.scheme || self.trading.get() != trading
+            was.look.header != now.look.header || was.scheme != now.scheme
         };
         *self.worn.borrow_mut() = now;
-        self.trading.set(trading);
         match replace {
             true => self.rebuild(),
             false => self.chart.queue_draw(),
@@ -221,12 +214,12 @@ impl HeaderCard {
         self.chart.queue_draw();
         let layout = self.layout();
         for (zone, place) in Zone::ALL.into_iter().zip(&self.zones) {
-            for part in layout.shown(zone) {
+            for &part in layout.zone(zone) {
                 place.append(&self.placed(part));
             }
         }
         self.second.set_visible(layout.second_row());
-        let spare: Vec<Part> = Part::every_shown().into_iter().filter(|part| !layout.contains(*part)).collect();
+        let spare: Vec<Part> = Part::ALL.into_iter().filter(|part| !layout.contains(*part)).collect();
         self.all_shown.set_visible(spare.is_empty());
         self.spare.set_visible(!spare.is_empty());
         for part in spare {
@@ -471,8 +464,7 @@ impl HeaderCard {
             let (Some(this), Some(over)) = (this.upgrade(), target.widget().and_downcast::<gtk::Box>()) else { return false };
             let Some(part) = dragged(value).filter(|part| this.layout().takes(zone, *part)) else { return false };
             let mut layout = this.layout();
-            let at = among_all(&layout, zone, part, landing(&over, part, x).0);
-            layout.place(part, zone, at);
+            layout.place(part, zone, landing(&over, part, x).0);
             this.set(layout);
             true
         });
@@ -525,19 +517,6 @@ fn icon(image: gtk::Widget) -> gtk::Widget {
     image.set_halign(gtk::Align::Center);
     holder.append(&image);
     holder.upcast()
-}
-
-/// Where in `zone`, hidden parts and all, the `shown`-th part shown with
-/// `part` lifted out sits: a drop lands among the parts it can see, and the
-/// hidden ones keep their places around it.
-fn among_all(layout: &Layout, zone: Zone, part: Part, shown: usize) -> usize {
-    let others: Vec<Part> = layout.zone(zone).iter().copied().filter(|p| *p != part).collect();
-    others
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.shown())
-        .nth(shown)
-        .map_or(others.len(), |(at, _)| at)
 }
 
 /// The part a drag carries.

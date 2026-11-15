@@ -1,8 +1,8 @@
 {%- comment -%}
   The trail above a manual page's title: the manual's root, then the page's
-  section, then, for a page under a chapter (`parent:`), that chapter. A
-  chapter's own title is right underneath, so it is not repeated
-  as a crumb. The last crumb is where you are and does not link.
+  section, then the pages above it (manual_trail, from _plugins/manual.rb):
+  the chapter, and for a page further down, the page it sits under too. A
+  page's own title is right underneath, so it is not repeated as a crumb. The last crumb is where you are and does not link.
 
   Replaces the theme's breadcrumbs, which read `parent:` front matter the
   chapters do not have; sections come from site.manual.sections and the
@@ -33,15 +33,11 @@
       {%- endif -%}
     </li>
     {%- endif %}
-    {%- if page.parent %}
-    {%- assign parent_url = "/manual/" | append: page.parent | append: "/" %}
-    {%- assign parent_page = site.html_pages | where: "url", parent_url | first %}
-    {%- if parent_page %}
+    {%- for crumb in page.manual_trail %}
     <li class="crumbs-item">
-      <a href="{{ parent_page.url | relative_url }}">{{ parent_page.title }}</a>
+      <a href="{{ crumb.url | relative_url }}">{{ crumb.title }}</a>
     </li>
-    {%- endif %}
-    {%- endif %}
+    {%- endfor %}
   </ol>
 </nav>
 {%- endif -%}

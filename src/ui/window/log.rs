@@ -43,6 +43,8 @@ pub(super) struct Messages {
     pub update_shown: Cell<Option<crate::update::Version>>,
     /// The version whose notice was dismissed: not offered again this run.
     pub update_dismissed: Cell<Option<crate::update::Version>>,
+    /// What is said while a command waits to hear it, besides the Log.
+    pub heard: RefCell<Option<Vec<Entry>>>,
 }
 
 impl Messages {
@@ -59,6 +61,7 @@ impl Messages {
             update: RefCell::new(None),
             update_shown: Cell::new(None),
             update_dismissed: Cell::new(None),
+            heard: RefCell::new(None),
         }
     }
 }
@@ -69,6 +72,9 @@ const UNREAD: &str = "unread";
 impl Window {
     /// Put `entry` in this window's log.
     pub(super) fn say(&self, entry: Entry) {
+        if let Some(heard) = self.messages.heard.borrow_mut().as_mut() {
+            heard.push(entry.clone());
+        }
         self.messages.log.get().add(entry);
     }
 

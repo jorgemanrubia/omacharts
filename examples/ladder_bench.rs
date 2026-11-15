@@ -75,6 +75,7 @@ fn es() -> Instrument {
         exchange: None,
         popularity: 0,
         local_name: None,
+        formula: None,
     }
 }
 

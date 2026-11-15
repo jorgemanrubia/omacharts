@@ -19,9 +19,16 @@ use crate::ticks::{Tape, Trade, DEFAULT_CAPACITY};
 
 use super::{exchange_of, map_err, session, Rithmic, CME_GROUP};
 
-/// How far back the history plant's minute ladders go, in days. On Rithmic
-/// Test a month asked came back as about fifteen days.
-const HISTORY_DAYS: u32 = 30;
+/// How far back the history plant's minute ladders are asked for, in days:
+/// as far back as a chart's own intraday bars go, so a session profile has
+/// a ladder under every session an hourly chart shows. The plant answers
+/// the whole span in one request — ninety days of ES is some 74,000 minutes
+/// — and a span is asked for once and kept. A root is asked for no further
+/// back than its front month took over ([`Ladders::history_since`]), which
+/// for a quarterly root is about as far. Days older than this that the
+/// store kept from earlier runs are still drawn; they are only never asked
+/// for.
+const HISTORY_DAYS: u32 = super::INTRADAY_DAYS;
 
 /// A minute from the plant, as a ladder of whole ticks.
 pub fn minute_of(found: &rithmic::LadderMinute, tick_size: f64) -> Minute {
@@ -146,6 +153,18 @@ impl Ladders for Rithmic {
         HISTORY_DAYS
     }
 
+    /// A root is read as the contract front now, and charted as Rithmic's
+    /// own continuous series, as traded: each month while it was front.
+    /// Before this month took over it was a thin back month at a price of
+    /// its own, and the month that was front then has expired, which the
+    /// plant no longer serves. A dated contract is itself all the way back.
+    fn history_since(&self, symbol: &str, now: i64) -> Option<i64> {
+        match crate::specs::root_of(symbol) == symbol {
+            true => crate::continuous::front_since(symbol, now),
+            false => None,
+        }
+    }
+
     fn minutes(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
         if !session::here() {
             return Err(ProviderError::NeedsSetup(
@@ -157,10 +176,12 @@ impl Ladders for Rithmic {
         // A dated contract is its own; a root is its front month.
         let contract = match crate::specs::root_of(symbol) == symbol {
             true => client.front_month(symbol, exchange).map_err(map_err)?,
-            false => symbol.to_string(),
+            false => super::spelled(symbol),
         };
         let found = client.ladders(&contract, exchange, from, to).map_err(map_err)?;
-        Ok(found.iter().map(|m| minute_of(m, tick_size)).collect())
+        // Each plant minute let go as it is turned into a ladder: ninety
+        // days is some 74,000 of them, and holding both at once doubles it.
+        Ok(found.into_iter().map(|m| minute_of(&m, tick_size)).collect())
     }
 
     fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
@@ -183,7 +204,7 @@ impl Ladders for Rithmic {
                 };
                 let _watch = match crate::specs::root_of(&root) == root {
                     true => client.watch(&root, exchange_of(&root), hear),
-                    false => client.watch_contract(&root, exchange_of(&root), hear),
+                    false => client.watch_contract(&super::spelled(&root), exchange_of(&root), hear),
                 };
                 fold(&inbox, Tape::new(tick_size, DEFAULT_CAPACITY), &say, &stopping);
             })
@@ -198,6 +219,26 @@ mod tests {
 
     fn trade(seconds: i64, price: f64, size: u64, aggressor: Option<rithmic::Side>) -> Event {
         Event::Live(rithmic::Live::Trade(rithmic::Trade { price, size, aggressor, at_nanos: seconds * 1_000_000_000 }))
+    }
+
+    fn utc(text: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(text).unwrap().timestamp()
+    }
+
+    /// ES is read as ESZ6 in November, which took over from ESU6 on 10
+    /// September, a trading day that opened at 17:00 Chicago the evening
+    /// before: nothing from before that is asked of it, at any depth. A
+    /// dated contract is itself all the way back.
+    #[test]
+    fn a_root_is_asked_back_to_where_its_front_month_took_over() {
+        let rithmic = Rithmic::new();
+        assert_eq!(rithmic.history_days(), 90, "as far as a chart's intraday bars");
+        let november = utc("2026-11-14T15:00:00Z");
+        assert_eq!(rithmic.history_since("ES", november), Some(utc("2026-09-09T22:00:00Z")));
+        assert_eq!(rithmic.history_since("ESZ6", november), None);
+        assert_eq!(rithmic.history_since("ESZ26", november), None);
+        // After the December roll, ESH7's span, from 10 December.
+        assert_eq!(rithmic.history_since("ES", utc("2026-12-11T15:00:00Z")), Some(utc("2026-12-09T23:00:00Z")));
     }
 
     /// A plant minute becomes a ladder of whole ticks, each side where the

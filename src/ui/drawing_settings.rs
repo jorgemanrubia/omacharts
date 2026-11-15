@@ -33,6 +33,8 @@ use crate::ui::colors;
 use crate::ui::dialogs;
 use crate::ui::palette;
 use crate::ui::pane::ChartPane;
+use crate::ui::profile_rows;
+use crate::ui::property_rows;
 use crate::ui::window::Window;
 pub use omacharts_chart::shapes::{paint_head, rounded};
 
@@ -150,7 +152,13 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             call_refresh();
         })
     };
-    let editor = style_editor(theme.clone(), kind, drawing.style(&configs_now).clone(), on_style.clone());
+    // How many rows the profile is drawing, for the Rows box to show while
+    // the count is automatic.
+    let drawn_rows: Rc<dyn Fn() -> Option<usize>> = {
+        let view = view.clone();
+        Rc::new(move || view.selected_profile_rows())
+    };
+    let editor = style_editor(theme.clone(), kind, drawing.style(&configs_now).clone(), on_style.clone(), drawn_rows);
     page.add(&editor.group);
     for group in &editor.more {
         page.add(group);
@@ -184,7 +192,9 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     // not a button at the bottom of its properties.
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} properties", kind.label()));
-    dialog.set_content_width(440);
+    // A study's width: a drawing's rows are a study's, sliders with their
+    // boxes among them, and at a narrower one their titles wrap.
+    dialog.set_content_width(chart_settings::DIALOG_WIDTH);
 
     let show_text = text_tab.as_ref().map(|(_, show)| show.clone());
     *refresh.borrow_mut() = Some({
@@ -376,7 +386,8 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
     let theme = window.theme();
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
-    dialog.set_content_width(480);
+    // It opens on the properties' own rows, so at their width.
+    dialog.set_content_width(chart_settings::DIALOG_WIDTH);
     dialog.set_content_height(620);
 
     let navigation = adw::NavigationView::new();
@@ -433,7 +444,8 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                         }
                     })
                 };
-                let editor = style_editor(window.theme(), kind, current, on_style);
+                // A configuration is drawn on no chart, so has no count to show.
+                let editor = style_editor(window.theme(), kind, current, on_style, Rc::new(|| None));
                 let sub = adw::PreferencesPage::new();
                 sub.add(&editor.group);
                 for group in &editor.more {
@@ -562,14 +574,15 @@ fn describe(kind: Kind, style: &Style) -> String {
                     format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
                 }
             };
-            format!("{}, {}px{arrow}", name_of(&style.colour), style.width)
+            format!("{}, {}px{}{arrow}", name_of(&style.colour), style.width, pattern_words(style.line_style))
         }
         Kind::Rect | Kind::Ellipse => {
             let edge = match style.border {
-                true => format!(", edge {} {}px", name_of(&style.colour), style.width),
+                true => format!(", edge {} {}px{}", name_of(&style.colour), style.width, pattern_words(style.line_style)),
                 false => ", no edge".to_string(),
             };
-            format!("{} at {:.0}%{edge}", name_of(&style.fill), style.alpha * 100.0)
+            let held = if style.edge_only { ", by its edge" } else { "" };
+            format!("{} at {:.0}%{edge}{held}", name_of(&style.fill), style.alpha * 100.0)
         }
         // A text configuration is its three text properties and nothing
         // else, so they are what the row says. The face is named only when
@@ -587,8 +600,13 @@ fn describe(kind: Kind, style: &Style) -> String {
                 true => String::new(),
                 false => format!(" on {}", name_of(&style.fill)),
             };
+            let area = match (look.highlight, &look.value_area_paint) {
+                (false, _) => ", value area not set apart".to_string(),
+                (true, Some(paint)) => format!(", value area {}", name_of(paint)),
+                (true, None) => String::new(),
+            };
             format!(
-                "{}{background} {}, from the {}, point of control {}",
+                "{}{background} {}, from the {}, point of control {}{area}",
                 name_of(&style.colour),
                 look.shape.label().to_lowercase(),
                 look.align.label().to_lowercase(),
@@ -607,6 +625,15 @@ fn describe(kind: Kind, style: &Style) -> String {
             vwap_bands(style)
         ),
         Kind::Fib => fib_summary(style),
+    }
+}
+
+/// A pattern in a summary: nothing for solid, which is what a line is
+/// unless it says otherwise.
+fn pattern_words(pattern: LineStyle) -> String {
+    match pattern {
+        LineStyle::Solid => String::new(),
+        other => format!(" {}", other.label().to_lowercase()),
     }
 }
 
@@ -692,7 +719,13 @@ impl Editor {
 
 /// The rows for a kind's properties, their colours picked on `theme`. Every
 /// change calls `on_style` with the whole style as it now is.
-fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(Style)>) -> Editor {
+fn style_editor(
+    theme: Theme,
+    kind: Kind,
+    current: Style,
+    on_style: Rc<dyn Fn(Style)>,
+    drawn_rows: Rc<dyn Fn() -> Option<usize>>,
+) -> Editor {
     let style: Rc<RefCell<Style>> = Rc::new(RefCell::new(current));
     // Set while the rows are being shown a style, so a row's own signal does
     // not call back as if the hand had changed it.
@@ -724,20 +757,29 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
 
     match kind {
         Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
-            // Colour.
-            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+            // Colour, thickness and the pattern drawn in it, the order every
+            // line in every dialog keeps; the pattern's samples are in the
+            // colour.
+            let ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
+            let (row, show) = paint_row(&theme, property_rows::COLOUR, &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
+                let ink = ink.clone();
                 move |paint| {
                     style.borrow_mut().colour = paint;
+                    ink.repaint();
                     emit();
                 }
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
 
-            // Thickness.
-            let (row, show) = width_row("Thickness", style.borrow().width, {
+            // Thickness, from the same row as every other line's.
+            let (row, show) = property_rows::thickness_row(property_rows::THICKNESS, style.borrow().width, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |width| {
@@ -747,6 +789,20 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            let (row, show) = pattern_row(&ink, property_rows::LINE_STYLE, style.borrow().line_style, &showing, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |pattern| {
+                    style.borrow_mut().line_style = pattern;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| {
+                show(s.line_style);
+                ink.repaint();
+            }));
 
             // Arrow. Each choice is drawn rather than named, in the line's
             // own colour at its own width: which end "the start" is, and
@@ -809,148 +865,334 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
                 }
             }));
         }
-        // The study's properties, as one drawing carries them.
+        // The study's properties, as one drawing carries them: the same
+        // rows in the same groups and order, laid out by `profile_rows`,
+        // less what only a study has.
         Kind::Profile => {
+            group.set_title("Parameters");
+            let granularity =
+                profile_rows::granularity(style.borrow().profile.rows, drawn_rows.clone(), {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |rows| {
+                        style.borrow_mut().profile.rows = rows;
+                        emit();
+                    }
+                });
+            {
+                let show = granularity.show.clone();
+                shows.push(Rc::new(move |s: &Style| show(s.profile.rows)));
+            }
+
+            let (area, show) = profile_rows::value_area_row(style.borrow().profile.value_area, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |share| {
+                    style.borrow_mut().profile.value_area = share;
+                    emit();
+                }
+            });
+            shows.push(Rc::new(move |s: &Style| show(s.profile.value_area)));
+
+            // The value area set apart from the other rows, or not; and in
+            // a colour of its own, or in the background's, only stronger.
+            let area_paint = |s: &Style| {
+                s.profile
+                    .value_area_paint
+                    .clone()
+                    .unwrap_or_else(|| s.fill.clone())
+            };
+            // Reset sits before the swatch and greys out while there is
+            // nothing to reset, as on every other colour with a Reset.
+            let area_row = adw::ActionRow::new();
+            area_row.set_title(profile_rows::VALUE_AREA_COLOUR);
+            let reset = gtk::Button::with_label("Reset");
+            reset.add_css_class("flat");
+            reset.add_css_class("subtle-link");
+            reset.set_valign(gtk::Align::Center);
+            reset.set_tooltip_text(Some("Back to the background's colour"));
+            area_row.add_suffix(&reset);
+            let (button, show) = paint_button(&theme, &area_paint(&style.borrow()), {
+                let style = style.clone();
+                let emit = emit.clone();
+                let reset = reset.downgrade();
+                move |paint| {
+                    style.borrow_mut().profile.value_area_paint = Some(paint);
+                    if let Some(reset) = reset.upgrade() {
+                        reset.set_sensitive(true);
+                    }
+                    emit();
+                }
+            });
+            area_row.add_suffix(&button);
+            let show_area: Rc<dyn Fn(&Style)> = {
+                let reset = reset.clone();
+                Rc::new(move |s: &Style| {
+                    show(&area_paint(s));
+                    reset.set_sensitive(s.profile.value_area_paint.is_some());
+                })
+            };
+            show_area(&style.borrow());
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                let show = show_area.clone();
+                reset.connect_clicked(move |_| {
+                    style.borrow_mut().profile.value_area_paint = None;
+                    let now = style.borrow().clone();
+                    show(&now);
+                    emit();
+                });
+            }
+            area_row.set_sensitive(style.borrow().profile.highlight);
+            let (highlight, show) = profile_rows::switch_row(
+                profile_rows::HIGHLIGHT,
+                style.borrow().profile.highlight,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |on| {
+                        style.borrow_mut().profile.highlight = on;
+                        emit();
+                    }
+                },
+            );
+            {
+                let area_row = area_row.clone();
+                highlight.connect_active_notify(move |row| area_row.set_sensitive(row.is_active()));
+            }
+            {
+                let area_row = area_row.clone();
+                shows.push(Rc::new(move |s: &Style| {
+                    show(s.profile.highlight);
+                    area_row.set_sensitive(s.profile.highlight);
+                    show_area(s);
+                }));
+            }
+            profile_rows::add_parameters(
+                &group,
+                &profile_rows::ParameterRows {
+                    leading: Vec::new(),
+                    granularity,
+                    value_area: area.upcast(),
+                    highlight,
+                    value_area_colour: area_row.upcast(),
+                },
+            );
+
             // Filled rows wear an outline only when asked; the outline style
             // is nothing but one, so the switch is for the filled style.
             let filled = |s: &Style| s.profile.shape == ProfileShape::Filled;
-            let edge = adw::SwitchRow::new();
-            edge.set_title("Outline");
-            edge.set_active(style.borrow().border || !filled(&style.borrow()));
-            edge.set_sensitive(filled(&style.borrow()));
-            group.add(&edge);
-
-            let (outline_row, show) = paint_row(&theme, "Outline colour", &style.borrow().colour, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |paint| {
-                    style.borrow_mut().colour = paint;
-                    emit();
-                }
-            });
-            group.add(&outline_row);
-            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
-
-            let (thickness_row, show) = width_row("Outline thickness", style.borrow().width, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |width| {
-                    style.borrow_mut().width = width;
-                    emit();
-                }
-            });
-            group.add(&thickness_row);
-            shows.push(Rc::new(move |s: &Style| show(s.width)));
-
-            // The outline's own rows wait for there to be an outline.
             let outlined = move |s: &Style| s.border || !filled(s);
-            for row in [outline_row.clone().upcast::<gtk::Widget>(), thickness_row.clone().upcast()] {
-                row.set_sensitive(outlined(&style.borrow()));
-            }
+            let edge = adw::SwitchRow::new();
+            edge.set_title(profile_rows::OUTLINE);
+            edge.set_active(outlined(&style.borrow()));
+            edge.set_sensitive(filled(&style.borrow()));
             {
                 let style = style.clone();
                 let emit = emit.clone();
                 let showing = showing.clone();
-                let rows = [outline_row.clone().upcast::<gtk::Widget>(), thickness_row.clone().upcast()];
                 edge.connect_active_notify(move |row| {
                     if showing.get() || !filled(&style.borrow()) {
                         return;
-                    }
-                    for widget in &rows {
-                        widget.set_sensitive(row.is_active());
                     }
                     style.borrow_mut().border = row.is_active();
                     emit();
                 });
             }
-            {
-                let rows = [outline_row.upcast::<gtk::Widget>(), thickness_row.upcast()];
-                shows.push(Rc::new(move |s: &Style| {
+            // The switch follows the style, the moment it is picked as well
+            // as when a style is shown: on and greyed while the outline is
+            // all there is, back to what it was set to when the rows are
+            // filled again.
+            let follow_shape: Rc<dyn Fn(&Style)> = {
+                let edge = edge.clone();
+                let showing = showing.clone();
+                Rc::new(move |s: &Style| {
+                    let was = showing.replace(true);
                     edge.set_active(outlined(s));
+                    showing.set(was);
                     edge.set_sensitive(filled(s));
-                    for widget in &rows {
-                        widget.set_sensitive(outlined(s));
+                })
+            };
+            {
+                let follow_shape = follow_shape.clone();
+                shows.push(Rc::new(move |s: &Style| follow_shape(s)));
+            }
+
+            let outline_ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
+            let (outline_row, show) = paint_row(
+                &theme,
+                profile_rows::OUTLINE_COLOUR,
+                &style.borrow().colour,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    let ink = outline_ink.clone();
+                    move |paint| {
+                        style.borrow_mut().colour = paint;
+                        ink.repaint();
+                        emit();
                     }
+                },
+            );
+            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let (outline_pattern, show) = pattern_row(
+                &outline_ink,
+                profile_rows::OUTLINE_STYLE,
+                style.borrow().line_style,
+                &showing,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |pattern| {
+                        style.borrow_mut().line_style = pattern;
+                        emit();
+                    }
+                },
+            );
+            {
+                let ink = outline_ink.clone();
+                shows.push(Rc::new(move |s: &Style| {
+                    show(s.line_style);
+                    ink.repaint();
                 }));
             }
 
-            let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |paint| {
-                    style.borrow_mut().fill = paint;
-                    emit();
-                }
-            });
-            group.add(&row);
+            let (outline_thickness, show) = profile_rows::thickness_row(
+                profile_rows::OUTLINE_THICKNESS,
+                style.borrow().width,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |width| {
+                        style.borrow_mut().width = width;
+                        emit();
+                    }
+                },
+            );
+            shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            let (background, show) =
+                paint_row(&theme, profile_rows::BACKGROUND, &style.borrow().fill, {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |paint| {
+                        style.borrow_mut().fill = paint;
+                        emit();
+                    }
+                });
             shows.push(Rc::new(move |s: &Style| show(&s.fill)));
 
-            // Over the outline and the background together, from the look
-            // as designed at 0%: their strengths are measured, and this
-            // only fades them.
-            let fade = adw::ActionRow::new();
-            fade.set_title("Transparency");
-            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
-            scale.set_size_request(160, -1);
-            scale.set_valign(gtk::Align::Center);
-            scale.set_draw_value(true);
-            scale.set_value_pos(gtk::PositionType::Left);
-            scale.set_format_value_func(|_, v| format!("{v:.0}%"));
-            scale.set_value((1.0 - style.borrow().profile.opacity) * 100.0);
-            {
-                let style = style.clone();
-                let emit = emit.clone();
-                scale.connect_value_changed(move |scale| {
-                    style.borrow_mut().profile.opacity = (1.0 - scale.value() / 100.0).clamp(0.0, 1.0);
-                    emit();
+            // The outline fades with the rows.
+            let (transparency, show) =
+                profile_rows::transparency_row(transparency_share(&style.borrow()), {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |share| {
+                        style.borrow_mut().set_profile_alpha(1.0 - share);
+                        emit();
+                    }
                 });
-            }
-            fade.add_suffix(&scale);
-            group.add(&fade);
-            shows.push(Rc::new(move |s: &Style| scale.set_value((1.0 - s.profile.opacity) * 100.0)));
+            shows.push(Rc::new(move |s: &Style| show(transparency_share(s))));
 
-            let (row, show) = paint_row(&theme, "Point of control", &style.borrow().profile.poc, {
+            let (show_poc, show) = profile_rows::switch_row(
+                profile_rows::SHOW_POC,
+                style.borrow().profile.show_poc,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |on| {
+                        style.borrow_mut().profile.show_poc = on;
+                        emit();
+                    }
+                },
+            );
+            shows.push(Rc::new(move |s: &Style| show(s.profile.show_poc)));
+
+            let poc_ink = {
                 let style = style.clone();
-                let emit = emit.clone();
-                move |paint| {
-                    style.borrow_mut().profile.poc = paint;
-                    emit();
-                }
-            });
-            group.add(&row);
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().profile.poc.hex(&theme))
+            };
+            let (poc_colour, show) = paint_row(
+                &theme,
+                profile_rows::POC_COLOUR,
+                &style.borrow().profile.poc,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    let ink = poc_ink.clone();
+                    move |paint| {
+                        style.borrow_mut().profile.poc = paint;
+                        ink.repaint();
+                        emit();
+                    }
+                },
+            );
             shows.push(Rc::new(move |s: &Style| show(&s.profile.poc)));
 
-            let (row, show) = width_row("Point of control thickness", style.borrow().profile.poc_width, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |width| {
-                    style.borrow_mut().profile.poc_width = width;
-                    emit();
-                }
-            });
-            group.add(&row);
+            let (poc_style, show) = pattern_row(
+                &poc_ink,
+                profile_rows::POC_STYLE,
+                style.borrow().profile.poc_style,
+                &showing,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |pattern| {
+                        style.borrow_mut().profile.poc_style = pattern;
+                        emit();
+                    }
+                },
+            );
+            shows.push(Rc::new(move |s: &Style| {
+                show(s.profile.poc_style);
+                poc_ink.repaint();
+            }));
+
+            let (poc_thickness, show) = profile_rows::thickness_row(
+                profile_rows::POC_THICKNESS,
+                style.borrow().profile.poc_width,
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |width| {
+                        style.borrow_mut().profile.poc_width = width;
+                        emit();
+                    }
+                },
+            );
             shows.push(Rc::new(move |s: &Style| show(s.profile.poc_width)));
 
             let shapes = ProfileShape::ALL;
-            let (row, show) = named_row(
-                "Style",
+            let (shape, show) = named_row(
+                profile_rows::STYLE,
                 &shapes.map(ProfileShape::label),
                 shapes.iter().position(|s| *s == style.borrow().profile.shape),
                 {
                     let style = style.clone();
                     let emit = emit.clone();
+                    let follow_shape = follow_shape.clone();
                     move |at| {
                         style.borrow_mut().profile.shape = shapes[at];
+                        let now = style.borrow().clone();
+                        follow_shape(&now);
                         emit();
                     }
                 },
             );
-            group.add(&row);
-            shows.push(Rc::new(move |s: &Style| show(shapes.iter().position(|x| *x == s.profile.shape))));
+            shows.push(Rc::new(move |s: &Style| {
+                show(shapes.iter().position(|x| *x == s.profile.shape))
+            }));
 
             let aligns = ProfileAlign::ALL;
-            let (row, show) = named_row(
-                "Alignment",
+            let (alignment, show) = named_row(
+                profile_rows::ALIGNMENT,
                 &aligns.map(ProfileAlign::label),
                 aligns.iter().position(|a| *a == style.borrow().profile.align),
                 {
@@ -962,26 +1204,25 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
                     }
                 },
             );
-            group.add(&row);
-            shows.push(Rc::new(move |s: &Style| show(aligns.iter().position(|x| *x == s.profile.align))));
+            shows.push(Rc::new(move |s: &Style| {
+                show(aligns.iter().position(|x| *x == s.profile.align))
+            }));
 
-            let area = adw::SpinRow::with_range(10.0, 100.0, 5.0);
-            area.set_title("Value area %");
-            area.set_value(style.borrow().profile.value_area * 100.0);
-            {
-                let style = style.clone();
-                let emit = emit.clone();
-                let showing = showing.clone();
-                area.connect_value_notify(move |row| {
-                    if showing.get() {
-                        return;
-                    }
-                    style.borrow_mut().profile.value_area = row.value() / 100.0;
-                    emit();
-                });
-            }
-            group.add(&area);
-            shows.push(Rc::new(move |s: &Style| area.set_value(s.profile.value_area * 100.0)));
+            more.push(profile_rows::style_group(profile_rows::StyleRows {
+                outline: edge,
+                outline_colour: outline_row.upcast(),
+                outline_style: outline_pattern.upcast(),
+                outline_thickness: outline_thickness.upcast(),
+                background: background.upcast(),
+                transparency: transparency.upcast(),
+                show_poc,
+                poc_colour: poc_colour.upcast(),
+                poc_style: poc_style.upcast(),
+                poc_thickness: poc_thickness.upcast(),
+                style: shape.upcast(),
+                alignment: alignment.upcast(),
+                width: None,
+            }));
         }
         // The study's rows, in the study's order and groups: what it is
         // worked out from, the line, then a group for each band.
@@ -1014,7 +1255,7 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
             // The bands' samples too: a band with no colour of its own is
             // drawn in the line's.
             let inks: Rc<RefCell<Vec<Ink>>> = Rc::new(RefCell::new(vec![ink.clone()]));
-            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+            let (row, show) = paint_row(&theme, property_rows::COLOUR, &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 let inks = inks.clone();
@@ -1061,7 +1302,7 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
         // opens on its own colour, thickness and pattern.
         Kind::Fib => {
             let inks: Rc<RefCell<Vec<Ink>>> = Rc::new(RefCell::new(Vec::new()));
-            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+            let (row, show) = paint_row(&theme, property_rows::COLOUR, &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 let inks = inks.clone();
@@ -1113,7 +1354,7 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
         // they are edited by the same rows.
         Kind::Rect | Kind::Ellipse => {
             // Background and how much of it shows.
-            let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
+            let (row, show) = paint_row(&theme, property_rows::BACKGROUND, &style.borrow().fill, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |paint| {
@@ -1124,30 +1365,20 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.fill)));
 
-            let alpha_row = adw::ActionRow::new();
-            alpha_row.set_title("Transparency");
-            alpha_row.set_subtitle("How much of the candles shows through.");
-            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
-            scale.set_size_request(160, -1);
-            scale.set_valign(gtk::Align::Center);
-            scale.set_draw_value(true);
-            scale.set_value_pos(gtk::PositionType::Left);
-            scale.set_format_value_func(|_, v| format!("{v:.0}%"));
-            scale.set_value((1.0 - style.borrow().alpha) * 100.0);
-            {
+            // As much of the chart through it as through a profile's rows,
+            // on the same slider and box.
+            let (alpha_row, show_alpha) = property_rows::transparency_row(1.0 - style.borrow().alpha, {
                 let style = style.clone();
                 let emit = emit.clone();
-                scale.connect_value_changed(move |scale| {
-                    style.borrow_mut().alpha = (1.0 - scale.value() / 100.0).clamp(0.0, 1.0);
+                move |share| {
+                    style.borrow_mut().alpha = (1.0 - share).clamp(0.0, 1.0);
                     emit();
-                });
-            }
-            alpha_row.add_suffix(&scale);
+                }
+            });
             group.add(&alpha_row);
-            let scale_for_show = scale.clone();
-            shows.push(Rc::new(move |s: &Style| scale_for_show.set_value((1.0 - s.alpha) * 100.0)));
+            shows.push(Rc::new(move |s: &Style| show_alpha(1.0 - s.alpha)));
 
-            // The edge: whether, how thick, what colour.
+            // The edge: whether, what colour, how thick, what pattern.
             let border_row = adw::SwitchRow::new();
             border_row.set_title("Border");
             border_row.set_active(style.borrow().border);
@@ -1160,7 +1391,23 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
                 });
             }
             group.add(&border_row);
-            let (width_row, show_width) = width_row("Border thickness", style.borrow().width, {
+            let ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
+            let (colour_row, show_colour) = paint_row(&theme, "Border colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                let ink = ink.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    ink.repaint();
+                    emit();
+                }
+            });
+            group.add(&colour_row);
+            let (width_row, show_width) = property_rows::thickness_row("Border thickness", style.borrow().width, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |width| {
@@ -1169,22 +1416,24 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
                 }
             });
             group.add(&width_row);
-            let (colour_row, show_colour) = paint_row(&theme, "Border colour", &style.borrow().colour, {
+            let (pattern_row, show_pattern) = pattern_row(&ink, "Border style", style.borrow().line_style, &showing, {
                 let style = style.clone();
                 let emit = emit.clone();
-                move |paint| {
-                    style.borrow_mut().colour = paint;
+                move |pattern| {
+                    style.borrow_mut().line_style = pattern;
                     emit();
                 }
             });
-            group.add(&colour_row);
-            // The edge's rows only mean something while there is an edge.
+            group.add(&pattern_row);
+            // The edge's rows are there while there is an edge, and gone
+            // with it: a thickness, a colour and a pattern for nothing
+            // drawn are rows to read past.
             let follow = {
-                let width_row = width_row.clone();
-                let colour_row = colour_row.clone();
+                let rows: [gtk::Widget; 3] = [colour_row.clone().upcast(), width_row.clone().upcast(), pattern_row.clone().upcast()];
                 move |on: bool| {
-                    width_row.set_sensitive(on);
-                    colour_row.set_sensitive(on);
+                    for row in &rows {
+                        row.set_visible(on);
+                    }
                 }
             };
             follow(style.borrow().border);
@@ -1192,12 +1441,31 @@ fn style_editor(theme: Theme, kind: Kind, current: Style, on_style: Rc<dyn Fn(St
                 let follow = follow.clone();
                 border_row.connect_active_notify(move |row| follow(row.is_active()));
             }
+
+            // Whether the inside is the chart's. On whether or not the
+            // edge is drawn, since the edge is still where it is.
+            let edge_only = adw::SwitchRow::new();
+            edge_only.set_title("Select by border only");
+            edge_only.set_active(style.borrow().edge_only);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                edge_only.connect_active_notify(move |row| {
+                    style.borrow_mut().edge_only = row.is_active();
+                    emit();
+                });
+            }
+            group.add(&edge_only);
+
             let border_for_show = border_row.clone();
             shows.push(Rc::new(move |s: &Style| {
                 border_for_show.set_active(s.border);
                 show_width(s.width);
                 show_colour(&s.colour);
+                show_pattern(s.line_style);
+                ink.repaint();
                 follow(s.border);
+                edge_only.set_active(s.edge_only);
             }));
         }
         // A text drawing has no shape to edit, so its look *is* its text
@@ -1528,7 +1796,7 @@ fn text_rows(
 ) -> Vec<StyleRow> {
     let mut rows: Vec<StyleRow> = Vec::new();
 
-    let (row, show) = paint_row(theme, "Colour", &style.borrow().text.colour, {
+    let (row, show) = paint_row(theme, property_rows::COLOUR, &style.borrow().text.colour, {
         let style = style.clone();
         let emit = emit.clone();
         move |paint| {
@@ -1663,7 +1931,16 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
     let row_h = h / rows.len() as f64;
     let colour = style.colour.hex(theme);
     let fill = style.fill.hex(theme);
-    let opacity = style.profile.opacity.clamp(0.0, 1.0);
+    let area_fill = match (style.profile.highlight, &style.profile.value_area_paint) {
+        (true, Some(paint)) => paint.hex(theme),
+        _ => fill.clone(),
+    };
+    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    let alpha = style.profile_alpha();
+    let (inside_alpha, outside_alpha) = row_alphas(alpha, style.profile.highlight);
+    // A swatch is small: its faintest rows are kept in sight while the
+    // profile is in sight at all.
+    let least = 0.12 * line_alpha(1.0, alpha);
     let right = style.profile.align == ProfileAlign::Right;
     let span = |share: f64| match right {
         true => (x + w - w * share, w * share),
@@ -1684,30 +1961,39 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
         ProfileShape::Filled => {
             for (n, share) in rows.iter().enumerate() {
                 let inside = (2..=4).contains(&n);
-                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                colors::set_source_alpha(cr, &fill, alpha.max(0.12) * opacity);
+                let (paint, strength) = if inside { (&area_fill, inside_alpha) } else { (&fill, outside_alpha) };
+                colors::set_source_alpha(cr, paint, strength.max(least));
                 let (left, width) = span(*share);
                 cr.rectangle(left, y + n as f64 * row_h, width, row_h);
                 let _ = cr.fill();
             }
             let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, &colour, edge * opacity);
+            colors::set_source_alpha(cr, &colour, line_alpha(edge, alpha));
             cr.set_line_width(1.0);
         }
         ProfileShape::Outline => {
-            colors::set_source_alpha(cr, &colour, opacity);
+            colors::set_source_alpha(cr, &colour, line_alpha(1.0, alpha));
             cr.set_line_width(style.width.clamp(1.0, 2.0));
         }
     }
+    cr.set_line_cap(gtk::cairo::LineCap::Butt);
+    cr.set_dash(&style.line_style.dashes(cr.line_width()), 0.0);
     path(cr);
     let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+    if !style.profile.show_poc {
+        return;
+    }
     let poc = (y + 3.5 * row_h).round() + 0.5;
     colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
-    cr.set_line_width(style.profile.poc_width.clamp(1.0, 2.0));
+    let poc_w = style.profile.poc_width.clamp(1.0, 2.0);
+    cr.set_line_width(poc_w);
+    cr.set_dash(&style.profile.poc_style.dashes(poc_w), 0.0);
     let (left, width) = span(1.0);
     cr.move_to(left, poc);
     cr.line_to(left + width, poc);
     let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
 }
 
 /// A small anchored VWAP in a style's look: a dot on the bar it starts from
@@ -1791,12 +2077,9 @@ fn vwap_band_group(
         })
     };
 
-    let switch_row = |title: &str, subtitle: Option<&str>, on: bool, apply: fn(&mut drawings::VwapBand, bool)| {
+    let switch_row = |title: &str, on: bool, apply: fn(&mut drawings::VwapBand, bool)| {
         let row = adw::SwitchRow::new();
         row.set_title(title);
-        if let Some(subtitle) = subtitle {
-            row.set_subtitle(subtitle);
-        }
         row.set_active(on);
         let edit = edit.clone();
         row.connect_active_notify(move |row| {
@@ -1806,7 +2089,7 @@ fn vwap_band_group(
         row
     };
 
-    let show = switch_row("Show", None, band.enabled, |band, on| band.enabled = on);
+    let show = switch_row(property_rows::SHOW, band.enabled, |band, on| band.enabled = on);
     group.add(&show);
     shows.push(Rc::new(move |s: &Style| show.set_active(s.vwap.bands[index].enabled)));
 
@@ -1831,9 +2114,7 @@ fn vwap_band_group(
         shows.push(Rc::new(move |s: &Style| adjustment.set_value(s.vwap.bands[index].deviations)));
     }
 
-    let shaded = switch_row("Shaded", Some("Fill the area between this band's edges"), band.fill, |band, on| {
-        band.fill = on
-    });
+    let shaded = switch_row(property_rows::SHADED, band.fill, |band, on| band.fill = on);
     group.add(&shaded);
     shows.push(Rc::new(move |s: &Style| shaded.set_active(s.vwap.bands[index].fill)));
 
@@ -1898,7 +2179,7 @@ fn vwap_band_group(
         });
     }
     let colour = adw::ActionRow::new();
-    colour.set_title("Colour");
+    colour.set_title(property_rows::COLOUR);
     colour.add_suffix(&reset);
     colour.add_suffix(&button);
     group.add(&colour);
@@ -2045,7 +2326,7 @@ fn fib_level_row(
         });
     }
     let colour = adw::ActionRow::new();
-    colour.set_title("Colour");
+    colour.set_title(property_rows::COLOUR);
     colour.add_suffix(&reset);
     colour.add_suffix(&button);
     row.add_row(&colour);
@@ -2116,7 +2397,7 @@ fn stroke_rows(
         .map(|style| (chart_settings::LINE_SAMPLE_WIDTH, Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, *style)))
         .collect();
     let mut rows = Vec::new();
-    for (title, options, by_width) in [("Thickness", widths, true), ("Line style", styles, false)] {
+    for (title, options, by_width) in [(property_rows::THICKNESS, widths, true), (property_rows::LINE_STYLE, styles, false)] {
         let row = adw::ActionRow::new();
         row.set_title(title);
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -2181,6 +2462,28 @@ fn stroke_rows(
     rows
 }
 
+/// The pattern a line or an edge is drawn in, picked from drawn samples:
+/// the second of [`stroke_rows`], on its own, for a stroke whose thickness
+/// is a row of its own already.
+fn pattern_row(
+    ink: &Ink,
+    title: &str,
+    current: LineStyle,
+    showing: &Rc<Cell<bool>>,
+    on_pick: impl Fn(LineStyle) + Clone + 'static,
+) -> (adw::ActionRow, Rc<dyn Fn(LineStyle)>) {
+    let current = Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, current);
+    let (row, show) = stroke_rows(ink, current, showing, move |stroke: Stroke| on_pick(stroke.style))
+        .into_iter()
+        .nth(1)
+        .expect("a thickness row and a pattern row");
+    row.set_title(title);
+    row.add_css_class("line-style-row");
+    let show: Rc<dyn Fn(LineStyle)> =
+        Rc::new(move |pattern| show(Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, pattern)));
+    (row, show)
+}
+
 /// A row choosing one of a few named ways, and a way to show another.
 fn named_row(
     title: &str,
@@ -2210,25 +2513,14 @@ fn named_row(
     (row, show)
 }
 
-fn width_row(title: &str, current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-    let spin = gtk::SpinButton::with_range(
-        drawings::MIN_WIDTH,
-        drawings::MAX_WIDTH,
-        drawings::WIDTH_STEP,
-    );
-    spin.set_digits(1);
-    spin.set_valign(gtk::Align::Center);
-    spin.set_value(current);
-    spin.connect_value_changed(move |spin| on_pick(spin.value()));
-    row.add_suffix(&spin);
-    let spin_for_show = spin.clone();
-    (row, Rc::new(move |width| spin_for_show.set_value(width)))
-}
-
 /// A row that picks a colour: the nine presets as tiles, and a wheel for a
 /// colour of one's own.
+/// A volume profile's transparency, as its row shows it: what it draws,
+/// whether it was saved as a fade or as a strength.
+fn transparency_share(style: &Style) -> f64 {
+    1.0 - style.profile_alpha()
+}
+
 fn paint_row(
     theme: &Theme,
     title: &str,
@@ -2248,11 +2540,13 @@ fn paint_button(
     current: &Paint,
     on_pick: impl Fn(Paint) + Clone + 'static,
 ) -> (gtk::MenuButton, Shower<Paint>) {
+    // The study's colour button: the same frame round the same swatch.
     let shown = palette::swatch_area(&current.hex(theme), false);
+    shown.set_size_request(palette::BUTTON_SWATCH.0, palette::BUTTON_SWATCH.1);
     let button = gtk::MenuButton::new();
     button.set_child(Some(&shown));
     button.set_valign(gtk::Align::Center);
-    button.add_css_class("flat");
+    button.add_css_class("swatch-button");
     let popover = gtk::Popover::new();
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -2403,8 +2697,10 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
         match kind {
             Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
                 colors::set_source(cr, &colour);
-                cr.set_line_width(style.width.clamp(1.0, 4.0));
+                let width = style.width.clamp(1.0, 4.0);
+                cr.set_line_width(width);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_dash(&style.line_style.round_dashes(width), 0.0);
                 let y = (h / 2.0).round() + 0.5;
                 cr.move_to(2.0, y);
                 cr.line_to(w - 2.0, y);
@@ -2417,6 +2713,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                 if style.border {
                     colors::set_source_alpha(cr, &colour, 0.8);
                     cr.set_line_width(1.0);
+                    cr.set_dash(&style.line_style.dashes(1.0), 0.0);
                     cr.rectangle(1.5, 1.5, w - 3.0, h - 3.0);
                     let _ = cr.stroke();
                 }
@@ -2435,6 +2732,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                 if style.border {
                     colors::set_source_alpha(cr, &colour, 0.8);
                     cr.set_line_width(1.0);
+                    cr.set_dash(&style.line_style.dashes(1.0), 0.0);
                     curve(cr, 1.5);
                     let _ = cr.stroke();
                 }
@@ -2530,11 +2828,13 @@ fn draw_preview_figure(
                 cr.set_line_width(line_w);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
                 cr.set_line_join(gtk::cairo::LineJoin::Round);
+                cr.set_dash(&style.line_style.round_dashes(line_w), 0.0);
                 cr.move_to(corners[0].0, corners[0].1);
                 for (cx, cy) in &corners[1..] {
                     cr.line_to(*cx, *cy);
                 }
                 let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
                 if style.arrow.at_end() {
                     head(cr, corners[2], corners[3], line_w, style.head);
                 }
@@ -2549,9 +2849,11 @@ fn draw_preview_figure(
             colors::set_source(cr, &colour);
             cr.set_line_width(line_w);
             cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_dash(&style.line_style.round_dashes(line_w), 0.0);
             cr.move_to(a.0, a.1);
             cr.line_to(b.0, b.1);
             let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
             if style.arrow.at_end() {
                 head(cr, a, b, line_w, style.head);
             }
@@ -2570,8 +2872,10 @@ fn draw_preview_figure(
                 if style.border {
                     colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                     cr.set_line_width(edge_w);
+                    cr.set_dash(&style.line_style.dashes(edge_w), 0.0);
                     cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
                     let _ = cr.stroke();
+                    cr.set_dash(&[], 0.0);
                 }
             } else {
                 let curve = |cr: &gtk::cairo::Context| {
@@ -2586,8 +2890,10 @@ fn draw_preview_figure(
                 if style.border {
                     colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                     cr.set_line_width(edge_w);
+                    cr.set_dash(&style.line_style.dashes(edge_w), 0.0);
                     curve(cr);
                     let _ = cr.stroke();
+                    cr.set_dash(&[], 0.0);
                 }
             }
             preview_text(cr, (x, y, rw, rh), kind, theme, style, text, scale);
@@ -2798,4 +3104,137 @@ fn finish(
 /// it: the nth, so configuration 1 is Up and 2 is Down.
 pub fn preset_of(n: u8) -> Preset {
     Preset::ALL[(n.clamp(1, CONFIGURATIONS) - 1) as usize]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Store;
+
+    /// A profile drawing's properties are the study's, in the same groups
+    /// and the same order, less what only a study has: its period, whether
+    /// only the newest is drawn, what it measures, how a delta is painted,
+    /// and how wide it is drawn, which on a drawing is the span it covers.
+    #[test]
+    fn a_profile_drawing_has_the_studys_rows_in_the_studys_order() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = crate::ui::window::test_window(&store);
+            let only_the_study = [
+                "Reset every",
+                "Only show in last period",
+                "Calculation method",
+                "Colouring",
+                chart_settings::PROFILE_WIDTH_LABEL,
+            ];
+            let study: Vec<(String, Vec<String>)> = chart_settings::profile_titles(&window)
+                .into_iter()
+                .map(|(title, rows)| {
+                    (
+                        title,
+                        rows.into_iter()
+                            .filter(|row| !only_the_study.contains(&row.as_str()))
+                            .collect(),
+                    )
+                })
+                .collect();
+
+            let editor = style_editor(
+                window.theme(),
+                Kind::Profile,
+                Style::profile(Preset::Violet),
+                Rc::new(|_| {}),
+                Rc::new(|| None),
+            );
+            let mut drawing = vec![(
+                editor.group.title().to_string(),
+                profile_rows::titles(&editor.group),
+            )];
+            drawing.extend(
+                editor
+                    .more
+                    .iter()
+                    .map(|group| (group.title().to_string(), profile_rows::titles(group))),
+            );
+
+            assert_eq!(drawing, study);
+            assert!(
+                drawing
+                    .iter()
+                    .any(|(_, rows)| rows.iter().any(|row| row == profile_rows::AUTOMATIC)),
+                "{drawing:?}"
+            );
+        });
+    }
+
+    /// The widgets of a group, in order, as far down as its rows.
+    fn rows_of(group: &adw::PreferencesGroup) -> Vec<gtk::Widget> {
+        fn walk(widget: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
+            if widget.is::<adw::PreferencesRow>() {
+                out.push(widget.clone());
+                return;
+            }
+            let mut child = widget.first_child();
+            while let Some(next) = child {
+                walk(&next, out);
+                child = next.next_sibling();
+            }
+        }
+        let mut out = Vec::new();
+        walk(group.upcast_ref(), &mut out);
+        out
+    }
+
+    fn title_of(row: &gtk::Widget) -> String {
+        row.downcast_ref::<adw::PreferencesRow>().map(|r| r.title().to_string()).unwrap_or_default()
+    }
+
+    /// Every drawing that has a stroke row of its own lists its colour, its
+    /// thickness and its style in that order, as a study's line does, and
+    /// its thickness is the study's spin row; a box's fill shows through
+    /// on the slider and box a profile's does.
+    #[test]
+    fn a_drawing_s_stroke_and_fill_rows_are_the_studys() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = crate::ui::window::test_window(&store);
+            let edit = |kind: Kind| {
+                let editor = style_editor(window.theme(), kind, Style::of(kind, Preset::Blue), Rc::new(|_| {}), Rc::new(|| None));
+                rows_of(&editor.group)
+            };
+            for kind in [Kind::Line, Kind::Horizontal, Kind::Arrow, Kind::Zigzag] {
+                let rows = edit(kind);
+                let titles: Vec<String> = rows.iter().map(title_of).collect();
+                assert_eq!(
+                    titles[..3],
+                    [property_rows::COLOUR, property_rows::THICKNESS, property_rows::LINE_STYLE],
+                    "{kind:?}"
+                );
+                assert!(rows[1].is::<adw::SpinRow>(), "{kind:?}: the study's thickness row");
+            }
+            for kind in [Kind::Rect, Kind::Ellipse] {
+                let rows = edit(kind);
+                let titles: Vec<String> = rows.iter().map(title_of).collect();
+                let at = |title: &str| titles.iter().position(|t| t == title).unwrap_or_else(|| panic!("{title} in {titles:?}"));
+                assert_eq!(at("Border colour") + 1, at("Border thickness"), "{kind:?}: {titles:?}");
+                assert_eq!(at("Border thickness") + 1, at("Border style"), "{kind:?}: {titles:?}");
+                assert!(rows[at("Border thickness")].is::<adw::SpinRow>(), "{kind:?}");
+                let transparency = &rows[at(property_rows::TRANSPARENCY)];
+                let row = transparency.downcast_ref::<adw::ActionRow>().expect("an action row");
+                assert!(row.subtitle().is_none_or(|s| s.is_empty()), "{kind:?}: no hint under it");
+                let mut entry = false;
+                let mut child = Some(transparency.clone());
+                let mut stack = Vec::new();
+                while let Some(widget) = child.take().or_else(|| stack.pop()) {
+                    entry |= widget.is::<gtk::SpinButton>();
+                    let mut next = widget.first_child();
+                    while let Some(c) = next {
+                        next = c.next_sibling();
+                        stack.push(c);
+                    }
+                }
+                assert!(entry, "{kind:?}: a box to type the figure in, as the study's has");
+            }
+        });
+    }
 }

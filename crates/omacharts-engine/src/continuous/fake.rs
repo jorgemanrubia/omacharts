@@ -143,7 +143,7 @@ impl Provider for Months {
     fn delay_minutes(&self, _: InstrumentKind) -> u32 {
         0
     }
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+    fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
         (instrument.kind == InstrumentKind::FutureRoot).then(|| instrument.symbol.clone())
     }
     fn charted_contract(&self, instrument: &Instrument) -> Option<String> {

@@ -57,6 +57,87 @@ pub fn shown() -> bool {
     true
 }
 
+/// A profile's rows at the strength they are designed at, as every profile
+/// was drawn before it could be faded.
+pub fn opaque() -> f64 {
+    1.0
+}
+
+pub fn is_opaque(opacity: &f64) -> bool {
+    *opacity == 1.0
+}
+
+/// A stored opacity as one a profile can be drawn at: inside nothing to
+/// all, and as designed for anything that is not a number.
+pub fn drawn_opacity(opacity: f64) -> f64 {
+    match opacity.is_finite() {
+        true => opacity.clamp(0.0, 1.0),
+        false => 1.0,
+    }
+}
+
+/// How solid a profile's value area is drawn until somebody says otherwise:
+/// the strength its rows were designed at, which is a Transparency of 70%.
+/// A study and a drawing alike, so a new profile looks as every profile
+/// always did.
+pub const DESIGNED_ALPHA: f64 = 0.30;
+
+/// The rows outside the value area, as a share of the value area's
+/// strength, while it is highlighted: the 0.14 to 0.30 the study was
+/// designed at.
+///
+/// A share rather than a fixed step down, at every transparency, so the
+/// value area reads as the value area however strong the profile is drawn:
+/// at 0% the value area is the colour picked, solid, and the rest is that
+/// colour at 47%, quiet enough to tell apart and strong enough to read. A
+/// profile wanted solid all through turns the highlight off.
+pub const OUTSIDE_SHARE: f64 = 0.14 / DESIGNED_ALPHA;
+
+pub fn designed_alpha() -> f64 {
+    DESIGNED_ALPHA
+}
+
+pub fn is_designed_alpha(alpha: &f64) -> bool {
+    *alpha == DESIGNED_ALPHA
+}
+
+pub fn is_shown(on: &bool) -> bool {
+    *on
+}
+
+/// How solid a profile's value area is drawn: `alpha` faded by `opacity`,
+/// inside nothing to solid. The Transparency row is one minus this.
+///
+/// Two numbers because the opacity came first: it faded the look as
+/// designed, so a profile stored with one is drawn at the strength it had,
+/// and the Transparency row writes the strength itself, with the opacity
+/// back at 1.
+pub fn drawn_alpha(alpha: f64, opacity: f64) -> f64 {
+    let alpha = match alpha.is_finite() {
+        true => alpha.clamp(0.0, 1.0),
+        false => DESIGNED_ALPHA,
+    };
+    alpha * drawn_opacity(opacity)
+}
+
+/// How solid a profile's rows are drawn, inside its value area and out,
+/// from how solid the value area is: the rest at [`OUTSIDE_SHARE`] of it
+/// while the value area is highlighted, and every row the same when not.
+pub fn row_alphas(alpha: f64, highlight: bool) -> (f64, f64) {
+    match highlight {
+        true => (alpha, alpha * OUTSIDE_SHARE),
+        false => (alpha, alpha),
+    }
+}
+
+/// A line drawn with the rows, an outline or an edge, at the strength it
+/// was designed at beside rows at [`DESIGNED_ALPHA`], following them as they
+/// are made fainter or stronger: gone with them at 100% transparency, and
+/// solid well before they are.
+pub fn line_alpha(designed: f64, alpha: f64) -> f64 {
+    (designed * alpha / DESIGNED_ALPHA).clamp(0.0, 1.0)
+}
+
 /// How much of the room a profile has its longest row may reach: of its
 /// period's width, or of the empty space past the last bar when it is drawn
 /// there. What every profile was drawn at before it could be chosen, so one
@@ -254,28 +335,40 @@ impl Profile {
 /// The floor keeps a motionless period from collapsing to a single block; the
 /// ceiling keeps a profile from becoming a smear of hairlines on a chart only
 /// a few hundred pixels tall.
+///
+/// The ceiling is also what an automatic profile drawn from ladders stops
+/// at, where its rows are otherwise a tick each: past it, a period's rows
+/// are made 2, 5 or 10 ticks tall. Measured on an ES-like month at 1h and
+/// 2m (`crates/omacharts-chart/examples/profile_bench.rs`), a row costs about
+/// a microsecond to paint and nothing worth counting to compute, so the
+/// ceiling is set by the screen, not the clock: 800 rows down a profile as
+/// tall as a 1440-pixel display are still nearly two pixels each, and keep
+/// a tick a row on ES up to a 200-point day. At 600 a day like that would
+/// be drawn at 2 ticks, which is the blockiness this is here to remove.
 const MIN_ROWS: usize = 4;
 const MAX_ROWS: usize = 800;
 
-/// How many rows the typical period should get when the count is automatic.
+/// How many rows the typical period should get when the count is automatic
+/// and its rows are estimated from the bars.
 ///
 /// Not a target to hit exactly — the row height is snapped to a round price
 /// step and the count falls out of that, so the realised count lands anywhere
-/// from about a hundred to this. It is a ceiling the snapping stays under.
+/// from about two hundred to this. It is a ceiling the snapping stays under.
 ///
 /// Set where it is because of what it has to beat. Forty-eight rows across an
 /// Apple session is nine cents a row, which hides exactly the shelf a profile
 /// is read for; a nickel a row is the increment the stock actually trades on,
 /// and that comes out near a hundred and sixty. Raised from 250 when that
-/// read as blocky: a bar's volume is spread over every row it covers, so finer
-/// rows draw a smoother curve rather than a noisier one.
-const TARGET_ROWS: f64 = 400.0;
+/// read as blocky, and from 400 when an ES session still did, at about 140
+/// rows where one a tick is 236: a bar's volume is spread over every row it
+/// covers, so finer rows draw a smoother curve rather than a noisier one.
+const TARGET_ROWS: f64 = 600.0;
 
 /// The fewest rows an automatic period is drawn with before its rows are
 /// split. The step is the chart's, so a period far quieter than the typical
 /// one — this month two days in, against whole months — would be a handful
-/// of blocks.
-const SMOOTH_ROWS: f64 = 40.0;
+/// of blocks. Raised with [`TARGET_ROWS`], from 40.
+const SMOOTH_ROWS: f64 = 60.0;
 
 /// One profile per period, with each period whose start is in `merged` folded
 /// into the one before it: a composite, profiled as a single period.
@@ -334,18 +427,7 @@ pub fn compute_with(
     // quiet session is drawn as a short profile next to a busy one rather than
     // being stretched to the same height. Comparing two sessions is most of
     // what a volume profile is for.
-    let step = rows.is_none().then(|| auto_step(bars, &periods, kind));
-
-    let grid = match step {
-        // A row a fraction of the contract's tick would hold every price or
-        // none, a comb rather than a profile: with ladders the step is whole
-        // ticks, for the estimated periods beside them too.
-        Some((step, tick)) => match at_price {
-            Some(at) => Grid::Step { step: on_ticks(step, at.tick_size), tick: tick.max(at.tick_size) },
-            None => Grid::Step { step, tick },
-        },
-        None => Grid::Rows(rows.unwrap_or(MIN_ROWS).clamp(MIN_ROWS, MAX_ROWS)),
-    };
+    let grid = grid(bars, &periods, rows, kind, at_price);
 
     let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
     for (start, end) in periods.into_iter().skip(skipped) {
@@ -411,14 +493,43 @@ pub fn of_span(
     kind: Option<InstrumentKind>,
 ) -> Option<Profile> {
     let first = bars.first()?;
-    let grid = match rows {
-        Some(rows) => Grid::Rows(rows.clamp(MIN_ROWS, MAX_ROWS)),
-        None => {
-            let (step, tick) = auto_step(bars, &[(0, bars.len())], kind);
-            Grid::Step { step, tick }
-        }
-    };
+    // The span is one period, divided by the study's own rule.
+    let grid = grid(bars, &[(0, bars.len())], rows, kind, None);
     one(bars, offset, first.ts, grid, value_area)
+}
+
+/// How a chart's periods are divided, for the study and a drawing alike:
+/// `rows` to each period when a count is chosen; left automatic, one price
+/// step for every period on the chart.
+///
+/// With what traded at each price, the step is the contract's own tick, a
+/// price to a row; estimated, a round step near [`TARGET_ROWS`]. Either way
+/// a period too quiet for it is split finer, and one too wide for
+/// [`MAX_ROWS`] made coarser, on the same grid.
+fn grid(
+    bars: &[Bar],
+    periods: &[(usize, usize)],
+    rows: Option<usize>,
+    kind: Option<InstrumentKind>,
+    at_price: Option<&AtPrice>,
+) -> Grid {
+    if let Some(rows) = rows {
+        return Grid::Rows(rows.clamp(MIN_ROWS, MAX_ROWS));
+    }
+    let (step, tick) = match at_price {
+        Some(at) if at.tick_size > 0.0 && at.tick_size.is_finite() => (at.tick_size, at.tick_size),
+        _ => auto_step(bars, periods, kind),
+    };
+    match at_price {
+        // A row a fraction of the contract's tick would hold every price or
+        // none, a comb rather than a profile: with ladders the step is whole
+        // ticks, for the estimated periods beside them too.
+        Some(at) => Grid::Step {
+            step: on_ticks(step, at.tick_size),
+            tick: tick.max(at.tick_size),
+        },
+        None => Grid::Step { step, tick },
+    }
 }
 
 /// How a period is divided up.
@@ -480,12 +591,10 @@ fn span(bars: &[Bar]) -> f64 {
 /// across an Apple session is nine cents a row, which hides exactly the shelf
 /// a profile is read for.
 ///
-/// The widest period has a say as well as the typical one. The step is one
-/// step for the whole chart, but the row count is capped per period, so a
-/// period that moved much further than the median would run out of rows and
-/// be drawn across a fraction of its own range — a sliver, with everything
-/// above it clamped into the top row. Picking a step that fits the widest
-/// period inside [`MAX_ROWS`] is what keeps every period whole.
+/// The widest period has no say. It used to: a period that moved much
+/// further than the median would run out of rows, so the step was made to
+/// fit it, and one wild session coarsened every other on the chart. Now
+/// that period alone is drawn coarser, by [`coarsened`], on the same grid.
 fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKind>) -> (f64, f64) {
     let price = bars[bars.len() / 2].close.abs().max(f64::MIN_POSITIVE);
     let tick = 10f64.powi(-(price_decimals(0.0, price, kind) as i32));
@@ -499,7 +608,6 @@ fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKi
     }
     spans.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let typical = spans[spans.len() / 2];
-    let widest = *spans.last().unwrap_or(&typical);
 
     // 1, 2 and 5 ticks, then the same at every power of ten — the increments
     // an exchange and a trader both think in.
@@ -508,12 +616,34 @@ fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKi
         for base in [1.0, 2.0, 5.0] {
             multiple = base * 10f64.powi(decade);
             let step = multiple * tick;
-            if typical / step <= TARGET_ROWS && widest / step <= MAX_ROWS as f64 {
+            if typical / step <= TARGET_ROWS {
                 return (step, tick);
             }
         }
     }
     (multiple * tick, tick)
+}
+
+/// The chart's step, made coarser for a period too wide to be drawn whole
+/// at it inside [`MAX_ROWS`]: by 2, 5 or 10 and on, so every row edge is
+/// still on the chart's grid — and with ladders, on the contract's prices.
+///
+/// Without it the period would run out of rows and be drawn across a
+/// fraction of its own range, a sliver with everything above it clamped
+/// into the top row.
+fn coarsened(step: f64, span: f64) -> f64 {
+    if !(span > 0.0 && step > 0.0) || span / step <= MAX_ROWS as f64 {
+        return step;
+    }
+    for decade in 0..12 {
+        for base in [2.0, 5.0, 10.0] {
+            let coarse = step * base * 10f64.powi(decade);
+            if span / coarse <= MAX_ROWS as f64 {
+                return coarse;
+            }
+        }
+    }
+    step
 }
 
 /// The chart's step, split for a period too quiet to be drawn smoothly at it:
@@ -566,7 +696,7 @@ fn one(
         // low happened to fall. A row that runs from 182.35 to 182.40 is one
         // you can find on the axis; the same row starting at 182.3617 is not.
         Grid::Step { step, tick } => {
-            let step = smoothed(step, tick, high - low);
+            let step = coarsened(smoothed(step, tick, high - low), high - low);
             let base = (low / step).floor() * step;
             let rows = ((high - base) / step).ceil().max(1.0);
             let rows = if rows.is_finite() { rows as usize } else { MIN_ROWS };
@@ -675,7 +805,9 @@ fn one_exact(
     }
     let step = match grid {
         Grid::Rows(rows) => on_ticks((high - low) / rows as f64, tick),
-        Grid::Step { step, .. } => smoothed_ticks(on_ticks(step, tick), tick, high - low),
+        // Whole ticks either way: coarsened by 2, 5 and 10 from a whole
+        // number of ticks is still a whole number of them.
+        Grid::Step { step, .. } => coarsened(smoothed_ticks(on_ticks(step, tick), tick, high - low), high - low),
     };
     // Rows of whole ticks start on a whole multiple of the step, and a
     // price on a boundary is the row above it.
@@ -789,6 +921,32 @@ mod tests {
 
     fn bar(ts: i64, low: f64, high: f64, volume: f64) -> Bar {
         Bar { ts, open: low, high, low, close: high, volume }
+    }
+
+    /// A profile's strength is the colour solid at 1 and nothing at 0,
+    /// faded by any opacity stored before it could be set; the rows outside
+    /// the value area are the share they were designed at while it is set
+    /// apart, and the same as it when not; and the lines go with them,
+    /// exactly as designed at the designed strength.
+    #[test]
+    fn a_profile_is_drawn_at_its_strength_and_as_designed_by_default() {
+        assert_eq!(drawn_alpha(DESIGNED_ALPHA, 1.0), 0.30);
+        assert_eq!(drawn_alpha(1.0, 1.0), 1.0);
+        assert_eq!(drawn_alpha(0.0, 1.0), 0.0);
+        assert!((drawn_alpha(DESIGNED_ALPHA, 0.5) - 0.15).abs() < 1e-12);
+        assert_eq!(drawn_alpha(f64::NAN, 1.0), DESIGNED_ALPHA);
+        assert_eq!(drawn_alpha(3.0, 1.0), 1.0);
+
+        let (inside, outside) = row_alphas(DESIGNED_ALPHA, true);
+        assert!((inside - 0.30).abs() < 1e-12 && (outside - 0.14).abs() < 1e-12, "{inside} {outside}");
+        assert_eq!(row_alphas(1.0, false), (1.0, 1.0));
+        let (_, outside) = row_alphas(1.0, true);
+        assert!((outside - 0.14 / 0.30).abs() < 1e-12);
+
+        assert!((line_alpha(0.75, DESIGNED_ALPHA) - 0.75).abs() < 1e-12);
+        assert!((line_alpha(0.45, DESIGNED_ALPHA * 0.5) - 0.225).abs() < 1e-12);
+        assert_eq!(line_alpha(1.0, 1.0), 1.0);
+        assert_eq!(line_alpha(0.45, 0.0), 0.0);
     }
 
     #[test]
@@ -969,8 +1127,10 @@ mod tests {
         format!("{profiles:?}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
     }
 
-    /// The estimate from bar ranges, held to what it computed before volume at
-    /// price existed: a chart without ladders draws exactly what it drew.
+    /// The estimate from bar ranges, held to what it computes: a chart
+    /// without ladders draws exactly what it drew, until the rows are chosen
+    /// again on purpose. Last moved when [`TARGET_ROWS`] went from 400 to
+    /// 600, which changed the two automatic cases on a busy session.
     #[test]
     fn without_ladders_the_profile_is_what_it_always_was() {
         let mut bars = session(0, 333.0, 8.0);
@@ -986,7 +1146,7 @@ mod tests {
         assert_eq!(prints, GOLDEN, "{prints:?}");
     }
 
-    const GOLDEN: [u64; 4] = [17829156222254821403, 1918181280838795739, 7844774359875511761, 10693579781058083716];
+    const GOLDEN: [u64; 4] = [3880260519079001309, 1918181280838795739, 7844774359875511761, 17172638958208028019];
 
     fn row_height(p: &Profile) -> f64 {
         p.rows[0].high - p.rows[0].low
@@ -1051,6 +1211,165 @@ mod tests {
         let bars = session(0, 333.0, 8.0);
         let fixed = &compute(&bars, Reset::Session, 0, Some(182), 0.7, Some(InstrumentKind::Equity), &[])[0];
         assert_eq!(fixed.rows.len(), 182);
+    }
+
+    /// What traded at every tick a run of bars covers: ten contracts a
+    /// price, so every price has a row's worth.
+    fn every_tick_of(run: &[Bar], tick: f64) -> Option<Ladder> {
+        let low = run.iter().fold(f64::MAX, |a, b| a.min(b.low));
+        let high = run.iter().fold(f64::MIN, |a, b| a.max(b.high));
+        let low_tick = (low / tick).floor() as i32;
+        let count = ((high / tick).ceil() as i32 - low_tick + 1).max(1) as usize;
+        let level = crate::ladders::Level { at_bid: 5, at_ask: 5, ..Default::default() };
+        Some(Ladder { low_tick, levels: vec![level; count], sides: Default::default() })
+    }
+
+    fn with_ladders(bars: &[Bar], rows: Option<usize>, tick: f64) -> Vec<Profile> {
+        let of = |run: &[Bar]| every_tick_of(run, tick);
+        let at = AtPrice { tick_size: tick, of: &of };
+        let kind = Some(InstrumentKind::FutureRoot);
+        compute_with(bars, Reset::Session, 0, rows, 0.7, kind, &[], Some(&at), Method::Total, false)
+    }
+
+    /// From what traded at each price, an automatic profile is a price to a
+    /// row: a 59-point ES session is 236 rows a tick tall, not the 140-odd
+    /// a round step near a target count made of it.
+    #[test]
+    fn with_ladders_automatic_rows_are_a_tick_each() {
+        let bars = session(0, 7_575.0, 59.0);
+        let profile = &with_ladders(&bars, None, 0.25)[0];
+        assert!((row_height(profile) - 0.25).abs() < 1e-9, "{}", row_height(profile));
+        assert!((230..=245).contains(&profile.rows.len()), "{} rows", profile.rows.len());
+    }
+
+    /// A period too wide for a tick a row inside [`MAX_ROWS`] is drawn at 2,
+    /// 5 or 10 ticks, whole and on the same prices, and alone: the sessions
+    /// beside it keep their tick a row.
+    #[test]
+    fn with_ladders_a_period_past_the_cap_alone_is_coarser() {
+        let mut bars = session(0, 7_575.0, 60.0);
+        bars.extend(session(1, 7_575.0, 300.0));
+        bars.extend(session(2, 7_575.0, 80.0));
+        let profiles = with_ladders(&bars, None, 0.25);
+        assert_eq!(profiles.len(), 3);
+        let (calm, wild, after) = (&profiles[0], &profiles[1], &profiles[2]);
+        assert!((row_height(calm) - 0.25).abs() < 1e-9, "{}", row_height(calm));
+        assert!((row_height(after) - 0.25).abs() < 1e-9, "{}", row_height(after));
+        assert!(wild.rows.len() <= MAX_ROWS, "{} rows", wild.rows.len());
+        assert!((row_height(wild) - 0.5).abs() < 1e-9, "a 1,224-tick day at {}", row_height(wild));
+        let covered = wild.rows.last().unwrap().high - wild.rows[0].low;
+        assert!(covered >= 300.0 * 1.02 - 0.5, "drawn whole: {covered}");
+    }
+
+    /// A row count somebody chose is the count, with ladders as without.
+    #[test]
+    fn with_ladders_a_chosen_row_count_is_still_obeyed() {
+        let bars = session(0, 7_575.0, 59.0);
+        let fixed = &with_ladders(&bars, Some(60), 0.25)[0];
+        // Rows of whole ticks: 60 asked across 241 ticks is 5 ticks a row.
+        assert!((row_height(fixed) - 1.25).abs() < 1e-9, "{}", row_height(fixed));
+        assert!((48..=50).contains(&fixed.rows.len()), "{}", fixed.rows.len());
+        let estimated = &compute(&bars, Reset::Session, 0, Some(60), 0.7, Some(InstrumentKind::FutureRoot), &[])[0];
+        assert_eq!(estimated.rows.len(), 60);
+    }
+
+    /// A drawing over exactly one session draws the rows the study draws
+    /// for that session, automatic or counted: the two share one rule.
+    #[test]
+    fn a_drawn_span_over_one_session_is_divided_as_the_study_divides_it() {
+        let bars = session(0, 333.0, 8.0);
+        for rows in [None, Some(50)] {
+            let study = &compute(
+                &bars,
+                Reset::Session,
+                0,
+                rows,
+                0.7,
+                Some(InstrumentKind::Equity),
+                &[],
+            )[0];
+            let drawn =
+                of_span(&bars, 0, rows, 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+            assert_eq!(
+                format!("{:?}", drawn.rows),
+                format!("{:?}", study.rows),
+                "rows {rows:?}"
+            );
+            assert_eq!(
+                (drawn.poc, drawn.value_area),
+                (study.poc, study.value_area),
+                "rows {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drawn_span_takes_the_row_count_it_is_given() {
+        let bars = session(0, 333.0, 8.0);
+        let drawn =
+            of_span(&bars, 0, Some(120), 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+        assert_eq!(drawn.rows.len(), 120);
+        assert_eq!(
+            of_span(&bars, 0, Some(10_000), 0.7, None)
+                .expect("a profile")
+                .rows
+                .len(),
+            MAX_ROWS
+        );
+    }
+
+    /// Automatic on a short span is as fine as the price goes: a cent a row
+    /// on a share whose bars moved fifty cents.
+    #[test]
+    fn automatically_a_small_drawn_span_is_a_tick_a_row() {
+        let bars: Vec<Bar> = (0..20)
+            .map(|i| {
+                bar(
+                    i * 60,
+                    333.0 + (i % 5) as f64 * 0.1,
+                    333.1 + (i % 5) as f64 * 0.1,
+                    1000.0,
+                )
+            })
+            .collect();
+        let drawn = of_span(&bars, 0, None, 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+        assert!(
+            (row_height(&drawn) - 0.01).abs() < 1e-9,
+            "a cent a row, got {}",
+            row_height(&drawn)
+        );
+        assert_eq!(drawn.rows.len(), 50, "333.00 to 333.50, a row a cent");
+    }
+
+    /// Automatic on a span that covers years of a stock that grew a hundred
+    /// times over: never more rows than [`MAX_ROWS`], and every price of it
+    /// still drawn, at a round step.
+    #[test]
+    fn automatically_a_huge_drawn_span_is_capped_and_drawn_whole() {
+        let bars: Vec<Bar> = (0..5000i64)
+            .map(|i| {
+                let p = 20.0 * (1.0 + i as f64 / 50.0);
+                bar(i * DAY, p * 0.98, p * 1.02, 1_000_000.0)
+            })
+            .collect();
+        let drawn = of_span(&bars, 0, None, 0.7, Some(InstrumentKind::Equity)).expect("a profile");
+        assert!(drawn.rows.len() <= MAX_ROWS, "{} rows", drawn.rows.len());
+        assert!(
+            drawn.rows.len() >= MAX_ROWS / 5,
+            "still a profile: {} rows",
+            drawn.rows.len()
+        );
+        let (low, high) = (drawn.rows[0].low, drawn.rows[drawn.rows.len() - 1].high);
+        assert!(
+            low <= bars[0].low && high >= bars[bars.len() - 1].high,
+            "{low}..{high}"
+        );
+        let cents = row_height(&drawn) * 100.0;
+        assert!(
+            (cents - cents.round()).abs() < 1e-6,
+            "a round step, not {}",
+            row_height(&drawn)
+        );
     }
 
     #[test]

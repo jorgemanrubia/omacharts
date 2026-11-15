@@ -33,6 +33,7 @@ pub mod exec;
 pub mod parser;
 pub mod skill;
 pub mod spec;
+pub mod trading;
 pub mod transfer;
 
 /// What the shell is told. Documented in `doc/cli.md` and in the JSON
@@ -232,6 +233,11 @@ pub trait Live {
     /// Write the arrangement out now, so a command about to read or change it
     /// sees what is on screen.
     fn flush_workspace(&self);
+    /// What is selected on chart `pane` of the chartbook on screen: held by
+    /// the window and nowhere else, so nothing without one.
+    fn selection(&self, _pane: u32) -> Option<Selection> {
+        None
+    }
     /// The focused chart's clock, used to read ruler anchors as the chart reads time.
     fn measurement_zone(&self) -> chrono_tz::Tz { chrono_tz::UTC }
 
@@ -282,6 +288,13 @@ pub trait Live {
     /// Write every chart's template name again, after one was renamed.
     /// Nothing to do without a window.
     fn adopt_template_names(&self) {}
+    /// Show or hide the open chartbook's sidebar as its corner button does,
+    /// which is also what remembers it with the chartbook. Nothing to do
+    /// without a window.
+    fn show_sidebar(&self, _shown: bool) {}
+    /// Put the drawing tools out or away as Ctrl+Shift+D does, which is also
+    /// what remembers it. Nothing to do without a window.
+    fn show_drawing_tools(&self, _shown: bool) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -334,6 +347,36 @@ pub trait Live {
     /// streams. Empty for one that does not, and with no window at all.
     fn streaming(&self) -> Vec<crate::live::Report> {
         Vec::new()
+    }
+
+    /// Trading as the window has it: the logins, their accounts and the
+    /// book its sessions keep, and how each login stands, by id. None with
+    /// no window, where nothing is signed in.
+    fn trading_view(&self) -> Option<(crate::trading::View, Vec<(String, crate::trading::Standing)>)> {
+        None
+    }
+    /// The trading services a login can be added for, by id and label.
+    fn trading_services(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// Open the sign-in dialog for a new login of `service` in the window.
+    fn add_login(&self, _service: &str) -> Result<(), Fault> {
+        Err(trading::no_window())
+    }
+    /// Sign the login `id` in with its saved password; true when it has
+    /// none and its dialog opened for one instead.
+    fn sign_in_login(&self, _id: &str) -> Result<bool, Fault> {
+        Err(trading::no_window())
+    }
+    /// End the login `id`'s session, before it is signed out or removed.
+    fn end_session(&self, _id: &str) {}
+    /// Read Trading again after a command changed it in the store: the
+    /// logins, the default account, the quantities, the order labels.
+    fn adopt_trading(&self) {}
+    /// Carry out `act` on an account, as the chart or the Trading panel
+    /// would, and say what was said doing it.
+    fn trade(&self, _act: trading::Act) -> Result<trading::Said, Fault> {
+        Err(trading::no_window())
     }
 }
 
@@ -753,7 +796,10 @@ pub fn plan_refresh(
         let fetched_at =
             if left_out { coverage.fetched_at } else { coverage.fetched_at.max(asked.unwrap_or(0)) };
         let due = row_due(instrument, fetched_at, now);
-        if batch == 0 || left_out {
+        // A formula is several series worked together, which a batch of
+        // closes cannot ask for.
+        let unbatchable = omacharts_engine::formula::is_formula(&symbol);
+        if batch == 0 || unbatchable || left_out {
             if due == Due::Now {
                 bars.push((fetched_at, instrument));
             }
@@ -1031,7 +1077,20 @@ pub fn usage() -> String {
 /// an arrangement builds widgets that hold the window, and a method that does
 /// that cannot be handed a bare reference. The alternative, recovering an `Rc`
 /// from a `&Window`, is a use-after-free waiting to happen.
+/// What somebody has selected on a chart: the drawings wearing grips, and
+/// the indicator picked in its legend or on its line. One or the other: taking
+/// an indicator lets go of the drawings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Selection {
+    pub drawings: Vec<i64>,
+    pub indicator: Option<u32>,
+}
+
 impl Live for Rc<crate::ui::Window> {
+    fn selection(&self, pane: u32) -> Option<Selection> {
+        crate::ui::Window::selection_on(self, pane)
+    }
+
     fn measurement_zone(&self) -> chrono_tz::Tz {
         crate::ui::Window::measurement_zone(self)
     }
@@ -1091,6 +1150,14 @@ impl Live for Rc<crate::ui::Window> {
         crate::ui::Window::adopt_template_names(self);
     }
 
+    fn show_sidebar(&self, shown: bool) {
+        crate::ui::Window::show_sidebar(self, shown);
+    }
+
+    fn show_drawing_tools(&self, shown: bool) {
+        crate::ui::Window::show_drawing_tools(self, shown);
+    }
+
     fn screenshot(
         &self,
         whole_book: bool,
@@ -1115,6 +1182,34 @@ impl Live for Rc<crate::ui::Window> {
 
     fn streaming(&self) -> Vec<crate::live::Report> {
         crate::ui::Window::streaming(self)
+    }
+
+    fn trading_view(&self) -> Option<(crate::trading::View, Vec<(String, crate::trading::Standing)>)> {
+        Some(crate::ui::Window::trading_now(self))
+    }
+
+    fn trading_services(&self) -> Vec<(String, String)> {
+        crate::ui::Window::trading_services(self)
+    }
+
+    fn add_login(&self, service: &str) -> Result<(), Fault> {
+        crate::ui::Window::ask_login(self, service).map_err(Fault::refused)
+    }
+
+    fn sign_in_login(&self, id: &str) -> Result<bool, Fault> {
+        crate::ui::Window::sign_in_login(self, id).map_err(Fault::refused)
+    }
+
+    fn end_session(&self, id: &str) {
+        crate::ui::Window::desk(self).end(id);
+    }
+
+    fn adopt_trading(&self) {
+        crate::ui::Window::adopt_trading_settings(self);
+    }
+
+    fn trade(&self, act: trading::Act) -> Result<trading::Said, Fault> {
+        crate::ui::Window::trade_command(self, act)
     }
 
     fn show_range(

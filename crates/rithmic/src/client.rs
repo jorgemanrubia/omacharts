@@ -32,7 +32,7 @@ use crate::{Bar, Error, LadderMinute, Live, Period, Side, Trade, App, Credential
 const PATIENCE: Duration = Duration::from_secs(20);
 
 /// How long one ordinary request may take.
-const REQUEST: Duration = Duration::from_secs(15);
+pub(crate) const REQUEST: Duration = Duration::from_secs(15);
 
 /// How long a replay of bars may take. The history plant answers a large
 /// window in pieces, and the whole of it can take a while; past this it is
@@ -681,7 +681,7 @@ pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<DataP
 
     let ticker = within(REQUEST, RithmicTickerPlant::connect(&config, ConnectStrategy::Simple)).await?;
     let ticker_updates = ticker.get_handle();
-    if let Err(error) = signed_in(within(REQUEST, ticker_updates.login()).await) {
+    if let Err(error) = signed_in("ticker", credentials, within(REQUEST, ticker_updates.login()).await) {
         ticker_updates.abort();
         return Err(error);
     }
@@ -693,7 +693,7 @@ pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<DataP
         }
     };
     let history_updates = history.get_handle();
-    if let Err(error) = signed_in(within(REQUEST, history_updates.login()).await) {
+    if let Err(error) = signed_in("history", credentials, within(REQUEST, history_updates.login()).await) {
         history_updates.abort();
         let _ = within(REQUEST, ticker_updates.disconnect()).await;
         return Err(error);
@@ -1209,9 +1209,18 @@ pub(crate) async fn within<T>(
 
 /// A login's outcome: a refusal is the login's fault and final, a broken
 /// connection is worth another go.
-pub(crate) fn signed_in(outcome: Result<RithmicResponse, Error>) -> Result<(), Error> {
+/// A plant's login answered: its session is told of ([`crate::sessions`]),
+/// or the refusal is Rithmic's refusing the login.
+pub(crate) fn signed_in(
+    plant: &'static str,
+    credentials: &Credentials,
+    outcome: Result<RithmicResponse, Error>,
+) -> Result<(), Error> {
     match outcome {
-        Ok(_) => Ok(()),
+        Ok(response) => {
+            crate::sessions::heard(plant, credentials, &response);
+            Ok(())
+        }
         Err(Error::Rejected(why)) => Err(Error::Refused(why)),
         Err(error) => Err(error),
     }
@@ -1365,40 +1374,52 @@ fn bars_of(responses: &[RithmicResponse], period: Period) -> Result<Vec<Bar>, Er
     Ok(bars)
 }
 
+/// One minute of a volume-profile replay, if it says its prices.
+fn ladder_minute(bar: &rithmic_rs::rti::ResponseVolumeProfileMinuteBars) -> Option<LadderMinute> {
+    let (Some(marker), Some(open), Some(high), Some(low), Some(close)) =
+        (bar.marker, bar.open_price, bar.high_price, bar.low_price, bar.close_price)
+    else {
+        return None;
+    };
+    let n = bar.profile_price.len();
+    let wide = |values: &[i32]| -> Vec<u64> {
+        (0..n).map(|i| values.get(i).map_or(0, |v| u64::try_from(*v).unwrap_or(0))).collect()
+    };
+    let count = |values: &[i32]| -> Vec<u32> {
+        (0..n).map(|i| values.get(i).map_or(0, |v| u32::try_from(*v).unwrap_or(0))).collect()
+    };
+    Some(LadderMinute {
+        start: i64::from(marker) - 60,
+        open,
+        high,
+        low,
+        close,
+        volume: bar.volume.unwrap_or(0),
+        prices: bar.profile_price.clone(),
+        // Rithmic names a side by its aggressor: its bid volume is what
+        // bidders took, buyers lifting the offer, and goes with its bid
+        // aggressor trades. Read the other way round, a session's cumulative
+        // delta came out the mirror of Sierra Chart's on the same ES day
+        // (November 2026).
+        bid: wide(&bar.profile_ask_volume),
+        ask: wide(&bar.profile_bid_volume),
+        unknown: wide(&bar.profile_no_aggressor_volume),
+        bid_trades: count(&bar.profile_ask_aggressor_trades),
+        ask_trades: count(&bar.profile_bid_aggressor_trades),
+        unknown_trades: count(&bar.profile_no_aggressor_trades),
+    })
+}
+
 /// The minutes of a volume-profile replay, oldest first. Marked, as minute
 /// bars are, with the time they close.
 fn ladders_of(responses: &[RithmicResponse]) -> Result<Vec<LadderMinute>, Error> {
-    let mut minutes: Vec<LadderMinute> = Vec::with_capacity(responses.len());
-    for response in responses {
-        let RithmicMessage::ResponseVolumeProfileMinuteBars(bar) = &response.message else { continue };
-        let (Some(marker), Some(open), Some(high), Some(low), Some(close)) =
-            (bar.marker, bar.open_price, bar.high_price, bar.low_price, bar.close_price)
-        else {
-            continue;
-        };
-        let n = bar.profile_price.len();
-        let wide = |values: &[i32]| -> Vec<u64> {
-            (0..n).map(|i| values.get(i).map_or(0, |v| u64::try_from(*v).unwrap_or(0))).collect()
-        };
-        let count = |values: &[i32]| -> Vec<u32> {
-            (0..n).map(|i| values.get(i).map_or(0, |v| u32::try_from(*v).unwrap_or(0))).collect()
-        };
-        minutes.push(LadderMinute {
-            start: i64::from(marker) - 60,
-            open,
-            high,
-            low,
-            close,
-            volume: bar.volume.unwrap_or(0),
-            prices: bar.profile_price.clone(),
-            bid: wide(&bar.profile_bid_volume),
-            ask: wide(&bar.profile_ask_volume),
-            unknown: wide(&bar.profile_no_aggressor_volume),
-            bid_trades: count(&bar.profile_bid_aggressor_trades),
-            ask_trades: count(&bar.profile_ask_aggressor_trades),
-            unknown_trades: count(&bar.profile_no_aggressor_trades),
-        });
-    }
+    let mut minutes: Vec<LadderMinute> = responses
+        .iter()
+        .filter_map(|response| match &response.message {
+            RithmicMessage::ResponseVolumeProfileMinuteBars(bar) => ladder_minute(bar),
+            _ => None,
+        })
+        .collect();
     if minutes.is_empty()
         && let Some(error) = responses.last().and_then(|end| end.error.as_ref())
     {
@@ -1473,7 +1494,7 @@ pub(crate) mod tests {
     /// Rithmic is told the caller's name and version, not this crate's.
     #[test]
     fn the_plants_are_told_the_app_the_caller_names() {
-        let app = App { name: "abcd:omacharts", version: "9.8.7" };
+        let app = App { name: "someapp", version: "9.8.7" };
         let credentials = Credentials {
             user: "someone".into(),
             password: "secret".into(),
@@ -1481,7 +1502,7 @@ pub(crate) mod tests {
             url: crate::TEST_URL.into(),
         };
         let config = config(app, &credentials).expect("a config");
-        assert_eq!(config.app_name, "abcd:omacharts");
+        assert_eq!(config.app_name, "someapp");
         assert_eq!(config.app_version, "9.8.7");
         assert_ne!(config.app_version, env!("CARGO_PKG_VERSION"));
     }
@@ -1525,6 +1546,27 @@ pub(crate) mod tests {
         assert_eq!(hello[0], 0x16, "not a TLS handshake: {hello:?}");
         assert_eq!(hello[5], 0x01, "not a ClientHello: {hello:?}");
         assert!(hello.windows(9).any(|w| w == b"localhost"), "no server name in the hello");
+    }
+
+    /// A minute's bid aggressors are its buyers: Rithmic's bid volume is
+    /// what lifted the offer, its ask volume what hit the bid.
+    #[test]
+    fn rithmics_bid_aggressors_are_buyers() {
+        let mut bar = rithmic_rs::rti::ResponseVolumeProfileMinuteBars::default();
+        bar.marker = Some(1_700_000_060);
+        bar.open_price = Some(100.0);
+        bar.high_price = Some(100.25);
+        bar.low_price = Some(100.0);
+        bar.close_price = Some(100.25);
+        bar.volume = Some(10);
+        bar.profile_price = vec![100.0];
+        bar.profile_bid_volume = vec![7];
+        bar.profile_ask_volume = vec![3];
+        bar.profile_bid_aggressor_trades = vec![4];
+        bar.profile_ask_aggressor_trades = vec![2];
+        let minute = ladder_minute(&bar).expect("a minute");
+        assert_eq!((minute.ask.as_slice(), minute.ask_trades.as_slice()), (&[7][..], &[4][..]), "buyers");
+        assert_eq!((minute.bid.as_slice(), minute.bid_trades.as_slice()), (&[3][..], &[2][..]), "sellers");
     }
 
     #[test]
@@ -1814,7 +1856,13 @@ pub(crate) mod tests {
     fn no_error_carries_a_password() {
         // Every constructor of an error here is built from Rithmic's words
         // or this crate's; none takes a login. What a refusal looks like:
-        let refused = signed_in(Err(Error::Rejected("permission denied".into()))).unwrap_err();
+        let login = Credentials {
+            user: "someone".into(),
+            password: "secret".into(),
+            system: crate::TEST_SYSTEM.into(),
+            url: crate::TEST_URL.into(),
+        };
+        let refused = signed_in("order", &login, Err(Error::Rejected("permission denied".into()))).unwrap_err();
         assert_eq!(refused, Error::Refused("permission denied".into()));
         assert_eq!(refused.to_string(), "Rithmic refused the login: permission denied");
     }

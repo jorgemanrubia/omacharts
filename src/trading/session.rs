@@ -297,10 +297,9 @@ impl Desk {
     /// the trading service has dealt with the rest. One the app holds is the app's
     /// to keep ([`due`]): once one of it filled or went, the rest are
     /// cancelled, off the main loop, and said in the Log. A login signed
-    /// out takes its links with it: nothing holds the app's any more. Not
-    /// at all while trading is switched off.
+    /// out takes its links with it: nothing holds the app's any more.
     pub fn keep_links(&self) {
-        if !crate::features::trading() || self.links.borrow().is_empty() {
+        if self.links.borrow().is_empty() {
             return;
         }
         let mut cancels = Vec::new();
@@ -400,11 +399,6 @@ impl Desk {
     /// session open or opening already. The Trading page's Sign in and
     /// startup both come here.
     pub fn sign_in(&self, login: &Login, data: bool) -> bool {
-        // Nothing signs in to a trading service's order plant while trading is
-        // switched off, whoever asks.
-        if !crate::features::trading() {
-            return false;
-        }
         let Some(service) = self.service_for(login) else { return false };
         if !self.begin(&login.id) {
             return false;
@@ -645,11 +639,6 @@ pub struct View {
 
 impl View {
     pub fn load(store: &Store) -> View {
-        // Switched off, the window knows of no login to trade through:
-        // every trading piece is left out, as it is with none.
-        if !crate::features::trading() {
-            return View::default();
-        }
         let logins = logins(store);
         if logins.is_empty() {
             return View::default();
@@ -979,21 +968,6 @@ mod tests {
         }
     }
 
-    /// With trading switched off nothing signs in to a trading service, whoever
-    /// asks: not startup, not the Trading page.
-    #[test]
-    fn nothing_signs_in_while_trading_is_off() {
-        let fake = Arc::new(FakeService::listed());
-        let desk = Desk::new(Registry::of(vec![fake.clone()]));
-        let login = Login { service: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
-        assert!(!crate::features::trading());
-        assert!(!desk.sign_in(&login, true));
-        desk.sign_in_saved(std::slice::from_ref(&login));
-        assert!(!desk.opening("l") && !desk.live("l"));
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        assert_eq!(fake.signed_in.load(Ordering::Acquire), 0);
-    }
-
     /// A saved login signs in on a thread of its own without anything
     /// waiting for it, and comes back with everything its account holds:
     /// the position, the working order, today's orders whatever became of
@@ -1002,7 +976,6 @@ mod tests {
     /// filled meanwhile is in the book.
     #[test]
     fn a_saved_login_signs_in_with_what_its_accounts_hold() {
-        crate::features::force(crate::features::Feature::Trading, true);
         let fake = Arc::new(FakeService { takes: std::time::Duration::from_millis(50), ..FakeService::listed() });
         fake.held.lock().unwrap().insert("Lucid".into(), held_before());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));

@@ -930,7 +930,9 @@ fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
     // How far it has got is heard under its name while it runs.
     let name = omacharts_engine::progress::name(&request.symbol, native);
     let load = omacharts_engine::progress::begin(&name);
-    let fetched = omacharts_engine::progress::within(Some(load), || provider.bars(&request.symbol, native, since));
+    let fetched = omacharts_engine::progress::within(Some(load), || {
+        omacharts_engine::formula::bars(provider, &request.symbol, native, since)
+    });
     omacharts_engine::progress::end(&name);
     match fetched {
         Ok(fresh) if fresh.is_empty() => {

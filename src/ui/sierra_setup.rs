@@ -77,10 +77,7 @@ pub fn dialog(known: Saved, done: Box<dyn Fn(Saved)>) -> adw::AlertDialog {
     for (setting, value) in SERVER_STEPS {
         steps.add_row(&step_row(setting, value));
     }
-    // Only once there is trading to allow.
-    if crate::features::trading() {
-        steps.add_row(&step_row("Allow Trading", "Yes, to trade through Sierra Chart"));
-    }
+    steps.add_row(&step_row("Allow Trading", "Yes, to trade through Sierra Chart"));
     list.append(&steps);
 
     let live = adw::ExpanderRow::new();

@@ -19,56 +19,20 @@ one.
 ## Charting first
 
 Omacharts has to keep appealing to people who never trade from it. Trading
-is experimental, and strictly opt-in, by two rules.
+is experimental, marked Beta, and there for everybody.
 
-**Trading is behind a feature flag, `trading`, off unless somebody switches
-it on.** Off, the app is the one it was before any of this, even with a
-broker login saved: no trading panel or toggle; no account, P&L, Buy Sell or
-Quantity in a chart's header; no order or position lines or tags on a chart;
-no orders in the chart's menu; no trading keys and no trading rows on the
-shortcuts sheet; no Preferences → Trading in the sidebar and no trading parts
-in Preferences → Overlays → Header (a header that holds them keeps them where
-they were, unseen, for when the flag is on); no trading part typed to
-`config set chart_header…`; and nothing signs in to a broker's order plant, at startup or ever. Rithmic
-as a data feed is not trading and stays: with the flag off its login is
-typed in its own dialog from the Market data page, kept as the data login, and
-signs in its data alone; the row signs it in, out and removes it like any
-other feed's.
+Sierra Chart, as a data feed read from its files and as a trading service
+through its DTC server, is behind the `sierra` flag, switched with
+`omacharts features`. See [sierra.md](sierra.md).
 
-The flag is switched from a terminal, and an open window follows at once,
-in place — the trading pieces come or go as they do when the first login
-is added or the last removed, with the charts, the arrangement and the
-focus as they were. Switched off, every session on an order plant signs
-out; switched on, the saved logins sign in as at startup:
-
-```
-omacharts features                    # every flag and whether it is on
-omacharts features enable trading
-omacharts features disable trading
-```
-
-It is kept in the settings as `feature.trading`, a machine's setting that a
-restore from elsewhere leaves alone. The command is accepted and listed
-nowhere — not in `--help`, `surface --json`, the completions, the man page,
-the agent skill, the manual or `doc/cli.md` — and `config list` leaves it
-out, so that an experiment is not advertised. A flag nobody knows exits
-with code 3. More flags are a row each in `FLAGS`, in `src/features.rs`: a
-name, a default and what it switches. Checking one is a load of a bool,
-read once at startup and written when it is switched; nothing asks the
-database, and with trading off its pieces are never built.
-
-The second flag is `sierra`: Sierra Chart as a data feed, read from its
-files, and with `trading` on as well, as a broker through its DTC server.
-See [sierra.md](sierra.md).
-
-**With the flag on, trading's settings are always visible in Preferences;
-everything else is unchanged until there is an account.** Every trading
-setting is in Preferences whether or not there is a login, so it can be set
-before the first one: Preferences → Trading (its accounts, Order entry, and
-Orders and positions with their colours and lines), and the header's P&L,
-Buy Sell and Quantity in Preferences → Overlays → Header, listed and offered
-like any other part. A setting changed with no account changes nothing
-anybody sees until there is one.
+**Trading's settings are always visible in Preferences; everything else is
+unchanged until there is an account.** Every trading setting is in
+Preferences whether or not there is a login, so it can be set before the
+first one: Preferences → Trading (its accounts, Order entry, and Orders and
+positions with their colours and lines), the chart's own Trading section in
+Chart settings, and the header's P&L, Buy Sell and Quantity in Preferences →
+Overlays → Header, listed and offered like any other part. A setting changed
+with no account changes nothing anybody sees until there is one.
 
 Everywhere else, until somebody adds a trading account the app is the one it
 was before any of this: the same chart, header, corners, menus, panels and
@@ -222,7 +186,7 @@ sign-in rows.
 ```
 Data feeds
 Symbols use the first data feed that offers them.
-  ⋮ Rithmic   CME futures, front month · live · through Lucid
+  ⋮ Rithmic   CME futures, continuous · live · through Lucid
   ⋮ Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed   [Remove]
   [ Add a data feed… ]
 ```
@@ -232,10 +196,8 @@ Symbols use the first data feed that offers them.
   button. The last feed left offers no Remove, because with none no chart
   could draw.
 - **Add a data feed…** offers the feeds not on the list. Rithmic's login is
-  a broker's, so with trading on adding it adds a login in Preferences →
-  Trading, through the same dialog: name, user ID, password, system and
-  gateway. With trading off the same dialog opens from the Market data page,
-  and the login signs in its data alone.
+  a broker's, so adding it adds a login in Preferences → Trading, through
+  the same dialog: name, user ID, password, system and gateway.
 - **A feed's row** has a handle to drag it up or down, one action (Sign in…
   or Sign out) and Remove. Its subtitle says what it serves and how it
   stands: "live", "not signed in", "session expired", or the feed's own
@@ -299,10 +261,20 @@ is of.
 
 #### Front month, and rolls
 
-- **A root is the contract trading now, not stitched.** Rithmic's `ES` is
-  the front month, with the history that contract has (about 90 days
-  intraday). That is what a prop trader watches at 1m or 5m, and it never
-  crosses a roll.
+- **A root's history is Rithmic's own continuous series.** The history
+  plant answers the root itself, `ES`, with each contract's bars while it
+  was front, joined at Rithmic's roll and not adjusted: daily back to
+  December 2011, intraday as far as Rithmic keeps it (about 200 days of 5m).
+  The feed declares it as its own series, as traded, as thinkorswim's and
+  Yahoo's are; live trades come from the front month. An expired month on
+  its own is refused with "reference data not available" (seen on a
+  LucidTrading login, November 2026), so there are no months to stitch, and
+  where a root has no series the front month stands in.
+- **A month is asked for as Rithmic spells it.** The stitcher names a month
+  `ESZ26`; Rithmic spells it `ESZ6`, which is also December 2016, and its
+  history plant answers a long request with both. A contract's bars are
+  kept only from nine years before its month, which its namesake a decade
+  older never reaches.
 - **The feed says which contract is the front month, and says when it
   changes.** Rithmic is asked once per root with `RequestFrontMonthContract`
   and `need_updates`, so a roll arrives as a `FrontMonthContractUpdate` the
@@ -330,11 +302,6 @@ is of.
 - **At a roll the chart corrects itself.** The new contract's bars disagree
   with the cached tail of the old one, and the loader's `OVERLAP` check
   already treats that as history rewritten and fetches again.
-- **Stitching, later.** When long daily charts from Rithmic matter, the
-  provider fetches the earlier contracts back to the start and joins them on
-  a fixed roll date, unadjusted, all inside its own `bars()`. Back-adjusting
-  prices across rolls would be a chart option and never the default, because
-  it moves prices a trader has drawn levels on.
 - **Not a special case for daily.** Sending daily `ES` to Yahoo because
   Rithmic is not stitched would make the feed depend on the resolution and
   break "the first that serves it". Routing stays by instrument alone.
@@ -734,6 +701,45 @@ Ctrl+B on ES filled 2, and Ctrl+F left the account flat.
 live account: an order from the menu, a key or a drag, a move, a cancel and
 a flatten go to the broker at once, and the pending look is the feedback.
 Whether a live account should ask, and how, is an open decision, below.
+
+#### Past fills
+
+A chart's settings have **Show fills** on the Trading tab, off until it is
+turned on, kept with the chart. On, the chart marks every fill of its
+account in the contract it trades, as Sierra Chart does: a small triangle
+at the fill's bar and price, in the theme's colour for a rise for a buy and
+its colour for a fall for a sell, the candles' own two. An entry stands left
+of its bar pointing right at it, an exit right of it pointing left, so the
+two ends of a round trip face each other; a fill that closed one way and
+opened the other wears both. The tip is at the price and off the bar's
+body. A thin dotted line joins each entry to the exit that closed it, in the
+profit colour for a trip that won and the loss colour for one that lost.
+
+Exits are matched to entries first in, first out: an entry scaled out of in
+three parts has three lines, three entries closed by one exit have three,
+and what an exit has left once flat opens the other way. What the account
+held before the oldest fill there is, worked out from the position held
+now, is closed with no line rather than taken for a new position.
+
+The fills come from the broker's fill history, asked for once for each
+account, 30 days back, the first time a chart with fills on needs it, and
+from the session's book, today's orders and every fill heard since, which
+appear as they come. A history the broker refuses is asked again only after
+the session next refreshes. What each broker serves:
+
+- **Rithmic:** `show_fill_history` over a range of seconds (or of trade
+  dates), one answer per fill with its basket, size, price and time. On
+  Rithmic Test it answers nothing (see *Signing in*), so only today's
+  orders, from `show_orders`, and what fills live are marked there.
+  `show_order_history_summary` has whole days of exchange notifications back
+  to 2013 and is not used for this yet.
+- **Sierra Chart (DTC):** `HISTORICAL_ORDER_FILLS_REQUEST` with a start and
+  a number of days, one answer per fill with its execution id, prices
+  unscaled by the contract's display multiplier; a fill whose contract has
+  no definition is left out rather than drawn a hundred times off.
+
+Drawing them costs two searches for the fills in view and one search of the
+bars for each; nothing is worked out per bar.
 
 #### The Log
 

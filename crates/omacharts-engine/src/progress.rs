@@ -124,16 +124,17 @@ pub fn measuring() -> bool {
 pub(crate) mod tests {
     use super::*;
 
-    /// What a load under `name` says, read again while another test's
-    /// load starting or ending holds the loads for a moment.
+    /// What the load under `name` says, waiting out whoever holds the
+    /// loads: [`of`] never waits, so while any other test starts, ends or
+    /// reads a load it says nothing, which a test can't tell from a load
+    /// that says nothing.
+    pub(crate) fn reported(name: &str) -> Option<f64> {
+        LOADS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(name)?.fraction()
+    }
+
+    /// What the load under `name` says, which it must.
     pub(crate) fn settled(name: &str) -> f64 {
-        for _ in 0..100_000 {
-            if let Some(fraction) = of(name) {
-                return fraction;
-            }
-            std::thread::yield_now();
-        }
-        panic!("{name} says nothing");
+        reported(name).unwrap_or_else(|| panic!("{name} says nothing"))
     }
 
     #[test]

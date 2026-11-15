@@ -159,8 +159,12 @@ impl Store {
         };
         for &number in &numbers {
             let tick_size = tail(&tx, key, number, number).first().map(|(_, t, _)| *t).unwrap_or(0.0);
+            // Stamped when its newest minute was had, not when it was
+            // folded: a closed day is no fresher for having been compacted,
+            // and a day sealed while its month was front stays that month's.
             if let Some(day) = read_day(&tx, key, number)? {
-                write_day(&tx, key, tick_size, &day)?;
+                let had = day.last_ts().map_or(i64::MAX, |last| last + 60);
+                write_day_at(&tx, key, tick_size, &day, had.min(chrono::Utc::now().timestamp()))?;
             }
             tx.execute("DELETE FROM ladder_tail WHERE key = ?1 AND day = ?2", params![key, number])?;
         }
@@ -302,6 +306,27 @@ impl Store {
         Ok(gone > 0)
     }
 
+    /// Let go of the days of `key` that end before `since` and were written
+    /// after it: read, by a build that asked a root's front month for
+    /// everything, from a month that was not front on them yet. Their
+    /// coverage goes too. A day written while its own month was front, or
+    /// folded from its live tail, is stamped no later than its last minute,
+    /// and stays. How many went.
+    pub fn forget_ladders_read_late(&self, key: &str, since: i64) -> rusqlite::Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let late: Vec<i64> = {
+            let mut statement = tx.prepare_cached(
+                "SELECT day FROM ladder_days WHERE key = ?1 AND last_ts < ?2 AND fetched_at > ?2",
+            )?;
+            statement.query_map(params![key, since], |r| r.get(0))?.collect::<Result<_, _>>()?
+        };
+        for &day in &late {
+            forget_day(&tx, key, day)?;
+        }
+        tx.commit()?;
+        Ok(late.len())
+    }
+
     /// Every day stored for `key`, as `(day, minutes)`, oldest first.
     pub fn ladder_days(&self, key: &str) -> Vec<(i64, i64)> {
         let Ok(mut statement) =
@@ -354,7 +379,13 @@ fn read_day(conn: &Connection, key: &str, number: i64) -> rusqlite::Result<Optio
     Ok(day)
 }
 
+/// Write `day` as it stands, stamped now.
 fn write_day(conn: &Connection, key: &str, tick_size: f64, day: &Day) -> rusqlite::Result<()> {
+    write_day_at(conn, key, tick_size, day, chrono::Utc::now().timestamp())
+}
+
+/// Write `day` as it stands, stamped `fetched_at`: when what it holds was had.
+fn write_day_at(conn: &Connection, key: &str, tick_size: f64, day: &Day, fetched_at: i64) -> rusqlite::Result<()> {
     let (Some(first), Some(last)) = (day.first_ts(), day.last_ts()) else {
         conn.execute("DELETE FROM ladder_days WHERE key = ?1 AND day = ?2", params![key, day.day])?;
         return Ok(());
@@ -370,7 +401,7 @@ fn write_day(conn: &Connection, key: &str, tick_size: f64, day: &Day) -> rusqlit
             day.minutes.len() as i64,
             first,
             last,
-            chrono::Utc::now().timestamp(),
+            fetched_at,
             encode_day(day, tick_size),
             encode_ladder(&day.total),
         ],
@@ -660,6 +691,36 @@ mod tests {
         assert_eq!(kept, ["sierra:ES@ESH27", "sierra:ESM27", "sierra:ESX"], "another symbol's keys are its own");
         assert!(store.ladder_coverage("sierra:ES@ESZ26").is_empty());
         assert!(!store.forget_other_months("sierra:ES", &["sierra:ES@ESH27".into()]).unwrap(), "once");
+    }
+
+    /// A day before `since` written after it goes, coverage and all; one
+    /// written before it stays, and so does one sealed live then and folded
+    /// into its row only now, which is stamped when its last minute was had.
+    #[test]
+    fn days_read_after_the_roll_from_before_it_are_let_go() {
+        let store = Store::memory().unwrap();
+        let days = Days::fixed(0);
+        let since = 3 * 86_400;
+        let one_day = |day: i64| -> Vec<Minute> { (0..60).map(|i| minute(day * 86_400 + i * 60, 30_000, 1, 1)).collect() };
+        // Day 0 read now, long after day 3 began: read late.
+        store.save_ladder_history(KEY, TICK, &days, 0, 86_400, &one_day(0)).unwrap();
+        // Day 1 read while its own month was front.
+        store.save_ladder_history(KEY, TICK, &days, 86_400, 2 * 86_400, &one_day(1)).unwrap();
+        store.conn.execute("UPDATE ladder_days SET fetched_at = ?1 WHERE day = 1", params![2 * 86_400]).unwrap();
+        // Day 2 sealed live, folded now.
+        for minute in one_day(2) {
+            let ts = minute.ts;
+            store.append_ladder_minute(KEY, TICK, 2, &minute, Some((2 * 86_400, ts + 60))).unwrap();
+        }
+        assert_eq!(store.compact_ladders(KEY, 3).unwrap(), 1);
+        // Day 3, after the roll, read now.
+        store.save_ladder_history(KEY, TICK, &days, since, 4 * 86_400, &one_day(3)).unwrap();
+
+        assert_eq!(store.forget_ladders_read_late(KEY, since).unwrap(), 1);
+        let kept: Vec<i64> = store.ladder_days(KEY).into_iter().map(|(day, _)| day).collect();
+        assert_eq!(kept, vec![1, 2, 3]);
+        assert_eq!(store.missing_ladders(KEY, 0, 86_400), vec![(0, 3_600)], "its minutes unknown again");
+        assert_eq!(store.forget_ladders_read_late(KEY, since).unwrap(), 0, "once");
     }
 
     #[test]

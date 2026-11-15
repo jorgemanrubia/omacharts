@@ -232,6 +232,11 @@ pub struct State {
     /// Positions were pushed since the last refresh began: the PnL plant's
     /// snapshot said something, so they need not be worked out from fills.
     positions_pushed: bool,
+    /// Orders, positions and accounts told of live since this sign-in, by
+    /// [`State::current`]'s keys. Updates are subscribed to
+    /// before the snapshot is asked for, so one can come first: it is as
+    /// current as the snapshot or more, and the snapshot gives way to it.
+    live: HashSet<String>,
 }
 
 fn number(text: Option<&str>) -> Option<f64> {
@@ -298,6 +303,7 @@ impl State {
     fn signed_in_again(&mut self) {
         self.orders.retain(|order| !order.status.working());
         self.positions.clear();
+        self.live.clear();
         self.refreshed = false;
     }
 
@@ -409,6 +415,18 @@ impl State {
             }
         };
         &mut self.accounts[at]
+    }
+
+    /// Whether what is told of `key` (an order, a position or an account)
+    /// says what it is now: a live update always does, and is remembered; a
+    /// snapshot's only while nothing live has been told of it since this
+    /// sign-in.
+    fn current(&mut self, key: String, snapshot: Option<bool>) -> bool {
+        if snapshot == Some(true) {
+            return !self.live.contains(&key);
+        }
+        self.live.insert(key);
+        true
     }
 
     /// Note an order just placed here, before Rithmic says anything of it.
@@ -532,6 +550,9 @@ impl State {
 
     fn rithmic_order(&mut self, update: &RithmicOrderNotification) -> bool {
         let Some(basket) = update.basket_id.as_deref().filter(|id| !id.is_empty()) else { return false };
+        if !self.current(format!("order {basket}"), update.is_snapshot) {
+            return false;
+        }
         let before = self.order_mut(basket).cloned();
         let mut order = before.clone().unwrap_or_else(|| WorkingOrder {
             account: String::new(),
@@ -647,6 +668,11 @@ impl State {
     /// the order ended.
     fn exchange_order(&mut self, update: &ExchangeOrderNotification) -> bool {
         let Some(basket) = update.basket_id.as_deref().filter(|id| !id.is_empty()) else { return false };
+        if !self.current(format!("order {basket}"), update.is_snapshot) {
+            // What the order is now was told live; a fill the snapshot
+            // holds is still noted, once.
+            return fill_of(basket, update).is_some_and(|fill| self.fill(fill));
+        }
         if self.order_mut(basket).is_none() {
             let Some(order) = told_of(basket, update) else { return false };
             let at = self.orders.partition_point(|known| known.at <= order.at);
@@ -663,16 +689,7 @@ impl State {
                 if let Some(price) = update.avg_fill_price.or(update.fill_price).filter(|price| *price != 0.0) {
                     order.fill_price = Some(price);
                 }
-                let size = update.fill_size.and_then(|qty| u32::try_from(qty).ok()).filter(|qty| *qty > 0);
-                if let (Some(price), Some(qty)) = (update.fill_price.filter(|price| *price != 0.0), size) {
-                    fill = Some(Fill {
-                        basket_id: basket.to_string(),
-                        id: update.fill_id.clone().filter(|id| !id.is_empty()),
-                        at: update.ssboe.map(i64::from).unwrap_or_else(now),
-                        qty,
-                        price,
-                    });
-                }
+                fill = fill_of(basket, update);
                 if let Some(left) = update.total_unfilled_size.and_then(|left| u32::try_from(left).ok()) {
                     order.filled = order.qty.saturating_sub(left);
                 } else if let Some(done) = update.total_fill_size.and_then(|done| u32::try_from(done).ok()) {
@@ -709,6 +726,9 @@ impl State {
             return false;
         };
         self.positions_pushed = true;
+        if !self.current(format!("position {account} {symbol}"), update.is_snapshot) {
+            return false;
+        }
         let net = update.net_quantity.or_else(|| Some(update.buy_qty? - update.sell_qty?)).unwrap_or(0);
         let fresh = Position {
             account: account.to_string(),
@@ -738,6 +758,9 @@ impl State {
 
     fn account(&mut self, update: &AccountPnLPositionUpdate) -> bool {
         let Some(account) = update.account_id.as_deref() else { return false };
+        if !self.current(format!("account {account}"), update.is_snapshot) {
+            return false;
+        }
         let known = self.account_mut(account);
         let before = known.clone();
         if let Some(day) = number(update.day_pnl.as_deref()) {
@@ -1228,7 +1251,7 @@ async fn sign_in_trading(
     let nobody = RithmicAccount::new("", "", "");
     let order_plant = within(REQUEST, RithmicOrderPlant::connect(&config, ConnectStrategy::Simple)).await?;
     let order = order_plant.get_handle(&nobody);
-    if let Err(error) = signed_in(within(REQUEST, order.login()).await) {
+    if let Err(error) = signed_in("order", credentials, within(REQUEST, order.login()).await) {
         order.abort();
         return Err(error);
     }
@@ -1256,7 +1279,7 @@ async fn sign_in_trading(
         }
     };
     let pnl = pnl_plant.get_handle(&nobody);
-    if let Err(error) = signed_in(within(REQUEST, pnl.login()).await) {
+    if let Err(error) = signed_in("pnl", credentials, within(REQUEST, pnl.login()).await) {
         pnl.abort();
         let _ = within(REQUEST, order.disconnect()).await;
         return Err(error);
@@ -1362,6 +1385,22 @@ fn moment_of(date: &str, time: &str) -> Option<i64> {
 /// An order first heard of from the exchange, as far as `update` says: its
 /// account, contract, side, size, kind and price, working until the report
 /// says otherwise.
+/// The fill an exchange's fill report tells of, if it is one.
+fn fill_of(basket: &str, update: &ExchangeOrderNotification) -> Option<Fill> {
+    if !update.report_type.as_deref().is_some_and(|report| report.eq_ignore_ascii_case("fill")) {
+        return None;
+    }
+    let qty = update.fill_size.and_then(|qty| u32::try_from(qty).ok()).filter(|qty| *qty > 0)?;
+    let price = update.fill_price.filter(|price| *price != 0.0)?;
+    Some(Fill {
+        basket_id: basket.to_string(),
+        id: update.fill_id.clone().filter(|id| !id.is_empty()),
+        at: update.ssboe.map(i64::from).unwrap_or_else(now),
+        qty,
+        price,
+    })
+}
+
 fn told_of(basket: &str, update: &ExchangeOrderNotification) -> Option<WorkingOrder> {
     let given = |text: &Option<String>| text.as_ref().filter(|text| !text.is_empty()).cloned();
     let kind = kind_of(update.price_type)?;
@@ -2028,6 +2067,77 @@ mod tests {
         assert_eq!(cancelled.status, Status::Cancelled);
         let rejected = book.orders.iter().find(|order| order.basket_id == "R1").unwrap();
         assert_eq!(rejected.status, Status::Rejected("price out of band".into()));
+    }
+
+    /// Updates are subscribed to before the snapshot is asked for, so an
+    /// update can arrive first. It is as current as the snapshot or more:
+    /// a limit moved live keeps its new price when the snapshot's older
+    /// row for it lands, and a fill the snapshot holds is still noted.
+    /// After a drop the next snapshot is heard afresh.
+    #[test]
+    fn a_snapshot_gives_way_to_what_was_told_live() {
+        let mut state = State::default();
+        let open = |price: f64, snapshot: bool| {
+            step("L1", "open", |n| {
+                n.account_id = Some("951".into());
+                n.symbol = Some("ESZ6".into());
+                n.exchange = Some("CME".into());
+                n.transaction_type = Some(1);
+                n.price_type = Some(1);
+                n.quantity = Some(2);
+                n.price = Some(price);
+                n.is_snapshot = Some(snapshot);
+            })
+        };
+        assert!(state.apply(&open(7_605.0, false)), "moved live");
+        assert!(!state.apply(&open(7_600.0, true)), "the snapshot's older row");
+        assert_eq!(state.book().orders[0].price, Some(7_605.0));
+
+        let mut fill = ExchangeOrderNotification::default();
+        fill.basket_id = Some("L1".into());
+        fill.report_type = Some("fill".into());
+        fill.is_snapshot = Some(true);
+        fill.fill_size = Some(1);
+        fill.fill_price = Some(7_605.0);
+        fill.fill_id = Some("F1".into());
+        fill.total_unfilled_size = Some(1);
+        let fill = RithmicMessage::ExchangeOrderNotification(fill);
+        assert!(state.apply(&fill), "its fill is noted");
+        assert!(!state.apply(&fill), "once");
+        let order = &state.book().orders[0];
+        assert_eq!((order.price, order.fills.len()), (Some(7_605.0), 1));
+
+        state.signed_in_again();
+        assert!(state.apply(&open(7_610.0, true)), "a new sign-in's snapshot");
+        assert_eq!(state.book().orders[0].price, Some(7_610.0));
+    }
+
+    /// The PnL plant is subscribed to before its snapshot is asked for too:
+    /// a position and a balance pushed live stand against the snapshot's.
+    #[test]
+    fn a_pnl_snapshot_gives_way_to_what_was_pushed_live() {
+        let mut state = State::default();
+        let held = |net: i32, snapshot: bool| {
+            let mut update = InstrumentPnLPositionUpdate::default();
+            update.account_id = Some("951".into());
+            update.symbol = Some("ESZ6".into());
+            update.net_quantity = Some(net);
+            update.is_snapshot = Some(snapshot);
+            RithmicMessage::InstrumentPnLPositionUpdate(update)
+        };
+        let balance = |amount: &str, snapshot: bool| {
+            let mut update = AccountPnLPositionUpdate::default();
+            update.account_id = Some("951".into());
+            update.account_balance = Some(amount.into());
+            update.is_snapshot = Some(snapshot);
+            RithmicMessage::AccountPnLPositionUpdate(update)
+        };
+        assert!(state.apply(&held(2, false)));
+        assert!(!state.apply(&held(1, true)));
+        assert_eq!(state.book().positions[0].net, 2);
+        assert!(state.apply(&balance("50100", false)));
+        assert!(!state.apply(&balance("50000", true)));
+        assert_eq!(state.book().accounts[0].balance, Some(50_100.0));
     }
 
     /// The risk system's limits and its liquidation level, which come in

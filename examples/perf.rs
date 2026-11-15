@@ -283,6 +283,22 @@ fn drawing(rows: &mut Vec<Row>) {
         }));
     }
 
+    // A chart with a position held: its line and label drawn with every
+    // frame of the chart, and the layer its breath is on, which is drawn
+    // beside the chart and so is not in a cairo frame at all.
+    let mut scene = Scene::new(3_000, 1_500);
+    scene.hold_position();
+    scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+    let (surface, cr) = canvas();
+    rows.push(row("draw", "pan/zoom frame, a position held, 1500 bars", || {
+        scene.view_frame(&cr, WIDTH, HEIGHT);
+        surface.flush();
+    }));
+    rows.push(row("draw", "crosshair frame, a position held, 1500 bars", || {
+        scene.pointer_frame(&cr, WIDTH, HEIGHT);
+        surface.flush();
+    }));
+
     // A volume profile over the price, at each edge: aligned right with room
     // open past the last bar, the session still forming is drawn there.
     for (align, room) in [("left", 0usize), ("right", 150)] {
@@ -304,6 +320,34 @@ fn drawing(rows: &mut Vec<Row>) {
             }));
         }
     }
+
+    // A volume profile drawn over the whole screen, at the automatic count
+    // and at the finest a hand can ask for: the rows are what its frame
+    // paints, and a span this wide is where they are most. Then what
+    // dividing a span costs, over a span far wider than any screen.
+    for (count, label) in [(None, "automatic rows"), (Some(800), "800 rows")] {
+        if let Some(mut scene) = Scene::of(3_000, 1_500, &[]) {
+            scene.draw_profile(count);
+            scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+            let (surface, cr) = canvas();
+            rows.push(row(
+                "draw",
+                &format!("pan/zoom frame, drawn volume profile, {label}, 1500 bars"),
+                || {
+                    scene.view_frame(&cr, WIDTH, HEIGHT);
+                    surface.flush();
+                },
+            ));
+        }
+    }
+    let span = bench::series(100_000);
+    rows.push(row(
+        "draw",
+        "compute drawn volume profile over 100000 bars",
+        || {
+            black_box(indicators::profile::of_span(&span, 0, None, 0.7, None));
+        },
+    ));
 
     // What one indicator's arithmetic costs over a long series, which is what
     // every tick pays and what the first frame of a chart pays. A row each
@@ -430,6 +474,9 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
     use std::sync::Arc;
 
     let store = Store::open_at(&home.join("trading.db")).expect("a database");
+    // Harness only: bin/perf-compare runs this file on older revisions too, which read this setting before trading.
+    store.set_setting_bool("feature.trading", true);
+    omacharts::features::adopt(&store);
     let typed = |name: &str| Typed {
         service: "fake".into(),
         name: name.into(),

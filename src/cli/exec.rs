@@ -31,6 +31,7 @@ use crate::chart_defaults::ChartDefaults;
 use crate::chart_look::{ChartLook, LookEdit};
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::trading::chart_pnl;
+use crate::ui::window::{SHOW_DRAWING_TOOLS, SHOW_WATCHLIST};
 
 /// Parse and run.
 pub fn dispatch(
@@ -145,6 +146,13 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        ("chart", "drawing-tools") => drawing_tools(store, m, json, live),
+        ("chartbook", "sidebar") => {
+            if live.is_none() && !names_a_target(noun, verb, m) {
+                return Outcome::failed(Fault::no_window("open chartbook"));
+            }
+            chartbook_sidebar(store, m, json, live)
+        }
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
@@ -160,7 +168,7 @@ pub fn dispatch(
                     _ => "focused chart",
                 }));
             }
-            charts_verb(store, noun, verb, m, json)
+            charts_verb(store, noun, verb, m, json, live)
         }
 
         ("template", _) => {
@@ -204,6 +212,8 @@ pub fn dispatch(
             outcome
         }
 
+        ("trading", _) => super::trading::run(store, verb, m, json, live),
+
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
         ("config", "set") => {
@@ -226,6 +236,12 @@ pub fn dispatch(
                     }
                     Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
                     Ok(key) if key == chart_pnl::DISPLAY || key == chart_pnl::R_AMOUNT => live.adopt_pnl(),
+                    Ok(key)
+                        if key == crate::ui::trading_settings::ORDER_LABELS
+                            || key == crate::trading::sizes::SIZE_TEMPLATES =>
+                    {
+                        live.adopt_trading()
+                    }
                     // Any other may be one of the rows a chart's look is read
                     // from, which the window reads again and wears only if
                     // it changed.
@@ -275,7 +291,7 @@ pub fn dispatch(
             // Only after it worked, and only what it touched. Rebuilding the
             // window because a setting changed would be the kind of thing
             // that is fine with five symbols and stutters with five hundred.
-            if let Some(live) = live.filter(|_| spec.writes) {
+            if let Some(live) = live.filter(|_| spec.writes && !TELL_THE_WINDOW.contains(&(noun, verb))) {
                 match spec.workspace {
                     true => live.reload_workspace(),
                     false => live.reload_watchlists(),
@@ -285,6 +301,11 @@ pub fn dispatch(
         }
     }
 }
+
+/// The verbs that tell the window what they changed themselves, as a click
+/// would, so nothing is rebuilt after them. Putting the sidebar away is one
+/// button; rebuilding every chart for it would flicker the whole window.
+const TELL_THE_WINDOW: &[(&str, &str)] = &[("chartbook", "sidebar"), ("chart", "drawing-tools")];
 
 /// Did the command say which chartbook or chart it meant?
 ///
@@ -349,8 +370,13 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         .map(|l| l.parse().unwrap_or(10))
         .unwrap_or(10);
     let index = crate::inventory::everything();
-    let hits: Vec<&omacharts_engine::Instrument> =
-        index.search(query, limit).iter().filter_map(|h| index.get(h.index)).collect();
+    // A whole formula first, the way the search field offers it.
+    let exact = index.spelled(query);
+    let hits: Vec<&omacharts_engine::Instrument> = exact
+        .iter()
+        .chain(index.search(query, limit).iter().filter_map(|h| index.get(h.index)))
+        .take(limit)
+        .collect();
     if hits.is_empty() {
         return Err(Fault::not_found(format!("nothing matches {query:?}")));
     }
@@ -1124,6 +1150,7 @@ fn charts_verb(
     verb: &str,
     m: &clap::ArgMatches,
     as_json: bool,
+    live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let mut workspace = Workspace::load(store);
     let selector = arg(m, "BOOK").or_else(|| arg(m, "book"));
@@ -1138,6 +1165,7 @@ fn charts_verb(
                         "name": workspace.name_of(i),
                         "charts": charts::panes(book).len(),
                         "watchlist": book["watchlist"],
+                        "sidebar": sidebar_of(store, book),
                         "active": i == workspace.active(),
                     })
                     .to_string()
@@ -1173,9 +1201,10 @@ fn charts_verb(
             let rows: Vec<String> = charts::panes(book).iter().map(|pane| pane_json(pane, &every)).collect();
             return Ok(match as_json {
                 true => format!(
-                    "{{\"chartbook\":{},\"watchlist\":{},\"charts\":[{}]}}\n",
+                    "{{\"chartbook\":{},\"watchlist\":{},\"sidebar\":{},\"charts\":[{}]}}\n",
                     super::json_string(&workspace.name_of(at)),
                     book["watchlist"],
+                    sidebar_of(store, book),
                     rows.join(",")
                 ),
                 false => {
@@ -1350,7 +1379,7 @@ fn charts_verb(
         ("chartbook", "template") => {
             return book_template_verb(store, m, as_json, &mut workspace, selector.map(String::as_str));
         }
-        ("chart", _) => return chart_verb(store, verb, m, as_json, &mut workspace),
+        ("chart", _) => return chart_verb(store, verb, m, as_json, &mut workspace, live),
         _ => return Err(Fault::usage(format!("no such command: {noun} {verb}"))),
     };
 
@@ -1476,11 +1505,17 @@ fn chart_verb(
     m: &clap::ArgMatches,
     as_json: bool,
     workspace: &mut Workspace,
+    live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
     let wanted = arg(m, "chart").map(String::as_str);
     let book = workspace.book(at)?.clone();
     let pane = charts::resolve_pane(&book, wanted)?;
+    // What is selected is on screen, so only the chartbook on screen has any.
+    let selection = live
+        .filter(|_| at == workspace.active())
+        .and_then(|live| live.selection(pane))
+        .unwrap_or_default();
 
     let text = match verb {
         "split" => {
@@ -1531,9 +1566,10 @@ fn chart_verb(
             format!("focused {}", chart_label(&book, id))
         }
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
-        "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
-        "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
+        "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane, &selection),
+        "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane, &selection),
         "look" => return chart_look(store, m, as_json, workspace, at, pane),
+        "compare" => return chart_compare(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
 
@@ -1611,6 +1647,9 @@ fn chart_set(
         Some(text) if text.eq_ignore_ascii_case("none") => Some(None),
         Some(text) => Some(Some(find_template(store, text)?)),
     };
+
+    let shows_fills = switch("show-fills")?;
+    let trading = chart_trading(store, m, workspace.book(at)?, pane)?;
 
     // Which mode it was in, read before anything is written: only becoming
     // Follow leads the Follow charts. Re-stating the mode a chart is already
@@ -1719,6 +1758,48 @@ fn chart_set(
             changed.push("no chart template, and no indicators".to_string());
         }
     }
+    if let Some(shows) = shows_fills {
+        if shows {
+            chart["shows_fills"] = json!(true);
+        } else if let Some(fields) = chart.as_object_mut() {
+            fields.remove("shows_fills");
+        }
+        changed.push(format!("fills {}", if shows { "marked" } else { "not marked" }));
+    }
+    let ChartTrading { account, symbol: traded, size } = trading;
+    if let Some(fields) = chart.as_object_mut() {
+        match account {
+            None => {}
+            Some(None) => {
+                fields.remove("account");
+                changed.push("on the default account".to_string());
+            }
+            Some(Some((key, name))) => {
+                fields.insert("account".into(), json!(key));
+                changed.push(format!("on {name}"));
+            }
+        }
+        match traded {
+            None => {}
+            Some(None) => {
+                fields.remove("trading_symbol");
+                fields.remove("trading_suffix");
+                changed.push("trades what it charts".to_string());
+            }
+            Some(Some((symbol, suffix))) => {
+                changed.push(format!("trades {}", spell(&symbol, suffix.as_deref())));
+                fields.insert("trading_symbol".into(), json!(symbol));
+                match suffix {
+                    Some(suffix) => fields.insert("trading_suffix".into(), json!(suffix)),
+                    None => fields.remove("trading_suffix"),
+                };
+            }
+        }
+        if let Some(picked) = size {
+            changed.push(format!("quantity {}", picked.size));
+            fields.insert("trading_size".into(), to_value(&picked)?);
+        }
+    }
     // What the chart ends up showing, which is what it leads its new group
     // with. Read after the writes above, so `--symbol X --link N` leads with X
     // rather than with whatever the chart had before.
@@ -1729,7 +1810,8 @@ fn chart_set(
         return Err(Fault::usage(
             "nothing to change; pass --title, --symbol, --resolution, --bars, \
              --session, --link, --auto-scale, --log-scale, --indicators, \
-             --drawings, --show-drawings, --send-drawings or --template"
+             --drawings, --show-drawings, --send-drawings, --template, --account, --quantity, \
+             --trading-symbol or --show-fills"
                 .into(),
         ));
     }
@@ -1769,6 +1851,7 @@ fn chart_indicator(
     workspace: &mut Workspace,
     at: usize,
     pane: u32,
+    selection: &crate::cli::Selection,
 ) -> Result<String, Fault> {
     let action = required(m, "ACTION")?.as_str();
     let book = workspace.book(at)?.clone();
@@ -1779,13 +1862,22 @@ fn chart_indicator(
         .unwrap_or_else(|| json!({}));
 
     if action == "list" {
-        let listed = chart["indicators"].as_array().cloned().unwrap_or_default();
+        let mut listed = chart["indicators"].as_array().cloned().unwrap_or_default();
+        for indicator in &mut listed {
+            let picked = selection.indicator.is_some_and(|id| indicator["id"].as_u64() == Some(id.into()));
+            indicator["selected"] = json!(picked);
+        }
+        if flag(m, "selected") {
+            listed.retain(|indicator| indicator["selected"] == true);
+        }
         return Ok(list_indicators(&listed, json!({"chart": pane}), as_json));
     }
 
     // Everything is read and checked before anything is written, so a command
     // carrying one bad value leaves the chart exactly as it was.
-    let kind = indicator_kind(m, action)?;
+    let wanted = wanted_indicator(m, Some(selection), pane)?;
+    let listed = chart["indicators"].as_array().cloned().unwrap_or_default();
+    let kind = wanted_kind(m, action, &listed, wanted, &format!("chart {pane}"))?;
     let edits = Edits::read(m)?;
 
     // A chart on a template shows the template's indicators, and changing
@@ -1797,7 +1889,7 @@ fn chart_indicator(
     {
         let mut list: Vec<Value> =
             template.indicators.iter().map(to_value).collect::<Result<_, _>>()?;
-        let text = edit_indicators(m, action, kind, &edits, &mut list, "this chart's template")?;
+        let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart's template")?;
         let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
             .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
         crate::templates::set_indicators(store, template.id, indicators.clone());
@@ -1832,7 +1924,7 @@ fn chart_indicator(
     let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
         Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
     })?;
-    let text = edit_indicators(m, action, kind, &edits, indicators, "this chart")?;
+    let text = edit_indicators(wanted, action, kind, &edits, indicators, "this chart")?;
 
     workspace.save(store);
 
@@ -1845,6 +1937,222 @@ fn chart_indicator(
         workspace.name_of(at)
     );
     said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// What a stored chart compares, or nothing for one that compares nothing or
+/// holds something this build cannot read.
+fn stored_compare(chart: &Value) -> omacharts_engine::compare::Compare {
+    serde_json::from_value(chart["compare"].clone()).unwrap_or_default()
+}
+
+/// A colour as `--color` takes it back: the palette name, or the hex.
+fn colour_words(choice: &ColorChoice) -> String {
+    match choice {
+        ColorChoice::Swatch { name } => name.clone(),
+        ColorChoice::Fixed { hex } => hex.clone(),
+    }
+}
+
+/// Where a comparison's lines are measured from, in words.
+fn compare_base(compare: &omacharts_engine::compare::Compare, zone: Tz) -> String {
+    match compare.from {
+        None => "from the left edge".to_string(),
+        Some(ts) => match chrono::DateTime::from_timestamp(ts, 0) {
+            Some(utc) => {
+                let local = utc.with_timezone(&zone);
+                let midnight = local.format("%H:%M").to_string() == "00:00";
+                format!("from {}", local.format(if midnight { "%Y-%m-%d" } else { "%Y-%m-%d %H:%M" }))
+            }
+            None => format!("from {ts}"),
+        },
+    }
+}
+
+/// `chart compare`: other markets drawn against the chart's own, in percent.
+///
+/// Everything named is checked before anything is written, so a typo in the
+/// third symbol leaves the first two uncompared rather than half the list in.
+fn chart_compare(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+) -> Result<String, Fault> {
+    use omacharts_engine::compare::{Compare, Comparison};
+    let action = required(m, "ACTION")?.as_str();
+    let book = workspace.book(at)?.clone();
+    let chart = charts::panes(&book)
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(pane as u64))
+        .cloned()
+        .ok_or_else(|| Fault::not_found(format!("no chart {pane}")))?;
+    let own_symbol = chart["symbol"].as_str().unwrap_or("").to_string();
+    let own_suffix = chart["suffix"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let zone = chart_zone(store, &own_symbol, own_suffix.as_deref());
+    let label = chart_label(&book, pane);
+    let mut compare = stored_compare(&chart);
+
+    let report = |compare: &Compare, message: String| -> Result<String, Fault> {
+        let listed: Vec<Value> = compare
+            .symbols
+            .iter()
+            .map(|c| json!({"symbol": c.spelled(), "color": c.color.as_ref().map(colour_words)}))
+            .collect();
+        said(
+            as_json,
+            json!({
+                "chart": pane,
+                "compare": listed,
+                "from": compare.from,
+                "lines_only": compare.lines_only,
+                "message": message,
+            }),
+            message,
+        )
+    };
+
+    let named: Vec<String> = m.get_many::<String>("SYMBOL").map(|given| given.cloned().collect()).unwrap_or_default();
+    if action == "list" {
+        if !named.is_empty() {
+            return Err(Fault::usage("`chart compare list` takes no symbols".into()));
+        }
+        let message = match compare.symbols.is_empty() {
+            true => format!("{label} compares nothing"),
+            false => format!(
+                "{label} compared with {}, {}{}",
+                compare.symbols.iter().map(Comparison::spelled).collect::<Vec<_>>().join(", "),
+                compare_base(&compare, zone),
+                if compare.lines_only { ", lines only" } else { "" }
+            ),
+        };
+        return report(&compare, message);
+    }
+
+    // Read and check everything first.
+    let index = crate::inventory::everything();
+    let mut markets: Vec<(String, Option<String>)> = Vec::new();
+    for text in &named {
+        let (symbol, suffix) = listing(&index, text, None);
+        // Kept as the instrument it resolves to, so BTC-USD is the coin the
+        // listings call BTC.
+        let Some(found) = index.resolve(&symbol, suffix.as_deref()) else {
+            return Err(Fault::not_found(format!(
+                "no instrument called {}; try `omacharts symbol search {symbol}`",
+                spell(&symbol, suffix.as_deref())
+            )));
+        };
+        markets.push((found.symbol, found.suffix));
+    }
+    let from = match arg(m, "from").map(String::as_str) {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("left") => Some(None),
+        Some(text) => Some(Some(read_when(text, "from", zone)?)),
+    };
+    let lines_only = match arg(m, "lines-only").map(String::as_str) {
+        None => None,
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(text) => return Err(Fault::usage(format!("--lines-only takes on or off, not {text:?}"))),
+    };
+    let color = match arg(m, "color").map(String::as_str) {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("auto") => Some(None),
+        Some(_) => Some(colour(m, "color")?),
+    };
+
+    let mut said_what: Vec<String> = Vec::new();
+    match action {
+        "add" => {
+            if markets.is_empty() {
+                return Err(Fault::usage("say which markets to compare, like `chart compare add GC NQ`".into()));
+            }
+            for (symbol, suffix) in &markets {
+                let spelled = spell(symbol, suffix.as_deref());
+                if symbol.eq_ignore_ascii_case(&own_symbol)
+                    && suffix.as_deref().unwrap_or("").eq_ignore_ascii_case(own_suffix.as_deref().unwrap_or(""))
+                {
+                    return Err(Fault::refused(format!("{label} is {spelled}; compare it with another market")));
+                }
+                if !compare.add(Comparison::new(symbol, suffix.as_deref())) {
+                    said_what.push(format!("{spelled} was compared already"));
+                }
+            }
+            let added: Vec<String> = markets.iter().map(|(s, x)| spell(s, x.as_deref())).collect();
+            said_what.insert(0, format!("compared {}", added.join(", ")));
+        }
+        "remove" => {
+            if markets.is_empty() {
+                return Err(Fault::usage(
+                    "say which markets to stop comparing, or `chart compare clear` for all of them".into(),
+                ));
+            }
+            for (symbol, suffix) in &markets {
+                let spelled = spell(symbol, suffix.as_deref());
+                if !compare.remove(symbol, suffix.as_deref()) {
+                    return Err(Fault::not_found(format!("{label} does not compare {spelled}")));
+                }
+            }
+            let removed: Vec<String> = markets.iter().map(|(s, x)| spell(s, x.as_deref())).collect();
+            said_what.push(format!("stopped comparing {}", removed.join(", ")));
+        }
+        "clear" => {
+            if !markets.is_empty() {
+                return Err(Fault::usage("`chart compare clear` takes no symbols; it takes them all off".into()));
+            }
+            compare = Compare::default();
+            said_what.push("stopped comparing anything".to_string());
+        }
+        "set" => {
+            if from.is_none() && lines_only.is_none() && color.is_none() {
+                return Err(Fault::usage("say what to set: --from, --lines-only or --color".into()));
+            }
+        }
+        other => return Err(Fault::usage(format!("{other:?} is not something chart compare does"))),
+    }
+
+    // The settings, after the list is what it is going to be.
+    if compare.is_empty() && (from.is_some() || lines_only.is_some() || color.is_some()) && action != "clear" {
+        return Err(Fault::refused(format!(
+            "{label} compares nothing; add a market first, like `chart compare add GC`"
+        )));
+    }
+    if let Some(color) = color {
+        if markets.is_empty() {
+            return Err(Fault::usage("--color is for the markets named; say which".into()));
+        }
+        for (symbol, suffix) in &markets {
+            let at = compare.position(symbol, suffix.as_deref()).ok_or_else(|| {
+                Fault::not_found(format!("{label} does not compare {}", spell(symbol, suffix.as_deref())))
+            })?;
+            if let Some(comparison) = compare.symbols.get_mut(at) {
+                comparison.color = color.clone();
+            }
+        }
+        let named: Vec<String> = markets.iter().map(|(s, x)| spell(s, x.as_deref())).collect();
+        said_what.push(match &color {
+            Some(paint) => format!("{} coloured {}", named.join(", "), colour_words(paint)),
+            None => format!("{} coloured by the theme", named.join(", ")),
+        });
+    }
+    if let Some(from) = from {
+        compare.from = from;
+        said_what.push(compare_base(&compare, zone));
+    }
+    if let Some(on) = lines_only {
+        compare.lines_only = on;
+        said_what.push(if on { "lines only".to_string() } else { "with its bars".to_string() });
+    }
+
+    let target = workspace.book_mut(at)?;
+    let Some(stored) = charts::pane_mut(target, pane) else {
+        return Err(Fault::not_found(format!("no chart {pane}")));
+    };
+    stored["compare"] = serde_json::to_value(&compare).map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
+    workspace.save(store);
+    let message = format!("{} on {label} in {:?}", said_what.join(", "), workspace.name_of(at));
+    report(&compare, message)
 }
 
 /// A chart as a new one opens: the defaults, and the template they name.
@@ -1891,6 +2199,9 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
                     // Absent from an indicator stored before it could be
                     // left out, which was in the legend.
                     "in_legend": i.get("in_legend").cloned().unwrap_or(json!(true)),
+                    // Selected in the window, picked in its legend or on its
+                    // line; a chart template's list has no window to ask.
+                    "selected": i.get("selected").cloned().unwrap_or(json!(false)),
                 })
             })
             .collect();
@@ -1898,7 +2209,15 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
         out["indicators"] = Value::Array(rows);
         return format!("{out}\n");
     }
-    listed.iter().map(describe_indicator).collect::<Vec<_>>().join("\n") + "\n"
+    listed
+        .iter()
+        .map(|i| match i["selected"] == true {
+            true => format!("{} · selected", describe_indicator(i)),
+            false => describe_indicator(i),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 /// The indicator kind an `indicator` verb names.
@@ -1914,14 +2233,69 @@ fn indicator_kind(m: &clap::ArgMatches, action: &str) -> Result<IndicatorKind, F
     })
 }
 
+/// The kind of indicator a verb works on, from `indicators`: the KIND
+/// given, or with `--id` and no KIND the kind of the one the id names,
+/// since the id alone says which. A KIND the id's indicator is not is
+/// refused rather than read as another indicator. `whose` names the list.
+fn wanted_kind(
+    m: &clap::ArgMatches,
+    action: &str,
+    indicators: &[Value],
+    wanted: Option<u64>,
+    whose: &str,
+) -> Result<IndicatorKind, Fault> {
+    let Some(id) = wanted.filter(|_| action != "add") else { return indicator_kind(m, action) };
+    let named = indicators
+        .iter()
+        .find(|i| i["id"].as_u64() == Some(id))
+        .and_then(|i| IndicatorKind::ALL.into_iter().find(|kind| is_kind(i, *kind)))
+        .ok_or_else(|| Fault::not_found(format!("{whose} has no indicator {id}; `indicator list` gives the ids")))?;
+    if arg(m, "KIND").is_none() {
+        return Ok(named);
+    }
+    let given = indicator_kind(m, action)?;
+    if given != named {
+        return Err(Fault::usage(format!(
+            "indicator {id} is {}, not {}; leave the kind out and --id alone says which",
+            named.short_name(),
+            given.short_name()
+        )));
+    }
+    Ok(given)
+}
+
 /// Add, remove or reconfigure one indicator in a list of them.
 ///
 /// One list, whoever it belongs to: a chart's and a template's are the same
 /// shape and take the same flags, so they are changed by the same code and
 /// cannot come to read a flag differently. `whose` is how a refusal names
 /// the list — "this chart has no RSI".
-fn edit_indicators(
+/// The indicator `--id` names: a number from `indicator list`, or
+/// `selected` for the one selected on chart `pane` in the window.
+fn wanted_indicator(
     m: &clap::ArgMatches,
+    selection: Option<&crate::cli::Selection>,
+    pane: u32,
+) -> Result<Option<u64>, Fault> {
+    match arg(m, "id").map(String::as_str) {
+        None => Ok(None),
+        Some("selected") => match selection {
+            None => Err(Fault::usage("a chart template has nothing selected; name the indicator with --id N".into())),
+            Some(selection) => selection.indicator.map(|id| Some(id.into())).ok_or_else(|| {
+                Fault::not_found(format!(
+                    "no indicator is selected on chart {pane}; `chart indicator list` gives the ids"
+                ))
+            }),
+        },
+        Some(text) => text
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| Fault::usage(format!("{text:?} is not an indicator id; a number, or selected"))),
+    }
+}
+
+fn edit_indicators(
+    wanted_id: Option<u64>,
     action: &str,
     kind: IndicatorKind,
     edits: &Edits,
@@ -1954,20 +2328,14 @@ fn edit_indicators(
         }
         "remove" => {
             let before = indicators.len();
-            indicators.retain(|i| !is_kind(i, kind));
+            // With an id, that one; without, every one of the kind.
+            indicators.retain(|i| !(is_kind(i, kind) && wanted_id.is_none_or(|id| i["id"].as_u64() == Some(id))));
             if indicators.len() == before {
                 return Err(Fault::not_found(format!("{whose} has no {}", kind.short_name())));
             }
             format!("removed {}", kind.short_name())
         }
         "set" => {
-            let wanted_id = match arg(m, "id") {
-                None => None,
-                Some(text) => Some(
-                    text.parse::<u64>()
-                        .map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?,
-                ),
-            };
             let matching: Vec<usize> = indicators
                 .iter()
                 .enumerate()
@@ -2009,6 +2377,21 @@ fn edit_indicators(
     })
 }
 
+/// A drawing `--id` names, given a KIND too: refused when it is another
+/// kind, rather than changed or removed as though it were that one. The
+/// KIND can be left out; the id alone says which.
+fn drawing_is(drawing: &omacharts_engine::drawings::Drawing, kind: Option<omacharts_engine::drawings::Kind>) -> Result<(), Fault> {
+    match kind {
+        Some(kind) if kind != drawing.kind => Err(Fault::usage(format!(
+            "drawing {} is {}, not {}; leave the kind out and --id alone says which",
+            drawing.id,
+            drawing.kind.key(),
+            kind.key()
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// What is drawn on a chart's symbol, from a terminal.
 ///
 /// Drawings belong to the symbol rather than the chart, so the chart named
@@ -2026,6 +2409,7 @@ fn chart_drawing(
     workspace: &mut Workspace,
     at: usize,
     pane: u32,
+    selection: &crate::cli::Selection,
 ) -> Result<String, Fault> {
     use omacharts_engine::drawings::{Drawing, Kind, Scope, CONFIGURATIONS};
 
@@ -2065,26 +2449,44 @@ fn chart_drawing(
         .as_array()
         .map(|list| list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).collect())
         .unwrap_or_default();
+    let mine = chart["drawing_uid"].as_str().unwrap_or("").to_string();
     let shown = |store: &Store, locals: &[Drawing]| -> Vec<Drawing> {
-        let mut all: Vec<Drawing> = match shows {
-            true => store.drawings(&symbol, suffix.as_deref()),
-            false => Vec::new(),
-        };
-        all.extend(locals.iter().cloned());
-        omacharts_engine::drawings::sort_for_painting(&mut all);
-        all
+        omacharts_engine::drawings::seen_by(&store.drawings(&symbol, suffix.as_deref()), locals, &mine, shows)
     };
 
     if action == "list" {
-        let listed = shown(store, &locals);
+        let mut listed = shown(store, &locals);
+        let selected = |d: &Drawing| d.id != 0 && selection.drawings.contains(&d.id);
+        if flag(m, "selected") {
+            listed.retain(|d| selected(d));
+        }
         return match as_json {
             true => Ok(format!(
                 "{{\"chart\":{pane},\"symbol\":{},\"shows_drawings\":{shows},\"sends_drawings\":{sends},\"drawings\":[{}]}}\n",
                 json!(spell(&symbol, suffix.as_deref())),
-                listed.iter().map(|d| drawing_json(d, &configs, zone).to_string()).collect::<Vec<_>>().join(",")
+                listed
+                    .iter()
+                    .map(|d| {
+                        let mut row = drawing_json(d, &configs, zone);
+                        row["selected"] = json!(selected(d));
+                        row.to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
             )),
+            false if listed.is_empty() && flag(m, "selected") => {
+                Ok(format!("nothing selected on {}\n", spell(&symbol, suffix.as_deref())))
+            }
             false if listed.is_empty() => Ok(format!("nothing drawn on {}\n", spell(&symbol, suffix.as_deref()))),
-            false => Ok(listed.iter().map(|d| describe_drawing(d, &configs, zone)).collect::<Vec<_>>().join("\n") + "\n"),
+            false => Ok(listed
+                .iter()
+                .map(|d| match selected(d) {
+                    true => format!("{} · selected", describe_drawing(d, &configs, zone)),
+                    false => describe_drawing(d, &configs, zone),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"),
         };
     }
 
@@ -2132,12 +2534,24 @@ fn chart_drawing(
         Some("back") => Some(false),
         Some(other) => return Err(Fault::usage(format!("{other:?} is not front or back"))),
     };
-    let id = match arg(m, "id") {
+    let id = match arg(m, "id").map(String::as_str) {
         None => None,
-        Some(text) => Some(
-            text.parse::<i64>()
-                .map_err(|_| Fault::usage(format!("--id takes a number from `drawing list`, not {text:?}")))?,
-        ),
+        // The one selected in the window: one, since a change is made to
+        // one drawing at a time here.
+        Some("selected") => match selection.drawings.as_slice() {
+            [one] => Some(*one),
+            [] => return Err(Fault::not_found(format!("no drawing is selected on chart {pane}"))),
+            many => {
+                return Err(Fault::ambiguous(format!(
+                    "{} drawings are selected on chart {pane}; say which with --id {}",
+                    many.len(),
+                    many.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(" or ")
+                )))
+            }
+        },
+        Some(text) => Some(text.parse::<i64>().map_err(|_| {
+            Fault::usage(format!("--id takes a number from `drawing list`, or selected, not {text:?}"))
+        })?),
     };
 
     // Where a drawing with this scope is kept, and the id it gets there.
@@ -2236,6 +2650,7 @@ fn chart_drawing(
                 ));
             }
             let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
+            drawing_is(&drawing, kind)?;
             let was_local = drawing.is_local();
             if !drawing.kind.takes_text() && !words.is_empty() {
                 return Err(takes_no_text(drawing.kind));
@@ -2309,6 +2724,7 @@ fn chart_drawing(
                 return Err(Fault::usage("`drawing remove` needs --id, from `drawing list`".into()));
             };
             let found = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
+            drawing_is(&found, kind)?;
             if found.is_local() {
                 locals.retain(|d| d.id != id);
                 write_locals(workspace, at, pane, &locals)?;
@@ -2551,6 +2967,8 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
         "arrow": style.arrow.key(),
         "head": style.head.key(),
         "border": style.border,
+        "line_style": style.line_style.label().to_lowercase(),
+        "select_by_border": style.edge_only,
         "fill": style.fill.spell(),
         "alpha": style.alpha,
         "text_color": style.text.colour.spell(),
@@ -2566,8 +2984,15 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "style": style.profile.shape.key(),
             "align": style.profile.align.key(),
             "value_area": style.profile.value_area,
-            "transparency": 1.0 - style.profile.opacity,
+            "transparency": 1.0 - style.profile_alpha(),
+            "highlight_value_area": style.profile.highlight,
+            // Null while it is the background's own.
+            "value_area_color": style.profile.value_area_paint.as_ref().map(|paint| paint.spell()),
             "poc_width": style.profile.poc_width,
+            "poc_style": style.profile.poc_style.label().to_lowercase(),
+            "poc": style.profile.show_poc,
+            // Null while automatic, as the study's.
+            "rows": style.profile.rows,
         });
     }
     // And only an anchored VWAP has these.
@@ -2662,25 +3087,39 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                     format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
                 }
             };
-            format!("{}, {}px{arrow}", style.colour.spell(), style.width)
+            format!("{}, {}px{}{arrow}", style.colour.spell(), style.width, pattern_words(style.line_style))
         }
         Kind::Rect | Kind::Ellipse => {
             let edge = match style.border {
-                true => format!(", edge {} {}px", style.colour.spell(), style.width),
+                true => format!(", edge {} {}px{}", style.colour.spell(), style.width, pattern_words(style.line_style)),
                 false => ", no edge".to_string(),
             };
-            format!("fill {} at {:.2}{edge}", style.fill.spell(), style.alpha)
+            let held = if style.edge_only { ", selected by its border" } else { "" };
+            format!("fill {} at {:.2}{edge}{held}", style.fill.spell(), style.alpha)
         }
         Kind::Text => describe_text_style(style),
         Kind::Profile => {
             let look = &style.profile;
+            let area = match (look.highlight, &look.value_area_paint) {
+                (false, _) => ", not set apart".to_string(),
+                (true, Some(paint)) => format!(" in {}", paint.spell()),
+                (true, None) => String::new(),
+            };
+            let rows = match look.rows {
+                Some(rows) => format!(", {rows} rows"),
+                None => String::new(),
+            };
+            let poc = match look.show_poc {
+                true => format!("point of control {}", look.poc.spell()),
+                false => "no point of control".to_string(),
+            };
             format!(
-                "{} {}, from the {}, point of control {}, value area {:.0}%",
+                "{} {}{rows}, from the {}, {poc}, value area {:.0}%{area}, transparency {:.0}%",
                 style.colour.spell(),
                 look.shape.key(),
                 look.align.key(),
-                look.poc.spell(),
-                look.value_area * 100.0
+                look.value_area * 100.0,
+                (1.0 - style.profile_alpha()) * 100.0
             )
         }
         Kind::Vwap => {
@@ -2718,6 +3157,14 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
     }
 }
 
+/// A pattern in a look said in words: nothing for solid.
+fn pattern_words(pattern: LineStyle) -> String {
+    match pattern {
+        LineStyle::Solid => String::new(),
+        other => format!(" {}", other.label().to_lowercase()),
+    }
+}
+
 /// How a configuration sets words: the ink, the size, and the face when it is
 /// not the desktop's.
 fn describe_text_style(style: &omacharts_engine::Style) -> String {
@@ -2748,7 +3195,16 @@ struct StyleEdits {
     align: Option<omacharts_engine::drawings::ProfileAlign>,
     value_area: Option<f64>,
     transparency: Option<f64>,
+    /// Whether a profile sets its value area apart.
+    highlight: Option<bool>,
+    /// The value area's own colour; `Some(None)` gives it back the
+    /// background's.
+    area_paint: Option<Option<omacharts_engine::Paint>>,
     poc_width: Option<f64>,
+    /// A profile's rows: `Some(None)` for automatic, as the study's.
+    rows: Option<Option<usize>>,
+    /// Whether a profile draws its point of control.
+    show_poc: Option<bool>,
     source: Option<omacharts_engine::drawings::VwapSource>,
     /// An anchored VWAP's line pattern.
     line: Option<LineStyle>,
@@ -2773,6 +3229,13 @@ struct StyleEdits {
     level_style: Option<LineStyle>,
     fib_labels: Option<bool>,
     price_labels: Option<bool>,
+    /// The pattern a line, a box's or an ellipse's edge, or a profile's
+    /// outline is drawn in.
+    line_style: Option<LineStyle>,
+    /// Whether a box or an ellipse is taken by its edge alone.
+    edge_only: Option<bool>,
+    /// A volume profile's point of control's pattern.
+    poc_style: Option<LineStyle>,
 }
 
 impl StyleEdits {
@@ -2902,7 +3365,14 @@ impl StyleEdits {
             Some("off") => Ok(Some(false)),
             Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
         };
+        let area_paint = match arg(m, "value-area-color").map(String::as_str) {
+            Some("none") => Some(None),
+            _ => paint("value-area-color")?.map(Some),
+        };
         Ok(StyleEdits {
+            line_style: pattern("line-style")?,
+            edge_only: switch("select-by-border")?,
+            poc_style: pattern("poc-style")?,
             levels,
             level,
             level_colour,
@@ -2925,7 +3395,19 @@ impl StyleEdits {
             align,
             value_area: bounded(m, "value-area", 0.1, 1.0)?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            highlight: switch("highlight-value-area")?,
+            area_paint,
             poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
+            rows: match arg(m, "rows") {
+                None => None,
+                Some(text) if text.eq_ignore_ascii_case("auto") => Some(None),
+                Some(text) => Some(Some(text.parse::<usize>().map_err(|_| {
+                    Fault::usage(format!(
+                        "{text:?} is not a row count; use a number or `auto`"
+                    ))
+                })?)),
+            },
+            show_poc: switch("poc")?,
             colour: paint("color")?,
             width,
             arrow,
@@ -2960,7 +3442,11 @@ impl StyleEdits {
             && self.align.is_none()
             && self.value_area.is_none()
             && self.transparency.is_none()
+            && self.highlight.is_none()
+            && self.area_paint.is_none()
             && self.poc_width.is_none()
+            && self.rows.is_none()
+            && self.show_poc.is_none()
             && self.source.is_none()
             && self.line.is_none()
             && self.bands.is_none()
@@ -2971,6 +3457,9 @@ impl StyleEdits {
             && !self.edits_a_level()
             && self.fib_labels.is_none()
             && self.price_labels.is_none()
+            && self.line_style.is_none()
+            && self.edge_only.is_none()
+            && self.poc_style.is_none()
     }
 
     /// Whether anything is said about the look of a retracement's level, as
@@ -3028,6 +3517,30 @@ impl StyleEdits {
                 "--level says which level the --level-* flags change; give one of them too".into(),
             ));
         }
+        use omacharts_engine::DrawingKind as K;
+        let stroked = matches!(kind, K::Line | K::Horizontal | K::Arrow | K::Zigzag | K::Rect | K::Ellipse | K::Profile | K::Vwap);
+        if self.line_style.is_some() && !stroked {
+            let instead = match kind {
+                K::Fib => "; its levels' is --level-style",
+                _ => "",
+            };
+            return Err(Fault::usage(format!(
+                "--line-style is a line's, a box's or an ellipse's edge, a profile's outline or an anchored VWAP's line; a {} has none{instead}",
+                kind.label().to_lowercase()
+            )));
+        }
+        if self.edge_only.is_some() && !matches!(kind, K::Rect | K::Ellipse) {
+            return Err(Fault::usage(format!(
+                "--select-by-border is a rectangle's or an ellipse's; a {} is taken by what is drawn already",
+                kind.label().to_lowercase()
+            )));
+        }
+        if self.poc_style.is_some() && kind != K::Profile {
+            return Err(Fault::usage(format!(
+                "--poc-style is a volume profile's; a {} has no point of control",
+                kind.label().to_lowercase()
+            )));
+        }
         Ok(())
     }
 
@@ -3076,6 +3589,15 @@ impl StyleEdits {
         if let Some(border) = self.border {
             style.border = border;
         }
+        if let Some(pattern) = self.line_style {
+            style.line_style = pattern;
+        }
+        if let Some(on) = self.edge_only {
+            style.edge_only = on;
+        }
+        if let Some(pattern) = self.poc_style {
+            style.profile.poc_style = pattern;
+        }
         if let Some(fill) = &self.fill {
             style.fill = fill.clone();
         }
@@ -3104,15 +3626,33 @@ impl StyleEdits {
             style.profile.value_area = share;
         }
         if let Some(clear) = self.transparency {
-            style.profile.opacity = 1.0 - clear;
+            style.set_profile_alpha(1.0 - clear);
+        }
+        if let Some(on) = self.highlight {
+            style.profile.highlight = on;
+        }
+        if let Some(paint) = &self.area_paint {
+            style.profile.value_area_paint = paint.clone();
         }
         if let Some(width) = self.poc_width {
             style.profile.poc_width = width;
         }
+        if let Some(rows) = self.rows {
+            style.profile.rows = rows;
+        }
+        if let Some(on) = self.show_poc {
+            style.profile.show_poc = on;
+        }
         if let Some(source) = self.source {
             style.vwap.source = source;
         }
-        if let Some(line) = self.line {
+        // --line-style is every line's pattern, an anchored VWAP's too;
+        // --style, its older name there, is still read.
+        let vwap_line = match kind {
+            omacharts_engine::DrawingKind::Vwap => self.line.or(self.line_style),
+            _ => self.line,
+        };
+        if let Some(line) = vwap_line {
             style.vwap.line = line;
         }
         if let Some(shown) = &self.bands {
@@ -3399,6 +3939,11 @@ struct Edits {
     cvd_style: Option<omacharts_engine::indicators::cvd::Style>,
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
+    /// Whether a volume profile sets its value area apart.
+    highlight: Option<bool>,
+    /// A volume profile's value area colour; `Some(None)` is `none`, the
+    /// rows' own.
+    value_area_color: Option<Option<ColorChoice>>,
     poc_color: Option<ColorChoice>,
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
@@ -3410,6 +3955,12 @@ struct Edits {
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
     poc_width: Option<f64>,
+    outline_style: Option<LineStyle>,
+    poc_style: Option<LineStyle>,
+    signal_style: Option<LineStyle>,
+    d_style: Option<LineStyle>,
+    /// How far a volume profile fades, 0 as designed.
+    transparency: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     opacity: Option<f64>,
@@ -3442,6 +3993,18 @@ fn time_of_day(m: &clap::ArgMatches, id: &str) -> Result<Option<u32>, Fault> {
         Some(text) => omacharts_engine::clock::parse_time(text).map(Some).ok_or_else(|| {
             Fault::usage(format!("--{id} takes a time of day such as 9am, 09:30 or 2130, not {text:?}"))
         }),
+    }
+}
+
+/// A line's pattern as `--style` and its kin are given it.
+fn line_style(m: &clap::ArgMatches, id: &str) -> Result<Option<LineStyle>, Fault> {
+    match arg(m, id) {
+        None => Ok(None),
+        Some(text) => LineStyle::ALL
+            .into_iter()
+            .find(|s| serde_json::to_value(s).ok().as_ref().and_then(Value::as_str) == Some(text.as_str()))
+            .map(Some)
+            .ok_or_else(|| Fault::usage(format!("--{id} is solid, dashed or dotted, not {text:?}"))),
     }
 }
 
@@ -3497,6 +4060,16 @@ impl Edits {
                 })?)),
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
+            highlight: match arg(m, "highlight-value-area").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--highlight-value-area is on or off, not {other:?}"))),
+            },
+            value_area_color: match arg(m, "value-area-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "value-area-color")?.map(Some),
+            },
             poc_color: colour(m, "poc-color")?,
             outline: match arg(m, "outline").map(String::as_str) {
                 None => None,
@@ -3519,6 +4092,11 @@ impl Edits {
             outline_color: colour(m, "outline-color")?,
             outline_width: bounded(m, "outline-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
             poc_width: bounded(m, "poc-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
+            outline_style: line_style(m, "outline-style")?,
+            poc_style: line_style(m, "poc-style")?,
+            signal_style: line_style(m, "signal-style")?,
+            d_style: line_style(m, "d-style")?,
+            transparency: bounded(m, "transparency", 0.0, 1.0)?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -3548,7 +4126,8 @@ impl Edits {
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
-            style: match arg(m, "style") {
+            // --line-style, as on a drawing; --style, the older name, too.
+            style: match arg(m, "line-style").or_else(|| arg(m, "style")) {
                 None => None,
                 Some(text) => Some(
                     LineStyle::ALL
@@ -3628,6 +4207,8 @@ impl Edits {
             && self.cvd_style.is_none()
             && self.rows.is_none()
             && self.value_area.is_none()
+            && self.highlight.is_none()
+            && self.value_area_color.is_none()
             && self.poc_color.is_none()
             && self.profile_style.is_none()
             && self.align.is_none()
@@ -3638,6 +4219,11 @@ impl Edits {
             && self.outline_color.is_none()
             && self.outline_width.is_none()
             && self.poc_width.is_none()
+            && self.outline_style.is_none()
+            && self.poc_style.is_none()
+            && self.signal_style.is_none()
+            && self.d_style.is_none()
+            && self.transparency.is_none()
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
@@ -3737,6 +4323,18 @@ impl Edits {
                 false => return Err(refuse("%D line")),
             }
         }
+        if let Some(pattern) = self.signal_style {
+            match kind == IndicatorKind::Macd {
+                true => params["signal_style"] = to_value(&pattern)?,
+                false => return Err(refuse("signal line")),
+            }
+        }
+        if let Some(pattern) = self.d_style {
+            match kind == IndicatorKind::Stochastic {
+                true => params["d_style"] = to_value(&pattern)?,
+                false => return Err(refuse("%D line")),
+            }
+        }
         if let Some(anchor) = self.anchor {
             match (params.get("reset").is_some(), anchor) {
                 (false, _) => return Err(refuse("anchor")),
@@ -3826,6 +4424,40 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["outline_color"] = to_value(colour)?,
                 false => return Err(refuse("outline")),
+            }
+        }
+        for (pattern, key, what) in [
+            (self.outline_style, "outline_style", "outline"),
+            (self.poc_style, "poc_style", "point of control"),
+        ] {
+            if let Some(pattern) = pattern {
+                match kind == IndicatorKind::VolumeProfile {
+                    true => params[key] = to_value(&pattern)?,
+                    false => return Err(refuse(what)),
+                }
+            }
+        }
+        if let Some(clear) = self.transparency {
+            match kind == IndicatorKind::VolumeProfile {
+                true => {
+                    // The strength it is drawn at, from solid at 0 to gone at
+                    // 1; a fade saved by an older build is let go of.
+                    params["alpha"] = json!(1.0 - clear);
+                    params["opacity"] = json!(omacharts_engine::indicators::profile::opaque());
+                }
+                false => return Err(refuse("transparency")),
+            }
+        }
+        if let Some(on) = self.highlight {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["highlight"] = json!(on),
+                false => return Err(refuse("value area highlight")),
+            }
+        }
+        if let Some(choice) = &self.value_area_color {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["value_area_color"] = to_value(choice)?,
+                false => return Err(refuse("value area colour")),
             }
         }
         for (width, key, what) in [
@@ -4202,6 +4834,82 @@ fn shown_style(pane: &Value, every: &ChartLook) -> &'static str {
     }
 }
 
+/// What `chart set` changes about how a chart trades, checked before
+/// anything is written: the account, by key and name, or the default
+/// again; the symbol traded instead, or none; the quantity picked.
+struct ChartTrading {
+    account: Option<Option<(String, String)>>,
+    symbol: Option<Option<(String, Option<String>)>>,
+    size: Option<crate::trading::sizes::Picked>,
+}
+
+fn chart_trading(store: &Store, m: &clap::ArgMatches, book: &Value, pane: u32) -> Result<ChartTrading, Fault> {
+    let stored = charts::panes(book).iter().find(|chart| chart["id"].as_u64() == Some(pane.into()));
+    let account = match arg(m, "account") {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("default") => Some(None),
+        Some(text) => {
+            let view = crate::trading::View::load(store);
+            let account = super::trading::find_account(&view, text)?;
+            Some(Some((account.key(), view.account_name(account))))
+        }
+    };
+    let wants_symbol = arg(m, "trading-symbol");
+    let quantity = arg(m, "quantity");
+    if wants_symbol.is_none() && quantity.is_none() {
+        return Ok(ChartTrading { account, symbol: None, size: None });
+    }
+    // What the chart charts, as the symbol or the trading symbol is judged
+    // against: what `--symbol` makes it, if it is changing too.
+    let index = crate::inventory::everything();
+    let (symbol, suffix) = match arg(m, "symbol") {
+        Some(text) => listing(&index, text, arg(m, "suffix").map(|s| s.to_uppercase())),
+        None => (
+            stored.and_then(|chart| chart["symbol"].as_str()).unwrap_or("").to_string(),
+            stored.and_then(|chart| chart["suffix"].as_str()).map(String::from),
+        ),
+    };
+    let charted = index.resolve(&symbol, suffix.as_deref());
+    let symbol = match wants_symbol {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("none") || text.is_empty() => Some(None),
+        Some(text) => {
+            let (traded, traded_suffix) = listing(&index, text, None);
+            let instrument = index.resolve(&traded, traded_suffix.as_deref()).ok_or_else(|| {
+                Fault::not_found(format!("no instrument called {}; try `omacharts symbol search {traded}`", spell(&traded, traded_suffix.as_deref())))
+            })?;
+            if !charted.as_ref().is_some_and(|charted| charted.tracks(&instrument)) {
+                return Err(Fault::refused(format!(
+                    "{} does not move with {}: a chart trades the other size of what it charts, MES on ES",
+                    instrument.display_symbol(),
+                    spell(&symbol, suffix.as_deref())
+                )));
+            }
+            Some(Some((instrument.symbol.clone(), instrument.suffix.clone())))
+        }
+    };
+    let size = match quantity {
+        None => None,
+        Some(text) => {
+            let n = text.trim().parse::<u32>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                Fault::usage(format!("--quantity is a whole number above 0, not {text:?}"))
+            })?;
+            // What the chart trades once this command is done.
+            let traded = match &symbol {
+                Some(Some((traded, traded_suffix))) => index.resolve(traded, traded_suffix.as_deref()),
+                Some(None) => charted.clone(),
+                None => stored
+                    .and_then(|chart| chart["trading_symbol"].as_str())
+                    .and_then(|traded| index.resolve(traded, stored.and_then(|chart| chart["trading_suffix"].as_str())))
+                    .or_else(|| charted.clone()),
+            };
+            let traded = traded.ok_or_else(|| Fault::refused("this chart charts nothing to trade".into()))?;
+            Some(super::trading::picked(store, &traded, n)?)
+        }
+    };
+    Ok(ChartTrading { account, symbol, size })
+}
+
 fn pane_json(pane: &Value, every: &ChartLook) -> String {
     json!({
         "id": pane["id"],
@@ -4238,6 +4946,16 @@ fn pane_json(pane: &Value, every: &ChartLook) -> String {
         // The chart template by id, as `template list` names it; none before
         // there were templates.
         "template": pane["template"],
+        // The markets compared with it, in the order they were added; empty
+        // for a chart that compares nothing.
+        "compare": stored_compare(pane).symbols.iter().map(|c| c.spelled()).collect::<Vec<_>>(),
+        // How it trades: on the default account while it has none of its
+        // own, what it charts while it trades nothing else, and the
+        // quantity its Qty shows when one was picked.
+        "account": pane["account"],
+        "trading_symbol": pane["trading_symbol"].as_str().map(|symbol| spell(symbol, pane["trading_suffix"].as_str())),
+        "quantity": pane["trading_size"]["size"],
+        "shows_fills": pane["shows_fills"].as_bool().unwrap_or(false),
     })
     .to_string()
 }
@@ -4626,9 +5344,10 @@ fn template_indicator(
         return Ok(list_indicators(&list, json!({"template": template.name}), as_json));
     }
 
-    let kind = indicator_kind(m, action)?;
+    let wanted = wanted_indicator(m, None, 0)?;
+    let kind = wanted_kind(m, action, &list, wanted, &format!("chart template {:?}", template.name))?;
     let edits = Edits::read(m)?;
-    let text = edit_indicators(m, action, kind, &edits, &mut list, "this chart template")?;
+    let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart template")?;
     let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
         .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
     crate::templates::set_indicators(store, template.id, indicators.clone());
@@ -4713,10 +5432,12 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
     if as_json {
         return Ok(format!(
             "{{\"windowOpen\":{window_open},\"chartbook\":{},\"target\":{},\"watchlist\":{},\
-             \"focusedPosition\":{},\"charts\":[{}]}}\n",
+             \"sidebar\":{},\"drawingTools\":{},\"focusedPosition\":{},\"charts\":[{}]}}\n",
             super::json_string(&workspace.name_of(at)),
             super::json_string(&format!("id:{at}")),
             book["watchlist"],
+            sidebar_of(store, &book),
+            store.setting_bool(SHOW_DRAWING_TOOLS, false),
             match position {
                 Some(at) => at.to_string(),
                 None => "null".to_string(),
@@ -4737,6 +5458,11 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
         return Ok(out);
     }
     out.push_str(&format!("chartbook  {} (id:{at})\n", workspace.name_of(at)));
+    out.push_str(&format!(
+        "sidebar {}, drawing tools {}\n",
+        switch_word(sidebar_of(store, &book)),
+        switch_word(store.setting_bool(SHOW_DRAWING_TOOLS, false)),
+    ));
     for (i, id) in order.iter().enumerate() {
         let Some(pane) = charts::panes(&book).iter().find(|p| p["id"].as_u64() == Some(*id as u64))
         else {
@@ -4773,7 +5499,7 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
 fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
     let given: Vec<String> = m.get_many::<String>("ZONES").map(|zones| zones.cloned().collect()).unwrap_or_default();
     if given.is_empty() {
-        let header = crate::header::spell(&crate::header::load(store).seen());
+        let header = crate::header::spell(&crate::header::load(store));
         return match as_json {
             true => Ok(format!("{}\n", json!({"header": header}))),
             false => Ok(format!("{header}\n")),
@@ -4783,7 +5509,7 @@ fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Optio
     if let Some(live) = live {
         live.adopt_look();
     }
-    let header = crate::header::spell(&header.seen());
+    let header = crate::header::spell(&header);
     said(as_json, json!({"header": header}), format!("every chart's header shows {header}"))
 }
 
@@ -4793,6 +5519,77 @@ fn retyped_header(store: &Store, text: &str) -> Result<crate::header::Layout, Fa
     let typed = crate::header::parse(text).map_err(Fault::usage)?;
     LookEdit::save_global([LookEdit::Header(typed)], store);
     Ok(crate::header::load(store))
+}
+
+fn switch_word(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// Whether a stored chartbook shows the sidebar. A book written before it
+/// remembered opens as the window's own setting says, as the window does.
+fn sidebar_of(store: &Store, book: &Value) -> bool {
+    book["sidebar_shown"].as_bool().unwrap_or_else(|| store.setting_bool(SHOW_WATCHLIST, true))
+}
+
+/// Whether the drawing tools are out down the left of the window.
+///
+/// One setting for the window rather than one per chartbook, as the key
+/// keeps it. With a window, the window puts them out or away, as the key
+/// does, and writes the setting doing it.
+fn drawing_tools(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let Some(state) = arg(m, "STATE") else {
+        let on = store.setting_bool(SHOW_DRAWING_TOOLS, false);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"drawingTools": on}))),
+            false => Ok(format!("{}\n", switch_word(on))),
+        };
+    };
+    let on = state == "on";
+    match live {
+        Some(live) => live.show_drawing_tools(on),
+        None => store.set_setting_bool(SHOW_DRAWING_TOOLS, on),
+    }
+    said(
+        as_json,
+        json!({"drawingTools": on}),
+        format!("the drawing tools are {}", if on { "out" } else { "put away" }),
+    )
+}
+
+/// Whether a chartbook shows the sidebar, its watchlist down the right.
+///
+/// Kept with each chartbook, as the corner button keeps it. The open one is
+/// shown or hidden by the window, through that button; another is written
+/// down for when it is next opened.
+fn chartbook_sidebar(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let mut workspace = Workspace::load(store);
+    let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
+    let name = workspace.name_of(at);
+    let Some(state) = arg(m, "STATE") else {
+        let on = sidebar_of(store, workspace.book(at)?);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"chartbook": name, "sidebar": on}))),
+            false => Ok(format!("{}\n", switch_word(on))),
+        };
+    };
+    let on = state == "on";
+    match live {
+        Some(live) if at == workspace.active() => live.show_sidebar(on),
+        _ => {
+            workspace.book_mut(at)?["sidebar_shown"] = json!(on);
+            workspace.save(store);
+            // The window holds every chartbook it has, and would write the
+            // old answer back over this one at its next save.
+            if let Some(live) = live {
+                live.reload_workspace();
+            }
+        }
+    }
+    said(
+        as_json,
+        json!({"chartbook": name, "sidebar": on}),
+        format!("chartbook {name:?} {} the sidebar", if on { "shows" } else { "hides" }),
+    )
 }
 
 // -- settings and cache ---------------------------------------------------
@@ -5297,8 +6094,13 @@ fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
 
 fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let key = required(m, "KEY")?;
+    // What dictation tells the agent is empty until somebody writes in it,
+    // and empty is an answer, not something missing.
+    // And so is the model dictation asks an agent for: empty is its own.
+    let unset = (key == crate::dictation::CONTEXT || model_agent(key).is_some()).then(String::new);
     let value = store
         .setting(key)
+        .or(unset)
         .ok_or_else(|| Fault::not_found(format!("{key:?} has never been set")))?;
     // The theme that follows the desktop is stored by its id and said as
     // `config theme` says it.
@@ -5326,7 +6128,7 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // as a header missing a part.
     if key == crate::header::SETTING {
         let header = retyped_header(store, value)?;
-        let value = crate::header::spell(&header.seen());
+        let value = crate::header::spell(&header);
         let text = format!("every chart's header shows {value}");
         return said(as_json, json!({"key": key, "value": value}), text);
     }
@@ -5434,12 +6236,46 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("set {key} to {}", serde_json::to_string(&stored).unwrap_or_default());
         return said(as_json, json!({"key": key, "value": stored}), text);
     }
+    // The model dictation asks an agent for, kept per agent: only for the
+    // agents dictation runs itself, and empty for the agent's own.
+    if let Some(agent) = key.strip_prefix(crate::dictation::agent::MODEL_PREFIX) {
+        let agent = model_agent(key).ok_or_else(|| {
+            let known: Vec<String> =
+                crate::dictation::agent::Agent::ALL.iter().map(|agent| agent.id().to_string()).collect();
+            Fault::usage(format!(
+                "dictation does not choose a model for {agent:?}; it does for {}",
+                known.join(", ")
+            ))
+        })?;
+        let value = value.trim().to_string();
+        store.set_setting(&crate::dictation::agent::model_setting(agent), &value);
+        let text = match value.is_empty() {
+            true => format!("dictation lets {} use its default model", agent.label()),
+            false => format!("dictation asks {} for {value}", agent.label()),
+        };
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
+    // Prose, said back as what was stored rather than echoed whole: it can
+    // run to paragraphs. Empty clears it.
+    if key == crate::dictation::CONTEXT {
+        let value = value.trim().to_string();
+        store.set_setting(key, &value);
+        let text = match value.is_empty() {
+            true => "dictation sends the agent no extra context".to_string(),
+            false => format!("dictation sends the agent {} characters of extra context", value.chars().count()),
+        };
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
     let value = value.to_string();
 
     store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
 }
 
+/// The agent an `agent_model.<agent>` setting is for, when dictation runs it.
+fn model_agent(key: &str) -> Option<crate::dictation::agent::Agent> {
+    key.strip_prefix(crate::dictation::agent::MODEL_PREFIX).and_then(crate::dictation::agent::Agent::named)
+}
 
 /// The theme `wanted` names, as `config theme` and `chart look --theme`
 /// take one: by id, any case, spaces for dashes, or `system`.
@@ -6072,7 +6908,13 @@ fn listing(
     suffix: Option<String>,
 ) -> (String, Option<String>) {
     let symbol = symbol.to_uppercase();
-    if suffix.is_some() || index.find(&symbol, None).is_some() {
+    // A formula carries its legs' suffixes inside it: `GC/SAN.MC` is one
+    // symbol, not `GC/SAN` in Madrid, and `SPY-SAP.DE` not `SPY-SAP` there.
+    if suffix.is_some()
+        || index.find(&symbol, None).is_some()
+        || omacharts_engine::formula::looks_like(&symbol)
+        || (symbol.contains('-') && index.resolve(&symbol, None).is_some())
+    {
         return (symbol, suffix);
     }
     // A dated contract however it was typed, ESH27 or ES H7, as the exchange
@@ -6304,6 +7146,50 @@ mod tests {
         assert_eq!(kinds("Macro"), vec![vec!["rsi"], vec!["rsi"]]);
     }
 
+    /// `--id` from `indicator list` says which indicator on its own: no
+    /// kind is needed to set or remove it, on a chart or a template, and a
+    /// kind that is not the id's is refused rather than read as another.
+    #[test]
+    fn an_indicator_is_set_and_removed_by_its_id_alone() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart set --book Macro --template none", &store);
+        run("chart indicator add sma --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        let ids = |line: &str| -> Vec<(u64, String)> {
+            json_of(&run(line, &store))["indicators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| (i["id"].as_u64().unwrap(), i["kind"].as_str().unwrap().to_string()))
+                .collect()
+        };
+        assert_eq!(ids("chart indicator list --book Macro --json"), [(1, "sma".into()), (2, "rsi".into())]);
+
+        let out = run("chart indicator set --book Macro --id 2 --period 21", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let out = run("chart indicator remove --book Macro sma --id 2", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert!(out.err.contains("indicator 2 is RSI, not SMA"), "{}", out.err);
+        let out = run("chart indicator remove --book Macro --id 9", &store);
+        assert_eq!(out.code, super::super::EXIT_NOT_FOUND, "{}", out.err);
+        let out = run("chart indicator remove --book Macro --id 2", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(ids("chart indicator list --book Macro --json"), [(1, "sma".into())]);
+
+        // A template's the same.
+        run("template indicator add Default rsi", &store);
+        let held = ids("template indicator list Default --json");
+        let (rsi, _) = held.iter().find(|(_, kind)| kind == "rsi").unwrap().clone();
+        let out = run(&format!("template indicator set Default --id {rsi} --period 9"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let out = run(&format!("template indicator remove Default volume --id {rsi}"), &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "{}", out.err);
+        let out = run(&format!("template indicator remove Default --id {rsi}"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(!ids("template indicator list Default --json").iter().any(|(_, kind)| kind == "rsi"));
+    }
+
     #[test]
     fn a_chart_switches_onto_a_template_and_onto_none() {
         let store = bare();
@@ -6402,7 +7288,6 @@ mod tests {
     #[test]
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
-        crate::features::set(&store, crate::features::Feature::Trading, true);
         use crate::header::{Layout, Part, Zone};
         assert_eq!(crate::header::load(&store), Layout::standard());
         let out = run("config header left=change,symbol right=link,template left2=name", &store);
@@ -6900,6 +7785,30 @@ mod tests {
         assert_eq!(parsed["charts"].as_array().unwrap().len(), 2);
     }
 
+    /// `chart split` gives the new chart what the old one trades with, as
+    /// splitting in the window does: its account, what it trades instead
+    /// and at what size, and whether it marks its fills.
+    #[test]
+    fn a_split_chart_keeps_what_it_trades_with() {
+        let store = bare();
+        ok("chartbook create Desk --symbol ES --switch", &store);
+        let mut workspace = Workspace::load(&store);
+        let at = workspace.find("Desk").unwrap();
+        let pane = charts::panes_mut(workspace.book_mut(at).unwrap()).unwrap().first_mut().unwrap();
+        pane["account"] = json!("login/952");
+        pane["trading_symbol"] = json!("MES");
+        pane["trading_size"] = json!({"template": "Default", "size": 2, "contract": "MES"});
+        pane["shows_fills"] = json!(true);
+        workspace.save(&store);
+
+        ok("chart split horizontal --book Desk", &store);
+        let panes = panes_of(&store, "Desk");
+        assert_eq!(panes.len(), 2);
+        for key in ["account", "trading_symbol", "trading_size", "shows_fills"] {
+            assert_eq!(panes[1][key], panes[0][key], "{key}");
+        }
+    }
+
     fn ok(line: &str, store: &Store) -> String {
         let out = run(line, store);
         assert_eq!(out.code, 0, "{line}: {}", out.err);
@@ -7189,19 +8098,6 @@ mod tests {
         assert!(look.get("theme").is_none() && look["grid"] == json!(false), "{look}");
     }
 
-    /// A header typed for one chart while trading is off keeps trading's
-    /// parts where they were, as one typed for every chart does.
-    #[test]
-    fn a_charts_header_typed_with_trading_off_keeps_trading_s_parts() {
-        let store = bare();
-        ok("chartbook create Macro --symbol SPY", &store);
-        ok("chart look --book Macro --chart pos:0 --header left=symbol", &store);
-        let stored = panes_of(&store, "Macro")[0]["look"]["header"].as_str().unwrap_or_default().to_string();
-        assert_eq!(stored, "left=symbol right=account,day_pnl,trade,size,position");
-        ok("config header left=symbol", &store);
-        assert_eq!(crate::header::spell(&crate::header::load(&store)), stored);
-    }
-
     /// A split copies the chart it divides, and a duplicated chartbook its
     /// charts, own looks and all.
     #[test]
@@ -7416,6 +8312,85 @@ mod tests {
         assert_eq!(charts(&store)["charts"][0]["indicators_shown"], true);
     }
 
+    /// Markets are compared, listed, coloured, pinned, drawn as lines and
+    /// taken off from the command line, and each change is written down
+    /// with the chart and said back about the chart it reached.
+    #[test]
+    fn markets_are_compared_from_the_command_line() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let compare = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&run("chart compare list --book Macro --json", store).out).unwrap()
+        };
+        assert_eq!(compare(&store)["compare"], serde_json::json!([]), "nothing compared to begin with");
+
+        let added = run("chart compare add --book Macro GC nq BTC-USD", &store);
+        assert_eq!(added.code, 0, "{}", added.err);
+        assert!(added.out.contains("compared GC, NQ, BTC on pos:0 SPY 1D"), "{}", added.out);
+        let listed = compare(&store);
+        let symbols: Vec<&str> = listed["compare"].as_array().unwrap().iter().map(|c| c["symbol"].as_str().unwrap()).collect();
+        assert_eq!(symbols, ["GC", "NQ", "BTC"], "BTC-USD is the coin the listings call BTC");
+        assert_eq!(listed["from"], serde_json::Value::Null);
+        assert_eq!(listed["lines_only"], false);
+
+        let again = run("chart compare add --book Macro GC", &store);
+        assert_eq!(again.code, 0, "{}", again.err);
+        assert!(again.out.contains("GC was compared already"), "{}", again.out);
+        assert_eq!(compare(&store)["compare"].as_array().unwrap().len(), 3, "not twice");
+
+        let set = run("chart compare set --book Macro --from 2026-01-02 --lines-only on", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        assert!(set.out.contains("from 2026-01-02, lines only"), "{}", set.out);
+        let listed = compare(&store);
+        assert!(listed["from"].as_i64().is_some());
+        assert_eq!(listed["lines_only"], true);
+
+        let coloured = run("chart compare set --book Macro GC --color Rose", &store);
+        assert_eq!(coloured.code, 0, "{}", coloured.err);
+        assert_eq!(compare(&store)["compare"][0]["color"], "Rose");
+
+        run("chart compare set --book Macro --from left", &store);
+        assert_eq!(compare(&store)["from"], serde_json::Value::Null, "back to the left edge");
+
+        let removed = run("chart compare remove --book Macro NQ", &store);
+        assert_eq!(removed.code, 0, "{}", removed.err);
+        let charts: serde_json::Value =
+            serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
+        assert_eq!(charts["charts"][0]["compare"], serde_json::json!(["GC", "BTC"]));
+
+        let cleared = run("chart compare clear --book Macro", &store);
+        assert_eq!(cleared.code, 0, "{}", cleared.err);
+        let listed = compare(&store);
+        assert_eq!(listed["compare"], serde_json::json!([]));
+        assert_eq!(listed["lines_only"], false, "lines only goes with the last market");
+    }
+
+    /// What cannot be compared is refused before anything is written: a
+    /// market nobody lists, the chart's own symbol, settings with nothing
+    /// to set them on, and a market that is not there to take off.
+    #[test]
+    fn a_comparison_that_cannot_be_made_changes_nothing() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let refused = |line: &str, code: u8, words: &str| {
+            let outcome = run(line, &store);
+            assert_eq!(outcome.code, code, "{line}: {}", outcome.err);
+            assert!(outcome.err.contains(words), "{line}: {}", outcome.err);
+        };
+        refused("chart compare add --book Macro GC ZZZZQ", 3, "no instrument called ZZZZQ");
+        refused("chart compare add --book Macro SPY", 5, "compare it with another market");
+        refused("chart compare set --book Macro --lines-only on", 5, "compares nothing");
+        refused("chart compare add --book Macro", 2, "say which markets");
+        run("chart compare add --book Macro GC", &store);
+        refused("chart compare remove --book Macro NQ", 3, "does not compare NQ");
+        refused("chart compare set --book Macro NQ --color Rose", 3, "does not compare NQ");
+        refused("chart compare set --book Macro --from yesterday", 2, "--from takes a moment");
+        let listed: serde_json::Value =
+            serde_json::from_str(&run("chart compare list --book Macro --json", &store).out).unwrap();
+        let symbols: Vec<&str> = listed["compare"].as_array().unwrap().iter().map(|c| c["symbol"].as_str().unwrap()).collect();
+        assert_eq!(symbols, ["GC"], "the refused GC ZZZZQ added neither");
+    }
+
     /// The legend is on for a new chart unless the default says otherwise,
     /// `config set` is that default, and `chart set --legend` is one chart's
     /// own answer, which wins over it. Each indicator's own switch is left
@@ -7536,6 +8511,38 @@ mod tests {
         let out = run("chart indicator add rsi", &store);
         assert_eq!(out.code, super::super::EXIT_NO_WINDOW);
         assert!(out.err.contains("name one, or start Omacharts"), "{}", out.err);
+    }
+
+    /// --line-style names a line's pattern on a study as on a drawing, an
+    /// anchored VWAP's line too, and --style, its older name on both, still
+    /// works.
+    #[test]
+    fn line_style_is_one_name_on_studies_and_drawings_and_style_still_works() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        for words in [
+            "chart indicator add sma --book Macro --line-style dotted",
+            "chart indicator add ema --book Macro --style dashed",
+            "chart drawing add avwap --book Macro --from 2026-10-14,0 --line-style dotted",
+            "chart drawing add avwap --book Macro --from 2026-10-15,0 --style dashed",
+        ] {
+            let out = run(words, &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        }
+        let studies = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(studies["indicators"][0]["stroke"]["style"], "dotted");
+        assert_eq!(studies["indicators"][1]["stroke"]["style"], "dashed");
+        let drawings = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(drawings["drawings"][0]["style"]["vwap"]["style"], "dotted");
+        assert_eq!(drawings["drawings"][1]["style"]["vwap"]["style"], "dashed");
+
+        let set = run("chart indicator set sma --book Macro --line-style solid", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let studies = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(studies["indicators"][0]["stroke"]["style"], "solid");
+        let fib = run("chart drawing add fib --book Macro --from 2026-10-01,100 --to 2026-10-14,200 --line-style dashed", &store);
+        assert_ne!(fib.code, 0, "a retracement's levels have --level-style");
+        assert!(fib.err.contains("--level-style"), "{}", fib.err);
     }
 
     #[test]
@@ -8170,6 +9177,56 @@ mod tests {
         assert_eq!(crate::trading::chart_pnl::load(&store), crate::trading::chart_pnl::ChartPnl::Money);
     }
 
+    /// What dictation tells the agent besides the words: empty until it is
+    /// written, written whole, read back whole, and cleared by an empty one.
+    #[test]
+    fn the_agent_context_is_set_and_read_like_any_setting() {
+        let store = bare();
+        assert_eq!(run("config get agent_context", &store).out, "\n");
+        assert_eq!(run("config get agent_context --json", &store).out.trim(), r#"{"key":"agent_context","value":""}"#);
+        let set: Vec<String> = ["omacharts", "config", "set", "agent_context", "Use Sonnet.\nKeep it brief."]
+            .map(String::from)
+            .to_vec();
+        let out = dispatch(&set, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation sends the agent 26 characters of extra context");
+        assert_eq!(run("config get agent_context", &store).out, "Use Sonnet.\nKeep it brief.\n");
+        let json: serde_json::Value = serde_json::from_str(&run("config get agent_context --json", &store).out).unwrap();
+        assert_eq!(json["value"], "Use Sonnet.\nKeep it brief.");
+        let clear: Vec<String> = ["omacharts", "config", "set", "agent_context", ""].map(String::from).to_vec();
+        let out = dispatch(&clear, &store, None, &super::super::Here);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation sends the agent no extra context");
+        assert_eq!(run("config get agent_context", &store).out, "\n");
+    }
+
+    /// The model dictation asks each agent for: the agent's own until one
+    /// is set, kept per agent, and refused for an agent it does not run.
+    #[test]
+    fn the_agent_model_is_set_and_read_per_agent() {
+        let store = bare();
+        assert_eq!(run("config get agent_model.claude", &store).out, "\n");
+        assert_eq!(
+            run("config get agent_model.claude --json", &store).out.trim(),
+            r#"{"key":"agent_model.claude","value":""}"#
+        );
+        let out = run("config set agent_model.claude opus", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out.trim(), "dictation asks Claude Code for opus");
+        assert_eq!(run("config get agent_model.claude", &store).out, "opus\n");
+        assert_eq!(run("config get agent_model.codex", &store).out, "\n");
+        let json: serde_json::Value =
+            serde_json::from_str(&run("config set agent_model.codex gpt-5.5 --json", &store).out).unwrap();
+        assert_eq!(json, serde_json::json!({"key": "agent_model.codex", "value": "gpt-5.5"}));
+        let clear: Vec<String> = ["omacharts", "config", "set", "agent_model.claude", ""].map(String::from).to_vec();
+        let out = dispatch(&clear, &store, None, &super::super::Here);
+        assert_eq!(out.out.trim(), "dictation lets Claude Code use its default model");
+        assert_eq!(run("config get agent_model.claude", &store).out, "\n");
+        let refused = run("config set agent_model.pi big", &store);
+        assert_eq!(refused.code, crate::cli::EXIT_USAGE, "{}", refused.out);
+        assert!(refused.err.contains("cursor-agent"), "{}", refused.err);
+    }
+
     /// Quietly ignoring a parameter the indicator has no use for would read
     /// as the command having worked.
     #[test]
@@ -8335,6 +9392,73 @@ mod tests {
         assert_eq!(run("chart crosshair", &store).out.trim(), "off");
         assert_eq!(run("chart crosshair on", &store).code, 0);
         assert_eq!(run("chart crosshair", &store).out.trim(), "on");
+    }
+
+    /// The drawing tools are one setting for the window, the one its key
+    /// writes, read back the way the crosshair's is.
+    #[test]
+    fn the_drawing_tools_can_be_read_and_set() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        assert_eq!(run("chart drawing-tools", &store).out.trim(), "off", "put away out of the box");
+        assert_eq!(run("chart drawing-tools on", &store).code, 0);
+        assert_eq!(run("chart drawing-tools", &store).out.trim(), "on");
+        assert!(store.setting_bool(SHOW_DRAWING_TOOLS, false));
+        let status: Value = serde_json::from_str(&run("status show --json", &store).out).unwrap();
+        assert_eq!(status["drawingTools"], json!(true));
+        assert_eq!(run("chart drawing-tools off", &store).code, 0);
+        assert_eq!(run("chart drawing-tools --json", &store).out.trim(), r#"{"drawingTools":false}"#);
+    }
+
+    /// Whether the sidebar is out is kept with each chartbook, and read
+    /// back wherever a chartbook is described.
+    #[test]
+    fn a_chartbooks_sidebar_can_be_read_and_set() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chartbook create Rates", &store);
+        assert_eq!(run("chartbook sidebar --book Macro", &store).out.trim(), "on", "out out of the box");
+        assert_eq!(run("chartbook sidebar off --book Rates", &store).code, 0);
+        assert_eq!(run("chartbook sidebar --book Rates", &store).out.trim(), "off");
+        assert_eq!(run("chartbook sidebar --book Macro", &store).out.trim(), "on", "one chartbook's alone");
+
+        let shown: Value = serde_json::from_str(&run("chartbook show Rates --json", &store).out).unwrap();
+        assert_eq!(shown["sidebar"], json!(false));
+        let listed: Value = serde_json::from_str(&run("chartbook list --json", &store).out).unwrap();
+        let sidebars: Vec<&Value> = listed["chartbooks"].as_array().unwrap().iter().map(|b| &b["sidebar"]).collect();
+        assert_eq!(sidebars, vec![&json!(true), &json!(false)]);
+        let status: Value = serde_json::from_str(&run("status show --json", &store).out).unwrap();
+        assert_eq!(status["sidebar"], json!(true), "the open chartbook's");
+
+        // "The open one" needs a window to be open in.
+        assert_eq!(run("chartbook sidebar off", &store).code, crate::cli::EXIT_NO_WINDOW);
+    }
+
+    /// With a window open, the open chartbook's sidebar and the drawing
+    /// tools are put out or away by the window, as a click would, and
+    /// nothing is rebuilt after it. Another chartbook's is written down, and
+    /// the window reads it back so its next save keeps it.
+    #[test]
+    fn the_window_shows_and_hides_its_sidebars_itself() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chartbook create Rates", &store);
+        let line = |text: &str| -> Vec<String> {
+            std::iter::once("omacharts".to_string()).chain(text.split_whitespace().map(String::from)).collect()
+        };
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chartbook sidebar off"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["flush", "sidebar off"]);
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chartbook sidebar off --book Rates"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["flush", "workspace"]);
+        assert_eq!(run("chartbook sidebar --book Rates", &store).out.trim(), "off");
+
+        let window = Watching::default();
+        assert_eq!(dispatch(&line("chart drawing-tools on"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["tools on"]);
     }
 
     #[test]
@@ -8862,11 +9986,128 @@ mod tests {
         assert_eq!(profile["align"], "right");
         assert_eq!(profile["poc_color"], "amber");
         assert_eq!(profile["value_area"], 0.6);
+        assert!((profile["transparency"].as_f64().unwrap() - 0.7).abs() < 1e-9, "as it always looked: {profile}");
+        assert_eq!(profile["highlight_value_area"], true);
+        assert!(profile["value_area_color"].is_null(), "{profile}");
+
+        let out = run(
+            "chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 \
+             --transparency 0 --highlight-value-area off --value-area-color ink",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][1]["style"]["profile"];
+        assert_eq!(profile["transparency"], 0.0, "0 is its background solid: {profile}");
+        assert_eq!(profile["highlight_value_area"], false);
+        assert_eq!(profile["value_area_color"], "ink");
 
         let bad = run("chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 --align up", &store);
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// A line's, a box's and an ellipse's pattern, a box taken by its edge
+    /// alone, and a profile drawing's outline and point of control patterns
+    /// are set from a command, read back, and refused on what has none.
+    #[test]
+    fn line_styles_and_select_by_border_are_set_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let add = |words: &str| {
+            let out = run(&format!("chart drawing add {words} --book Macro --from 2026-10-01,100 --to 2026-10-14,200"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        };
+        add("line --line-style dashed");
+        add("rect --border off --line-style dotted --select-by-border on");
+        add("ellipse --line-style dashed");
+        add("profile --line-style dotted --poc-style dashed");
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let style = |n: usize| listed["drawings"][n]["style"].clone();
+        assert_eq!(style(0)["line_style"], "dashed");
+        assert_eq!(style(0)["select_by_border"], false, "off unless set");
+        assert_eq!(style(1)["line_style"], "dotted");
+        assert_eq!(style(1)["border"], false);
+        assert_eq!(style(1)["select_by_border"], true);
+        assert_eq!(style(2)["line_style"], "dashed");
+        assert_eq!(style(3)["line_style"], "dotted");
+        assert_eq!(style(3)["profile"]["poc_style"], "dashed");
+
+        let id = listed["drawings"][1]["id"].as_i64().unwrap();
+        let set = run(&format!("chart drawing set --book Macro --id {id} --select-by-border off --line-style solid"), &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(listed["drawings"][1]["style"]["select_by_border"], false);
+        assert_eq!(listed["drawings"][1]["style"]["line_style"], "solid");
+
+        for bad in [
+            "text --line-style dashed",
+            "line --select-by-border on",
+            "rect --poc-style dotted",
+            "line --line-style wavy",
+        ] {
+            let out = run(&format!("chart drawing add {bad} --book Macro --from 2026-10-01,100 --to 2026-10-14,200"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
+
+        let configured = run("chart drawing configure rect --config 4 --select-by-border on --line-style dashed", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
+        let configs = run("chart drawing configs rect", &store);
+        assert!(configs.out.contains("selected by its border"), "{}", configs.out);
+    }
+
+    /// A volume profile's outline and point of control patterns and its
+    /// transparency, and the MACD's signal and the stochastic's %D patterns,
+    /// are set from a command, and refused by every other indicator.
+    #[test]
+    fn indicator_line_styles_and_a_profile_s_transparency_are_set_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        for kind in ["volume_profile", "macd", "stochastic", "rsi"] {
+            let out = run(&format!("chart indicator add {kind} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{kind}: {}", out.err);
+        }
+        for words in [
+            "volume_profile --outline-style dotted --poc-style dashed --transparency 0.3",
+            "volume_profile --highlight-value-area off --value-area-color Foreground",
+            "macd --signal-style dashed",
+            "stochastic --d-style dotted",
+        ] {
+            let out = run(&format!("chart indicator set {words} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        }
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        let params = |n: usize| listed["indicators"][n]["params"].clone();
+        assert_eq!(params(0)["outline_style"], "dotted");
+        assert_eq!(params(0)["poc_style"], "dashed");
+        // 0.3 of the chart showing through is 0.7 of the colour, solid at 0.
+        assert!((params(0)["alpha"].as_f64().unwrap() - 0.7).abs() < 1e-9, "{}", params(0));
+        assert_eq!(params(0)["opacity"], 1.0, "no older fade is kept: {}", params(0));
+        assert_eq!(params(0)["highlight"], false);
+        assert_eq!(params(0)["value_area_color"]["name"], "Foreground", "{}", params(0));
+        let out = run("chart indicator set volume_profile --value-area-color none --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert!(listed["indicators"][0]["params"]["value_area_color"].is_null(), "{}", listed["indicators"][0]);
+        assert_eq!(params(1)["signal_style"], "dashed");
+        assert_eq!(params(2)["d_style"], "dotted");
+
+        for bad in [
+            "rsi --signal-style dashed",
+            "rsi --d-style dashed",
+            "macd --outline-style dotted",
+            "rsi --transparency 0.5",
+            "volume_profile --transparency 1.5",
+            "rsi --highlight-value-area off",
+            "volume_profile --highlight-value-area maybe",
+            "rsi --value-area-color Blue",
+            "volume_profile --value-area-color nonsense",
+            "macd --signal-style wavy",
+        ] {
+            let out = run(&format!("chart indicator set {bad} --book Macro"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
     }
 
     /// A retracement spans two anchors, takes which levels it draws, each
@@ -9070,6 +10311,20 @@ mod tests {
         let on_nvda = run("chart drawing list --book Macro --chart pos:1 --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&on_nvda.out).unwrap();
         assert!(parsed["drawings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_drawing_named_by_id_and_another_kind_is_refused() {
+        let store = bare();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192", &store);
+        let out = run("chart drawing set line --book Macro --id 1 --fill ink", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert!(out.err.contains("drawing 1 is rect, not line"), "{}", out.err);
+        let out = run("chart drawing remove line --book Macro --id 1", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        let out = run("chart drawing remove rect --book Macro --id 1", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
     }
 
     #[test]
@@ -9519,6 +10774,12 @@ mod tests {
         fn adopt_features(&self) {
             self.0.borrow_mut().push("features");
         }
+        fn show_sidebar(&self, shown: bool) {
+            self.0.borrow_mut().push(if shown { "sidebar on" } else { "sidebar off" });
+        }
+        fn show_drawing_tools(&self, shown: bool) {
+            self.0.borrow_mut().push(if shown { "tools on" } else { "tools off" });
+        }
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}
         fn symbols(&self) -> Option<std::rc::Rc<omacharts_engine::SearchIndex>> {
@@ -9576,44 +10837,49 @@ mod tests {
     #[test]
     fn features_are_listed_and_switched_by_name() {
         let store = bare();
+        // The first flag, by what the table calls it: no feed is named here.
+        let (name, feature) = (crate::features::FLAGS[0].name, crate::features::FLAGS[0].feature);
         for line in ["features", "features list"] {
             let out = run(line, &store);
             assert_eq!(out.code, 0, "{}", out.err);
-            assert!(out.out.starts_with("trading"), "{}", out.out);
+            assert!(out.out.starts_with(name), "{}", out.out);
             assert!(out.out.lines().next().unwrap().contains(" off "), "{}", out.out);
         }
         let listed = json_of(&run("features list --json", &store));
-        assert_eq!(listed["features"][0]["name"], "trading");
+        assert_eq!(listed["features"][0]["name"], name);
         assert_eq!(listed["features"][0]["on"], false);
         assert_eq!(listed["features"][0]["default"], false);
 
-        let out = run("features enable trading", &store);
+        let out = run(&format!("features enable {name}"), &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "trading is on\n");
-        assert!(crate::features::stored(&store, crate::features::Feature::Trading));
-        assert_eq!(run("features enable trading", &store).out, "trading was already on\n");
+        assert_eq!(out.out, format!("{name} is on\n"));
+        assert!(crate::features::stored(&store, feature));
+        assert_eq!(run(&format!("features enable {name}"), &store).out, format!("{name} was already on\n"));
         assert_eq!(json_of(&run("features list --json", &store))["features"][0]["on"], true);
-        let out = json_of(&run("features disable trading --json", &store));
-        assert_eq!(out, json!({"name": "trading", "on": false, "changed": true}));
-        assert!(!crate::features::stored(&store, crate::features::Feature::Trading));
+        let out = json_of(&run(&format!("features disable {name} --json"), &store));
+        assert_eq!(out, json!({"name": name, "on": false, "changed": true}));
+        assert!(!crate::features::stored(&store, feature));
 
         for line in ["features enable bananas", "features disable bananas"] {
             let out = run(line, &store);
             assert_eq!(out.code, crate::cli::EXIT_NOT_FOUND, "{line}: {}", out.err);
-            assert!(out.err.contains("trading"), "{}", out.err);
+            assert!(out.err.contains(name), "{}", out.err);
         }
         // Kept out of `config list`, which is not where they are shown.
-        run("features enable trading", &store);
+        run(&format!("features enable {name}"), &store);
         assert!(!run("config list", &store).out.contains("feature."));
+        crate::features::force(feature, false);
     }
 
-    /// Switched with a window open, the window is told, so trading comes
-    /// and goes in it at once; switched to what it already was, nothing.
+    /// Switched with a window open, the window is told, so what the flag
+    /// switches comes and goes in it at once; switched to what it already
+    /// was, nothing.
     #[test]
     fn switching_a_feature_reaches_the_window_that_is_open() {
         let store = bare();
         let window = Watching::default();
-        let args = |verb: &str| ["omacharts", "features", verb, "trading"].map(String::from).to_vec();
+        let name = crate::features::FLAGS[0].name;
+        let args = |verb: &str| ["omacharts", "features", verb, name].map(String::from).to_vec();
         assert_eq!(dispatch(&args("enable"), &store, Some(&window), &super::super::Here).code, 0);
         assert_eq!(dispatch(&args("enable"), &store, Some(&window), &super::super::Here).code, 0);
         assert_eq!(dispatch(&args("disable"), &store, Some(&window), &super::super::Here).code, 0);
@@ -9628,7 +10894,7 @@ mod tests {
         let help = run("--help", &store).out;
         assert!(!help.contains("features"), "{help}");
         let surface = run("surface --json", &store).out;
-        assert!(!surface.contains("features") && !surface.contains("\"trading"), "{surface}");
+        assert!(!surface.contains("features"), "{surface}");
         for shell in ["bash", "zsh", "fish"] {
             let script = run(&format!("surface --completions {shell}"), &store).out;
             assert!(!script.contains("features"), "{shell}");
@@ -9638,23 +10904,85 @@ mod tests {
         assert_eq!(run("features list", &store).code, 0);
     }
 
-    /// With trading off, the header knows none of trading's parts: they are
-    /// neither typed nor suggested, and the ones a header already holds stay
-    /// where they were for when it is switched on.
+    /// With no window, what the store keeps of Trading is read and
+    /// changed, and everything a session does is refused as needing the
+    /// window: nothing is signed in without one.
     #[test]
-    fn with_trading_off_the_header_has_no_trading_parts() {
-        use crate::header::Part;
+    fn trading_without_a_window_is_the_store_s_and_orders_need_one() {
+        use crate::trading::{self, fake::Kept};
         let store = bare();
-        let out = run("config set chart_header right=trade,settings", &store);
-        assert_eq!(out.code, EXIT_USAGE);
-        assert!(!out.err.contains("day_pnl") && !out.err.contains("account"), "{}", out.err);
-        let out = run("config header left=symbol right=link,settings", &store);
+        assert!(run("trading logins", &store).out.contains("no trading services yet"));
+        let typed = trading::Typed {
+            service: "fake".into(),
+            name: "Practice".into(),
+            user: "someone".into(),
+            password: String::new(),
+            values: Vec::new(),
+        };
+        let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
+        let account = |number: &str| trading::Account {
+            login: id.clone(),
+            id: number.into(),
+            name: None,
+            currency: Some("USD".into()),
+            balance: Some(50_000.0),
+        };
+        trading::cache_accounts(&store, &id, vec![account("A-1"), account("A-2")]);
+
+        let logins = json_of(&run("trading logins --json", &store));
+        assert_eq!(logins["logins"][0]["name"], "Practice", "{logins}");
+        assert_eq!(logins["logins"][0]["live"], false, "{logins}");
+        assert!(logins["services"].as_array().unwrap().iter().any(|service| service["id"] == "fake"), "{logins}");
+
+        let accounts = json_of(&run("trading accounts --json", &store));
+        assert_eq!(accounts["accounts"][0]["balance"], 50_000.0, "{accounts}");
+        assert_eq!(accounts["accounts"][0]["default"], true, "{accounts}");
+        assert_eq!(run("trading default A-2", &store).code, 0);
+        let accounts = json_of(&run("trading accounts --json", &store));
+        assert_eq!(accounts["accounts"][1]["default"], true, "{accounts}");
+        // By its login's name and its number, as the help says, in any case.
+        assert_eq!(run("trading default practice/a-1", &store).code, 0);
+        let accounts = json_of(&run("trading accounts --json", &store));
+        assert_eq!(accounts["accounts"][0]["default"], true, "{accounts}");
+        // And by the key the JSON gives.
+        let key = accounts["accounts"][1]["account"].as_str().expect("a key").to_string();
+        assert_eq!(run(&format!("trading default {key}"), &store).code, 0, "{key}");
+        assert_eq!(json_of(&run("trading accounts --json", &store))["accounts"][1]["default"], true);
+        assert_eq!(run("trading default Practice/A-9", &store).code, crate::cli::EXIT_NOT_FOUND);
+        assert_eq!(run("trading default nope", &store).code, crate::cli::EXIT_NOT_FOUND);
+
+        for line in [
+            "trading positions",
+            "trading orders",
+            "trading buy",
+            "trading sell --limit 7600",
+            "trading exit --stop 7590",
+            "trading modify B1 --price 7600",
+            "trading cancel --all",
+            "trading flatten",
+            "trading sign-in Practice",
+            "trading login fake",
+        ] {
+            assert_eq!(run(line, &store).code, crate::cli::EXIT_NO_WINDOW, "{line}");
+        }
+        assert_eq!(run("trading buy --limit 1 --stop 2", &store).code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("trading exit", &store).code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("trading login nope", &store).code, crate::cli::EXIT_NOT_FOUND);
+
+        // The quantities a chart's Qty offers.
+        let out = run("trading quantities set Micros 1,2,5,10 --symbols MES,MNQ", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "every chart's header shows left=symbol right=link,settings\n");
-        assert_eq!(
-            crate::header::load(&store).zone(crate::header::Zone::Right),
-            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link, Part::Settings],
-            "trading's parts kept where they were"
-        );
+        let listed = json_of(&run("trading quantities list --json", &store));
+        let micros = &listed["templates"][2];
+        assert_eq!(micros["quantities"], json!([1, 2, 5, 10]), "{listed}");
+        assert_eq!(micros["symbols"], json!(["MES", "MNQ"]), "{listed}");
+        assert_eq!(run("trading quantities set Micros 0", &store).code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("trading quantities remove Micros", &store).code, 0);
+        assert_eq!(json_of(&run("trading quantities --json", &store))["templates"].as_array().unwrap().len(), 2);
+
+        assert_eq!(run("trading sign-out Practice", &store).code, 0);
+        assert!(trading::logins(&store)[0].signed_out);
+        assert_eq!(run("trading remove Practice", &store).code, 0);
+        assert!(trading::logins(&store).is_empty());
     }
 }

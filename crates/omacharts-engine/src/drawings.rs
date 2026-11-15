@@ -85,12 +85,25 @@ impl Preset {
     }
 }
 
-/// How much of the colour a rectangle's fill gets, over whatever is under it.
+/// How much of the colour a rectangle's or an ellipse's fill gets, over
+/// whatever is under it, unless somebody chose another.
 ///
-/// The alpha the VWAP bands already shade with. At 0.12 the faintest tint on
-/// any theme drops to the grid's floor; at 0.20 the candle bodies under it
-/// start losing a third of their contrast. Nothing a drawing paints is opaque.
-pub const FILL_ALPHA: f64 = 0.16;
+/// It was [`FIRST_FILL_ALPHA`], the alpha the VWAP bands shade with, and a
+/// region laid over a session read as a heavy, muddy block that washed the
+/// bars out: on a dark theme a sixth of a saturated colour is most of what
+/// separates a candle from the ground. At this strength the bars and the
+/// lines under a box keep nearly all of their contrast on every theme, and
+/// the region is still a region: its faintest tint, over every theme and
+/// colour, still makes the 1.08:1 against the ground that the chart's own
+/// grid makes, and the border is a clearer step up from its own fill than
+/// it was. Any lower and the faintest pair, Carbon's Down, is fainter than
+/// the grid. Nothing a drawing paints is opaque.
+pub const FILL_ALPHA: f64 = 0.13;
+
+/// The fill as it first shipped. Kept to recognise a stored configuration
+/// nobody changed, so it can be read as today's, and for a line's style,
+/// which carries a fill it never paints.
+pub const FIRST_FILL_ALPHA: f64 = 0.16;
 
 /// How much of the colour a rectangle's border gets.
 ///
@@ -745,6 +758,10 @@ fn is_false(flag: &bool) -> bool {
     !*flag
 }
 
+fn is_true(flag: &bool) -> bool {
+    *flag
+}
+
 impl Span {
     pub fn plain(text: &str) -> Span {
         Span { text: text.to_string(), bold: false, italic: false }
@@ -1080,9 +1097,21 @@ pub struct Style {
     /// The shape of the arrowhead, where there is one.
     #[serde(default)]
     pub head: ArrowHead,
+    /// How a line, or a shape's edge, is drawn: solid, dashed or dotted.
+    /// Left out of what is stored while it is solid, so a drawing written
+    /// before it could be chosen reads back the same.
+    #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+    pub line_style: LineStyle,
     /// Whether a rectangle has an edge at all.
     #[serde(default = "Style::default_border")]
     pub border: bool,
+    /// Whether a box or an ellipse is taken hold of by its edge alone, so
+    /// what is inside it — the crosshair, a pan, another drawing, a new one
+    /// being placed — belongs to the chart under it. For a large region
+    /// laid over the bars, which would otherwise swallow every click made
+    /// in it. The edge is still there to take when it is not drawn.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub edge_only: bool,
     /// What a rectangle is filled with.
     #[serde(default = "Style::default_fill")]
     pub fill: Paint,
@@ -1406,8 +1435,9 @@ fn stored_fib_levels<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Vec<Fi
 
 /// A volume profile drawing's own properties: the study's, as one drawing
 /// carries them. The rows are the drawing's fill, the value area at its
-/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it; the edge round them is
-/// its colour.
+/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it while the value area is
+/// highlighted, or all at its alpha when not; the edge round them is its
+/// colour.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct ProfileLook {
     /// The line across the busiest price.
@@ -1424,15 +1454,33 @@ pub struct ProfileLook {
     /// increment, as the study does.
     #[serde(default)]
     pub rows: Option<usize>,
-    /// How much of the outline and the background shows, over the strength
-    /// each is drawn at: 1 is the look as designed, 0 nothing. The point of
-    /// control keeps its own, being the line the profile is read by.
+    /// A fade over the drawing's `alpha`, from before the Transparency row
+    /// set the alpha itself: 1 draws the alpha as it is. A drawing stored
+    /// with one is drawn as it was; the row folds it into the alpha on the
+    /// next change. The point of control keeps its own strength, being the
+    /// line the profile is read by. See [`Style::profile_alpha`].
     #[serde(default = "ProfileLook::opaque")]
     pub opacity: f64,
+    /// Whether the value area is set apart from the other rows. Off, every
+    /// row is drawn alike. Missing, it is, as every profile was.
+    #[serde(default = "ProfileLook::shown", skip_serializing_if = "is_true")]
+    pub highlight: bool,
+    /// The value area's own colour, while it is highlighted. Unset is the
+    /// drawing's fill, the same colour stronger, as it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_area_paint: Option<Paint>,
+    /// Whether the point of control is drawn. Missing, it is, as every
+    /// profile's was.
+    #[serde(default = "ProfileLook::shown", skip_serializing_if = "is_true")]
+    pub show_poc: bool,
     /// The point of control's thickness. The outline's is the drawing's
     /// own `width`.
     #[serde(default = "ProfileLook::poc_default")]
     pub poc_width: f64,
+    /// The point of control's pattern. The outline's is the drawing's own
+    /// `line_style`.
+    #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+    pub poc_style: LineStyle,
 }
 
 impl ProfileLook {
@@ -1442,6 +1490,10 @@ impl ProfileLook {
 
     fn poc_default() -> f64 {
         DEFAULT_WIDTH
+    }
+
+    fn shown() -> bool {
+        true
     }
 
     fn is_default(&self) -> bool {
@@ -1458,7 +1510,11 @@ impl Default for ProfileLook {
             value_area: 0.70,
             rows: None,
             opacity: 1.0,
+            highlight: true,
+            value_area_paint: None,
+            show_poc: true,
             poc_width: DEFAULT_WIDTH,
+            poc_style: LineStyle::Solid,
         }
     }
 }
@@ -1468,11 +1524,11 @@ pub use crate::indicators::profile::{Align as ProfileAlign, Style as ProfileShap
 /// The value area's fill: the study's own. A drawing over a study is already
 /// on top, and being louder would only cost the candles under it — at 0.36
 /// the up and down bodies under a fill fall below 0.06 ΔE apart.
-pub const PROFILE_ALPHA: f64 = 0.30;
+pub const PROFILE_ALPHA: f64 = crate::indicators::profile::DESIGNED_ALPHA;
 
 /// The rows outside the value area, as a share of its alpha: the study's
 /// 0.14 to its 0.30.
-pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
+pub const PROFILE_ROW_SHARE: f64 = crate::indicators::profile::OUTSIDE_SHARE;
 
 /// The hairline around a filled profile's silhouette, the drawing's and the
 /// study's alike. Soft on purpose: 0.55 read as a box drawn round the rows
@@ -1551,9 +1607,14 @@ impl Style {
             width: DEFAULT_WIDTH,
             arrow: Arrow::None,
             head: ArrowHead::Filled,
+            line_style: LineStyle::Solid,
             border: true,
+            edge_only: false,
             fill: Paint::preset(preset),
-            alpha: FILL_ALPHA,
+            // A line fills nothing. Kept at the strength a box was first
+            // filled at, so a line's configuration nobody touched still
+            // reads as the one that shipped.
+            alpha: FIRST_FILL_ALPHA,
             text: TextStyle::of(preset),
             profile: ProfileLook::default(),
             vwap: VwapLook::default(),
@@ -1570,7 +1631,9 @@ impl Style {
             width: BORDER_WIDTH,
             arrow: Arrow::None,
             head: ArrowHead::Filled,
+            line_style: LineStyle::Solid,
             border: true,
+            edge_only: false,
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
             text: TextStyle::of(preset),
@@ -1618,6 +1681,20 @@ impl Style {
     /// box in nothing.
     pub fn text(preset: Preset) -> Style {
         Style { border: false, alpha: 0.0, ..Style::rect(preset) }
+    }
+
+    /// How solid a volume profile's value area is drawn: its alpha, faded
+    /// by any opacity it was stored with. The Transparency row is one minus
+    /// this.
+    pub fn profile_alpha(&self) -> f64 {
+        crate::indicators::profile::drawn_alpha(self.alpha, self.profile.opacity)
+    }
+
+    /// Set how solid a volume profile's value area is drawn, the old fade
+    /// folded away: 0 is nothing and 1 the colour itself.
+    pub fn set_profile_alpha(&mut self, alpha: f64) {
+        self.alpha = alpha.clamp(0.0, 1.0);
+        self.profile.opacity = 1.0;
     }
 
     /// A volume profile starts from the box's look, with what only a
@@ -1789,8 +1866,9 @@ impl Style {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Configurations {
     pub line: Vec<Style>,
+    #[serde(deserialize_with = "renewed_fills")]
     pub rect: Vec<Style>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "renewed_fills")]
     pub ellipse: Vec<Style>,
     #[serde(default)]
     pub text: Vec<Style>,
@@ -1825,6 +1903,22 @@ fn renewed_profiles<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
         let n = at as u8 + 1;
         if *style == Style::profile_as_first_shipped(n) {
             *style = Style::profile_configuration(n);
+        }
+    }
+    Ok(stored)
+}
+
+/// Stored box and ellipse configurations, with every one still as it first
+/// shipped — filled at [`FIRST_FILL_ALPHA`] — read as it ships now, at
+/// [`FILL_ALPHA`]. The two kinds start from the same nine looks, so one test
+/// serves both. One somebody changed is theirs and is kept exactly, its
+/// fill's strength included: only the default moved.
+fn renewed_fills<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Style>, D::Error> {
+    let mut stored = Vec::<Style>::deserialize(deserializer)?;
+    for (style, preset) in stored.iter_mut().zip(Preset::ALL) {
+        let first = Style { alpha: FIRST_FILL_ALPHA, ..Style::rect(preset) };
+        if *style == first {
+            *style = Style::rect(preset);
         }
     }
     Ok(stored)
@@ -2022,9 +2116,10 @@ pub struct Drawing {
     /// A chart that stops sending has to take back the drawings it sent,
     /// and "the ones it sent" is a question nothing could answer: a shared
     /// drawing sits with the symbol, and the symbol does not remember who
-    /// put it there. So it is written down. Nothing reads it to draw
-    /// anything, and a drawing written before charts had names has none —
-    /// which means no chart claims it, and no chart can withdraw it.
+    /// put it there. So it is written down. A chart not shown other charts'
+    /// drawings reads it too, to keep showing its own. A drawing written
+    /// before charts had names has none — which means no chart claims it,
+    /// no chart can withdraw it, and every chart counts it as another's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
     /// The corners of a zig-zag, first to last, and empty for every other
@@ -2065,6 +2160,39 @@ pub struct Drawing {
 /// first among equals.
 pub fn sort_for_painting(drawings: &mut [Drawing]) {
     drawings.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.abs().cmp(&b.id.abs())));
+}
+
+impl Drawing {
+    /// Whether the chart named `uid` made this. A drawing with no origin was
+    /// made by no chart anybody can name, so no chart claims it.
+    pub fn made_by(&self, uid: &str) -> bool {
+        !uid.is_empty() && self.origin.as_deref() == Some(uid)
+    }
+
+    /// Whether a chart named `uid` sees this shared drawing: all of them
+    /// when it is shown what other charts send, and only the ones it sent
+    /// itself when it is not.
+    pub fn seen_by(&self, uid: &str, shows_others: bool) -> bool {
+        shows_others || self.made_by(uid)
+    }
+}
+
+/// What one chart sees, painting order: the symbol's shared drawings that
+/// [`Drawing::seen_by`] lets through, and the chart's own local ones always.
+///
+/// "Show drawings from other charts" turned off hides other charts' work,
+/// never the chart's own. A chart sends what it draws by default, so its own
+/// drawings sit with the symbol beside everybody else's, and only the origin
+/// tells them apart. A drawing with no origin, written before charts had
+/// names, belongs to no chart: it counts as another chart's, and is hidden
+/// with them. Claiming it for every chart would put it back on each chart
+/// somebody had asked to keep clean, and sending works the same way — no
+/// chart can withdraw it either.
+pub fn seen_by(shared: &[Drawing], own: &[Drawing], uid: &str, shows_others: bool) -> Vec<Drawing> {
+    let mut all: Vec<Drawing> = shared.iter().filter(|d| d.seen_by(uid, shows_others)).cloned().collect();
+    all.extend(own.iter().cloned());
+    sort_for_painting(&mut all);
+    all
 }
 
 /// The width a line is drawn at when nobody chose one: the chart's own
@@ -2485,11 +2613,22 @@ pub struct Projected {
     /// only one that knows whether its price scale is linear: on a log
     /// scale the levels are not evenly spaced between the anchors.
     pub levels: Vec<f64>,
+    /// Whether only the edge of a box or an ellipse is something to take
+    /// hold of, its inside being the chart's: [`Style::edge_only`].
+    pub edge_only: bool,
 }
 
 impl Projected {
     pub fn new(kind: Kind, from: (f64, f64), to: (f64, f64)) -> Projected {
-        Projected { kind, from, to, corners: Vec::new(), words: None, levels: Vec::new() }
+        Projected { kind, from, to, corners: Vec::new(), words: None, levels: Vec::new(), edge_only: false }
+    }
+
+    /// The same projection, taken hold of by its edge alone when `on` and
+    /// it is a box or an ellipse. Every other kind is a line, or is read
+    /// off the bars, and is all edge already.
+    pub fn with_edge_only(self, on: bool) -> Projected {
+        let edge_only = on && matches!(self.kind, Kind::Rect | Kind::Ellipse);
+        Projected { edge_only, ..self }
     }
 
     /// A retracement's projection: its two ends, and its levels' heights.
@@ -2510,7 +2649,7 @@ impl Projected {
     pub fn through(kind: Kind, corners: Vec<(f64, f64)>) -> Projected {
         let from = corners.first().copied().unwrap_or((0.0, 0.0));
         let to = corners.last().copied().unwrap_or(from);
-        Projected { kind, from, to, corners, words: None, levels: Vec::new() }
+        Projected { kind, from, to, corners, words: None, levels: Vec::new(), edge_only: false }
     }
 
     /// The same projection, told where its words landed.
@@ -2625,8 +2764,14 @@ impl Projected {
         // the words are inside the shape, but on a line they can sit well
         // clear of the stroke and used to be the one part of a drawing you
         // could not take hold of.
-        if self.words.is_some_and(|box_| within(box_, (x, y), reach)) {
+        //
+        // Not on a figure taken by its edge alone: its words are inside
+        // it, and inside it is the chart's.
+        if !self.edge_only && self.words.is_some_and(|box_| within(box_, (x, y), reach)) {
             return true;
+        }
+        if self.edge_only {
+            return self.on_edge(x, y, reach);
         }
         match self.kind {
             // Every kind that is a stroke is picked the same way: near the
@@ -2664,6 +2809,29 @@ impl Projected {
         }
     }
 
+    /// Whether the pointer is within `reach` of a box's or an ellipse's
+    /// outline, either side of it: the band a figure taken by its edge
+    /// alone is taken by. Drawn or not, since a border turned off is still
+    /// where the figure ends. A figure too small to have an inside past the
+    /// reach is all edge.
+    fn on_edge(&self, x: f64, y: f64, reach: f64) -> bool {
+        let (left, top, w, h) = self.bounds();
+        match self.kind {
+            Kind::Ellipse => {
+                inside_ellipse((x, y), (left, top, w, h), reach)
+                    && !inside_ellipse((x, y), (left, top, w, h), -reach)
+            }
+            _ => {
+                let outer = within((left, top, w, h), (x, y), reach);
+                let inner = w > 2.0 * reach
+                    && h > 2.0 * reach
+                    && (left + reach < x && x < left + w - reach)
+                    && (top + reach < y && y < top + h - reach);
+                outer && !inner
+            }
+        }
+    }
+
     /// Whether any of the drawing lies inside a box: the box a hand drags
     /// out to select what it touches. A line counts when the segment
     /// crosses the box, not when its own bounding box does, so a long
@@ -2673,6 +2841,17 @@ impl Projected {
         let overlaps = |(l, t, w, h): (f64, f64, f64, f64)| {
             l <= right && l + w >= left && t <= bottom && t + h >= top
         };
+        // A figure taken by its edge alone is not taken by a box dragged
+        // wholly inside it, which is a hand selecting what is in there.
+        if self.edge_only {
+            let (l, t, w, h) = self.bounds();
+            let corners = [(left, top), (right, top), (left, bottom), (right, bottom)];
+            let inside = match self.kind {
+                Kind::Ellipse => corners.iter().all(|at| inside_ellipse(*at, (l, t, w, h), 0.0)),
+                _ => l < left && right < l + w && t < top && bottom < t + h,
+            };
+            return overlaps((l, t, w, h)) && !inside;
+        }
         // A box dragged over a drawing's label takes the drawing, for the
         // same reason clicking the label does.
         if self.words.is_some_and(overlaps) {
@@ -2717,6 +2896,53 @@ impl Projected {
         }
         (left, top, right - left, bottom - top)
     }
+
+    /// The box a label is placed against, on a chart whose plot runs from
+    /// `left` to `right`: for a line, the box round the part of it that is
+    /// on screen; for every other kind, [`bounds`](Self::bounds).
+    ///
+    /// A line is as long as the time its anchors span, and the same span is
+    /// a few candles on one chart and thousands on another. A label placed
+    /// against the whole of it sits at the middle or an end of that span, so
+    /// a level drawn on an hourly chart carried its words with it to a
+    /// two-minute chart — somewhere days off screen, while the line itself
+    /// ran right across the plot. Placed against what is on screen, the
+    /// words go wherever the line shows. A line wholly on screen gets the
+    /// box it always had, and one wholly off it keeps that too, since there
+    /// is nothing to put the words beside.
+    pub fn label_bounds(&self, left: f64, right: f64) -> (f64, f64, f64, f64) {
+        if !self.kind.is_line() || right <= left {
+            return self.bounds();
+        }
+        let mut seen: Option<(f64, f64, f64, f64)> = None;
+        for (a, b) in self.segments() {
+            let Some((p, q)) = clip_across(a, b, left, right) else { continue };
+            let (x0, x1) = ordered(p.0, q.0);
+            let (y0, y1) = ordered(p.1, q.1);
+            seen = Some(match seen {
+                None => (x0, y0, x1, y1),
+                Some((l, t, r, b)) => (l.min(x0), t.min(y0), r.max(x1), b.max(y1)),
+            });
+        }
+        match seen {
+            Some((l, t, r, b)) => (l, t, r - l, b - t),
+            None => self.bounds(),
+        }
+    }
+}
+
+/// The part of the segment `a`–`b` between `left` and `right`, or `None`
+/// when none of it is.
+fn clip_across(a: (f64, f64), b: (f64, f64), left: f64, right: f64) -> Option<((f64, f64), (f64, f64))> {
+    let (a, b) = if a.0 <= b.0 { (a, b) } else { (b, a) };
+    if b.0 < left || a.0 > right {
+        return None;
+    }
+    // Only asked about an edge the segment crosses, so it is never upright.
+    let at = |x: f64| (x, a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0));
+    let start = if a.0 < left { at(left) } else { a };
+    let end = if b.0 > right { at(right) } else { b };
+    Some((start, end))
 }
 
 /// Whether a point is in the ellipse inscribed in `bounds`, allowing `reach`
@@ -3017,6 +3243,63 @@ mod shape_tests {
         assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().scope, Scope::Shared);
     }
 
+    /// A chart not shown other charts' drawings keeps the ones it sent
+    /// itself and its local ones; a drawing with no origin, from before
+    /// charts had names, is nobody's and goes with the others. Shown
+    /// everything, it sees everything, in painting order.
+    #[test]
+    fn a_chart_sees_its_own_drawings_whatever_it_is_shown_of_others() {
+        let at = |id: i64, origin: Option<&str>| {
+            let mut d = Drawing::new(Kind::Line, Anchor::new(1, 1.0), Anchor::new(2, 2.0));
+            d.id = id;
+            d.origin = origin.map(str::to_string);
+            d
+        };
+        let shared = vec![at(1, Some("mine")), at(2, Some("theirs")), at(3, None)];
+        let mut local = at(-1, Some("mine"));
+        local.scope = Scope::Local;
+        let ids = |seen: Vec<Drawing>| seen.iter().map(|d| d.id).collect::<Vec<_>>();
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", false)), vec![1, -1]);
+        assert_eq!(ids(seen_by(&shared, &[local.clone()], "mine", true)), vec![1, -1, 2, 3]);
+        // A chart with no name yet claims nothing, even the drawings that
+        // have none either.
+        assert_eq!(ids(seen_by(&shared, &[], "", false)), Vec::<i64>::new());
+        // And an old drawing with no origin still reads.
+        let old = r#"{"kind":"horizontal","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":2.0}}"#;
+        assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().origin, None);
+    }
+
+    /// A line's label is placed against the part of it on screen: one that
+    /// runs off both sides centres its words on the plot, one wholly on
+    /// screen keeps its own box, and one wholly off it keeps that too.
+    #[test]
+    fn a_line_s_label_is_placed_against_the_part_of_it_on_screen() {
+        // A level from far left of the plot to far right of it.
+        let wide = Projected::new(Kind::Horizontal, (-5000.0, 100.0), (9000.0, 100.0));
+        assert_eq!(wide.label_bounds(50.0, 850.0), (50.0, 100.0, 800.0, 0.0));
+        let (x, _) = text_origin(Kind::Horizontal, wide.label_bounds(50.0, 850.0), (80.0, 16.0), Place::Center);
+        assert_eq!(x, 410.0, "centred on the plot");
+        // Its whole box would have put the words thousands of pixels away.
+        let (far, _) = text_origin(Kind::Horizontal, wide.bounds(), (80.0, 16.0), Place::Center);
+        assert!(far > 850.0);
+        // A sloped line cut at both edges, its heights where it is cut.
+        let slope = Projected::new(Kind::Line, (0.0, 0.0), (1000.0, 1000.0));
+        assert_eq!(slope.label_bounds(100.0, 400.0), (100.0, 100.0, 300.0, 300.0));
+        // Wholly on screen, and wholly off it: the box it always had.
+        let inside = Projected::new(Kind::Line, (200.0, 50.0), (300.0, 80.0));
+        assert_eq!(inside.label_bounds(50.0, 850.0), inside.bounds());
+        let off = Projected::new(Kind::Line, (-900.0, 50.0), (-300.0, 80.0));
+        assert_eq!(off.label_bounds(50.0, 850.0), off.bounds());
+        // A zig-zag's box is round the parts of its legs on screen.
+        let path = Projected::through(Kind::Zigzag, vec![(-100.0, 0.0), (100.0, 200.0), (1000.0, 50.0)]);
+        let (left, top, _, height) = path.label_bounds(0.0, 500.0);
+        assert_eq!((left, top), (0.0, 100.0));
+        assert!(height > 0.0);
+        // A box is a box: placed against all of it, as ever.
+        let rect = Projected::new(Kind::Rect, (-500.0, 0.0), (500.0, 100.0));
+        assert_eq!(rect.label_bounds(0.0, 200.0), rect.bounds());
+    }
+
     #[test]
     fn paint_is_spelled_the_way_it_is_typed() {
         assert_eq!(Paint::parse("amber"), Some(Paint::preset(Preset::Amber)));
@@ -3030,6 +3313,41 @@ mod shape_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A profile drawing stored before its rows and its point of control
+    /// could be set reads back automatic, with the point of control drawn,
+    /// and a look nobody changed is still stored without either.
+    #[test]
+    fn a_profile_stored_before_rows_and_the_point_of_control_reads_as_it_was() {
+        let mut old = serde_json::to_value(ProfileLook {
+            value_area: 0.6,
+            ..ProfileLook::default()
+        })
+        .unwrap();
+        let fields = old.as_object_mut().expect("an object");
+        fields.remove("rows");
+        fields.remove("show_poc");
+        let look: ProfileLook = serde_json::from_value(old).expect("an old profile look");
+        assert_eq!(look.rows, None);
+        assert!(look.show_poc);
+        assert_eq!(
+            look,
+            ProfileLook {
+                value_area: 0.6,
+                ..ProfileLook::default()
+            }
+        );
+        let stored = serde_json::to_string(&ProfileLook::default()).expect("stored");
+        assert!(!stored.contains("show_poc"), "{stored}");
+        let hidden = ProfileLook {
+            show_poc: false,
+            rows: Some(120),
+            ..ProfileLook::default()
+        };
+        let back: ProfileLook =
+            serde_json::from_str(&serde_json::to_string(&hidden).unwrap()).unwrap();
+        assert_eq!(back, hidden);
+    }
     use crate::omarchy;
     use crate::theme::builtin_themes;
     use std::collections::HashMap;
@@ -4324,5 +4642,140 @@ mod edge_grip_tests {
         }
         // Other kinds are as they were.
         assert_eq!(read.of(Kind::Rect, 1), &Style::rect(Preset::Up));
+    }
+
+    /// A style written before line styles and edge-only picking existed
+    /// reads back solid, bordered and taken anywhere; and one that leaves
+    /// them so writes nothing for them, so it reads the same in a build
+    /// from before them.
+    #[test]
+    fn line_style_and_edge_only_default_to_what_there_was() {
+        let mut stored: serde_json::Value = serde_json::to_value(Style::rect(Preset::Blue)).unwrap();
+        let fields = stored.as_object_mut().unwrap();
+        assert!(!fields.contains_key("line_style") && !fields.contains_key("edge_only"), "{fields:?}");
+        fields.remove("border");
+        let style: Style = serde_json::from_value(stored).unwrap();
+        assert_eq!(style.line_style, LineStyle::Solid);
+        assert!(style.border && !style.edge_only);
+
+        let chosen = Style { line_style: LineStyle::Dotted, edge_only: true, border: false, ..Style::rect(Preset::Blue) };
+        let back: Style = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+        assert_eq!(back, chosen);
+
+        let look = serde_json::to_string(&ProfileLook::default()).unwrap();
+        assert!(!look.contains("poc_style"), "{look}");
+        let look: ProfileLook = serde_json::from_str(&look).unwrap();
+        assert_eq!(look.poc_style, LineStyle::Solid);
+    }
+
+    /// A profile drawing stored before its value area could be set apart
+    /// or coloured, and faded by the opacity it had then, draws at the
+    /// strength it always did, highlighted in its background's colour; and
+    /// a strength set now is the strength itself, with the old fade let go.
+    #[test]
+    fn a_stored_profile_drawing_keeps_its_look_and_a_new_strength_is_its_own() {
+        let mut stored = serde_json::to_value(Style::profile(Preset::Blue)).unwrap();
+        if stored.get("profile").is_none() {
+            stored["profile"] = serde_json::to_value(ProfileLook::default()).unwrap();
+        }
+        let look = stored["profile"].as_object_mut().unwrap();
+        assert!(!look.contains_key("highlight") && !look.contains_key("value_area_paint"), "{look:?}");
+        look.insert("opacity".into(), serde_json::json!(0.5));
+        let style: Style = serde_json::from_value(stored).unwrap();
+        assert!(style.profile.highlight && style.profile.value_area_paint.is_none());
+        assert!((style.profile_alpha() - PROFILE_ALPHA * 0.5).abs() < 1e-12);
+        assert_eq!(Style::profile(Preset::Blue).profile_alpha(), PROFILE_ALPHA, "a new one looks as they always did");
+
+        let mut set = style.clone();
+        set.set_profile_alpha(1.0);
+        assert_eq!((set.alpha, set.profile.opacity, set.profile_alpha()), (1.0, 1.0, 1.0), "0% is solid");
+        set.profile.highlight = false;
+        set.profile.value_area_paint = Some(Paint::preset(Preset::Ink));
+        let back: Style = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+        assert_eq!(back, set);
+    }
+
+    /// A box's and an ellipse's fill is lighter than it first shipped, its
+    /// colour and border the same; a stored configuration nobody changed
+    /// takes the new fill, and one somebody did, or a drawing's own style,
+    /// keeps the opacity it was given.
+    #[test]
+    fn the_default_fill_is_lighter_and_a_chosen_one_is_kept() {
+        const { assert!(FILL_ALPHA < FIRST_FILL_ALPHA) };
+        for preset in Preset::ALL {
+            let style = Style::rect(preset);
+            assert_eq!(style.alpha, FILL_ALPHA);
+            assert_eq!(style.fill, Paint::preset(preset), "the colour is not moved");
+            assert!(style.border && style.colour == Paint::preset(preset) && style.width == BORDER_WIDTH, "nor the border");
+        }
+
+        let first = |preset| Style { alpha: FIRST_FILL_ALPHA, ..Style::rect(preset) };
+        let mut stored = Configurations {
+            rect: Preset::ALL.into_iter().map(first).collect(),
+            ellipse: Preset::ALL.into_iter().map(first).collect(),
+            ..Configurations::default()
+        };
+        stored.rect[2] = Style { alpha: 0.4, ..first(Preset::ALL[2]) };
+        stored.ellipse[4] = Style { alpha: FIRST_FILL_ALPHA, width: 3.0, ..first(Preset::ALL[4]) };
+        let read: Configurations = serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
+        for n in 1..=CONFIGURATIONS {
+            let rect = read.of(Kind::Rect, n).alpha;
+            let ellipse = read.of(Kind::Ellipse, n).alpha;
+            assert_eq!(rect, if n == 3 { 0.4 } else { FILL_ALPHA }, "box {n}");
+            assert_eq!(ellipse, if n == 5 { FIRST_FILL_ALPHA } else { FILL_ALPHA }, "ellipse {n}");
+        }
+
+        let mut own = Drawing::new(Kind::Rect, Anchor::new(0, 1.0), Anchor::new(60, 2.0));
+        own.config = None;
+        own.style = Some(first(Preset::Blue));
+        let drawing: Drawing = serde_json::from_str(&serde_json::to_string(&own).unwrap()).unwrap();
+        assert_eq!(drawing.style.unwrap().alpha, FIRST_FILL_ALPHA, "an explicit opacity is the user's");
+    }
+
+    fn large_box(kind: Kind) -> Projected {
+        Projected::new(kind, (100.0, 100.0), (500.0, 400.0))
+    }
+
+    /// Taken by its edge alone, a large box or ellipse lets a click inside
+    /// it through to the chart and is still taken on its outline, within
+    /// the usual reach; off, it is taken anywhere, as it always was.
+    #[test]
+    fn a_figure_taken_by_its_edge_alone_is_the_charts_inside() {
+        for kind in [Kind::Rect, Kind::Ellipse] {
+            let anywhere = large_box(kind);
+            let edge = large_box(kind).with_edge_only(true);
+            assert_eq!(anywhere.hit(300.0, 250.0), Some(Grip::Body), "{kind:?} off is unchanged");
+            assert_eq!(edge.hit(300.0, 250.0), None, "{kind:?}: inside is the chart's");
+            assert!(!edge.near(300.0, 250.0, PICK_REACH), "{kind:?}: not even near");
+            // On its outline, either side of it, inside the reach: a box's
+            // top edge, an ellipse's upper left, clear of the grips.
+            let (x, y) = match kind {
+                Kind::Rect => (220.0, 100.0),
+                _ => (300.0 - 200.0 * 0.6, 250.0 - 150.0 * 0.8),
+            };
+            for dy in [-(PICK_REACH - 2.0), 0.0, PICK_REACH - 2.0] {
+                assert_eq!(edge.hit(x, y + dy), Some(Grip::Body), "{kind:?} at {dy}");
+            }
+            assert_eq!(edge.hit(x, y + PICK_REACH + 4.0), None, "{kind:?}: past the reach inside");
+            assert_eq!(edge.hit(x, y - PICK_REACH - 4.0), None, "{kind:?}: past it outside");
+            // Its grips are still its grips.
+            assert!(edge.hit(500.0, 400.0).is_some());
+        }
+        // A line has no inside to give away.
+        let line = Projected::new(Kind::Line, (0.0, 0.0), (100.0, 100.0)).with_edge_only(true);
+        assert!(!line.edge_only);
+    }
+
+    /// A box dragged out wholly inside an edge-only figure is a hand
+    /// selecting what is in there, not the figure; one across its edge
+    /// takes it.
+    #[test]
+    fn a_selection_inside_an_edge_only_figure_leaves_it_out() {
+        for kind in [Kind::Rect, Kind::Ellipse] {
+            let edge = large_box(kind).with_edge_only(true);
+            assert!(!edge.touches((250.0, 200.0, 100.0, 80.0)), "{kind:?}");
+            assert!(large_box(kind).touches((250.0, 200.0, 100.0, 80.0)), "{kind:?} off");
+            assert!(edge.touches((50.0, 200.0, 100.0, 80.0)), "{kind:?} across its edge");
+        }
     }
 }

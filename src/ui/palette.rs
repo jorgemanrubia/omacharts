@@ -22,6 +22,9 @@ use crate::ui::colors;
 
 const SWATCH: i32 = 26;
 
+/// The swatch inside a colour button, a study's and a drawing's alike.
+pub const BUTTON_SWATCH: (i32, i32) = (30, 20);
+
 /// A button showing `resolved`, which opens the theme's palette.
 ///
 /// `choice` is what is stored now, so the palette can tick the swatch in use.
@@ -33,7 +36,7 @@ pub fn picker(
     on_pick: impl Fn(ColorChoice) + Clone + 'static,
 ) -> gtk::MenuButton {
     let shown = swatch_area(resolved, false);
-    shown.set_size_request(30, 20);
+    shown.set_size_request(BUTTON_SWATCH.0, BUTTON_SWATCH.1);
     let button = menu_button(theme, choice, resolved, &shown, shown.clone(), on_pick);
     button.add_css_class("swatch-button");
     button

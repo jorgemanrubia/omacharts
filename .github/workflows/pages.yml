@@ -14,6 +14,9 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
+      # The sidebar shows the version, read from here at build time, so a
+      # release redeploys the manual.
+      - 'Cargo.toml'
   workflow_dispatch:
 
 permissions:

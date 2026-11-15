@@ -7,32 +7,24 @@ layout: default
   (its headings, h2 to h5, from _plugins/manual.rb) when there are enough
   to be worth it. Below the text, the neighbours in reading order: the
   letter, then each section's chapters by nav_order, each followed by the
-  pages that name it as their `parent:`. The trail above the title is
+  pages under it, depth first (manual_prev and manual_next, from
+  _plugins/manual.rb). A page whose sections moved to pages of their own
+  lists them in `moved:` (old anchor: new url), and a link to an old anchor
+  is sent on to the new page. The trail above the title is
   components/breadcrumbs.html, which the theme's layout places.
 {%- endcomment -%}
-{%- assign manual_pages = site.html_pages
-      | where_exp: "item", "item.url contains '/manual/'"
-      | where_exp: "item", "item.title != nil"
-      | where_exp: "item", "item.nav_exclude != true" -%}
-{%- assign ordered = manual_pages | where_exp: "item", "item.section == nil" | sort: "nav_order" -%}
-{%- for section in site.manual.sections -%}
-  {%- assign chapters = manual_pages | where: "section", section.key | where_exp: "item", "item.parent == nil" | sort: "nav_order" -%}
-  {%- for chapter in chapters -%}
-    {%- assign ordered = ordered | push: chapter -%}
-    {%- assign chapter_key = chapter.url | split: "/" | last -%}
-    {%- assign children = manual_pages | where: "parent", chapter_key | sort: "nav_order" -%}
-    {%- assign ordered = ordered | concat: children -%}
-  {%- endfor -%}
-{%- endfor -%}
-{%- assign prev_page = nil -%}
-{%- assign next_page = nil -%}
-{%- for node in ordered -%}
-  {%- if node.url == page.url -%}
-    {%- assign i = forloop.index0 | minus: 1 -%}
-    {%- if forloop.index0 > 0 -%}{%- assign prev_page = ordered[i] -%}{%- endif -%}
-    {%- unless forloop.last -%}{%- assign j = forloop.index0 | plus: 1 -%}{%- assign next_page = ordered[j] -%}{%- endunless -%}
-  {%- endif -%}
-{%- endfor -%}
+{%- assign prev_page = page.manual_prev -%}
+{%- assign next_page = page.manual_next -%}
+
+{%- if page.moved %}
+<script>
+  (function () {
+    var moved = {{ page.moved | jsonify }};
+    var to = moved[decodeURIComponent(location.hash.slice(1))];
+    if (to) location.replace("{{ site.baseurl }}" + to);
+  })();
+</script>
+{%- endif %}
 
 <header class="chapter-head">
   <h1 class="chapter-title">{{ page.title }}</h1>

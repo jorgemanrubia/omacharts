@@ -150,6 +150,8 @@ crop: none (resized to 2000 wide)
 -->
 {% include figure.html src="/assets/manual/charts/daily-ohlc.jpg" alt="The same NVDA daily chart drawn as OHLC bars" caption="The same chart as OHLC bars." %}
 
+A line shows the closes alone, so the price scale fits the closes rather than the highs and lows.
+
 ### Colours
 
 The colour of a rise and of a fall, and whether a candle's body is filled, bordered or hollow, are set beside the style ([Bars](/manual/themes/#bars)). They are every chart's, except on a chart with [a look of its own](#a-charts-own-look).
@@ -428,6 +430,7 @@ The header runs across a chart's top. It has two rows, each with a left, a centr
 
 | Part | Shows |
 |---|---|
+| **Data feed** | A dot in the feed's state: orange while connecting, green once prices arrive, red when they cannot. Shown once a feed other than Yahoo Finance is set up. With more than one feed, click it for the list of every feed, in the order of Preferences › Data, to move this chart to another. A feed with nothing for the chart's symbol says *no data for* it, and choosing it leaves the chart empty with the reason, until another is chosen from the same list. The choice is the chart's own, and is kept |
 | **Symbol** | The symbol, with its venue. Click it to [find another](/manual/symbols/) |
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
 | **Daily change** | The day's move as a percentage, in the chart's up and down colours, and in the header's text when it has not moved. The same figure as the sidebar's |
@@ -441,7 +444,7 @@ The header runs across a chart's top. It has two rows, each with a left, a centr
 | **Maximize** | The two arrows, when the chartbook has two charts or more |
 | **Link mode** | The link button ([Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist)) |
 
-Out of the box the first row has the data feed, the symbol, the resolution and the daily change on the left, the chart title in the centre, and the gear, **Maximize** and the link on the right, with the account, the P&L, **Buy**, **Sell** and the quantity ahead of them while trading is on. The second row is empty, and an empty second row takes no room.
+Out of the box the first row has the data feed, the symbol, the resolution and the daily change on the left, the chart title in the centre, and the gear, **Maximize** and the link on the right, led by the account, the P&L, **Buy**, **Sell** and the quantity, which draw nothing without an account to trade on ([Trading from a chart](/manual/trading-on-a-chart/#the-account-part)). The second row is empty, and an empty second row takes no room.
 
 Edit it in Preferences › Overlays › **Header**, or right-click the header and choose **Edit header…**, which opens Preferences there. A header with every part taken off has nothing to right-click, so open Preferences › Overlays to put parts back. The page draws the header as a chart shows it, with the parts it does not show underneath. Drag a part to any place in the header, or down among the others to take it off, or right-click or double-click it; click one underneath to put it back where it goes out of the box. The places are outlined while a part is being dragged. A place on the second row takes a part only under a place that has one, and when the last part leaves a place on the first row, the parts under it move up.
 
@@ -537,6 +540,10 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Edit chart title…** | Asks for the chart title, with its key. Blank removes it | [Chart titles](#chart-titles) |
+| **Compare with…** | Opens the search to draw another market on the chart in percent | [Comparing markets](/manual/comparing/) |
+| **Compare from here** | Measures every compared line from the bar under the pointer. Only while the chart compares something | [Where the lines are measured from](/manual/comparing/#where-the-lines-are-measured-from) |
+| **Compare from left edge** | Measures from the first bar on screen again. Only while the base is pinned | [Where the lines are measured from](/manual/comparing/#where-the-lines-are-measured-from) |
+| **Lines only** | Ticked while the chart's own symbol is drawn as a line. Only while the chart compares something | [Lines only](/manual/comparing/#lines-only) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |

@@ -1268,6 +1268,8 @@ mod tests {
             assert!(!style.label().is_empty());
         }
         assert_eq!(BarStyle::from_key("sticks"), None);
+        assert_eq!(BarStyle::from_key("line"), Some(BarStyle::Line));
+        assert_eq!(serde_json::to_string(&BarStyle::Line).unwrap(), "\"line\"");
         assert_eq!(BarStyle::default(), BarStyle::Candles);
     }
 

@@ -70,6 +70,7 @@ struct Context {
     charts_page: adw::PreferencesPage,
     templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
+    agent_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
@@ -125,27 +126,28 @@ impl Preferences {
         let charts_page = adw::PreferencesPage::new();
         let templates_page = adw::PreferencesPage::new();
         let data_page = adw::PreferencesPage::new();
+        let agent_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
 
         // What the app does first, then, under a rule that says which
         // charts they change, what the charts look like. A template is the
         // same for every chart on it, so it sits with the app, not under
-        // the rule. Trading's page only while trading is switched on.
-        let mut app: Vec<Section> = vec![
-            ("general", "General", "preferences-system-symbolic", section_view(&general_page, "General")),
-            ("data", "Market data", "network-transmit-receive-symbolic", section_view(&data_page, "Market data")),
-            ("templates", "Templates", "edit-copy-symbolic", section_view(&templates_page, "Templates")),
+        // the rule.
+        let app: Vec<Section> = vec![
+            ("general", "General", "preferences-system-symbolic", None, section_view(&general_page, "General")),
+            ("data", "Market data", "network-transmit-receive-symbolic", None, section_view(&data_page, "Market data")),
+            ("templates", "Templates", "edit-copy-symbolic", None, section_view(&templates_page, "Templates")),
+            ("agent", "Agent", agent_icon(), None, section_view(&agent_page, "Agent")),
+            // Experimental, and said so where it is set up.
+            (TRADING, "Trading", "view-list-bullet-symbolic", Some("Beta"), section_view(&trading_page, "Trading")),
         ];
-        if crate::features::trading() {
-            app.push((TRADING, "Trading", "view-list-bullet-symbolic", section_view(&trading_page, "Trading")));
-        }
         // Global to begin with, whatever the arrangement: Preferences is
         // the app's, and opening it to change one chart is the exception.
         // Unless the focused chart's look already differs from every
         // chart's: that look is the one on screen, and what would change.
         let (scope, rule) = Scope::new(&window, window.own_look_differs());
         let mut visual = visual_sections(&scope);
-        visual.push(("charts", "Charts", "utilities-system-monitor-symbolic", section_view(&charts_page, "Charts")));
+        visual.push(("charts", "Charts", "utilities-system-monitor-symbolic", None, section_view(&charts_page, "Charts")));
         // Opened from a chart at the section it asked for, else where it was
         // left. The header is the first thing on Overlays, so opening there
         // is all it takes to show it.
@@ -164,6 +166,7 @@ impl Preferences {
             charts_page,
             templates_page,
             data_page,
+            agent_page,
             trading_page,
             window,
             scope,
@@ -195,9 +198,10 @@ impl Preferences {
     }
 }
 
-/// A section of a settings window: its id, title, icon, and its page stack,
-/// so a page can be pushed inside one without taking the others with it.
-pub(crate) type Section = (&'static str, &'static str, &'static str, adw::NavigationView);
+/// A section of a settings window: its id, title, icon, a tag beside the
+/// title when it has one, and its page stack, so a page can be pushed inside
+/// one without taking the others with it.
+pub(crate) type Section = (&'static str, &'static str, &'static str, Option<&'static str>, adw::NavigationView);
 
 /// `page` as the root of a section's page stack, under a header bar.
 pub(crate) fn section_view(page: &impl IsA<gtk::Widget>, title: &str) -> adw::NavigationView {
@@ -212,7 +216,7 @@ pub(crate) fn section_view(page: &impl IsA<gtk::Widget>, title: &str) -> adw::Na
 /// Appearance and Overlays, for Preferences and for a chart's settings,
 /// changing the charts `scope` says.
 pub(crate) fn visual_sections(scope: &Rc<Scope>) -> Vec<Section> {
-    VISUAL.iter().map(|(id, title, icon, page)| (*id, *title, *icon, section_view(&page(scope), title))).collect()
+    VISUAL.iter().map(|(id, title, icon, page)| (*id, *title, *icon, None, section_view(&page(scope), title))).collect()
 }
 
 /// A settings window's sections down a sidebar, in two lists read as one,
@@ -235,10 +239,10 @@ impl Sections {
         let lists = lists.map(|sections| {
             let list = gtk::ListBox::new();
             list.add_css_class("navigation-sidebar");
-            for (id, title, icon, view) in sections {
+            for (id, title, icon, tag, view) in sections {
                 stack.add_named(view, Some(id));
                 titles.push((id.to_string(), title.to_string()));
-                list.append(&sidebar_row(id, title, icon));
+                list.append(&sidebar_row(id, title, icon, *tag));
             }
             list
         });
@@ -330,10 +334,18 @@ impl Sections {
 
 /// A section's row in a settings sidebar: its icon and its title, named by
 /// its id.
-fn sidebar_row(id: &str, title: &str, icon: &str) -> gtk::ListBoxRow {
+fn sidebar_row(id: &str, title: &str, icon: &str, tag: Option<&str>) -> gtk::ListBoxRow {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.append(&gtk::Image::from_icon_name(icon));
     row.append(&gtk::Label::new(Some(title)));
+    if let Some(tag) = tag {
+        let tag = gtk::Label::new(Some(tag));
+        tag.add_css_class("section-tag");
+        tag.set_valign(gtk::Align::Center);
+        // Close to its title, not spaced like the icon.
+        tag.set_margin_start(-6);
+        row.append(&tag);
+    }
     gtk::ListBoxRow::builder().child(&row).name(id).build()
 }
 
@@ -471,9 +483,9 @@ fn build_charts_page(context: &Rc<Context>) {
 /// then a colour for each of buy, sell, long, short, profit and loss, and a
 /// pattern for each kind of line.
 /// One look worn over every theme, and each row saves only itself: what
-/// nobody set keeps following the theme. On the Trading page, there while
-/// trading is switched on, with or without a login, as every trading
-/// setting is: without one nothing draws in it.
+/// nobody set keeps following the theme. On the Trading page, there with
+/// or without a login, as every trading setting is: without one nothing
+/// draws in it.
 fn trading_look_group(context: &Rc<Context>, first: Vec<adw::PreferencesRow>) -> adw::PreferencesGroup {
     use omacharts_engine::indicators::LineStyle;
     use omacharts_engine::{TradingColour, TradingLine, TradingLook};
@@ -567,6 +579,152 @@ fn build_general_page(context: &Rc<Context>) {
     build_charts_page(context);
     rebuild_templates(context);
     build_data_page(context);
+    for group in agent_groups(context).groups {
+        context.agent_page.add(&group);
+    }
+}
+
+/// Which agent dictation goes to, its model, and what is said to it besides
+/// the words.
+///
+/// The agent is Omarchy's default, asked each time the dialog opens. For an
+/// agent dictation runs itself the model is chosen here, kept for that
+/// agent; any other is opened by Omarchy with its own, so there is no
+/// choice to offer. The extra context is empty unless somebody writes in
+/// it, and kept as it is typed: there is no moment of "done" in a box of
+/// prose, and closing the dialog must not lose it.
+fn agent_groups(context: &Rc<Context>) -> AgentGroups {
+    use crate::dictation::agent;
+    let detected = agent::Detected::of(&agent::omarchy_default());
+    agent_groups_for(&context.store, detected, agent::offered)
+}
+
+/// What the Agent page is made of; the rows are for its tests to look at.
+#[cfg_attr(not(test), allow(dead_code))]
+struct AgentGroups {
+    groups: Vec<adw::PreferencesGroup>,
+    agent: adw::ActionRow,
+    model: Option<adw::ComboRow>,
+}
+
+fn agent_groups_for(
+    store: &Rc<Store>,
+    detected: crate::dictation::agent::Detected,
+    offered: fn(crate::dictation::agent::Agent) -> crate::dictation::agent::Offered,
+) -> AgentGroups {
+    use crate::dictation::agent::{default_label, model_setting, Detected, Offered};
+
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Dictation");
+    let agent_row = adw::ActionRow::new();
+    agent_row.set_title("Agent");
+    agent_row.add_css_class("property");
+    agent_row.set_subtitle(&match detected.name() {
+        Some(name) => format!("{name}, from Omarchy"),
+        None => "No default agent in Omarchy. Set one with omarchy default agent.".to_string(),
+    });
+    group.add(&agent_row);
+
+    let model_row = match detected {
+        Detected::Known(agent) => {
+            let row = adw::ComboRow::new();
+            row.set_title("Model");
+            let key = model_setting(agent);
+            let chosen = store.setting(&key).unwrap_or_default().trim().to_string();
+            // The agent's own model first, chosen until another is and
+            // passing nothing, then the others, filled in once they are
+            // found out: the one chosen shows at once, listed or not.
+            let ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let filling = Rc::new(std::cell::Cell::new(false));
+            let fill = {
+                let row = row.clone();
+                let ids = ids.clone();
+                let filling = filling.clone();
+                let chosen = chosen.clone();
+                move |found: Offered| {
+                    let mut entries = vec![(default_label(&found), String::new())];
+                    entries.extend(found.models);
+                    if !chosen.is_empty() && !entries.iter().any(|(_, id)| *id == chosen) {
+                        entries.push((chosen.clone(), chosen.clone()));
+                    }
+                    let names: Vec<String> = entries.iter().map(|(name, _)| name.clone()).collect();
+                    filling.set(true);
+                    row.set_model(Some(&string_list(&names)));
+                    row.set_selected(entries.iter().position(|(_, id)| *id == chosen).unwrap_or(0) as u32);
+                    filling.set(false);
+                    *ids.borrow_mut() = entries.into_iter().map(|(_, id)| id).collect();
+                }
+            };
+            fill(Offered::default());
+            {
+                let store = store.clone();
+                let ids = ids.clone();
+                row.connect_selected_notify(move |row| {
+                    if filling.get() {
+                        return;
+                    }
+                    if let Some(id) = ids.borrow().get(row.selected() as usize) {
+                        store.set_setting(&model_setting(agent), id);
+                    }
+                });
+            }
+            let weak = row.downgrade();
+            glib::spawn_future_local(async move {
+                let found = gio::spawn_blocking(move || offered(agent)).await.unwrap_or_default();
+                if weak.upgrade().is_some() {
+                    fill(found);
+                }
+            });
+            group.add(&row);
+            Some(row)
+        }
+        _ => None,
+    };
+
+    let extra = adw::PreferencesGroup::new();
+    extra.set_title("Context");
+    extra.set_description(Some("Added to what you dictate in Omarchy while using Omacharts."));
+    let area = gtk::TextView::new();
+    area.set_wrap_mode(gtk::WrapMode::WordChar);
+    area.set_top_margin(8);
+    area.set_bottom_margin(8);
+    area.set_left_margin(8);
+    area.set_right_margin(8);
+    area.set_accepts_tab(false);
+    area.buffer().set_text(&store.setting(crate::dictation::CONTEXT).unwrap_or_default());
+    let frame = gtk::ScrolledWindow::new();
+    frame.set_child(Some(&area));
+    frame.set_min_content_height(120);
+    frame.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    frame.add_css_class("card");
+    extra.add(&frame);
+    let saving = store.clone();
+    area.buffer().connect_changed(move |buffer| {
+        let (start, end) = buffer.bounds();
+        saving.set_setting(crate::dictation::CONTEXT, buffer.text(&start, &end, true).as_str());
+    });
+
+    AgentGroups { groups: vec![group, extra], agent: agent_row, model: model_row }
+}
+
+/// The robot the Agent section is shown by, which no icon theme has: put
+/// where the display's icon theme finds it, once, and named.
+fn agent_icon() -> &'static str {
+    const NAME: &str = "omacharts-agent-symbolic";
+    const SVG: &str = include_str!("../../assets/symbolic/omacharts-agent-symbolic.svg");
+    let Some(display) = gtk::gdk::Display::default() else { return NAME };
+    let theme = gtk::IconTheme::for_display(&display);
+    if theme.has_icon(NAME) {
+        return NAME;
+    }
+    let folder = crate::store::data_dir().join("icons");
+    let file = folder.join(format!("{NAME}.svg"));
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(SVG) {
+        let _ = std::fs::create_dir_all(&folder);
+        let _ = std::fs::write(&file, SVG);
+    }
+    theme.add_search_path(&folder);
+    NAME
 }
 
 /// The clock every chart reads, and how it writes the time.
@@ -885,18 +1043,6 @@ fn build_data_page(context: &Rc<Context>) {
     });
     group.add(&limit);
 
-    // Trading switched off has no Trading page, and the Market data page adds a
-    // trading service's data feed through the trading service's own dialog itself.
-    if !crate::features::trading() {
-        crate::ui::feed_settings::build(
-            &context.data_page,
-            context.store.clone(),
-            context.on_change.clone(),
-            vec![group],
-            Rc::new(|_: &str, _: &gtk::Widget| {}),
-        );
-        return;
-    }
     let trading = crate::ui::trading_settings::build(
         &context.trading_page,
         context.store.clone(),
@@ -1340,6 +1486,127 @@ fn describe_count(series: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn two_models(_: crate::dictation::agent::Agent) -> crate::dictation::agent::Offered {
+        crate::dictation::agent::Offered {
+            default: Some("opus".into()),
+            models: vec![("Opus".into(), "opus".into()), ("Haiku".into(), "haiku".into())],
+        }
+    }
+
+    fn settle_until(done: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let started = std::time::Instant::now();
+        while !done() && started.elapsed() < std::time::Duration::from_secs(5) {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// An agent dictation runs itself: named, with its models after its
+    /// own, the one chosen kept for that agent and its own kept as none.
+    #[test]
+    fn the_agent_page_offers_the_models_of_an_agent_dictation_runs() {
+        use crate::dictation::agent::{Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            store.set_setting("agent_model.claude", "haiku");
+            let page = agent_groups_for(&store, Detected::Known(Agent::Claude), two_models);
+            assert_eq!(page.agent.subtitle().unwrap(), "Claude Code, from Omarchy");
+            let model = page.model.expect("a model to choose");
+            settle_until(|| model.model().is_some_and(|list| list.n_items() == 3));
+            let names: Vec<String> = (0..3)
+                .map(|i| model.model().unwrap().downcast::<gtk::StringList>().unwrap().string(i).unwrap().to_string())
+                .collect();
+            assert_eq!(names, ["Agent's default (Opus)", "Opus", "Haiku"]);
+            assert_eq!(model.selected(), 2, "the one chosen before");
+            model.set_selected(1);
+            assert_eq!(store.setting("agent_model.claude").as_deref(), Some("opus"));
+            model.set_selected(0);
+            assert_eq!(store.setting("agent_model.claude").as_deref(), Some(""));
+            assert_eq!(store.setting("agent_model.codex"), None, "kept for that agent only");
+            assert_eq!(page.groups[1].description().unwrap(), "Added to what you dictate in Omarchy while using Omacharts.");
+        });
+    }
+
+    /// Nothing chosen yet: the agent's own model is the one selected.
+    #[test]
+    fn a_fresh_install_uses_the_agents_own_model() {
+        use crate::dictation::agent::{Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let page = agent_groups_for(&store, Detected::Known(Agent::Claude), two_models);
+            let model = page.model.expect("a model to choose");
+            settle_until(|| model.model().is_some_and(|list| list.n_items() == 3));
+            assert_eq!(model.selected(), 0);
+            assert_eq!(store.setting("agent_model.claude"), None, "nothing written by looking");
+        });
+    }
+
+    /// Opening the page runs no agent: its models are the ones kept in
+    /// Omacharts and its own is read from a file. An agent's command runs
+    /// for a dictation and nothing else.
+    #[test]
+    fn opening_the_agent_page_runs_no_agent() {
+        use crate::dictation::agent::{self, Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            for each in Agent::ALL {
+                let page = agent_groups_for(&store, Detected::Known(each), agent::offered);
+                let model = page.model.expect("a model to choose");
+                let listed = each.models().len() as u32 + 1;
+                settle_until(|| model.model().is_some_and(|list| list.n_items() >= listed));
+                assert!(model.model().unwrap().n_items() >= listed, "{each:?}");
+            }
+            let spawned = agent::SPAWNED.lock().unwrap().clone();
+            let agents: Vec<&str> = Agent::ALL.iter().map(|each| each.program()).collect();
+            assert!(!spawned.iter().any(|program| agents.contains(&program.as_str())), "{spawned:?}");
+        });
+    }
+
+    /// Any other agent Omarchy offers is opened by Omarchy with its own
+    /// model, so there is no Model to choose; and none at all is said.
+    #[test]
+    fn the_agent_page_hides_the_model_of_an_agent_omarchy_opens() {
+        use crate::dictation::agent::Detected;
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let page = agent_groups_for(&store, Detected::of("pi"), two_models);
+            assert_eq!(page.agent.subtitle().unwrap(), "Pi, from Omarchy");
+            assert!(page.model.is_none());
+            let page = agent_groups_for(&store, Detected::None, two_models);
+            assert!(page.agent.subtitle().unwrap().starts_with("No default agent in Omarchy"));
+            assert!(page.model.is_none());
+        });
+    }
+
+    /// The context box starts empty: nothing in it is sent until somebody
+    /// writes it.
+    #[test]
+    fn the_context_box_starts_empty() {
+        use crate::dictation::agent::{Agent, Detected};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let page = agent_groups_for(&store, Detected::Known(Agent::Codex), two_models);
+            fn text_view(widget: &gtk::Widget) -> Option<gtk::TextView> {
+                if let Some(view) = widget.downcast_ref::<gtk::TextView>() {
+                    return Some(view.clone());
+                }
+                let mut child = widget.first_child();
+                while let Some(each) = child {
+                    if let Some(view) = text_view(&each) {
+                        return Some(view);
+                    }
+                    child = each.next_sibling();
+                }
+                None
+            }
+            let area = text_view(page.groups[1].upcast_ref()).expect("the context box");
+            let buffer = area.buffer();
+            assert_eq!(buffer.text(&buffer.start_iter(), &buffer.end_iter(), true), "");
+            assert_eq!(store.setting(crate::dictation::CONTEXT), None);
+        });
+    }
 
     #[test]
     fn sizes_read_sensibly() {

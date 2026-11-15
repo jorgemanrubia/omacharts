@@ -7,10 +7,12 @@
 
 pub mod bars;
 pub mod clock;
+pub mod compare;
 pub mod continuous;
 pub mod contracts;
 pub mod drawings;
 pub mod exchanges;
+pub mod formula;
 pub mod frame;
 pub mod indicators;
 pub mod ladders;
