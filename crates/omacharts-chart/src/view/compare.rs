@@ -297,8 +297,12 @@ pub(super) fn draw_lines(
         stroke(cr, columns, to_y, |at| overlay.placed(based, line, at));
     }
     cr.restore().ok();
-    if state.draws_a_line() {
-        super::close_line(cr, &state.scheme, columns, to_y);
+    // In the colour its chip and legend wear, not the shade a line alone
+    // takes: that says where in its range a close sits, which nothing
+    // compared beside it says.
+    if state.draws_a_line() && super::trace_closes(cr, columns, to_y).is_some() {
+        colors::set_source(cr, &overlay.spec.color);
+        let _ = cr.stroke();
     }
 }
 
