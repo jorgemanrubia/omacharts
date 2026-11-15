@@ -3199,33 +3199,40 @@ pub fn add_indicator_over(window: &Rc<Window>, over: Over) {
         picker
             .get_or_init(|| {
                 let frame = PickFrame::new("Indicator");
-                let picks = Rc::new(Picks::default());
-                let (list, shown) = (frame.list.clone(), picks.clone());
-                frame.entry.connect_search_changed(move |entry| fill_kinds(&list, &shown, &entry.text(), 0, None));
-                (frame, picks)
+                let shown: Rc<RefCell<Picks>> = Rc::default();
+                let (list, kinds) = (frame.list.clone(), shown.clone());
+                frame.entry.connect_search_changed(move |entry| fill_kinds(&list, &kinds, &entry.text(), 0, None));
+                (frame, shown)
             })
             .clone()
     });
-    let (frame, picks) = picker;
+    let (frame, shown) = picker;
     frame.entry.set_text("");
-    fill_kinds(&frame.list, &picks, "", 0, None);
+    fill_kinds(&frame.list, &shown, "", 0, None);
     let owner = Owner::chart(window);
     frame.open(&over, move |at| {
-        if let Some(picked) = picks.shown.borrow().get(at).cloned() {
-            add_kind(&owner, &Refresh::none(), picked, picks.numbered.get());
+        let picked = shown.borrow().pick(at);
+        if let Some((indicator, set_up)) = picked {
+            add_kind(&owner, &Refresh::none(), indicator, set_up);
         }
     });
 }
 
-/// What a picker's rows add, in order, and whether the query gave them their
-/// numbers ("sma 50"), which makes them set up already.
+type IndicatorPicker = (Rc<PickFrame>, Rc<RefCell<Picks>>);
+
+/// What a picker's rows add, in their order.
 #[derive(Default)]
 struct Picks {
-    shown: RefCell<Vec<Indicator>>,
-    numbered: Cell<bool>,
+    rows: Vec<Indicator>,
+    /// Typed with their numbers ("sma 50"), so already set up as wanted.
+    numbered: bool,
 }
 
-type IndicatorPicker = (Rc<PickFrame>, Rc<Picks>);
+impl Picks {
+    fn pick(&self, at: usize) -> Option<(Indicator, bool)> {
+        self.rows.get(at).map(|indicator| (indicator.clone(), self.numbered))
+    }
+}
 
 thread_local! {
     /// Built once, the first time it is asked for, like the symbol picker.
@@ -3233,11 +3240,17 @@ thread_local! {
 }
 
 /// The kinds matching `query`, one row each: the name, and the short name
-/// a legend writes it as. Numbers after the name are its lengths: the rows
-/// are then the kinds that take them, each set up with them. `pad` is the
-/// rows' height above and below, which the picker over a chart leaves to its
-/// stylesheet.
-fn fill_kinds(rows: &gtk::ListBox, picks: &Picks, query: &str, pad: i32, grouped: Option<&Cell<bool>>) {
+/// a legend writes it as. Numbers typed after the name ("sma 50") are its
+/// lengths: the rows are then the kinds that take them, each chip what
+/// the legend will write, "SMA 50". `pad` is the rows' height above and
+/// below, which the picker over a chart leaves to its stylesheet.
+fn fill_kinds(
+    rows: &gtk::ListBox,
+    shown: &RefCell<Picks>,
+    query: &str,
+    pad: i32,
+    grouped: Option<&std::cell::Cell<bool>>,
+) {
     while let Some(child) = rows.first_child() {
         rows.remove(&child);
     }
@@ -3250,10 +3263,12 @@ fn fill_kinds(rows: &gtk::ListBox, picks: &Picks, query: &str, pad: i32, grouped
         true => indicators::Category::ALL.iter().flat_map(|c| c.kinds()).collect(),
         false => indicators::search(name),
     };
-    picks.numbered.set(!numbers.is_empty());
+    let picks: Vec<Indicator> =
+        kinds.into_iter().filter_map(|kind| Indicator::numbered(0, kind, &numbers)).collect();
+    let numbered = !numbers.is_empty();
     // Filled before the rows, which a header function reads.
-    *picks.shown.borrow_mut() = kinds.into_iter().filter_map(|kind| Indicator::numbered(0, kind, &numbers)).collect();
-    for pick in picks.shown.borrow().iter() {
+    *shown.borrow_mut() = Picks { rows: picks.clone(), numbered };
+    for pick in &picks {
         let kind = pick.kind;
         let name = gtk::Label::new(Some(kind.name()));
         name.set_xalign(0.0);
@@ -3270,7 +3285,7 @@ fn fill_kinds(rows: &gtk::ListBox, picks: &Picks, query: &str, pad: i32, grouped
         // The chip is the short name the chart will show; where that is the
         // name itself, it would be saying it twice. With numbers, it is the
         // label they make, which is the only place they show before Enter.
-        let chip = match picks.numbered.get() {
+        let chip = match numbered {
             true => Some(pick.label()),
             false => (!kind.short_name().eq_ignore_ascii_case(kind.name())).then(|| kind.short_name().to_string()),
         };
@@ -3294,9 +3309,10 @@ fn fill_kinds(rows: &gtk::ListBox, picks: &Picks, query: &str, pad: i32, grouped
 /// Put `picked` on what `owner` names and go straight to its settings:
 /// picking the kind and setting it up are two steps, and the second is where
 /// you say whether you meant it. For a chart, in its settings window, opened
-/// for it if it was not open already; for a template, in its editor. Typed
-/// with its numbers, it is set up already: they said what was meant.
-fn add_kind(owner: &Rc<Owner>, refresh: &Refresh, picked: Indicator, numbered: bool) {
+/// for it if it was not open already; for a template, in its editor. One
+/// `set_up` already, typed with its numbers, skips the second step: the
+/// numbers said what was meant.
+fn add_kind(owner: &Rc<Owner>, refresh: &Refresh, picked: Indicator, set_up: bool) {
     let id = owner.next_indicator_id();
     // On a template it goes onto the template, like every other change
     // made here, so if it is not added after all it simply comes off again.
@@ -3304,10 +3320,8 @@ fn add_kind(owner: &Rc<Owner>, refresh: &Refresh, picked: Indicator, numbered: b
     indicators.push(Indicator { id, ..picked });
     owner.set_indicators(indicators);
     refresh.run();
-    if numbered {
-        return;
-    }
     match owner.template {
+        _ if set_up => {}
         None => {
             let opened_for_it = current().is_none();
             ChartSettings::open(&owner.app, Focus::Adding(id, opened_for_it));
@@ -3358,22 +3372,22 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     dialog.set_content_height(620);
     dialog.set_child(Some(&content));
 
-    let picks = Rc::new(Picks::default());
+    let shown: Rc<RefCell<Picks>> = Rc::default();
     // Grouped under their families while nothing is typed, which is when the
     // list is being browsed; once something is, it is a ranked answer, and
     // headings would scatter the best match away from the top.
     let grouped = Rc::new(std::cell::Cell::new(true));
     {
-        let shown = picks.clone();
+        let shown = shown.clone();
         let grouped = grouped.clone();
         rows.set_header_func(move |row, before| {
             if !grouped.get() {
                 row.set_header(None::<&gtk::Widget>);
                 return;
             }
-            let picks = shown.shown.borrow();
+            let picks = shown.borrow();
             let category = |row: &gtk::ListBoxRow| {
-                picks.get(row.index().max(0) as usize).map(|pick| pick.kind.category())
+                picks.rows.get(row.index().max(0) as usize).map(|pick| pick.kind.category())
             };
             let this = category(row);
             if this.is_none() || before.and_then(category) == this {
@@ -3393,9 +3407,9 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
 
     let fill = {
         let rows = rows.clone();
-        let picks = picks.clone();
+        let shown = shown.clone();
         let grouped = grouped.clone();
-        move |query: &str| fill_kinds(&rows, &picks, query, 7, Some(&grouped))
+        move |query: &str| fill_kinds(&rows, &shown, query, 7, Some(&grouped))
     };
     fill("");
 
@@ -3432,9 +3446,9 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     let dialog_for_pick = dialog.clone();
     rows.connect_row_activated(move |_, row| {
         let at = row.index().max(0) as usize;
-        let Some(picked) = picks.shown.borrow().get(at).cloned() else { return };
+        let Some((indicator, set_up)) = shown.borrow().pick(at) else { return };
         dialog_for_pick.close();
-        add_kind(&owner_for_pick, &refresh_for_pick, picked, picks.numbered.get());
+        add_kind(&owner_for_pick, &refresh_for_pick, indicator, set_up);
     });
 
     // What Enter does in the box, from anywhere in the dialog — including the
