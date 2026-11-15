@@ -66,8 +66,7 @@ pub enum LookEdit {
     /// A line's shade at its lowest close on screen, and at its highest.
     LineLow(ColorChoice),
     LineHigh(ColorChoice),
-    /// A header put over the one there: trading's parts, while it is off,
-    /// stay where they were, since nobody could see them to keep them.
+    /// A header in place of the one there.
     Header(Layout),
     Grid(bool),
     PriceLine(bool),

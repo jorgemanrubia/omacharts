@@ -1,10 +1,10 @@
 //! Settings.
 //!
-//! Six sections, each a question somebody arrives with. General: the app on
+//! Sections, each a question somebody arrives with. General: the app on
 //! this desktop, its clock, its backups. Market data: where the bars come
 //! from and how they are kept. Templates: the sets of indicators charts can
-//! share, the same whichever chart is on one. Trading, while it is switched
-//! on: the accounts, and how orders and positions are drawn. Then the
+//! share, the same whichever chart is on one. Agent: what dictation sends.
+//! Trading: the accounts, and how orders and positions are drawn. Then the
 //! visual sections, under a rule that says which charts they change.
 //! Appearance: how every chart looks, and Overlays: what every chart draws
 //! over its bars, each answered once for all of them; they are modules of

@@ -2248,11 +2248,10 @@ pub(super) mod tests {
         });
     }
 
-    /// What the Preferences a window opens say: the sidebar's sections,
-    /// every group's and every row's title, and the parts the header's
-    /// picture shows or offers.
+    /// What the Preferences a window opens say, section by section: every
+    /// group's and every row's title, and the parts the header's picture
+    /// shows or offers.
     struct PreferencesWords {
-        sections: Vec<String>,
         groups: Vec<String>,
         rows: Vec<String>,
         parts: Vec<String>,
@@ -2280,14 +2279,9 @@ pub(super) mod tests {
             .filter_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
             .collect();
         assert!(!lists.is_empty(), "no sidebar");
-        let mut words = PreferencesWords { sections: Vec::new(), groups: Vec::new(), rows: Vec::new(), parts: Vec::new() };
+        let mut words = PreferencesWords { groups: Vec::new(), rows: Vec::new(), parts: Vec::new() };
         let sections = lists.iter().flat_map(|list| (0..).map_while(|index| list.row_at_index(index)).map(move |row| (list, row)));
         for (sidebar, section) in sections {
-            for widget in widgets(section.clone().upcast()) {
-                if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-                    words.sections.push(label.label().to_string());
-                }
-            }
             sidebar.select_row(Some(&section));
             for widget in widgets(dialog.clone().upcast()) {
                 if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {

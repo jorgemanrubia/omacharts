@@ -5514,11 +5514,11 @@ fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Optio
 }
 
 /// Every chart's header made the one typed, and saved. Refused whole on a
-/// misspelling; trading's parts, while it is off, stay where they were.
+/// misspelling.
 fn retyped_header(store: &Store, text: &str) -> Result<crate::header::Layout, Fault> {
     let typed = crate::header::parse(text).map_err(Fault::usage)?;
-    LookEdit::save_global([LookEdit::Header(typed)], store);
-    Ok(crate::header::load(store))
+    LookEdit::save_global([LookEdit::Header(typed.clone())], store);
+    Ok(typed)
 }
 
 fn switch_word(on: bool) -> &'static str {

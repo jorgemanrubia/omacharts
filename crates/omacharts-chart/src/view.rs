@@ -9138,10 +9138,7 @@ fn draw_last_price(
     let Some((price, rising)) = last_price(state) else { return };
     let floor = price_y + price_h;
     let Some(y) = last_price_y(state, price_y, floor, to_y) else { return };
-    let tag = match rising {
-        true => &state.price_tags.last_up,
-        false => &state.price_tags.down,
-    };
+    let tag = state.price_tags.last(rising);
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
         draw_last_price_line(cr, state, plot_x, plot_w, price_y, floor, to_y);
@@ -9381,6 +9378,17 @@ struct PriceTags {
     up: Tag,
     down: Tag,
     last_up: Tag,
+}
+
+impl PriceTags {
+    /// The last price's tag: up's own when the price rose, down's when it
+    /// fell.
+    fn last(&self, rising: bool) -> &Tag {
+        match rising {
+            true => &self.last_up,
+            false => &self.down,
+        }
+    }
 }
 
 fn price_tags(scheme: &BarScheme) -> PriceTags {
@@ -12532,8 +12540,7 @@ mod tests {
         let (w, h) = (600.0, 400.0);
         let mut state = charted(100);
         let (_, rising) = last_price(&state).unwrap();
-        let tag = if rising { &state.price_tags.last_up } else { &state.price_tags.down };
-        let fill = colors::rgba(&tag.fill);
+        let fill = colors::rgba(&state.price_tags.last(rising).fill);
         let byte = |c: f64| (c * 255.0).round() as i32;
         let (r, g, b) = (byte(fill.0), byte(fill.1), byte(fill.2));
         // Where the tag's colour is on the price axis, by row.
