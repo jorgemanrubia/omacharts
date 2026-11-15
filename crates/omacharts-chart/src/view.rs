@@ -243,6 +243,9 @@ struct State {
     /// a year is 250 bars of a stock and 365 of bitcoin, and the month to
     /// date grows a bar a day.
     range: Option<Range>,
+    /// Where the chart was looking before it was built again, held until
+    /// the series it was looking at arrives: see [`ChartView::keep_viewport`].
+    kept: Option<Viewport>,
     drag: Option<Drag>,
     /// The grip of a selected drawing the pointer rests on, lit so the hand
     /// can see what a press would take hold of. Not while anything is being
@@ -1414,6 +1417,7 @@ impl State {
             overhang_share: 0.0,
             lead: 0,
             range: None,
+            kept: None,
             indicators: Vec::new(),
             show_indicators: true,
             covered_axis_top: 0.0,
@@ -2554,7 +2558,17 @@ impl State {
         if let Some(compare) = self.compare.as_mut() {
             compare.realign(&self.bars, timeframe);
         }
-        if changed {
+        // Only once there are bars to place it on: an empty series first,
+        // while the feed is asked, leaves it waiting.
+        let kept = match self.bars.is_empty() {
+            true => None,
+            false => self.kept.take(),
+        };
+        let kept_here = kept.as_ref().is_some_and(|kept| {
+            kept.timeframe == timeframe
+                && self.instrument.as_ref().is_some_and(|i| i.symbol == kept.symbol && i.suffix == kept.suffix)
+        });
+        if changed && !kept_here {
             // A measured range belongs to the series it was measured on.
             self.ruler = None;
             self.ruler_armed = false;
@@ -2576,8 +2590,61 @@ impl State {
                 self.free_strips();
             }
         }
+        match kept {
+            Some(kept) if kept_here => self.take_viewport(kept),
+            // Another symbol opens at rest, but a range somebody asked for
+            // is kept across it, as [`ChartView::show_range`] promises.
+            Some(kept) => self.range = kept.range.or(self.range),
+            None => {}
+        }
         self.fit_range();
         changed
+    }
+
+    /// Where this chart is looking, to be put back on the same series by
+    /// [`State::take_viewport`]. The one still waiting for its series, if
+    /// none has arrived since it was handed over.
+    fn viewport(&self) -> Option<Viewport> {
+        let Some(instrument) = self.instrument.as_ref().filter(|_| !self.bars.is_empty()) else {
+            return self.kept.clone();
+        };
+        Some(Viewport {
+            symbol: instrument.symbol.clone(),
+            suffix: instrument.suffix.clone(),
+            timeframe: self.timeframe,
+            visible: self.visible,
+            anchored: self.anchored,
+            first: (!self.anchored).then(|| self.bars.get(self.first).map(|bar| bar.ts)).flatten(),
+            lead: self.lead,
+            overhang: self.overhang,
+            overhang_by_hand: self.overhang_by_hand,
+            overhang_share: self.overhang_share,
+            range: self.range,
+            price_auto: self.price_auto,
+            price_zoom: self.price_zoom,
+            price_offset: self.price_offset,
+            price_base: self.price_base.get(),
+        })
+    }
+
+    /// Look where `kept` was looking. The leftmost bar is found by its
+    /// time rather than its place in the series, which may have grown at
+    /// either end since.
+    fn take_viewport(&mut self, kept: Viewport) {
+        self.visible = kept.visible;
+        self.anchored = kept.anchored;
+        if let Some(ts) = kept.first {
+            self.first = self.bars.partition_point(|bar| bar.ts < ts).min(self.bars.len().saturating_sub(1));
+        }
+        self.lead = kept.lead;
+        self.overhang = kept.overhang;
+        self.overhang_by_hand = kept.overhang_by_hand;
+        self.overhang_share = kept.overhang_share;
+        self.range = kept.range;
+        self.price_auto = kept.price_auto;
+        self.price_zoom = kept.price_zoom;
+        self.price_offset = kept.price_offset;
+        self.price_base.set(kept.price_base);
     }
 
     /// Show `range`, and keep showing it as the series changes.
@@ -2704,6 +2771,30 @@ impl State {
         let right = (left + columns as i64).min(len);
         (first as usize, (right - first).max(0) as usize, (-left).max(0) as usize)
     }
+}
+
+/// Where a chart is looking: how many bars across, which of them or the
+/// live edge, and the price scale. Not stored anywhere — it is what a chart
+/// built again, its chartbook opened again, needs to look exactly where it
+/// was left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Viewport {
+    symbol: String,
+    suffix: Option<String>,
+    timeframe: Timeframe,
+    visible: usize,
+    anchored: bool,
+    /// The leftmost bar's time, when the view is not following the live edge.
+    first: Option<i64>,
+    lead: usize,
+    overhang: usize,
+    overhang_by_hand: bool,
+    overhang_share: f64,
+    range: Option<Range>,
+    price_auto: bool,
+    price_zoom: f64,
+    price_offset: f64,
+    price_base: Option<(f64, f64)>,
 }
 
 /// Something the window hangs off the chart after building it. Optional
@@ -5249,6 +5340,28 @@ impl ChartView {
         state.overhang = RIGHT_MARGIN;
         state.overhang_by_hand = false;
         state.lead = 0;
+        drop(state);
+        self.redraw();
+    }
+
+    /// Where the chart is looking, for [`ChartView::keep_viewport`] to put
+    /// back on a chart built again in its place.
+    pub fn viewport(&self) -> Option<Viewport> {
+        self.state.borrow().viewport()
+    }
+
+    /// Look where `viewport` was looking once the same series arrives —
+    /// across the bars that arrived since, at the width the chart has now.
+    /// Another symbol or timeframe opens at rest, as it would have.
+    pub fn keep_viewport(&self, viewport: Viewport) {
+        let mut state = self.state.borrow_mut();
+        let here = state.instrument.as_ref().is_some_and(|i| i.symbol == viewport.symbol && i.suffix == viewport.suffix)
+            && state.timeframe == viewport.timeframe
+            && !state.bars.is_empty();
+        match here {
+            true => state.take_viewport(viewport),
+            false => state.kept = Some(viewport),
+        }
         drop(state);
         self.redraw();
     }
@@ -11958,6 +12071,56 @@ mod tests {
             restored.replace_series(named("NQ"), restored.timeframe, ramp(450));
             assert!(!same_scale(drawn_scale(&restored, w, h), left), "{log}: another symbol holds its own fit");
         }
+    }
+
+    /// A chart built again in place of another, its chartbook opened
+    /// again, looks exactly where the other was left once the same series
+    /// arrives: as many bars across, the same bars or the live edge, the
+    /// same prices. Bars that came in meanwhile do not move a view panned
+    /// back, and are followed by one at the live edge.
+    #[test]
+    fn a_chart_built_again_looks_where_the_one_before_was_left() {
+        let (w, h) = (1200.0, 600.0);
+        let blank = || {
+            let mut state = charted(0);
+            state.visible = 160;
+            state
+        };
+        let mut left = blank();
+        left.replace_series(named("ES"), left.timeframe, ramp(400));
+        left.zoom_time(0.5, 0.5, w);
+        left.pan_by(-60.0, w);
+        left.scale_price(2.0, w, h);
+        left.price_offset = 0.1;
+        assert!(!left.anchored, "panned back");
+        let kept = left.viewport().expect("a view");
+
+        let mut again = blank();
+        again.kept = Some(kept.clone());
+        again.replace_series(named("ES"), again.timeframe, Vec::new());
+        assert!(again.kept.is_some(), "an empty series is not the one to place it on");
+        again.replace_series(named("ES"), again.timeframe, ramp(402));
+        assert_eq!(again.viewport(), Some(kept.clone()), "looks where it was left");
+        assert_eq!(again.view(), left.view(), "on the same bars");
+        assert!(same_scale(drawn_scale(&again, w, h), drawn_scale(&left, w, h)), "at the same prices");
+
+        // At the live edge, it follows what came in meanwhile at the same zoom.
+        let mut live = blank();
+        live.replace_series(named("ES"), live.timeframe, ramp(400));
+        live.zoom_time(0.5, 0.5, w);
+        let mut again = blank();
+        again.kept = live.viewport();
+        again.replace_series(named("ES"), again.timeframe, ramp(402));
+        assert!(again.anchored, "still at the live edge");
+        assert_eq!(again.columns(), live.columns(), "the same zoom");
+        assert_eq!(again.view().0, live.view().0 + 2, "on the newest bars");
+
+        // Another symbol opens at rest.
+        let mut other = blank();
+        other.kept = Some(kept);
+        other.replace_series(named("NQ"), other.timeframe, ramp(400));
+        assert!(other.anchored && other.visible == 160 && other.price_auto, "another symbol opens at rest");
+        assert!(other.kept.is_none());
     }
 
     /// Nothing to write down while the scale fits itself, and nothing left

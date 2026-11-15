@@ -4745,6 +4745,11 @@ pub struct Window {
     /// them, in layout order, so a change can be carried to the other books
     /// on it the way it was made. Empty for a book on none.
     template_leaves: RefCell<Vec<u32>>,
+    /// Where each chart not on screen was looking when it went, by its own
+    /// name, which a rebuild keeps: opening its chartbook again finds it
+    /// exactly as it was left. Only in memory — scroll and zoom are not
+    /// written down.
+    viewports: RefCell<HashMap<String, crate::ui::chart::Viewport>>,
     /// What an open chart settings dialog reads off the focused chart, asked
     /// to read it again when something else changed it. Each says whether
     /// it is still on screen, and goes once it is not.
@@ -4953,6 +4958,7 @@ impl Window {
             active: Cell::new(0),
             next_pane: Cell::new(1),
             template_leaves: RefCell::new(Vec::new()),
+            viewports: RefCell::new(HashMap::new()),
             chart_watchers: RefCell::new(Vec::new()),
             save_pending: Cell::new(false),
             linked_action: RefCell::new(None),
@@ -6902,6 +6908,16 @@ impl Window {
             return false;
         }
 
+        // Where the charts going off screen are looking, for when they come
+        // back: built again, they would open at rest.
+        {
+            let mut viewports = self.viewports.borrow_mut();
+            for pane in self.panes.borrow().iter() {
+                if let Some(viewport) = pane.view.viewport() {
+                    viewports.insert(pane.uid.borrow().clone(), viewport);
+                }
+            }
+        }
         self.release_all_panes();
         self.panes.borrow_mut().clear();
         let mut restored: Vec<(Rc<ChartPane>, StoredPane)> = Vec::new();
@@ -6942,6 +6958,9 @@ impl Window {
             // it was just minted.
             if !stored.drawing_uid.is_empty() {
                 *pane.uid.borrow_mut() = stored.drawing_uid.clone();
+                if let Some(viewport) = self.viewports.borrow_mut().remove(&stored.drawing_uid) {
+                    pane.view.keep_viewport(viewport);
+                }
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
@@ -14609,6 +14628,60 @@ mod paste_across_tests {
             let pasted = paste_on(&window, &at(&window, 0), "its own chart");
             assert_ne!(pasted.from, drawing.from, "a paste on its own chart hides behind the original");
             assert_eq!(pasted.to.ts - pasted.from.ts, drawing.to.ts - drawing.from.ts);
+        });
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::bare_window;
+
+    /// Every chart laid out and charting its bars, which arrive from the
+    /// feed's thread.
+    fn charted(window: &Rc<Window>) {
+        window.chart_host.allocate(1600, 900, -1, None);
+        let context = gtk::glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while window.panes.borrow().iter().any(|pane| pane.view.bar_count() == 0) {
+            assert!(std::time::Instant::now() < until, "the bars never came");
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        while context.iteration(false) {}
+    }
+
+    fn first(window: &Window) -> Rc<ChartPane> {
+        let id = window.layout.borrow().leaves()[0];
+        window.pane(id).expect("a chart")
+    }
+
+    /// Opening another chartbook and coming back finds every chart looking
+    /// exactly where it was left: zoomed, panned back and with its price
+    /// scale dragged, not back at rest on the newest bars.
+    #[test]
+    fn a_chart_looks_where_it_was_left_when_its_chartbook_opens_again() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let live: &dyn crate::cli::Live = &window;
+            let args: Vec<String> = ["omacharts", "chartbook", "create", "Second"].map(String::from).to_vec();
+            let outcome = crate::cli::run(&args, &window.store, Some(live), &crate::cli::Here);
+            assert_eq!(outcome.code, 0, "{}", outcome.err);
+            charted(&window);
+
+            let view = first(&window).view.clone();
+            view.zoom(0.5);
+            view.pan_bars(-40);
+            view.set_price_auto(false);
+            let left = view.viewport().expect("a chart with bars is looking somewhere");
+            assert!(!view.at_latest(), "panned back");
+
+            window.activate_book(1);
+            charted(&window);
+            window.activate_book(0);
+            charted(&window);
+            assert_eq!(first(&window).view.viewport(), Some(left), "the chart came back somewhere else");
         });
     }
 }
