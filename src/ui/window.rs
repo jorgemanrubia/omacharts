@@ -5894,6 +5894,11 @@ impl Window {
         if let (Some(from), Some(to)) = (self.pane(self.focused.get()), self.pane(id)) {
             from.view.hand_over(&to.view);
         }
+        // The keyboard goes with the focus when it was on a chart: the keys
+        // a chart answers itself — Delete, the arrows on a selection — act
+        // on the chart the focus is on, not one left behind, or swapped off
+        // the screen when maximized.
+        let keyboard_on_chart = self.panes.borrow().iter().any(|pane| pane.view.area.has_focus());
         self.focused.set(id);
         // Maximized, the focus keys still walk the arrangement — they just
         // walk it one chart at a time, with the window showing whichever one
@@ -5906,6 +5911,9 @@ impl Window {
         }
         for pane in self.panes.borrow().iter() {
             pane.set_focused(pane.id == id);
+        }
+        if keyboard_on_chart && let Some(pane) = self.pane(id) {
+            pane.view.area.grab_focus();
         }
         // What is left in the header describes the focused chart, as do the
         // chart menu's radio items.
@@ -6086,7 +6094,15 @@ impl Window {
     /// cycle through the charts one window at a time.
     pub fn focus_along(self: &Rc<Self>, step: i32) {
         let order = reading_order(&self.layout_rects());
-        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else { return };
+        // A focus on no chart in the arrangement starts the walk at the
+        // first, rather than leaving the keys dead until something else
+        // moves it.
+        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else {
+            if let Some(first) = order.first() {
+                self.focus(*first);
+            }
+            return;
+        };
         if order.len() < 2 {
             return;
         }
