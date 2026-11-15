@@ -4849,6 +4849,19 @@ impl ChartView {
         *self.on_pane_resize.borrow_mut() = Some(Box::new(handler));
     }
 
+    /// Strip `id` has been given a new share of the chart's height, `share`,
+    /// or the one it is drawn at now, as the drag on its edge left it: told
+    /// to whoever keeps it, once, when the drag ends.
+    pub fn pane_resized(&self, id: u32, share: Option<f64>) {
+        let share = share.or_else(|| {
+            let state = self.state.borrow();
+            state.indicators.iter().find(|d| d.indicator.id == id).and_then(|d| d.output.pane_height())
+        });
+        if let (Some(share), Some(handler)) = (share, self.on_pane_resize.borrow().as_ref()) {
+            handler(id, share);
+        }
+    }
+
     pub fn set_pane_close_handler(&self, handler: impl Fn(u32) + 'static) {
         *self.on_pane_close.borrow_mut() = Some(Box::new(handler));
     }
@@ -6355,7 +6368,6 @@ impl ChartView {
         });
 
         let state = self.state.clone();
-        let on_resize = self.on_pane_resize.clone();
         let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         drag.connect_drag_end(move |_, offset_x, offset_y| {
@@ -6466,14 +6478,8 @@ impl ChartView {
                 _ => {}
             }
             let Some(Drag::PaneEdge { id, .. }) = finished else { return };
-            let share = state
-                .borrow()
-                .indicators
-                .iter()
-                .find(|d| d.indicator.id == id)
-                .and_then(|d| d.output.pane_height());
-            if let (Some(share), Some(handler)) = (share, on_resize.borrow().as_ref()) {
-                handler(id, share);
+            if let Some(view) = view.upgrade() {
+                view.pane_resized(id, None);
             }
         });
 

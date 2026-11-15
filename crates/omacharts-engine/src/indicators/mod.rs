@@ -680,6 +680,28 @@ impl Params {
             _ => None,
         }
     }
+
+    /// The share of the chart's height a strip of its own takes, for an
+    /// indicator drawn in one. Asked here rather than by a list of kinds at
+    /// each place that sets it — a drag on the strip's edge, the settings'
+    /// slider — which is how a strip added after the list was written, the
+    /// CVD's, came to be drawn at the height it was dragged to and stored
+    /// at the one it had. Every kind is named, so a new one has to say.
+    pub fn height_mut(&mut self) -> Option<&mut f64> {
+        match self {
+            Params::Volume { height, .. }
+            | Params::Cvd { height, .. }
+            | Params::Rsi { height, .. }
+            | Params::Atr { height, .. }
+            | Params::Macd { height, .. }
+            | Params::Stochastic { height, .. } => Some(height),
+            Params::MovingAverage { .. }
+            | Params::Vwap { .. }
+            | Params::Bollinger { .. }
+            | Params::VolumeProfile { .. }
+            | Params::SessionTimes { .. } => None,
+        }
+    }
 }
 
 /// One indicator on a chart.
@@ -1528,6 +1550,16 @@ pub fn split_query(query: &str) -> (&str, Vec<f64>) {
 
 #[cfg(test)]
 mod tests {
+    /// Every indicator drawn in a strip of its own has a height a drag or
+    /// the slider can write, and nothing drawn over the price has one.
+    #[test]
+    fn every_strip_has_a_height_to_write() {
+        for kind in Kind::ALL {
+            let mut params = kind.default_params();
+            assert_eq!(params.height_mut().is_some(), kind.in_own_pane(), "{kind:?}");
+        }
+    }
+
     use super::*;
 
     /// A volume profile stored before its strength, highlight and value

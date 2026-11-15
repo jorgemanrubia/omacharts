@@ -3166,13 +3166,10 @@ fn pane_height_row(
         height,
         MIN_PANE_SHARE,
         MAX_PANE_SHARE,
-        move |indicator, share| match &mut indicator.params {
-            Params::Volume { height, .. }
-            | Params::Rsi { height, .. }
-            | Params::Macd { height, .. }
-            | Params::Atr { height, .. }
-            | Params::Stochastic { height, .. } => *height = share,
-            _ => {}
+        move |indicator, share| {
+            if let Some(height) = indicator.params.height_mut() {
+                *height = share;
+            }
         },
     )
 }

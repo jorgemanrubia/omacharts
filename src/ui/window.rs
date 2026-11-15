@@ -2411,6 +2411,28 @@ mod focus_tests {
         });
     }
 
+    /// A strip dragged taller keeps the height it was dragged to, a CVD's as
+    /// much as a volume's: on the chart, written down, and in a window
+    /// opened on the same store afterwards.
+    #[test]
+    fn every_strip_dragged_taller_keeps_its_height() {
+        crate::ui::on_gtk(|| {
+            for kind in omacharts_engine::indicators::Kind::ALL.into_iter().filter(|kind| kind.in_own_pane()) {
+                let store = Rc::new(Store::memory().expect("a store"));
+                let window = bare_window(&store);
+                let pane = window.focused_pane();
+                window.set_indicators_of(&pane, vec![Indicator::new(7, kind)]);
+                window.save_workspace();
+                pane.view.pane_resized(7, Some(0.41));
+                let height = |pane: &ChartPane| pane.indicators.borrow()[0].params.clone().height_mut().map(|h| *h);
+                assert_eq!(height(&pane), Some(0.41), "{kind:?} on the chart");
+                window.save_workspace();
+                let reopened = bare_window(&store);
+                assert_eq!(height(&reopened.focused_pane()), Some(0.41), "{kind:?} after a restart");
+            }
+        });
+    }
+
     /// Maximized, the window goes with the focus: Alt+Left and Right cycle
     /// through every chart one window at a time, and Up and Down still go
     /// the way they point.
@@ -5669,14 +5691,8 @@ impl Window {
             let Some(pane) = resizer.pane(id) else { return };
             let mut indicators = pane.indicators.borrow().clone();
             if let Some(indicator) = indicators.iter_mut().find(|i| i.id == indicator_id) {
-                match &mut indicator.params {
-                    omacharts_engine::Params::Volume { height, .. }
-                    | omacharts_engine::Params::Rsi { height, .. }
-                    | omacharts_engine::Params::Macd { height, .. }
-                    | omacharts_engine::Params::Atr { height, .. }
-                    | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
-                    _ => return,
-                }
+                let Some(height) = indicator.params.height_mut() else { return };
+                *height = share;
                 // On a template, the template takes the height, and the
                 // charts on it keep one shape.
                 resizer.change_indicators_of(&pane, indicators);
