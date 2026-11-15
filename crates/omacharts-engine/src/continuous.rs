@@ -914,6 +914,11 @@ impl Continuous {
     }
 }
 
+/// How far before its first bar a stitched chart scrolled back reads at a
+/// time: a quarter's month and some, intraday; five years, daily.
+const OLDER_INTRADAY_DAYS: i64 = 100;
+const OLDER_DAILY_DAYS: i64 = 5 * 365;
+
 /// `provider`, stitched when [`source`] says its roots are.
 pub fn wrapped(provider: Box<dyn Provider>) -> Box<dyn Provider> {
     match source(provider.as_ref()) {
@@ -990,6 +995,17 @@ impl Provider for Continuous {
         let Some(spelled) = Spelled::parse(symbol) else { return self.inner.bars_between(symbol, timeframe, since, until) };
         let fetch = fetch_from(self.inner.as_ref(), &self.read, &spelled.root, spelled.front, timeframe);
         stitched(self.inner.as_ref(), &spelled, timeframe, Some(since), Some(until), &fetch).map(|(bars, _)| bars)
+    }
+
+    /// A stitched root reads a quarter and some at a time intraday, and
+    /// five years daily, from whichever feed holds the months. Anything
+    /// else is the feed's own to say.
+    fn reaches_back(&self, symbol: &str, timeframe: Timeframe) -> Option<i64> {
+        match Spelled::parse(symbol) {
+            Some(_) if timeframe.is_intraday() => Some(OLDER_INTRADAY_DAYS * 86_400),
+            Some(_) => Some(OLDER_DAILY_DAYS * 86_400),
+            None => self.inner.reaches_back(symbol, timeframe),
+        }
     }
 
     fn earliest(&self, symbol: &str) -> Option<i64> {

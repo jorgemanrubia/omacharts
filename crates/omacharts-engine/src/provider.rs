@@ -546,6 +546,20 @@ pub trait Provider: Send + Sync {
         Ok(bars)
     }
 
+    /// How far before its first bar a chart of `symbol` scrolled back to it
+    /// reads at a time, in seconds, at `timeframe`, a native one: one
+    /// [`Self::bars_between`] of that span, and the next once the view
+    /// comes near the new first bar. `None` for a feed with nothing more
+    /// to give than its first load took, which is never asked: the
+    /// default, since the default `bars_between` would read everything
+    /// from the start of the span to now again.
+    ///
+    /// Asked at the native resolution, so every resolution folded from it
+    /// scrolls back with it.
+    fn reaches_back(&self, _symbol: &str, _timeframe: Timeframe) -> Option<i64> {
+        None
+    }
+
     /// When the history this feed holds of `symbol` starts, where it can say
     /// so without reading it: the first trade in a file of them. `None`
     /// where it cannot.
