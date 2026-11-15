@@ -1892,11 +1892,7 @@ impl Window {
         // chart's series does.
         pane.view.set_mark_tick(target.tick);
         let key = target.account.key();
-        // The trading colours on the theme and bars this chart wears, with
-        // profit and loss in the bars' own up and down: red-up bars turn
-        // them round.
-        let worn = self.look_of(pane);
-        let look = omacharts_engine::theme_trading(&self.theme_of(&worn), self.theming.borrow().trading_look(), &worn.bars);
+        let (_, look) = self.trading_colours_of(pane);
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();

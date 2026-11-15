@@ -12296,6 +12296,15 @@ impl Window {
         pane.look.borrow().clone().unwrap_or_else(|| self.global_look.borrow().clone())
     }
 
+    /// The theme `pane` wears and the trading colours on it, profit and loss
+    /// in its bars' own up and down: red-up bars turn them round.
+    pub fn trading_colours_of(&self, pane: &ChartPane) -> (omacharts_engine::Theme, omacharts_engine::TradingColours) {
+        let worn = self.look_of(pane);
+        let theme = self.theme_of(&worn);
+        let colours = omacharts_engine::theme_trading(&theme, self.theming.borrow().trading_look(), &worn.bars);
+        (theme, colours)
+    }
+
     /// The look a settings window's visual pages show: every chart's, or
     /// with `every` false the one the focused chart wears.
     pub fn look(&self, every: bool) -> ChartLook {

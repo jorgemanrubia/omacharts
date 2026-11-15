@@ -107,11 +107,9 @@ impl Window {
 
         // The theme's own colours for a buy and a sell, whatever the chart's
         // bars wear: a buy is the theme's rise. A trip's line is its money's,
-        // in the trading colours, which follow the bars' up and down.
-        let worn = self.look_of(pane);
-        let theme = self.theme_of(&worn);
+        // in the trading colours.
+        let (theme, look) = self.trading_colours_of(pane);
         let bars = omacharts_engine::theme_bars(&theme);
-        let look = omacharts_engine::theme_trading(&theme, self.theming.borrow().trading_look(), &worn.bars);
         let mut trips: Vec<TripLine> = paired
             .trips
             .iter()
