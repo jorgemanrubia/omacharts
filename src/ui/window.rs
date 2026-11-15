@@ -75,11 +75,6 @@ pub(crate) fn test_window(store: &Rc<Store>) -> Rc<Window> {
 /// cost of the `coverage` queries it takes to find out there is nothing to do.
 const BACKFILL_POLL_SECONDS: u32 = 60;
 
-/// How far before its first bar a stitched chart scrolled back reads at a
-/// time: a quarter's month and some, intraday; five years, daily.
-const OLDER_INTRADAY_DAYS: i64 = 100;
-const OLDER_DAILY_DAYS: i64 = 5 * 365;
-
 /// Most batches of closes one rail refresh sends: two hundred rows at
 /// Yahoo's twenty a request. Not a budget — the loader paces them like any
 /// other work nobody is waiting on — but a list longer than this is split,
@@ -1771,6 +1766,181 @@ mod strip_window_tests {
 }
 
 #[cfg(test)]
+mod scroll_back_tests {
+    use super::*;
+    use omacharts_engine::continuous::{Adjustment, Continuity};
+    use omacharts_engine::provider::{Capability, Sink, Stream, Subscription, Update};
+    use std::sync::Mutex;
+
+    const NOW: i64 = 1_794_438_900;
+
+    /// A feed with its own continuous series of a root, as Rithmic's is,
+    /// that streams and holds history back to `floor`: its first load is
+    /// three hundred bars, and a scroll back reads two hundred more at a
+    /// time, or nothing with no `reach`.
+    struct Deep {
+        floor: i64,
+        reach: bool,
+        asked: Mutex<Vec<(Timeframe, i64, i64, usize)>>,
+    }
+
+    fn series(timeframe: Timeframe, from: i64, until: i64) -> Vec<omacharts_engine::Bar> {
+        let step = timeframe.seconds();
+        let first = from.div_euclid(step) * step + if from.rem_euclid(step) == 0 { 0 } else { step };
+        (0..)
+            .map(|n| first + n * step)
+            .take_while(|ts| *ts < until)
+            .map(|ts| {
+                let price = 100.0 + (ts / step % 50) as f64;
+                omacharts_engine::Bar { ts, open: price, high: price + 1.0, low: price - 1.0, close: price, volume: 10.0 }
+            })
+            .collect()
+    }
+
+    impl Provider for Deep {
+        fn id(&self) -> &'static str {
+            "deep"
+        }
+        fn label(&self) -> &'static str {
+            "Deep"
+        }
+        fn delay_minutes(&self, _: omacharts_engine::InstrumentKind) -> u32 {
+            0
+        }
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
+            (instrument.kind == omacharts_engine::InstrumentKind::FutureRoot).then(|| instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            omacharts_engine::providers::Synthetic::frozen(NOW).capabilities()
+        }
+        fn continuity(&self) -> Continuity {
+            Continuity::native(&[Adjustment::AsTraded])
+        }
+        fn bars(&self, _: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
+            let step = timeframe.seconds();
+            Ok(series(timeframe, since.unwrap_or(NOW - 300 * step).max(self.floor), NOW + 1))
+        }
+        fn bars_between(&self, _: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
+            let bars = series(timeframe, since.max(self.floor), until);
+            self.asked.lock().unwrap().push((timeframe, since, until, bars.len()));
+            Ok(bars)
+        }
+        fn reaches_back(&self, _: &str, timeframe: Timeframe) -> Option<i64> {
+            self.reach.then(|| 200 * timeframe.seconds())
+        }
+        fn stream(&self) -> Option<&dyn Stream> {
+            Some(self)
+        }
+    }
+
+    impl Stream for Deep {
+        fn subscribe(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>, sink: Sink) -> Result<Box<dyn Subscription>, omacharts_engine::ProviderError> {
+            sink(Update::Snapshot(self.bars(symbol, timeframe, since)?));
+            struct Done;
+            impl Subscription for Done {}
+            Ok(Box::new(Done))
+        }
+    }
+
+    fn settle(done: impl Fn() -> bool) -> bool {
+        settle_for(400, done)
+    }
+
+    /// The same, `turns` turns of the loop at most.
+    fn settle_for(turns: usize, done: impl Fn() -> bool) -> bool {
+        let context = glib::MainContext::default();
+        for _ in 0..turns {
+            if done() {
+                return true;
+            }
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        done()
+    }
+
+    /// Every resolution, the ones the feed serves and the ones folded from
+    /// them, scrolls back on a feed of its own continuous series: each time
+    /// the chart reaches its first bar, the stretch before the native
+    /// series' first bar is read, only that, and comes in under the chart
+    /// and into the store, until the feed has nothing older, when it stops.
+    #[test]
+    fn every_resolution_scrolls_back_on_a_feed_with_more_history() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let resolutions = ["1m", "2m", "3m", "5m", "10m", "15m", "30m", "90m", "1h", "2h", "4h", "1D", "1W", "1M"];
+            for label in resolutions {
+                let timeframe = Timeframe::parse(label).expect("a resolution");
+                let native = timeframe.native();
+                let step = native.seconds();
+                let floor = (NOW - 650 * step).div_euclid(step) * step;
+                let deep = Arc::new(Deep { floor, reach: true, asked: Mutex::new(Vec::new()) });
+                let store = Rc::new(Store::memory().expect("a store"));
+                let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+                let window = Window::build_with(&app, store.clone(), vec![deep.clone() as Arc<dyn Provider>]);
+                let pane = window.focused_pane();
+                pane.timeframe.set(timeframe);
+                let es = window.index.find("ES", None).expect("ES");
+                window.show_in(&pane, es);
+                let key = pane.served.borrow().clone().expect("served");
+                assert_eq!(key, "deep:ES", "{label}: its own series");
+                let feed = window.feed_of(&key).expect("a feed");
+                let first = || window.first_native(&feed, &key, native);
+                assert!(settle(|| first().is_some()), "{label}: the first load never came");
+                let loaded = first().unwrap();
+
+                let mut at = loaded;
+                for _ in 0..5 {
+                    let shown = pane.view.with_bars(|bars| bars.first().map(|bar| bar.ts)).expect("bars on the chart");
+                    let asked = deep.asked.lock().unwrap().len();
+                    window.fill_older(pane.id, shown);
+                    settle(|| deep.asked.lock().unwrap().len() > asked);
+                    // What came back is put under the chart on the window's
+                    // thread, a turn or two after it was read.
+                    settle_for(40, || first() != Some(at));
+                    let now = first().unwrap();
+                    let (_, since, until, _) = *deep.asked.lock().unwrap().last().expect("asked");
+                    assert_eq!(deep.asked.lock().unwrap().len(), asked + 1, "{label}: asked once");
+                    assert_eq!(until, at, "{label}: nothing the chart holds is read again");
+                    assert_eq!(since, at - 200 * step, "{label}");
+                    if now == at {
+                        break;
+                    }
+                    assert!(now < at, "{label}: older bars came in");
+                    assert_eq!(store.coverage(&key, native).map(|c| c.first_ts), Some(now), "{label}: and are kept");
+                    let shown_now = pane.view.with_bars(|bars| bars.first().map(|bar| bar.ts)).unwrap();
+                    assert!(shown_now < shown, "{label}: and are on the chart");
+                    at = now;
+                }
+                assert_eq!(at, floor, "{label}: as far back as the feed goes");
+                let (.., last) = *deep.asked.lock().unwrap().last().unwrap();
+                assert_eq!(last, 0, "{label}: and the last ask brought nothing, so it stops");
+            }
+        });
+    }
+
+    /// A feed with nothing more than its first load took is never asked.
+    #[test]
+    fn a_feed_with_nothing_older_is_never_asked() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let deep = Arc::new(Deep { floor: 0, reach: false, asked: Mutex::new(Vec::new()) });
+            let store = Rc::new(Store::memory().expect("a store"));
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build_with(&app, store, vec![deep.clone() as Arc<dyn Provider>]);
+            let pane = window.focused_pane();
+            pane.timeframe.set(Timeframe::hours(4));
+            window.show_in(&pane, window.index.find("ES", None).expect("ES"));
+            assert!(settle(|| pane.view.with_bars(|bars| !bars.is_empty())));
+            let shown = pane.view.with_bars(|bars| bars[0].ts);
+            window.fill_older(pane.id, shown);
+            settle_for(40, || false);
+            assert!(deep.asked.lock().unwrap().is_empty());
+        });
+    }
+}
+
+#[cfg(test)]
 mod legend_switch_tests {
     use super::*;
     use crate::ui::window::trade::tests::window;
@@ -2238,6 +2408,28 @@ mod focus_tests {
             assert_eq!(towards(br, -1), tr);
             assert_eq!(towards(tl, -1), tl, "nothing above the top row");
             assert_eq!(towards(bl, 1), bl, "nothing below the bottom row");
+        });
+    }
+
+    /// A strip dragged taller keeps the height it was dragged to, a CVD's as
+    /// much as a volume's: on the chart, written down, and in a window
+    /// opened on the same store afterwards.
+    #[test]
+    fn every_strip_dragged_taller_keeps_its_height() {
+        crate::ui::on_gtk(|| {
+            for kind in omacharts_engine::indicators::Kind::ALL.into_iter().filter(|kind| kind.in_own_pane()) {
+                let store = Rc::new(Store::memory().expect("a store"));
+                let window = bare_window(&store);
+                let pane = window.focused_pane();
+                window.set_indicators_of(&pane, vec![Indicator::new(7, kind)]);
+                window.save_workspace();
+                pane.view.pane_resized(7, Some(0.41));
+                let height = |pane: &ChartPane| pane.indicators.borrow()[0].params.clone().height_mut().map(|h| *h);
+                assert_eq!(height(&pane), Some(0.41), "{kind:?} on the chart");
+                window.save_workspace();
+                let reopened = bare_window(&store);
+                assert_eq!(height(&reopened.focused_pane()), Some(0.41), "{kind:?} after a restart");
+            }
         });
     }
 
@@ -5487,8 +5679,8 @@ impl Window {
         let scaler = self.clone();
         pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
 
-        // Scrolled back toward its first bar, a stitched root brings the
-        // months before it.
+        // Scrolled back toward its first bar, a chart on a feed with more
+        // history brings the stretch before it.
         let filler = self.clone();
         pane.view.set_history_handler(move |first| filler.fill_older(id, first));
 
@@ -5499,14 +5691,8 @@ impl Window {
             let Some(pane) = resizer.pane(id) else { return };
             let mut indicators = pane.indicators.borrow().clone();
             if let Some(indicator) = indicators.iter_mut().find(|i| i.id == indicator_id) {
-                match &mut indicator.params {
-                    omacharts_engine::Params::Volume { height, .. }
-                    | omacharts_engine::Params::Rsi { height, .. }
-                    | omacharts_engine::Params::Macd { height, .. }
-                    | omacharts_engine::Params::Atr { height, .. }
-                    | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
-                    _ => return,
-                }
+                let Some(height) = indicator.params.height_mut() else { return };
+                *height = share;
                 // On a template, the template takes the height, and the
                 // charts on it keep one shape.
                 resizer.change_indicators_of(&pane, indicators);
@@ -5633,25 +5819,24 @@ impl Window {
     }
 
     /// Bring the bars before `first`, chart `id`'s first bar, now that its
-    /// view has come near it: for a stitched root, whose first load reaches
-    /// back only so far, the stretch before it, read off the window's thread
-    /// and stitched as the chart's own are, moved by every roll after it.
-    /// A feed with nothing older brings nothing, and is not asked again
-    /// until the chart has another first bar. The bars come in before the
-    /// ones shown, which stay where they are, and are kept with them.
+    /// view has come near it, from a feed that has more than its first load
+    /// took ([`omacharts_engine::Provider::reaches_back`]): a stitched root,
+    /// moved by every roll after it, or a feed's own series. Read off the
+    /// window's thread at the native resolution, before the native series'
+    /// own first bar, which a folded bar can start before: a four-hour bar
+    /// begins at the bucket's start, not at the first hour in it. So every
+    /// resolution folded from it scrolls back with it. A feed with nothing
+    /// older brings nothing, and is not asked again until the chart has
+    /// another first bar. The bars come in before the ones shown, which
+    /// stay where they are, and are kept with them.
     fn fill_older(self: &Rc<Self>, id: u32, first: i64) {
         let Some(pane) = self.pane(id) else { return };
         let Some(key) = pane.served.borrow().clone() else { return };
         let Some((_, symbol)) = key.split_once(':') else { return };
-        if omacharts_engine::continuous::Spelled::parse(symbol).is_none() {
-            return;
-        }
         let Some(feed) = self.feed_of(&key) else { return };
         let native = pane.timeframe.get().native();
-        let reach = match native.is_intraday() {
-            true => OLDER_INTRADAY_DAYS * 86_400,
-            false => OLDER_DAILY_DAYS * 86_400,
-        };
+        let Some(reach) = feed.provider.reaches_back(symbol, native) else { return };
+        let first = self.first_native(&feed, &key, native).unwrap_or(first);
         let (provider, symbol) = (feed.provider.clone(), symbol.to_string());
         let (sender, older) = async_channel::bounded(1);
         let read = std::thread::Builder::new().name("omacharts older bars".into()).spawn(move || {
@@ -5665,6 +5850,18 @@ impl Window {
             let Ok(Ok(older)) = older.recv().await else { return };
             this.take_older(&key, native, first, older);
         });
+    }
+
+    /// The first bar of the series `key` at `native`, as the chart has it:
+    /// the live series', on a feed that streams, or what the store keeps.
+    fn first_native(&self, feed: &Feed, key: &str, native: Timeframe) -> Option<i64> {
+        let series = Series { key: key.to_string(), native };
+        if let Some(live) = feed.live.as_ref()
+            && let Some(first) = live.with_bars(&series, |bars| bars.first().map(|bar| bar.ts))
+        {
+            return first;
+        }
+        self.store.coverage(key, native).map(|coverage| coverage.first_ts)
     }
 
     /// Put `older`, bars from before `first`, under the series `key` at
@@ -5713,6 +5910,11 @@ impl Window {
         if let (Some(from), Some(to)) = (self.pane(self.focused.get()), self.pane(id)) {
             from.view.hand_over(&to.view);
         }
+        // The keyboard goes with the focus when it was on a chart: the keys
+        // a chart answers itself — Delete, the arrows on a selection — act
+        // on the chart the focus is on, not one left behind, or swapped off
+        // the screen when maximized.
+        let keyboard_on_chart = self.panes.borrow().iter().any(|pane| pane.view.area.has_focus());
         self.focused.set(id);
         // Maximized, the focus keys still walk the arrangement — they just
         // walk it one chart at a time, with the window showing whichever one
@@ -5725,6 +5927,9 @@ impl Window {
         }
         for pane in self.panes.borrow().iter() {
             pane.set_focused(pane.id == id);
+        }
+        if keyboard_on_chart && let Some(pane) = self.pane(id) {
+            pane.view.area.grab_focus();
         }
         // What is left in the header describes the focused chart, as do the
         // chart menu's radio items.
@@ -5905,7 +6110,15 @@ impl Window {
     /// cycle through the charts one window at a time.
     pub fn focus_along(self: &Rc<Self>, step: i32) {
         let order = reading_order(&self.layout_rects());
-        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else { return };
+        // A focus on no chart in the arrangement starts the walk at the
+        // first, rather than leaving the keys dead until something else
+        // moves it.
+        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else {
+            if let Some(first) = order.first() {
+                self.focus(*first);
+            }
+            return;
+        };
         if order.len() < 2 {
             return;
         }
