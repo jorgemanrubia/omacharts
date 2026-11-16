@@ -64,7 +64,9 @@ impl Over {
 /// Inside a dialog, the dialog's own content: a frame hung behind a modal
 /// dialog is drawn but never given the keyboard. Inside a form window
 /// (chart settings), that window's content: a popover cannot hang from a
-/// toplevel itself.
+/// toplevel itself. When that content is sections down a sidebar, the
+/// section shown, so the frame sits over the page it was asked from rather
+/// than across the sidebar too.
 fn window_content(from: &impl IsA<gtk::Widget>) -> gtk::Widget {
     let from = from.as_ref();
     let dialog = from.downcast_ref::<adw::Dialog>().cloned().or_else(|| from.ancestor(adw::Dialog::static_type()).and_downcast());
@@ -72,11 +74,16 @@ fn window_content(from: &impl IsA<gtk::Widget>) -> gtk::Widget {
         return content;
     }
     let root = from.root();
-    root.clone()
+    let content = root
+        .clone()
         .and_downcast::<adw::ApplicationWindow>()
         .and_then(|window| window.content())
         .or_else(|| root.and_downcast::<adw::Window>().and_then(|window| window.content()))
-        .unwrap_or_else(|| from.clone().upcast())
+        .unwrap_or_else(|| from.clone().upcast());
+    match content.downcast_ref::<adw::NavigationSplitView>().and_then(|split| split.content()) {
+        Some(section) => section.upcast(),
+        None => content,
+    }
 }
 
 type OnPick = Rc<dyn Fn(usize)>;
