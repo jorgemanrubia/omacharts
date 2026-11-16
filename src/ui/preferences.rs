@@ -936,7 +936,7 @@ fn confirm_delete_template(context: &Rc<Context>, anchor: &gtk::Button, id: u32,
              indicators as their own, and stop changing with it."
         ),
     };
-    let dialog = crate::ui::dialogs::card("Delete Chart Template?", Some(&body), None);
+    let dialog = adw::AlertDialog::new(Some("Delete Chart Template?"), Some(&body));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("delete", "Delete");
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
@@ -1391,7 +1391,8 @@ pub(crate) fn ask_for_text(
     let rows = adw::PreferencesGroup::new();
     rows.add(&name);
 
-    let dialog = crate::ui::dialogs::card(heading, None, Some(rows.upcast_ref()));
+    let dialog = adw::AlertDialog::new(Some(heading), None);
+    dialog.set_extra_child(Some(&rows));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("ok", verb);
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);

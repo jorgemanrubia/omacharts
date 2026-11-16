@@ -7702,7 +7702,8 @@ impl Window {
         rows.add(&chosen);
 
         let field = name.clone();
-        let dialog = crate::ui::dialogs::card("New chartbook", None, Some(rows.upcast_ref()));
+        let dialog = adw::AlertDialog::new(Some("New chartbook"), None);
+        dialog.set_extra_child(Some(&rows));
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("create", "Create");
         dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
@@ -7849,7 +7850,7 @@ impl Window {
             },
         );
 
-        let dialog = crate::ui::dialogs::card("Remove chartbook", Some(&body), None);
+        let dialog = adw::AlertDialog::new(Some("Remove chartbook"), Some(&body));
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("remove", "Remove");
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
@@ -8134,7 +8135,7 @@ impl Window {
              \u{201c}{}\u{201d}. Its charts keep their symbols.{fewer}",
             chosen.name
         );
-        let dialog = crate::ui::dialogs::card("Use Chartbook Template?", Some(&body), None);
+        let dialog = adw::AlertDialog::new(Some("Use Chartbook Template?"), Some(&body));
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("replace", "Replace Layout");
         dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
@@ -11979,7 +11980,7 @@ impl Window {
                 "Remove Indicators",
             ),
         };
-        let dialog = crate::ui::dialogs::card(title, Some(&body), None);
+        let dialog = adw::AlertDialog::new(Some(title), Some(&body));
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("replace", verb);
         dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);

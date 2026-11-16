@@ -154,7 +154,7 @@ fn confirm_delete(
              indicators, and stop changing with the template."
         ),
     };
-    let dialog = crate::ui::dialogs::card("Delete Chartbook Template?", Some(&body), None);
+    let dialog = adw::AlertDialog::new(Some("Delete Chartbook Template?"), Some(&body));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("delete", "Delete");
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
