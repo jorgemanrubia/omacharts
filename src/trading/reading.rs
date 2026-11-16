@@ -73,11 +73,29 @@ pub struct Levels {
     pub poc: Option<f64>,
     pub vah: Option<f64>,
     pub val: Option<f64>,
+    /// The volume profile's strongest high-volume nodes and the deepest
+    /// low-volume ones, at most [`NODES_READ`] of each, lowest price first.
+    pub hvn: Vec<f64>,
+    pub lvn: Vec<f64>,
     /// This session's high and low.
     pub high: Option<f64>,
     pub low: Option<f64>,
     /// The session before's high, low and close.
     pub prior: Option<(f64, f64, f64)>,
+}
+
+/// How many of a profile's nodes of each kind the levels carry: the
+/// strongest, so a line read every half minute names the shelves that
+/// matter and stays one line.
+pub const NODES_READ: usize = 2;
+
+/// The prices of the strongest `NODES_READ` of `nodes`, lowest first.
+fn strongest(profile: &omacharts_engine::indicators::Profile, nodes: &[omacharts_engine::indicators::profile::Node]) -> Vec<f64> {
+    let mut nodes: Vec<_> = nodes.iter().collect();
+    nodes.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+    let mut prices: Vec<f64> = nodes.iter().take(NODES_READ).filter_map(|node| profile.rows.get(node.row)).map(|row| row.low).collect();
+    prices.sort_by(f64::total_cmp);
+    prices
 }
 
 /// The session a bar at `ts` belongs to: the trading day, CME's.
@@ -107,6 +125,9 @@ pub fn levels(bars: &[Bar], drawn: &[Drawn], intraday: bool) -> Levels {
                     levels.poc = Some(profile.poc_price());
                     levels.vah = Some(vah);
                     levels.val = Some(val);
+                    let nodes = profile.nodes();
+                    levels.hvn = strongest(profile, &nodes.high);
+                    levels.lvn = strongest(profile, &nodes.low);
                 }
             }
             _ => {}
@@ -130,7 +151,7 @@ pub fn levels(bars: &[Bar], drawn: &[Drawn], intraday: bool) -> Levels {
 }
 
 impl Levels {
-    /// One line: `vwap 7605.5 b1 7600.25/7610.75 poc 7608 vah 7612 val 7601 hi 7615 lo 7598 prev 7620/7590/7601`.
+    /// One line: `vwap 7605.5 b1 7600.25/7610.75 poc 7608 vah 7612 val 7601 hvn 7590,7608 lvn 7598 hi 7615 lo 7598 prev 7620/7590/7601`.
     pub fn text(&self, places: usize) -> String {
         let n = |price: f64| num(price, places);
         let mut parts = Vec::new();
@@ -140,7 +161,17 @@ impl Levels {
         for (deviations, upper, lower) in &self.bands {
             parts.push(format!("{}sd {}/{}", num(*deviations, 2), n(*upper), n(*lower)));
         }
-        for (name, value) in [("poc", self.poc), ("vah", self.vah), ("val", self.val), ("hi", self.high), ("lo", self.low)] {
+        for (name, value) in [("poc", self.poc), ("vah", self.vah), ("val", self.val)] {
+            if let Some(value) = value {
+                parts.push(format!("{name} {}", n(value)));
+            }
+        }
+        for (name, prices) in [("hvn", &self.hvn), ("lvn", &self.lvn)] {
+            if !prices.is_empty() {
+                parts.push(format!("{name} {}", prices.iter().map(|price| n(*price)).collect::<Vec<_>>().join(",")));
+            }
+        }
+        for (name, value) in [("hi", self.high), ("lo", self.low)] {
             if let Some(value) = value {
                 parts.push(format!("{name} {}", n(value)));
             }
@@ -164,6 +195,8 @@ impl Levels {
             "poc": p(self.poc),
             "vah": p(self.vah),
             "val": p(self.val),
+            "hvn": self.hvn.iter().map(|price| p(Some(*price))).collect::<Vec<_>>(),
+            "lvn": self.lvn.iter().map(|price| p(Some(*price))).collect::<Vec<_>>(),
             "hi": p(self.high),
             "lo": p(self.low),
             "prev": self.prior.map(|(high, low, close)| json!({"h": p(Some(high)), "l": p(Some(low)), "c": p(Some(close))})),
@@ -282,6 +315,45 @@ mod tests {
         assert_eq!(levels.text(2), "hi 15 lo 11.5 prev h13 l9 c12");
         let daily = super::levels(&bars, &[], false);
         assert_eq!(daily.high, None, "no sessions on a daily chart");
+    }
+
+    #[test]
+    fn the_levels_name_the_strongest_nodes_lowest_first() {
+        use omacharts_engine::indicators::{Profile, ProfileRow};
+        // Three shelves a quarter apart, the middle one the weakest.
+        let shelf = |at: f64, centre: f64, height: f64| height * (-((at - centre) / 3.0).powi(2)).exp();
+        let rows: Vec<ProfileRow> = (0..90)
+            .map(|at| {
+                let x = at as f64;
+                let volume = 10.0 + shelf(x, 15.0, 1000.0) + shelf(x, 45.0, 300.0) + shelf(x, 75.0, 700.0);
+                ProfileRow { low: 7500.0 + x * 0.25, high: 7500.25 + x * 0.25, volume }
+            })
+            .collect();
+        let profile = Profile {
+            start_ts: 0,
+            parts: vec![0],
+            end_ts: 0,
+            first_bar: 0,
+            last_bar: 0,
+            max_volume: 1010.0,
+            total_volume: 0.0,
+            poc: 15,
+            value_area: (10, 20),
+            rows,
+        };
+        let nodes = profile.nodes();
+        assert_eq!(nodes.high.len(), 3);
+        let levels = Levels {
+            poc: Some(profile.poc_price()),
+            hvn: strongest(&profile, &nodes.high),
+            lvn: strongest(&profile, &nodes.low),
+            ..Levels::default()
+        };
+        assert_eq!(levels.hvn, vec![7503.75, 7518.75], "the two strongest, the weak middle one left out");
+        assert_eq!(levels.lvn.len(), 2);
+        let text = levels.text(2);
+        assert!(text.starts_with("poc 7503.88 hvn 7503.75,7518.75 lvn 75"), "{text}");
+        assert_eq!(levels.json(2)["hvn"], json!([7503.75, 7518.75]));
     }
 
     #[test]
