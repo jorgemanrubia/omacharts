@@ -162,6 +162,7 @@ The legend lists the chart's indicators under the symbol, faint until the pointe
 | Bin | Removes it |
 | Click the label | Selects it on the chart ([Selecting an indicator](#selecting-an-indicator)) |
 | Double-click the label | Opens its settings, as the gear does |
+| Right-click the line | Selects it and opens [its menu](#its-menu), hidden or not |
 
 An indicator with **Show in chart legend** off in its settings has no line in the legend, and is still drawn. Hiding it is the switch on its row in the [Indicators page](#the-indicators-page). [Session Times](/manual/indicators/session-times/) starts out of the legend, and every other indicator in it.
 
@@ -212,7 +213,7 @@ crop: 0,0,2440,1150 (resized to 2000 wide)
 
 One thing is selected at a time: selecting an indicator clears the selected drawings, and selecting a drawing clears the indicator. Drawings come first. Within a few pixels of a drawing, a click selects the drawing or nothing at all, never the indicator under it, which is selected anywhere else along its length. A press on an indicator that goes on to drag pans the chart, since an indicator does not move.
 
-[Session Times](/manual/indicators/session-times/) is not selected by a click, since it covers the whole chart, and neither is the inside of a band's shading, so a press there pans. A hidden indicator is not selected either.
+[Session Times](/manual/indicators/session-times/) is not selected by a click, since it covers the whole chart, and neither is the inside of a band's shading, so a press there pans. A hidden indicator is not selected either: right-click its line in the legend for its menu and **Show**.
 
 A paste is a new indicator with the same settings, on the chart that has the keyboard, which can be the chart it was copied from or any other. On a chart on a template, it goes on the template. One whose colour was left to the theme takes the next free colour there. The pasted indicator is selected.
 
@@ -228,6 +229,7 @@ A paste is a new indicator with the same settings, on the chart that has the key
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies it |
 | **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: an indicator, or drawings |
 | **Remove** (<kbd>Delete</kbd>) | Removes it, from the template on a chart on one |
+| **Hide** / **Show** | Hides it, or shows it again, as the legend's eye does |
 | **Properties…** (<kbd>Alt</kbd> + <kbd>Enter</kbd>) | Opens its settings |
 
 ## Colours and lines
