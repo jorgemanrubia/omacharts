@@ -16,7 +16,7 @@
 use adw::prelude::*;
 use gtk::glib;
 use gtk::subclass::prelude::ObjectSubclassIsExt;
-use omacharts_engine::theme::{ColorChoice, Theme, FOREGROUND};
+use omacharts_engine::theme::{ColorChoice, Theme};
 
 use crate::ui::colors;
 
@@ -63,19 +63,21 @@ pub fn chip(theme: &Theme, choice: ColorChoice, on_pick: impl Fn(ColorChoice) + 
         on_pick(choice);
     });
     button.add_css_class("colour-chip");
-    slot(&button, &[FOREGROUND], move || name.text().to_string())
+    let names: Vec<String> = theme.palette().into_iter().map(|swatch| swatch.name).chain([CUSTOM.to_string()]).collect();
+    slot(&button, &names.iter().map(String::as_str).collect::<Vec<_>>(), move || name.text().to_string())
 }
 
 /// Hold `control` in a slot as wide as it is with the widest of `words` in
 /// place of `shown()`, the word it shows now. The control's box hugs what
-/// it shows, at the slot's start, and the room left over sits after it,
-/// outside the box: what stands beside the slot does not move as the word
-/// changes, and the highlight is only as wide as what it highlights.
+/// it shows, at the slot's end, and the room left over sits before it,
+/// outside the box: the control's right edge, and what stands beside the
+/// slot, do not move as the word changes, and the highlight is only as wide
+/// as what it highlights.
 pub(crate) fn slot(control: &impl IsA<gtk::Widget>, words: &[&str], shown: impl Fn() -> String + 'static) -> adw::Bin {
     let layout: SlotLayout = glib::Object::new();
     layout.imp().words.replace(words.iter().map(|word| word.to_string()).collect());
     layout.imp().shown.replace(Some(Box::new(shown)));
-    control.set_halign(gtk::Align::Start);
+    control.set_halign(gtk::Align::End);
     let slot = adw::Bin::new();
     slot.set_layout_manager(Some(layout));
     slot.set_child(Some(control));
@@ -128,8 +130,8 @@ mod slot_layout {
             (measured.0 + room, measured.1 + room, -1, -1)
         }
 
-        /// The child's own start alignment holds it at the slot's start, at
-        /// its natural width.
+        /// The child's own end alignment holds it at the slot's end, at its
+        /// natural width.
         fn allocate(&self, slot: &gtk::Widget, width: i32, height: i32, baseline: i32) {
             if let Some(child) = slot.first_child() {
                 child.allocate(width, height, baseline, None);
@@ -138,12 +140,14 @@ mod slot_layout {
     }
 }
 
-/// What a chip calls a colour: the swatch's name, or Custom for one picked
-/// on the wheel, whose hex nobody reads.
+/// What a chip calls a colour picked on the wheel, whose hex nobody reads.
+const CUSTOM: &str = "Custom";
+
+/// What a chip calls a colour: the swatch's name, or [`CUSTOM`].
 fn chip_name(choice: &ColorChoice) -> String {
     match choice {
         ColorChoice::Swatch { name } => name.clone(),
-        ColorChoice::Fixed { .. } => "Custom".to_string(),
+        ColorChoice::Fixed { .. } => CUSTOM.to_string(),
     }
 }
 
