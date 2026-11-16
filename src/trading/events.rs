@@ -173,8 +173,7 @@ pub fn signed(amount: f64) -> String {
 }
 
 /// Whether an event is one a `trading wait` wakes for: something done to
-/// an order or a position, a limit reached, an alert, a level crossed, a
-/// bar closed. A P&L moving with the market is not.
+/// an order or a position, an alert, a level crossed, a bar closed. A P&L moving with the market is not.
 pub fn wakes(event: &Value) -> bool {
     !matches!(event["ev"].as_str(), Some("pnl" | "watching" | "placed"))
 }
@@ -197,12 +196,6 @@ pub fn text(event: &Value) -> String {
             s("acct"),
             signed(event["day"].as_f64().unwrap_or(0.0)),
             signed(event["open"].as_f64().unwrap_or(0.0))
-        ),
-        "limit" => format!(
-            "limit {} reached acct {} day {}: entries refused until the next trading day",
-            s("limit"),
-            s("acct"),
-            signed(event["pnl"].as_f64().unwrap_or(0.0))
         ),
         "alert" => format!("alert {} {} {} at {} last {}", s("id"), s("sym"), s("dir"), s("px"), s("last")),
         "cross" => format!("cross {} {} last {}", s("dir"), s("px"), s("last")),

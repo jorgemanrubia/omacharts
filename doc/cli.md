@@ -133,10 +133,13 @@ and `chart profile merge --at WHEN` folds the profile holding that moment
 into the one before it, a composite with one point of control and one value
 area; `split --at` puts it back. A composite is the chart's, kept for the
 symbol and the period it was made under. All three need the window, which has
-the bars that say where a period starts.
+the bars that say where a period starts. `--rows` adds each profile's rows as
+a price and volume table, `--nodes` its high-volume nodes and the low-volume
+nodes between them, and `--last` keeps only the newest profile.
 
 ```
 omacharts chart profile list --on-screen --json
+omacharts chart profile list --last --nodes --json
 omacharts chart profile merge --at 2026-10-28
 ```
 

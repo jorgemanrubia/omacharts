@@ -2059,6 +2059,110 @@ mod legend_switch_tests {
 }
 
 #[cfg(test)]
+mod indicator_menu_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+    use omacharts_engine::IndicatorKind;
+
+    /// Each section of a menu, as the label and action of every item in it.
+    fn sections(menu: &gio::Menu) -> Vec<Vec<(String, String)>> {
+        let text = |model: &gio::MenuModel, at, name| {
+            model.item_attribute_value(at, name, Some(glib::VariantTy::STRING)).and_then(|v| v.get::<String>()).unwrap_or_default()
+        };
+        (0..menu.n_items())
+            .filter_map(|at| menu.item_link(at, "section"))
+            .map(|section| (0..section.n_items()).map(|at| (text(&section, at, "label"), text(&section, at, "action"))).collect())
+            .collect()
+    }
+
+    fn shown(pane: &ChartPane, id: u32) -> bool {
+        pane.indicators.borrow().iter().find(|i| i.id == id).expect("the indicator").visible
+    }
+
+    /// Hide is the last of the menu's main rows, right above Properties, and
+    /// on a hidden indicator it is Show: the legend eye's words, doing what
+    /// the eye does.
+    #[test]
+    fn the_indicator_menu_hides_an_indicator_and_shows_it_again() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            window.set_indicators_of(&pane, vec![Indicator::new(1, IndicatorKind::Sma), Indicator::new(2, IndicatorKind::Rsi)]);
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's actions");
+
+            for (id, before) in [(1, true), (2, true)] {
+                let (menu, _) = window.indicator_menu_model(id, None);
+                let all = sections(&menu);
+                let [.., main, properties] = all.as_slice() else { panic!("two sections at least: {all:?}") };
+                let words = if before { "Hide" } else { "Show" };
+                assert_eq!(main.last(), Some(&(words.to_string(), "chart.indicator-shown".to_string())), "{id}: {main:?}");
+                assert_eq!(main[main.len() - 2].0, "Remove", "right below Remove");
+                assert_eq!(properties[0].0, "Properties…", "and right above the separator");
+
+                actions.activate_action("indicator-shown", None);
+                assert!(!shown(&pane, id), "{id} hidden");
+                assert!(shown(&pane, 3 - id), "the other one left alone");
+
+                let (menu, _) = window.indicator_menu_model(id, None);
+                let all = sections(&menu);
+                let [.., main, _] = all.as_slice() else { panic!("{all:?}") };
+                assert_eq!(main.last().map(|(label, _)| label.as_str()), Some("Show"));
+                actions.activate_action("indicator-shown", None);
+                assert!(shown(&pane, id), "{id} shown again");
+            }
+        });
+    }
+
+    /// A hidden indicator cannot be clicked on the chart, so its line in the
+    /// legend takes a right click and opens the same menu.
+    #[test]
+    fn a_legend_line_opens_the_indicator_menu_on_a_right_click() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let mut hidden = Indicator::new(1, IndicatorKind::Sma);
+            hidden.visible = false;
+            window.set_indicators_of(&pane, vec![hidden]);
+            let row = pane.indicator_legend.first_child().expect("its line in the legend");
+            let secondary = row
+                .observe_controllers()
+                .into_iter()
+                .filter_map(|c| c.ok().and_downcast::<gtk::GestureClick>())
+                .any(|click| click.button() == gtk::gdk::BUTTON_SECONDARY);
+            assert!(secondary, "a right click on the line is taken");
+        });
+    }
+
+    /// The menu's Cut and Copy are the indicator's it was opened on, which a
+    /// hidden one is without being selected; the chart's own would take the
+    /// selected drawings.
+    #[test]
+    fn the_indicator_menu_copies_its_indicator_even_when_it_is_not_selected() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let mut hidden = Indicator::new(1, IndicatorKind::Sma);
+            hidden.visible = false;
+            window.set_indicators_of(&pane, vec![hidden, Indicator::new(2, IndicatorKind::Rsi)]);
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's actions");
+
+            let _ = window.indicator_menu_model(1, None);
+            assert_eq!(pane.view.picked(), None, "a hidden indicator is not selected");
+            actions.activate_action("indicator-copy", None);
+            assert!(matches!(&*window.clipboard.borrow(), Clipboard::Indicator(i) if i.id == 1));
+
+            let _ = window.indicator_menu_model(1, None);
+            actions.activate_action("indicator-cut", None);
+            let left: Vec<u32> = pane.indicators.borrow().iter().map(|i| i.id).collect();
+            assert_eq!(left, vec![2], "cut takes it off the chart");
+        });
+    }
+}
+
+#[cfg(test)]
 mod apply_to_all_tests {
     use super::*;
     use crate::ui::window::trade::tests::window;
@@ -12148,13 +12252,7 @@ impl Window {
             toggle.set_tooltip_text(Some(if indicator.visible { "Hide" } else { "Show" }));
             let this = self.clone();
             let shown = pane.clone();
-            toggle.connect_clicked(move |_| {
-                let mut indicators = shown.indicators.borrow().clone();
-                if let Some(found) = indicators.iter_mut().find(|i| i.id == id) {
-                    found.visible = !found.visible;
-                }
-                this.change_indicators_of(&shown, indicators);
-            });
+            toggle.connect_clicked(move |_| this.toggle_indicator_shown(&shown, id));
 
             let settings = gtk::Button::from_icon_name("emblem-system-symbolic");
             settings.add_css_class("flat");
@@ -12185,6 +12283,21 @@ impl Window {
             row.append(&toggle);
             row.append(&settings);
             row.append(&remove);
+
+            // A right click on its line opens the menu a right click on the
+            // indicator does. A hidden indicator is drawn nowhere a click can
+            // reach, so this is where its Show is.
+            let menu = gtk::GestureClick::new();
+            menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+            let this = self.clone();
+            let (picker, anchor) = (pane.clone(), row.clone());
+            menu.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                this.focus(picker.id);
+                picker.view.pick(Some(id));
+                this.indicator_menu(id, &anchor, x, y, None);
+            });
+            row.add_controller(menu);
             pane.indicator_legend.append(&row);
         }
     }
@@ -12216,7 +12329,7 @@ impl Window {
             IndicatorEvent::Picked(picked) => self.show_picked_in_legend(&pane, picked),
             IndicatorEvent::Menu(indicator, x, y) => {
                 self.focus(id);
-                self.indicator_menu(indicator, x, y);
+                self.indicator_menu(indicator, &pane.view.area, x, y, Some(x));
             }
             IndicatorEvent::Properties(indicator) => {
                 self.focus(id);
@@ -12242,16 +12355,30 @@ impl Window {
         self.change_indicators_of(pane, kept);
     }
 
+    /// Hide one indicator, or show it again: the legend's eye, and Hide and
+    /// Show in its menu. On a chart on a template, the template's.
+    fn toggle_indicator_shown(self: &Rc<Self>, pane: &Rc<ChartPane>, id: u32) {
+        let mut indicators = pane.indicators.borrow().clone();
+        if let Some(found) = indicators.iter_mut().find(|i| i.id == id) {
+            found.visible = !found.visible;
+        }
+        self.change_indicators_of(pane, indicators);
+    }
+
     /// Cut, Copy, Paste and Remove, in the order and the one section GTK's
     /// own context menus give Cut, Copy, Paste and Delete. Paste only while there
     /// is something to put down. Remove is this selection's, and not every
     /// drawing or indicator: clearing the chart is a thing done to the chart,
     /// in the chart's own menu. Plain words, since the menu is already about
     /// what is selected.
-    fn clipboard_section(&self, remove: &str) -> gio::Menu {
+    ///
+    /// Cut and Copy are named with Remove: an indicator's menu opens from the
+    /// legend on one that is hidden, and so not selected, where the chart's
+    /// own Cut would take the selected drawings instead.
+    fn clipboard_section(&self, [cut, copy, remove]: [&str; 3]) -> gio::Menu {
         let section = gio::Menu::new();
-        shortcuts::append_with_key(&section, "Cut", "chart.cut", "<Ctrl>x");
-        shortcuts::append_with_key(&section, "Copy", "chart.copy", "<Ctrl>c");
+        shortcuts::append_with_key(&section, "Cut", cut, "<Ctrl>x");
+        shortcuts::append_with_key(&section, "Copy", copy, "<Ctrl>c");
         if self.has_copied() {
             shortcuts::append_with_key(&section, "Paste", "chart.paste", "<Ctrl>v");
         }
@@ -12259,14 +12386,36 @@ impl Window {
         section
     }
 
-    /// The menu of the indicator selected on the focused chart, laid out as a
-    /// drawing's is: copying and removing it, then its properties, last and
-    /// alone. What only some indicators can do goes above, as a drawing's own
-    /// errands do.
-    fn indicator_menu(self: &Rc<Self>, indicator: u32, x: f64, y: f64) {
+    /// The menu of an indicator on the focused chart, opened at `x`, `y` over
+    /// `over`: from the indicator on the chart, where `chart_x` is the
+    /// pointer's, or from its line in the legend, where there is none.
+    fn indicator_menu(
+        self: &Rc<Self>,
+        indicator: u32,
+        over: &impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+        chart_x: Option<f64>,
+    ) {
+        let (menu, rows) = self.indicator_menu_model(indicator, chart_x);
+        let (wx, wy) = over.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
+        popup_menu_with(&menu, &self.window, wx, wy, rows);
+    }
+
+    /// The indicator menu, laid out as a drawing's is: copying, removing and
+    /// hiding it, then its properties, last and alone. What only some
+    /// indicators can do goes above, as a drawing's own errands do.
+    fn indicator_menu_model(
+        self: &Rc<Self>,
+        indicator: u32,
+        chart_x: Option<f64>,
+    ) -> (gio::Menu, Vec<(String, gtk::Widget)>) {
         let pane = self.focused_pane();
         *self.menu_indicator.borrow_mut() = Some(indicator);
-        let params = pane.indicators.borrow().iter().find(|i| i.id == indicator).map(|i| i.params.clone());
+        let (params, visible) = match pane.indicators.borrow().iter().find(|i| i.id == indicator) {
+            Some(found) => (Some(found.params.clone()), found.visible),
+            None => (None, true),
+        };
 
         let menu = gio::Menu::new();
         let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
@@ -12295,7 +12444,7 @@ impl Window {
         // A composite is made one profile at a time, from the one under the
         // pointer back into the one before it.
         if matches!(params, Some(Params::VolumeProfile { .. })) {
-            let spot = pane.view.profile_at(indicator, x);
+            let spot = chart_x.and_then(|x| pane.view.profile_at(indicator, x));
             let profile = gio::Menu::new();
             if spot.as_ref().is_some_and(|s| s.has_previous) {
                 profile.append(Some("Merge with previous profile"), Some("chart.profile-merge"));
@@ -12309,15 +12458,15 @@ impl Window {
             *self.menu_profile.borrow_mut() = spot;
         }
 
-        menu.append_section(None, &self.clipboard_section("chart.indicator-delete"));
+        let clipboard = self.clipboard_section(["chart.indicator-cut", "chart.indicator-copy", "chart.indicator-delete"]);
+        // In the legend eye's words.
+        shortcuts::append(&clipboard, if visible { "Hide" } else { "Show" }, "chart.indicator-shown");
+        menu.append_section(None, &clipboard);
 
         let properties = gio::Menu::new();
         shortcuts::append_with_key(&properties, "Properties…", "chart.indicator-settings", "<Alt>Return");
         menu.append_section(None, &properties);
-
-        let area = pane.view.area.clone();
-        let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
-        popup_menu_with(&menu, &self.window, wx, wy, rows);
+        (menu, rows)
     }
 
     /// Change one indicator of the focused chart, wherever its indicators
@@ -13323,14 +13472,19 @@ impl Window {
     pub fn copy(self: &Rc<Self>) {
         let pane = self.focused_pane();
         if let Some(id) = pane.view.picked() {
-            if let Some(indicator) = pane.indicators.borrow().iter().find(|i| i.id == id) {
-                *self.clipboard.borrow_mut() = Clipboard::Indicator(indicator.clone());
-            }
+            self.copy_indicator(&pane, id);
             return;
         }
         let copied = pane.view.copy_selected();
         if !copied.is_empty() {
             *self.clipboard.borrow_mut() = Clipboard::Drawings(copied, pane.view.price_window());
+        }
+    }
+
+    /// Take a copy of one indicator, selected or not.
+    fn copy_indicator(&self, pane: &ChartPane, id: u32) {
+        if let Some(indicator) = pane.indicators.borrow().iter().find(|i| i.id == id) {
+            *self.clipboard.borrow_mut() = Clipboard::Indicator(indicator.clone());
         }
     }
 
@@ -13429,7 +13583,7 @@ impl Window {
             shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
             menu.append_section(None, &edit);
         }
-        menu.append_section(None, &self.clipboard_section("chart.drawing-delete"));
+        menu.append_section(None, &self.clipboard_section(["chart.cut", "chart.copy", "chart.drawing-delete"]));
 
         // The arrowhead, as the four pictures it is, on one row: the three
         // shapes and the one that is no shape. A row of four rather than a
@@ -13938,7 +14092,33 @@ impl Window {
         actions.add_action(&bar_style);
         *self.bar_style_action.borrow_mut() = Some(bar_style);
 
-        // The indicator menu's two rows, about the indicator it was opened on.
+        // The indicator menu's rows, about the indicator it was opened on.
+        let cut = gio::SimpleAction::new("indicator-cut", None);
+        let this = self.clone();
+        cut.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                let pane = this.focused_pane();
+                this.copy_indicator(&pane, id);
+                this.remove_indicator(&pane, id);
+            }
+        });
+        actions.add_action(&cut);
+        let copy = gio::SimpleAction::new("indicator-copy", None);
+        let this = self.clone();
+        copy.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.copy_indicator(&this.focused_pane(), id);
+            }
+        });
+        actions.add_action(&copy);
+        let shown = gio::SimpleAction::new("indicator-shown", None);
+        let this = self.clone();
+        shown.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.toggle_indicator_shown(&this.focused_pane(), id);
+            }
+        });
+        actions.add_action(&shown);
         let delete = gio::SimpleAction::new("indicator-delete", None);
         let this = self.clone();
         delete.connect_activate(move |_, _| {

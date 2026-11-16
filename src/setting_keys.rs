@@ -42,10 +42,11 @@ const KEYS: &[(&str, Kind)] = &[
     // Each login's accounts as last listed, with their balances: rewritten
     // at every sign-in, and account numbers stay on this machine.
     ("trading_accounts", Kind::Bookkeeping),
-    // Each account's own limits, held to on this machine; and the day one
-    // of them was reached, the app's note.
-    (crate::trading::limits::LIMITS, Kind::Local),
-    (crate::trading::limits::HITS, Kind::Bookkeeping),
+    // Each account's own limits and the day one was reached, written by
+    // versions that had them and read by nothing now: kept off another
+    // machine's settings as they always were.
+    ("trading_limits", Kind::Local),
+    ("trading_limit_hits", Kind::Bookkeeping),
     // Which experiments are switched on: a machine's, switched on there
     // from its command line, never carried to another by a restore.
     (crate::features::PREFIX, Kind::Local),

@@ -1197,10 +1197,6 @@ impl Window {
                 }
             }
         };
-        let stop_points = exits.zip(tick).and_then(|(exits, tick)| exits.stop_points(tick));
-        if let Some(why) = self.limits_refuse(&target, side, size.get(), stop_points, exits.is_some()) {
-            return self.refuse_on(&target, &format!("Not placed · {why}"));
-        }
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
             Ok(order) => match exits {
                 Some(exits) => self.place_bracket(target, order, exits),
@@ -1707,9 +1703,6 @@ impl Window {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let size = self.size_of(pane);
-        if let Some(why) = self.limits_refuse(&target, side, size.get(), None, false) {
-            return self.refuse_on(&target, &format!("Not placed · {why}"));
-        }
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
             Ok(order) => self.place(target, order),
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),

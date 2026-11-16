@@ -45,7 +45,6 @@
 //! - `executions`: an account's fills in a contract, paired into round trips.
 //! - `brackets`: an entry's target and stop as typed, turned into the
 //!   distances a bracket order is sent with.
-//! - `limits`: each account's own limits, which the app holds it to.
 //! - `events`: what changed between two books, said one line each.
 //! - `reading`: a chart's bars, indicator values and levels, in numbers.
 
@@ -57,7 +56,6 @@ pub mod executions;
 mod domain;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;
-pub mod limits;
 mod linking;
 mod logins;
 pub mod reading;

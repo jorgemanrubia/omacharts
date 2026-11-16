@@ -1,8 +1,7 @@
 //! What an agent trading from the command line asks of the window, behind
 //! the `agent-trading` feature flag: a snapshot of a chart and its account
 //! in a few lines, a wait for the next thing that matters, a stream of
-//! every order, position and P&L change, price alerts, and the account's
-//! own limits held on every entry.
+//! every order, position and P&L change, and price alerts.
 //!
 //! Everything is answered from what the window already holds — the book
 //! its sessions keep, the bars and indicators on screen — so a snapshot
@@ -25,7 +24,7 @@ use serde_json::{Value, json};
 use super::Window;
 use crate::cli::trading::{Ask, Token};
 use crate::cli::{Fault, Sink};
-use crate::trading::{self, events, limits, reading};
+use crate::trading::{self, events, reading};
 use crate::ui::pane::ChartPane;
 
 /// How many events are kept for a token to be answered from.
@@ -415,12 +414,11 @@ impl Window {
     }
 
     /// The positions were marked to a new price: say each account's P&L
-    /// as often as a stream asks, and hold its daily limits.
+    /// as often as a stream asks.
     pub(super) fn agent_heard_pnl(self: &Rc<Self>) {
         if !crate::features::agent_trading() {
             return;
         }
-        self.hold_daily_limits();
         let every = self
             .agent
             .listeners
@@ -449,31 +447,6 @@ impl Window {
         }
         for (key, day, open) in moved {
             self.agent_event(events::pnl_event(&key, day, open));
-        }
-    }
-
-    /// An account whose day's P&L has reached its daily profit or loss
-    /// limit takes no new entries for the rest of the trading day: noted
-    /// once, said in the Log and to every agent listening.
-    fn hold_daily_limits(self: &Rc<Self>) {
-        let today = limits::trading_day(chrono::Utc::now());
-        let accounts: Vec<(String, f64)> =
-            self.trading.borrow().book.accounts.iter().filter_map(|money| Some((money.key.clone(), money.day_pnl?))).collect();
-        for (key, pnl) in accounts {
-            let caps = limits::holding(&self.store, &key);
-            let Some(limit) = limits::reached(&caps, pnl) else {
-                continue;
-            };
-            if limits::hit_on(&self.store, &key, today).is_some() {
-                continue;
-            }
-            limits::note_hit(&self.store, &key, &limits::Hit { day: today, limit: limit.into(), pnl });
-            let name = self.account_label(&key);
-            self.say(crate::log_words::note(
-                &name,
-                format!("The {} limit is reached · no new entries until the next trading day", limit.replace('-', " ")),
-            ));
-            self.agent_event(json!({"ev": "limit", "acct": events::number(&key), "limit": limit, "pnl": (pnl * 100.0).round() / 100.0}));
         }
     }
 
@@ -691,9 +664,6 @@ impl Window {
         let last = target.as_ref().and_then(|target| self.market_price(pane, target)).or_else(|| pane.view.last_price());
         let money = key.as_deref().and_then(|key| view.book.money(key)).cloned();
         let money = money.as_ref();
-        let today = limits::trading_day(chrono::Utc::now());
-        let caps = key.as_deref().map(|key| limits::holding(&self.store, key)).unwrap_or_default();
-        let hit = key.as_deref().and_then(|key| limits::hit_on(&self.store, key, today));
         let held = match (&key, &contract) {
             (Some(key), Some(contract)) => view.book.position(key, contract).cloned(),
             _ => None,
@@ -721,7 +691,6 @@ impl Window {
                         "bal": money.and_then(|money| money.balance),
                         "day": day,
                         "open": money.and_then(|money| money.unrealized),
-                        "lim": limits_json(&caps, day, hit.as_ref()),
                     })),
                     "pos": held.as_ref().map(|held| json!({"net": held.net, "avg": p(held.avg), "open": held.open_pnl})),
                     "ord": working.iter().map(|order| json!([order.basket_id, side_letter(order.side), order.qty, kind_word(order.kind), p(order.price)])).collect::<Vec<_>>(),
@@ -750,10 +719,6 @@ impl Window {
                     events::signed(day.unwrap_or(0.0)),
                     events::signed(money.and_then(|money| money.unrealized).unwrap_or(0.0))
                 ));
-                let limits = limits_text(&caps, day, hit.as_ref());
-                if !limits.is_empty() {
-                    line.push_str(&format!(" | {limits}"));
-                }
                 out.push_str(&line);
                 out.push('\n');
             }
@@ -808,51 +773,6 @@ impl Window {
         }
         out
     }
-
-    /// Why the account's own limits refuse an order of `qty` on `side`
-    /// from `target`, risking `stop_points` a contract to its stop, sent
-    /// as a `bracket` with its exits or not; none when they let it go, and
-    /// always none with the flag off.
-    pub(super) fn limits_refuse(
-        &self,
-        target: &trading::Target,
-        side: trading::Side,
-        qty: u32,
-        stop_points: Option<f64>,
-        bracket: bool,
-    ) -> Option<String> {
-        if !crate::features::agent_trading() {
-            return None;
-        }
-        let key = target.account.key();
-        let today = limits::trading_day(chrono::Utc::now());
-        let caps = limits::holding(&self.store, &key);
-        let hit = limits::hit_on(&self.store, &key, today);
-        if caps.is_empty() && hit.is_none() {
-            return None;
-        }
-        let view = self.trading.borrow();
-        let held = view.book.position(&key, &target.contract);
-        let point =
-            held.and_then(|held| held.point).or_else(|| omacharts_engine::specs::point(omacharts_engine::specs::root_of(&target.contract)));
-        let signed = match side {
-            trading::Side::Buy => qty as i32,
-            trading::Side::Sell => -(qty as i32),
-        };
-        let entry = limits::Entry {
-            qty,
-            held: held.map_or(0, |held| held.net),
-            signed,
-            risk: stop_points.zip(point).map(|(points, point)| points * point * f64::from(qty)),
-            bracket,
-        };
-        let pnl = view.book.money(&key).and_then(|money| money.day_pnl);
-        let refused = limits::refuse(&caps, hit.as_ref(), pnl, &entry);
-        if refused.is_some() && stop_points.is_some() && point.is_none() && caps.max_risk.is_some() {
-            return Some(format!("what a point of {} is worth is not known, so its risk cannot be counted", target.contract));
-        }
-        refused
-    }
 }
 
 /// Whether `event` came from the book: an order's or a position's.
@@ -881,54 +801,6 @@ fn kind_word(kind: trading::OrderKind) -> &'static str {
         trading::OrderKind::Limit => "lmt",
         trading::OrderKind::Stop => "stp",
     }
-}
-
-/// The limits, and how far the day's P&L is from each daily one.
-fn limits_text(caps: &limits::Caps, day: Option<f64>, hit: Option<&limits::Hit>) -> String {
-    let mut parts = Vec::new();
-    let day = day.unwrap_or(0.0);
-    if let Some(loss) = caps.daily_loss {
-        parts.push(format!("loss {} ({} left)", reading::num(loss, 2), reading::num((loss + day).max(0.0), 2)));
-    }
-    if let Some(profit) = caps.daily_profit {
-        parts.push(format!("profit {} ({} to go)", reading::num(profit, 2), reading::num((profit - day).max(0.0), 2)));
-    }
-    if let Some(qty) = caps.max_qty {
-        parts.push(format!("qty {qty}"));
-    }
-    if let Some(risk) = caps.max_risk {
-        parts.push(format!("risk {}", reading::num(risk, 2)));
-    }
-    if let Some(hit) = hit {
-        parts.push(format!("{} REACHED: entries refused", hit.limit));
-    }
-    match parts.is_empty() {
-        true => String::new(),
-        false => format!("lim {}", parts.join(" ")),
-    }
-}
-
-/// The account's limits and how near they are, only those it has: null
-/// for an account with none.
-fn limits_json(caps: &limits::Caps, day: Option<f64>, hit: Option<&limits::Hit>) -> Value {
-    if caps.is_empty() && hit.is_none() {
-        return Value::Null;
-    }
-    let day = day.unwrap_or(0.0);
-    let mut lim = serde_json::Map::new();
-    let mut put = |key: &str, value: Value| {
-        if !value.is_null() {
-            lim.insert(key.into(), value);
-        }
-    };
-    put("loss", json!(caps.daily_loss));
-    put("loss_left", json!(caps.daily_loss.map(|loss| ((loss + day).max(0.0) * 100.0).round() / 100.0)));
-    put("profit", json!(caps.daily_profit));
-    put("profit_left", json!(caps.daily_profit.map(|profit| ((profit - day).max(0.0) * 100.0).round() / 100.0)));
-    put("qty", json!(caps.max_qty));
-    put("risk", json!(caps.max_risk));
-    put("hit", json!(hit.map(|hit| hit.limit.clone())));
-    Value::Object(lim)
 }
 
 #[cfg(test)]
@@ -1027,79 +899,6 @@ mod tests {
                 session.links.lock().unwrap().iter().any(|group| group.contains(&target.basket_id) && group.contains(&stop.basket_id)),
                 "not linked"
             );
-        });
-    }
-
-    /// The account's own limits refuse an entry, with exit code 5 and the
-    /// reason; closing is always allowed; once the day's loss is reached
-    /// nothing new goes in for the rest of the day.
-    #[test]
-    fn the_account_s_limits_refuse_entries_and_never_exits() {
-        crate::ui::on_gtk(|| {
-            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
-            assert!(settle(&window, || pane.view.last_price().is_some()));
-            agents_on();
-            let (code, out) = command(&window, &format!("trading limits set {key} --max-qty 1 --max-risk 150 --daily-loss 1000"));
-            assert_eq!(code, 0, "{out}");
-
-            let (code, why) = command(&window, "trading buy --stop-loss -1");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
-            assert!(why.contains("hold 2 contracts"), "{why}");
-
-            // Closing the one held is no entry.
-            let (code, out) = command(&window, "trading sell");
-            assert_eq!(code, 0, "{out}");
-            assert!(settle(&window, || window.trading.borrow().book.positions.iter().all(|held| held.net == 0)
-                && !window.trade.placing.busy(&key)));
-
-            let (code, why) = command(&window, "trading buy");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
-            assert!(why.contains("needs a stop-loss"), "{why}");
-            let (code, why) = command(&window, "trading buy --stop-loss -4");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "4 points of ES is $200: {why}");
-            assert!(why.contains("$200.00"), "{why}");
-            let (code, out) = command(&window, "trading buy --stop-loss -2");
-            assert_eq!(code, 0, "$100 is inside it: {out}");
-            assert!(settle(&window, || working(&session).len() == 1 && !window.trade.placing.busy(&key)));
-
-            // The day's loss reached: noted, and no entry goes in after it.
-            session.book.lock().unwrap().accounts =
-                vec![trading::Money { key: "951".into(), day_pnl: Some(-1250.0), ..Default::default() }];
-            let today = limits::trading_day(chrono::Utc::now());
-            assert!(settle(&window, || limits::hit_on(&window.store, &key, today).is_some()), "not noted");
-            let (code, why) = command(&window, "trading buy --stop-loss -1");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
-            assert!(why.contains("daily loss"), "{why}");
-            // A close sent with exits is no close: either exit opens one.
-            let (code, why) = command(&window, "trading sell --stop-loss +1");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
-            // Tightened, it is still reached.
-            let (code, out) = command(&window, &format!("trading limits set {key} --daily-loss 900"));
-            assert_eq!(code, 0, "{out}");
-            assert!(limits::hit_on(&window.store, &key, today).is_some(), "lifted by a tighter limit");
-            // Raised past the day's P&L, it no longer stops entries, at once:
-            // what refuses this one is the quantity.
-            let (code, out) = command(&window, &format!("trading limits set {key} --daily-loss 2000"));
-            assert_eq!(code, 0, "{out}");
-            assert!(limits::hit_on(&window.store, &key, today).is_none(), "still reached");
-            let (code, why) = command(&window, "trading buy --stop-loss -1");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
-            assert!(why.contains("hold 2"), "{why}");
-            // Lowered back under it, it is reached again.
-            let (code, out) = command(&window, &format!("trading limits set {key} --daily-loss 1000"));
-            assert_eq!(code, 0, "{out}");
-            let (code, why) = command(&window, "trading buy --stop-loss -1");
-            assert!(why.contains("daily loss"), "{code} {why}");
-            // Closing still goes.
-            let (code, out) = command(&window, "trading sell");
-            assert_eq!(code, 0, "{out}");
-            assert!(settle(&window, || window.trading.borrow().book.positions.iter().all(|held| held.net == 0)
-                && !window.trade.placing.busy(&key)));
-            // Cleared, everything goes at once.
-            let (code, out) = command(&window, &format!("trading limits clear {key}"));
-            assert_eq!(code, 0, "{out}");
-            let (code, out) = command(&window, "trading buy --quantity 2");
-            assert_eq!(code, 0, "{out}");
         });
     }
 

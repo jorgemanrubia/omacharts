@@ -122,8 +122,7 @@ impl Window {
         match act {
             Act::Order { chart, side, kind, price, quantity, exits } => {
                 let pane = self.chart_to_trade(chart)?;
-                // Any quantity, not only those the chart's Qty offers: the
-                // account's own limits are what hold it.
+                // Any quantity, not only those the chart's Qty offers.
                 let size = quantity.and_then(trading::Quantity::new);
                 self.heard_doing(|| {
                     self.order_with_exits(&pane, side, kind, None, price, size, exits)

@@ -339,6 +339,184 @@ impl Profile {
     }
 }
 
+/// A high- or low-volume node of a profile: a shelf the volume piles up on,
+/// or the thin stretch between two of them.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Node {
+    /// The row at the node's heart: the highest of a high-volume node, the
+    /// lowest of a low-volume one.
+    pub row: usize,
+    /// The rows it spans, inclusive: as far either way as the volume stays
+    /// within half its strength of the heart's.
+    pub rows: (usize, usize),
+    /// The volume a row there holds, smoothed as the nodes were found.
+    pub volume: f64,
+    /// How far it stands out, as a share of the point of control's smoothed
+    /// volume: a high-volume node's height over the ground around it, a
+    /// low-volume node's depth under the lower of its two neighbours.
+    pub strength: f64,
+}
+
+/// A profile's high-volume nodes and the low-volume ones between them, each
+/// lowest price first. See [`Profile::nodes`].
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Nodes {
+    pub high: Vec<Node>,
+    pub low: Vec<Node>,
+}
+
+/// How many rows either side a row is averaged with before nodes are looked
+/// for, as a share of the profile's rows: a fortieth, so a profile of a tick
+/// a row and one of thirty rows are smoothed over the same share of their
+/// height, about five per cent, and a lone busy tick is not a node. Never
+/// less than one row.
+const NODE_SMOOTHING: f64 = 1.0 / 40.0;
+
+/// How far a peak must stand above the ground around it to be a high-volume
+/// node, as a share of the point of control's smoothed volume. A tenth keeps
+/// the shelves a trader reads off a session and drops the ripples left on a
+/// profile drawn a tick a row once it is smoothed.
+pub const NODE_PROMINENCE: f64 = 0.10;
+
+impl Profile {
+    /// The high-volume nodes and the low-volume nodes between them, found
+    /// the same way every time:
+    ///
+    /// 1. Each row's volume is averaged with the rows within
+    ///    [`NODE_SMOOTHING`] of the profile's height either way.
+    /// 2. A high-volume node is a peak of those, a row or a run of equal
+    ///    rows with less on both sides, or on its one side at the profile's
+    ///    edge, whose prominence — its height over the higher of the lowest
+    ///    points between it and anything higher on each side — is at least
+    ///    [`NODE_PROMINENCE`] of the highest. A profile flat throughout has
+    ///    none.
+    /// 3. A low-volume node is the lowest point between two neighbouring
+    ///    high-volume nodes, so there is always one fewer of them.
+    ///
+    /// A delta profile is read by the size of its rows, either way.
+    pub fn nodes(&self) -> Nodes {
+        let volume: Vec<f64> = self.rows.iter().map(|row| row.volume.abs()).collect();
+        find_nodes(&smooth(&volume))
+    }
+}
+
+/// `volume` averaged over a window [`NODE_SMOOTHING`] of its length either
+/// way, cut short at the ends.
+fn smooth(volume: &[f64]) -> Vec<f64> {
+    let reach = ((volume.len() as f64 * NODE_SMOOTHING).round() as usize).max(1);
+    (0..volume.len())
+        .map(|at| {
+            let window = &volume[at.saturating_sub(reach)..(at + reach + 1).min(volume.len())];
+            window.iter().sum::<f64>() / window.len() as f64
+        })
+        .collect()
+}
+
+/// Rows told apart by less than this share of the point of control's
+/// volume are level. Spreading a bar over its rows leaves noise in the last
+/// places of a float, and without this a shelf of equal rows reads as a
+/// peak with no prominence beside a row a hair lower.
+const LEVEL: f64 = 1e-6;
+
+fn find_nodes(smoothed: &[f64]) -> Nodes {
+    let top = smoothed.iter().copied().fold(0.0, f64::max);
+    let count = smoothed.len();
+    if count < 3 || top <= 0.0 {
+        return Nodes::default();
+    }
+    // In steps of LEVEL, the point of control's being one.
+    let level: Vec<f64> = smoothed.iter().map(|volume| (volume / top / LEVEL).round() * LEVEL).collect();
+    let level = level.as_slice();
+    let top = 1.0;
+    // Peaks, a run of equal rows counting once at its middle.
+    let mut peaks = Vec::new();
+    let mut start = 0;
+    while start < count {
+        let mut end = start;
+        while end + 1 < count && level[end + 1] == level[start] {
+            end += 1;
+        }
+        let lower_before = start == 0 || level[start - 1] < level[start];
+        let lower_after = end + 1 == count || level[end + 1] < level[start];
+        if lower_before && lower_after && !(start == 0 && end + 1 == count) {
+            let at = (start + end) / 2;
+            let prominence = prominence(level, start, end);
+            if prominence >= NODE_PROMINENCE * top {
+                peaks.push((at, prominence));
+            }
+        }
+        start = end + 1;
+    }
+    let mut valleys = Vec::new();
+    for pair in peaks.windows(2) {
+        let (left, right) = (pair[0].0, pair[1].0);
+        let floor = level[left..=right].iter().copied().fold(f64::INFINITY, f64::min);
+        let first = (left..=right).find(|&at| level[at] == floor).unwrap_or(left);
+        let last = (left..=right).rev().find(|&at| level[at] == floor).unwrap_or(right);
+        let depth = level[left].min(level[right]) - floor;
+        valleys.push(((first + last) / 2, depth, left, right));
+    }
+    let high = peaks
+        .iter()
+        .enumerate()
+        .map(|(n, &(at, prominence))| {
+            // Bounded by the valleys either side, so two nodes never share a row.
+            let from = n.checked_sub(1).map_or(0, |v| valleys[v].0 + 1);
+            let to = valleys.get(n).map_or(count - 1, |v| v.0.saturating_sub(1).max(at));
+            let floor = level[at] - prominence / 2.0;
+            let mut low = at;
+            while low > from && level[low - 1] >= floor {
+                low -= 1;
+            }
+            let mut high = at;
+            while high < to && level[high + 1] >= floor {
+                high += 1;
+            }
+            Node { row: at, rows: (low, high), volume: smoothed[at], strength: prominence / top }
+        })
+        .collect();
+    let low = valleys
+        .iter()
+        .map(|&(at, depth, left, right)| {
+            let ceiling = level[at] + depth / 2.0;
+            let mut low = at;
+            while low > left + 1 && level[low - 1] <= ceiling {
+                low -= 1;
+            }
+            let mut high = at;
+            while high + 1 < right && level[high + 1] <= ceiling {
+                high += 1;
+            }
+            Node { row: at, rows: (low, high), volume: smoothed[at], strength: depth / top }
+        })
+        .collect();
+    Nodes { high, low }
+}
+
+/// How far the run of equal rows `start..=end` stands over its ground: its
+/// height less the higher of the lowest points on each side before a higher
+/// row or the profile's edge. A side with no rows at all is no ground.
+fn prominence(level: &[f64], start: usize, end: usize) -> f64 {
+    let height = level[start];
+    let ground = |rows: &mut dyn Iterator<Item = usize>| {
+        let mut floor: Option<f64> = None;
+        for at in rows {
+            if level[at] > height {
+                break;
+            }
+            floor = Some(floor.map_or(level[at], |floor: f64| floor.min(level[at])));
+        }
+        floor
+    };
+    let before = ground(&mut (0..start).rev());
+    let after = ground(&mut (end + 1..level.len()));
+    match (before, after) {
+        (Some(a), Some(b)) => height - a.max(b),
+        (Some(a), None) | (None, Some(a)) => height - a,
+        (None, None) => 0.0,
+    }
+}
+
 /// The fewest and most rows a period is ever divided into.
 ///
 /// The floor keeps a motionless period from collapsing to a single block; the
@@ -925,6 +1103,88 @@ fn expand_value_area(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A profile of these row volumes, a dollar a row from 100.
+    fn shaped(volumes: &[f64]) -> Profile {
+        let rows: Vec<ProfileRow> = volumes
+            .iter()
+            .enumerate()
+            .map(|(at, &volume)| ProfileRow { low: 100.0 + at as f64, high: 101.0 + at as f64, volume })
+            .collect();
+        let poc = (0..rows.len()).fold(0, |best, at| if rows[at].volume > rows[best].volume { at } else { best });
+        Profile {
+            start_ts: 0,
+            parts: vec![0],
+            end_ts: 0,
+            first_bar: 0,
+            last_bar: 0,
+            max_volume: rows[poc].volume,
+            total_volume: volumes.iter().sum(),
+            poc,
+            value_area: (poc, poc),
+            rows,
+        }
+    }
+
+    /// A bell of `width` rows around `centre`, `height` tall, over `rows`.
+    fn bell(rows: usize, centre: f64, width: f64, height: f64) -> Vec<f64> {
+        (0..rows).map(|at| height * (-((at as f64 - centre) / width).powi(2)).exp()).collect()
+    }
+
+    #[test]
+    fn a_single_bell_has_one_high_volume_node_and_no_low() {
+        let nodes = shaped(&bell(40, 20.0, 5.0, 1000.0)).nodes();
+        assert_eq!(nodes.high.len(), 1, "{nodes:?}");
+        assert!(nodes.low.is_empty());
+        let node = &nodes.high[0];
+        assert_eq!(node.row, 20);
+        assert!(node.rows.0 < 20 && node.rows.1 > 20, "a node spans its shelf: {:?}", node.rows);
+        assert!(node.strength > 0.99, "the only peak stands nearly its whole height: {}", node.strength);
+    }
+
+    #[test]
+    fn two_bells_have_a_low_volume_node_between_them() {
+        let big = bell(60, 15.0, 4.0, 1000.0);
+        let small = bell(60, 45.0, 4.0, 600.0);
+        let volumes: Vec<f64> = big.iter().zip(&small).map(|(a, b)| a + b + 20.0).collect();
+        let nodes = shaped(&volumes).nodes();
+        let rows: Vec<usize> = nodes.high.iter().map(|node| node.row).collect();
+        assert_eq!(rows, vec![15, 45], "lowest price first: {nodes:?}");
+        assert_eq!(nodes.low.len(), 1);
+        let valley = &nodes.low[0];
+        assert!((25..=35).contains(&valley.row), "the valley is between them: {}", valley.row);
+        assert!(valley.rows.0 > 15 && valley.rows.1 < 45);
+        assert!(nodes.high[0].strength > nodes.high[1].strength, "the bigger shelf is the stronger");
+        assert!(valley.strength > 0.5, "the valley sinks most of the smaller shelf's height: {}", valley.strength);
+    }
+
+    #[test]
+    fn a_flat_profile_has_no_nodes() {
+        assert_eq!(shaped(&[500.0; 30]).nodes(), Nodes::default());
+        assert_eq!(shaped(&[0.0; 30]).nodes(), Nodes::default());
+    }
+
+    #[test]
+    fn a_ripple_is_not_a_node() {
+        // A bell with every other row a little busier: the noise of a
+        // profile drawn a tick a row.
+        let volumes: Vec<f64> = bell(80, 40.0, 10.0, 1000.0)
+            .iter()
+            .enumerate()
+            .map(|(at, v)| v + if at % 2 == 0 { 40.0 } else { 0.0 })
+            .collect();
+        let nodes = shaped(&volumes).nodes();
+        assert_eq!(nodes.high.len(), 1, "{nodes:?}");
+        assert!(nodes.low.is_empty());
+    }
+
+    #[test]
+    fn a_peak_at_the_edge_is_a_node() {
+        let volumes: Vec<f64> = (0..30).map(|at| at as f64 * 10.0).collect();
+        let nodes = shaped(&volumes).nodes();
+        assert_eq!(nodes.high.len(), 1);
+        assert_eq!(nodes.high[0].row, 29);
+    }
 
     const DAY: i64 = 86_400;
 
