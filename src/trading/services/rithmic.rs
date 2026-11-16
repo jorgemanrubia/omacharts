@@ -533,24 +533,19 @@ impl Session for RithmicSession {
     }
 
     fn place(&self, order: &OrderRequest) -> Result<String, Failure> {
-        let placed = rithmic::Order {
-            account: order.account.clone(),
-            contract: order.contract.clone(),
-            exchange: order.exchange.clone(),
-            side: match order.side {
-                Side::Buy => rithmic::Side::Buy,
-                Side::Sell => rithmic::Side::Sell,
-            },
-            qty: order.qty,
-            kind: match order.kind {
-                OrderKind::Market => rithmic::Kind::Market,
-                OrderKind::Limit => rithmic::Kind::Limit,
-                OrderKind::Stop => rithmic::Kind::Stop,
-            },
-            price: order.price,
-            tag: order.tag.clone(),
-        };
-        self.trading.place(&placed).map_err(failed)
+        self.trading.place(&rithmic_order(order)).map_err(failed)
+    }
+
+    /// Rithmic's own bracket order: the exits are its to put in as the
+    /// entry fills, linked.
+    fn place_bracket(
+        &self,
+        order: &OrderRequest,
+        exits: &crate::trading::brackets::Exits,
+    ) -> Result<String, Failure> {
+        self.trading
+            .place_bracket(&rithmic_order(order), exits.target, exits.stop)
+            .map_err(failed)
     }
 
     fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure> {
@@ -584,6 +579,27 @@ impl Session for RithmicSession {
     fn sign_out(&self) {
         self.alive.store(false, Ordering::Release);
         self.trading.sign_out();
+    }
+}
+
+/// An order as Rithmic's crate takes it.
+fn rithmic_order(order: &OrderRequest) -> rithmic::Order {
+    rithmic::Order {
+        account: order.account.clone(),
+        contract: order.contract.clone(),
+        exchange: order.exchange.clone(),
+        side: match order.side {
+            Side::Buy => rithmic::Side::Buy,
+            Side::Sell => rithmic::Side::Sell,
+        },
+        qty: order.qty,
+        kind: match order.kind {
+            OrderKind::Market => rithmic::Kind::Market,
+            OrderKind::Limit => rithmic::Kind::Limit,
+            OrderKind::Stop => rithmic::Kind::Stop,
+        },
+        price: order.price,
+        tag: order.tag.clone(),
     }
 }
 

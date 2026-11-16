@@ -120,7 +120,15 @@ fn build(only: Option<&str>) -> Command {
         }
         group = group.subcommand_required(true).arg_required_else_help(true);
         for verb in noun.verbs {
-            group = group.subcommand(build_verb(verb));
+            let mut cmd = build_verb(verb);
+            // Accepted, never listed: see [`spec::HIDDEN_FLAGS`].
+            for (_, _, flag) in spec::HIDDEN_FLAGS
+                .iter()
+                .filter(|(n, v, _)| *n == noun.name && *v == verb.name)
+            {
+                cmd = cmd.arg(flag_arg(flag).hide(true));
+            }
+            group = group.subcommand(cmd);
         }
         // Accepted, never listed: see [`spec::HIDDEN_VERBS`].
         for (_, verb) in spec::HIDDEN_VERBS.iter().filter(|(named, _)| *named == noun.name) {
@@ -161,25 +169,30 @@ fn build_verb(verb: &'static spec::Verb) -> Command {
         cmd = cmd.arg(a);
     }
     for flag in verb.flags {
-        let mut a = Arg::new(flag.long).long(flag.long).help(flag.help);
-        match flag.value {
-            None => a = a.action(ArgAction::SetTrue),
-            // A number may be negative: a chart's own drawings are numbered
-            // below zero, and `--id -1` has to reach the arm as a value.
-            Some(name) => a = a.value_name(name).num_args(1).allow_negative_numbers(true),
-        }
-        if flag.many {
-            a = a.action(ArgAction::Append);
-        }
-        if !flag.values.is_empty() {
-            a = a.value_parser(flag.values.to_vec());
-        }
-        cmd = cmd.arg(a);
+        cmd = cmd.arg(flag_arg(flag));
     }
     if verb.json {
         cmd = cmd.arg(json_flag());
     }
     cmd
+}
+
+fn flag_arg(flag: &'static spec::Flag) -> Arg {
+    let mut a = Arg::new(flag.long).long(flag.long).help(flag.help);
+    match flag.value {
+        None => a = a.action(ArgAction::SetTrue),
+        // A number may be negative: a chart's own drawings are numbered
+        // below zero, and `--id -1` has to reach the arm as a value; and a
+        // bracket's stop is `-4` points from the fill.
+        Some(name) => a = a.value_name(name).num_args(1).allow_negative_numbers(true),
+    }
+    if flag.many {
+        a = a.action(ArgAction::Append);
+    }
+    if !flag.values.is_empty() {
+        a = a.value_parser(flag.values.to_vec());
+    }
+    a
 }
 
 fn json_flag() -> Arg {

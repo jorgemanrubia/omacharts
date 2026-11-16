@@ -58,6 +58,7 @@ mod trade;
 mod trade_cli;
 mod updates;
 mod about;
+mod agent;
 use trade::Trade;
 
 /// A real window on `store`, charting the synthetic feed with its clock
@@ -75,11 +76,6 @@ pub(crate) fn test_window(store: &Rc<Store>) -> Rc<Window> {
 /// A minute is below anyone's patience for a dash filling in and far above the
 /// cost of the `coverage` queries it takes to find out there is nothing to do.
 const BACKFILL_POLL_SECONDS: u32 = 60;
-
-/// How far before its first bar a stitched chart scrolled back reads at a
-/// time: a quarter's month and some, intraday; five years, daily.
-const OLDER_INTRADAY_DAYS: i64 = 100;
-const OLDER_DAILY_DAYS: i64 = 5 * 365;
 
 /// Most batches of closes one rail refresh sends: two hundred rows at
 /// Yahoo's twenty a request. Not a budget — the loader paces them like any
@@ -1808,6 +1804,181 @@ mod strip_window_tests {
 }
 
 #[cfg(test)]
+mod scroll_back_tests {
+    use super::*;
+    use omacharts_engine::continuous::{Adjustment, Continuity};
+    use omacharts_engine::provider::{Capability, Sink, Stream, Subscription, Update};
+    use std::sync::Mutex;
+
+    const NOW: i64 = 1_794_438_900;
+
+    /// A feed with its own continuous series of a root, as Rithmic's is,
+    /// that streams and holds history back to `floor`: its first load is
+    /// three hundred bars, and a scroll back reads two hundred more at a
+    /// time, or nothing with no `reach`.
+    struct Deep {
+        floor: i64,
+        reach: bool,
+        asked: Mutex<Vec<(Timeframe, i64, i64, usize)>>,
+    }
+
+    fn series(timeframe: Timeframe, from: i64, until: i64) -> Vec<omacharts_engine::Bar> {
+        let step = timeframe.seconds();
+        let first = from.div_euclid(step) * step + if from.rem_euclid(step) == 0 { 0 } else { step };
+        (0..)
+            .map(|n| first + n * step)
+            .take_while(|ts| *ts < until)
+            .map(|ts| {
+                let price = 100.0 + (ts / step % 50) as f64;
+                omacharts_engine::Bar { ts, open: price, high: price + 1.0, low: price - 1.0, close: price, volume: 10.0 }
+            })
+            .collect()
+    }
+
+    impl Provider for Deep {
+        fn id(&self) -> &'static str {
+            "deep"
+        }
+        fn label(&self) -> &'static str {
+            "Deep"
+        }
+        fn delay_minutes(&self, _: omacharts_engine::InstrumentKind) -> u32 {
+            0
+        }
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
+            (instrument.kind == omacharts_engine::InstrumentKind::FutureRoot).then(|| instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            omacharts_engine::providers::Synthetic::frozen(NOW).capabilities()
+        }
+        fn continuity(&self) -> Continuity {
+            Continuity::native(&[Adjustment::AsTraded])
+        }
+        fn bars(&self, _: &str, timeframe: Timeframe, since: Option<i64>) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
+            let step = timeframe.seconds();
+            Ok(series(timeframe, since.unwrap_or(NOW - 300 * step).max(self.floor), NOW + 1))
+        }
+        fn bars_between(&self, _: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
+            let bars = series(timeframe, since.max(self.floor), until);
+            self.asked.lock().unwrap().push((timeframe, since, until, bars.len()));
+            Ok(bars)
+        }
+        fn reaches_back(&self, _: &str, timeframe: Timeframe) -> Option<i64> {
+            self.reach.then(|| 200 * timeframe.seconds())
+        }
+        fn stream(&self) -> Option<&dyn Stream> {
+            Some(self)
+        }
+    }
+
+    impl Stream for Deep {
+        fn subscribe(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>, sink: Sink) -> Result<Box<dyn Subscription>, omacharts_engine::ProviderError> {
+            sink(Update::Snapshot(self.bars(symbol, timeframe, since)?));
+            struct Done;
+            impl Subscription for Done {}
+            Ok(Box::new(Done))
+        }
+    }
+
+    fn settle(done: impl Fn() -> bool) -> bool {
+        settle_for(400, done)
+    }
+
+    /// The same, `turns` turns of the loop at most.
+    fn settle_for(turns: usize, done: impl Fn() -> bool) -> bool {
+        let context = glib::MainContext::default();
+        for _ in 0..turns {
+            if done() {
+                return true;
+            }
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        done()
+    }
+
+    /// Every resolution, the ones the feed serves and the ones folded from
+    /// them, scrolls back on a feed of its own continuous series: each time
+    /// the chart reaches its first bar, the stretch before the native
+    /// series' first bar is read, only that, and comes in under the chart
+    /// and into the store, until the feed has nothing older, when it stops.
+    #[test]
+    fn every_resolution_scrolls_back_on_a_feed_with_more_history() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let resolutions = ["1m", "2m", "3m", "5m", "10m", "15m", "30m", "90m", "1h", "2h", "4h", "1D", "1W", "1M"];
+            for label in resolutions {
+                let timeframe = Timeframe::parse(label).expect("a resolution");
+                let native = timeframe.native();
+                let step = native.seconds();
+                let floor = (NOW - 650 * step).div_euclid(step) * step;
+                let deep = Arc::new(Deep { floor, reach: true, asked: Mutex::new(Vec::new()) });
+                let store = Rc::new(Store::memory().expect("a store"));
+                let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+                let window = Window::build_with(&app, store.clone(), vec![deep.clone() as Arc<dyn Provider>]);
+                let pane = window.focused_pane();
+                pane.timeframe.set(timeframe);
+                let es = window.index.find("ES", None).expect("ES");
+                window.show_in(&pane, es);
+                let key = pane.served.borrow().clone().expect("served");
+                assert_eq!(key, "deep:ES", "{label}: its own series");
+                let feed = window.feed_of(&key).expect("a feed");
+                let first = || window.first_native(&feed, &key, native);
+                assert!(settle(|| first().is_some()), "{label}: the first load never came");
+                let loaded = first().unwrap();
+
+                let mut at = loaded;
+                for _ in 0..5 {
+                    let shown = pane.view.with_bars(|bars| bars.first().map(|bar| bar.ts)).expect("bars on the chart");
+                    let asked = deep.asked.lock().unwrap().len();
+                    window.fill_older(pane.id, shown);
+                    settle(|| deep.asked.lock().unwrap().len() > asked);
+                    // What came back is put under the chart on the window's
+                    // thread, a turn or two after it was read.
+                    settle_for(40, || first() != Some(at));
+                    let now = first().unwrap();
+                    let (_, since, until, _) = *deep.asked.lock().unwrap().last().expect("asked");
+                    assert_eq!(deep.asked.lock().unwrap().len(), asked + 1, "{label}: asked once");
+                    assert_eq!(until, at, "{label}: nothing the chart holds is read again");
+                    assert_eq!(since, at - 200 * step, "{label}");
+                    if now == at {
+                        break;
+                    }
+                    assert!(now < at, "{label}: older bars came in");
+                    assert_eq!(store.coverage(&key, native).map(|c| c.first_ts), Some(now), "{label}: and are kept");
+                    let shown_now = pane.view.with_bars(|bars| bars.first().map(|bar| bar.ts)).unwrap();
+                    assert!(shown_now < shown, "{label}: and are on the chart");
+                    at = now;
+                }
+                assert_eq!(at, floor, "{label}: as far back as the feed goes");
+                let (.., last) = *deep.asked.lock().unwrap().last().unwrap();
+                assert_eq!(last, 0, "{label}: and the last ask brought nothing, so it stops");
+            }
+        });
+    }
+
+    /// A feed with nothing more than its first load took is never asked.
+    #[test]
+    fn a_feed_with_nothing_older_is_never_asked() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let deep = Arc::new(Deep { floor: 0, reach: false, asked: Mutex::new(Vec::new()) });
+            let store = Rc::new(Store::memory().expect("a store"));
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build_with(&app, store, vec![deep.clone() as Arc<dyn Provider>]);
+            let pane = window.focused_pane();
+            pane.timeframe.set(Timeframe::hours(4));
+            window.show_in(&pane, window.index.find("ES", None).expect("ES"));
+            assert!(settle(|| pane.view.with_bars(|bars| !bars.is_empty())));
+            let shown = pane.view.with_bars(|bars| bars[0].ts);
+            window.fill_older(pane.id, shown);
+            settle_for(40, || false);
+            assert!(deep.asked.lock().unwrap().is_empty());
+        });
+    }
+}
+
+#[cfg(test)]
 mod legend_switch_tests {
     use super::*;
     use crate::ui::window::trade::tests::window;
@@ -1914,6 +2085,110 @@ mod legend_switch_tests {
             window.change_chart_setting(ChartSetting::Legend(false), true, || {});
             assert!(!window.shows_legend(), "the chart on screen");
             assert!(!window.books.borrow()[1].panes[0].shows_legend, "the book written down");
+        });
+    }
+}
+
+#[cfg(test)]
+mod indicator_menu_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+    use omacharts_engine::IndicatorKind;
+
+    /// Each section of a menu, as the label and action of every item in it.
+    fn sections(menu: &gio::Menu) -> Vec<Vec<(String, String)>> {
+        let text = |model: &gio::MenuModel, at, name| {
+            model.item_attribute_value(at, name, Some(glib::VariantTy::STRING)).and_then(|v| v.get::<String>()).unwrap_or_default()
+        };
+        (0..menu.n_items())
+            .filter_map(|at| menu.item_link(at, "section"))
+            .map(|section| (0..section.n_items()).map(|at| (text(&section, at, "label"), text(&section, at, "action"))).collect())
+            .collect()
+    }
+
+    fn shown(pane: &ChartPane, id: u32) -> bool {
+        pane.indicators.borrow().iter().find(|i| i.id == id).expect("the indicator").visible
+    }
+
+    /// Hide is the last of the menu's main rows, right above Properties, and
+    /// on a hidden indicator it is Show: the legend eye's words, doing what
+    /// the eye does.
+    #[test]
+    fn the_indicator_menu_hides_an_indicator_and_shows_it_again() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            window.set_indicators_of(&pane, vec![Indicator::new(1, IndicatorKind::Sma), Indicator::new(2, IndicatorKind::Rsi)]);
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's actions");
+
+            for (id, before) in [(1, true), (2, true)] {
+                let (menu, _) = window.indicator_menu_model(id, None);
+                let all = sections(&menu);
+                let [.., main, properties] = all.as_slice() else { panic!("two sections at least: {all:?}") };
+                let words = if before { "Hide" } else { "Show" };
+                assert_eq!(main.last(), Some(&(words.to_string(), "chart.indicator-shown".to_string())), "{id}: {main:?}");
+                assert_eq!(main[main.len() - 2].0, "Remove", "right below Remove");
+                assert_eq!(properties[0].0, "Properties…", "and right above the separator");
+
+                actions.activate_action("indicator-shown", None);
+                assert!(!shown(&pane, id), "{id} hidden");
+                assert!(shown(&pane, 3 - id), "the other one left alone");
+
+                let (menu, _) = window.indicator_menu_model(id, None);
+                let all = sections(&menu);
+                let [.., main, _] = all.as_slice() else { panic!("{all:?}") };
+                assert_eq!(main.last().map(|(label, _)| label.as_str()), Some("Show"));
+                actions.activate_action("indicator-shown", None);
+                assert!(shown(&pane, id), "{id} shown again");
+            }
+        });
+    }
+
+    /// A hidden indicator cannot be clicked on the chart, so its line in the
+    /// legend takes a right click and opens the same menu.
+    #[test]
+    fn a_legend_line_opens_the_indicator_menu_on_a_right_click() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let mut hidden = Indicator::new(1, IndicatorKind::Sma);
+            hidden.visible = false;
+            window.set_indicators_of(&pane, vec![hidden]);
+            let row = pane.indicator_legend.first_child().expect("its line in the legend");
+            let secondary = row
+                .observe_controllers()
+                .into_iter()
+                .filter_map(|c| c.ok().and_downcast::<gtk::GestureClick>())
+                .any(|click| click.button() == gtk::gdk::BUTTON_SECONDARY);
+            assert!(secondary, "a right click on the line is taken");
+        });
+    }
+
+    /// The menu's Cut and Copy are the indicator's it was opened on, which a
+    /// hidden one is without being selected; the chart's own would take the
+    /// selected drawings.
+    #[test]
+    fn the_indicator_menu_copies_its_indicator_even_when_it_is_not_selected() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let pane = window.focused_pane();
+            let mut hidden = Indicator::new(1, IndicatorKind::Sma);
+            hidden.visible = false;
+            window.set_indicators_of(&pane, vec![hidden, Indicator::new(2, IndicatorKind::Rsi)]);
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's actions");
+
+            let _ = window.indicator_menu_model(1, None);
+            assert_eq!(pane.view.picked(), None, "a hidden indicator is not selected");
+            actions.activate_action("indicator-copy", None);
+            assert!(matches!(&*window.clipboard.borrow(), Clipboard::Indicator(i) if i.id == 1));
+
+            let _ = window.indicator_menu_model(1, None);
+            actions.activate_action("indicator-cut", None);
+            let left: Vec<u32> = pane.indicators.borrow().iter().map(|i| i.id).collect();
+            assert_eq!(left, vec![2], "cut takes it off the chart");
         });
     }
 }
@@ -2243,6 +2518,28 @@ mod focus_tests {
             assert_eq!(towards(br, -1), tr);
             assert_eq!(towards(tl, -1), tl, "nothing above the top row");
             assert_eq!(towards(bl, 1), bl, "nothing below the bottom row");
+        });
+    }
+
+    /// A strip dragged taller keeps the height it was dragged to, a CVD's as
+    /// much as a volume's: on the chart, written down, and in a window
+    /// opened on the same store afterwards.
+    #[test]
+    fn every_strip_dragged_taller_keeps_its_height() {
+        crate::ui::on_gtk(|| {
+            for kind in omacharts_engine::indicators::Kind::ALL.into_iter().filter(|kind| kind.in_own_pane()) {
+                let store = Rc::new(Store::memory().expect("a store"));
+                let window = bare_window(&store);
+                let pane = window.focused_pane();
+                window.set_indicators_of(&pane, vec![Indicator::new(7, kind)]);
+                window.save_workspace();
+                pane.view.pane_resized(7, Some(0.41));
+                let height = |pane: &ChartPane| pane.indicators.borrow()[0].params.clone().height_mut().map(|h| *h);
+                assert_eq!(height(&pane), Some(0.41), "{kind:?} on the chart");
+                window.save_workspace();
+                let reopened = bare_window(&store);
+                assert_eq!(height(&reopened.focused_pane()), Some(0.41), "{kind:?} after a restart");
+            }
         });
     }
 
@@ -4823,6 +5120,11 @@ pub struct Window {
     /// them, in layout order, so a change can be carried to the other books
     /// on it the way it was made. Empty for a book on none.
     template_leaves: RefCell<Vec<u32>>,
+    /// Where each chart not on screen was looking when it went, by its own
+    /// name, which a rebuild keeps: opening its chartbook again finds it
+    /// exactly as it was left. Only in memory — scroll and zoom are not
+    /// written down.
+    viewports: RefCell<HashMap<String, crate::ui::chart::Viewport>>,
     /// What an open chart settings window or a visual page of Preferences
     /// reads off the focused chart and the looks, asked to read it again
     /// when something else changed it. Each says whether it is still on
@@ -4916,6 +5218,8 @@ pub struct Window {
     /// Everything trading puts in the window, none of it built until there
     /// is a login.
     trade: Trade,
+    /// What agents trading from the command line are told: see `agent`.
+    agent: agent::Agent,
     /// The Log, the corner notice and the main menu's dot.
     messages: log::Messages,
     /// What is dictated here, on its way to the agent.
@@ -5035,6 +5339,7 @@ impl Window {
             active: Cell::new(0),
             next_pane: Cell::new(1),
             template_leaves: RefCell::new(Vec::new()),
+            viewports: RefCell::new(HashMap::new()),
             chart_watchers: RefCell::new(Vec::new()),
             global_look: RefCell::new(ChartLook::global(&store)),
             save_pending: Cell::new(false),
@@ -5072,6 +5377,7 @@ impl Window {
             desk: Rc::new(crate::trading::Desk::new(crate::trading::registry())),
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
+            agent: agent::Agent::default(),
             messages: log::Messages::new(omacharts_engine::log::global()),
             dictation: Default::default(),
             about: RefCell::new(None),
@@ -5553,8 +5859,8 @@ impl Window {
         let scaler = self.clone();
         pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
 
-        // Scrolled back toward its first bar, a stitched root brings the
-        // months before it.
+        // Scrolled back toward its first bar, a chart on a feed with more
+        // history brings the stretch before it.
         let filler = self.clone();
         pane.view.set_history_handler(move |first| filler.fill_older(id, first));
 
@@ -5565,14 +5871,8 @@ impl Window {
             let Some(pane) = resizer.pane(id) else { return };
             let mut indicators = pane.indicators.borrow().clone();
             if let Some(indicator) = indicators.iter_mut().find(|i| i.id == indicator_id) {
-                match &mut indicator.params {
-                    omacharts_engine::Params::Volume { height, .. }
-                    | omacharts_engine::Params::Rsi { height, .. }
-                    | omacharts_engine::Params::Macd { height, .. }
-                    | omacharts_engine::Params::Atr { height, .. }
-                    | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
-                    _ => return,
-                }
+                let Some(height) = indicator.params.height_mut() else { return };
+                *height = share;
                 // On a template, the template takes the height, and the
                 // charts on it keep one shape.
                 resizer.change_indicators_of(&pane, indicators);
@@ -5699,25 +5999,24 @@ impl Window {
     }
 
     /// Bring the bars before `first`, chart `id`'s first bar, now that its
-    /// view has come near it: for a stitched root, whose first load reaches
-    /// back only so far, the stretch before it, read off the window's thread
-    /// and stitched as the chart's own are, moved by every roll after it.
-    /// A feed with nothing older brings nothing, and is not asked again
-    /// until the chart has another first bar. The bars come in before the
-    /// ones shown, which stay where they are, and are kept with them.
+    /// view has come near it, from a feed that has more than its first load
+    /// took ([`omacharts_engine::Provider::reaches_back`]): a stitched root,
+    /// moved by every roll after it, or a feed's own series. Read off the
+    /// window's thread at the native resolution, before the native series'
+    /// own first bar, which a folded bar can start before: a four-hour bar
+    /// begins at the bucket's start, not at the first hour in it. So every
+    /// resolution folded from it scrolls back with it. A feed with nothing
+    /// older brings nothing, and is not asked again until the chart has
+    /// another first bar. The bars come in before the ones shown, which
+    /// stay where they are, and are kept with them.
     fn fill_older(self: &Rc<Self>, id: u32, first: i64) {
         let Some(pane) = self.pane(id) else { return };
         let Some(key) = pane.served.borrow().clone() else { return };
         let Some((_, symbol)) = key.split_once(':') else { return };
-        if omacharts_engine::continuous::Spelled::parse(symbol).is_none() {
-            return;
-        }
         let Some(feed) = self.feed_of(&key) else { return };
         let native = pane.timeframe.get().native();
-        let reach = match native.is_intraday() {
-            true => OLDER_INTRADAY_DAYS * 86_400,
-            false => OLDER_DAILY_DAYS * 86_400,
-        };
+        let Some(reach) = feed.provider.reaches_back(symbol, native) else { return };
+        let first = self.first_native(&feed, &key, native).unwrap_or(first);
         let (provider, symbol) = (feed.provider.clone(), symbol.to_string());
         let (sender, older) = async_channel::bounded(1);
         let read = std::thread::Builder::new().name("omacharts older bars".into()).spawn(move || {
@@ -5731,6 +6030,18 @@ impl Window {
             let Ok(Ok(older)) = older.recv().await else { return };
             this.take_older(&key, native, first, older);
         });
+    }
+
+    /// The first bar of the series `key` at `native`, as the chart has it:
+    /// the live series', on a feed that streams, or what the store keeps.
+    fn first_native(&self, feed: &Feed, key: &str, native: Timeframe) -> Option<i64> {
+        let series = Series { key: key.to_string(), native };
+        if let Some(live) = feed.live.as_ref()
+            && let Some(first) = live.with_bars(&series, |bars| bars.first().map(|bar| bar.ts))
+        {
+            return first;
+        }
+        self.store.coverage(key, native).map(|coverage| coverage.first_ts)
     }
 
     /// Put `older`, bars from before `first`, under the series `key` at
@@ -5799,6 +6110,11 @@ impl Window {
         if let (Some(from), Some(to)) = (self.pane(self.focused.get()), self.pane(id)) {
             from.view.hand_over(&to.view);
         }
+        // The keyboard goes with the focus when it was on a chart: the keys
+        // a chart answers itself — Delete, the arrows on a selection — act
+        // on the chart the focus is on, not one left behind, or swapped off
+        // the screen when maximized.
+        let keyboard_on_chart = self.panes.borrow().iter().any(|pane| pane.view.area.has_focus());
         self.focused.set(id);
         // Maximized, the focus keys still walk the arrangement — they just
         // walk it one chart at a time, with the window showing whichever one
@@ -5811,6 +6127,9 @@ impl Window {
         }
         for pane in self.panes.borrow().iter() {
             pane.set_focused(pane.id == id);
+        }
+        if keyboard_on_chart && let Some(pane) = self.pane(id) {
+            pane.view.area.grab_focus();
         }
         // What is left in the header describes the focused chart, as do the
         // chart menu's radio items.
@@ -5991,7 +6310,15 @@ impl Window {
     /// cycle through the charts one window at a time.
     pub fn focus_along(self: &Rc<Self>, step: i32) {
         let order = reading_order(&self.layout_rects());
-        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else { return };
+        // A focus on no chart in the arrangement starts the walk at the
+        // first, rather than leaving the keys dead until something else
+        // moves it.
+        let Some(at) = order.iter().position(|id| *id == self.focused.get()) else {
+            if let Some(first) = order.first() {
+                self.focus(*first);
+            }
+            return;
+        };
         if order.len() < 2 {
             return;
         }
@@ -6974,6 +7301,16 @@ impl Window {
             return false;
         }
 
+        // Where the charts going off screen are looking, for when they come
+        // back: built again, they would open at rest.
+        {
+            let mut viewports = self.viewports.borrow_mut();
+            for pane in self.panes.borrow().iter() {
+                if let Some(viewport) = pane.view.viewport() {
+                    viewports.insert(pane.uid.borrow().clone(), viewport);
+                }
+            }
+        }
         self.release_all_panes();
         self.panes.borrow_mut().clear();
         let mut restored: Vec<(Rc<ChartPane>, StoredPane)> = Vec::new();
@@ -7012,6 +7349,9 @@ impl Window {
             // it was just minted.
             if !stored.drawing_uid.is_empty() {
                 *pane.uid.borrow_mut() = stored.drawing_uid.clone();
+                if let Some(viewport) = self.viewports.borrow_mut().remove(&stored.drawing_uid) {
+                    pane.view.keep_viewport(viewport);
+                }
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
@@ -10600,6 +10940,7 @@ impl Window {
     fn wire_close(self: &Rc<Self>) {
         let this = self.clone();
         self.window.connect_close_request(move |window| {
+            this.agent_closing();
             this.retire_feeds();
             this.desk.sign_out_all(crate::trading::SIGN_OUT_WAIT);
             // The forms over it go with it. Destroy-with-parent cannot do
@@ -12006,13 +12347,7 @@ impl Window {
             toggle.set_tooltip_text(Some(if indicator.visible { "Hide" } else { "Show" }));
             let this = self.clone();
             let shown = pane.clone();
-            toggle.connect_clicked(move |_| {
-                let mut indicators = shown.indicators.borrow().clone();
-                if let Some(found) = indicators.iter_mut().find(|i| i.id == id) {
-                    found.visible = !found.visible;
-                }
-                this.change_indicators_of(&shown, indicators);
-            });
+            toggle.connect_clicked(move |_| this.toggle_indicator_shown(&shown, id));
 
             let settings = gtk::Button::from_icon_name("emblem-system-symbolic");
             settings.add_css_class("flat");
@@ -12043,6 +12378,21 @@ impl Window {
             row.append(&toggle);
             row.append(&settings);
             row.append(&remove);
+
+            // A right click on its line opens the menu a right click on the
+            // indicator does. A hidden indicator is drawn nowhere a click can
+            // reach, so this is where its Show is.
+            let menu = gtk::GestureClick::new();
+            menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+            let this = self.clone();
+            let (picker, anchor) = (pane.clone(), row.clone());
+            menu.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                this.focus(picker.id);
+                picker.view.pick(Some(id));
+                this.indicator_menu(id, &anchor, x, y, None);
+            });
+            row.add_controller(menu);
             pane.indicator_legend.append(&row);
         }
     }
@@ -12074,7 +12424,7 @@ impl Window {
             IndicatorEvent::Picked(picked) => self.show_picked_in_legend(&pane, picked),
             IndicatorEvent::Menu(indicator, x, y) => {
                 self.focus(id);
-                self.indicator_menu(indicator, x, y);
+                self.indicator_menu(indicator, &pane.view.area, x, y, Some(x));
             }
             IndicatorEvent::Properties(indicator) => {
                 self.focus(id);
@@ -12100,16 +12450,30 @@ impl Window {
         self.change_indicators_of(pane, kept);
     }
 
+    /// Hide one indicator, or show it again: the legend's eye, and Hide and
+    /// Show in its menu. On a chart on a template, the template's.
+    fn toggle_indicator_shown(self: &Rc<Self>, pane: &Rc<ChartPane>, id: u32) {
+        let mut indicators = pane.indicators.borrow().clone();
+        if let Some(found) = indicators.iter_mut().find(|i| i.id == id) {
+            found.visible = !found.visible;
+        }
+        self.change_indicators_of(pane, indicators);
+    }
+
     /// Cut, Copy, Paste and Remove, in the order and the one section GTK's
     /// own context menus give Cut, Copy, Paste and Delete. Paste only while there
     /// is something to put down. Remove is this selection's, and not every
     /// drawing or indicator: clearing the chart is a thing done to the chart,
     /// in the chart's own menu. Plain words, since the menu is already about
     /// what is selected.
-    fn clipboard_section(&self, remove: &str) -> gio::Menu {
+    ///
+    /// Cut and Copy are named with Remove: an indicator's menu opens from the
+    /// legend on one that is hidden, and so not selected, where the chart's
+    /// own Cut would take the selected drawings instead.
+    fn clipboard_section(&self, [cut, copy, remove]: [&str; 3]) -> gio::Menu {
         let section = gio::Menu::new();
-        shortcuts::append_with_key(&section, "Cut", "chart.cut", "<Ctrl>x");
-        shortcuts::append_with_key(&section, "Copy", "chart.copy", "<Ctrl>c");
+        shortcuts::append_with_key(&section, "Cut", cut, "<Ctrl>x");
+        shortcuts::append_with_key(&section, "Copy", copy, "<Ctrl>c");
         if self.has_copied() {
             shortcuts::append_with_key(&section, "Paste", "chart.paste", "<Ctrl>v");
         }
@@ -12117,14 +12481,36 @@ impl Window {
         section
     }
 
-    /// The menu of the indicator selected on the focused chart, laid out as a
-    /// drawing's is: copying and removing it, then its properties, last and
-    /// alone. What only some indicators can do goes above, as a drawing's own
-    /// errands do.
-    fn indicator_menu(self: &Rc<Self>, indicator: u32, x: f64, y: f64) {
+    /// The menu of an indicator on the focused chart, opened at `x`, `y` over
+    /// `over`: from the indicator on the chart, where `chart_x` is the
+    /// pointer's, or from its line in the legend, where there is none.
+    fn indicator_menu(
+        self: &Rc<Self>,
+        indicator: u32,
+        over: &impl IsA<gtk::Widget>,
+        x: f64,
+        y: f64,
+        chart_x: Option<f64>,
+    ) {
+        let (menu, rows) = self.indicator_menu_model(indicator, chart_x);
+        let (wx, wy) = over.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
+        popup_menu_with(&menu, &self.window, wx, wy, rows);
+    }
+
+    /// The indicator menu, laid out as a drawing's is: copying, removing and
+    /// hiding it, then its properties, last and alone. What only some
+    /// indicators can do goes above, as a drawing's own errands do.
+    fn indicator_menu_model(
+        self: &Rc<Self>,
+        indicator: u32,
+        chart_x: Option<f64>,
+    ) -> (gio::Menu, Vec<(String, gtk::Widget)>) {
         let pane = self.focused_pane();
         *self.menu_indicator.borrow_mut() = Some(indicator);
-        let params = pane.indicators.borrow().iter().find(|i| i.id == indicator).map(|i| i.params.clone());
+        let (params, visible) = match pane.indicators.borrow().iter().find(|i| i.id == indicator) {
+            Some(found) => (Some(found.params.clone()), found.visible),
+            None => (None, true),
+        };
 
         let menu = gio::Menu::new();
         let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
@@ -12153,7 +12539,7 @@ impl Window {
         // A composite is made one profile at a time, from the one under the
         // pointer back into the one before it.
         if matches!(params, Some(Params::VolumeProfile { .. })) {
-            let spot = pane.view.profile_at(indicator, x);
+            let spot = chart_x.and_then(|x| pane.view.profile_at(indicator, x));
             let profile = gio::Menu::new();
             if spot.as_ref().is_some_and(|s| s.has_previous) {
                 profile.append(Some("Merge with previous profile"), Some("chart.profile-merge"));
@@ -12167,15 +12553,15 @@ impl Window {
             *self.menu_profile.borrow_mut() = spot;
         }
 
-        menu.append_section(None, &self.clipboard_section("chart.indicator-delete"));
+        let clipboard = self.clipboard_section(["chart.indicator-cut", "chart.indicator-copy", "chart.indicator-delete"]);
+        // In the legend eye's words.
+        shortcuts::append(&clipboard, if visible { "Hide" } else { "Show" }, "chart.indicator-shown");
+        menu.append_section(None, &clipboard);
 
         let properties = gio::Menu::new();
         shortcuts::append_with_key(&properties, "Properties…", "chart.indicator-settings", "<Alt>Return");
         menu.append_section(None, &properties);
-
-        let area = pane.view.area.clone();
-        let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
-        popup_menu_with(&menu, &self.window, wx, wy, rows);
+        (menu, rows)
     }
 
     /// Change one indicator of the focused chart, wherever its indicators
@@ -13302,14 +13688,19 @@ impl Window {
     pub fn copy(self: &Rc<Self>) {
         let pane = self.focused_pane();
         if let Some(id) = pane.view.picked() {
-            if let Some(indicator) = pane.indicators.borrow().iter().find(|i| i.id == id) {
-                *self.clipboard.borrow_mut() = Clipboard::Indicator(indicator.clone());
-            }
+            self.copy_indicator(&pane, id);
             return;
         }
         let copied = pane.view.copy_selected();
         if !copied.is_empty() {
             *self.clipboard.borrow_mut() = Clipboard::Drawings(copied, pane.view.price_window());
+        }
+    }
+
+    /// Take a copy of one indicator, selected or not.
+    fn copy_indicator(&self, pane: &ChartPane, id: u32) {
+        if let Some(indicator) = pane.indicators.borrow().iter().find(|i| i.id == id) {
+            *self.clipboard.borrow_mut() = Clipboard::Indicator(indicator.clone());
         }
     }
 
@@ -13408,7 +13799,7 @@ impl Window {
             shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
             menu.append_section(None, &edit);
         }
-        menu.append_section(None, &self.clipboard_section("chart.drawing-delete"));
+        menu.append_section(None, &self.clipboard_section(["chart.cut", "chart.copy", "chart.drawing-delete"]));
 
         // The arrowhead, as the four pictures it is, on one row: the three
         // shapes and the one that is no shape. A row of four rather than a
@@ -13917,7 +14308,33 @@ impl Window {
         actions.add_action(&bar_style);
         *self.bar_style_action.borrow_mut() = Some(bar_style);
 
-        // The indicator menu's two rows, about the indicator it was opened on.
+        // The indicator menu's rows, about the indicator it was opened on.
+        let cut = gio::SimpleAction::new("indicator-cut", None);
+        let this = self.clone();
+        cut.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                let pane = this.focused_pane();
+                this.copy_indicator(&pane, id);
+                this.remove_indicator(&pane, id);
+            }
+        });
+        actions.add_action(&cut);
+        let copy = gio::SimpleAction::new("indicator-copy", None);
+        let this = self.clone();
+        copy.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.copy_indicator(&this.focused_pane(), id);
+            }
+        });
+        actions.add_action(&copy);
+        let shown = gio::SimpleAction::new("indicator-shown", None);
+        let this = self.clone();
+        shown.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.toggle_indicator_shown(&this.focused_pane(), id);
+            }
+        });
+        actions.add_action(&shown);
         let delete = gio::SimpleAction::new("indicator-delete", None);
         let this = self.clone();
         delete.connect_activate(move |_, _| {
@@ -14824,6 +15241,60 @@ mod paste_across_tests {
             let pasted = paste_on(&window, &at(&window, 0), "its own chart");
             assert_ne!(pasted.from, drawing.from, "a paste on its own chart hides behind the original");
             assert_eq!(pasted.to.ts - pasted.from.ts, drawing.to.ts - drawing.from.ts);
+        });
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::bare_window;
+
+    /// Every chart laid out and charting its bars, which arrive from the
+    /// feed's thread.
+    fn charted(window: &Rc<Window>) {
+        window.chart_host.allocate(1600, 900, -1, None);
+        let context = gtk::glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while window.panes.borrow().iter().any(|pane| pane.view.bar_count() == 0) {
+            assert!(std::time::Instant::now() < until, "the bars never came");
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        while context.iteration(false) {}
+    }
+
+    fn first(window: &Window) -> Rc<ChartPane> {
+        let id = window.layout.borrow().leaves()[0];
+        window.pane(id).expect("a chart")
+    }
+
+    /// Opening another chartbook and coming back finds every chart looking
+    /// exactly where it was left: zoomed, panned back and with its price
+    /// scale dragged, not back at rest on the newest bars.
+    #[test]
+    fn a_chart_looks_where_it_was_left_when_its_chartbook_opens_again() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let live: &dyn crate::cli::Live = &window;
+            let args: Vec<String> = ["omacharts", "chartbook", "create", "Second"].map(String::from).to_vec();
+            let outcome = crate::cli::run(&args, &window.store, Some(live), &crate::cli::Here);
+            assert_eq!(outcome.code, 0, "{}", outcome.err);
+            charted(&window);
+
+            let view = first(&window).view.clone();
+            view.zoom(0.5);
+            view.pan_bars(-40);
+            view.set_price_auto(false);
+            let left = view.viewport().expect("a chart with bars is looking somewhere");
+            assert!(!view.at_latest(), "panned back");
+
+            window.activate_book(1);
+            charted(&window);
+            window.activate_book(0);
+            charted(&window);
+            assert_eq!(first(&window).view.viewport(), Some(left), "the chart came back somewhere else");
         });
     }
 }

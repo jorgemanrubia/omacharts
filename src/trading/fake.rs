@@ -324,6 +324,11 @@ pub struct FakeSession {
     /// The next cancel goes through, but its answer is lost on the way:
     /// the order is cancelled and the cancel says nothing came back.
     pub cancel_lost: std::sync::atomic::AtomicBool,
+    /// Entries placed as brackets that have not filled, by basket, with
+    /// their exits: they are placed, linked, as the entry fills.
+    pub brackets: Mutex<HashMap<String, (OrderRequest, super::brackets::Exits)>>,
+    /// The exits of the bracket [`Session::place_bracket`] is placing.
+    next_bracket: Mutex<Option<super::brackets::Exits>>,
 }
 
 impl FakeSession {
@@ -364,6 +369,52 @@ impl FakeSession {
             silent: Default::default(),
             holds: Default::default(),
             cancel_lost: Default::default(),
+            brackets: Mutex::default(),
+            next_bracket: Mutex::default(),
+        }
+    }
+
+    /// The entry `basket` filled at `at`: if it was placed as a bracket,
+    /// its target and stop go in now, linked, as the trading service's own
+    /// bracket would put them.
+    fn release_bracket(&self, book: &mut Book, basket: &str, at: f64) {
+        let Some((entry, exits)) = self.brackets.lock().unwrap().remove(basket) else {
+            return;
+        };
+        let tick = *self.tick.lock().unwrap();
+        let (target, stop) = exits.prices(entry.side, at, tick);
+        let side = match entry.side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+        let mut placed = Vec::new();
+        for (kind, price) in [(OrderKind::Limit, target), (OrderKind::Stop, stop)] {
+            let Some(price) = price else { continue };
+            let id = format!("B{}", self.baskets.fetch_add(1, Ordering::AcqRel));
+            book.orders.insert(
+                0,
+                Order {
+                    account: entry.account.clone(),
+                    basket_id: id.clone(),
+                    contract: entry.contract.clone(),
+                    exchange: entry.exchange.clone(),
+                    side,
+                    qty: entry.qty,
+                    filled: 0,
+                    kind,
+                    price: Some(price),
+                    status: Stage::Working.into(),
+                    fill_price: None,
+                    fills: Vec::new(),
+                    at: 0,
+                    tag: Some(entry.tag.clone()),
+                    tick: Some(tick),
+                },
+            );
+            placed.push(id);
+        }
+        if placed.len() == 2 {
+            self.links.lock().unwrap().push(placed);
         }
     }
 
@@ -476,6 +527,7 @@ impl FakeSession {
         let bought = if order.side == Side::Buy { left as i32 } else { -(left as i32) };
         FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.fill_price.unwrap_or(last));
         self.end_linked(&mut book, basket);
+        self.release_bracket(&mut book, basket, order.fill_price.unwrap_or(last));
         drop(book);
         self.moved();
     }
@@ -627,13 +679,35 @@ impl Session for FakeSession {
                 tick: Some(0.25),
             },
         );
+        if let Some(exits) = self.next_bracket.lock().unwrap().take() {
+            self.brackets
+                .lock()
+                .unwrap()
+                .insert(basket.clone(), (order.clone(), exits));
+        }
         if filled {
             let bought = if order.side == Side::Buy { order.qty as i32 } else { -(order.qty as i32) };
             FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, last);
+            self.release_bracket(&mut book, &basket, last);
         }
         drop(book);
         self.moved();
         Ok(basket)
+    }
+    fn place_bracket(
+        &self,
+        order: &OrderRequest,
+        exits: &super::brackets::Exits,
+    ) -> Result<String, Failure> {
+        *self.next_bracket.lock().unwrap() = Some(*exits);
+        let placed = self.place(order);
+        self.next_bracket.lock().unwrap().take();
+        if placed.is_ok()
+            && let Some(said) = self.heard.lock().unwrap().last_mut()
+        {
+            *said = "bracket";
+        }
+        placed
     }
     fn cancel(&self, _: &str, basket: &str) -> Result<(), Failure> {
         self.refused()?;

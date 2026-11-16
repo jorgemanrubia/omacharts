@@ -53,7 +53,7 @@ pub use view::{CompareLine, Comparing, Reading, Readout};
 pub use view::{ExecutionMark, Executions, TripLine};
 pub use view::{
     volume_colours, volume_opacity, ChartView, Clock, DrawingEvent, Drawn, Echo, Hidden, Hover, IndicatorEvent,
-    PriceWindow, ProfileSpot, POINTER_LAYER, PULSE_LAYER, PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS,
+    PriceWindow, ProfileSpot, Viewport, POINTER_LAYER, PULSE_LAYER, PRICE_AXIS_W, TIME_AXIS_H, VISIBLE_BARS,
 };
 
 /// The class the editor typed into on the chart wears.

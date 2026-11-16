@@ -152,6 +152,24 @@ pub trait Caller {
     fn home(&self) -> std::path::PathBuf {
         crate::store::home()
     }
+
+    /// Where a command that answers later, or keeps answering, writes: the
+    /// terminal that typed it, held open until it is let go. Only a window
+    /// has one to give: with no window nothing waits for anything.
+    fn sink(&self) -> Option<std::rc::Rc<dyn Sink>> {
+        None
+    }
+}
+
+/// A terminal a command keeps writing to after it has returned: `trading
+/// watch` and `trading wait`. It stays open until [`Sink::end`], or until it
+/// is dropped.
+pub trait Sink {
+    /// Write `text` to it, as it is.
+    fn say(&self, text: &str);
+    /// The command is done, with this exit code: the terminal gets its
+    /// prompt back once the last hold on it is let go.
+    fn end(&self, code: u8);
 }
 
 /// This process, which is the caller whenever there is no window.
@@ -377,6 +395,26 @@ pub trait Live {
     /// would, and say what was said doing it.
     fn trade(&self, _act: trading::Act) -> Result<trading::Said, Fault> {
         Err(trading::no_window())
+    }
+    /// What an agent trading from the command line asks of the window:
+    /// a snapshot, a wait, a stream of events, a price alert.
+    fn agent(&self, _ask: trading::Ask) -> Result<String, Fault> {
+        Err(trading::no_window())
+    }
+    /// Chart `chart` on screen in numbers: its last `last` bars, its
+    /// indicators' latest values and its levels.
+    fn read_chart(
+        &self,
+        _chart: u32,
+        _last: usize,
+    ) -> Result<crate::trading::reading::ChartRead, Fault> {
+        Err(Fault::no_window("chart on screen"))
+    }
+    /// The last price a chart on screen has of `instrument`, with when its
+    /// last bar began and the step its price moves in; none with no chart
+    /// of it.
+    fn chart_price(&self, _instrument: &Instrument) -> Option<(f64, i64, Option<f64>)> {
+        None
     }
 }
 
@@ -1210,6 +1248,22 @@ impl Live for Rc<crate::ui::Window> {
 
     fn trade(&self, act: trading::Act) -> Result<trading::Said, Fault> {
         crate::ui::Window::trade_command(self, act)
+    }
+
+    fn agent(&self, ask: trading::Ask) -> Result<String, Fault> {
+        crate::ui::Window::agent_command(self, ask)
+    }
+
+    fn read_chart(
+        &self,
+        chart: u32,
+        last: usize,
+    ) -> Result<crate::trading::reading::ChartRead, Fault> {
+        crate::ui::Window::read_chart(self, chart, last)
+    }
+
+    fn chart_price(&self, instrument: &Instrument) -> Option<(f64, i64, Option<f64>)> {
+        crate::ui::Window::chart_price(self, instrument)
     }
 
     fn show_range(

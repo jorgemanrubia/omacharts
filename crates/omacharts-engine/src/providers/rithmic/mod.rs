@@ -46,23 +46,27 @@ use crate::symbols::{Instrument, InstrumentKind};
 /// list, is not ours.
 const CME_GROUP: [&str; 4] = ["CME", "CBOT", "NYMEX", "COMEX"];
 
-/// How far back a first fetch asks, in days, and what the capabilities
-/// claim. Rithmic keeps about ninety days of intraday history for a
-/// contract; one-minute bars ask for a month of that, some forty thousand
-/// bars, because a first chart is not worth the rest of the plant's quota.
+/// How far back a first fetch asks, in days: a month of one-minute bars,
+/// some forty thousand of them, and a quarter of anything else intraday,
+/// because a first chart is not worth more of the plant's quota than that.
+/// The plant itself keeps years of intraday history of a root, and a chart
+/// scrolled back to its first bar reads the same span again before it
+/// ([`Provider::reaches_back`]), so this is where a chart starts, not how
+/// far it can go.
 const MINUTE_DAYS: u32 = 30;
 const INTRADAY_DAYS: u32 = 90;
-/// Daily bars go back as far as the front month does.
+/// Daily bars go back ten years at first, and further on a scroll back.
 const DAILY_DAYS: i64 = 3_650;
 
+/// Every resolution as far back as the plant has it: none is capped.
 const CAPABILITIES: &[Capability] = &[
-    Capability { timeframe: Timeframe::minutes(1), history_days: Some(MINUTE_DAYS), max_request_days: None },
-    Capability { timeframe: Timeframe::minutes(2), history_days: Some(INTRADAY_DAYS), max_request_days: None },
-    Capability { timeframe: Timeframe::minutes(5), history_days: Some(INTRADAY_DAYS), max_request_days: None },
-    Capability { timeframe: Timeframe::minutes(15), history_days: Some(INTRADAY_DAYS), max_request_days: None },
-    Capability { timeframe: Timeframe::minutes(30), history_days: Some(INTRADAY_DAYS), max_request_days: None },
-    Capability { timeframe: Timeframe::minutes(90), history_days: Some(INTRADAY_DAYS), max_request_days: None },
-    Capability { timeframe: Timeframe::hours(1), history_days: Some(INTRADAY_DAYS), max_request_days: None },
+    Capability { timeframe: Timeframe::minutes(1), history_days: None, max_request_days: None },
+    Capability { timeframe: Timeframe::minutes(2), history_days: None, max_request_days: None },
+    Capability { timeframe: Timeframe::minutes(5), history_days: None, max_request_days: None },
+    Capability { timeframe: Timeframe::minutes(15), history_days: None, max_request_days: None },
+    Capability { timeframe: Timeframe::minutes(30), history_days: None, max_request_days: None },
+    Capability { timeframe: Timeframe::minutes(90), history_days: None, max_request_days: None },
+    Capability { timeframe: Timeframe::hours(1), history_days: None, max_request_days: None },
     Capability { timeframe: Timeframe::days(1), history_days: None, max_request_days: None },
 ];
 
@@ -163,7 +167,8 @@ fn period_of(timeframe: Timeframe) -> Result<rithmic::Period, ProviderError> {
     }
 }
 
-/// How far back a first fetch at `timeframe` goes, in seconds.
+/// How far back a first fetch at `timeframe` goes, in seconds, and how
+/// far before its first bar a chart scrolled back reads at a time.
 fn depth(timeframe: Timeframe) -> i64 {
     match timeframe.unit {
         Unit::Minute if timeframe.count == 1 => i64::from(MINUTE_DAYS) * 86_400,
@@ -206,53 +211,69 @@ fn now() -> i64 {
 }
 
 /// Bars of `root`'s continuous series, or of the dated contract `root`
-/// names, from `from` on.
+/// names, from `from` and starting before `to`, or up to now with no `to`.
 ///
 /// A root is asked for as itself, which Rithmic answers with its continuous
 /// series. Where it has none for the root, its front month stands in: asked
 /// once with the contract it remembers, and again with a fresh answer if
 /// that one has nothing, since a contract that has rolled off is the likely
-/// reason and the next front month is the cure.
+/// reason and the next front month is the cure. A span that ends before
+/// now is older history, where having nothing is the answer rather than a
+/// sign of a roll, so the front month is not asked again for it.
 fn front_month_bars(
     client: &rithmic::Client,
     root: &str,
     timeframe: Timeframe,
     from: i64,
+    to: Option<i64>,
 ) -> Result<Vec<Bar>, ProviderError> {
     let period = period_of(timeframe)?;
     let exchange = exchange_of(root);
-    let to = now() + timeframe.seconds();
+    let (from, ask_to, until) = span(from, to, now(), timeframe);
     // Its own bars, and none of a namesake a decade older.
     let own = |contract: &str, bars: Vec<rithmic::Bar>| -> Vec<Bar> {
         let from = from.max(first_possible(contract).unwrap_or(i64::MIN));
-        bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect()
+        bars.iter().map(bar_of).filter(|bar| bar.ts >= from && bar.ts < until).collect()
     };
     if is_dated(root) {
         let contract = spelled(root);
-        let bars = client.bars(&contract, exchange, period, from, to).map_err(map_err)?;
+        let bars = client.bars(&contract, exchange, period, from, ask_to).map_err(map_err)?;
         return Ok(own(&contract, bars));
     }
-    if let Ok(bars) = client.bars(root, exchange, period, from, to)
-        && !bars.is_empty()
-    {
-        return Ok(bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect());
+    match client.bars(root, exchange, period, from, ask_to) {
+        Ok(bars) if !bars.is_empty() => return Ok(own(root, bars)),
+        Ok(none) if to.is_some() => return Ok(own(root, none)),
+        _ => {}
     }
     let contract = client.front_month(root, exchange).map_err(map_err)?;
-    let first = client.bars(&contract, exchange, period, from, to);
+    let first = client.bars(&contract, exchange, period, from, ask_to);
     let (contract, bars) = match first {
-        Ok(bars) if !bars.is_empty() => (contract, bars),
+        Ok(bars) if !bars.is_empty() || to.is_some() => (contract, bars),
         stale => {
             client.forget_front_month(root, exchange);
             let fresh = client.front_month(root, exchange).map_err(map_err)?;
             if fresh == contract {
                 (contract, stale.map_err(map_err)?)
             } else {
-                let bars = client.bars(&fresh, exchange, period, from, to).map_err(map_err)?;
+                let bars = client.bars(&fresh, exchange, period, from, ask_to).map_err(map_err)?;
                 (fresh, bars)
             }
         }
     };
     Ok(own(&contract, bars))
+}
+
+/// What the plant is asked for, given bars wanted from `from` and starting
+/// before `to`, or up to `now` with no `to`: the first bar's start, the end
+/// of the request, and the start no kept bar reaches. Up to now the
+/// request runs a bar past it, for the one forming; a span that ends
+/// earlier asks for nothing after it, so the bars a chart already holds
+/// are never read again.
+fn span(from: i64, to: Option<i64>, now: i64, timeframe: Timeframe) -> (i64, i64, i64) {
+    match to {
+        Some(to) => (from, to.max(from), to),
+        None => (from, now + timeframe.seconds(), i64::MAX),
+    }
 }
 
 /// Where a trade at `ts` lands at `timeframe`: the start of its minute or
@@ -525,7 +546,7 @@ fn stream(
     };
     let load: Load = {
         let root = root.clone();
-        Box::new(move |from: i64| front_month_bars(&client, &root, timeframe, from))
+        Box::new(move |from: i64| front_month_bars(&client, &root, timeframe, from, None))
     };
     let clock: Clock = Arc::new(|| chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX));
     serve(&events, sender, Fold::new(timeframe, root_of(&root)), since, load, clock, &say, &stop);
@@ -721,7 +742,28 @@ impl Provider for Rithmic {
         }
         let client = session::client().map_err(map_err)?;
         let from = since.unwrap_or_else(|| now() - depth(timeframe));
-        front_month_bars(&client, symbol, timeframe, from)
+        front_month_bars(&client, symbol, timeframe, from, None)
+    }
+
+    /// Only the span asked for, never what comes after it: the chart holds
+    /// that already, and the plant's quota is spent on what it does not.
+    fn bars_between(&self, symbol: &str, timeframe: Timeframe, since: i64, until: i64) -> Result<Vec<Bar>, ProviderError> {
+        period_of(timeframe)?;
+        if !session::here() {
+            return Err(ProviderError::NeedsSetup(
+                "Rithmic charts are served by the open window, which holds the one session".into(),
+            ));
+        }
+        let client = session::client().map_err(map_err)?;
+        front_month_bars(&client, symbol, timeframe, since, Some(until))
+    }
+
+    /// The plant keeps years of every resolution it serves, so a chart
+    /// scrolled back reads as far again as its first load did, each time
+    /// it reaches its first bar: a month of minutes, a quarter of anything
+    /// else intraday, ten years of days.
+    fn reaches_back(&self, _symbol: &str, timeframe: Timeframe) -> Option<i64> {
+        period_of(timeframe).ok().map(|_| depth(timeframe))
     }
 
     fn stream(&self) -> Option<&dyn Stream> {
@@ -785,6 +827,36 @@ mod tests {
         let dec_2017 = chrono::NaiveDate::from_ymd_opt(2017, 12, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
         assert!(dec_2016 < first && first <= dec_2017);
         assert_eq!(first_possible("ES"), None);
+    }
+
+    /// Scrolled back, the plant is asked for the span before the chart's
+    /// first bar and nothing after it, which the chart holds already; a
+    /// first load or a tail runs to now and the bar forming past it.
+    #[test]
+    fn an_older_span_asks_for_nothing_the_chart_holds() {
+        let hour = Timeframe::hours(1);
+        let (now, first) = (2_000_000_000, 1_990_000_000);
+        assert_eq!(span(first - 90 * 86_400, Some(first), now, hour), (first - 90 * 86_400, first, first));
+        assert_eq!(span(first, None, now, hour), (first, now + 3_600, i64::MAX));
+        assert_eq!(span(first, Some(first - 1), now, hour).1, first, "never a request that ends before it starts");
+    }
+
+    /// Every resolution Rithmic serves scrolls back, by as much again as
+    /// its first load took, and every one folded from them with it; none
+    /// is capped, since the plant keeps years of each.
+    #[test]
+    fn every_resolution_scrolls_back_and_none_is_capped() {
+        let rithmic = Rithmic::new();
+        for capability in rithmic.capabilities() {
+            assert_eq!(capability.history_days, None, "{:?}", capability.timeframe);
+            let reach = rithmic.reaches_back("ES", capability.timeframe);
+            assert_eq!(reach, Some(depth(capability.timeframe)), "{:?}", capability.timeframe);
+        }
+        for label in ["3m", "10m", "2h", "4h", "1W", "1M", "3D"] {
+            let folded = Timeframe::parse(label).expect("a resolution");
+            assert!(rithmic.reaches_back("ES", folded.native()).is_some(), "{label}, folded from {:?}", folded.native());
+        }
+        assert_eq!(rithmic.reaches_back("ESZ6", Timeframe::minutes(1)), Some(30 * 86_400), "a dated contract too");
     }
 
     /// A root is Rithmic's own continuous series, as traded: an expired

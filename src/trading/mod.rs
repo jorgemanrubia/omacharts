@@ -43,15 +43,22 @@
 //! - `sizes`: trading sizes and their templates.
 //! - `chart_pnl`: whether the charts write P&L as money or in R.
 //! - `executions`: an account's fills in a contract, paired into round trips.
+//! - `brackets`: an entry's target and stop as typed, turned into the
+//!   distances a bracket order is sent with.
+//! - `events`: what changed between two books, said one line each.
+//! - `reading`: a chart's bars, indicator values and levels, in numbers.
 
 pub mod services;
+pub mod brackets;
 pub mod chart_pnl;
+pub mod events;
 pub mod executions;
 mod domain;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;
 mod linking;
 mod logins;
+pub mod reading;
 mod rules;
 mod session;
 pub mod sizes;

@@ -118,6 +118,14 @@ pub fn dispatch(
     let result = match (noun, verb) {
         ("symbol", "search") => symbol_search(m, json),
         ("symbol", "show") => symbol_show(m, json),
+        ("symbol", "quote") | ("chart", "bars") | ("chart", "values")
+            if !crate::features::agent_trading() =>
+        {
+            Err(super::trading::agent_off())
+        }
+        ("symbol", "quote") => symbol_quote(store, m, json, live),
+        ("chart", "bars") => chart_bars(store, m, json, live),
+        ("chart", "values") => chart_values(store, m, json, live),
         ("symbol", "contracts") => symbol_contracts(m, json),
 
         ("watchlist", "list") => watchlist_list(store, json),
@@ -212,7 +220,7 @@ pub fn dispatch(
             outcome
         }
 
-        ("trading", _) => super::trading::run(store, verb, m, json, live),
+        ("trading", _) => super::trading::run(store, verb, m, json, live, caller),
 
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
@@ -467,6 +475,178 @@ fn symbol_show(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         found.exchange_label().unwrap_or("unknown"),
         found.currency.as_deref().unwrap_or("unknown"),
     ))
+}
+
+/// `symbol quote`: the last price from a chart of it on screen, which is
+/// live, else from the cache, which is as last fetched. No feed here gives
+/// a bid or an ask, so they are null rather than made up.
+fn symbol_quote(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let index = crate::inventory::everything();
+    let (symbol, suffix) = listing(
+        &index,
+        required(m, "SYMBOL")?,
+        arg(m, "SUFFIX").map(|s| s.to_uppercase()),
+    );
+    let found = index.resolve(&symbol, suffix.as_deref()).ok_or_else(|| {
+        Fault::not_found(format!(
+            "no instrument called {}; try `omacharts symbol search {symbol}`",
+            spell(&symbol, suffix.as_deref())
+        ))
+    })?;
+    let feeds = crate::feeds::Feeds::load(store);
+    let cached = feeds
+        .route(&found)
+        .and_then(|(provider, _)| super::quote(store, provider, &found));
+    let on_screen = live.and_then(|live| live.chart_price(&found));
+    let (last, at, source, places) = match (on_screen, &cached) {
+        (Some((last, at, tick)), _) => (last, at, "chart", crate::trading::reading::places(tick)),
+        (None, Some(quote)) => (quote.last, quote.as_of, "cache", 2),
+        (None, None) => {
+            return Err(Fault::not_found(format!(
+                "no price for {}: no chart of it is on screen and none has been fetched",
+                found.display_symbol()
+            )));
+        }
+    };
+    let change = cached
+        .as_ref()
+        .map(|quote| (quote.change, quote.change_pct));
+    let num = |price: f64| crate::trading::reading::num(price, places);
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({
+                "symbol": found.display_symbol(),
+                "last": crate::trading::reading::price(Some(last), places),
+                "bid": null,
+                "ask": null,
+                "change": change.map(|(change, _)| change),
+                "change_pct": change.map(|(_, pct)| pct),
+                "as_of": at,
+                "source": source,
+            })
+        ));
+    }
+    let moved = change
+        .map(|(change, pct)| format!(" {change:+.2} ({pct:+.2}%)"))
+        .unwrap_or_default();
+    Ok(format!(
+        "{} {}{moved} ({source})\n",
+        found.display_symbol(),
+        num(last)
+    ))
+}
+
+/// The chart `--chart` names in the chartbook `--book` names, on screen.
+fn chart_on_screen(store: &Store, m: &clap::ArgMatches) -> Result<u32, Fault> {
+    let workspace = Workspace::load(store);
+    let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
+    if at != workspace.active() {
+        return Err(Fault::refused(format!(
+            "only the open chartbook's charts hold their bars, and {} is not it; switch to it first",
+            workspace.name_of(at)
+        )));
+    }
+    super::charts::resolve_pane(workspace.book(at)?, arg(m, "chart").map(String::as_str))
+}
+
+/// What `chart bars` and `chart values` say with no window: the bars and
+/// what is computed from them are the window's.
+fn no_chart_window() -> Fault {
+    Fault::new(
+        super::EXIT_NO_WINDOW,
+        "no window is open, and a chart's bars and indicators are held by the chart on screen; start Omacharts".into(),
+    )
+}
+
+/// `chart bars`: the chart's last bars, as it holds them.
+fn chart_bars(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let last = match arg(m, "last") {
+        None => 20,
+        Some(text) => text
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=10_000).contains(n))
+            .ok_or_else(|| {
+                Fault::usage(format!(
+                    "--last is a number of bars from 1 to 10000, not {text:?}"
+                ))
+            })?,
+    };
+    let live = live.ok_or_else(no_chart_window)?;
+    let chart = chart_on_screen(store, m)?;
+    let read = live.read_chart(chart, last)?;
+    if as_json {
+        let bars: Vec<Value> = read
+            .bars
+            .iter()
+            .map(|bar| crate::trading::reading::bar_json(bar, read.places))
+            .collect();
+        return Ok(format!(
+            "{}\n",
+            json!({"chart": read.label, "symbol": read.symbol, "resolution": read.timeframe, "fields": ["t", "o", "h", "l", "c", "v"], "bars": bars})
+        ));
+    }
+    Ok(format!(
+        "{}\n{}",
+        read.label,
+        crate::trading::reading::bars_text(&read.bars, read.places, read.intraday, read.zone)
+    ))
+}
+
+/// `chart values`: each indicator's latest values, and the levels.
+fn chart_values(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let live = live.ok_or_else(no_chart_window)?;
+    let chart = chart_on_screen(store, m)?;
+    let read = live.read_chart(chart, 1)?;
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({"chart": read.label, "symbol": read.symbol, "indicators": read.values, "levels": read.levels.json(read.places)})
+        ));
+    }
+    let mut lines = vec![read.label.clone()];
+    for value in &read.values {
+        let mut fields: Vec<String> = Vec::new();
+        if let Some(object) = value.as_object() {
+            for (key, field) in object {
+                if matches!(key.as_str(), "id" | "kind" | "label" | "visible") || field.is_null() {
+                    continue;
+                }
+                if let (Some(bands), "bands") = (field.as_array(), key.as_str()) {
+                    for band in bands {
+                        let at = |name: &str| band[name].as_f64().map_or("-".to_string(), |n| crate::trading::reading::num(n, read.places));
+                        fields.push(format!("{}sd {}/{}", at("deviations"), at("upper"), at("lower")));
+                    }
+                    continue;
+                }
+                fields.push(format!("{key} {field}"));
+            }
+        }
+        lines.push(format!(
+            "{} {}",
+            value["label"].as_str().unwrap_or(""),
+            fields.join(" ")
+        ));
+    }
+    lines.push(format!("levels {}", read.levels.text(read.places)));
+    Ok(format!("{}\n", lines.join("\n")))
 }
 
 fn instrument_json(i: &omacharts_engine::Instrument) -> String {
@@ -1395,7 +1575,10 @@ fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -
         Some(text) => Some(text.parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?),
     };
     let merge = match required(m, "ACTION")?.as_str() {
-        "list" => return list_profiles(live, id, flag(m, "on-screen"), as_json),
+        "list" => {
+            let detail = Detail { rows: flag(m, "rows"), nodes: flag(m, "nodes"), last: flag(m, "last") };
+            return list_profiles(live, id, flag(m, "on-screen"), detail, as_json);
+        }
         "merge" => true,
         "split" => false,
         other => return Err(Fault::usage(format!("{other:?} is not list, merge or split"))),
@@ -1410,9 +1593,19 @@ fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -
     said(as_json, json!({"chart": chart, "action": action, "at": ts}), format!("{done} on {chart}"))
 }
 
+/// What `chart profile list` adds to each profile beyond its levels, and
+/// whether it keeps only the newest.
+#[derive(Clone, Copy, Default)]
+struct Detail {
+    rows: bool,
+    nodes: bool,
+    last: bool,
+}
+
 /// The profiles a chart draws, as numbers a script can compare: where each
-/// begins and ends, the periods in it, its point of control and value area.
-fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool) -> Result<String, Fault> {
+/// begins and ends, the periods in it, its point of control and value area;
+/// and on request its rows, and the high- and low-volume nodes in them.
+fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail, as_json: bool) -> Result<String, Fault> {
     let zone = live.measurement_zone();
     let (chart, profiles) = live.profiles(id)?;
     let day = |ts: i64| {
@@ -1420,13 +1613,16 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool)
             .map(|at| at.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default()
     };
-    let shown: Vec<_> = profiles.iter().filter(|(_, on)| !visible || *on).collect();
+    let mut shown: Vec<_> = profiles.iter().filter(|(p, on)| (!visible || *on) && !p.rows.is_empty()).collect();
+    if detail.last {
+        shown = shown.split_off(shown.len().saturating_sub(1));
+    }
     if as_json {
         let rows: Vec<Value> = shown
             .iter()
             .map(|(p, on)| {
                 let (low, high) = p.value_area_bounds();
-                json!({
+                let mut row = json!({
                     "start": p.start_ts,
                     "end": p.end_ts,
                     "start_text": day(p.start_ts),
@@ -1438,7 +1634,11 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool)
                     "value_area_high": high,
                     "volume": p.total_volume,
                     "visible": on,
-                })
+                });
+                if let Some(fields) = row.as_object_mut() {
+                    fields.extend(profile_detail_json(p, detail));
+                }
+                row
             })
             .collect();
         return Ok(format!("{}\n", json!({"chart": chart, "profiles": rows})));
@@ -1456,8 +1656,90 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool)
             high,
             if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
         ));
+        out.push_str(&profile_detail_text(p, detail));
     }
     Ok(out)
+}
+
+/// How many places a profile's prices are given to: those of its row
+/// height, which is the instrument's tick when a row is a tick.
+fn profile_places(p: &omacharts_engine::indicators::Profile) -> usize {
+    let height = p.rows.first().map(|row| row.high - row.low);
+    crate::trading::reading::places(height).min(6)
+}
+
+/// A profile's nodes, each with the price at its heart, the prices it
+/// spans, its smoothed row volume and its strength as a share of the point
+/// of control's.
+fn node_json(p: &omacharts_engine::indicators::Profile, nodes: &[omacharts_engine::indicators::profile::Node]) -> Vec<Value> {
+    let places = profile_places(p);
+    let at = |row: usize, edge: fn(&omacharts_engine::indicators::profile::ProfileRow) -> f64| {
+        crate::trading::reading::price(p.rows.get(row).map(edge), places)
+    };
+    nodes
+        .iter()
+        .map(|node| {
+            json!({
+                "price": at(node.row, |row| row.low),
+                "low": at(node.rows.0, |row| row.low),
+                "high": at(node.rows.1, |row| row.high),
+                "volume": node.volume.round(),
+                "strength": (node.strength * 100.0).round() / 100.0,
+            })
+        })
+        .collect()
+}
+
+fn profile_detail_json(p: &omacharts_engine::indicators::Profile, detail: Detail) -> serde_json::Map<String, Value> {
+    let mut fields = serde_json::Map::new();
+    let places = profile_places(p);
+    if detail.rows {
+        let height = p.rows.first().map(|row| row.high - row.low);
+        fields.insert("row_height".into(), crate::trading::reading::price(height, places));
+        let rows: Vec<Value> = p
+            .rows
+            .iter()
+            .map(|row| json!([crate::trading::reading::price(Some(row.low), places), row.volume.round()]))
+            .collect();
+        fields.insert("rows".into(), Value::Array(rows));
+    }
+    if detail.nodes {
+        let nodes = p.nodes();
+        fields.insert("hvn".into(), Value::Array(node_json(p, &nodes.high)));
+        fields.insert("lvn".into(), Value::Array(node_json(p, &nodes.low)));
+    }
+    fields
+}
+
+/// The nodes as one line each, `hvn 7565 (7562–7568) 0.82 · …`, and the
+/// rows as a `price volume` table from the lowest price, indented under
+/// the profile they belong to.
+fn profile_detail_text(p: &omacharts_engine::indicators::Profile, detail: Detail) -> String {
+    let places = profile_places(p);
+    let n = |price: f64| crate::trading::reading::num(price, places);
+    let mut out = String::new();
+    if detail.nodes {
+        let nodes = p.nodes();
+        for (name, list) in [("hvn", &nodes.high), ("lvn", &nodes.low)] {
+            let each: Vec<String> = list
+                .iter()
+                .filter_map(|node| {
+                    let (heart, low, high) = (p.rows.get(node.row)?, p.rows.get(node.rows.0)?, p.rows.get(node.rows.1)?);
+                    Some(format!("{} ({}–{}) {:.2}", n(heart.low), n(low.low), n(high.high), node.strength))
+                })
+                .collect();
+            let each = if each.is_empty() { "none".to_string() } else { each.join(" · ") };
+            out.push_str(&format!("   {name} {each}\n"));
+        }
+    }
+    if detail.rows {
+        let height = p.rows.first().map_or(0.0, |row| row.high - row.low);
+        out.push_str(&format!("   rows of {}, price volume:\n", n(height)));
+        for row in &p.rows {
+            out.push_str(&format!("   {} {}\n", n(row.low), row.volume.round()));
+        }
+    }
+    out
 }
 
 fn chart_measure(
@@ -6038,11 +6320,12 @@ fn features_list(store: &Store, as_json: bool) -> Result<String, Fault> {
             .collect();
         return Ok(wrap_list("features", rows));
     }
+    let width = flags.iter().map(|flag| flag.name.len()).max().unwrap_or(0);
     Ok(flags
         .iter()
         .map(|flag| {
             let state = if crate::features::stored(store, flag.feature) { "on" } else { "off" };
-            format!("{:<12} {state:<4} {}\n", flag.name, flag.about)
+            format!("{:<width$} {state:<4} {}\n", flag.name, flag.about)
         })
         .collect())
 }
@@ -9841,14 +10124,17 @@ mod tests {
                     .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[], None)),
             ))
         }
-        /// Two sessions, so there is one to merge into the other.
+        /// Two sessions, so there is one to merge into the other: a flat
+        /// one, and one with two shelves and a thin stretch between them.
         fn profiles(&self, _id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
             use omacharts_engine::indicators::profile::compute;
             let day = 86_400;
-            let bars: Vec<omacharts_engine::Bar> = (0..4)
-                .map(|i| omacharts_engine::Bar { ts: 1_793_836_800 + (i / 2) * day + (i % 2) * 3600, open: 100.0, high: 101.0, low: 99.0, close: 100.5, volume: 10.0 })
-                .collect();
-            let profiles = compute(&bars, omacharts_engine::Reset::Session, 0, Some(10), 0.7, None, &[]);
+            let bar = |at: i64, low: f64, high: f64, volume: f64| omacharts_engine::Bar { ts: 1_793_836_800 + at, open: low, high, low, close: high, volume };
+            let mut bars: Vec<omacharts_engine::Bar> = (0..2).map(|i| bar(i * 3600, 99.0, 101.0, 10.0)).collect();
+            for (hour, (low, high, volume)) in [(99.0, 100.0, 100.0), (99.0, 100.0, 100.0), (100.0, 105.0, 5.0), (104.0, 105.0, 60.0)].into_iter().enumerate() {
+                bars.push(bar(day + hour as i64 * 3600, low, high, volume));
+            }
+            let profiles = compute(&bars, omacharts_engine::Reset::Session, 0, Some(20), 0.7, None, &[]);
             Ok(("pos:0 SPY 1h in Main".into(), profiles.into_iter().map(|p| (p, true)).collect()))
         }
         fn profile(&self, _id: Option<u32>, _ts: i64, _merge: bool) -> Result<String, Fault> {
@@ -9914,6 +10200,52 @@ mod tests {
             assert_eq!(invoke(&bad, Some(&NoWindow)).code, crate::cli::EXIT_USAGE);
         }
         assert_eq!(invoke(&["--clear"], Some(&NoWindow)).code, 0);
+    }
+
+    #[test]
+    fn a_profile_lists_its_rows_and_nodes_on_request() {
+        let store = seeded();
+        let invoke = |tail: &str| {
+            let args: Vec<String> = ["omacharts", "chart", "profile", "list"]
+                .into_iter()
+                .map(str::to_string)
+                .chain(tail.split_whitespace().map(str::to_string))
+                .collect();
+            dispatch(&args, &store, Some(&NoWindow), &super::super::Here)
+        };
+        let plain: Value = serde_json::from_str(&invoke("--json").out).unwrap();
+        let first = &plain["profiles"][1];
+        assert!(first.get("rows").is_none() && first.get("hvn").is_none(), "the default stays as it was: {first}");
+
+        let full = invoke("--last --rows --nodes --json");
+        assert_eq!(full.code, 0, "{}", full.err);
+        let full: Value = serde_json::from_str(&full.out).unwrap();
+        let profiles = full["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 1, "--last keeps only the newest");
+        let profile = &profiles[0];
+        assert_eq!(profile["rows"].as_array().unwrap().len(), 20, "the rows the study was set to");
+        assert_eq!(profile["rows"][0][0], 99.0, "a row is named by its low");
+        assert_eq!(profile["row_height"], 0.3);
+        let hvn: Vec<f64> = profile["hvn"].as_array().unwrap().iter().map(|n| n["price"].as_f64().unwrap()).collect();
+        assert_eq!(hvn.len(), 2, "two shelves: {profile}");
+        assert!(hvn[0] < 100.0 && hvn[1] >= 104.0, "{hvn:?}");
+        assert_eq!(profile["hvn"][0]["strength"], 1.0, "the bigger shelf is the point of control's");
+        let lvn = profile["lvn"].as_array().unwrap();
+        assert_eq!(lvn.len(), 1);
+        let valley = lvn[0]["price"].as_f64().unwrap();
+        assert!(valley > 100.0 && valley < 104.0, "{valley}");
+
+        let text = invoke("--last --nodes");
+        assert_eq!(text.code, 0, "{}", text.err);
+        let lines: Vec<&str> = text.out.lines().collect();
+        assert_eq!(lines.len(), 4, "{}", text.out);
+        assert!(lines[2].trim_start().starts_with("hvn 99"), "{}", text.out);
+        assert!(lines[3].trim_start().starts_with("lvn 10"), "{}", text.out);
+        let flat = invoke("--nodes");
+        assert!(flat.out.contains("hvn none"), "a flat profile has no nodes: {}", flat.out);
+
+        let rows = invoke("--last --rows");
+        assert!(rows.out.contains("rows of 0.3, price volume:\n   99 "), "{}", rows.out);
     }
 
     /// Every example in the table is a command that runs.

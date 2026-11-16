@@ -974,7 +974,40 @@ is on screen (`●`) or not (`○`). `--on-screen` keeps only the ones on screen
 With `--json`, each profile has `start` and `end` (Unix seconds, with
 `start_text` and `end_text` in the chart's clock), `periods` (the start of each
 period in it), `composite`, `poc`, `value_area_low`, `value_area_high`,
-`volume` and `visible`.
+`volume` and `visible`. `--last` keeps only the newest profile.
+
+`--rows` adds each profile's rows, from its lowest price, as a `price volume`
+table under it. A row is named by its low, which is the traded price when a
+row is one tick. With `--json` they are `rows`, a list of `[price, volume]`
+pairs, and `row_height`. There are as many rows as the study draws, set by
+its `--rows` ([Indicators](#indicators)).
+
+`--nodes` adds each profile's high-volume nodes, the prices volume piled up
+at, and its low-volume nodes, the thinnest price between two neighbouring
+high-volume nodes. Each is given by the price at its centre, the prices it
+spans in brackets, and its strength: how far it stands above or sinks below
+the volume around it, as a share of the point of control's volume. A profile
+with even volume throughout has none. With `--json` they are `hvn` and `lvn`,
+lowest price first, each with `price`, `low`, `high`, `volume` and
+`strength`.
+
+The nodes are found the same way every time. Each row's volume is first
+averaged with the rows within a fortieth of the profile's height either side
+(at least one row), so a single busy row is not a node. A high-volume node is
+a peak of those averages that stands at least a tenth of the point of
+control's volume above the lowest volume between it and any higher peak, on
+each side. A low-volume node is the lowest point between two neighbouring
+high-volume nodes. A node spans the rows within half its strength of its
+centre.
+
+```
+$ omacharts chart profile list --last --nodes
+1 profiles on pos:0 ESZ6 5m in "Chartbook 1"
+●  2026-11-15 18:10 → 2026-11-16 02:50  POC 7579.70  VA 7556.20–7614.40
+   hvn 7550.6 (7548.2–7553.8) 0.38 · 7566 (7564–7568.4) 0.52 · 7578.8 (7573.4–7583) 0.78 · 7599.8 (7597.2–7603) 0.52 · 7610.8 (7609–7613) 0.21
+   lvn 7560.2 (7555.6–7563.4) 0.78 · 7571 (7568.4–7573.8) 0.52 · 7591.6 (7583.8–7596.8) 0.57 · 7607 (7604.2–7609) 0.21
+  [exit 0]
+```
 
 ```
 $ omacharts chart profile list --on-screen
@@ -1724,7 +1757,7 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 | `trading default ACCOUNT` | The account charts trade on until given one of their own |
 | `trading positions` | What every account holds, at what average, with its open P&L |
 | `trading orders [--all]` | The day's working orders; with `--all`, the filled and cancelled ones too |
-| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N` instead of the chart's Qty |
+| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N`, any whole number, instead of the chart's Qty |
 | `trading exit --target PRICE --stop PRICE` | A target, a stop, or both linked, for the whole of the position the chart trades |
 | `trading modify ORDER --price PRICE` | Moves a working order |
 | `trading cancel ORDER`, `trading cancel --all [--account ACCOUNT]` | Cancels one order, or every open order on an account (the default one when not given) |
@@ -1769,10 +1802,6 @@ Lucid: Move Buy Limit 2 ESZ6 to 6,805.00
 $ omacharts trading flatten
 Lucid: Flatten ESZ6 and cancel its orders
   [exit 0]
-
-$ omacharts trading sell --quantity 12
-omacharts: Futures offers 1, 2, 3, 4, 5, 6, 7, 8, 9 for ES, not 12
-  [exit 5]
 
 $ omacharts trading buy --limit 6900
 omacharts: Lucid: Not placed · 6,900.00 is above the market now

@@ -488,6 +488,34 @@ impl cli::Caller for Typed<'_> {
             .map_err(|error| cli::unreadable(path, error))?;
         String::from_utf8(bytes.to_vec()).map_err(|error| cli::unreadable(path, error))
     }
+
+    fn sink(&self) -> Option<std::rc::Rc<dyn cli::Sink>> {
+        Some(std::rc::Rc::new(Held(std::cell::RefCell::new(Some(
+            self.0.clone(),
+        )))))
+    }
+}
+
+/// The terminal that typed a command, held so it keeps waiting: GLib lets
+/// it go, and gives it its prompt back, once the last reference to its
+/// command line is dropped.
+struct Held(std::cell::RefCell<Option<gio::ApplicationCommandLine>>);
+
+impl cli::Sink for Held {
+    fn say(&self, text: &str) {
+        use gio::prelude::*;
+        if let Some(line) = self.0.borrow().as_ref() {
+            line.print_literal(text);
+        }
+    }
+
+    fn end(&self, code: u8) {
+        use gio::prelude::*;
+        if let Some(line) = self.0.borrow_mut().take() {
+            line.set_exit_code(glib::ExitCode::from(code));
+            line.done();
+        }
+    }
 }
 
 fn open_store() -> Store {

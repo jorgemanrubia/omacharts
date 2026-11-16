@@ -120,16 +120,13 @@ impl Window {
     /// as the command's failure.
     pub fn trade_command(self: &Rc<Self>, act: Act) -> Result<Said, Fault> {
         match act {
-            Act::Order { chart, side, kind, price, quantity } => {
+            Act::Order { chart, side, kind, price, quantity, exits } => {
                 let pane = self.chart_to_trade(chart)?;
-                let size = match quantity {
-                    None => None,
-                    Some(n) => {
-                        let traded = pane.traded().ok_or_else(|| Fault::refused("this chart charts nothing to trade".into()))?;
-                        Some(crate::cli::trading::picked(&self.store, &traded, n)?.size)
-                    }
-                };
-                self.heard_doing(|| self.order_on(&pane, side, kind, None, price, size))
+                // Any quantity, not only those the chart's Qty offers.
+                let size = quantity.and_then(trading::Quantity::new);
+                self.heard_doing(|| {
+                    self.order_with_exits(&pane, side, kind, None, price, size, exits)
+                })
             }
             Act::Exit { chart, target, stop } => {
                 let pane = self.chart_to_trade(chart)?;
@@ -316,10 +313,20 @@ mod tests {
             let id = listed["orders"][0]["id"].as_str().expect("an id").to_string();
             assert_eq!(listed["orders"][0]["qty"], 2, "{listed}");
 
-            // A quantity the chart does not offer is refused.
-            let (code, why) = command(&window, "trading sell --quantity 12");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
-            assert!(why.contains("1, 2, 3"), "{why}");
+            // A quantity the chart's Qty does not offer goes all the same,
+            // and the window shows it as it shows any other.
+            let (code, out) = command(&window, &format!("trading buy --limit {} --quantity 13", away(last, -50)));
+            assert_eq!(code, 0, "{out}");
+            assert!(out.contains("Buy Limit 13 ESZ6 at"), "{out}");
+            assert!(settled(&window, &key, || working().iter().any(|order| order.qty == 13)), "not placed");
+            let listed = json(&window, "trading orders --json");
+            assert!(listed["orders"].as_array().is_some_and(|orders| orders.iter().any(|order| order["qty"] == 13)), "{listed}");
+            let thirteen = listed["orders"].as_array().into_iter().flatten().find(|order| order["qty"] == 13).expect("the 13");
+            let (code, out) = command(&window, &format!("trading cancel {}", thirteen["id"].as_str().expect("an id")));
+            assert_eq!(code, 0, "{out}");
+            assert!(settled(&window, &key, || working().len() == 1), "not cancelled");
+            let (code, why) = command(&window, "trading sell --quantity 0");
+            assert_eq!(code, crate::cli::EXIT_USAGE, "{why}");
 
             let moved_to = away(last, -60);
             let (code, out) = command(&window, &format!("trading modify {id} --price {moved_to}"));
@@ -352,6 +359,16 @@ mod tests {
             let (code, out) = command(&window, "trading flatten");
             assert_eq!(code, 0, "{out}");
             assert!(out.contains("Already flat in ESZ6"), "{out}");
+
+            // A position of 13, which no Qty offers, shows as any other.
+            let (code, out) = command(&window, "trading buy --quantity 13");
+            assert_eq!(code, 0, "{out}");
+            assert!(settled(&window, &key, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 13)), "not bought");
+            let held = json(&window, "trading positions --json");
+            assert_eq!(held["positions"][0]["qty"], 13, "{held}");
+            use super::super::marks::MarksSeen as _;
+            let (position, _) = pane.view.mark_states();
+            assert!(position.as_ref().is_some_and(|(words, _)| words.contains("13")), "{position:?}");
         });
     }
 

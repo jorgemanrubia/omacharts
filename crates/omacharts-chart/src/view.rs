@@ -221,6 +221,9 @@ struct State {
     /// a year is 250 bars of a stock and 365 of bitcoin, and the month to
     /// date grows a bar a day.
     range: Option<Range>,
+    /// Where the chart was looking before it was built again, held until
+    /// the series it was looking at arrives: see [`ChartView::keep_viewport`].
+    kept: Option<Viewport>,
     drag: Option<Drag>,
     /// The grip of a selected drawing the pointer rests on, lit so the hand
     /// can see what a press would take hold of. Not while anything is being
@@ -1398,6 +1401,7 @@ impl State {
             overhang_share: 0.0,
             lead: 0,
             range: None,
+            kept: None,
             indicators: Vec::new(),
             show_indicators: true,
             covered_axis_top: 0.0,
@@ -2548,7 +2552,17 @@ impl State {
         if let Some(compare) = self.compare.as_mut() {
             compare.realign(&self.bars, timeframe);
         }
-        if changed {
+        // Only once there are bars to place it on: an empty series first,
+        // while the feed is asked, leaves it waiting.
+        let kept = match self.bars.is_empty() {
+            true => None,
+            false => self.kept.take(),
+        };
+        let kept_here = kept.as_ref().is_some_and(|kept| {
+            kept.timeframe == timeframe
+                && self.instrument.as_ref().is_some_and(|i| i.symbol == kept.symbol && i.suffix == kept.suffix)
+        });
+        if changed && !kept_here {
             // A measured range belongs to the series it was measured on.
             self.ruler = None;
             self.ruler_armed = false;
@@ -2570,8 +2584,61 @@ impl State {
                 self.free_strips();
             }
         }
+        match kept {
+            Some(kept) if kept_here => self.take_viewport(kept),
+            // Another symbol opens at rest, but a range somebody asked for
+            // is kept across it, as [`ChartView::show_range`] promises.
+            Some(kept) => self.range = kept.range.or(self.range),
+            None => {}
+        }
         self.fit_range();
         changed
+    }
+
+    /// Where this chart is looking, to be put back on the same series by
+    /// [`State::take_viewport`]. The one still waiting for its series, if
+    /// none has arrived since it was handed over.
+    fn viewport(&self) -> Option<Viewport> {
+        let Some(instrument) = self.instrument.as_ref().filter(|_| !self.bars.is_empty()) else {
+            return self.kept.clone();
+        };
+        Some(Viewport {
+            symbol: instrument.symbol.clone(),
+            suffix: instrument.suffix.clone(),
+            timeframe: self.timeframe,
+            visible: self.visible,
+            anchored: self.anchored,
+            first: (!self.anchored).then(|| self.bars.get(self.first).map(|bar| bar.ts)).flatten(),
+            lead: self.lead,
+            overhang: self.overhang,
+            overhang_by_hand: self.overhang_by_hand,
+            overhang_share: self.overhang_share,
+            range: self.range,
+            price_auto: self.price_auto,
+            price_zoom: self.price_zoom,
+            price_offset: self.price_offset,
+            price_base: self.price_base.get(),
+        })
+    }
+
+    /// Look where `kept` was looking. The leftmost bar is found by its
+    /// time rather than its place in the series, which may have grown at
+    /// either end since.
+    fn take_viewport(&mut self, kept: Viewport) {
+        self.visible = kept.visible;
+        self.anchored = kept.anchored;
+        if let Some(ts) = kept.first {
+            self.first = self.bars.partition_point(|bar| bar.ts < ts).min(self.bars.len().saturating_sub(1));
+        }
+        self.lead = kept.lead;
+        self.overhang = kept.overhang;
+        self.overhang_by_hand = kept.overhang_by_hand;
+        self.overhang_share = kept.overhang_share;
+        self.range = kept.range;
+        self.price_auto = kept.price_auto;
+        self.price_zoom = kept.price_zoom;
+        self.price_offset = kept.price_offset;
+        self.price_base.set(kept.price_base);
     }
 
     /// Show `range`, and keep showing it as the series changes.
@@ -2691,6 +2758,30 @@ impl State {
         let right = (left + columns as i64).min(len);
         (first as usize, (right - first).max(0) as usize, (-left).max(0) as usize)
     }
+}
+
+/// Where a chart is looking: how many bars across, which of them or the
+/// live edge, and the price scale. Not stored anywhere — it is what a chart
+/// built again, its chartbook opened again, needs to look exactly where it
+/// was left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Viewport {
+    symbol: String,
+    suffix: Option<String>,
+    timeframe: Timeframe,
+    visible: usize,
+    anchored: bool,
+    /// The leftmost bar's time, when the view is not following the live edge.
+    first: Option<i64>,
+    lead: usize,
+    overhang: usize,
+    overhang_by_hand: bool,
+    overhang_share: f64,
+    range: Option<Range>,
+    price_auto: bool,
+    price_zoom: f64,
+    price_offset: f64,
+    price_base: Option<(f64, f64)>,
 }
 
 /// Something the window hangs off the chart after building it. Optional
@@ -3487,6 +3578,26 @@ impl ChartView {
     /// mean anything while the chart has the keyboard — and a Delete typed
     /// into a search box must stay in the box.
     fn wire_keys(self: &Rc<Self>) {
+        let keys = gtk::EventControllerKey::new();
+        let view = Rc::downgrade(self);
+        keys.connect_key_pressed(move |_, key, _, modifiers| match view.upgrade() {
+            Some(view) => view.key_pressed(key, modifiers),
+            None => glib::Propagation::Proceed,
+        });
+        let view = Rc::downgrade(self);
+        keys.connect_key_released(move |_, key, _, _| {
+            use gtk::gdk::Key;
+            if let (Key::Control_L | Key::Control_R, Some(view)) = (key, view.upgrade()) {
+                view.set_magnet(false);
+            }
+        });
+        self.area.add_controller(keys);
+    }
+
+    /// A key pressed while the chart has the keyboard: `Stop` where the
+    /// chart took it, `Proceed` where it goes on up to the pane and the
+    /// window.
+    fn key_pressed(self: &Rc<Self>, key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> glib::Propagation {
         use gtk::gdk::ModifierType;
         fn ctrl(m: ModifierType) -> bool {
             m.contains(ModifierType::CONTROL_MASK)
@@ -3498,213 +3609,205 @@ impl ChartView {
             m.contains(ModifierType::ALT_MASK)
         }
 
-        let keys = gtk::EventControllerKey::new();
-        let view = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, modifiers| {
-            let Some(view) = view.upgrade() else { return glib::Propagation::Proceed };
-            use gtk::gdk::Key;
-            match key {
-                // Ctrl alone says nothing to anybody else, so it goes on;
-                // here it is the magnet, and the crosshair and a drawing
-                // half laid down move onto the candle without waiting for
-                // the hand to.
-                Key::Control_L | Key::Control_R => {
-                    view.set_magnet(true);
-                    glib::Propagation::Proceed
+        let view = self;
+        use gtk::gdk::Key;
+        match key {
+            // Ctrl alone says nothing to anybody else, so it goes on;
+            // here it is the magnet, and the crosshair and a drawing
+            // half laid down move onto the candle without waiting for
+            // the hand to.
+            Key::Control_L | Key::Control_R => {
+                view.set_magnet(true);
+                glib::Propagation::Proceed
+            }
+            Key::Escape => match view.cancel() {
+                true => glib::Propagation::Stop,
+                false => glib::Propagation::Proceed,
+            },
+            Key::Delete | Key::BackSpace | Key::KP_Delete => {
+                if let Some(id) = view.picked() {
+                    view.tell_indicator(IndicatorEvent::Remove(id));
+                    return glib::Propagation::Stop;
                 }
-                Key::Escape => match view.cancel() {
+                if view.state.borrow().selected.is_empty() {
+                    return glib::Propagation::Proceed;
+                }
+                view.delete_selected();
+                glib::Propagation::Stop
+            }
+            // Alt and Enter opens the properties, which is what it opens
+            // on a selected object in Explorer, Visual Studio, Visio and
+            // AutoCAD. Enter acts on the thing; Alt+Enter asks about it.
+            Key::Return | Key::KP_Enter | Key::ISO_Enter if alt(modifiers) => {
+                if let Some(id) = view.picked() {
+                    view.tell_indicator(IndicatorEvent::Properties(id));
+                    return glib::Propagation::Stop;
+                }
+                if view.state.borrow().selected.is_empty() {
+                    return glib::Propagation::Proceed;
+                }
+                if let Some(handler) = view.on_drawing_properties.borrow().as_ref() {
+                    handler();
+                }
+                glib::Propagation::Stop
+            }
+            // Enter and F2 both put the caret in the drawing's text, and
+            // they do it because that is what they do in PowerPoint,
+            // Keynote, Google Slides, draw.io, LibreOffice and Figma.
+            // The pointer's way in is a double-click. Enter used to open
+            // the properties here, which left Enter and F2 meaning two
+            // different things — the one arrangement none of those apps
+            // has.
+            // Enter ends a zig-zag, which is the keyboard's way of
+            // saying "that is the last corner". Tried before the text
+            // keys, since while one is being laid down that is what the
+            // key is for.
+            Key::Return | Key::KP_Enter | Key::ISO_Enter
+                if view.state.borrow().placing.as_ref().is_some_and(|d| d.kind.is_path()) =>
+            {
+                view.commit_placing();
+                glib::Propagation::Stop
+            }
+            Key::F2 | Key::Return | Key::KP_Enter | Key::ISO_Enter => {
+                match view.edit_selected_text() {
                     true => glib::Propagation::Stop,
                     false => glib::Propagation::Proceed,
-                },
-                Key::Delete | Key::BackSpace | Key::KP_Delete => {
-                    if let Some(id) = view.picked() {
-                        view.tell_indicator(IndicatorEvent::Remove(id));
-                        return glib::Propagation::Stop;
-                    }
-                    if view.state.borrow().selected.is_empty() {
-                        return glib::Propagation::Proceed;
-                    }
-                    view.delete_selected();
-                    glib::Propagation::Stop
                 }
-                // Alt and Enter opens the properties, which is what it opens
-                // on a selected object in Explorer, Visual Studio, Visio and
-                // AutoCAD. Enter acts on the thing; Alt+Enter asks about it.
-                Key::Return | Key::KP_Enter | Key::ISO_Enter if alt(modifiers) => {
-                    if let Some(id) = view.picked() {
-                        view.tell_indicator(IndicatorEvent::Properties(id));
-                        return glib::Propagation::Stop;
-                    }
-                    if view.state.borrow().selected.is_empty() {
-                        return glib::Propagation::Proceed;
-                    }
-                    if let Some(handler) = view.on_drawing_properties.borrow().as_ref() {
-                        handler();
-                    }
-                    glib::Propagation::Stop
-                }
-                // Enter and F2 both put the caret in the drawing's text, and
-                // they do it because that is what they do in PowerPoint,
-                // Keynote, Google Slides, draw.io, LibreOffice and Figma.
-                // The pointer's way in is a double-click. Enter used to open
-                // the properties here, which left Enter and F2 meaning two
-                // different things — the one arrangement none of those apps
-                // has.
-                // Enter ends a zig-zag, which is the keyboard's way of
-                // saying "that is the last corner". Tried before the text
-                // keys, since while one is being laid down that is what the
-                // key is for.
-                Key::Return | Key::KP_Enter | Key::ISO_Enter
-                    if view.state.borrow().placing.as_ref().is_some_and(|d| d.kind.is_path()) =>
-                {
-                    view.commit_placing();
-                    glib::Propagation::Stop
-                }
-                Key::F2 | Key::Return | Key::KP_Enter | Key::ISO_Enter => {
-                    match view.edit_selected_text() {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                Key::a | Key::A
-                    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                        && !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
-                {
-                    match view.select_visible() {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                Key::z | Key::Z | Key::y | Key::Y
-                    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
-                {
-                    let redo = matches!(key, Key::y | Key::Y)
-                        || modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
-                    let done = if redo { view.redo() } else { view.undo() };
-                    match done {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                // Alt+Shift and an arrow: put the selected drawings' labels
-                // against that edge of the shape, and Alt+Shift+. puts them
-                // back in the middle. Four edges and a centre, not nine
-                // places: the corners are a thing to aim at with the picture
-                // in the properties, and a key for each would need two
-                // arrows pressed together to mean one of them.
-                //
-                // Before the nudge arm below, which otherwise takes any
-                // arrow on a selected drawing. It only claims the key when
-                // there is a label to move — on a figure with nothing
-                // written on it the arrows go on nudging, rather than the
-                // chord quietly doing nothing.
-                Key::Left | Key::Right | Key::Up | Key::Down
-                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
-                {
-                    let at = match key {
-                        Key::Left => drawings::Place::Left,
-                        Key::Right => drawings::Place::Right,
-                        Key::Up => drawings::Place::Top,
-                        _ => drawings::Place::Bottom,
-                    };
-                    match view.place_text(at) {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                // Alt+Shift and the size keys: the stroke of whatever is
-                // selected, a drawing's or an indicator's. Ctrl with the
-                // same keys is the text's size, and bare they are the
-                // chart's zoom — three things that all mean "bigger", kept
-                // apart by which modifier is held and what is selected.
-                // Ctrl+Shift would be no fourth: Shift is how + is typed on
-                // the main row, so it is Ctrl and + already.
-                Key::plus | Key::equal | Key::KP_Add | Key::minus | Key::underscore | Key::KP_Subtract
-                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
-                {
-                    let thicker = matches!(key, Key::plus | Key::equal | Key::KP_Add);
-                    if let Some(id) = view.picked() {
-                        view.tell_indicator(IndicatorEvent::StepWidth(id, thicker));
-                        return glib::Propagation::Stop;
-                    }
-                    let by = if thicker { drawings::WIDTH_STEP } else { -drawings::WIDTH_STEP };
-                    match view.step_width(by) {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                // Alt+Shift+A steps the arrowhead round its four states.
-                // The same hand that holds Alt+Shift to place a label, on
-                // the letter the arrow tool already answers to.
-                Key::a | Key::A if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) => {
-                    match view.cycle_head() {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                // The full stop, wherever the layout hides it: Shift makes it
-                // a colon on a Spanish keyboard and a greater-than on a US
-                // one, and the chord is the same chord on both.
-                Key::period | Key::greater | Key::colon | Key::KP_Decimal
-                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
-                {
-                    match view.place_text(drawings::Place::Center) {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                // Ctrl+Shift with up or down: to the front, or to the back,
-                // among the other drawings. Up is front, the way a stack
-                // reads.
-                Key::Up | Key::Down
-                    if !view.state.borrow().selected.is_empty()
-                        && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                        && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
-                {
-                    view.restack_selected(key == Key::Up);
-                    glib::Propagation::Stop
-                }
-                Key::Left | Key::Right | Key::Up | Key::Down
-                    if !view.state.borrow().selected.is_empty()
-                        && !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
-                {
-                    // A pixel at a time; ten with Shift.
-                    let step = if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
-                        10.0
-                    } else {
-                        1.0
-                    };
-                    let (dx, dy) = match key {
-                        Key::Left => (-step, 0.0),
-                        Key::Right => (step, 0.0),
-                        Key::Up => (0.0, -step),
-                        _ => (0.0, step),
-                    };
-                    view.nudge_selected(dx, dy);
-                    glib::Propagation::Stop
-                }
-                // Alt+N: configuration N for the selected drawing, or for
-                // the one about to be drawn while a tool is in hand.
-                _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) => {
-                    let Some(number) = preset_number(key) else {
-                        return glib::Propagation::Proceed;
-                    };
-                    match view.apply_configuration(number as u8) {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
-                    }
-                }
-                _ => glib::Propagation::Proceed,
             }
-        });
-        let view = Rc::downgrade(self);
-        keys.connect_key_released(move |_, key, _, _| {
-            use gtk::gdk::Key;
-            if let (Key::Control_L | Key::Control_R, Some(view)) = (key, view.upgrade()) {
-                view.set_magnet(false);
+            Key::a | Key::A
+                if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                    && !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+            {
+                match view.select_visible() {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
             }
-        });
-        self.area.add_controller(keys);
+            Key::z | Key::Z | Key::y | Key::Y
+                if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
+            {
+                let redo = matches!(key, Key::y | Key::Y)
+                    || modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                let done = if redo { view.redo() } else { view.undo() };
+                match done {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
+            }
+            // Alt+Shift and an arrow: put the selected drawings' labels
+            // against that edge of the shape, and Alt+Shift+. puts them
+            // back in the middle. Four edges and a centre, not nine
+            // places: the corners are a thing to aim at with the picture
+            // in the properties, and a key for each would need two
+            // arrows pressed together to mean one of them.
+            //
+            // Before the nudge arm below, which otherwise takes any
+            // arrow on a selected drawing. It only claims the key when
+            // there is a label to move — on a figure with nothing
+            // written on it the arrows go on nudging, rather than the
+            // chord quietly doing nothing.
+            Key::Left | Key::Right | Key::Up | Key::Down
+                if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+            {
+                let at = match key {
+                    Key::Left => drawings::Place::Left,
+                    Key::Right => drawings::Place::Right,
+                    Key::Up => drawings::Place::Top,
+                    _ => drawings::Place::Bottom,
+                };
+                match view.place_text(at) {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
+            }
+            // Alt+Shift and the size keys: the stroke of whatever is
+            // selected, a drawing's or an indicator's. Ctrl with the
+            // same keys is the text's size, and bare they are the
+            // chart's zoom — three things that all mean "bigger", kept
+            // apart by which modifier is held and what is selected.
+            // Ctrl+Shift would be no fourth: Shift is how + is typed on
+            // the main row, so it is Ctrl and + already.
+            Key::plus | Key::equal | Key::KP_Add | Key::minus | Key::underscore | Key::KP_Subtract
+                if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+            {
+                let thicker = matches!(key, Key::plus | Key::equal | Key::KP_Add);
+                if let Some(id) = view.picked() {
+                    view.tell_indicator(IndicatorEvent::StepWidth(id, thicker));
+                    return glib::Propagation::Stop;
+                }
+                let by = if thicker { drawings::WIDTH_STEP } else { -drawings::WIDTH_STEP };
+                match view.step_width(by) {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
+            }
+            // Alt+Shift+A steps the arrowhead round its four states.
+            // The same hand that holds Alt+Shift to place a label, on
+            // the letter the arrow tool already answers to.
+            Key::a | Key::A if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) => {
+                match view.cycle_head() {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
+            }
+            // The full stop, wherever the layout hides it: Shift makes it
+            // a colon on a Spanish keyboard and a greater-than on a US
+            // one, and the chord is the same chord on both.
+            Key::period | Key::greater | Key::colon | Key::KP_Decimal
+                if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+            {
+                match view.place_text(drawings::Place::Center) {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
+            }
+            // Ctrl+Shift with up or down: to the front, or to the back,
+            // among the other drawings. Up is front, the way a stack
+            // reads.
+            Key::Up | Key::Down
+                if !view.state.borrow().selected.is_empty()
+                    && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                    && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+            {
+                view.restack_selected(key == Key::Up);
+                glib::Propagation::Stop
+            }
+            // Never with Alt: Alt and an arrow walks the focus from chart
+            // to chart, which a drawing left selected on the chart with
+            // the keyboard used to take for itself, a pixel at a time and
+            // often out of sight, until something took the keyboard off
+            // the chart.
+            Key::Left | Key::Right | Key::Up | Key::Down
+                if !view.state.borrow().selected.is_empty() && !ctrl(modifiers) && !alt(modifiers) =>
+            {
+                // A pixel at a time; ten with Shift.
+                let step = if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                    10.0
+                } else {
+                    1.0
+                };
+                let (dx, dy) = match key {
+                    Key::Left => (-step, 0.0),
+                    Key::Right => (step, 0.0),
+                    Key::Up => (0.0, -step),
+                    _ => (0.0, step),
+                };
+                view.nudge_selected(dx, dy);
+                glib::Propagation::Stop
+            }
+            // Alt+N: configuration N for the selected drawing, or for
+            // the one about to be drawn while a tool is in hand.
+            _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) => {
+                let Some(number) = preset_number(key) else {
+                    return glib::Propagation::Proceed;
+                };
+                match view.apply_configuration(number as u8) {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                }
+            }
+            _ => glib::Propagation::Proceed,
+        }
     }
 
     /// Ctrl went down or came up: snap, or stop snapping, where the pointer
@@ -4741,6 +4844,19 @@ impl ChartView {
         *self.on_pane_resize.borrow_mut() = Some(Box::new(handler));
     }
 
+    /// Strip `id` has been given a new share of the chart's height, `share`,
+    /// or the one it is drawn at now, as the drag on its edge left it: told
+    /// to whoever keeps it, once, when the drag ends.
+    pub fn pane_resized(&self, id: u32, share: Option<f64>) {
+        let share = share.or_else(|| {
+            let state = self.state.borrow();
+            state.indicators.iter().find(|d| d.indicator.id == id).and_then(|d| d.output.pane_height())
+        });
+        if let (Some(share), Some(handler)) = (share, self.on_pane_resize.borrow().as_ref()) {
+            handler(id, share);
+        }
+    }
+
     pub fn set_pane_close_handler(&self, handler: impl Fn(u32) + 'static) {
         *self.on_pane_close.borrow_mut() = Some(Box::new(handler));
     }
@@ -5239,6 +5355,13 @@ impl ChartView {
         read(&self.state.borrow().bars)
     }
 
+    /// Read the indicators as the chart drew them, each with what it
+    /// computed, without copying them. As [`Self::with_bars`], `read` must
+    /// not reach back into the chart.
+    pub fn with_indicators<T>(&self, read: impl FnOnce(&[Drawn]) -> T) -> T {
+        read(&self.state.borrow().indicators)
+    }
+
     /// Jump back to the right edge and follow new bars again.
     pub fn go_to_latest(&self) {
         let mut state = self.state.borrow_mut();
@@ -5246,6 +5369,28 @@ impl ChartView {
         state.overhang = RIGHT_MARGIN;
         state.overhang_by_hand = false;
         state.lead = 0;
+        drop(state);
+        self.redraw();
+    }
+
+    /// Where the chart is looking, for [`ChartView::keep_viewport`] to put
+    /// back on a chart built again in its place.
+    pub fn viewport(&self) -> Option<Viewport> {
+        self.state.borrow().viewport()
+    }
+
+    /// Look where `viewport` was looking once the same series arrives —
+    /// across the bars that arrived since, at the width the chart has now.
+    /// Another symbol or timeframe opens at rest, as it would have.
+    pub fn keep_viewport(&self, viewport: Viewport) {
+        let mut state = self.state.borrow_mut();
+        let here = state.instrument.as_ref().is_some_and(|i| i.symbol == viewport.symbol && i.suffix == viewport.suffix)
+            && state.timeframe == viewport.timeframe
+            && !state.bars.is_empty();
+        match here {
+            true => state.take_viewport(viewport),
+            false => state.kept = Some(viewport),
+        }
         drop(state);
         self.redraw();
     }
@@ -6227,7 +6372,6 @@ impl ChartView {
         });
 
         let state = self.state.clone();
-        let on_resize = self.on_pane_resize.clone();
         let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         drag.connect_drag_end(move |_, offset_x, offset_y| {
@@ -6338,14 +6482,8 @@ impl ChartView {
                 _ => {}
             }
             let Some(Drag::PaneEdge { id, .. }) = finished else { return };
-            let share = state
-                .borrow()
-                .indicators
-                .iter()
-                .find(|d| d.indicator.id == id)
-                .and_then(|d| d.output.pane_height());
-            if let (Some(share), Some(handler)) = (share, on_resize.borrow().as_ref()) {
-                handler(id, share);
+            if let Some(view) = view.upgrade() {
+                view.pane_resized(id, None);
             }
         });
 
@@ -11982,6 +12120,56 @@ mod tests {
         }
     }
 
+    /// A chart built again in place of another, its chartbook opened
+    /// again, looks exactly where the other was left once the same series
+    /// arrives: as many bars across, the same bars or the live edge, the
+    /// same prices. Bars that came in meanwhile do not move a view panned
+    /// back, and are followed by one at the live edge.
+    #[test]
+    fn a_chart_built_again_looks_where_the_one_before_was_left() {
+        let (w, h) = (1200.0, 600.0);
+        let blank = || {
+            let mut state = charted(0);
+            state.visible = 160;
+            state
+        };
+        let mut left = blank();
+        left.replace_series(named("ES"), left.timeframe, ramp(400));
+        left.zoom_time(0.5, 0.5, w);
+        left.pan_by(-60.0, w);
+        left.scale_price(2.0, w, h);
+        left.price_offset = 0.1;
+        assert!(!left.anchored, "panned back");
+        let kept = left.viewport().expect("a view");
+
+        let mut again = blank();
+        again.kept = Some(kept.clone());
+        again.replace_series(named("ES"), again.timeframe, Vec::new());
+        assert!(again.kept.is_some(), "an empty series is not the one to place it on");
+        again.replace_series(named("ES"), again.timeframe, ramp(402));
+        assert_eq!(again.viewport(), Some(kept.clone()), "looks where it was left");
+        assert_eq!(again.view(), left.view(), "on the same bars");
+        assert!(same_scale(drawn_scale(&again, w, h), drawn_scale(&left, w, h)), "at the same prices");
+
+        // At the live edge, it follows what came in meanwhile at the same zoom.
+        let mut live = blank();
+        live.replace_series(named("ES"), live.timeframe, ramp(400));
+        live.zoom_time(0.5, 0.5, w);
+        let mut again = blank();
+        again.kept = live.viewport();
+        again.replace_series(named("ES"), again.timeframe, ramp(402));
+        assert!(again.anchored, "still at the live edge");
+        assert_eq!(again.columns(), live.columns(), "the same zoom");
+        assert_eq!(again.view().0, live.view().0 + 2, "on the newest bars");
+
+        // Another symbol opens at rest.
+        let mut other = blank();
+        other.kept = Some(kept);
+        other.replace_series(named("NQ"), other.timeframe, ramp(400));
+        assert!(other.anchored && other.visible == 160 && other.price_auto, "another symbol opens at rest");
+        assert!(other.kept.is_none());
+    }
+
     /// Nothing to write down while the scale fits itself, and nothing left
     /// once a reset or auto scale has let go of a held one.
     #[test]
@@ -14184,6 +14372,34 @@ mod tests {
                 }
                 window.destroy();
             }
+        });
+    }
+
+    /// Alt and an arrow is the window's, to walk the focus from chart to
+    /// chart, even with a drawing selected on the chart that has the
+    /// keyboard: it goes on up rather than nudging the drawing. A bare
+    /// arrow, and Shift and one, still nudge it.
+    #[test]
+    fn alt_and_an_arrow_goes_past_a_selected_drawing_to_the_window() {
+        crate::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let view = ChartView::new(theme, scheme);
+            {
+                let mut s = view.state.borrow_mut();
+                let mut drawing = Drawing::new(DrawingKind::Rect, Anchor::new(1, 1.0), Anchor::new(5, 2.0));
+                drawing.follow(1);
+                s.drawings = vec![drawing];
+                s.selected = vec![0];
+            }
+            use gtk::gdk::{Key, ModifierType};
+            for key in [Key::Left, Key::Right, Key::Up, Key::Down] {
+                assert_eq!(view.key_pressed(key, ModifierType::ALT_MASK), glib::Propagation::Proceed, "Alt+{key:?}");
+            }
+            for modifiers in [ModifierType::empty(), ModifierType::SHIFT_MASK] {
+                assert_eq!(view.key_pressed(Key::Right, modifiers), glib::Propagation::Stop, "{modifiers:?}+Right nudges");
+            }
+            assert_eq!(view.state.borrow().selected, vec![0], "still selected");
         });
     }
 
