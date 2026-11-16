@@ -1211,6 +1211,17 @@ tos      thinkorswim · US listings, from your thinkorswim account · live, as e
   [exit 0]
 ```
 
+One chart can be drawn from another feed than the order's pick: `chart set
+--feed FEED` names it, by its id or its name as `provider list` gives them,
+and `--feed default` puts the chart back on the order. `chart list --json`
+reads it back as `feed`, `null` while the chart follows the order. A feed that
+is not on the order is refused with exit 3, and the error lists what is.
+
+```
+$ omacharts chart set --feed yahoo
+$ omacharts chart set --feed default
+```
+
 ## Choosing the days a chart shows
 
 ```
@@ -1420,7 +1431,7 @@ that day, is in `trading accounts` once its login answers. Nothing signs
 out, and the reply is the logins asked; the Log says how each went.
 
 A chart's trading is set with `chart set`: `--account` (a name, a number,
-login and number such as `Lucid/1234`, or `default`), `--quantity`, `--trading-symbol` (the other size of what it
+login and number such as `Acme Futures/ACME-0001`, or `default`), `--quantity`, `--trading-symbol` (the other size of what it
 charts, such as MES on ES, or `none`) and `--show-fills`. `chart list --json`
 reads them back. Orders, flatten and exit act on the chart that `--book` and
 `--chart` name, the focused one by default, as every chart command does.

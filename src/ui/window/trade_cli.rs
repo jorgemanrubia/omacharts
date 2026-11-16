@@ -29,8 +29,7 @@ impl Window {
             .logins
             .iter()
             .map(|login| {
-                let data = view.data_login.as_deref() == Some(login.id.as_str());
-                (login.id.clone(), self.desk.standing(login, data))
+                (login.id.clone(), self.desk.standing(login, view.feeds(&login.id)))
             })
             .collect();
         (view, standings)
@@ -101,7 +100,7 @@ impl Window {
             );
             return Ok(true);
         }
-        let data = trading::data_login_id(&self.store, &logins).as_deref() == Some(id);
+        let data = trading::feeds_charts(&self.store, login);
         self.desk.sign_in(login, data);
         self.desk.tell();
         Ok(false)
@@ -253,7 +252,7 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::super::trade::tests::{long_es, settle};
+    use super::super::trade::tests::{long_es, open_login, settle, window_with_logins};
     use super::*;
     use crate::trading::Session as _;
 
@@ -386,7 +385,9 @@ mod tests {
             assert_eq!(accounts["accounts"][0]["default"], true, "{accounts}");
             let logins = json(&window, "trading logins --json");
             assert_eq!(logins["logins"][0]["live"], true, "{logins}");
-            assert_eq!(logins["logins"][0]["accounts"][0], "Rithmic Test", "{logins}");
+            assert_eq!(logins["logins"][0]["accounts"][0], "Rithmic Test 951", "{logins}");
+            assert_eq!(logins["logins"][0]["feed"]["label"], "Rithmic (Rithmic Test)", "{logins}");
+            assert!(logins["logins"][0]["feed"]["id"].as_str().is_some_and(|id| id.starts_with("rithmic@")), "{logins}");
 
             let working = || session.book().orders.iter().filter(|order| order.status.working()).count();
             for (ticks, placed) in [(-40, 1), (-48, 2)] {
@@ -488,6 +489,53 @@ mod tests {
             assert!(window.focused_pane().account.borrow().is_none());
             assert!(window.focused_pane().trading_symbol.borrow().is_none());
             drop(pane);
+        });
+    }
+
+    /// A chart's data feed, set from a terminal: one named by its id, the
+    /// default again, and one that is not on the order refused. An account
+    /// of another login brings that login's own feed, over a feed picked
+    /// for the chart; another account of the same login leaves the pick.
+    #[test]
+    fn a_chart_s_feed_is_set_from_a_terminal_and_follows_its_login() {
+        if omacharts_engine::providers::rithmic::session::development() {
+            return;
+        }
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(crate::store::Store::memory().expect("a store"));
+            let (window, ids) = window_with_logins(&store, &["Acme Futures", "Demo Prop"]);
+            let (acme, demo) = (ids[0].clone(), ids[1].clone());
+            open_login(&window, &store, &acme, &["ACME-0001"]);
+            open_login(&window, &store, &demo, &["DEMO-1234", "DEMO-5678"]);
+            trading::set_default_account(&store, &format!("{acme}/ACME-0001"));
+            window.desk.tell();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&window.focused_pane(), es);
+            let feed = || window.focused_pane().feed.borrow().clone();
+
+            let (code, out) = command(&window, "chart set --feed yahoo");
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(feed().as_deref(), Some("yahoo"));
+            assert_eq!(json(&window, "chart list --json")["charts"][0]["feed"], "yahoo");
+
+            let (code, out) = command(&window, "chart set --account DEMO-1234");
+            assert_eq!(code, 0, "{out}");
+            assert!(out.contains("Rithmic (Demo Prop)"), "{out}");
+            assert_eq!(feed(), None, "the other login's own feed");
+            assert_eq!(json(&window, "chart list --json")["charts"][0]["feed"], Value::Null);
+
+            let (code, out) = command(&window, &format!("chart set --feed rithmic@{acme}"));
+            assert_eq!(code, 0, "{out}");
+            let (code, out) = command(&window, "chart set --account DEMO-5678");
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(feed(), Some(format!("rithmic@{acme}")), "the same login: the pick stays");
+
+            let (code, out) = command(&window, "chart set --feed default");
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(feed(), None);
+            let (code, why) = command(&window, "chart set --feed nowhere");
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND, "{why}");
+            assert!(why.contains("Rithmic (Acme Futures)"), "{why}");
         });
     }
 

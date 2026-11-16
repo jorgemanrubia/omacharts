@@ -619,8 +619,8 @@ impl Desk {
         self.sessions.borrow().get(login).cloned()
     }
 
-    /// How `login` stands. The data login's own refusal, which the data
-    /// session keeps, counts too.
+    /// How `login` stands. With `data`, while its own data feed is charted
+    /// from, the refusal its data session keeps counts too.
     pub fn standing(&self, login: &Login, data: bool) -> Standing {
         if let Some(why) = self.refused.borrow().get(&login.id) {
             return Standing::Refused(why.clone());
@@ -698,7 +698,9 @@ pub struct View {
     /// The default account, as stored; [`account_of`] ignores one that is
     /// stale.
     pub default: Option<String>,
-    pub data_login: Option<String>,
+    /// The logins whose own data feed is on the order, charted from: what
+    /// their data session is refused counts against them.
+    pub fed: Vec<String>,
     /// What the live sessions know of orders, positions and money; empty
     /// with none signed in. The window fills it from [`Desk::book`].
     pub book: Book,
@@ -713,10 +715,15 @@ impl View {
         View {
             accounts: accounts(store),
             default: store.setting(DEFAULT_ACCOUNT),
-            data_login: data_login_id(store, &logins),
+            fed: logins.iter().filter(|login| feeds_charts(store, login)).map(|login| login.id.clone()).collect(),
             logins,
             book: Book::default(),
         }
+    }
+
+    /// Is the login `id`'s own data feed charted from?
+    pub fn feeds(&self, id: &str) -> bool {
+        self.fed.iter().any(|fed| fed == id)
     }
 
     /// Is trading anywhere to be seen? Only with a login: without one there
@@ -736,7 +743,7 @@ impl View {
 
     /// What `account` is called here: see [`account_name`].
     pub fn account_name(&self, account: &Account) -> String {
-        account_name(account, &self.logins, &self.accounts)
+        account_name(account, &self.logins)
     }
 
     /// What the header calls `account`: see [`account_label`].
@@ -763,7 +770,7 @@ impl View {
     /// What the header says is wrong with `account`'s login, if anything.
     pub fn trouble(&self, desk: &Desk, account: &Account) -> Option<String> {
         let login = self.login(&account.login)?;
-        desk.standing(login, self.data_login.as_deref() == Some(login.id.as_str())).trouble()
+        desk.standing(login, self.feeds(&login.id)).trouble()
     }
 }
 

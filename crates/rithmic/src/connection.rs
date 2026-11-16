@@ -204,6 +204,7 @@ pub fn connection(
 /// Close both halves of the login `login`'s connection, if it has one,
 /// waiting [`SIGN_OUT_WAIT`] at most for Rithmic to hear it.
 pub fn close(login: &str) {
+    client::forget_entitlements(Some(login));
     let found = registry().as_ref().and_then(|connections| connections.get(login).cloned());
     if let Some(connection) = found {
         connection.close();
@@ -226,6 +227,22 @@ pub fn running() -> bool {
     !feeding().is_empty()
 }
 
+/// Is market data open on the login `login`'s connection?
+pub fn feeding_login(login: &str) -> bool {
+    feeding().iter().any(|connection| connection.inner.login == login)
+}
+
+/// Close the data half of the login `login`'s connection alone, as
+/// [`shutdown`] closes every one: the session the charts of that login's
+/// feed share ends, and the other logins' go on. Its trading half is left
+/// as it is.
+pub fn close_data(login: &str) {
+    client::forget_entitlements(Some(login));
+    for connection in feeding().into_iter().filter(|connection| connection.inner.login == login) {
+        connection.close_data();
+    }
+}
+
 /// The data half of the login `login`'s connection, when it is open now:
 /// the session the charts share, borrowed. Never opens one, nor starts a
 /// connection, so whatever asks here adds no market-data session that was
@@ -240,12 +257,23 @@ pub fn open_data(login: &str) -> Option<Client> {
     Some(Client::of(connection.inner.clone(), generation))
 }
 
+/// The data half of any login's connection that is open now, its own
+/// first: [`open_data`] for `login`, else another login's, borrowed the
+/// same way. Prices are the exchange's whoever hears them.
+pub fn open_data_or_any(login: &str) -> Option<Client> {
+    open_data(login).or_else(|| {
+        let mut logins: Vec<String> = feeding().iter().map(|connection| connection.inner.login.clone()).collect();
+        logins.sort();
+        logins.iter().find_map(|other| open_data(other))
+    })
+}
+
 /// Close the data half of every connection, waiting a few seconds at most
 /// for Rithmic to acknowledge: what charting is done with. Whatever is
 /// watching hears [`Error::Closed`], and the next [`Connection::data`]
 /// opens it afresh. A trading half is left as it is.
 pub fn shutdown() {
-    client::forget_entitlements();
+    client::forget_entitlements(None);
     for connection in feeding() {
         connection.close_data();
     }
@@ -818,7 +846,7 @@ impl Supervisor {
         match outcome {
             Ok(plants) => {
                 self.data.phase = Phase::Up(Instant::now());
-                self.data.up(plants);
+                self.data.up(plants, &self.login);
             }
             Err(error @ (Error::Refused(_) | Error::NoLogin(_))) => {
                 self.data.phase = Phase::Stopped(error.clone());

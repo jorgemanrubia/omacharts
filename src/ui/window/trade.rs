@@ -2368,7 +2368,7 @@ pub(super) mod tests {
             assert_eq!(paned.next_sibling(), None, "the panel at the very bottom");
             assert!(store.setting_bool(SHOW_TRADING_PANEL, false), "remembered");
 
-            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            trading::remove_login(&store, &kept, &id).expect("removed");
             window.desk.tell();
             assert!(nothing(&window), "trading left behind by the last login");
             assert_eq!(corner_buttons(&window), bare);
@@ -2528,7 +2528,7 @@ pub(super) mod tests {
             press("accounts");
             assert!(!window.trading_panel_shown());
 
-            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            trading::remove_login(&store, &kept, &id).expect("removed");
             window.desk.tell();
             for tab in PANEL_TABS {
                 assert!(window.window.lookup_action(&format!("trading-{tab}")).is_none(), "{tab} left behind");
@@ -2644,7 +2644,7 @@ pub(super) mod tests {
             window.desk.note(&store);
             window.desk.tell();
             // The chart is on SPY: not a future.
-            assert_eq!(trading_rows(&window), vec![("SPY is not tradable on Rithmic Test".to_string(), false)]);
+            assert_eq!(trading_rows(&window), vec![("SPY is not tradable on Rithmic Test 951".to_string(), false)]);
 
             let es = window.index.find("ES", None).expect("ES in the curated half");
             let pane = window.focused_pane();
@@ -2733,7 +2733,7 @@ pub(super) mod tests {
             assert_eq!(session.book().orders.len(), before, "a second order sent while the first was on its way");
             window.trade.placing.done(&account.key());
 
-            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            trading::remove_login(&store, &kept, &id).expect("removed");
             window.desk.end(&id);
             window.desk.tell();
             assert!(trading_rows(&window).is_empty(), "orders left behind by the last login");
@@ -3878,7 +3878,7 @@ pub(super) mod tests {
             window.desk.tell();
             assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with a login");
 
-            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            trading::remove_login(&store, &kept, &id).expect("removed");
             window.desk.tell();
             assert!(titles().iter().any(|title| title == "Trading"), "Trading gone with the last login");
         });
@@ -5199,6 +5199,14 @@ pub(super) mod tests {
         numbers: &[&str],
     ) -> (String, Arc<trading::fake::FakeSession>) {
         let id = trading::add_login(store, &Kept::default(), typed).expect("a login");
+        let session = open_login(window, store, &id, numbers);
+        (id, session)
+    }
+
+    /// The login `id`, kept already, signed in with accounts numbered
+    /// `numbers`.
+    pub(in crate::ui::window) fn open_login(window: &Rc<Window>, store: &Rc<Store>, id: &str, numbers: &[&str]) -> Arc<trading::fake::FakeSession> {
+        let id = id.to_string();
         let accounts = numbers
             .iter()
             .map(|number| trading::Account {
@@ -5214,7 +5222,33 @@ pub(super) mod tests {
         window.desk.opened(&id, Ok(session.clone()));
         window.desk.note(store);
         window.desk.tell();
-        (id, session)
+        session
+    }
+
+    /// Rithmic logins named `names`, kept before the window opens, and a
+    /// window drawing from Yahoo and from each login's own feed, a futures
+    /// feed posing as it, in that order. The window and the logins' ids.
+    pub(in crate::ui::window) fn window_with_logins(store: &Rc<Store>, names: &[&str]) -> (Rc<Window>, Vec<String>) {
+        let _ = adw::init();
+        let ids: Vec<String> = names
+            .iter()
+            .map(|name| {
+                let typed = trading::Typed { name: name.to_string(), ..typed() };
+                trading::add_login(store, &Kept::default(), &typed).expect("a login")
+            })
+            .collect();
+        let mut feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false)];
+        for (id, name) in ids.iter().zip(names) {
+            let feed: &'static str = Box::leak(format!("rithmic@{id}").into_boxed_str());
+            let label: &'static str = Box::leak(format!("Rithmic ({name})").into_boxed_str());
+            feeds.push(Posing::feed(feed, label, true));
+        }
+        let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        let window = Window::build_with(&app, store.clone(), feeds);
+        for feed in window.feeds() {
+            feed.usable.set(true);
+        }
+        (window, ids)
     }
 
     /// What a part's menu shows, a line a row: "✓" on the one in force,
@@ -5359,23 +5393,24 @@ pub(super) mod tests {
     fn the_feed_dot_with_one_account_has_its_feed_as_the_default() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            let window = window_on(&store, true);
+            let (window, ids) = window_with_logins(&store, &["Acme Futures"]);
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es.clone());
-            let (_, session) = sign_in(&window, &store, &["951"]);
+            let session = open_login(&window, &store, &ids[0], &["ACME-0001"]);
+            let own = "Rithmic (Acme Futures)";
 
             assert_eq!(pane.account_text(), None, "one account: nothing to choose");
             // In the order, whichever is the default: the mark says which.
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
-            assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance".to_string(), format!("{own} ✓"), "[credits-rithmic]".into()]);
+            assert_eq!(dot(&pane), Some((format!("{own} · Connecting…"), "connecting", false, true)));
 
             // Picked from the menu, through its action, as a click does.
             pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic", "[credits-rithmic]"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓".to_string(), own.into(), "[credits-rithmic]".into()]);
             // The default chosen again is no choice: nothing is kept.
             window.choose_feed(pane.id, None);
-            assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some(format!("{own} · Connecting…")));
 
             // A chosen feed that cannot be used: red, no warning, and why.
             window.choose_feed(pane.id, Some("yahoo".into()));
@@ -5394,51 +5429,106 @@ pub(super) mod tests {
             // default moves to the order's pick.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓", "Rithmic · no data for SPY", "[credits-rithmic]"]);
+            assert_eq!(
+                feeds(&window, &pane),
+                vec!["Yahoo Finance ✓".to_string(), format!("{own} · no data for SPY"), "[credits-rithmic]".into()]
+            );
             assert!(dot(&pane).expect("a dot").3, "every feed is still offered");
         });
     }
 
-    /// Two accounts and two feeds: the Account part names the chart's,
-    /// and opens the accounts with a mark on it and a line under one only
-    /// for its trouble. Choosing another account keeps the chart's feed,
-    /// and a chart on the default follows the default.
+    /// Two accounts of one login and two feeds: the Account part names the
+    /// chart's, and opens the accounts with a mark on it and a line under
+    /// one only for its trouble. Choosing another account of the same login
+    /// keeps the chart's feed, and a chart on the default follows the
+    /// default.
     #[test]
     fn choosing_an_account_keeps_the_feed() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            let window = window_on(&store, true);
+            let (window, ids) = window_with_logins(&store, &["Demo Prop"]);
+            let id = ids[0].clone();
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
-            let (id, session) = sign_in(&window, &store, &["951", "952"]);
-            assert_eq!(pane.account_text().as_deref(), Some("951"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951 ✓", "952"]);
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓", "[credits-rithmic]"]);
+            let session = open_login(&window, &store, &id, &["DEMO-1234", "DEMO-5678"]);
+            assert_eq!(pane.account_text().as_deref(), Some("DEMO-1234"));
+            assert_eq!(accounts(&window, &pane), vec!["Demo Prop", "DEMO-1234 ✓", "DEMO-5678"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic (Demo Prop) ✓", "[credits-rithmic]"]);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
-            assert_eq!(pane.account_text().as_deref(), Some("951"), "the feed is the dot's, not the account's");
+            assert_eq!(pane.account_text().as_deref(), Some("DEMO-1234"), "the feed is the dot's, not the account's");
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Yahoo Finance · Connecting…".into()));
-            let other = format!("{id}/952");
+            let other = format!("{id}/DEMO-5678");
             pane.menu_actions.activate_action("account", Some(&other.to_variant()));
             assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
-            assert_eq!(pane.feed.borrow().as_deref(), Some("yahoo"), "the feed stays with the chart");
-            assert_eq!(pane.account_text().as_deref(), Some("952"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test", "951", "952 ✓"]);
+            assert_eq!(pane.feed.borrow().as_deref(), Some("yahoo"), "the same login: the feed stays with the chart");
+            assert_eq!(pane.account_text().as_deref(), Some("DEMO-5678"));
+            assert_eq!(accounts(&window, &pane), vec!["Demo Prop", "DEMO-1234", "DEMO-5678 ✓"]);
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Yahoo Finance · Connecting…".into()));
 
             // Back on the default, and the default moves: the chart follows.
             window.choose_account(pane.id, None);
-            assert_eq!(pane.account_text().as_deref(), Some("951"));
+            assert_eq!(pane.account_text().as_deref(), Some("DEMO-1234"));
             trading::set_default_account(&store, &other);
             window.desk.tell();
-            assert_eq!(pane.account_text().as_deref(), Some("952"));
+            assert_eq!(pane.account_text().as_deref(), Some("DEMO-5678"));
 
             // The login in trouble: after the account, and under its row.
             session.sign_out();
             window.desk.tell();
-            assert_eq!(pane.account_text().as_deref(), Some("952 signed out"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test · signed out", "951", "952 ✓"]);
+            assert_eq!(pane.account_text().as_deref(), Some("DEMO-5678 signed out"));
+            assert_eq!(accounts(&window, &pane), vec!["Demo Prop · signed out", "DEMO-1234", "DEMO-5678 ✓"]);
+        });
+    }
+
+    /// Two Rithmic logins, one with an account and one with two, each with
+    /// its own feed: the dot lists both, by login. Moving a chart to the
+    /// other login's account moves its data to that login's feed, over a
+    /// feed picked for it, and back again; a feed picked afterwards stays.
+    #[test]
+    fn choosing_another_logins_account_brings_its_feed() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let (window, ids) = window_with_logins(&store, &["Acme Futures", "Demo Prop"]);
+            let (acme, demo) = (ids[0].clone(), ids[1].clone());
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es);
+            open_login(&window, &store, &acme, &["ACME-0001"]);
+            open_login(&window, &store, &demo, &["DEMO-1234", "DEMO-5678"]);
+            trading::set_default_account(&store, &format!("{acme}/ACME-0001"));
+            window.desk.tell();
+            assert_eq!(
+                accounts(&window, &pane),
+                vec!["Acme Futures", "ACME-0001 ✓", "Demo Prop", "DEMO-1234", "DEMO-5678"]
+            );
+            let acme_own = "Rithmic (Acme Futures)";
+            let demo_own = "Rithmic (Demo Prop)";
+            assert_eq!(
+                feeds(&window, &pane),
+                vec!["Yahoo Finance".to_string(), format!("{acme_own} ✓"), demo_own.into(), "[credits-rithmic]".into()]
+            );
+
+            // Another login's account: its feed, though Yahoo was picked.
+            window.choose_feed(pane.id, Some("yahoo".into()));
+            let on_demo = format!("{demo}/DEMO-1234");
+            pane.menu_actions.activate_action("account", Some(&on_demo.to_variant()));
+            assert_eq!(pane.feed.borrow().as_deref(), None, "the account's own feed, as nobody picked one");
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some(format!("{demo_own} · Connecting…")));
+            assert_eq!(
+                feeds(&window, &pane),
+                vec!["Yahoo Finance".to_string(), acme_own.into(), format!("{demo_own} ✓"), "[credits-rithmic]".into()]
+            );
+
+            // Picked again, then the default account, on the first login.
+            window.choose_feed(pane.id, Some(format!("rithmic@{acme}")));
+            pane.menu_actions.activate_action("account", Some(&format!("{demo}/DEMO-5678").to_variant()));
+            assert_eq!(pane.feed.borrow().clone(), Some(format!("rithmic@{acme}")), "the same login: the pick stays");
+            window.choose_account(pane.id, None);
+            assert_eq!(pane.account_text().as_deref(), Some("ACME-0001"));
+            assert_eq!(pane.feed.borrow().as_deref(), None);
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some(format!("{acme_own} · Connecting…")));
         });
     }
 

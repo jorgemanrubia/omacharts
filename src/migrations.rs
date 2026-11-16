@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 10;
+pub const LATEST: i32 = 11;
 
 /// How far the market data file's own migrations go.
 pub const MARKET_LATEST: i32 = 2;
@@ -317,6 +317,21 @@ Migration {
            AND ',' || replace(value, ' ', '') || ',' LIKE '%,account,%'
            AND ',' || replace(value, ' ', '') || ',' NOT LIKE '%,feed,%';",
     ),
+},
+Migration {
+    version: 11,
+    name: "each Rithmic login is a data feed of its own",
+    // Rithmic was one feed, through whichever login was the data login. Now
+    // every Rithmic login is a feed, `rithmic@<login id>`, and the bare
+    // `rithmic` stands for the one that was the data login. An order that
+    // had Rithmic has that login's feed in its place and every other
+    // Rithmic login's right after it, so that each login there was is a
+    // feed to choose. What was fetched through it is kept under the new
+    // feed's name, so nothing is fetched again. A chart that picked
+    // `rithmic` is left alone: the app reads the bare name as that same
+    // login. Nothing is lost, so nothing to snapshot.
+    risky: false,
+    step: Step::Rust(rithmic_cache_follows_its_login),
 }];
 
 /// Everything that has ever been true of the market data file.
@@ -484,6 +499,69 @@ fn logins_name_their_broker(tx: &Connection) -> rusqlite::Result<()> {
         write("data_login", &data)?;
     }
     tx.execute("DELETE FROM settings WHERE key IN ('rithmic_logins', 'rithmic_data_login')", [])?;
+    Ok(())
+}
+
+/// Version 11: `rithmic` in the order of the data feeds becomes the data
+/// login's feed, `rithmic@<id>`, followed by every other Rithmic login's;
+/// and market data cached as `rithmic:…` moves to `rithmic@<id>:…`, the
+/// feed of the login that fetched it. The data login is the stored one, or
+/// with none stored, the first Rithmic login. With no Rithmic login there
+/// is no feed to give either to, and both are left as they are, as is an
+/// order that cannot be read.
+fn rithmic_cache_follows_its_login(tx: &Connection) -> rusqlite::Result<()> {
+    let read = |key: &str| -> rusqlite::Result<Option<String>> {
+        match tx.query_row("SELECT value FROM main.settings WHERE key = ?1", [key], |row| row.get(0)) {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error),
+        }
+    };
+    let logins: Vec<serde_json::Value> =
+        read("logins")?.and_then(|stored| serde_json::from_str(&stored).ok()).unwrap_or_default();
+    let rithmic: Vec<String> = logins
+        .iter()
+        .filter(|login| login.get("broker").and_then(|b| b.as_str()).is_none_or(|b| b.eq_ignore_ascii_case("rithmic")))
+        .filter_map(|login| login.get("id").and_then(|id| id.as_str()).map(str::to_string))
+        .collect();
+    let data = read("data_login")?.map(|id| id.trim().to_string());
+    let Some(login) = data.filter(|id| rithmic.contains(id)).or_else(|| rithmic.first().cloned()) else {
+        return Ok(());
+    };
+    if let Some(order) = read("providers")?.and_then(|stored| serde_json::from_str::<Vec<String>>(&stored).ok()) {
+        let feed = |id: &str| format!("rithmic@{id}");
+        let theirs: Vec<String> = std::iter::once(&login).chain(rithmic.iter().filter(|id| **id != login)).map(|id| feed(id)).collect();
+        let mut carried: Vec<String> = Vec::new();
+        for id in order {
+            match id.trim().eq_ignore_ascii_case("rithmic") {
+                true => carried.extend(theirs.iter().cloned()),
+                false => carried.push(id),
+            }
+        }
+        let mut once: Vec<String> = Vec::new();
+        for id in carried {
+            if !once.iter().any(|known| known.eq_ignore_ascii_case(&id)) {
+                once.push(id);
+            }
+        }
+        tx.execute(
+            "UPDATE main.settings SET value = ?1 WHERE key = 'providers'",
+            [serde_json::Value::from(once).to_string()],
+        )?;
+    }
+    let to = format!("rithmic@{login}:");
+    for table in ["bar_series", "quotes", "ladder_days", "ladder_tail", "ladder_coverage"] {
+        // OR IGNORE, and then away with what stayed: a row the new feed
+        // already has is newer than the one carried.
+        tx.execute(
+            &format!(
+                "UPDATE OR IGNORE market.{table} SET key = ?1 || substr(key, 9)
+                 WHERE substr(key, 1, 8) = 'rithmic:'"
+            ),
+            [&to],
+        )?;
+        tx.execute(&format!("DELETE FROM market.{table} WHERE substr(key, 1, 8) = 'rithmic:'"), [])?;
+    }
     Ok(())
 }
 
@@ -789,7 +867,7 @@ mod tests {
             (read("rithmic_logins"), read("rithmic_data_login"))
         };
         assert_eq!(migrated(&[]), (None, None));
-        assert_eq!(migrated(&[("rithmic_system", "Lucid"), ("rithmic_gateway", "wss://x")]), (None, None));
+        assert_eq!(migrated(&[("rithmic_system", "Acme Futures"), ("rithmic_gateway", "wss://x")]), (None, None));
         let (logins, data) = migrated(&[("rithmic_user", " trader ")]);
         let logins: serde_json::Value = serde_json::from_str(&logins.unwrap()).unwrap();
         assert_eq!(
@@ -804,9 +882,9 @@ mod tests {
         );
         assert_eq!(data.as_deref(), Some("1"));
         let (logins, _) =
-            migrated(&[("rithmic_user", "trader"), ("rithmic_system", "LucidTrading"), ("rithmic_gateway", "wss://x")]);
+            migrated(&[("rithmic_user", "trader"), ("rithmic_system", "AcmeFutures"), ("rithmic_gateway", "wss://x")]);
         let logins: serde_json::Value = serde_json::from_str(&logins.unwrap()).unwrap();
-        assert_eq!(logins[0]["name"], "LucidTrading");
+        assert_eq!(logins[0]["name"], "AcmeFutures");
         assert_eq!(logins[0]["gateway"], "wss://x");
     }
 
@@ -857,15 +935,15 @@ mod tests {
         };
         assert_eq!(migrated(8, &[]), (None, None));
 
-        let two = r#"[{"id":"1","name":"Lucid","user":"trader","system":"LucidTrading","gateway":"wss://x"},
+        let two = r#"[{"id":"1","name":"Acme Futures","user":"trader","system":"AcmeFutures","gateway":"wss://x"},
                       {"id":"18f","name":"Rithmic Test","user":"dev","system":"Rithmic Test",
                        "gateway":"wss://rituz00100.rithmic.com:443","signed_out":true}]"#;
         let (logins, data) = migrated(8, &[("rithmic_logins", two), ("rithmic_data_login", "18f")]);
         assert_eq!(data.as_deref(), Some("18f"));
         let logins: Vec<crate::trading::Login> = serde_json::from_str(&logins.unwrap()).unwrap();
         assert_eq!(logins.len(), 2);
-        assert_eq!((logins[0].id.as_str(), logins[0].name.as_str(), logins[0].service.as_str()), ("1", "Lucid", "rithmic"));
-        assert_eq!((logins[0].user.as_str(), logins[0].value("system"), logins[0].value("gateway")), ("trader", Some("LucidTrading"), Some("wss://x")));
+        assert_eq!((logins[0].id.as_str(), logins[0].name.as_str(), logins[0].service.as_str()), ("1", "Acme Futures", "rithmic"));
+        assert_eq!((logins[0].user.as_str(), logins[0].value("system"), logins[0].value("gateway")), ("trader", Some("AcmeFutures"), Some("wss://x")));
         assert!(!logins[0].signed_out);
         assert_eq!((logins[1].id.as_str(), logins[1].signed_out), ("18f", true));
 
@@ -885,6 +963,61 @@ mod tests {
 
         let unreadable = migrated(8, &[("rithmic_logins", "not a list")]);
         assert_eq!(unreadable.0.as_deref(), Some("not a list"), "carried, not lost");
+    }
+
+    /// What was fetched through Rithmic is kept under the feed of the login
+    /// that fetched it: the data login, or the first Rithmic login without
+    /// one. A row the new feed already has is the one kept, other feeds are
+    /// untouched, and with no Rithmic login nothing moves. Rithmic in the
+    /// order becomes every login's feed, that login's first.
+    #[test]
+    fn rithmic_becomes_a_feed_per_login() {
+        let migrated = |rows: &[(&str, &str)]| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+            apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..10], 10, None).unwrap();
+            for (key, value) in rows {
+                conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2)", [key, value]).unwrap();
+            }
+            for key in ["rithmic:ESZ6", "rithmic:NQZ6", "rithmic@2:NQZ6", "yahoo:SPY"] {
+                conn.execute("INSERT INTO market.quotes (key, last, fetched_at) VALUES (?1, 1.0, 0)", [key]).unwrap();
+                conn.execute("INSERT INTO market.ladder_coverage (key, from_ts, to_ts) VALUES (?1, 0, 60)", [key])
+                    .unwrap();
+            }
+            run(&conn, None).unwrap();
+            let keys = |table: &str| -> Vec<String> {
+                let mut statement = conn.prepare(&format!("SELECT key FROM market.{table} ORDER BY key")).unwrap();
+                statement.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+            };
+            assert_eq!(keys("quotes"), keys("ladder_coverage"));
+            let order = conn.query_row("SELECT value FROM settings WHERE key = 'providers'", [], |r| r.get::<_, String>(0)).ok();
+            (keys("quotes"), order)
+        };
+        let two = r#"[{"id":"1","name":"Acme Futures","broker":"rithmic","user":"a"},
+                      {"id":"2","name":"Demo Prop","broker":"rithmic","user":"d"}]"#;
+        assert_eq!(
+            migrated(&[("logins", two), ("data_login", "2")]).0,
+            ["rithmic@2:ESZ6", "rithmic@2:NQZ6", "yahoo:SPY"]
+        );
+        assert_eq!(
+            migrated(&[("logins", two)]).0,
+            ["rithmic@1:ESZ6", "rithmic@1:NQZ6", "rithmic@2:NQZ6", "yahoo:SPY"]
+        );
+        assert_eq!(migrated(&[]).0, ["rithmic:ESZ6", "rithmic:NQZ6", "rithmic@2:NQZ6", "yahoo:SPY"]);
+
+        // The order: Rithmic is each login's feed, the data login's first.
+        let order = |providers: &str, data: Option<&str>| {
+            let mut rows = vec![("logins", two), ("providers", providers)];
+            rows.extend(data.map(|data| ("data_login", data)));
+            migrated(&rows).1
+        };
+        assert_eq!(order(r#"["tos","rithmic","yahoo"]"#, Some("2")).as_deref(), Some(r#"["tos","rithmic@2","rithmic@1","yahoo"]"#));
+        assert_eq!(order(r#"["Rithmic","yahoo"]"#, None).as_deref(), Some(r#"["rithmic@1","rithmic@2","yahoo"]"#));
+        assert_eq!(order(r#"["rithmic@2","rithmic"]"#, None).as_deref(), Some(r#"["rithmic@2","rithmic@1"]"#), "once");
+        assert_eq!(order(r#"["tos","yahoo"]"#, None).as_deref(), Some(r#"["tos","yahoo"]"#), "taken off, it stays off");
+        assert_eq!(order("not a list", None).as_deref(), Some("not a list"));
+        assert_eq!(migrated(&[("providers", r#"["rithmic"]"#)]).1.as_deref(), Some(r#"["rithmic"]"#), "no login");
     }
 
     /// A header that showed the account shows the account and the data

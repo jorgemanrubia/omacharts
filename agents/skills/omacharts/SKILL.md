@@ -83,6 +83,9 @@ feed delivers bars — polled on a timer, or streamed as each print arrives —
 and, for a feed that streams, what the open window holds a subscription to and
 whether anything has ticked. A chart on a streamed feed is never refetched on
 a timer; if it looks still, `provider status` is where to look first.
+One chart can be drawn from another feed than the rest with `chart set
+--feed FEED`, by the id or the name `provider list` gives, and put back on
+the order with `--feed default`.
 
 **Trading is real money, and nothing asks twice.** Trading is experimental.
 `trading accounts`, `positions` and `orders` read freely. `trading buy`,

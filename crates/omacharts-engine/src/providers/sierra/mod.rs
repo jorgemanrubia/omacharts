@@ -57,10 +57,11 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     label: "Sierra Chart",
     serves: "Futures from your Sierra Chart's data files, every trade",
     covers: "Futures in your Sierra Chart",
-    build: || Box::new(Sierra),
+    build: |_| Box::new(Sierra),
     setup: Some(&setup::Setup),
     experimental: false,
     gate: Some("sierra"),
+    login: None,
 };
 
 /// Every resolution is folded from the trades, so any of these is as cheap

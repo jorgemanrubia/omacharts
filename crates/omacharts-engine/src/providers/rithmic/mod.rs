@@ -76,27 +76,42 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     label: "Rithmic",
     serves: "CME futures, continuous, from your Rithmic login",
     covers: "CME futures, front month",
-    build: || Box::new(Rithmic::new()),
-    setup: Some(&session::Signing),
+    build: |feed| Box::new(Rithmic::of(feed)),
+    setup: Some(&session::SIGNING),
     experimental: false,
     gate: None,
+    login: None,
 };
 
 /// What a chart says when Rithmic has nobody signed in.
 pub const NOT_SIGNED_IN: &str = "Rithmic is not signed in";
 
-pub struct Rithmic;
+/// One login's feed, or the entry's, which has none. Nothing in it: the
+/// session belongs to the first fetch.
+pub struct Rithmic {
+    feed: &'static crate::providers::Listed,
+}
 
 impl Default for Rithmic {
     fn default() -> Rithmic {
-        Rithmic
+        Rithmic::new()
     }
 }
 
 impl Rithmic {
-    /// A value with nothing in it: the session belongs to the first fetch.
+    /// The entry in the list of feeds, with no login of its own.
     pub fn new() -> Rithmic {
-        Rithmic
+        Rithmic { feed: &LISTED }
+    }
+
+    /// The feed `feed`, a login's or the entry's.
+    pub fn of(feed: &'static crate::providers::Listed) -> Rithmic {
+        Rithmic { feed }
+    }
+
+    /// The login this feed signs in with: empty for the entry.
+    fn login(&self) -> &'static str {
+        self.feed.login.unwrap_or_default()
     }
 }
 
@@ -107,8 +122,8 @@ impl Rithmic {
 /// Once a session has said which exchanges the login is entitled to, a root
 /// on any other is not served either, and goes to the next source: Rithmic
 /// Test's login sees CME and CBOT, so GC, CL and NG chart from Yahoo there.
-pub fn rithmic_symbol(instrument: &Instrument) -> Option<String> {
-    symbol_under(instrument, session::entitled)
+pub fn rithmic_symbol(login: &str, instrument: &Instrument) -> Option<String> {
+    symbol_under(instrument, |exchange| session::entitled(login, exchange))
 }
 
 /// [`rithmic_symbol`] with `entitled` saying which exchanges may be charted.
@@ -177,17 +192,22 @@ fn depth(timeframe: Timeframe) -> i64 {
     }
 }
 
-/// Rithmic's words, as a provider error. A refusal of the login is
-/// remembered for the settings to show.
-fn map_err(error: rithmic::Error) -> ProviderError {
+/// Rithmic's words, as a provider error. A refusal of the login `login` is
+/// remembered for its row in the settings to show.
+fn map_err(login: &str, error: rithmic::Error) -> ProviderError {
+    if let rithmic::Error::Refused(why) = &error {
+        session::refused(login, why);
+    }
+    describe(error)
+}
+
+/// Rithmic's words, as a provider error, and nothing remembered.
+fn describe(error: rithmic::Error) -> ProviderError {
     use rithmic::Error;
 
     match error {
         Error::NoLogin(why) => ProviderError::NeedsSetup(format!("{NOT_SIGNED_IN}: {why}")),
-        Error::Refused(why) => {
-            session::refused(&why);
-            ProviderError::NeedsSetup(format!("Rithmic refused the sign-in: {why}"))
-        }
+        Error::Refused(why) => ProviderError::NeedsSetup(format!("Rithmic refused the sign-in: {why}")),
         Error::NotFound(_) => ProviderError::NotFound,
         Error::Rejected(why) if names_a_symbol(&why) => ProviderError::NotFound,
         Error::Rejected(why) => ProviderError::Network(format!("Rithmic refused the request: {why}")),
@@ -221,6 +241,7 @@ fn now() -> i64 {
 /// now is older history, where having nothing is the answer rather than a
 /// sign of a roll, so the front month is not asked again for it.
 fn front_month_bars(
+    login: &str,
     client: &rithmic::Client,
     root: &str,
     timeframe: Timeframe,
@@ -237,7 +258,7 @@ fn front_month_bars(
     };
     if is_dated(root) {
         let contract = spelled(root);
-        let bars = client.bars(&contract, exchange, period, from, ask_to).map_err(map_err)?;
+        let bars = client.bars(&contract, exchange, period, from, ask_to).map_err(|error| map_err(login, error))?;
         return Ok(own(&contract, bars));
     }
     match client.bars(root, exchange, period, from, ask_to) {
@@ -245,17 +266,17 @@ fn front_month_bars(
         Ok(none) if to.is_some() => return Ok(own(root, none)),
         _ => {}
     }
-    let contract = client.front_month(root, exchange).map_err(map_err)?;
+    let contract = client.front_month(root, exchange).map_err(|error| map_err(login, error))?;
     let first = client.bars(&contract, exchange, period, from, ask_to);
     let (contract, bars) = match first {
         Ok(bars) if !bars.is_empty() || to.is_some() => (contract, bars),
         stale => {
             client.forget_front_month(root, exchange);
-            let fresh = client.front_month(root, exchange).map_err(map_err)?;
+            let fresh = client.front_month(root, exchange).map_err(|error| map_err(login, error))?;
             if fresh == contract {
-                (contract, stale.map_err(map_err)?)
+                (contract, stale.map_err(|error| map_err(login, error))?)
             } else {
-                let bars = client.bars(&fresh, exchange, period, from, ask_to).map_err(map_err)?;
+                let bars = client.bars(&fresh, exchange, period, from, ask_to).map_err(|error| map_err(login, error))?;
                 (fresh, bars)
             }
         }
@@ -512,13 +533,15 @@ impl Drop for Live {
     }
 }
 
-fn failure(error: rithmic::Error) -> FetchFailure {
-    FetchFailure::from(&map_err(error))
+fn failure(login: &str, error: rithmic::Error) -> FetchFailure {
+    FetchFailure::from(&map_err(login, error))
 }
 
 /// One subscription's life, on a thread of its own: watch the front month,
 /// and hand what the session hears to [`serve`].
+#[allow(clippy::too_many_arguments)]
 fn stream(
+    login: &'static str,
     root: String,
     timeframe: Timeframe,
     since: Option<i64>,
@@ -532,12 +555,15 @@ fn stream(
             sink(update);
         }
     };
-    let client = match session::client() {
+    let client = match session::client(login) {
         Ok(client) => client,
-        Err(error) => return say(Update::Lost(failure(error))),
+        Err(error) => return say(Update::Lost(failure(login, error))),
     };
     let heard = sender.clone();
     let hear = move |live| {
+        if let rithmic::Live::Lost(rithmic::Error::Refused(why)) = &live {
+            session::refused(login, why);
+        }
         let _ = heard.send(Event::Live(live));
     };
     let _watch = match is_dated(&root) {
@@ -546,7 +572,7 @@ fn stream(
     };
     let load: Load = {
         let root = root.clone();
-        Box::new(move |from: i64| front_month_bars(&client, &root, timeframe, from, None))
+        Box::new(move |from: i64| front_month_bars(login, &client, &root, timeframe, from, None))
     };
     let clock: Clock = Arc::new(|| chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX));
     serve(&events, sender, Fold::new(timeframe, root_of(&root)), since, load, clock, &say, &stop);
@@ -663,7 +689,7 @@ fn serve(
                     }
                 }
             }
-            Event::Live(rithmic::Live::Lost(error)) => say(Update::Lost(failure(error))),
+            Event::Live(rithmic::Live::Lost(error)) => say(Update::Lost(FetchFailure::from(&describe(error)))),
         }
     }
 }
@@ -686,9 +712,10 @@ impl Stream for Rithmic {
         let root = symbol.to_string();
         let sender = events.clone();
         let stopping = stop.clone();
+        let login = self.login();
         std::thread::Builder::new()
             .name("omacharts rithmic stream".into())
-            .spawn(move || stream(root, timeframe, since, sink, stopping, inbox, sender))
+            .spawn(move || stream(login, root, timeframe, since, sink, stopping, inbox, sender))
             .map_err(|error| ProviderError::Network(error.to_string()))?;
         Ok(Box::new(Live { stop, events }))
     }
@@ -696,11 +723,11 @@ impl Stream for Rithmic {
 
 impl Provider for Rithmic {
     fn id(&self) -> &'static str {
-        "rithmic"
+        self.feed.id
     }
 
     fn label(&self) -> &'static str {
-        "Rithmic"
+        self.feed.label
     }
 
     /// The login's own feed, as it prints.
@@ -709,7 +736,7 @@ impl Provider for Rithmic {
     }
 
     fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
-        rithmic_symbol(instrument)
+        rithmic_symbol(self.login(), instrument)
     }
 
     /// A root as its front month, which is what [`front_month_bars`]
@@ -740,9 +767,10 @@ impl Provider for Rithmic {
                 "Rithmic charts are served by the open window, which holds the one session".into(),
             ));
         }
-        let client = session::client().map_err(map_err)?;
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
         let from = since.unwrap_or_else(|| now() - depth(timeframe));
-        front_month_bars(&client, symbol, timeframe, from, None)
+        front_month_bars(login, &client, symbol, timeframe, from, None)
     }
 
     /// Only the span asked for, never what comes after it: the chart holds
@@ -754,8 +782,9 @@ impl Provider for Rithmic {
                 "Rithmic charts are served by the open window, which holds the one session".into(),
             ));
         }
-        let client = session::client().map_err(map_err)?;
-        front_month_bars(&client, symbol, timeframe, since, Some(until))
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
+        front_month_bars(login, &client, symbol, timeframe, since, Some(until))
     }
 
     /// The plant keeps years of every resolution it serves, so a chart
@@ -782,8 +811,9 @@ impl Provider for Rithmic {
         if !session::here() {
             return Err(ProviderError::NeedsSetup("Rithmic lists contracts for the open window, which holds the one session".into()));
         }
-        let client = session::client().map_err(map_err)?;
-        let listed = client.listed(root, exchange_of(root)).map_err(map_err)?;
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
+        let listed = client.listed(root, exchange_of(root)).map_err(|error| map_err(login, error))?;
         Ok(listed
             .into_iter()
             .filter_map(|(symbol, (year, month, day))| Some((symbol, chrono::NaiveDate::from_ymd_opt(year, month, day)?)))
@@ -793,7 +823,7 @@ impl Provider for Rithmic {
     /// The window is done with Rithmic: the session logs out of every
     /// plant. A chart that asks again later signs in again.
     fn retire(&self) {
-        rithmic::shutdown();
+        rithmic::close_data(self.login());
     }
 }
 
@@ -906,7 +936,7 @@ mod tests {
             assert_eq!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), test_login), None, "{root}");
             assert!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), |_| true).is_some(), "{root}");
         }
-        assert!(session::entitled("NYMEX") || rithmic::entitled_exchanges().is_some(), "unknown means entitled");
+        assert!(session::entitled("a login no session has spoken for", "NYMEX"), "unknown means entitled");
     }
 
     #[test]
@@ -1256,13 +1286,16 @@ mod tests {
     /// failure to sit out; and none of them can carry a password.
     #[test]
     fn a_refusal_is_a_sign_in_in_rithmics_words() {
-        let mapped = map_err(rithmic::Error::Refused("permission denied".into()));
+        let mapped = map_err("acme-mapped", rithmic::Error::Refused("permission denied".into()));
         assert!(matches!(&mapped, ProviderError::NeedsSetup(why) if why.contains("permission denied")), "{mapped}");
         assert_eq!(FetchFailure::from(&mapped), FetchFailure::NeedsSignIn);
-        let missing = map_err(rithmic::Error::NoLogin("no Rithmic user ID is saved".into()));
+        let missing = describe(rithmic::Error::NoLogin("no Rithmic user ID is saved".into()));
         assert_eq!(FetchFailure::from(&missing), FetchFailure::NeedsSignIn);
-        assert!(matches!(map_err(rithmic::Error::Timeout), ProviderError::Network(_)));
-        assert!(matches!(map_err(rithmic::Error::NotFound("x".into())), ProviderError::NotFound));
+        assert!(matches!(describe(rithmic::Error::Timeout), ProviderError::Network(_)));
+        assert!(matches!(describe(rithmic::Error::NotFound("x".into())), ProviderError::NotFound));
+        // Remembered for that login's row alone.
+        assert_eq!(session::refusal("acme-mapped").as_deref(), Some("permission denied"));
+        assert_eq!(session::refusal("demo-unrefused"), None);
     }
 
     /// Nothing a provider says about a login holds its password: not the
@@ -1290,7 +1323,7 @@ mod tests {
         std::fs::write(&file, format!("{PLANTED}\n")).unwrap();
         let error = rithmic::Login::from_file(&file, rithmic::TEST_SYSTEM, rithmic::TEST_URL).unwrap_err();
         texts.push(format!("{error} {error:?}"));
-        let provider = map_err(error);
+        let provider = describe(error);
         texts.push(format!("{provider} {provider:?}"));
 
         for error in [
@@ -1299,7 +1332,7 @@ mod tests {
             rithmic::Error::Rejected("no data".into()),
             rithmic::Error::NoLogin("the keyring holds no Rithmic password for Rithmic Test".into()),
         ] {
-            let mapped = map_err(error.clone());
+            let mapped = describe(error.clone());
             texts.push(format!("{error} {error:?} {mapped} {mapped:?} {:?}", FetchFailure::from(&mapped)));
         }
         let _ = std::fs::remove_dir_all(&dir);

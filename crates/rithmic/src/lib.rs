@@ -51,7 +51,7 @@ pub use client::{
     choose_front_month_with, entitled_exchanges, on_entitlements, on_front_month, on_reference, price_limits, Client,
     Expiry, Reference, Watch,
 };
-pub use connection::{close, connection, open_data, running, shutdown, Connection, SIGN_OUT_WAIT};
+pub use connection::{close, close_data, connection, feeding_login, open_data, open_data_or_any, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
 pub use sessions::{on_session, Session};
 pub use systems::systems;
