@@ -527,6 +527,14 @@ impl Session for RithmicSession {
         self.trading.refresh().map_err(said)
     }
 
+    /// The account list asked for again on the order plant the session
+    /// has, the new accounts' orders and P&L subscribed to there, and then
+    /// everything refreshed. Nothing signs out.
+    fn sync(&self) -> Result<(), String> {
+        self.trading.relist().map_err(said)?;
+        self.refresh()
+    }
+
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
         let orders = self.trading.history(account, from, to).map_err(failed)?;
         Ok(orders.into_iter().map(order_of).collect())

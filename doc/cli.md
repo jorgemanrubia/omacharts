@@ -1413,6 +1413,12 @@ service's sign-in dialog in the window, and `trading sign-in LOGIN` signs in
 with the password the keyring holds, or opens the dialog when it holds none.
 `trading sign-out` and `trading remove` forget it.
 
+A login lists its accounts when it signs in. `trading sync` asks every
+signed-in login for them again, and for what they hold, as the sync at the
+Trading panel's top right does: an account opened since, such as one bought
+that day, is in `trading accounts` once its login answers. Nothing signs
+out, and the reply is the logins asked; the Log says how each went.
+
 A chart's trading is set with `chart set`: `--account` (a name, a number,
 login and number such as `Lucid/1234`, or `default`), `--quantity`, `--trading-symbol` (the other size of what it
 charts, such as MES on ES, or `none`) and `--show-fills`. `chart list --json`

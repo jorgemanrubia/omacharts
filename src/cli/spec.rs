@@ -1579,6 +1579,16 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
+                name: "sync",
+                about: "Ask every signed-in login for its accounts again, and what they hold: an account opened since sign-in is listed once its login answers. Nothing signs out",
+                args: &[],
+                flags: &[],
+                example: "omacharts trading sync",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
                 name: "accounts",
                 about: "Every account, with its balance, the day's and the open P&L and its limits; the default marked",
                 args: &[],

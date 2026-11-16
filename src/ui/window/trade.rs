@@ -231,12 +231,35 @@ impl Window {
         let panel = self.trade.panel.borrow().clone();
         if let Some(panel) = panel {
             panel.redraw(&self.trading.borrow());
+            self.show_syncing(&panel);
         }
         self.say_session_trouble();
         self.report_orders();
         self.settle_pending();
         self.apply_marks();
         self.agent_heard_book();
+    }
+
+    /// Ask every signed-in login for its accounts again, and for what
+    /// they hold, each on a thread of its own: an account opened since
+    /// sign-in shows up in the panel, the account pickers and the commands
+    /// once its login answers. Nothing signs out. What each login answered
+    /// goes in the Log. The logins asked, by name.
+    pub fn sync_accounts(self: &Rc<Self>) -> Vec<String> {
+        let logins = self.trading.borrow().logins.clone();
+        let started = self.desk.sync(&logins);
+        let panel = self.trade.panel.borrow().clone();
+        if let Some(panel) = panel {
+            self.show_syncing(&panel);
+        }
+        started
+    }
+
+    /// The panel's sync at work while any login is being synced, and
+    /// pressable only while one is signed in.
+    fn show_syncing(&self, panel: &TradingPanel) {
+        let live = self.trading.borrow().logins.iter().any(|login| self.desk.live(&login.id));
+        panel.show_syncing(self.desk.syncing(), live);
     }
 
     /// A contract held traded at a new price: read the book again, which
@@ -696,6 +719,14 @@ impl Window {
                 move |account: &str| {
                     let Some(this) = this.upgrade() else { return };
                     this.on_session(account, |session, number| session.cancel_all(number), |_, _, ()| {});
+                }
+            }),
+            sync: Box::new({
+                let this = Rc::downgrade(self);
+                move || {
+                    if let Some(this) = this.upgrade() {
+                        this.sync_accounts();
+                    }
                 }
             }),
         };

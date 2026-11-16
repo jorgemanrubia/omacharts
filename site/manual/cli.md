@@ -1672,6 +1672,7 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 | `trading sign-out LOGIN` | Signs it out and forgets its password; the login stays |
 | `trading remove LOGIN [--with-feed]` | Removes the login, its password and its accounts, and with `--with-feed` the data feed that came through it |
 | `trading data LOGIN` | Charts' market data comes through this login |
+| `trading sync` | Asks every signed-in login for its accounts again, and what they hold, as the panel's sync does: an account opened since sign-in is listed once its login answers. Nothing signs out |
 | `trading accounts` | Every account with its balance, the day's and the open P&L, its loss limit and liquidation level; `*` marks the default |
 | `trading default ACCOUNT` | The account charts trade on until given one of their own |
 | `trading positions` | What every account holds, at what average, with its open P&L |

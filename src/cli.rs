@@ -386,6 +386,11 @@ pub trait Live {
     }
     /// End the login `id`'s session, before it is signed out or removed.
     fn end_session(&self, _id: &str) {}
+    /// Ask every signed-in login for its accounts again, and what they
+    /// hold, as the Trading panel's sync does: the logins asked, by name.
+    fn sync_accounts(&self) -> Result<Vec<String>, Fault> {
+        Err(trading::no_window())
+    }
     /// Read Trading again after a command changed it in the store: the
     /// logins, the default account, the quantities, the order labels.
     fn adopt_trading(&self) {}
@@ -1238,6 +1243,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn end_session(&self, id: &str) {
         crate::ui::Window::desk(self).end(id);
+    }
+
+    fn sync_accounts(&self) -> Result<Vec<String>, Fault> {
+        Ok(crate::ui::Window::sync_accounts(self))
     }
 
     fn adopt_trading(&self) {
