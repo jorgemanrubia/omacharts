@@ -2048,25 +2048,63 @@ impl State {
         }
         let plan = layout(self, width, height);
         let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
-        // The selected ones first, since their grips are what the hand is
-        // most likely reaching for; then the most recently drawn.
-        let order = self.selected.iter().rev().copied().chain((0..self.drawings.len()).rev());
-        for index in order {
-            let drawing = self.drawings.get(index)?;
-            let projected = self.project(&plan, &scale, drawing);
-            let hit = projected.hit(x, y);
-            // Grips belong to the selected drawing only: on the others the
-            // whole thing is a body, so a press on an unselected line's end
-            // selects it rather than starting to move the end.
-            let hit = match hit {
-                Some(_) if !self.selected.contains(&index) => Some(Grip::Body),
-                other => other,
-            };
-            if let Some(grip) = hit {
+        // A selected drawing's grips first, since they are what the hand is
+        // most likely reaching for, wherever it sits in the stack.
+        for &index in self.selected.iter().rev() {
+            let Some(drawing) = self.drawings.get(index) else { continue };
+            match self.project(&plan, &scale, drawing).hit(x, y) {
+                Some(grip) if grip != Grip::Body => return Some((index, grip)),
+                _ => {}
+            }
+        }
+        // Then the bodies, topmost first, in the order they are painted —
+        // the list is kept in that order — so a press takes what is seen on
+        // top. Selected or not: a drawing just sent to the back is still
+        // selected, and taking it first would make the one now in front of
+        // it impossible to reach.
+        for index in (0..self.drawings.len()).rev() {
+            let Some(drawing) = self.drawings.get(index) else { continue };
+            if let Some(grip) = self.project(&plan, &scale, drawing).hit(x, y) {
+                // Grips belong to the selected drawing only: on the others
+                // the whole thing is a body, so a press on an unselected
+                // line's end selects it rather than starting to move the end.
+                let grip = match self.selected.contains(&index) {
+                    true => grip,
+                    false => Grip::Body,
+                };
                 return Some((index, grip));
             }
         }
         None
+    }
+
+    /// Put the selected drawings in front of, or behind, every other, in
+    /// the order they already have among themselves, and keep the list in
+    /// painting order. Hands back the drawings it moved, to be written down.
+    fn restack_selected(&mut self, to_front: bool) -> Vec<Drawing> {
+        let mut indices = self.selected.clone();
+        indices.sort_unstable();
+        indices.dedup();
+        indices.retain(|i| *i < self.drawings.len());
+        if indices.is_empty() {
+            return Vec::new();
+        }
+        let (lowest, highest) = self
+            .drawings
+            .iter()
+            .fold((i64::MAX, i64::MIN), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
+        self.remember();
+        let count = indices.len() as i64;
+        let mut moved = Vec::new();
+        for (n, index) in indices.into_iter().enumerate() {
+            let Some(drawing) = self.drawings.get_mut(index) else { continue };
+            drawing.order = if to_front { highest + 1 + n as i64 } else { lowest - count + n as i64 };
+            moved.push(drawing.clone());
+        }
+        let ids = self.selected_ids();
+        drawings::sort_for_painting(&mut self.drawings);
+        self.reselect(ids);
+        moved
     }
 
     /// The price range to draw, after the user's scaling, from the fit of
@@ -3899,32 +3937,10 @@ impl ChartView {
     /// the order they already have among themselves. Over the candles
     /// either way: the order is among drawings only.
     pub fn restack_selected(&self, to_front: bool) {
-        let changed = {
-            let mut state = self.state.borrow_mut();
-            let mut indices = state.selected.clone();
-            indices.sort_unstable();
-            indices.dedup();
-            indices.retain(|i| *i < state.drawings.len());
-            if indices.is_empty() {
-                return;
-            }
-            let (lowest, highest) = state
-                .drawings
-                .iter()
-                .fold((i64::MAX, i64::MIN), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
-            state.remember();
-            let count = indices.len() as i64;
-            let mut moved = Vec::new();
-            for (n, index) in indices.into_iter().enumerate() {
-                let Some(drawing) = state.drawings.get_mut(index) else { continue };
-                drawing.order = if to_front { highest + 1 + n as i64 } else { lowest - count + n as i64 };
-                moved.push(drawing.clone());
-            }
-            let ids = state.selected_ids();
-            drawings::sort_for_painting(&mut state.drawings);
-            state.reselect(ids);
-            moved
-        };
+        let changed = self.state.borrow_mut().restack_selected(to_front);
+        if changed.is_empty() {
+            return;
+        }
         self.redraw();
         for drawing in changed {
             self.tell(DrawingEvent::Changed(drawing));
@@ -15558,6 +15574,79 @@ mod drawing_tests {
         state.selected = vec![1];
         assert_eq!(state.drawing_at(w, h, 200.0, 150.0), Some((1, Grip::From)));
         assert_eq!(state.drawing_at(w, h, 50.0, 30.0), None);
+    }
+
+    /// A press takes the drawing painted on top, and "send to back" and
+    /// "bring to front" change which that is at once — for the drawing
+    /// still selected after it was sent back too, which used to keep
+    /// answering ahead of the one now in front of it. Every kind, and the
+    /// same after the list is read back in a new session.
+    #[test]
+    fn a_press_takes_the_drawing_on_top_as_restacked() {
+        let tried: Vec<DrawingKind> =
+            DrawingKind::ALL.into_iter().filter(|kind| !kind.is_text()).filter(|kind| restacked_and_pressed(*kind)).collect();
+        for kind in [DrawingKind::Line, DrawingKind::Rect, DrawingKind::Ellipse, DrawingKind::Profile] {
+            assert!(tried.contains(&kind), "{kind:?} was never found under the hand");
+        }
+    }
+
+    /// Words are measured with the desktop's font, which takes GTK.
+    #[test]
+    fn a_press_takes_the_words_on_top_as_restacked() {
+        crate::on_gtk(|| assert!(restacked_and_pressed(DrawingKind::Text), "the words were never under the hand"));
+    }
+
+    /// Two of `kind` exactly over each other, restacked every way, with a
+    /// press on both after each: false when no spot on its body was found.
+    fn restacked_and_pressed(kind: DrawingKind) -> bool {
+        let (w, h) = (800.0, 400.0);
+        let mut state = charted(400);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        let make = |id: i64| {
+            let mut drawing = Drawing::new(kind, a, b);
+            drawing.id = id;
+            if kind.is_text() {
+                drawing.text = drawings::Text::plain("Range");
+            }
+            drawing
+        };
+        state.drawings = vec![make(1)];
+        // Somewhere on its body, clear of its grips even when selected.
+        state.selected = vec![0];
+        let spot = (0..80)
+            .flat_map(|i| (0..40).map(move |j| (10.0 * i as f64, 10.0 * j as f64)))
+            .find(|&(x, y)| state.drawing_at(w, h, x, y) == Some((0, Grip::Body)));
+        state.selected.clear();
+        let Some((x, y)) = spot else { return false };
+        // The same drawing again, exactly over the first: the newer on top.
+        state.drawings.push(make(2));
+        let on_top = |state: &State| state.drawing_at(w, h, x, y).map(|(i, _)| state.drawings[i].id);
+        assert_eq!(on_top(&state), Some(2), "{kind:?}: the newer is on top");
+
+        state.selected = vec![1];
+        assert_eq!(state.restack_selected(false).len(), 1);
+        assert_eq!(state.selected_ids(), vec![2], "{kind:?}: still selected, behind");
+        assert_eq!(on_top(&state), Some(1), "{kind:?}: sent back, the other is taken");
+
+        // Read back in a new session: the order is the drawings' own.
+        let mut again = charted(400);
+        let mut read = state.drawings.clone();
+        read.sort_by_key(|d| d.id);
+        drawings::sort_for_painting(&mut read);
+        again.drawings = read;
+        assert_eq!(on_top(&again), Some(1), "{kind:?}: and after a restart");
+
+        state.selected = vec![0];
+        assert_eq!(state.selected_ids(), vec![2]);
+        state.restack_selected(true);
+        assert_eq!(on_top(&state), Some(2), "{kind:?}: brought to front, taken again");
+        state.selected = state.drawings.iter().position(|d| d.id == 1).into_iter().collect();
+        state.restack_selected(true);
+        assert_eq!(on_top(&state), Some(1), "{kind:?}: the other brought to front while selected");
+        state.restack_selected(false);
+        assert_eq!(on_top(&state), Some(2), "{kind:?}: sent back while selected, the other answers");
+        true
     }
 
     /// A selection of one kind can be asked for its properties; a mixed
