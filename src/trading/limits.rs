@@ -6,11 +6,11 @@
 //! written so that it cannot argue its way past them:
 //!
 //! - Once the day's P&L reaches the profit target or the loss, the account
-//!   takes no new entries until the next trading day, whatever the limits
-//!   are changed to meanwhile. Closing what is held is always allowed.
-//! - A limit made tighter holds at once. One made looser, or cleared,
-//!   holds from the next trading day, so it cannot be loosened to let the
-//!   trade it would refuse through.
+//!   takes no new entries until the next trading day. Closing what is held
+//!   is always allowed.
+//! - A limit changed holds at once, tighter or looser. Raising or clearing
+//!   the daily limit that was reached lifts the day's stop on entries,
+//!   unless the day's P&L still reaches what it now is.
 //!
 //! A trading day is CME's: it starts at 5 p.m. in Chicago.
 //!
@@ -48,57 +48,22 @@ impl Caps {
     pub fn is_empty(&self) -> bool {
         *self == Caps::default()
     }
-
-    /// Each limit the tighter of the two: no limit is the loosest.
-    fn tighter(self, other: Caps) -> Caps {
-        fn least<T: PartialOrd + Copy>(a: Option<T>, b: Option<T>) -> Option<T> {
-            match (a, b) {
-                (Some(a), Some(b)) => Some(if b < a { b } else { a }),
-                (a, b) => a.or(b),
-            }
-        }
-        Caps {
-            daily_profit: least(self.daily_profit, other.daily_profit),
-            daily_loss: least(self.daily_loss, other.daily_loss),
-            max_qty: least(self.max_qty, other.max_qty),
-            max_risk: least(self.max_risk, other.max_risk),
-        }
-    }
 }
 
-/// What is kept of one account: the limits holding now, and the ones
-/// asked for that loosen them, from the day they hold.
+/// What is kept of one account: its limits. Kept as it was when a looser
+/// limit waited for the next trading day, `later` being that limit, the
+/// last one asked for and so the one that holds.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Kept {
+struct Kept {
     #[serde(default)]
-    pub now: Caps,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub later: Option<Later>,
+    now: Caps,
+    #[serde(default, skip_serializing)]
+    later: Option<Later>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Later {
-    pub from: NaiveDate,
-    pub caps: Caps,
-}
-
-impl Kept {
-    /// As it stands on `day`: loosened limits whose day has come hold.
-    pub fn on(&self, day: NaiveDate) -> Kept {
-        match &self.later {
-            Some(later) if later.from <= day => Kept { now: later.caps, later: None },
-            _ => self.clone(),
-        }
-    }
-
-    /// `asked` set on `day`: what tightens holds now, the rest from the
-    /// next trading day.
-    pub fn set(&self, asked: Caps, day: NaiveDate) -> Kept {
-        let current = self.on(day);
-        let now = current.now.tighter(asked);
-        let later = (now != asked).then(|| Later { from: day + Duration::days(1), caps: asked });
-        Kept { now, later }
-    }
+struct Later {
+    caps: Caps,
 }
 
 /// The trading day `at` falls in: CME's, which starts at 5 p.m. Chicago
@@ -108,38 +73,46 @@ pub fn trading_day(at: DateTime<Utc>) -> NaiveDate {
     (chicago + Duration::hours(7)).date_naive()
 }
 
-/// Every account's limits, as kept.
-pub fn load(store: &Store) -> BTreeMap<String, Kept> {
-    store.setting(LIMITS).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+/// Every account's limits.
+pub fn load(store: &Store) -> BTreeMap<String, Caps> {
+    let kept: BTreeMap<String, Kept> =
+        store.setting(LIMITS).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    kept.into_iter().map(|(account, kept)| (account, kept.later.map_or(kept.now, |later| later.caps))).collect()
 }
 
-fn save(store: &Store, all: &BTreeMap<String, Kept>) {
-    match all.is_empty() {
+fn save(store: &Store, all: &BTreeMap<String, Caps>) {
+    let kept: BTreeMap<&String, Kept> = all.iter().map(|(account, caps)| (account, Kept { now: *caps, later: None })).collect();
+    match kept.is_empty() {
         true => store.remove_setting(LIMITS),
         false => {
-            if let Ok(text) = serde_json::to_string(all) {
+            if let Ok(text) = serde_json::to_string(&kept) {
                 store.set_setting(LIMITS, &text);
             }
         }
     }
 }
 
-/// The limits holding on `account` on `day`.
-pub fn holding(store: &Store, account: &str, day: NaiveDate) -> Caps {
-    load(store).get(account).map(|kept| kept.on(day).now).unwrap_or_default()
+/// The limits holding on `account`.
+pub fn holding(store: &Store, account: &str) -> Caps {
+    load(store).get(account).copied().unwrap_or_default()
 }
 
-/// `account`'s limits set to `asked`, every one of them: a limit left out
-/// is asked to be no limit. What it holds now and later, kept.
-pub fn set(store: &Store, account: &str, asked: Caps, day: NaiveDate) -> Kept {
+/// `account`'s limits set to `asked`, every one of them, from now: a limit
+/// left out is asked to be no limit. A daily limit reached on `day` that
+/// `asked` raises or clears no longer stops entries; if the day's P&L
+/// still reaches it, it is noted again as soon as the P&L is next heard.
+pub fn set(store: &Store, account: &str, asked: Caps, day: NaiveDate) {
     let mut all = load(store);
-    let kept = all.get(account).cloned().unwrap_or_default().set(asked, day);
-    match kept.now.is_empty() && kept.later.is_none() {
+    match asked.is_empty() {
         true => all.remove(account),
-        false => all.insert(account.to_string(), kept.clone()),
+        false => all.insert(account.to_string(), asked),
     };
     save(store, &all);
-    kept
+    if let Some(hit) = hit_on(store, account, day)
+        && reached(&asked, hit.pnl) != Some(hit.limit.as_str())
+    {
+        forget_hit(store, account);
+    }
 }
 
 /// A daily limit reached: which, at what P&L.
@@ -164,6 +137,22 @@ pub fn note_hit(store: &Store, account: &str, hit: &Hit) {
     all.insert(account.to_string(), hit.clone());
     if let Ok(text) = serde_json::to_string(&all) {
         store.set_setting(HITS, &text);
+    }
+}
+
+/// `account`'s note of a daily limit reached, gone.
+fn forget_hit(store: &Store, account: &str) {
+    let mut all: BTreeMap<String, Hit> = store.setting(HITS).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    if all.remove(account).is_none() {
+        return;
+    }
+    match all.is_empty() {
+        true => store.remove_setting(HITS),
+        false => {
+            if let Ok(text) = serde_json::to_string(&all) {
+                store.set_setting(HITS, &text);
+            }
+        }
     }
 }
 
@@ -270,20 +259,38 @@ mod tests {
     }
 
     #[test]
-    fn tighter_holds_at_once_and_looser_from_tomorrow() {
+    fn a_limit_changed_holds_at_once_tighter_or_looser() {
+        let store = Store::memory().expect("a store");
         let today = day("2026-11-16");
-        let first = Kept::default().set(Caps { max_qty: Some(2), daily_loss: Some(1200.0), ..Caps::default() }, today);
-        assert_eq!(first.now.max_qty, Some(2), "from no limit is tighter");
-        assert!(first.later.is_none());
+        set(&store, "L/1", Caps { max_qty: Some(2), daily_loss: Some(1200.0), ..Caps::default() }, today);
+        assert_eq!(holding(&store, "L/1").max_qty, Some(2));
+        set(&store, "L/1", Caps { max_qty: Some(1), daily_loss: Some(1200.0), ..Caps::default() }, today);
+        assert_eq!(holding(&store, "L/1").max_qty, Some(1), "tighter, at once");
+        set(&store, "L/1", Caps { max_qty: Some(5), ..Caps::default() }, today);
+        assert_eq!(holding(&store, "L/1"), Caps { max_qty: Some(5), ..Caps::default() }, "looser and cleared, at once too");
+    }
 
-        let tighter = first.set(Caps { max_qty: Some(1), daily_loss: Some(1200.0), ..Caps::default() }, today);
-        assert_eq!(tighter.now.max_qty, Some(1));
-        assert!(tighter.later.is_none());
+    #[test]
+    fn limits_kept_waiting_for_tomorrow_hold_now() {
+        let store = Store::memory().expect("a store");
+        store.set_setting(LIMITS, r#"{"L/1":{"now":{"max_qty":1},"later":{"from":"2026-11-17","caps":{"max_qty":5}}}}"#);
+        assert_eq!(holding(&store, "L/1").max_qty, Some(5));
+    }
 
-        let looser = tighter.set(Caps { max_qty: Some(5), ..Caps::default() }, today);
-        assert_eq!(looser.now.max_qty, Some(1), "still one today");
-        assert_eq!(looser.now.daily_loss, Some(1200.0), "clearing a limit is loosening it");
-        assert_eq!(looser.on(day("2026-11-17")).now, Caps { max_qty: Some(5), ..Caps::default() });
+    #[test]
+    fn raising_or_clearing_the_limit_reached_lifts_the_day_s_stop() {
+        let store = Store::memory().expect("a store");
+        let today = day("2026-11-16");
+        set(&store, "L/1", Caps { daily_loss: Some(1200.0), ..Caps::default() }, today);
+        let hit = Hit { day: today, limit: "daily-loss".into(), pnl: -1250.0 };
+        note_hit(&store, "L/1", &hit);
+        set(&store, "L/1", Caps { daily_loss: Some(1000.0), max_qty: Some(1), ..Caps::default() }, today);
+        assert_eq!(hit_on(&store, "L/1", today), Some(hit.clone()), "still reached: tighter");
+        set(&store, "L/1", Caps { daily_loss: Some(2000.0), ..Caps::default() }, today);
+        assert_eq!(hit_on(&store, "L/1", today), None, "raised past the P&L");
+        note_hit(&store, "L/1", &hit);
+        set(&store, "L/1", Caps::default(), today);
+        assert_eq!(hit_on(&store, "L/1", today), None, "cleared");
     }
 
     #[test]
@@ -323,15 +330,15 @@ mod tests {
         let store = Store::memory().expect("a store");
         let today = day("2026-11-16");
         set(&store, "L/1", Caps { max_qty: Some(1), ..Caps::default() }, today);
-        assert_eq!(holding(&store, "L/1", today).max_qty, Some(1));
-        assert!(holding(&store, "L/2", today).is_empty());
+        assert_eq!(holding(&store, "L/1").max_qty, Some(1));
+        assert!(holding(&store, "L/2").is_empty());
         let hit = Hit { day: today, limit: "daily-loss".into(), pnl: -1201.0 };
         note_hit(&store, "L/1", &hit);
         assert_eq!(hit_on(&store, "L/1", today), Some(hit));
         assert_eq!(hit_on(&store, "L/1", day("2026-11-17")), None);
-        // Cleared, it still holds today and is gone tomorrow.
+        // Cleared, it is gone at once.
         set(&store, "L/1", Caps::default(), today);
-        assert_eq!(holding(&store, "L/1", today).max_qty, Some(1));
-        assert!(holding(&store, "L/1", day("2026-11-17")).is_empty());
+        assert!(holding(&store, "L/1").is_empty());
+        assert!(store.setting(LIMITS).is_none());
     }
 }

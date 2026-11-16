@@ -369,7 +369,7 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
         "trading",
         Verb {
             name: "limits",
-            about: "An account's own limits, which the app holds it to: tighter ones hold at once, looser ones from the next trading day",
+            about: "An account's own limits, which the app holds it to: a change, tighter or looser, holds at once",
             args: &[
                 Arg::opt("ACTION", "show, set or clear (default: show)")
                     .of(&["show", "set", "clear"]),
@@ -496,7 +496,7 @@ const ORDER_FLAGS: &[Flag] = &[
     Flag::valued("chart", "CHART", CHART_SELECTOR),
     Flag::valued("limit", "PRICE", "a limit order at this price, rather than at the market"),
     Flag::valued("stop", "PRICE", "a stop order at this price, rather than at the market"),
-    Flag::valued("quantity", "N", "one of the chart's quantities (default: the one its Qty shows)"),
+    Flag::valued("quantity", "N", "how many contracts or shares, any whole number above 0 (default: what the chart's Qty shows)"),
 ];
 
 pub const CHART_SELECTOR: &str =

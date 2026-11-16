@@ -521,12 +521,7 @@ fn limits_verb(
             }
             let key = one(account)?;
             // What was asked last, each limit not given kept as it is.
-            let asked = kept
-                .get(&key)
-                .map(|kept| kept.on(today))
-                .map_or(Caps::default(), |kept| {
-                    kept.later.map_or(kept.now, |later| later.caps)
-                });
+            let asked = kept.get(&key).copied().unwrap_or_default();
             let merged = Caps {
                 daily_profit: given.daily_profit.or(asked.daily_profit),
                 daily_loss: given.daily_loss.or(asked.daily_loss),
@@ -548,7 +543,7 @@ fn limits_verb(
     let rows: Vec<(String, Value, String)> = shown
         .iter()
         .map(|key| {
-            let kept = all.get(key).map(|kept| kept.on(today)).unwrap_or_default();
+            let caps = all.get(key).copied().unwrap_or_default();
             let hit = limits::hit_on(store, key, today);
             let caps_json = |caps: &Caps| {
                 json!({"daily_profit": caps.daily_profit, "daily_loss": caps.daily_loss, "max_qty": caps.max_qty, "max_risk": caps.max_risk})
@@ -556,14 +551,10 @@ fn limits_verb(
             let value = json!({
                 "account": key,
                 "name": view.name_of(key),
-                "limits": caps_json(&kept.now),
-                "from_next_trading_day": kept.later.as_ref().map(|later| json!({"from": later.from.to_string(), "limits": caps_json(&later.caps)})),
+                "limits": caps_json(&caps),
                 "reached": hit.as_ref().map(|hit| json!({"limit": hit.limit, "pnl": hit.pnl})),
             });
-            let mut text = format!("{}: {}", view.name_of(key), caps_text(&kept.now));
-            if let Some(later) = &kept.later {
-                text.push_str(&format!("; from {}: {}", later.from, caps_text(&later.caps)));
-            }
+            let mut text = format!("{}: {}", view.name_of(key), caps_text(&caps));
             if let Some(hit) = &hit {
                 text.push_str(&format!("; {} reached today at {:.2}, entries refused", hit.limit, hit.pnl));
             }

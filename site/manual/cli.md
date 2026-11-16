@@ -1643,7 +1643,7 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 | `trading default ACCOUNT` | The account charts trade on until given one of their own |
 | `trading positions` | What every account holds, at what average, with its open P&L |
 | `trading orders [--all]` | The day's working orders; with `--all`, the filled and cancelled ones too |
-| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N` instead of the chart's Qty |
+| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N`, any whole number, instead of the chart's Qty |
 | `trading exit --target PRICE --stop PRICE` | A target, a stop, or both linked, for the whole of the position the chart trades |
 | `trading modify ORDER --price PRICE` | Moves a working order |
 | `trading cancel ORDER`, `trading cancel --all [--account ACCOUNT]` | Cancels one order, or every open order on an account (the default one when not given) |
@@ -1688,10 +1688,6 @@ Lucid: Move Buy Limit 2 ESZ6 to 6,805.00
 $ omacharts trading flatten
 Lucid: Flatten ESZ6 and cancel its orders
   [exit 0]
-
-$ omacharts trading sell --quantity 12
-omacharts: Futures offers 1, 2, 3, 4, 5, 6, 7, 8, 9 for ES, not 12
-  [exit 5]
 
 $ omacharts trading buy --limit 6900
 omacharts: Lucid: Not placed · 6,900.00 is above the market now

@@ -35,6 +35,16 @@ const KEPT: usize = 512;
 /// without a word is only noticed by writing to it, so the oldest goes.
 const LISTENERS: usize = 16;
 
+/// A fill comes as a burst — the order, then the position, then the cancel
+/// of whatever was linked to it — and the trading service may tell each in
+/// an update of its own. A wait woken by the first answers once the book
+/// has said nothing new for this long…
+const QUIET: Duration = Duration::from_millis(300);
+
+/// …and the fill has reached the position and its bracket's other leg has
+/// stopped working; or once this long has gone by regardless, saying so.
+const SETTLE_AT_MOST: Duration = Duration::from_millis(1500);
+
 /// What the window keeps for agents.
 #[derive(Default)]
 pub(super) struct Agent {
@@ -50,6 +60,8 @@ pub(super) struct Agent {
     /// Each account's P&L as last said, and when.
     pnl_said: RefCell<Vec<(String, f64, f64)>>,
     pnl_at: Cell<Option<Instant>>,
+    /// When the book last made an order or position event.
+    book_moved_at: Cell<Option<Instant>>,
     listeners: RefCell<Vec<Listener>>,
     next_listener: Cell<u64>,
     alerts: RefCell<Vec<Alert>>,
@@ -74,6 +86,11 @@ struct Waiting {
     chart: u32,
     bars: usize,
     since: Option<Token>,
+    /// The last event before it began to wait.
+    from: u64,
+    /// The order or position event that woke it, and when, while the rest
+    /// of its burst comes in: see [`QUIET`].
+    settling: Option<(Value, Instant)>,
     /// Each price it wakes at, with the side of it the price was last on.
     crosses: Vec<(f64, Option<bool>)>,
     /// Wake when a bar after this one begins.
@@ -123,7 +140,24 @@ impl Window {
                         .map(|(_, event)| event.clone());
                     let closed = bar_close.then(|| self.closed_bar(&pane, token.bar)).flatten();
                     if let Some(event) = missed.or(closed) {
-                        return Ok(self.woken(&pane, &event, bars, since, json));
+                        let settled = !from_book(&event) || (self.book_quiet() && self.fill_told(&event, token.seq));
+                        let Some(sink) = sink.filter(|_| !settled) else {
+                            return Ok(self.woken(&pane, &event, bars, since, json, true));
+                        };
+                        // The burst it began may still be coming in.
+                        let waiting = Waiting {
+                            chart,
+                            bars,
+                            since,
+                            from: token.seq,
+                            settling: Some((event, Instant::now())),
+                            crosses: Vec::new(),
+                            bar_close: None,
+                        };
+                        self.listen(sink, json, Kind::Wait(waiting));
+                        self.settle_later(Duration::ZERO);
+                        self.settle_later(SETTLE_AT_MOST);
+                        return Ok(String::new());
                     }
                 }
                 let last = pane.view.last_price();
@@ -131,12 +165,14 @@ impl Window {
                     chart,
                     bars,
                     since,
+                    from: self.agent.seq.get(),
+                    settling: None,
                     crosses: crosses.into_iter().map(|price| (price, last.map(|last| last > price))).collect(),
                     bar_close: bar_close.then(|| pane.view.with_bars(|bars| bars.last().map(|bar| bar.ts))).flatten(),
                 };
                 let Some(sink) = sink else {
                     // Nothing to answer later on: say how it stands now.
-                    return Ok(self.woken(&pane, &json!({"ev": "timeout"}), bars, since, json));
+                    return Ok(self.woken(&pane, &json!({"ev": "timeout"}), bars, since, json, true));
                 };
                 let id = self.listen(sink, json, Kind::Wait(waiting));
                 let this = Rc::downgrade(self);
@@ -169,7 +205,22 @@ impl Window {
     }
 
     /// Answer the wait `id` with `event` and the snapshot, and let it go.
+    /// One already woken by an order or a position answers with that, once
+    /// it settles, rather than with this.
     fn wake(self: &Rc<Self>, id: u64, event: &Value) {
+        let settling = self
+            .agent
+            .listeners
+            .borrow()
+            .iter()
+            .any(|listener| listener.id == id && matches!(listener.kind, Kind::Wait(Waiting { settling: Some(_), .. })));
+        if !settling {
+            self.answer(id, event, true);
+        }
+    }
+
+    /// Answer the wait `id`, saying so when the book had not settled.
+    fn answer(self: &Rc<Self>, id: u64, event: &Value, settled: bool) {
         let found = {
             let mut listeners = self.agent.listeners.borrow_mut();
             listeners.iter().position(|listener| listener.id == id).map(|at| listeners.remove(at))
@@ -179,7 +230,7 @@ impl Window {
             return;
         };
         let text = match self.agent_pane(waiting.chart) {
-            Ok(pane) => self.woken(&pane, event, waiting.bars, waiting.since, listener.json),
+            Ok(pane) => self.woken(&pane, event, waiting.bars, waiting.since, listener.json, settled),
             Err(fault) => format!("{}\n{}\n", line(event, listener.json).trim_end(), fault.message),
         };
         listener.sink.say(&text);
@@ -187,13 +238,97 @@ impl Window {
     }
 
     /// What woke a wait, then the snapshot.
-    fn woken(&self, pane: &ChartPane, event: &Value, bars: usize, since: Option<Token>, json: bool) -> String {
+    fn woken(&self, pane: &ChartPane, event: &Value, bars: usize, since: Option<Token>, json: bool, settled: bool) -> String {
         match json {
             true => {
                 let snapshot: Value = serde_json::from_str(&self.snapshot(pane, bars, since, true)).unwrap_or(Value::Null);
-                format!("{}\n", json!({"woke": event, "snapshot": snapshot}))
+                let mut answer = json!({"woke": event, "snapshot": snapshot});
+                if !settled {
+                    answer["settled"] = json!(false);
+                }
+                format!("{answer}\n")
             }
-            false => format!("woke {}\n{}", events::text(event), self.snapshot(pane, bars, since, false)),
+            false => {
+                let unsettled = match settled {
+                    true => String::new(),
+                    false => format!("unsettled: the book was still moving after {}s\n", SETTLE_AT_MOST.as_secs_f64()),
+                };
+                format!("woke {}\n{unsettled}{}", events::text(event), self.snapshot(pane, bars, since, false))
+            }
+        }
+    }
+
+    /// Look at the waits that are settling once `after` has gone by.
+    fn settle_later(self: &Rc<Self>, after: Duration) {
+        let this = Rc::downgrade(self);
+        glib::timeout_add_local_once(after, move || {
+            if let Some(this) = this.upgrade() {
+                this.agent_settle();
+            }
+        });
+    }
+
+    /// Answer each wait woken by an order or a position whose burst is
+    /// over: the book quiet for [`QUIET`] and showing what the fill did;
+    /// or [`SETTLE_AT_MOST`] gone by, saying it had not settled.
+    fn agent_settle(self: &Rc<Self>) {
+        let quiet = self.book_quiet();
+        let mut done = Vec::new();
+        for listener in self.agent.listeners.borrow().iter() {
+            let Kind::Wait(Waiting { settling: Some((event, began)), from, .. }) = &listener.kind else {
+                continue;
+            };
+            if began.elapsed() >= SETTLE_AT_MOST {
+                done.push((listener.id, event.clone(), false));
+            } else if quiet && self.fill_told(event, *from) {
+                done.push((listener.id, event.clone(), true));
+            }
+        }
+        for (id, event, settled) in done {
+            self.answer(id, &event, settled);
+        }
+    }
+
+    /// Whether the book has said nothing new for [`QUIET`].
+    fn book_quiet(&self) -> bool {
+        self.agent.book_moved_at.get().is_none_or(|at| at.elapsed() >= QUIET)
+    }
+
+    /// Whether all a fill did has reached the book, as far as can be told:
+    /// the position has moved since event `from`, and, the position flat,
+    /// nothing placed along with the filled order still works — the other
+    /// leg of its bracket. Anything but a fill has nothing to wait for.
+    fn fill_told(&self, event: &Value, from: u64) -> bool {
+        if !matches!(event["ev"].as_str(), Some("filled" | "partial")) {
+            return true;
+        }
+        let (Some(account), Some(contract), Some(basket)) = (event["acct"].as_str(), event["sym"].as_str(), event["id"].as_str()) else {
+            return true;
+        };
+        let moved = self
+            .agent
+            .log
+            .borrow()
+            .iter()
+            .any(|(seq, told)| *seq > from && told["ev"] == "pos" && told["acct"] == account && told["sym"] == contract);
+        if !moved {
+            return false;
+        }
+        let view = self.trading.borrow();
+        let on = |order: &trading::Order| events::number(&order.account) == account && order.contract == contract;
+        let flat = !view
+            .book
+            .positions
+            .iter()
+            .any(|held| events::number(&held.account) == account && held.contract == contract && held.net != 0);
+        let tag = view.book.orders.iter().find(|order| order.basket_id == basket && on(order)).and_then(|order| order.tag.as_deref());
+        match (flat, tag) {
+            (true, Some(tag)) => !view
+                .book
+                .orders
+                .iter()
+                .any(|order| order.basket_id != basket && on(order) && order.status.working() && order.tag.as_deref() == Some(tag)),
+            _ => true,
         }
     }
 
@@ -212,13 +347,26 @@ impl Window {
             log.push_back((seq, event.clone()));
         }
         let pnl = event["ev"] == "pnl";
+        let book = from_book(&event);
+        if book {
+            self.agent.book_moved_at.set(Some(Instant::now()));
+        }
         let mut woken = Vec::new();
-        for listener in self.agent.listeners.borrow().iter() {
-            match &listener.kind {
+        let (mut settling, mut began) = (false, false);
+        for listener in self.agent.listeners.borrow_mut().iter_mut() {
+            match &mut listener.kind {
                 Kind::Stream { pnl_every } => {
                     if !pnl || pnl_every.is_some() {
                         listener.sink.say(&line(&event, listener.json));
                     }
+                }
+                // Already woken, by what it will answer with.
+                Kind::Wait(Waiting { settling: Some(_), .. }) => settling = true,
+                // By an order or a position: answered once what that set
+                // off has come in too, so the snapshot shows it done.
+                Kind::Wait(waiting) if book && events::wakes(&event) => {
+                    waiting.settling = Some((event.clone(), Instant::now()));
+                    (settling, began) = (true, true);
                 }
                 Kind::Wait(_) if events::wakes(&event) => woken.push(listener.id),
                 Kind::Wait(_) => {}
@@ -226,6 +374,12 @@ impl Window {
         }
         for id in woken {
             self.wake(id, &event);
+        }
+        if settling && book {
+            self.settle_later(QUIET + Duration::from_millis(10));
+        }
+        if began {
+            self.settle_later(SETTLE_AT_MOST);
         }
     }
 
@@ -306,7 +460,7 @@ impl Window {
         let accounts: Vec<(String, f64)> =
             self.trading.borrow().book.accounts.iter().filter_map(|money| Some((money.key.clone(), money.day_pnl?))).collect();
         for (key, pnl) in accounts {
-            let caps = limits::holding(&self.store, &key, today);
+            let caps = limits::holding(&self.store, &key);
             let Some(limit) = limits::reached(&caps, pnl) else {
                 continue;
             };
@@ -538,7 +692,7 @@ impl Window {
         let money = key.as_deref().and_then(|key| view.book.money(key)).cloned();
         let money = money.as_ref();
         let today = limits::trading_day(chrono::Utc::now());
-        let caps = key.as_deref().map(|key| limits::holding(&self.store, key, today)).unwrap_or_default();
+        let caps = key.as_deref().map(|key| limits::holding(&self.store, key)).unwrap_or_default();
         let hit = key.as_deref().and_then(|key| limits::hit_on(&self.store, key, today));
         let held = match (&key, &contract) {
             (Some(key), Some(contract)) => view.book.position(key, contract).cloned(),
@@ -672,7 +826,7 @@ impl Window {
         }
         let key = target.account.key();
         let today = limits::trading_day(chrono::Utc::now());
-        let caps = limits::holding(&self.store, &key, today);
+        let caps = limits::holding(&self.store, &key);
         let hit = limits::hit_on(&self.store, &key, today);
         if caps.is_empty() && hit.is_none() {
             return None;
@@ -699,6 +853,11 @@ impl Window {
         }
         refused
     }
+}
+
+/// Whether `event` came from the book: an order's or a position's.
+fn from_book(event: &Value) -> bool {
+    event["ev"] == "pos" || (event.get("id").is_some() && event.get("acct").is_some())
 }
 
 /// An event or an answer, one line: JSON or text.
@@ -911,16 +1070,35 @@ mod tests {
             let (code, why) = command(&window, "trading buy --stop-loss -1");
             assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
             assert!(why.contains("daily loss"), "{why}");
-            // Loosened, it still holds today.
-            let (code, out) = command(&window, &format!("trading limits clear {key}"));
-            assert_eq!(code, 0, "{out}");
-            let (code, why) = command(&window, "trading buy --stop-loss -1");
-            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
             // A close sent with exits is no close: either exit opens one.
             let (code, why) = command(&window, "trading sell --stop-loss +1");
             assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            // Tightened, it is still reached.
+            let (code, out) = command(&window, &format!("trading limits set {key} --daily-loss 900"));
+            assert_eq!(code, 0, "{out}");
+            assert!(limits::hit_on(&window.store, &key, today).is_some(), "lifted by a tighter limit");
+            // Raised past the day's P&L, it no longer stops entries, at once:
+            // what refuses this one is the quantity.
+            let (code, out) = command(&window, &format!("trading limits set {key} --daily-loss 2000"));
+            assert_eq!(code, 0, "{out}");
+            assert!(limits::hit_on(&window.store, &key, today).is_none(), "still reached");
+            let (code, why) = command(&window, "trading buy --stop-loss -1");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            assert!(why.contains("hold 2"), "{why}");
+            // Lowered back under it, it is reached again.
+            let (code, out) = command(&window, &format!("trading limits set {key} --daily-loss 1000"));
+            assert_eq!(code, 0, "{out}");
+            let (code, why) = command(&window, "trading buy --stop-loss -1");
+            assert!(why.contains("daily loss"), "{code} {why}");
             // Closing still goes.
             let (code, out) = command(&window, "trading sell");
+            assert_eq!(code, 0, "{out}");
+            assert!(settle(&window, || window.trading.borrow().book.positions.iter().all(|held| held.net == 0)
+                && !window.trade.placing.busy(&key)));
+            // Cleared, everything goes at once.
+            let (code, out) = command(&window, &format!("trading limits clear {key}"));
+            assert_eq!(code, 0, "{out}");
+            let (code, out) = command(&window, "trading buy --quantity 2");
             assert_eq!(code, 0, "{out}");
         });
     }
@@ -1001,6 +1179,77 @@ mod tests {
             assert!(watching.ended.get(), "still held after the window went");
             assert!(watching.said.borrow().trim_end().ends_with(r#"{"ev":"closed"}"#), "{}", watching.said.borrow());
         });
+    }
+
+    /// A bracket's stop fills and the trading service tells it in three
+    /// updates: the fill, then the position, then the target cancelled.
+    /// The wait woken by the fill answers with the book as it ends up —
+    /// flat, and nothing working — not as it stood at the first of them.
+    #[test]
+    fn a_wait_woken_by_a_fill_answers_once_the_bracket_has_settled() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            agents_on();
+            let (code, out) = command(&window, "trading sell");
+            assert_eq!(code, 0, "{out}");
+            assert!(settle(&window, || window.trading.borrow().book.positions.is_empty() && !window.trade.placing.busy(&key)));
+            let (code, out) = command(&window, "trading sell --quantity 1 --target -6 --stop-loss +4");
+            assert_eq!(code, 0, "{out}");
+            assert!(settle(&window, || window.trading.borrow().book.orders.iter().filter(|order| order.status.working()).count() == 2 && !window.trade.placing.busy(&key)), "no exits");
+            let exits = working(&session);
+            let stop = exits.iter().find(|order| order.kind == OrderKind::Stop).expect("a stop").basket_id.clone();
+            let target = exits.iter().find(|order| order.kind == OrderKind::Limit).expect("a target").basket_id.clone();
+            pump(&window, Duration::from_millis(400));
+
+            let waiting = Rc::new(Terminal::default());
+            let (code, out) = command_from(&window, "trading wait --timeout 60", &Typed(waiting.clone()));
+            assert_eq!((code, out.as_str()), (0, ""));
+
+            // The stop fills: the order first, on its own.
+            {
+                let mut book = session.book.lock().unwrap();
+                let order = book.orders.iter_mut().find(|order| order.basket_id == stop).expect("the stop");
+                order.status = trading::Stage::Filled.into();
+                order.filled = 1;
+                order.fill_price = order.price;
+            }
+            session.moved();
+            pump(&window, Duration::from_millis(100));
+            assert!(!waiting.ended.get(), "answered before the position: {}", waiting.said.borrow());
+            // Then the position, flat.
+            session.book.lock().unwrap().positions.clear();
+            session.moved();
+            // And, longer after than the book stays quiet, the target cancelled.
+            pump(&window, Duration::from_millis(500));
+            assert!(!waiting.ended.get(), "answered with the target working: {}", waiting.said.borrow());
+            {
+                let mut book = session.book.lock().unwrap();
+                let order = book.orders.iter_mut().find(|order| order.basket_id == target).expect("the target");
+                order.status = trading::Stage::Cancelled.into();
+            }
+            session.moved();
+            let until = Instant::now() + Duration::from_secs(3);
+            while !waiting.ended.get() && Instant::now() < until {
+                pump(&window, Duration::from_millis(20));
+            }
+            let woke = waiting.said.borrow().clone();
+            assert!(woke.starts_with(&format!("woke filled {stop} B 1 ESZ6 stp")), "{woke}");
+            assert!(woke.contains("\npos flat\n"), "{woke}");
+            assert!(woke.contains("\nord none\n"), "{woke}");
+            assert!(!woke.contains("unsettled"), "{woke}");
+        });
+    }
+
+    /// Run the window for `long`, hearing the trading service throughout.
+    fn pump(window: &Rc<Window>, long: Duration) {
+        let context = glib::MainContext::default();
+        let until = Instant::now() + long;
+        while Instant::now() < until {
+            window.desk.tell();
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// A wait with nothing to wake it answers at its timeout.
