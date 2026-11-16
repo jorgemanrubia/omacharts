@@ -25,7 +25,6 @@ use std::rc::Rc;
 use super::{Caller, Fault, Live, Sink, EXIT_NO_WINDOW};
 use crate::store::Store;
 use crate::trading::brackets::{self, Leg};
-use crate::trading::limits::{self, Caps};
 use crate::trading::{self, Account, Login, OrderKind, Side, Standing, View};
 
 /// Something done to an account through the window: the chart it is
@@ -159,7 +158,7 @@ pub fn run(
     live: Option<&dyn Live>,
     caller: &dyn Caller,
 ) -> Result<String, Fault> {
-    if matches!(verb, "snapshot" | "wait" | "watch" | "alert" | "limits") && !crate::features::agent_trading() {
+    if matches!(verb, "snapshot" | "wait" | "watch" | "alert") && !crate::features::agent_trading() {
         return Err(agent_off());
     }
     match verb {
@@ -237,7 +236,6 @@ pub fn run(
                 json: as_json,
             })
         }
-        "limits" => limits_verb(store, m, as_json, live),
         "logins" => logins(store, live, as_json),
         "login" => {
             let service = required(m, "SERVICE")?;
@@ -456,154 +454,6 @@ fn count(m: &clap::ArgMatches, name: &str, default: usize) -> Result<usize, Faul
             .filter(|n| *n <= 10_000)
             .ok_or_else(|| Fault::usage(format!("--{name} is a whole number, not {text:?}"))),
     }
-}
-
-/// An amount of money given to `--name`, above 0.
-fn amount_of(m: &clap::ArgMatches, name: &str) -> Result<Option<f64>, Fault> {
-    let Some(text) = arg(m, name) else {
-        return Ok(None);
-    };
-    text.replace([',', '$'], "")
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|amount| amount.is_finite() && *amount > 0.0)
-        .map(Some)
-        .ok_or_else(|| Fault::usage(format!("--{name} is an amount above 0, not {text:?}")))
-}
-
-/// `trading limits [show|set|clear] [ACCOUNT]`.
-fn limits_verb(
-    store: &Store,
-    m: &clap::ArgMatches,
-    as_json: bool,
-    live: Option<&dyn Live>,
-) -> Result<String, Fault> {
-    let view = view_of(store, live);
-    let today = limits::trading_day(chrono::Utc::now());
-    let action = arg(m, "ACTION").map_or("show", String::as_str);
-    let account = match arg(m, "ACCOUNT") {
-        Some(text) => Some(find_account(&view, text)?.key()),
-        None => None,
-    };
-    let given = Caps {
-        daily_profit: amount_of(m, "daily-profit")?,
-        daily_loss: amount_of(m, "daily-loss")?,
-        max_qty: match arg(m, "max-qty") {
-            None => None,
-            Some(text) => Some(quantity(text).map_err(|_| {
-                Fault::usage(format!("--max-qty is a whole number above 0, not {text:?}"))
-            })?),
-        },
-        max_risk: amount_of(m, "max-risk")?,
-    };
-    if action != "set" && !given.is_empty() {
-        return Err(Fault::usage(format!(
-            "limits are given to `trading limits set`, not `{action}`"
-        )));
-    }
-    let one = |account: Option<String>| -> Result<String, Fault> {
-        account
-            .or_else(|| view.default_account().map(|account| account.key()))
-            .ok_or_else(|| {
-                Fault::not_found(
-                    "no account to set limits on: sign in to a trading service, or name one".into(),
-                )
-            })
-    };
-    let kept = limits::load(store);
-    let shown: Vec<String> = match (action, account) {
-        ("set", account) => {
-            if given.is_empty() {
-                return Err(Fault::usage(
-                    "say which: --daily-profit, --daily-loss, --max-qty, --max-risk".into(),
-                ));
-            }
-            let key = one(account)?;
-            // What was asked last, each limit not given kept as it is.
-            let asked = kept.get(&key).copied().unwrap_or_default();
-            let merged = Caps {
-                daily_profit: given.daily_profit.or(asked.daily_profit),
-                daily_loss: given.daily_loss.or(asked.daily_loss),
-                max_qty: given.max_qty.or(asked.max_qty),
-                max_risk: given.max_risk.or(asked.max_risk),
-            };
-            limits::set(store, &key, merged, today);
-            vec![key]
-        }
-        ("clear", account) => {
-            let key = one(account)?;
-            limits::set(store, &key, Caps::default(), today);
-            vec![key]
-        }
-        (_, Some(key)) => vec![key],
-        (_, None) => kept.keys().cloned().collect(),
-    };
-    let all = limits::load(store);
-    let rows: Vec<(String, Value, String)> = shown
-        .iter()
-        .map(|key| {
-            let caps = all.get(key).copied().unwrap_or_default();
-            let hit = limits::hit_on(store, key, today);
-            let caps_json = |caps: &Caps| {
-                json!({"daily_profit": caps.daily_profit, "daily_loss": caps.daily_loss, "max_qty": caps.max_qty, "max_risk": caps.max_risk})
-            };
-            let value = json!({
-                "account": key,
-                "name": view.name_of(key),
-                "limits": caps_json(&caps),
-                "reached": hit.as_ref().map(|hit| json!({"limit": hit.limit, "pnl": hit.pnl})),
-            });
-            let mut text = format!("{}: {}", view.name_of(key), caps_text(&caps));
-            if let Some(hit) = &hit {
-                text.push_str(&format!("; {} reached today at {:.2}, entries refused", hit.limit, hit.pnl));
-            }
-            (key.clone(), value, text)
-        })
-        .collect();
-    if as_json {
-        return Ok(format!(
-            "{}
-",
-            json!({"limits": rows.iter().map(|(_, value, _)| value.clone()).collect::<Vec<_>>()})
-        ));
-    }
-    if rows.is_empty() {
-        return Ok("no limits set
-"
-        .into());
-    }
-    Ok(format!(
-        "{}
-",
-        rows.iter()
-            .map(|(_, _, text)| text.clone())
-            .collect::<Vec<_>>()
-            .join(
-                "
-"
-            )
-    ))
-}
-
-fn caps_text(caps: &Caps) -> String {
-    if caps.is_empty() {
-        return "no limits".into();
-    }
-    let mut parts = Vec::new();
-    if let Some(profit) = caps.daily_profit {
-        parts.push(format!("daily profit {profit:.2}"));
-    }
-    if let Some(loss) = caps.daily_loss {
-        parts.push(format!("daily loss {loss:.2}"));
-    }
-    if let Some(qty) = caps.max_qty {
-        parts.push(format!("max qty {qty}"));
-    }
-    if let Some(risk) = caps.max_risk {
-        parts.push(format!("max risk {risk:.2}"));
-    }
-    parts.join(", ")
 }
 
 fn quantity(text: &str) -> Result<u32, Fault> {

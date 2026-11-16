@@ -308,7 +308,7 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
         "trading",
         Verb {
             name: "snapshot",
-            about: "Everything an agent decides on, in a few lines: the chart's account and its limits, the position, the working orders, the last price, the key levels and the last bars",
+            about: "Everything an agent decides on, in a few lines: the chart's account, the position, the working orders, the last price, the key levels and the last bars",
             args: &[],
             flags: SNAPSHOT_FLAGS,
             example: "omacharts trading snapshot --chart pos:0 --bars 12",
@@ -321,7 +321,7 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
         "trading",
         Verb {
             name: "wait",
-            about: "Wait until something happens (a fill, an order or a position changing, a limit reached, an alert, a price crossed, a bar closed) or the time is up; then say what, and the snapshot",
+            about: "Wait until something happens (a fill, an order or a position changing, an alert, a price crossed, a bar closed) or the time is up; then say what, and the snapshot",
             args: &[],
             flags: WAIT_FLAGS,
             example: "omacharts trading wait --timeout 30 --cross 7620 --bar-close --since 12.1794866400",
@@ -363,47 +363,6 @@ pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
             json: true,
             writes: false,
             workspace: true,
-        },
-    ),
-    (
-        "trading",
-        Verb {
-            name: "limits",
-            about: "An account's own limits, which the app holds it to: a change, tighter or looser, holds at once",
-            args: &[
-                Arg::opt("ACTION", "show, set or clear (default: show)")
-                    .of(&["show", "set", "clear"]),
-                Arg::opt(
-                    "ACCOUNT",
-                    "an account, as `trading accounts` lists it (default: the default account)",
-                ),
-            ],
-            flags: &[
-                Flag::valued(
-                    "daily-profit",
-                    "AMOUNT",
-                    "no new entries once the day's P&L reaches this",
-                ),
-                Flag::valued(
-                    "daily-loss",
-                    "AMOUNT",
-                    "no new entries once the day's P&L falls this far",
-                ),
-                Flag::valued(
-                    "max-qty",
-                    "N",
-                    "the most contracts an order, or the position it leaves, may be",
-                ),
-                Flag::valued(
-                    "max-risk",
-                    "AMOUNT",
-                    "the most a trade may risk to its stop-loss: stop distance x quantity x point value",
-                ),
-            ],
-            example: "omacharts trading limits set Lucid/LT50-1043 --daily-profit 1500 --daily-loss 1200 --max-qty 1 --max-risk 200",
-            json: true,
-            writes: false,
-            workspace: false,
         },
     ),
 ];

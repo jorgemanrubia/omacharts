@@ -29,9 +29,8 @@ pub enum Feature {
     /// file or connects to its DTC server.
     Sierra,
     /// What an agent driving the command line trades with: brackets on
-    /// `trading buy` and `sell`, `trading watch`, `trading alert` and the
-    /// per-account limits of `trading limits`, which the window enforces.
-    /// Off, none of it is accepted and no limit is checked.
+    /// `trading buy` and `sell`, `trading watch` and `trading alert`. Off,
+    /// none of it is accepted.
     AgentTrading,
 }
 
@@ -56,7 +55,7 @@ pub const FLAGS: &[Flag] = &[
         feature: Feature::AgentTrading,
         name: "agent-trading",
         default: false,
-        about: "For an agent trading from the command line: a chart in numbers, a snapshot, waits, an event stream, brackets, price alerts and per-account limits",
+        about: "For an agent trading from the command line: a chart in numbers, a snapshot, waits, an event stream, brackets and price alerts",
     },
 ];
 

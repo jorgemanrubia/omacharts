@@ -98,9 +98,16 @@ fn strongest(profile: &omacharts_engine::indicators::Profile, nodes: &[omacharts
     prices
 }
 
+/// The trading day `at` falls in: CME's, which starts at 5 p.m. Chicago
+/// time, named by the date it ends on.
+fn trading_day(at: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+    let chicago = at.with_timezone(&chrono_tz::America::Chicago);
+    (chicago + chrono::Duration::hours(7)).date_naive()
+}
+
 /// The session a bar at `ts` belongs to: the trading day, CME's.
 fn session_of(ts: i64) -> Option<chrono::NaiveDate> {
-    chrono::DateTime::from_timestamp(ts, 0).map(super::limits::trading_day)
+    chrono::DateTime::from_timestamp(ts, 0).map(trading_day)
 }
 
 /// The levels of a chart with `bars`, drawing `drawn`; `intraday` when a
@@ -298,6 +305,16 @@ mod tests {
         assert_eq!(num(1.08455, 5), "1.08455");
         assert_eq!(num(120.0, 0), "120");
         assert_eq!(places(Some(0.25)), 2);
+    }
+
+    #[test]
+    fn the_trading_day_starts_at_five_in_chicago() {
+        let at = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&chrono::Utc);
+        let day = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap();
+        // 4:59 p.m. CST on the 16th is still the 16th's day; 5 p.m. is the 17th's.
+        assert_eq!(trading_day(at("2026-11-16T22:59:00Z")), day("2026-11-16"));
+        assert_eq!(trading_day(at("2026-11-16T23:00:00Z")), day("2026-11-17"));
+        assert_eq!(trading_day(at("2026-11-17T03:00:00Z")), day("2026-11-17"));
     }
 
     #[test]
