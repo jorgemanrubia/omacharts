@@ -120,7 +120,7 @@ impl Window {
     /// as the command's failure.
     pub fn trade_command(self: &Rc<Self>, act: Act) -> Result<Said, Fault> {
         match act {
-            Act::Order { chart, side, kind, price, quantity } => {
+            Act::Order { chart, side, kind, price, quantity, exits } => {
                 let pane = self.chart_to_trade(chart)?;
                 let size = match quantity {
                     None => None,
@@ -129,7 +129,9 @@ impl Window {
                         Some(crate::cli::trading::picked(&self.store, &traded, n)?.size)
                     }
                 };
-                self.heard_doing(|| self.order_on(&pane, side, kind, None, price, size))
+                self.heard_doing(|| {
+                    self.order_with_exits(&pane, side, kind, None, price, size, exits)
+                })
             }
             Act::Exit { chart, target, stop } => {
                 let pane = self.chart_to_trade(chart)?;

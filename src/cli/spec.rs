@@ -224,23 +224,252 @@ pub const HIDDEN: &[Noun] = &[Noun {
 /// [`HIDDEN`] does for whole groups: for a verb only an experimental part
 /// of the app has a use for. `provider setup` sets up a feed that reads
 /// something on this machine, and the only one is Sierra Chart's, behind
-/// its feature flag; with the flag off it knows no such feed.
-pub const HIDDEN_VERBS: &[(&str, Verb)] = &[(
-    "provider",
-    Verb {
-        name: "setup",
-        about: "Set up a feed that reads something on this machine and add it; with no values, it is looked for",
-        args: &[
-            Arg::req("NAME", "the feed to set up"),
-            Arg::any("VALUE", "what it is set up with, as KEY=VALUE"),
-        ],
-        flags: &[],
-        example: "omacharts provider setup sierra folder=~/SierraChart port=11099",
-        json: true,
-        writes: true,
-        workspace: false,
-    },
-)];
+/// its feature flag; with the flag off it knows no such feed. `symbol
+/// quote`, `chart bars` and `chart values` read a chart in numbers for an
+/// agent that trades, behind the `agent-trading` flag.
+pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
+    (
+        "symbol",
+        Verb {
+            name: "quote",
+            about: "The last price of one instrument, from a chart of it on screen when there is one, else as last fetched; no feed here gives a bid or an ask, so they are null",
+            args: &[
+                Arg::req(
+                    "SYMBOL",
+                    "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one",
+                ),
+                Arg::opt(
+                    "SUFFIX",
+                    "the venue suffix for a listing abroad, such as DE",
+                ),
+            ],
+            flags: &[],
+            example: "omacharts symbol quote ES",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+    ),
+    (
+        "chart",
+        Verb {
+            name: "bars",
+            about: "A chart's last bars as it holds them on screen, oldest first: time, open, high, low, close and volume",
+            args: &[],
+            flags: &[
+                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                Flag::valued("chart", "CHART", CHART_SELECTOR),
+                Flag::valued(
+                    "last",
+                    "N",
+                    "how many bars, the newest of them (default 20)",
+                ),
+            ],
+            example: "omacharts chart bars --chart pos:0 --last 50 --json",
+            json: true,
+            writes: false,
+            workspace: true,
+        },
+    ),
+    (
+        "chart",
+        Verb {
+            name: "values",
+            about: "Each indicator on a chart with its latest values as drawn on screen: a line's value, a VWAP's and its bands', a volume profile's point of control and value area",
+            args: &[],
+            flags: &[
+                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                Flag::valued("chart", "CHART", CHART_SELECTOR),
+            ],
+            example: "omacharts chart values --chart pos:0 --json",
+            json: true,
+            writes: false,
+            workspace: true,
+        },
+    ),
+    (
+        "provider",
+        Verb {
+            name: "setup",
+            about: "Set up a feed that reads something on this machine and add it; with no values, it is looked for",
+            args: &[
+                Arg::req("NAME", "the feed to set up"),
+                Arg::any("VALUE", "what it is set up with, as KEY=VALUE"),
+            ],
+            flags: &[],
+            example: "omacharts provider setup sierra folder=~/SierraChart port=11099",
+            json: true,
+            writes: true,
+            workspace: false,
+        },
+    ),
+    // Trading for an agent, behind the `agent-trading` feature flag.
+    (
+        "trading",
+        Verb {
+            name: "snapshot",
+            about: "Everything an agent decides on, in a few lines: the chart's account and its limits, the position, the working orders, the last price, the key levels and the last bars",
+            args: &[],
+            flags: SNAPSHOT_FLAGS,
+            example: "omacharts trading snapshot --chart pos:0 --bars 12",
+            json: true,
+            writes: false,
+            workspace: true,
+        },
+    ),
+    (
+        "trading",
+        Verb {
+            name: "wait",
+            about: "Wait until something happens (a fill, an order or a position changing, a limit reached, an alert, a price crossed, a bar closed) or the time is up; then say what, and the snapshot",
+            args: &[],
+            flags: WAIT_FLAGS,
+            example: "omacharts trading wait --timeout 30 --cross 7620 --bar-close --since 12.1794866400",
+            json: true,
+            writes: false,
+            workspace: true,
+        },
+    ),
+    (
+        "trading",
+        Verb {
+            name: "watch",
+            about: "Stream every order, position and P&L change, one line each, until the window goes away",
+            args: &[],
+            flags: &[Flag::valued(
+                "pnl-every",
+                "SECONDS",
+                "say P&L at most this often (default 5; 0 never)",
+            )],
+            example: "omacharts trading watch --json",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+    ),
+    (
+        "trading",
+        Verb {
+            name: "alert",
+            about: "A price alert on what a chart charts, said once by `trading watch` and `trading wait` when the price crosses it; with no price, the alerts",
+            args: &[Arg::opt("PRICE", "the price")],
+            flags: &[
+                Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                Flag::valued("chart", "CHART", CHART_SELECTOR),
+                Flag::valued("remove", "ID", "take an alert off"),
+                Flag::switch("clear", "take every alert off"),
+            ],
+            example: "omacharts trading alert 7620.5 --chart pos:0",
+            json: true,
+            writes: false,
+            workspace: true,
+        },
+    ),
+    (
+        "trading",
+        Verb {
+            name: "limits",
+            about: "An account's own limits, which the app holds it to: tighter ones hold at once, looser ones from the next trading day",
+            args: &[
+                Arg::opt("ACTION", "show, set or clear (default: show)")
+                    .of(&["show", "set", "clear"]),
+                Arg::opt(
+                    "ACCOUNT",
+                    "an account, as `trading accounts` lists it (default: the default account)",
+                ),
+            ],
+            flags: &[
+                Flag::valued(
+                    "daily-profit",
+                    "AMOUNT",
+                    "no new entries once the day's P&L reaches this",
+                ),
+                Flag::valued(
+                    "daily-loss",
+                    "AMOUNT",
+                    "no new entries once the day's P&L falls this far",
+                ),
+                Flag::valued(
+                    "max-qty",
+                    "N",
+                    "the most contracts an order, or the position it leaves, may be",
+                ),
+                Flag::valued(
+                    "max-risk",
+                    "AMOUNT",
+                    "the most a trade may risk to its stop-loss: stop distance x quantity x point value",
+                ),
+            ],
+            example: "omacharts trading limits set Lucid/LT50-1043 --daily-profit 1500 --daily-loss 1200 --max-qty 1 --max-risk 200",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+    ),
+];
+
+/// Flags of listed verbs that the parser accepts and no listing shows, by
+/// noun and verb: as [`HIDDEN_VERBS`], for what is behind a feature flag.
+/// A bracket's exits on an order, behind `agent-trading`.
+pub const HIDDEN_FLAGS: &[(&str, &str, Flag)] = &[
+    (
+        "trading",
+        "buy",
+        Flag::valued("target", "PRICE", BRACKET_TARGET),
+    ),
+    (
+        "trading",
+        "buy",
+        Flag::valued("stop-loss", "PRICE", BRACKET_STOP),
+    ),
+    (
+        "trading",
+        "sell",
+        Flag::valued("target", "PRICE", BRACKET_TARGET),
+    ),
+    (
+        "trading",
+        "sell",
+        Flag::valued("stop-loss", "PRICE", BRACKET_STOP),
+    ),
+];
+
+const BRACKET_TARGET: &str = "a target sent with the order as one bracket: a price, or points from the fill, +6 for a buy and -6 for a sell";
+const BRACKET_STOP: &str = "a stop-loss sent with the order as one bracket: a price, or points from the fill, -4 for a buy and +4 for a sell";
+
+const SNAPSHOT_FLAGS: &[Flag] = &[
+    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+    Flag::valued("chart", "CHART", CHART_SELECTOR),
+    Flag::valued("bars", "N", "how many of the last bars (default 12)"),
+    Flag::valued(
+        "since",
+        "TOKEN",
+        "only what changed since the snapshot that gave this token: newer bars and the events since",
+    ),
+];
+
+const WAIT_FLAGS: &[Flag] = &[
+    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+    Flag::valued("chart", "CHART", CHART_SELECTOR),
+    Flag::valued(
+        "bars",
+        "N",
+        "how many of the last bars the snapshot shows (default 12)",
+    ),
+    Flag::valued(
+        "since",
+        "TOKEN",
+        "what happened since the snapshot that gave this token counts: if anything did, it answers at once",
+    ),
+    Flag::valued("timeout", "SECONDS", "the longest to wait (default 30)"),
+    Flag::valued(
+        "cross",
+        "PRICE",
+        "wake when the chart's price crosses this; once per price",
+    )
+    .repeating(),
+    Flag::switch("bar-close", "wake when the chart's bar closes"),
+];
 
 /// How a watchlist, section or chartbook is named on the command line.
 pub const SELECTOR: &str =

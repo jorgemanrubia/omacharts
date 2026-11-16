@@ -57,6 +57,7 @@ mod trade;
 mod trade_cli;
 mod updates;
 mod about;
+mod agent;
 use trade::Trade;
 
 /// A real window on `store`, charting the synthetic feed with its clock
@@ -5030,6 +5031,8 @@ pub struct Window {
     /// Everything trading puts in the window, none of it built until there
     /// is a login.
     trade: Trade,
+    /// What agents trading from the command line are told: see `agent`.
+    agent: agent::Agent,
     /// The Log, the corner notice and the main menu's dot.
     messages: log::Messages,
     /// What is dictated here, on its way to the agent.
@@ -5187,6 +5190,7 @@ impl Window {
             desk: Rc::new(crate::trading::Desk::new(crate::trading::registry())),
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
+            agent: agent::Agent::default(),
             messages: log::Messages::new(omacharts_engine::log::global()),
             dictation: Default::default(),
             about: RefCell::new(None),
@@ -10751,6 +10755,7 @@ impl Window {
     fn wire_close(self: &Rc<Self>) {
         let this = self.clone();
         self.window.connect_close_request(move |_| {
+            this.agent_closing();
             this.retire_feeds();
             this.desk.sign_out_all(crate::trading::SIGN_OUT_WAIT);
             this.stop_dictation();

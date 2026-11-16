@@ -1,0 +1,1074 @@
+//! What an agent trading from the command line asks of the window, behind
+//! the `agent-trading` feature flag: a snapshot of a chart and its account
+//! in a few lines, a wait for the next thing that matters, a stream of
+//! every order, position and P&L change, price alerts, and the account's
+//! own limits held on every entry.
+//!
+//! Everything is answered from what the window already holds — the book
+//! its sessions keep, the bars and indicators on screen — so a snapshot
+//! costs no request to anybody, and an agent can ask for one every half
+//! minute.
+//!
+//! Events are numbered as they happen and the last few hundred kept, so a
+//! snapshot can hand out a token, `SEQ.BAR`, and the next one, given it,
+//! says only what changed since: the bars that closed after it and the
+//! events after it.
+
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+use gtk::glib;
+use serde_json::{Value, json};
+
+use super::Window;
+use crate::cli::trading::{Ask, Token};
+use crate::cli::{Fault, Sink};
+use crate::trading::{self, events, limits, reading};
+use crate::ui::pane::ChartPane;
+
+/// How many events are kept for a token to be answered from.
+const KEPT: usize = 512;
+
+/// How many streams and waits may be open at once: a terminal closed
+/// without a word is only noticed by writing to it, so the oldest goes.
+const LISTENERS: usize = 16;
+
+/// What the window keeps for agents.
+#[derive(Default)]
+pub(super) struct Agent {
+    /// The number of the last event.
+    seq: Cell<u64>,
+    log: RefCell<VecDeque<(u64, Value)>>,
+    /// The book as events were last read off it; none until the first.
+    seen: RefCell<Option<trading::Book>>,
+    /// What was last said of each order and each position, by account and
+    /// order or contract: a book that drops an order for a moment and has
+    /// it again says nothing new.
+    said: RefCell<std::collections::HashMap<String, Value>>,
+    /// Each account's P&L as last said, and when.
+    pnl_said: RefCell<Vec<(String, f64, f64)>>,
+    pnl_at: Cell<Option<Instant>>,
+    listeners: RefCell<Vec<Listener>>,
+    next_listener: Cell<u64>,
+    alerts: RefCell<Vec<Alert>>,
+    next_alert: Cell<u32>,
+}
+
+struct Listener {
+    id: u64,
+    sink: Rc<dyn Sink>,
+    json: bool,
+    kind: Kind,
+}
+
+enum Kind {
+    /// `trading watch`: every event, P&L at most this often.
+    Stream { pnl_every: Option<Duration> },
+    /// `trading wait`: the first event that wakes it, or the time.
+    Wait(Waiting),
+}
+
+struct Waiting {
+    chart: u32,
+    bars: usize,
+    since: Option<Token>,
+    /// Each price it wakes at, with the side of it the price was last on.
+    crosses: Vec<(f64, Option<bool>)>,
+    /// Wake when a bar after this one begins.
+    bar_close: Option<i64>,
+}
+
+/// A price alert on an instrument, said once when the price crosses it.
+#[derive(Clone)]
+struct Alert {
+    id: u32,
+    /// The instrument, by its display symbol.
+    symbol: String,
+    price: f64,
+    places: usize,
+    /// Whether the price was last above it; none until a price is heard.
+    above: Option<bool>,
+}
+
+impl Window {
+    /// Carry out what an agent asked.
+    pub fn agent_command(self: &Rc<Self>, ask: Ask) -> Result<String, Fault> {
+        match ask {
+            Ask::Snapshot { chart, bars, since, json } => {
+                let pane = self.agent_pane(chart)?;
+                Ok(self.snapshot(&pane, bars, since, json))
+            }
+            Ask::Watch { pnl_every, json, sink } => {
+                let sink = sink.ok_or_else(|| Fault::refused("nothing to stream to: run it from a terminal".into()))?;
+                let pnl_every = (pnl_every > 0).then(|| Duration::from_secs(pnl_every));
+                self.agent_seen();
+                let watching = json!({"ev": "watching", "seq": self.agent.seq.get()});
+                sink.say(&line(&watching, json));
+                self.listen(sink, json, Kind::Stream { pnl_every });
+                Ok(String::new())
+            }
+            Ask::Wait { chart, bars, since, timeout, crosses, bar_close, json, sink } => {
+                let pane = self.agent_pane(chart)?;
+                self.agent_seen();
+                // Already happened since the snapshot it was given: at once.
+                if let Some(token) = since {
+                    let missed = self
+                        .agent
+                        .log
+                        .borrow()
+                        .iter()
+                        .find(|(seq, event)| *seq > token.seq && events::wakes(event))
+                        .map(|(_, event)| event.clone());
+                    let closed = bar_close.then(|| self.closed_bar(&pane, token.bar)).flatten();
+                    if let Some(event) = missed.or(closed) {
+                        return Ok(self.woken(&pane, &event, bars, since, json));
+                    }
+                }
+                let last = pane.view.last_price();
+                let waiting = Waiting {
+                    chart,
+                    bars,
+                    since,
+                    crosses: crosses.into_iter().map(|price| (price, last.map(|last| last > price))).collect(),
+                    bar_close: bar_close.then(|| pane.view.with_bars(|bars| bars.last().map(|bar| bar.ts))).flatten(),
+                };
+                let Some(sink) = sink else {
+                    // Nothing to answer later on: say how it stands now.
+                    return Ok(self.woken(&pane, &json!({"ev": "timeout"}), bars, since, json));
+                };
+                let id = self.listen(sink, json, Kind::Wait(waiting));
+                let this = Rc::downgrade(self);
+                glib::timeout_add_local_once(Duration::from_secs(timeout), move || {
+                    if let Some(this) = this.upgrade() {
+                        this.wake(id, &json!({"ev": "timeout"}));
+                    }
+                });
+                Ok(String::new())
+            }
+            Ask::Alert { chart, price, remove, clear, json } => self.alert_command(chart, price, remove, clear, json),
+        }
+    }
+
+    /// Chart `id` on screen.
+    fn agent_pane(&self, id: u32) -> Result<Rc<ChartPane>, Fault> {
+        self.panes.borrow().iter().find(|pane| pane.id == id).cloned().ok_or_else(|| Fault::not_found(format!("no chart {id} on screen")))
+    }
+
+    fn listen(&self, sink: Rc<dyn Sink>, json: bool, kind: Kind) -> u64 {
+        let id = self.agent.next_listener.get() + 1;
+        self.agent.next_listener.set(id);
+        let mut listeners = self.agent.listeners.borrow_mut();
+        if listeners.len() >= LISTENERS {
+            let oldest = listeners.remove(0);
+            oldest.sink.end(0);
+        }
+        listeners.push(Listener { id, sink, json, kind });
+        id
+    }
+
+    /// Answer the wait `id` with `event` and the snapshot, and let it go.
+    fn wake(self: &Rc<Self>, id: u64, event: &Value) {
+        let found = {
+            let mut listeners = self.agent.listeners.borrow_mut();
+            listeners.iter().position(|listener| listener.id == id).map(|at| listeners.remove(at))
+        };
+        let Some(listener) = found else { return };
+        let Kind::Wait(waiting) = &listener.kind else {
+            return;
+        };
+        let text = match self.agent_pane(waiting.chart) {
+            Ok(pane) => self.woken(&pane, event, waiting.bars, waiting.since, listener.json),
+            Err(fault) => format!("{}\n{}\n", line(event, listener.json).trim_end(), fault.message),
+        };
+        listener.sink.say(&text);
+        listener.sink.end(0);
+    }
+
+    /// What woke a wait, then the snapshot.
+    fn woken(&self, pane: &ChartPane, event: &Value, bars: usize, since: Option<Token>, json: bool) -> String {
+        match json {
+            true => {
+                let snapshot: Value = serde_json::from_str(&self.snapshot(pane, bars, since, true)).unwrap_or(Value::Null);
+                format!("{}\n", json!({"woke": event, "snapshot": snapshot}))
+            }
+            false => format!("woke {}\n{}", events::text(event), self.snapshot(pane, bars, since, false)),
+        }
+    }
+
+    /// Number `event`, keep it, and tell whoever listens.
+    fn agent_event(self: &Rc<Self>, mut event: Value) {
+        let seq = self.agent.seq.get() + 1;
+        self.agent.seq.set(seq);
+        if let Some(fields) = event.as_object_mut() {
+            fields.insert("seq".into(), json!(seq));
+        }
+        {
+            let mut log = self.agent.log.borrow_mut();
+            if log.len() >= KEPT {
+                log.pop_front();
+            }
+            log.push_back((seq, event.clone()));
+        }
+        let pnl = event["ev"] == "pnl";
+        let mut woken = Vec::new();
+        for listener in self.agent.listeners.borrow().iter() {
+            match &listener.kind {
+                Kind::Stream { pnl_every } => {
+                    if !pnl || pnl_every.is_some() {
+                        listener.sink.say(&line(&event, listener.json));
+                    }
+                }
+                Kind::Wait(_) if events::wakes(&event) => woken.push(listener.id),
+                Kind::Wait(_) => {}
+            }
+        }
+        for id in woken {
+            self.wake(id, &event);
+        }
+    }
+
+    /// Note the book as it is, so the first events are about what changes
+    /// from now on rather than everything there is.
+    fn agent_seen(&self) {
+        if self.agent.seen.borrow().is_none() {
+            *self.agent.seen.borrow_mut() = Some(self.trading.borrow().book.clone());
+        }
+    }
+
+    /// The book moved: say what changed in it. Nothing is kept until
+    /// somebody has asked, so with no agent it costs nothing.
+    pub(super) fn agent_heard_book(self: &Rc<Self>) {
+        if !crate::features::agent_trading() {
+            return;
+        }
+        let now = self.trading.borrow().book.clone();
+        let before = self.agent.seen.borrow_mut().replace(now.clone());
+        let Some(before) = before else { return };
+        for event in events::diff(&before, &now) {
+            let (key, what) = match event["ev"].as_str() {
+                Some("pos") => (format!("{}/{}", event["acct"], event["sym"]), event["net"].clone()),
+                _ => (format!("{}/{}", event["acct"], event["id"]), json!([event["ev"], event["filled"], event["px"]])),
+            };
+            if self.agent.said.borrow().get(&key) == Some(&what) {
+                continue;
+            }
+            self.agent.said.borrow_mut().insert(key, what);
+            self.agent_event(event);
+        }
+        self.agent_heard_pnl();
+    }
+
+    /// The positions were marked to a new price: say each account's P&L
+    /// as often as a stream asks, and hold its daily limits.
+    pub(super) fn agent_heard_pnl(self: &Rc<Self>) {
+        if !crate::features::agent_trading() {
+            return;
+        }
+        self.hold_daily_limits();
+        let every = self
+            .agent
+            .listeners
+            .borrow()
+            .iter()
+            .filter_map(|listener| match listener.kind {
+                Kind::Stream { pnl_every } => pnl_every,
+                Kind::Wait(_) => None,
+            })
+            .min();
+        let Some(every) = every else { return };
+        if self.agent.pnl_at.get().is_some_and(|at| at.elapsed() < every) {
+            return;
+        }
+        let moved = events::pnl(&self.trading.borrow().book, &self.agent.pnl_said.borrow());
+        if moved.is_empty() {
+            return;
+        }
+        self.agent.pnl_at.set(Some(Instant::now()));
+        {
+            let mut said = self.agent.pnl_said.borrow_mut();
+            for (key, day, open) in &moved {
+                said.retain(|(other, _, _)| other != key);
+                said.push((key.clone(), *day, *open));
+            }
+        }
+        for (key, day, open) in moved {
+            self.agent_event(events::pnl_event(&key, day, open));
+        }
+    }
+
+    /// An account whose day's P&L has reached its daily profit or loss
+    /// limit takes no new entries for the rest of the trading day: noted
+    /// once, said in the Log and to every agent listening.
+    fn hold_daily_limits(self: &Rc<Self>) {
+        let today = limits::trading_day(chrono::Utc::now());
+        let accounts: Vec<(String, f64)> =
+            self.trading.borrow().book.accounts.iter().filter_map(|money| Some((money.key.clone(), money.day_pnl?))).collect();
+        for (key, pnl) in accounts {
+            let caps = limits::holding(&self.store, &key, today);
+            let Some(limit) = limits::reached(&caps, pnl) else {
+                continue;
+            };
+            if limits::hit_on(&self.store, &key, today).is_some() {
+                continue;
+            }
+            limits::note_hit(&self.store, &key, &limits::Hit { day: today, limit: limit.into(), pnl });
+            let name = self.account_label(&key);
+            self.say(crate::log_words::note(
+                &name,
+                format!("The {} limit is reached · no new entries until the next trading day", limit.replace('-', " ")),
+            ));
+            self.agent_event(json!({"ev": "limit", "acct": events::number(&key), "limit": limit, "pnl": (pnl * 100.0).round() / 100.0}));
+        }
+    }
+
+    /// Chart `pane` moved: alerts and waits on its price, and on its bars.
+    pub(super) fn agent_heard_price(self: &Rc<Self>, pane: &ChartPane) {
+        if !crate::features::agent_trading() {
+            return;
+        }
+        if self.agent.alerts.borrow().is_empty()
+            && self.agent.listeners.borrow().iter().all(|listener| matches!(listener.kind, Kind::Stream { .. }))
+        {
+            return;
+        }
+        let Some(last) = pane.view.last_price() else {
+            return;
+        };
+        let symbol = pane.instrument.borrow().as_ref().map(|instrument| instrument.display_symbol()).unwrap_or_default();
+        let mut crossed = Vec::new();
+        self.agent.alerts.borrow_mut().retain_mut(|alert| {
+            if alert.symbol != symbol {
+                return true;
+            }
+            let above = last > alert.price;
+            let hit = last == alert.price || alert.above.is_some_and(|was| was != above);
+            alert.above = Some(above);
+            if hit {
+                crossed.push(json!({
+                    "ev": "alert",
+                    "id": alert.id,
+                    "sym": alert.symbol,
+                    "dir": if above { "up" } else { "down" },
+                    "px": alert.price,
+                    "last": reading::num(last, alert.places).parse::<f64>().unwrap_or(last),
+                }));
+            }
+            !hit
+        });
+        for event in crossed {
+            self.agent_event(event);
+        }
+        // The waits on this chart.
+        let mut woken = Vec::new();
+        let latest = pane.view.with_bars(|bars| bars.last().map(|bar| bar.ts));
+        for listener in self.agent.listeners.borrow_mut().iter_mut() {
+            let Kind::Wait(waiting) = &mut listener.kind else {
+                continue;
+            };
+            if waiting.chart != pane.id {
+                continue;
+            }
+            for (price, side) in waiting.crosses.iter_mut() {
+                let above = last > *price;
+                let hit = last == *price || side.is_some_and(|was| was != above);
+                *side = Some(above);
+                if hit {
+                    woken.push((listener.id, json!({"ev": "cross", "dir": if above { "up" } else { "down" }, "px": *price, "last": last})));
+                    break;
+                }
+            }
+            if let (Some(started), Some(latest)) = (waiting.bar_close, latest)
+                && latest > started
+                && let Some(event) = self.closed_bar(pane, started)
+            {
+                woken.push((listener.id, event));
+            }
+        }
+        for (id, event) in woken {
+            self.wake(id, &event);
+        }
+    }
+
+    /// The bar that began at or after `from` and has closed, as a `bar`
+    /// event: none while the bar `from` is the newest.
+    fn closed_bar(&self, pane: &ChartPane, from: i64) -> Option<Value> {
+        let places = reading::places(pane.view.tick());
+        pane.view.with_bars(|bars| {
+            let newest = bars.last()?;
+            if newest.ts <= from {
+                return None;
+            }
+            let closed = bars.iter().rev().nth(1)?;
+            let p = |price: f64| reading::num(price, places).parse::<f64>().unwrap_or(price);
+            Some(json!({"ev": "bar", "t": closed.ts, "o": p(closed.open), "h": p(closed.high), "l": p(closed.low), "c": p(closed.close), "v": closed.volume.round()}))
+        })
+    }
+
+    /// The window is closing: every stream and wait is told, and let go.
+    pub(super) fn agent_closing(&self) {
+        let listeners: Vec<Listener> = self.agent.listeners.borrow_mut().drain(..).collect();
+        for listener in listeners {
+            listener.sink.say(&line(&json!({"ev": "closed"}), listener.json));
+            listener.sink.end(0);
+        }
+    }
+
+    fn alert_command(
+        self: &Rc<Self>,
+        chart: Option<u32>,
+        price: Option<f64>,
+        remove: Option<u32>,
+        clear: bool,
+        as_json: bool,
+    ) -> Result<String, Fault> {
+        if clear {
+            self.agent.alerts.borrow_mut().clear();
+        }
+        if let Some(id) = remove {
+            let mut alerts = self.agent.alerts.borrow_mut();
+            let before = alerts.len();
+            alerts.retain(|alert| alert.id != id);
+            if alerts.len() == before {
+                return Err(Fault::not_found(format!("no alert {id}")));
+            }
+        }
+        if let (Some(chart), Some(price)) = (chart, price) {
+            let pane = self.agent_pane(chart)?;
+            let symbol = pane
+                .instrument
+                .borrow()
+                .as_ref()
+                .map(|instrument| instrument.display_symbol())
+                .ok_or_else(|| Fault::refused("that chart charts nothing".into()))?;
+            let id = self.agent.next_alert.get() + 1;
+            self.agent.next_alert.set(id);
+            let above = pane.view.last_price().map(|last| last > price);
+            let places = reading::places(pane.view.tick());
+            self.agent.alerts.borrow_mut().push(Alert { id, symbol, price, places, above });
+        }
+        let alerts = self.agent.alerts.borrow();
+        if as_json {
+            let rows: Vec<Value> = alerts.iter().map(|alert| json!({"id": alert.id, "sym": alert.symbol, "px": alert.price})).collect();
+            return Ok(format!("{}\n", json!({"alerts": rows})));
+        }
+        if alerts.is_empty() {
+            return Ok("no alerts\n".into());
+        }
+        Ok(alerts.iter().map(|alert| format!("{} {} {}\n", alert.id, alert.symbol, reading::num(alert.price, alert.places))).collect())
+    }
+
+    /// Chart `chart` on screen in numbers.
+    pub fn read_chart(&self, chart: u32, last: usize) -> Result<reading::ChartRead, Fault> {
+        let pane = self.agent_pane(chart)?;
+        Ok(self.chart_read(&pane, last))
+    }
+
+    fn chart_read(&self, pane: &ChartPane, last: usize) -> reading::ChartRead {
+        let instrument = pane.instrument.borrow().clone();
+        let timeframe = pane.view.timeframe();
+        let intraday = timeframe.seconds() < 86_400;
+        let places = reading::places(pane.view.tick());
+        let zone = instrument.as_ref().map_or(chrono_tz::UTC, |instrument| self.clock_for(instrument).zone);
+        let bars = pane.view.with_bars(|bars| bars[bars.len().saturating_sub(last)..].to_vec());
+        let (values, levels) = pane.view.with_indicators(|drawn| {
+            let values = reading::values(drawn, places, |one| one.indicator.label_for(timeframe));
+            let levels = pane.view.with_bars(|bars| reading::levels(bars, drawn, intraday));
+            (values, levels)
+        });
+        reading::ChartRead {
+            label: self.chart_named(pane),
+            symbol: instrument.as_ref().map(|instrument| instrument.display_symbol()).unwrap_or_default(),
+            timeframe: timeframe.label(),
+            intraday,
+            places,
+            zone,
+            bars,
+            values,
+            levels,
+        }
+    }
+
+    /// The last price of a chart on screen of `instrument`.
+    pub fn chart_price(&self, instrument: &omacharts_engine::Instrument) -> Option<(f64, i64, Option<f64>)> {
+        let panes = self.panes.borrow().clone();
+        panes.iter().find_map(|pane| {
+            let same = pane
+                .instrument
+                .borrow()
+                .as_ref()
+                .is_some_and(|shown| shown.symbol.eq_ignore_ascii_case(&instrument.symbol) && shown.suffix == instrument.suffix);
+            if !same {
+                return None;
+            }
+            let (last, at) = pane.view.with_bars(|bars| bars.last().map(|bar| (bar.close, bar.ts)))?;
+            Some((last, at, pane.view.tick()))
+        })
+    }
+
+    /// Chart `pane` and its account, terse: see [`crate::cli::trading::Ask::Snapshot`].
+    fn snapshot(&self, pane: &ChartPane, bars: usize, since: Option<Token>, as_json: bool) -> String {
+        let read = self.chart_read(pane, bars.max(1));
+        let places = read.places;
+        let n = |price: f64| reading::num(price, places);
+        let newest = read.bars.last().map_or(0, |bar| bar.ts);
+        let token = Token { seq: self.agent.seq.get(), bar: newest };
+        // Only what is newer than the token: the bar forming then has
+        // closed since, so it is shown again.
+        let shown: Vec<omacharts_engine::Bar> = match since {
+            Some(since) => read.bars.iter().filter(|bar| bar.ts >= since.bar).copied().collect(),
+            None => {
+                if bars == 0 {
+                    Vec::new()
+                } else {
+                    read.bars.clone()
+                }
+            }
+        };
+        let happened: Vec<Value> = match since {
+            Some(since) => self.agent.log.borrow().iter().filter(|(seq, _)| *seq > since.seq).map(|(_, event)| event.clone()).collect(),
+            None => Vec::new(),
+        };
+        let target = self.order_target(pane).ok();
+        let view = self.trading.borrow();
+        let key = target.as_ref().map(|target| target.account.key());
+        let contract = target.as_ref().map(|target| target.contract.clone());
+        let last = target.as_ref().and_then(|target| self.market_price(pane, target)).or_else(|| pane.view.last_price());
+        let money = key.as_deref().and_then(|key| view.book.money(key)).cloned();
+        let money = money.as_ref();
+        let today = limits::trading_day(chrono::Utc::now());
+        let caps = key.as_deref().map(|key| limits::holding(&self.store, key, today)).unwrap_or_default();
+        let hit = key.as_deref().and_then(|key| limits::hit_on(&self.store, key, today));
+        let held = match (&key, &contract) {
+            (Some(key), Some(contract)) => view.book.position(key, contract).cloned(),
+            _ => None,
+        };
+        let working: Vec<trading::Order> = match (&key, &contract) {
+            (Some(key), Some(contract)) => view.book.working(key, contract).cloned().collect(),
+            _ => Vec::new(),
+        };
+        drop(view);
+        let day = money.and_then(|money| money.day_pnl);
+        if as_json {
+            let p = |price: Option<f64>| price.map(|price| reading::num(price, places).parse::<f64>().unwrap_or(price));
+            return format!(
+                "{}\n",
+                json!({
+                    "tok": token.to_string(),
+                    "sym": read.symbol,
+                    "contract": contract,
+                    "tf": read.timeframe,
+                    "last": p(last),
+                    "bid": null,
+                    "ask": null,
+                    "acct": key.as_ref().map(|key| json!({
+                        "id": events::number(key),
+                        "bal": money.and_then(|money| money.balance),
+                        "day": day,
+                        "open": money.and_then(|money| money.unrealized),
+                        "lim": limits_json(&caps, day, hit.as_ref()),
+                    })),
+                    "pos": held.as_ref().map(|held| json!({"net": held.net, "avg": p(held.avg), "open": held.open_pnl})),
+                    "ord": working.iter().map(|order| json!([order.basket_id, side_letter(order.side), order.qty, kind_word(order.kind), p(order.price)])).collect::<Vec<_>>(),
+                    "lv": read.levels.json(places),
+                    "bars": shown.iter().map(|bar| reading::bar_json(bar, places)).collect::<Vec<_>>(),
+                    "ev": happened,
+                })
+            );
+        }
+        let mut out = String::new();
+        let price_or_dash = |price: Option<f64>| price.map_or("-".to_string(), n);
+        out.push_str(&format!(
+            "tok {token} {} {} last {} bid - ask -\n",
+            contract.as_deref().unwrap_or(&read.symbol),
+            read.timeframe,
+            price_or_dash(last)
+        ));
+        match (&key, money) {
+            (Some(key), money) => {
+                let mut line = format!("acct {}", events::number(key));
+                if let Some(balance) = money.and_then(|money| money.balance) {
+                    line.push_str(&format!(" bal {}", reading::num(balance, 2)));
+                }
+                line.push_str(&format!(
+                    " day {} open {}",
+                    events::signed(day.unwrap_or(0.0)),
+                    events::signed(money.and_then(|money| money.unrealized).unwrap_or(0.0))
+                ));
+                let limits = limits_text(&caps, day, hit.as_ref());
+                if !limits.is_empty() {
+                    line.push_str(&format!(" | {limits}"));
+                }
+                out.push_str(&line);
+                out.push('\n');
+            }
+            (None, _) => out.push_str("acct - (the chart trades no account)\n"),
+        }
+        match &held {
+            Some(held) => out.push_str(&format!(
+                "pos {}{} @{} open {}\n",
+                if held.net > 0 { "+" } else { "" },
+                held.net,
+                price_or_dash(held.avg),
+                events::signed(held.open_pnl.unwrap_or(0.0))
+            )),
+            None => out.push_str("pos flat\n"),
+        }
+        match working.is_empty() {
+            true => out.push_str("ord none\n"),
+            false => {
+                let orders: Vec<String> = working
+                    .iter()
+                    .map(|order| {
+                        format!(
+                            "{} {} {} {} {}",
+                            order.basket_id,
+                            side_letter(order.side),
+                            order.qty,
+                            kind_word(order.kind),
+                            price_or_dash(order.price)
+                        )
+                    })
+                    .collect();
+                out.push_str(&format!("ord {}\n", orders.join(" | ")));
+            }
+        }
+        let levels = read.levels.text(places);
+        if !levels.is_empty() {
+            out.push_str(&format!("lv {levels}\n"));
+        }
+        if !shown.is_empty() {
+            out.push_str("bars t o h l c v\n");
+            out.push_str(&reading::bars_text(&shown, places, read.intraday, read.zone));
+        }
+        if since.is_some() {
+            match happened.is_empty() {
+                true => out.push_str("ev none\n"),
+                false => {
+                    for event in &happened {
+                        out.push_str(&format!("ev {}\n", events::text(event)));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Why the account's own limits refuse an order of `qty` on `side`
+    /// from `target`, risking `stop_points` a contract to its stop, sent
+    /// as a `bracket` with its exits or not; none when they let it go, and
+    /// always none with the flag off.
+    pub(super) fn limits_refuse(
+        &self,
+        target: &trading::Target,
+        side: trading::Side,
+        qty: u32,
+        stop_points: Option<f64>,
+        bracket: bool,
+    ) -> Option<String> {
+        if !crate::features::agent_trading() {
+            return None;
+        }
+        let key = target.account.key();
+        let today = limits::trading_day(chrono::Utc::now());
+        let caps = limits::holding(&self.store, &key, today);
+        let hit = limits::hit_on(&self.store, &key, today);
+        if caps.is_empty() && hit.is_none() {
+            return None;
+        }
+        let view = self.trading.borrow();
+        let held = view.book.position(&key, &target.contract);
+        let point =
+            held.and_then(|held| held.point).or_else(|| omacharts_engine::specs::point(omacharts_engine::specs::root_of(&target.contract)));
+        let signed = match side {
+            trading::Side::Buy => qty as i32,
+            trading::Side::Sell => -(qty as i32),
+        };
+        let entry = limits::Entry {
+            qty,
+            held: held.map_or(0, |held| held.net),
+            signed,
+            risk: stop_points.zip(point).map(|(points, point)| points * point * f64::from(qty)),
+            bracket,
+        };
+        let pnl = view.book.money(&key).and_then(|money| money.day_pnl);
+        let refused = limits::refuse(&caps, hit.as_ref(), pnl, &entry);
+        if refused.is_some() && stop_points.is_some() && point.is_none() && caps.max_risk.is_some() {
+            return Some(format!("what a point of {} is worth is not known, so its risk cannot be counted", target.contract));
+        }
+        refused
+    }
+}
+
+/// An event or an answer, one line: JSON or text.
+fn line(event: &Value, json: bool) -> String {
+    match json {
+        true => format!("{event}\n"),
+        false => format!("{}\n", events::text(event)),
+    }
+}
+
+fn side_letter(side: trading::Side) -> &'static str {
+    match side {
+        trading::Side::Buy => "B",
+        trading::Side::Sell => "S",
+    }
+}
+
+fn kind_word(kind: trading::OrderKind) -> &'static str {
+    match kind {
+        trading::OrderKind::Market => "mkt",
+        trading::OrderKind::Limit => "lmt",
+        trading::OrderKind::Stop => "stp",
+    }
+}
+
+/// The limits, and how far the day's P&L is from each daily one.
+fn limits_text(caps: &limits::Caps, day: Option<f64>, hit: Option<&limits::Hit>) -> String {
+    let mut parts = Vec::new();
+    let day = day.unwrap_or(0.0);
+    if let Some(loss) = caps.daily_loss {
+        parts.push(format!("loss {} ({} left)", reading::num(loss, 2), reading::num((loss + day).max(0.0), 2)));
+    }
+    if let Some(profit) = caps.daily_profit {
+        parts.push(format!("profit {} ({} to go)", reading::num(profit, 2), reading::num((profit - day).max(0.0), 2)));
+    }
+    if let Some(qty) = caps.max_qty {
+        parts.push(format!("qty {qty}"));
+    }
+    if let Some(risk) = caps.max_risk {
+        parts.push(format!("risk {}", reading::num(risk, 2)));
+    }
+    if let Some(hit) = hit {
+        parts.push(format!("{} REACHED: entries refused", hit.limit));
+    }
+    match parts.is_empty() {
+        true => String::new(),
+        false => format!("lim {}", parts.join(" ")),
+    }
+}
+
+/// The account's limits and how near they are, only those it has: null
+/// for an account with none.
+fn limits_json(caps: &limits::Caps, day: Option<f64>, hit: Option<&limits::Hit>) -> Value {
+    if caps.is_empty() && hit.is_none() {
+        return Value::Null;
+    }
+    let day = day.unwrap_or(0.0);
+    let mut lim = serde_json::Map::new();
+    let mut put = |key: &str, value: Value| {
+        if !value.is_null() {
+            lim.insert(key.into(), value);
+        }
+    };
+    put("loss", json!(caps.daily_loss));
+    put("loss_left", json!(caps.daily_loss.map(|loss| ((loss + day).max(0.0) * 100.0).round() / 100.0)));
+    put("profit", json!(caps.daily_profit));
+    put("profit_left", json!(caps.daily_profit.map(|profit| ((profit - day).max(0.0) * 100.0).round() / 100.0)));
+    put("qty", json!(caps.max_qty));
+    put("risk", json!(caps.max_risk));
+    put("hit", json!(hit.map(|hit| hit.limit.clone())));
+    Value::Object(lim)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use serde_json::Value;
+
+    use super::super::trade::tests::{long_es, settle};
+    use super::*;
+    use crate::trading::{OrderKind, Session as _};
+
+    /// A terminal, kept: what it was told, and whether it was let go.
+    #[derive(Default)]
+    struct Terminal {
+        said: RefCell<String>,
+        ended: Cell<bool>,
+    }
+
+    impl Sink for Terminal {
+        fn say(&self, text: &str) {
+            self.said.borrow_mut().push_str(text);
+        }
+        fn end(&self, _code: u8) {
+            self.ended.set(true);
+        }
+    }
+
+    /// A caller whose terminal is [`Terminal`].
+    struct Typed(Rc<Terminal>);
+
+    impl crate::cli::Caller for Typed {
+        fn read(&self, path: &str) -> Result<String, Fault> {
+            crate::cli::Here.read(path)
+        }
+        fn sink(&self) -> Option<Rc<dyn Sink>> {
+            Some(self.0.clone())
+        }
+    }
+
+    fn command_from(window: &Rc<Window>, line: &str, caller: &dyn crate::cli::Caller) -> (u8, String) {
+        let args: Vec<String> = std::iter::once("omacharts").chain(line.split_whitespace()).map(String::from).collect();
+        let live: &dyn crate::cli::Live = window;
+        let outcome = crate::cli::run(&args, &window.store, Some(live), caller);
+        (outcome.code, if outcome.code == 0 { outcome.out } else { outcome.err })
+    }
+
+    fn command(window: &Rc<Window>, line: &str) -> (u8, String) {
+        command_from(window, line, &crate::cli::Here)
+    }
+
+    fn working(session: &trading::fake::FakeSession) -> Vec<trading::Order> {
+        session.book.lock().unwrap().orders.iter().filter(|order| order.status.working()).cloned().collect()
+    }
+
+    fn agents_on() {
+        crate::features::force(crate::features::Feature::AgentTrading, true);
+    }
+
+    /// `--target` and `--stop-loss` send the entry and its exits as one
+    /// bracket: the trading service puts the target and the stop in,
+    /// linked, at their distance from the fill. Off, they are refused.
+    #[test]
+    fn an_entry_goes_with_its_exits_as_one_bracket() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            let (code, why) = command(&window, "trading sell --target -6 --stop-loss +4");
+            assert_eq!(code, crate::cli::EXIT_USAGE, "off, a bracket is not an order: {why}");
+
+            agents_on();
+            let (code, why) = command(&window, "trading sell --target +6");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "a short's target is below: {why}");
+            assert!(why.contains("- points"), "{why}");
+
+            let (code, out) = command(&window, "trading sell --quantity 1 --target -6 --stop-loss +4");
+            assert_eq!(code, 0, "{out}");
+            assert!(settle(&window, || working(&session).len() == 2 && !window.trade.placing.busy(&key)), "no exits");
+            assert!(session.heard.lock().unwrap().contains(&"bracket"));
+            let fill = session
+                .book
+                .lock()
+                .unwrap()
+                .orders
+                .iter()
+                .find(|order| order.kind == OrderKind::Market && order.side == trading::Side::Sell)
+                .and_then(|order| order.fill_price)
+                .expect("the entry filled");
+            let exits = working(&session);
+            let target = exits.iter().find(|order| order.kind == OrderKind::Limit).expect("a target");
+            let stop = exits.iter().find(|order| order.kind == OrderKind::Stop).expect("a stop");
+            assert_eq!((target.side, target.price), (trading::Side::Buy, Some(fill - 6.0)));
+            assert_eq!((stop.side, stop.price), (trading::Side::Buy, Some(fill + 4.0)));
+            assert!(
+                session.links.lock().unwrap().iter().any(|group| group.contains(&target.basket_id) && group.contains(&stop.basket_id)),
+                "not linked"
+            );
+        });
+    }
+
+    /// The account's own limits refuse an entry, with exit code 5 and the
+    /// reason; closing is always allowed; once the day's loss is reached
+    /// nothing new goes in for the rest of the day.
+    #[test]
+    fn the_account_s_limits_refuse_entries_and_never_exits() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            agents_on();
+            let (code, out) = command(&window, &format!("trading limits set {key} --max-qty 1 --max-risk 150 --daily-loss 1000"));
+            assert_eq!(code, 0, "{out}");
+
+            let (code, why) = command(&window, "trading buy --stop-loss -1");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            assert!(why.contains("hold 2 contracts"), "{why}");
+
+            // Closing the one held is no entry.
+            let (code, out) = command(&window, "trading sell");
+            assert_eq!(code, 0, "{out}");
+            assert!(settle(&window, || window.trading.borrow().book.positions.iter().all(|held| held.net == 0)
+                && !window.trade.placing.busy(&key)));
+
+            let (code, why) = command(&window, "trading buy");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            assert!(why.contains("needs a stop-loss"), "{why}");
+            let (code, why) = command(&window, "trading buy --stop-loss -4");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "4 points of ES is $200: {why}");
+            assert!(why.contains("$200.00"), "{why}");
+            let (code, out) = command(&window, "trading buy --stop-loss -2");
+            assert_eq!(code, 0, "$100 is inside it: {out}");
+            assert!(settle(&window, || working(&session).len() == 1 && !window.trade.placing.busy(&key)));
+
+            // The day's loss reached: noted, and no entry goes in after it.
+            session.book.lock().unwrap().accounts =
+                vec![trading::Money { key: "951".into(), day_pnl: Some(-1250.0), ..Default::default() }];
+            let today = limits::trading_day(chrono::Utc::now());
+            assert!(settle(&window, || limits::hit_on(&window.store, &key, today).is_some()), "not noted");
+            let (code, why) = command(&window, "trading buy --stop-loss -1");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            assert!(why.contains("daily loss"), "{why}");
+            // Loosened, it still holds today.
+            let (code, out) = command(&window, &format!("trading limits clear {key}"));
+            assert_eq!(code, 0, "{out}");
+            let (code, why) = command(&window, "trading buy --stop-loss -1");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            // A close sent with exits is no close: either exit opens one.
+            let (code, why) = command(&window, "trading sell --stop-loss +1");
+            assert_eq!(code, crate::cli::EXIT_REFUSED, "{why}");
+            // Closing still goes.
+            let (code, out) = command(&window, "trading sell");
+            assert_eq!(code, 0, "{out}");
+        });
+    }
+
+    /// `trading watch` tells a terminal each order and position change as
+    /// it happens, and lets it go when the window closes; `trading wait`
+    /// answers with what woke it and the snapshot; a snapshot's token,
+    /// given back, says only what came after it.
+    #[test]
+    fn a_watch_streams_a_wait_wakes_and_a_snapshot_says_what_changed() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            agents_on();
+            window.agent_heard_book();
+
+            let watching = Rc::new(Terminal::default());
+            let (code, out) = command_from(&window, "trading watch --json", &Typed(watching.clone()));
+            assert_eq!((code, out.as_str()), (0, ""));
+            let waiting = Rc::new(Terminal::default());
+            let (code, out) = command_from(&window, "trading wait --timeout 60", &Typed(waiting.clone()));
+            assert_eq!((code, out.as_str()), (0, ""), "it answers later");
+
+            let (code, out) = command(&window, "trading sell");
+            assert_eq!(code, 0, "{out}");
+            assert!(settle(&window, || waiting.ended.get() && !window.trade.placing.busy(&key)), "the wait never woke");
+            assert!(settle(&window, || watching.said.borrow().contains(r#""ev":"pos""#)), "{}", watching.said.borrow());
+            let lines: Vec<Value> = watching.said.borrow().lines().map(|line| serde_json::from_str(line).expect("JSON")).collect();
+            assert_eq!(lines[0]["ev"], "watching");
+            assert!(lines.iter().any(|line| line["ev"] == "filled" && line["side"] == "S"), "{lines:?}");
+            assert!(lines.iter().any(|line| line["ev"] == "pos" && line["net"] == 0 && line["was"] == 1), "{lines:?}");
+            let woke = waiting.said.borrow().clone();
+            assert!(woke.starts_with("woke "), "{woke}");
+            assert!(woke.contains("\ntok "), "{woke}");
+
+            let (code, first) = command(&window, "trading snapshot");
+            assert_eq!(code, 0, "{first}");
+            assert!(first.starts_with("tok "), "{first}");
+            assert!(first.contains("\npos flat\n"), "{first}");
+            assert!(first.contains("\nbars "), "{first}");
+            let token = first.split_whitespace().nth(1).expect("a token").to_string();
+            let (_, again) = command(&window, &format!("trading snapshot --since {token}"));
+            assert!(again.contains("ev none"), "{again}");
+            let seq: u64 = token.split('.').next().unwrap().parse().unwrap();
+            session
+                .place(&trading::OrderRequest {
+                    account: "951".into(),
+                    contract: "ESZ6".into(),
+                    exchange: "CME".into(),
+                    side: trading::Side::Buy,
+                    qty: 1,
+                    kind: OrderKind::Limit,
+                    price: Some(7000.0),
+                    tag: trading::new_tag(),
+                })
+                .unwrap();
+            assert!(settle(&window, || window.agent.seq.get() > seq), "no event");
+            let (_, after) = command(&window, &format!("trading snapshot --since {token} --json"));
+            let after: Value = serde_json::from_str(&after).expect("JSON");
+            assert_eq!(after["ev"][0]["ev"], "placed", "{after}");
+            assert!(after["ord"].to_string().contains("7000"), "{after}");
+            // An order put in is no news to whoever put it in: a wait from
+            // that token sleeps on, and wakes when it is cancelled.
+            let later = Rc::new(Terminal::default());
+            let (code, out) = command_from(&window, &format!("trading wait --since {token} --timeout 60"), &Typed(later.clone()));
+            assert_eq!((code, out.as_str()), (0, ""), "woken by its own order");
+            let basket = working(&session).iter().find(|order| order.price == Some(7000.0)).expect("the order").basket_id.clone();
+            session.cancel("951", &basket).unwrap();
+            assert!(settle(&window, || later.ended.get()), "the wait never woke");
+            assert!(later.said.borrow().starts_with("woke cancelled"), "{}", later.said.borrow());
+            // One given a token from before the cancel answers at once.
+            let (code, out) =
+                command_from(&window, &format!("trading wait --since {token} --timeout 60"), &Typed(Rc::new(Terminal::default())));
+            assert_eq!(code, 0, "{out}");
+            assert!(out.starts_with("woke cancelled"), "{out}");
+
+            window.agent_closing();
+            assert!(watching.ended.get(), "still held after the window went");
+            assert!(watching.said.borrow().trim_end().ends_with(r#"{"ev":"closed"}"#), "{}", watching.said.borrow());
+        });
+    }
+
+    /// A wait with nothing to wake it answers at its timeout.
+    #[test]
+    fn a_wait_times_out() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            agents_on();
+            let waiting = Rc::new(Terminal::default());
+            let (code, _) = command_from(&window, "trading wait --timeout 1 --cross 1", &Typed(waiting.clone()));
+            assert_eq!(code, 0);
+            let context = glib::MainContext::default();
+            let until = Instant::now() + Duration::from_secs(3);
+            while !waiting.ended.get() && Instant::now() < until {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(waiting.said.borrow().starts_with("woke timeout"), "{}", waiting.said.borrow());
+        });
+    }
+
+    /// The chart in numbers: bars, indicator values, and a quote.
+    #[test]
+    fn a_chart_is_read_in_numbers() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.bar_count() > 5));
+            let (code, why) = command(&window, "chart bars --last 3 --json");
+            assert_eq!(code, crate::cli::EXIT_USAGE, "off, there is no such command: {why}");
+            agents_on();
+            let (code, out) = command(&window, "chart bars --last 3 --json");
+            assert_eq!(code, 0, "{out}");
+            let bars: Value = serde_json::from_str(&out).expect("JSON");
+            assert_eq!(bars["bars"].as_array().map(Vec::len), Some(3), "{bars}");
+            let close = pane.view.last_price().map(|last| (last * 100.0).round() / 100.0);
+            assert_eq!(bars["bars"][2][4].as_f64(), close, "{bars}");
+            let (code, out) = command(&window, "chart values --json");
+            assert_eq!(code, 0, "{out}");
+            let values: Value = serde_json::from_str(&out).expect("JSON");
+            assert!(values["indicators"].is_array(), "{values}");
+            assert!(values["levels"].is_object(), "{values}");
+            let (code, out) = command(&window, "symbol quote ES --json");
+            assert_eq!(code, 0, "{out}");
+            let quote: Value = serde_json::from_str(&out).expect("JSON");
+            assert_eq!(quote["source"], "chart", "{quote}");
+            assert_eq!(quote["last"].as_f64(), close, "{quote}");
+            assert!(quote["bid"].is_null());
+        });
+    }
+
+    /// Alerts are set, listed and taken off.
+    #[test]
+    fn alerts_are_set_listed_and_removed() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(trading::Linking::AfterTheFact);
+            assert!(settle(&window, || pane.view.last_price().is_some()));
+            agents_on();
+            let (code, out) = command(&window, "trading alert 9000");
+            assert_eq!(code, 0, "{out}");
+            let (code, out) = command(&window, "trading alert --json");
+            assert_eq!(code, 0, "{out}");
+            assert!(out.contains("9000"), "{out}");
+            let (code, out) = command(&window, "trading alert --remove 1");
+            assert_eq!(code, 0, "{out}");
+            assert!(!out.contains("9000"), "{out}");
+            let (code, _) = command(&window, "trading alert --remove 1");
+            assert_eq!(code, crate::cli::EXIT_NOT_FOUND);
+        });
+    }
+}

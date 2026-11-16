@@ -117,6 +117,14 @@ pub fn dispatch(
     let result = match (noun, verb) {
         ("symbol", "search") => symbol_search(m, json),
         ("symbol", "show") => symbol_show(m, json),
+        ("symbol", "quote") | ("chart", "bars") | ("chart", "values")
+            if !crate::features::agent_trading() =>
+        {
+            Err(super::trading::agent_off())
+        }
+        ("symbol", "quote") => symbol_quote(store, m, json, live),
+        ("chart", "bars") => chart_bars(store, m, json, live),
+        ("chart", "values") => chart_values(store, m, json, live),
         ("symbol", "contracts") => symbol_contracts(m, json),
 
         ("watchlist", "list") => watchlist_list(store, json),
@@ -202,7 +210,7 @@ pub fn dispatch(
             outcome
         }
 
-        ("trading", _) => super::trading::run(store, verb, m, json, live),
+        ("trading", _) => super::trading::run(store, verb, m, json, live, caller),
 
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
@@ -453,6 +461,178 @@ fn symbol_show(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         found.exchange_label().unwrap_or("unknown"),
         found.currency.as_deref().unwrap_or("unknown"),
     ))
+}
+
+/// `symbol quote`: the last price from a chart of it on screen, which is
+/// live, else from the cache, which is as last fetched. No feed here gives
+/// a bid or an ask, so they are null rather than made up.
+fn symbol_quote(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let index = crate::inventory::everything();
+    let (symbol, suffix) = listing(
+        &index,
+        required(m, "SYMBOL")?,
+        arg(m, "SUFFIX").map(|s| s.to_uppercase()),
+    );
+    let found = index.resolve(&symbol, suffix.as_deref()).ok_or_else(|| {
+        Fault::not_found(format!(
+            "no instrument called {}; try `omacharts symbol search {symbol}`",
+            spell(&symbol, suffix.as_deref())
+        ))
+    })?;
+    let feeds = crate::feeds::Feeds::load(store);
+    let cached = feeds
+        .route(&found)
+        .and_then(|(provider, _)| super::quote(store, provider, &found));
+    let on_screen = live.and_then(|live| live.chart_price(&found));
+    let (last, at, source, places) = match (on_screen, &cached) {
+        (Some((last, at, tick)), _) => (last, at, "chart", crate::trading::reading::places(tick)),
+        (None, Some(quote)) => (quote.last, quote.as_of, "cache", 2),
+        (None, None) => {
+            return Err(Fault::not_found(format!(
+                "no price for {}: no chart of it is on screen and none has been fetched",
+                found.display_symbol()
+            )));
+        }
+    };
+    let change = cached
+        .as_ref()
+        .map(|quote| (quote.change, quote.change_pct));
+    let num = |price: f64| crate::trading::reading::num(price, places);
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({
+                "symbol": found.display_symbol(),
+                "last": crate::trading::reading::price(Some(last), places),
+                "bid": null,
+                "ask": null,
+                "change": change.map(|(change, _)| change),
+                "change_pct": change.map(|(_, pct)| pct),
+                "as_of": at,
+                "source": source,
+            })
+        ));
+    }
+    let moved = change
+        .map(|(change, pct)| format!(" {change:+.2} ({pct:+.2}%)"))
+        .unwrap_or_default();
+    Ok(format!(
+        "{} {}{moved} ({source})\n",
+        found.display_symbol(),
+        num(last)
+    ))
+}
+
+/// The chart `--chart` names in the chartbook `--book` names, on screen.
+fn chart_on_screen(store: &Store, m: &clap::ArgMatches) -> Result<u32, Fault> {
+    let workspace = Workspace::load(store);
+    let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
+    if at != workspace.active() {
+        return Err(Fault::refused(format!(
+            "only the open chartbook's charts hold their bars, and {} is not it; switch to it first",
+            workspace.name_of(at)
+        )));
+    }
+    super::charts::resolve_pane(workspace.book(at)?, arg(m, "chart").map(String::as_str))
+}
+
+/// What `chart bars` and `chart values` say with no window: the bars and
+/// what is computed from them are the window's.
+fn no_chart_window() -> Fault {
+    Fault::new(
+        super::EXIT_NO_WINDOW,
+        "no window is open, and a chart's bars and indicators are held by the chart on screen; start Omacharts".into(),
+    )
+}
+
+/// `chart bars`: the chart's last bars, as it holds them.
+fn chart_bars(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let last = match arg(m, "last") {
+        None => 20,
+        Some(text) => text
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=10_000).contains(n))
+            .ok_or_else(|| {
+                Fault::usage(format!(
+                    "--last is a number of bars from 1 to 10000, not {text:?}"
+                ))
+            })?,
+    };
+    let live = live.ok_or_else(no_chart_window)?;
+    let chart = chart_on_screen(store, m)?;
+    let read = live.read_chart(chart, last)?;
+    if as_json {
+        let bars: Vec<Value> = read
+            .bars
+            .iter()
+            .map(|bar| crate::trading::reading::bar_json(bar, read.places))
+            .collect();
+        return Ok(format!(
+            "{}\n",
+            json!({"chart": read.label, "symbol": read.symbol, "resolution": read.timeframe, "fields": ["t", "o", "h", "l", "c", "v"], "bars": bars})
+        ));
+    }
+    Ok(format!(
+        "{}\n{}",
+        read.label,
+        crate::trading::reading::bars_text(&read.bars, read.places, read.intraday, read.zone)
+    ))
+}
+
+/// `chart values`: each indicator's latest values, and the levels.
+fn chart_values(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let live = live.ok_or_else(no_chart_window)?;
+    let chart = chart_on_screen(store, m)?;
+    let read = live.read_chart(chart, 1)?;
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({"chart": read.label, "symbol": read.symbol, "indicators": read.values, "levels": read.levels.json(read.places)})
+        ));
+    }
+    let mut lines = vec![read.label.clone()];
+    for value in &read.values {
+        let mut fields: Vec<String> = Vec::new();
+        if let Some(object) = value.as_object() {
+            for (key, field) in object {
+                if matches!(key.as_str(), "id" | "kind" | "label" | "visible") || field.is_null() {
+                    continue;
+                }
+                if let (Some(bands), "bands") = (field.as_array(), key.as_str()) {
+                    for band in bands {
+                        let at = |name: &str| band[name].as_f64().map_or("-".to_string(), |n| crate::trading::reading::num(n, read.places));
+                        fields.push(format!("{}sd {}/{}", at("deviations"), at("upper"), at("lower")));
+                    }
+                    continue;
+                }
+                fields.push(format!("{key} {field}"));
+            }
+        }
+        lines.push(format!(
+            "{} {}",
+            value["label"].as_str().unwrap_or(""),
+            fields.join(" ")
+        ));
+    }
+    lines.push(format!("levels {}", read.levels.text(read.places)));
+    Ok(format!("{}\n", lines.join("\n")))
 }
 
 fn instrument_json(i: &omacharts_engine::Instrument) -> String {
@@ -6093,11 +6273,12 @@ fn features_list(store: &Store, as_json: bool) -> Result<String, Fault> {
             .collect();
         return Ok(wrap_list("features", rows));
     }
+    let width = flags.iter().map(|flag| flag.name.len()).max().unwrap_or(0);
     Ok(flags
         .iter()
         .map(|flag| {
             let state = if crate::features::stored(store, flag.feature) { "on" } else { "off" };
-            format!("{:<12} {state:<4} {}\n", flag.name, flag.about)
+            format!("{:<width$} {state:<4} {}\n", flag.name, flag.about)
         })
         .collect())
 }

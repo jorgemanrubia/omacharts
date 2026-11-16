@@ -28,6 +28,11 @@ pub enum Feature {
     /// service. Off, nothing looks for its folder, watches a
     /// file or connects to its DTC server.
     Sierra,
+    /// What an agent driving the command line trades with: brackets on
+    /// `trading buy` and `sell`, `trading watch`, `trading alert` and the
+    /// per-account limits of `trading limits`, which the window enforces.
+    /// Off, none of it is accepted and no limit is checked.
+    AgentTrading,
 }
 
 /// What a flag is called on the command line, whether it is on when
@@ -40,12 +45,20 @@ pub struct Flag {
 }
 
 /// Every flag, in the order `omacharts features` lists them.
-pub const FLAGS: &[Flag] = &[Flag {
-    feature: Feature::Sierra,
-    name: "sierra",
-    default: false,
-    about: "Sierra Chart as a data feed, from its own files, and as a trading service",
-}];
+pub const FLAGS: &[Flag] = &[
+    Flag {
+        feature: Feature::Sierra,
+        name: "sierra",
+        default: false,
+        about: "Sierra Chart as a data feed, from its own files, and as a trading service",
+    },
+    Flag {
+        feature: Feature::AgentTrading,
+        name: "agent-trading",
+        default: false,
+        about: "For an agent trading from the command line: a chart in numbers, a snapshot, waits, an event stream, brackets, price alerts and per-account limits",
+    },
+];
 
 /// What every flag's setting starts with.
 pub const PREFIX: &str = "feature.";
@@ -135,6 +148,12 @@ pub fn on(feature: Feature) -> bool {
 #[inline]
 pub fn sierra() -> bool {
     on(Feature::Sierra)
+}
+
+/// Is trading for agents on?
+#[inline]
+pub fn agent_trading() -> bool {
+    on(Feature::AgentTrading)
 }
 
 /// Have the engine ask these flags whether a feed behind one is open: see

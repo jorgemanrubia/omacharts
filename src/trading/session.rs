@@ -206,6 +206,20 @@ pub trait Session: Send + Sync {
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure>;
     /// Place `order` and return the trading service's id for it. Never retried.
     fn place(&self, order: &OrderRequest) -> Result<String, Failure>;
+    /// Place `order` with the target and the stop that close it as one
+    /// bracket the trading service holds: it works the exits, at their
+    /// distance from the fill, once the entry fills. Returns the entry's id.
+    /// Never retried, and refused by a trading service that has no such
+    /// order rather than put together from single ones.
+    fn place_bracket(
+        &self,
+        _order: &OrderRequest,
+        _exits: &super::brackets::Exits,
+    ) -> Result<String, Failure> {
+        Err(Failure::Refused(
+            "this trading service does not place an entry with its exits as one bracket".into(),
+        ))
+    }
     fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure>;
     /// Move the working order `basket` to `price`, keeping everything else
     /// about it. Only when [`Capabilities::modify`] says so.

@@ -236,6 +236,7 @@ impl Window {
         self.report_orders();
         self.settle_pending();
         self.apply_marks();
+        self.agent_heard_book();
     }
 
     /// A contract held traded at a new price: read the book again, which
@@ -265,6 +266,7 @@ impl Window {
             panel.redraw(&self.trading.borrow());
         }
         self.apply_marks();
+        self.agent_heard_pnl();
     }
 
     /// Every live session's book, its positions marked to the trading service's
@@ -311,6 +313,7 @@ impl Window {
     /// again, to the chart itself while the trading service's market data has heard
     /// nothing, as often as [`Window::mark_to_market`] allows.
     pub(super) fn chart_moved(self: &Rc<Self>, pane: &ChartPane) {
+        self.agent_heard_price(pane);
         if !self.trade.shown.get() {
             return;
         }
@@ -1130,6 +1133,23 @@ impl Window {
         price: Option<f64>,
         size: Option<trading::Quantity>,
     ) {
+        self.order_with_exits(pane, side, kind, account, price, size, None);
+    }
+
+    /// [`Self::order_on`], sent as one bracket with `exits` when they are
+    /// given: the trading service's own, which works the target and the
+    /// stop once the entry fills.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn order_with_exits(
+        self: &Rc<Self>,
+        pane: &ChartPane,
+        side: Side,
+        kind: OrderKind,
+        account: Option<&str>,
+        price: Option<f64>,
+        size: Option<trading::Quantity>,
+        exits: Option<crate::cli::trading::Exits>,
+    ) {
         // Resolved again: the chart, its account or the login may have
         // changed since the menu opened.
         let target = match self.order_target(pane) {
@@ -1160,8 +1180,32 @@ impl Window {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let size = size.unwrap_or_else(|| self.size_of(&pane));
+        // The exits, as distances in ticks from where the entry is expected.
+        let tick = Self::tick_of(pane, &target);
+        let exits = match exits {
+            None => None,
+            Some(legs) => {
+                let reference = price.or_else(|| self.market_price(pane, &target));
+                let counted = match (reference, tick) {
+                    (Some(reference), Some(tick)) => trading::brackets::exits(side, reference, tick, legs.target, legs.stop),
+                    (None, _) => Err("there is no price to count its exits from yet".to_string()),
+                    (_, None) => Err("the contract's tick is not known, so its exits cannot be counted".to_string()),
+                };
+                match counted {
+                    Ok(exits) => Some(exits),
+                    Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
+                }
+            }
+        };
+        let stop_points = exits.zip(tick).and_then(|(exits, tick)| exits.stop_points(tick));
+        if let Some(why) = self.limits_refuse(&target, side, size.get(), stop_points, exits.is_some()) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
+        }
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
-            Ok(order) => self.place(target, order),
+            Ok(order) => match exits {
+                Some(exits) => self.place_bracket(target, order, exits),
+                None => self.place(target, order),
+            },
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
         }
     }
@@ -1170,6 +1214,60 @@ impl Window {
     /// is said and never retried.
     fn place(self: &Rc<Self>, target: trading::Target, order: trading::OrderRequest) {
         self.place_then(target, order, |_, _| {});
+    }
+
+    /// [`Self::place`] as one bracket with `exits`, which the trading
+    /// service works once the entry fills. One that has no such order
+    /// refuses it, and nothing is put together in its place.
+    fn place_bracket(
+        self: &Rc<Self>,
+        target: trading::Target,
+        order: trading::OrderRequest,
+        exits: trading::brackets::Exits,
+    ) {
+        let key = target.account.key();
+        if let Err(why) = self.trade.placing.begin(&key) {
+            return self.refuse_on(&target, &why);
+        }
+        let name = self.account_label(&key);
+        let decimals = crate::ui::trading_panel::decimals_of(target.tick);
+        self.say(log_words::order_sent(&name, &order, decimals));
+        let tick = target.tick.unwrap_or(0.0);
+        let mut legs = Vec::new();
+        if let Some(ticks) = exits.target {
+            legs.push(format!("target {} ticks", ticks));
+        }
+        if let Some(ticks) = exits.stop {
+            legs.push(format!("stop {} ticks", ticks));
+        }
+        if tick > 0.0 {
+            self.say(log_words::note(
+                &name,
+                format!("Bracket · {} from the fill", legs.join(", ")),
+            ));
+        }
+        let request = Request::Place(order.tag.clone());
+        self.ask(
+            request.clone(),
+            Pending::Place {
+                key: key.clone(),
+                order: order.clone(),
+            },
+        );
+        self.send(
+            &target,
+            move |session, _| session.place_bracket(&order, &exits),
+            move |this, outcome| {
+                this.trade.placing.done(&key);
+                if let Some(basket) = this.heard(&request, outcome, "Not placed", &name) {
+                    this.trade
+                        .placed
+                        .borrow_mut()
+                        .insert(basket, Stage::Pending);
+                    this.desk.tell();
+                }
+            },
+        );
     }
 
     /// [`Self::place`], and `then` with its basket once the trading service has
@@ -1609,6 +1707,9 @@ impl Window {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let size = self.size_of(pane);
+        if let Some(why) = self.limits_refuse(&target, side, size.get(), None, false) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
+        }
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
             Ok(order) => self.place(target, order),
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),

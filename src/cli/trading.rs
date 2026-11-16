@@ -20,8 +20,12 @@
 
 use serde_json::{json, Value};
 
-use super::{Fault, Live, EXIT_NO_WINDOW};
+use std::rc::Rc;
+
+use super::{Caller, Fault, Live, Sink, EXIT_NO_WINDOW};
 use crate::store::Store;
+use crate::trading::brackets::{self, Leg};
+use crate::trading::limits::{self, Caps};
 use crate::trading::{self, Account, Login, OrderKind, Side, Standing, View};
 
 /// Something done to an account through the window: the chart it is
@@ -30,7 +34,9 @@ use crate::trading::{self, Account, Login, OrderKind, Side, Standing, View};
 pub enum Act {
     /// Buy or sell what chart `chart` trades: at the market, or a limit
     /// or stop at `price`, for `quantity` or the chart's own.
-    Order { chart: u32, side: Side, kind: OrderKind, price: Option<f64>, quantity: Option<u32> },
+    /// With `exits`, the order goes as one bracket with its target and its
+    /// stop-loss.
+    Order { chart: u32, side: Side, kind: OrderKind, price: Option<f64>, quantity: Option<u32>, exits: Option<Exits> },
     /// A target, a stop, or both linked, for the position chart `chart` trades.
     Exit { chart: u32, target: Option<f64>, stop: Option<f64> },
     /// A working order moved to `price`: on `account` when it is given,
@@ -49,6 +55,86 @@ pub enum Act {
 /// What the window said doing it: who said it, and what.
 pub type Said = Vec<(String, String)>;
 
+/// A bracket's exits as typed: each a price, or points from the fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Exits {
+    pub target: Option<Leg>,
+    pub stop: Option<Leg>,
+}
+
+/// Where a snapshot left off: the last event it had heard of, by its
+/// number, and the time its newest bar began. Written `SEQ.BAR`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub seq: u64,
+    pub bar: i64,
+}
+
+impl Token {
+    pub fn parse(text: &str) -> Result<Token, Fault> {
+        let (seq, bar) = text.trim().split_once('.').unwrap_or((text.trim(), "0"));
+        match (seq.parse::<u64>(), bar.parse::<i64>()) {
+            (Ok(seq), Ok(bar)) => Ok(Token { seq, bar }),
+            _ => Err(Fault::usage(format!(
+                "--since takes the token a snapshot gave, such as 12.1794866400, not {text:?}"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.seq, self.bar)
+    }
+}
+
+/// What an agent asks of the window.
+pub enum Ask {
+    /// Chart `chart` and its account, in a few lines: `bars` of its last
+    /// bars, or only what changed since `since`.
+    Snapshot {
+        chart: u32,
+        bars: usize,
+        since: Option<Token>,
+        json: bool,
+    },
+    /// Answer on `sink` once something happens, or after `timeout` seconds,
+    /// with what it was and the snapshot.
+    Wait {
+        chart: u32,
+        bars: usize,
+        since: Option<Token>,
+        timeout: u64,
+        crosses: Vec<f64>,
+        bar_close: bool,
+        json: bool,
+        sink: Option<Rc<dyn Sink>>,
+    },
+    /// Every event on `sink`, P&L at most every `pnl_every` seconds, until
+    /// the window goes.
+    Watch {
+        pnl_every: u64,
+        json: bool,
+        sink: Option<Rc<dyn Sink>>,
+    },
+    /// An alert at `price` on chart `chart`'s instrument; one taken off;
+    /// every one taken off; or, with none of them, the alerts.
+    Alert {
+        chart: Option<u32>,
+        price: Option<f64>,
+        remove: Option<u32>,
+        clear: bool,
+        json: bool,
+    },
+}
+
+/// The words for an agent's verb with the flag off.
+pub fn agent_off() -> Fault {
+    Fault::usage(
+        "trading for agents is switched off: `omacharts features enable agent-trading`".into(),
+    )
+}
+
 /// The window's answer to a verb that needs it, when there is none.
 pub fn no_window() -> Fault {
     Fault::new(
@@ -65,8 +151,93 @@ fn account_key(store: &Store, live: &dyn Live, m: &clap::ArgMatches) -> Result<O
 }
 
 /// Run `trading VERB`.
-pub fn run(store: &Store, verb: &str, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+pub fn run(
+    store: &Store,
+    verb: &str,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+    caller: &dyn Caller,
+) -> Result<String, Fault> {
+    if matches!(verb, "snapshot" | "wait" | "watch" | "alert" | "limits") && !crate::features::agent_trading() {
+        return Err(agent_off());
+    }
     match verb {
+        "snapshot" => {
+            let live = live.ok_or_else(no_window)?;
+            let chart = chart_of(store, m)?;
+            let since = arg(m, "since").map(|text| Token::parse(text)).transpose()?;
+            live.agent(Ask::Snapshot {
+                chart,
+                bars: count(m, "bars", 12)?,
+                since,
+                json: as_json,
+            })
+        }
+        "wait" => {
+            let live = live.ok_or_else(no_window)?;
+            let chart = chart_of(store, m)?;
+            let since = arg(m, "since").map(|text| Token::parse(text)).transpose()?;
+            let crosses: Vec<f64> = match m.try_get_many::<String>("cross").ok().flatten() {
+                None => Vec::new(),
+                Some(given) => given
+                    .map(|text| typed_price("cross", text))
+                    .collect::<Result<_, _>>()?,
+            };
+            let timeout = count(m, "timeout", 30)? as u64;
+            if timeout == 0 || timeout > 3600 {
+                return Err(Fault::usage("--timeout is from 1 to 3600 seconds".into()));
+            }
+            live.agent(Ask::Wait {
+                chart,
+                bars: count(m, "bars", 12)?,
+                since,
+                timeout,
+                crosses,
+                bar_close: flag(m, "bar-close"),
+                json: as_json,
+                sink: caller.sink(),
+            })
+        }
+        "watch" => {
+            let live = live.ok_or_else(no_window)?;
+            let pnl_every = match arg(m, "pnl-every") {
+                None => 5,
+                Some(text) => text.trim().parse::<u64>().map_err(|_| {
+                    Fault::usage(format!("--pnl-every is a number of seconds, not {text:?}"))
+                })?,
+            };
+            live.agent(Ask::Watch {
+                pnl_every,
+                json: as_json,
+                sink: caller.sink(),
+            })
+        }
+        "alert" => {
+            let live = live.ok_or_else(no_window)?;
+            let price = match arg(m, "PRICE") {
+                None => None,
+                Some(text) => Some(typed_price("PRICE", text)?),
+            };
+            let remove = match arg(m, "remove") {
+                None => None,
+                Some(text) => Some(text.trim().parse::<u32>().map_err(|_| {
+                    Fault::usage(format!("--remove takes an alert's number, not {text:?}"))
+                })?),
+            };
+            let chart = match price {
+                Some(_) => Some(chart_of(store, m)?),
+                None => None,
+            };
+            live.agent(Ask::Alert {
+                chart,
+                price,
+                remove,
+                clear: flag(m, "clear"),
+                json: as_json,
+            })
+        }
+        "limits" => limits_verb(store, m, as_json, live),
         "logins" => logins(store, live, as_json),
         "login" => {
             let service = required(m, "SERVICE")?;
@@ -154,9 +325,24 @@ pub fn run(store: &Store, verb: &str, m: &clap::ArgMatches, as_json: bool, live:
                 None => None,
                 Some(text) => Some(quantity(text)?),
             };
+            let target = arg(m, "target")
+                .map(|text| {
+                    brackets::leg(text).map_err(|why| Fault::usage(format!("--target: {why}")))
+                })
+                .transpose()?;
+            let stop = arg(m, "stop-loss")
+                .map(|text| {
+                    brackets::leg(text).map_err(|why| Fault::usage(format!("--stop-loss: {why}")))
+                })
+                .transpose()?;
+            let exits = match (target, stop) {
+                (None, None) => None,
+                _ if !crate::features::agent_trading() => return Err(agent_off()),
+                (target, stop) => Some(Exits { target, stop }),
+            };
             let live = live.ok_or_else(no_window)?;
             let chart = chart_of(store, m)?;
-            act(live, Act::Order { chart, side, kind, price, quantity }, as_json)
+            act(live, Act::Order { chart, side, kind, price, quantity, exits }, as_json)
         }
         "exit" => {
             let (target, stop) = (price(m, "target")?, price(m, "stop")?);
@@ -247,6 +433,186 @@ fn price(m: &clap::ArgMatches, id: &str) -> Result<Option<f64>, Fault> {
         .filter(|price| price.is_finite() && *price > 0.0)
         .map(Some)
         .ok_or_else(|| Fault::usage(format!("--{id} is a price, not {text:?}")))
+}
+
+/// A price given to `--name`, as [`price`] reads one.
+fn typed_price(name: &str, text: &str) -> Result<f64, Fault> {
+    text.replace(',', "")
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|price| price.is_finite() && *price > 0.0)
+        .ok_or_else(|| Fault::usage(format!("{name} is a price, not {text:?}")))
+}
+
+/// A count given to `--name`, or `default`.
+fn count(m: &clap::ArgMatches, name: &str, default: usize) -> Result<usize, Fault> {
+    match arg(m, name) {
+        None => Ok(default),
+        Some(text) => text
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n <= 10_000)
+            .ok_or_else(|| Fault::usage(format!("--{name} is a whole number, not {text:?}"))),
+    }
+}
+
+/// An amount of money given to `--name`, above 0.
+fn amount_of(m: &clap::ArgMatches, name: &str) -> Result<Option<f64>, Fault> {
+    let Some(text) = arg(m, name) else {
+        return Ok(None);
+    };
+    text.replace([',', '$'], "")
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|amount| amount.is_finite() && *amount > 0.0)
+        .map(Some)
+        .ok_or_else(|| Fault::usage(format!("--{name} is an amount above 0, not {text:?}")))
+}
+
+/// `trading limits [show|set|clear] [ACCOUNT]`.
+fn limits_verb(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let view = view_of(store, live);
+    let today = limits::trading_day(chrono::Utc::now());
+    let action = arg(m, "ACTION").map_or("show", String::as_str);
+    let account = match arg(m, "ACCOUNT") {
+        Some(text) => Some(find_account(&view, text)?.key()),
+        None => None,
+    };
+    let given = Caps {
+        daily_profit: amount_of(m, "daily-profit")?,
+        daily_loss: amount_of(m, "daily-loss")?,
+        max_qty: match arg(m, "max-qty") {
+            None => None,
+            Some(text) => Some(quantity(text).map_err(|_| {
+                Fault::usage(format!("--max-qty is a whole number above 0, not {text:?}"))
+            })?),
+        },
+        max_risk: amount_of(m, "max-risk")?,
+    };
+    if action != "set" && !given.is_empty() {
+        return Err(Fault::usage(format!(
+            "limits are given to `trading limits set`, not `{action}`"
+        )));
+    }
+    let one = |account: Option<String>| -> Result<String, Fault> {
+        account
+            .or_else(|| view.default_account().map(|account| account.key()))
+            .ok_or_else(|| {
+                Fault::not_found(
+                    "no account to set limits on: sign in to a trading service, or name one".into(),
+                )
+            })
+    };
+    let kept = limits::load(store);
+    let shown: Vec<String> = match (action, account) {
+        ("set", account) => {
+            if given.is_empty() {
+                return Err(Fault::usage(
+                    "say which: --daily-profit, --daily-loss, --max-qty, --max-risk".into(),
+                ));
+            }
+            let key = one(account)?;
+            // What was asked last, each limit not given kept as it is.
+            let asked = kept
+                .get(&key)
+                .map(|kept| kept.on(today))
+                .map_or(Caps::default(), |kept| {
+                    kept.later.map_or(kept.now, |later| later.caps)
+                });
+            let merged = Caps {
+                daily_profit: given.daily_profit.or(asked.daily_profit),
+                daily_loss: given.daily_loss.or(asked.daily_loss),
+                max_qty: given.max_qty.or(asked.max_qty),
+                max_risk: given.max_risk.or(asked.max_risk),
+            };
+            limits::set(store, &key, merged, today);
+            vec![key]
+        }
+        ("clear", account) => {
+            let key = one(account)?;
+            limits::set(store, &key, Caps::default(), today);
+            vec![key]
+        }
+        (_, Some(key)) => vec![key],
+        (_, None) => kept.keys().cloned().collect(),
+    };
+    let all = limits::load(store);
+    let rows: Vec<(String, Value, String)> = shown
+        .iter()
+        .map(|key| {
+            let kept = all.get(key).map(|kept| kept.on(today)).unwrap_or_default();
+            let hit = limits::hit_on(store, key, today);
+            let caps_json = |caps: &Caps| {
+                json!({"daily_profit": caps.daily_profit, "daily_loss": caps.daily_loss, "max_qty": caps.max_qty, "max_risk": caps.max_risk})
+            };
+            let value = json!({
+                "account": key,
+                "name": view.name_of(key),
+                "limits": caps_json(&kept.now),
+                "from_next_trading_day": kept.later.as_ref().map(|later| json!({"from": later.from.to_string(), "limits": caps_json(&later.caps)})),
+                "reached": hit.as_ref().map(|hit| json!({"limit": hit.limit, "pnl": hit.pnl})),
+            });
+            let mut text = format!("{}: {}", view.name_of(key), caps_text(&kept.now));
+            if let Some(later) = &kept.later {
+                text.push_str(&format!("; from {}: {}", later.from, caps_text(&later.caps)));
+            }
+            if let Some(hit) = &hit {
+                text.push_str(&format!("; {} reached today at {:.2}, entries refused", hit.limit, hit.pnl));
+            }
+            (key.clone(), value, text)
+        })
+        .collect();
+    if as_json {
+        return Ok(format!(
+            "{}
+",
+            json!({"limits": rows.iter().map(|(_, value, _)| value.clone()).collect::<Vec<_>>()})
+        ));
+    }
+    if rows.is_empty() {
+        return Ok("no limits set
+"
+        .into());
+    }
+    Ok(format!(
+        "{}
+",
+        rows.iter()
+            .map(|(_, _, text)| text.clone())
+            .collect::<Vec<_>>()
+            .join(
+                "
+"
+            )
+    ))
+}
+
+fn caps_text(caps: &Caps) -> String {
+    if caps.is_empty() {
+        return "no limits".into();
+    }
+    let mut parts = Vec::new();
+    if let Some(profit) = caps.daily_profit {
+        parts.push(format!("daily profit {profit:.2}"));
+    }
+    if let Some(loss) = caps.daily_loss {
+        parts.push(format!("daily loss {loss:.2}"));
+    }
+    if let Some(qty) = caps.max_qty {
+        parts.push(format!("max qty {qty}"));
+    }
+    if let Some(risk) = caps.max_risk {
+        parts.push(format!("max risk {risk:.2}"));
+    }
+    parts.join(", ")
 }
 
 fn quantity(text: &str) -> Result<u32, Fault> {

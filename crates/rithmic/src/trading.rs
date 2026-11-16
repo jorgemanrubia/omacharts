@@ -30,9 +30,10 @@ use rithmic_rs::rti::{
     RithmicOrderNotification,
 };
 use rithmic_rs::{
-    ConnectStrategy, ManualOrAutoEntry, OrderSide, OrderStatus, OrderType, RithmicAccount, RithmicCancelAllOrders,
-    RithmicCancelOrder, RithmicExitPosition, RithmicLinkOrders, RithmicModifyOrder, RithmicOrder, RithmicOrderPlant,
-    RithmicOrderPlantHandle, RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, RmsUpdateBits, TimeInForce,
+    ConnectStrategy, ManualOrAutoEntry, OrderSide, OrderStatus, OrderType, RithmicAccount, RithmicBracketOrder,
+    RithmicCancelAllOrders, RithmicCancelOrder, RithmicExitPosition, RithmicLinkOrders, RithmicModifyOrder, RithmicOrder,
+    RithmicOrderPlant, RithmicOrderPlantHandle, RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, RmsUpdateBits,
+    TimeInForce,
 };
 use rithmic_rs::FillHistoryRange;
 use tokio::sync::{broadcast, oneshot, watch};
@@ -985,6 +986,72 @@ impl Trading {
             })
             .ok_or_else(|| Error::Rejected("Rithmic took the order without naming it".into()))?;
         self.inner.book.lock().unwrap_or_else(|e| e.into_inner()).placed(order, &basket, now());
+        Ok(basket)
+    }
+
+    /// Place `order` as Rithmic's own bracket: the entry, and a target
+    /// `target` ticks and a stop `stop` ticks from its fill, which Rithmic
+    /// puts in, linked, as the entry fills. Blocks until Rithmic has taken
+    /// it and returns the entry's basket id; the exits arrive on the book
+    /// as orders of their own. Never sent twice.
+    pub fn place_bracket(
+        &self,
+        order: &Order,
+        target: Option<u32>,
+        stop: Option<u32>,
+    ) -> Result<String, Error> {
+        let side = match order.side {
+            Side::Buy => OrderSide::Buy,
+            Side::Sell => OrderSide::Sell,
+        };
+        let ticks = |ticks: u32| i32::try_from(ticks).unwrap_or(i32::MAX);
+        let mut built = RithmicBracketOrder::new()
+            .symbol(&order.contract)
+            .exchange(&order.exchange)
+            .quantity(i32::try_from(order.qty).unwrap_or(1))
+            .action(side)
+            .duration(TimeInForce::Day)
+            .manual_or_auto(ManualOrAutoEntry::Manual)
+            .localid(&order.tag);
+        built = match (order.kind, order.price) {
+            (Kind::Market, _) => built.price_type(OrderType::Market),
+            (Kind::Limit, Some(price)) => built.price_type(OrderType::Limit).price(price),
+            (Kind::Stop, Some(price)) => {
+                built.price_type(OrderType::StopMarket).trigger_price(price)
+            }
+            (_, None) => {
+                return Err(Error::Rejected(
+                    "a limit or stop order needs a price".into(),
+                ));
+            }
+        };
+        if let Some(target) = target {
+            built = built.target(ticks(target));
+        }
+        if let Some(stop) = stop {
+            built = built.stop(ticks(stop));
+        }
+        let built = built.build().map_err(error_of)?;
+        let replies = self.on_desk(&order.account, async |desk| {
+            within(REQUEST, desk.place_bracket_order(built)).await
+        })?;
+        if let Some(error) = replies.iter().find_map(|reply| reply.error.clone()) {
+            return Err(error_of(error));
+        }
+        let basket = replies
+            .iter()
+            .find_map(|reply| match &reply.message {
+                RithmicMessage::ResponseBracketOrder(placed) => {
+                    placed.basket_id.clone().filter(|id| !id.is_empty())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| Error::Rejected("Rithmic took the bracket without naming it".into()))?;
+        self.inner
+            .book
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .placed(order, &basket, now());
         Ok(basket)
     }
 

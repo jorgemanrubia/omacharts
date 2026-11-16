@@ -5358,6 +5358,13 @@ impl ChartView {
         read(&self.state.borrow().bars)
     }
 
+    /// Read the indicators as the chart drew them, each with what it
+    /// computed, without copying them. As [`Self::with_bars`], `read` must
+    /// not reach back into the chart.
+    pub fn with_indicators<T>(&self, read: impl FnOnce(&[Drawn]) -> T) -> T {
+        read(&self.state.borrow().indicators)
+    }
+
     /// Jump back to the right edge and follow new bars again.
     pub fn go_to_latest(&self) {
         let mut state = self.state.borrow_mut();
