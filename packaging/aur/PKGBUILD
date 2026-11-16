@@ -16,7 +16,7 @@ makedepends=('cargo')
 # linker does not read, and every one of their symbols comes back undefined.
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('794ecb251fdc891e2c98f7d1c228b2dd3d8a3007118181e17231e0d3da56dba7')
+sha256sums=('9c1db5151cd0bdbf72e731f937eb196be04b9ebd20363914b2c03a6e19aaff67')
 
 prepare() {
   cd "$pkgname-$pkgver"
