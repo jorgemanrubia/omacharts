@@ -1508,29 +1508,61 @@ impl State {
     }
 
     /// Keep the selection on the same drawings after the list was rebuilt,
-    /// by id; a drawing with no id yet is the newest row.
-    fn reselect(&mut self, ids: Vec<i64>) {
+    /// by id. `before` is every id the list had before it was rebuilt.
+    fn reselect(&mut self, ids: Vec<i64>, before: &[i64]) {
         // A drawing with no id yet has only just been made and has not come
         // back from wherever drawings are kept, so there is nothing to find
-        // it by: it is one of the newest rows. One of those used to mean
-        // *the* newest row, which was right while only one drawing could be
-        // made at a time — and then pasting three of them selected the same
-        // last row three times over, and the dedup below left one selected.
+        // it by. It is a row that was not there before: one with no id
+        // still, or one with an id the old list never had. That used to be
+        // taken to mean the newest rows, the last in the list — which held
+        // while every drawing sat at the same depth with ids counting up,
+        // and stopped holding once one was brought to the front, or the new
+        // one was kept on this chart only, with a negative id that sorts
+        // under the shared ones. Then the row in hand was somebody else's,
+        // and the drawing just made came out unselected.
         // As many as there are, in the order they went down.
         let fresh = ids.iter().filter(|id| **id == 0).count();
-        let mut next = self.drawings.len().saturating_sub(fresh);
+        let mut new = self.fresh_rows(before);
+        let mut new = new.split_off(new.len().saturating_sub(fresh)).into_iter();
         self.selected = ids
             .into_iter()
             .filter_map(|id| match id {
-                0 => {
-                    let at = (next < self.drawings.len()).then_some(next);
-                    next += 1;
-                    at
-                }
+                0 => new.next(),
                 id => self.drawings.iter().position(|d| d.id == id),
             })
             .collect();
         self.selected.dedup();
+    }
+
+    /// The rows that were not in the list before it was rebuilt — still
+    /// with no id, or with an id `before` does not have — oldest first.
+    fn fresh_rows(&self, before: &[i64]) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..self.drawings.len())
+            .filter(|i| {
+                let id = self.drawings[*i].id;
+                id == 0 || !before.contains(&id)
+            })
+            .collect();
+        rows.sort_by_key(|i| self.drawings[*i].id.abs());
+        rows
+    }
+
+    /// Take the list as it came back from wherever drawings are kept, with
+    /// the selection kept on the same drawings — a new one included, which
+    /// comes back with an id it did not have. Hands back the ids the list
+    /// had before.
+    fn take_list(&mut self, drawings: Vec<Drawing>) -> Vec<i64> {
+        let ids = self.selected_ids();
+        let before = self.ids();
+        self.drawings = drawings;
+        self.reselect(ids, &before);
+        before
+    }
+
+    /// Every id the list has now, for [`State::reselect`] after a change
+    /// that keeps the same drawings.
+    fn ids(&self) -> Vec<i64> {
+        self.drawings.iter().map(|d| d.id).collect()
     }
 
     fn selected_ids(&self) -> Vec<i64> {
@@ -1621,6 +1653,50 @@ impl State {
         self.placing = Some(drawing);
         self.drag = Some(Drag::Place { moved: false });
         true
+    }
+
+    /// The drawing in hand is laid down: into the list, on top of what is
+    /// there, and selected on its own, so the next thing the hand does —
+    /// move it, stretch it, restyle it, delete it — is done to it. `None`
+    /// when there was nothing to lay down. The tool is put down unless it
+    /// is held.
+    fn finish_placing(&mut self) -> Option<Drawing> {
+        let mut drawing = self.placing.take()?;
+        if !self.sticky {
+            self.tool = None;
+        }
+        self.next_config = 1;
+        // The last corner of a path was only ever following the hand.
+        // Dropping it can leave too little to be a drawing — one press and
+        // Enter — and then there is nothing to commit.
+        if !drawing.finish_path() {
+            return None;
+        }
+        // On top of what is already there, as a word or a paste is: a line
+        // drawn across a box brought to the front goes over it.
+        drawing.order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+        self.remember();
+        self.drawings.push(drawing.clone());
+        self.selected = vec![self.drawings.len() - 1];
+        Some(drawing)
+    }
+
+    /// A word at `at`, with nothing in it yet: into the list and selected,
+    /// the tool put down unless it is held. Hands back where it went and
+    /// the drawing, to be told about.
+    fn add_text(&mut self, at: Anchor) -> (usize, Drawing) {
+        let mut drawing = Drawing::text_at(at);
+        drawing.follow(self.next_config);
+        drawing.scope = scope_for(self.sends);
+        drawing.order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+        self.remember();
+        self.drawings.push(drawing.clone());
+        self.selected = vec![self.drawings.len() - 1];
+        if !self.sticky {
+            self.tool = None;
+        }
+        self.next_config = 1;
+        (self.drawings.len() - 1, drawing)
     }
 
     fn ruler_anchor(&self, width: f64, height: f64, x: f64, y: f64) -> Option<Anchor> {
@@ -2103,7 +2179,8 @@ impl State {
         }
         let ids = self.selected_ids();
         drawings::sort_for_painting(&mut self.drawings);
-        self.reselect(ids);
+        let before = self.ids();
+        self.reselect(ids, &before);
         moved
     }
 
@@ -3214,16 +3291,14 @@ impl ChartView {
             .and_then(|editing| self.state.borrow().drawings.get(editing.index.get()).map(|d| d.id));
         let still_there = {
             let mut state = self.state.borrow_mut();
-            let ids = state.selected_ids();
-            state.drawings = drawings;
-            state.reselect(ids);
+            let before = state.take_list(drawings);
             match editing_id {
                 // Zero is the drawing that has just been added and not yet
-                // written down, which comes back as the newest row — the
-                // same convention the selection follows, for the same
-                // reason: there is no id to find it by yet.
+                // written down, which comes back as a row the list did not
+                // have before — found the way the selection finds it, for
+                // the same reason: there is no id to find it by yet.
                 Some(0) => {
-                    let now = state.drawings.len().checked_sub(1);
+                    let now = state.fresh_rows(&before).last().copied();
                     state.editing = now;
                     now
                 }
@@ -3615,7 +3690,8 @@ impl ChartView {
             }
             // The selection follows the drawings, those still there.
             let ids: Vec<i64> = state.selected.iter().filter_map(|i| now_id(&now_list(&list, *i))).collect();
-            state.reselect(ids);
+            let before = state.ids();
+            state.reselect(ids, &before);
             state.placing = None;
             list
         };
@@ -3994,40 +4070,19 @@ impl ChartView {
     /// told about. The tool is put down, since one line at a time is what a
     /// hand draws; arming it again is one key.
     fn commit_placing(&self) {
-        let added = {
-            let mut state = self.state.borrow_mut();
-            let Some(mut drawing) = state.placing.take() else { return };
-            // The last corner of a path was only ever following the hand.
-            // Dropping it can leave too little to be a drawing — one press
-            // and Enter — and then there is nothing to commit.
-            if !drawing.finish_path() {
-                if !state.sticky {
-                    state.tool = None;
-                }
-                state.next_config = 1;
-                drop(state);
-                self.area.set_cursor_from_name(Some("default"));
-                self.redraw();
-                self.tool_changed();
-                return;
-            }
-            state.remember();
-            state.drawings.push(drawing.clone());
-            state.selected = vec![state.drawings.len() - 1];
-            if !state.sticky {
-                state.tool = None;
-            }
-            state.next_config = 1;
-            drawing
-        };
+        let added = self.state.borrow_mut().finish_placing();
         self.area.set_cursor_from_name(Some(match self.armed().is_some() {
             true => "crosshair",
             false => "default",
         }));
-        self.pick(None);
+        if added.is_some() {
+            self.pick(None);
+        }
         self.redraw();
         self.tool_changed();
-        self.tell(DrawingEvent::Added(added));
+        if let Some(added) = added {
+            self.tell(DrawingEvent::Added(added));
+        }
     }
 
     // -- typing on the chart -----------------------------------------------
@@ -4041,21 +4096,7 @@ impl ChartView {
     /// drawing. What is special is only that it starts out saying nothing,
     /// and that saying nothing at the end means it goes away again.
     fn start_text_at(self: &Rc<Self>, at: Anchor) {
-        let (index, added) = {
-            let mut state = self.state.borrow_mut();
-            let mut drawing = Drawing::text_at(at);
-            drawing.follow(state.next_config);
-            drawing.scope = scope_for(state.sends);
-            drawing.order = state.drawings.iter().map(|d| d.order).max().unwrap_or(0);
-            state.remember();
-            state.drawings.push(drawing.clone());
-            state.selected = vec![state.drawings.len() - 1];
-            if !state.sticky {
-                state.tool = None;
-            }
-            state.next_config = 1;
-            (state.drawings.len() - 1, drawing)
-        };
+        let (index, added) = self.state.borrow_mut().add_text(at);
         self.area.set_cursor_from_name(Some("default"));
         self.tool_changed();
         // Announced before a character is typed, the way a line is announced
@@ -15396,13 +15437,14 @@ mod drawing_tests {
         // unnumbered, as it does between the paste and the write.
         let ids = state.selected_ids();
         assert_eq!(ids, vec![0, 0, 0], "a copy has no id until it is written down");
+        let before = state.ids();
         let same = state.drawings.clone();
         state.drawings = same;
-        state.reselect(ids);
+        state.reselect(ids, &before);
         assert_eq!(state.selected, vec![1, 2, 3], "only the last copy stayed in hand");
 
         // And one on its own still means the newest row.
-        state.reselect(vec![0]);
+        state.reselect(vec![0], &before);
         assert_eq!(state.selected, vec![3]);
     }
 
@@ -16290,5 +16332,151 @@ mod drawing_tests {
         let step = Timeframe::years(1).seconds();
         let (ticks, _) = axis_ticks(21, 922.0, step, true, Clock::default(), |c| Some(year(c)));
         assert!(ticks.len() > 2, "{ticks:?}");
+    }
+
+    /// Draw one of `kind` with the hand on `state`, the way the chart's
+    /// presses do: two anchors by a drag for most, a press for the anchored
+    /// VWAP, three corners and an end for a zig-zag, and a press for a word.
+    /// Hands back what was told to whoever keeps the drawings.
+    fn draw_by_hand(state: &mut State, kind: DrawingKind) -> Drawing {
+        let (w, h) = (800.0, 400.0);
+        state.tool = Some(kind);
+        if kind == DrawingKind::Text {
+            let at = state.locate(w, h, 300.0, 150.0).unwrap();
+            let (index, drawing) = state.add_text(at);
+            assert_eq!(state.selected, vec![index]);
+            return drawing;
+        }
+        assert!(state.begin_placing(w, h, 200.0, 150.0, false), "{kind:?}");
+        match kind {
+            DrawingKind::Vwap => {}
+            DrawingKind::Zigzag => {
+                for (x, y) in [(300.0, 100.0), (400.0, 200.0)] {
+                    let corner = state.locate(w, h, x, y).unwrap();
+                    let placing = state.placing.as_mut().unwrap();
+                    placing.move_last_corner(corner);
+                    placing.add_corner(corner);
+                }
+            }
+            _ => {
+                let to = state.locate(w, h, 400.0, 250.0).unwrap();
+                state.placing.as_mut().unwrap().move_grip(Grip::To, to);
+            }
+        }
+        state.finish_placing().unwrap_or_else(|| panic!("a {kind:?} was laid down"))
+    }
+
+    /// What the window does with a new drawing: gives it an id where it is
+    /// kept, and hands the chart its whole list back, in painting order.
+    fn written_down(state: &State, mut added: Drawing) -> (Vec<Drawing>, i64) {
+        let mut list: Vec<Drawing> = state.drawings.iter().filter(|d| d.id != 0).cloned().collect();
+        added.id = match added.is_local() {
+            true => list.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1,
+            false => list.iter().map(|d| d.id).max().unwrap_or(0).max(0) + 1,
+        };
+        let id = added.id;
+        list.push(added);
+        drawings::sort_for_painting(&mut list);
+        (list, id)
+    }
+
+    /// Every kind the hand can draw ends up selected on its own when the
+    /// drawing is done, and stays selected once the list comes back from
+    /// the store with the drawing's id in it — including on a chart where
+    /// something was brought to the front, and on one that keeps what it
+    /// draws to itself, where the new drawing does not come back last.
+    #[test]
+    fn every_drawing_made_by_hand_is_selected_once_it_is_done() {
+        let a = |state: &State, i: usize| Anchor::new(state.bars[i].ts, state.bars[i].close);
+        for kind in DrawingKind::ALL {
+            for sends in [true, false] {
+                let mut state = charted(400);
+                state.sends = sends;
+                // A box brought to the front, a line under it, and one of
+                // this chart's own.
+                let mut boxed = Drawing::new(DrawingKind::Rect, a(&state, 100), a(&state, 120));
+                boxed.id = 7;
+                boxed.order = 3;
+                let mut line = Drawing::new(DrawingKind::Line, a(&state, 130), a(&state, 150));
+                line.id = 9;
+                let mut own = Drawing::new(DrawingKind::Horizontal, a(&state, 160), a(&state, 160));
+                own.id = -1;
+                own.scope = drawings::Scope::Local;
+                state.drawings = vec![boxed, line, own];
+                drawings::sort_for_painting(&mut state.drawings);
+                state.selected = vec![0];
+
+                let added = draw_by_hand(&mut state, kind);
+                assert_eq!(added.kind, kind);
+                let last = state.drawings.len() - 1;
+                assert_eq!(state.selected, vec![last], "{kind:?}: only the new one, the moment it is done");
+                assert_eq!(state.tool, None, "{kind:?}: the tool is put down");
+                assert!(state.placing.is_none());
+                assert_eq!(state.drawings[last].order, 3, "{kind:?}: on top of what is there");
+
+                let (list, id) = written_down(&state, added);
+                state.take_list(list);
+                let selected: Vec<(i64, DrawingKind)> =
+                    state.selected.iter().map(|i| (state.drawings[*i].id, state.drawings[*i].kind)).collect();
+                assert_eq!(selected, vec![(id, kind)], "{kind:?} (sends: {sends}): the new one, once it has an id");
+            }
+        }
+    }
+
+    /// A chart that keeps its tool in hand for another drawing still selects
+    /// each one as it is done, and the tool stays armed for the next.
+    #[test]
+    fn a_held_tool_selects_each_drawing_it_makes() {
+        let mut state = charted(400);
+        state.sticky = true;
+        for kind in [DrawingKind::Rect, DrawingKind::Zigzag] {
+            let first = draw_by_hand(&mut state, kind);
+            let (list, id) = written_down(&state, first);
+            state.take_list(list);
+            assert_eq!(state.tool, Some(kind), "still in hand");
+            let second = draw_by_hand(&mut state, kind);
+            let (list, second_id) = written_down(&state, second);
+            state.take_list(list);
+            let selected: Vec<i64> = state.selected.iter().map(|i| state.drawings[*i].id).collect();
+            assert_eq!(selected, vec![second_id], "the newest alone, not {id} as well");
+        }
+    }
+
+    /// A drawing given up before it is done selects nothing new: a zig-zag
+    /// ended on its first corner is no drawing, and what was selected before
+    /// is still what is selected.
+    #[test]
+    fn a_drawing_given_up_selects_nothing() {
+        let (w, h) = (800.0, 400.0);
+        let mut state = charted(400);
+        let mut there = Drawing::new(DrawingKind::Line, Anchor::new(state.bars[10].ts, 1.0), Anchor::new(state.bars[20].ts, 2.0));
+        there.id = 4;
+        state.drawings = vec![there];
+        state.selected = vec![0];
+        state.tool = Some(DrawingKind::Zigzag);
+        assert!(state.begin_placing(w, h, 200.0, 150.0, false));
+        assert!(state.finish_placing().is_none());
+        assert_eq!(state.drawings.len(), 1);
+        assert_eq!(state.selected, vec![0]);
+        assert!(state.finish_placing().is_none(), "nothing in hand");
+    }
+
+    /// A drawing the list gains from elsewhere — a command, another chart —
+    /// is not selected: only the one this chart has just made is.
+    #[test]
+    fn a_drawing_that_arrives_from_elsewhere_is_not_selected() {
+        let mut state = charted(400);
+        let at = Anchor::new(state.bars[10].ts, 1.0);
+        let mut there = Drawing::new(DrawingKind::Line, at, at);
+        there.id = 4;
+        state.drawings = vec![there.clone()];
+        state.selected = vec![];
+        let mut arrived = Drawing::new(DrawingKind::Rect, at, at);
+        arrived.id = 5;
+        state.take_list(vec![there.clone(), arrived.clone()]);
+        assert!(state.selected.is_empty());
+        state.selected = vec![0];
+        state.take_list(vec![there, arrived]);
+        assert_eq!(state.selected, vec![0], "what was selected stays");
     }
 }
