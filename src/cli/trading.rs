@@ -300,6 +300,20 @@ pub fn run(
             adopt(live);
             said(as_json, json!({"login": login.name, "data": true}), format!("charts' market data comes through {}", login.name))
         }
+        "sync" => {
+            let live = live.ok_or_else(no_window)?;
+            let started = live.sync_accounts()?;
+            if started.is_empty() {
+                return Err(Fault::refused(
+                    "no login is signed in to sync, or each is syncing already; `omacharts trading logins` says which are live".into(),
+                ));
+            }
+            let text = format!(
+                "syncing {}; `omacharts trading accounts` lists what comes back, and the Log says how each went",
+                started.join(", ")
+            );
+            said(as_json, json!({"syncing": started}), text)
+        }
         "accounts" => accounts(store, live, as_json),
         "default" => {
             let view = view_of(store, live);

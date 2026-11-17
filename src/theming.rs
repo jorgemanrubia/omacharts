@@ -901,12 +901,14 @@ entry.chart-title-entry > text { margin: 0; }
 button.tools-toggle:not(:checked),
 button.trading-toggle:not(:checked) { opacity: 0.25; }
 button.tools-toggle:hover,
-button.trading-toggle:hover { opacity: 1; }
+button.trading-toggle:hover,
+button.trading-sync:hover { opacity: 1; }
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
 .window-corner button,
 button.tools-toggle,
-button.trading-toggle {
+button.trading-toggle,
+button.trading-sync {
   opacity: 0.75;
   transition: opacity 120ms ease-out;
 }
@@ -1248,6 +1250,7 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 .window-corner button,
 button.tools-toggle,
 button.trading-toggle,
+button.trading-sync,
 .legend-link,
 .legend-gear,
 .pane-expand,
@@ -1261,6 +1264,7 @@ button.rail-add {
 .window-corner button:hover,
 button.tools-toggle:hover,
 button.trading-toggle:hover,
+button.trading-sync:hover,
 .legend-link:hover,
 .legend-gear:hover,
 .chart-pane:hover .pane-expand:hover,

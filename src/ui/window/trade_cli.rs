@@ -407,6 +407,57 @@ mod tests {
         });
     }
 
+    /// The panel's sync, and `trading sync`, list an account opened at the
+    /// trading service since sign-in: in the panel, in `trading accounts`
+    /// and in the cache the account pickers read. The sync spins while it
+    /// is at work, and nothing else moves: the session stays signed in,
+    /// the position is still held. With no window there is nothing to
+    /// sync through.
+    #[test]
+    fn a_sync_lists_an_account_opened_since_sign_in() {
+        crate::ui::on_gtk(|| {
+            let (window, _, session, key) = long_es(trading::Linking::AfterTheFact);
+            let login = key.split_once('/').map(|(login, _)| login.to_string()).expect("a key");
+            window.show_trading_panel(true);
+            let panel = window.trade.panel.borrow().clone().expect("the panel");
+            assert!(panel.can_sync() && !panel.syncing());
+            let listed = |window: &Rc<Window>| {
+                let accounts = json(window, "trading accounts --json");
+                accounts["accounts"].as_array().map_or(0, Vec::len)
+            };
+            assert_eq!(listed(&window), 1);
+
+            // What the trading service holds is what the session was told.
+            *session.held.lock().unwrap() = session.book();
+            session.opened.lock().unwrap().push(trading::Account {
+                login: String::new(),
+                id: "952".into(),
+                name: None,
+                currency: Some("USD".into()),
+                balance: Some(25_000.0),
+            });
+            panel.press_sync();
+            assert!(panel.syncing() && !panel.can_sync(), "at work, and not pressed twice");
+            assert!(settle(&window, || !window.desk.syncing()));
+            assert!(settle(&window, || !panel.syncing()));
+            assert!(panel.can_sync());
+            assert_eq!(listed(&window), 2, "the new account listed");
+            assert!(panel.accounts_and_positions().iter().any(|text| text.contains("952")), "{:?}", panel.accounts_and_positions());
+            assert!(trading::accounts(&window.store).iter().any(|account| account.key() == format!("{login}/952")));
+            assert!(window.desk.live(&login), "still signed in");
+            assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "still held");
+
+            let synced = json(&window, "trading sync --json");
+            assert_eq!(synced["syncing"][0], "Rithmic Test", "{synced}");
+            assert!(settle(&window, || !window.desk.syncing()));
+            assert_eq!(session.syncs.load(std::sync::atomic::Ordering::Acquire), 2);
+
+            let args: Vec<String> = ["omacharts", "trading", "sync"].map(String::from).to_vec();
+            let alone = crate::cli::run(&args, &window.store, None, &crate::cli::Here);
+            assert_eq!(alone.code, crate::cli::EXIT_NO_WINDOW, "{}", alone.err);
+        });
+    }
+
     /// A chart's account, quantity, trading symbol and fills, set from a
     /// terminal, are the window's at once and stored with the chart.
     #[test]

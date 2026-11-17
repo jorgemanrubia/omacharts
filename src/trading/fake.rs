@@ -58,6 +58,9 @@ pub struct FakeService {
     pub numbered_by_user: bool,
     /// Every session it signed in, in order.
     pub sessions: Mutex<Vec<Arc<FakeSession>>>,
+    /// The accounts every session finds opened after it signed in, listed
+    /// by its first sync: [`FakeSession::opened`].
+    pub opened_later: Vec<Account>,
     pub signed_in: AtomicUsize,
     pub signed_out: Arc<AtomicUsize>,
 }
@@ -213,6 +216,28 @@ fn renumber(book: &mut Book, past: &mut [Order], number: &str) {
 /// always: nothing reads an account to write it.
 pub const PAST_FILLS_ENV: &str = "OMACHARTS_FAKE_FILLS";
 
+/// Where a build with the `fakes` feature reads the accounts every login's
+/// trading service opens after the login signed in, as an account bought
+/// meanwhile is: their numbers, comma-separated, each listed from the
+/// login's first sync on with a balance of 50,000.
+pub const OPENED_LATER_ENV: &str = "OMACHARTS_FAKE_OPENED";
+
+/// The accounts `numbers` names: see [`OPENED_LATER_ENV`].
+pub fn opened_later(numbers: &str) -> Vec<Account> {
+    numbers
+        .split(',')
+        .map(str::trim)
+        .filter(|number| !number.is_empty())
+        .map(|number| Account {
+            login: String::new(),
+            id: number.to_string(),
+            name: None,
+            currency: Some("USD".into()),
+            balance: Some(50_000.0),
+        })
+        .collect()
+}
+
 /// The orders the file at `path` describes, each filled at once: see
 /// [`PAST_FILLS_ENV`]. None for a file that is not there or does not read.
 pub fn past_fills(path: &std::path::Path) -> Vec<Order> {
@@ -259,7 +284,13 @@ pub fn past_fills(path: &std::path::Path) -> Vec<Order> {
 /// through Rithmic is the proof that nothing above [`Session`] knows
 /// which trading service it is.
 pub struct FakeSession {
-    pub accounts: Vec<Account>,
+    pub accounts: Mutex<Vec<Account>>,
+    /// Accounts the trading service has opened since the session signed
+    /// in, as one bought meanwhile is: listed by [`Session::sync`], and not
+    /// before.
+    pub opened: Mutex<Vec<Account>>,
+    /// How many times it was synced.
+    pub syncs: AtomicUsize,
     signed_out: Arc<AtomicUsize>,
     gone: std::sync::atomic::AtomicBool,
     pub book: Mutex<Book>,
@@ -339,7 +370,9 @@ impl FakeSession {
     /// A session that tells `changed` what kind of change it was.
     pub fn told(accounts: Vec<Account>, changed: Box<dyn Fn(Change) + Send + Sync>) -> FakeSession {
         FakeSession {
-            accounts,
+            accounts: Mutex::new(accounts),
+            opened: Mutex::default(),
+            syncs: AtomicUsize::new(0),
             signed_out: Arc::default(),
             gone: Default::default(),
             book: Mutex::default(),
@@ -555,7 +588,7 @@ impl FakeSession {
 
 impl Session for FakeSession {
     fn accounts(&self) -> Vec<Account> {
-        self.accounts.clone()
+        self.accounts.lock().unwrap().clone()
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -611,20 +644,50 @@ impl Session for FakeSession {
         book.orders.sort_by_key(|order| std::cmp::Reverse(order.at));
         book.positions = held.positions;
         // Money the trading service never said is the balance the account was listed
-        // with.
+        // with: every account's, or one's opened since sign-in.
+        let listed = |account: &Account| Money { key: account.id.clone(), balance: account.balance, ..Money::default() };
+        let accounts = self.accounts.lock().unwrap();
         book.accounts = match held.accounts.is_empty() {
-            true => self
-                .accounts
-                .iter()
-                .map(|account| Money { key: account.id.clone(), balance: account.balance, ..Money::default() })
-                .collect(),
-            false => held.accounts,
+            true => accounts.iter().map(listed).collect(),
+            false => {
+                let mut money = held.accounts;
+                let opened = self.syncs.load(Ordering::Acquire) > 0;
+                for account in accounts.iter().filter(|_| opened) {
+                    if !money.iter().any(|known| known.key == account.id) {
+                        money.push(listed(account));
+                    }
+                }
+                money
+            }
         };
+        drop(accounts);
         book.refreshed = true;
         drop(book);
         self.refreshes.fetch_add(1, Ordering::AcqRel);
         self.moved();
         Ok(())
+    }
+    /// What was opened since sign-in joins the list, then a refresh.
+    fn sync(&self) -> Result<(), String> {
+        if self.gone.load(Ordering::Acquire) {
+            return Err("the session was signed out".into());
+        }
+        if let Some(why) = self.refuse.lock().unwrap().take() {
+            return Err(why);
+        }
+        self.syncs.fetch_add(1, Ordering::AcqRel);
+        let opened: Vec<Account> = self.opened.lock().unwrap().drain(..).collect();
+        {
+            let mut accounts = self.accounts.lock().unwrap();
+            let login = accounts.first().map(|account| account.login.clone()).unwrap_or_default();
+            for account in opened {
+                if !accounts.iter().any(|known| known.id == account.id) {
+                    let login = if account.login.is_empty() { login.clone() } else { account.login.clone() };
+                    accounts.push(Account { login, ..account });
+                }
+            }
+        }
+        self.refresh()
     }
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
         self.histories.fetch_add(1, Ordering::AcqRel);
@@ -866,6 +929,7 @@ impl TradingService for FakeService {
         *session.contracts.lock().unwrap() = self.contracts.clone();
         *session.held.lock().unwrap() = book;
         *session.past.lock().unwrap() = before;
+        *session.opened.lock().unwrap() = self.opened_later.clone();
         let session = Arc::new(session);
         self.sessions.lock().unwrap().push(session.clone());
         Ok(session)

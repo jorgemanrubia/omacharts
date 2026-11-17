@@ -1676,6 +1676,14 @@ impl Trading {
         }
     }
 
+    /// Ask the server again for its trade accounts, and then for
+    /// everything each one holds, as coming back after a drop does: an
+    /// account opened since sign-in is listed from now on. The connection
+    /// stays as it is.
+    pub fn relist(&self) -> Result<(), Error> {
+        self.shared.sync()
+    }
+
     /// Ask again for every account's balance, positions and working orders,
     /// and wait for the answers; and again for the definition of every
     /// contract the book names that has none yet, whose prices it holds

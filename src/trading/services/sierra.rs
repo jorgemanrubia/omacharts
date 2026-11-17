@@ -522,6 +522,13 @@ impl Session for SierraSession {
         self.trading.refresh().map_err(said)
     }
 
+    /// The server asked again for its trade accounts, then for each one's
+    /// money, positions and orders, as after a drop: see
+    /// [`dtc::Trading::relist`]. Nothing signs out.
+    fn sync(&self) -> Result<(), String> {
+        self.trading.relist().map_err(said)
+    }
+
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
         Ok(self.trading.history(account, from, to).map_err(failed)?.iter().map(filled_order).collect())
     }
