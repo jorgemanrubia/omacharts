@@ -418,7 +418,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--drawings on` or `off` | Draws the chart's drawings, its own and the shared, or hides them all | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | `--show-drawings on` or `off`, `--send-drawings on` or `off` | Whether the chart shows other charts' drawings, and whether it sends its own | [Drawings](/manual/drawings/) |
-| `--account ACCOUNT` | The account the chart trades on: its name, its number, its login and number such as `Lucid/1234`, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
+| `--feed FEED` | The data feed the chart is drawn from, by its id or its name as `provider list` gives them, or `default` to follow the order | [The header](/manual/charts/#the-header) |
+| `--account ACCOUNT` | The account the chart trades on: its name, its number, its login and number such as `Acme Futures/ACME-0001`, or `default` to follow the default account | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
 | `--quantity N` | The quantity its Qty is set to, one its quantities offer | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
 | `--trading-symbol SYMBOL` | Trade the other size of what it charts, such as `MES` on an ES chart; `none` to trade what it charts | [Trading another size](/manual/trading-on-a-chart/#trading-another-size) |
 | `--show-fills on` or `off` | Marks the account's executions on the chart | [Executions on the chart](/manual/trading-on-a-chart/#executions-on-the-chart) |
@@ -1666,12 +1667,12 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 
 | Command | Does |
 |---|---|
-| `trading logins` | Each login, its service, and whether it is live and gives charts their data |
+| `trading logins` | Each login, its service, and whether it is live and its data feed is among the data feeds |
 | `trading login SERVICE` | Opens the service's sign-in dialog in the window, to add a login |
 | `trading sign-in LOGIN` | Signs a login in with its saved password, or opens its dialog when it has none |
 | `trading sign-out LOGIN` | Signs it out and forgets its password; the login stays |
-| `trading remove LOGIN [--with-feed]` | Removes the login, its password and its accounts, and with `--with-feed` the data feed that came through it |
-| `trading data LOGIN` | Charts' market data comes through this login |
+| `trading remove LOGIN` | Removes the login, its password, its accounts and its data feed |
+| `trading data LOGIN` | Puts this login's data feed at the top of the data feeds |
 | `trading sync` | Asks every signed-in login for its accounts again, and what they hold, as the panel's sync does: an account opened since sign-in is listed once its login answers. Nothing signs out |
 | `trading accounts` | Every account with its balance, the day's and the open P&L, its loss limit and liquidation level; `*` marks the default |
 | `trading default ACCOUNT` | The account charts trade on until given one of their own |

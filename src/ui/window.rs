@@ -7286,7 +7286,7 @@ impl Window {
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
             *pane.compare.borrow_mut() = stored.compare.clone();
-            *pane.feed.borrow_mut() = stored.source.clone();
+            *pane.feed.borrow_mut() = stored.source.as_deref().map(|id| crate::feeds::current_id(&self.store, id));
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
             pane.shows_fills.set(stored.shows_fills);
@@ -11026,14 +11026,36 @@ impl Window {
     }
 
     /// Put one chart on an account, or back on the default with `None`,
-    /// and say so in its header. A feed chosen for the chart stays: what a
-    /// chart is drawn from and where its orders go are chosen apart, a
-    /// Sierra Chart feed under a Rithmic account as well as either alone. A
-    /// chart on no chosen feed follows the new account's default.
+    /// and say so in its header. An account of another login brings that
+    /// login's own data feed with it, when it is on the order and serves
+    /// the chart; otherwise what the chart is drawn from stays as it was:
+    /// see [`crate::trading::feed_after_switch`]. A feed picked after the
+    /// switch is the chart's, a Sierra Chart feed under a Rithmic account as
+    /// well as either alone.
     fn choose_account(self: &Rc<Self>, id: u32, account: Option<String>) {
         let Some(pane) = self.pane(id) else { return };
         if *pane.account.borrow() == account {
             return;
+        }
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            let in_force = match self.route_chosen(&pane, &instrument) {
+                Some(Ok(routed) | Err(routed)) => Some(routed.feed.provider.id()),
+                None => self.missing_from(&pane, &instrument).map(|feed| feed.provider.id()),
+            };
+            let feeds = self.feeds();
+            let view = self.trading.borrow().clone();
+            let chosen = pane.feed.borrow().clone();
+            let feed = crate::trading::feed_after_switch(
+                &view,
+                view.account_of(pane.account.borrow().as_deref()),
+                view.account_of(account.as_deref()),
+                chosen.as_deref(),
+                in_force,
+                feeds.iter().map(|feed| feed.provider.as_ref() as &dyn Provider),
+                &instrument,
+            );
+            pane.feed.replace(feed);
         }
         pane.account.replace(account);
         self.apply_marks_to(&pane);

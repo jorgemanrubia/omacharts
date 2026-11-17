@@ -2101,7 +2101,7 @@ fn chart_set(
         }
         changed.push(format!("fills {}", if shows { "marked" } else { "not marked" }));
     }
-    let ChartTrading { account, symbol: traded, size } = trading;
+    let ChartTrading { account, feed, symbol: traded, size } = trading;
     if let Some(fields) = chart.as_object_mut() {
         match account {
             None => {}
@@ -2112,6 +2112,17 @@ fn chart_set(
             Some(Some((key, name))) => {
                 fields.insert("account".into(), json!(key));
                 changed.push(format!("on {name}"));
+            }
+        }
+        match feed {
+            None => {}
+            Some((None, said)) => {
+                fields.remove("source");
+                changed.push(said);
+            }
+            Some((Some(id), said)) => {
+                fields.insert("source".into(), json!(id));
+                changed.push(said);
             }
         }
         match traded {
@@ -5226,6 +5237,9 @@ fn shown_style(pane: &Value) -> &str {
 /// again; the symbol traded instead, or none; the quantity picked.
 struct ChartTrading {
     account: Option<Option<(String, String)>>,
+    /// The feed it is drawn from, by id, or none to follow its account's
+    /// own and else the order; and what to say about it.
+    feed: Option<(Option<String>, String)>,
     symbol: Option<Option<(String, Option<String>)>>,
     size: Option<crate::trading::sizes::Picked>,
 }
@@ -5241,10 +5255,11 @@ fn chart_trading(store: &Store, m: &clap::ArgMatches, book: &Value, pane: u32) -
             Some(Some((account.key(), view.account_name(account))))
         }
     };
+    let feed = chart_feed(store, m, stored, &account)?;
     let wants_symbol = arg(m, "trading-symbol");
     let quantity = arg(m, "quantity");
     if wants_symbol.is_none() && quantity.is_none() {
-        return Ok(ChartTrading { account, symbol: None, size: None });
+        return Ok(ChartTrading { account, feed, symbol: None, size: None });
     }
     // What the chart charts, as the symbol or the trading symbol is judged
     // against: what `--symbol` makes it, if it is changing too.
@@ -5294,7 +5309,87 @@ fn chart_trading(store: &Store, m: &clap::ArgMatches, book: &Value, pane: u32) -
             Some(super::trading::picked(store, &traded, n)?)
         }
     };
-    Ok(ChartTrading { account, symbol, size })
+    Ok(ChartTrading { account, feed, symbol, size })
+}
+
+/// What `chart set` makes of the feed a chart is drawn from, its `source`:
+/// the one `--feed` names, on the order, or none for `default`; else, for
+/// an `--account` of another login, what the window's account picker makes
+/// of it ([`crate::trading::feed_after_switch`]): that login's own feed
+/// when it serves the chart, the feed on screen kept otherwise. `None`
+/// leaves it as it is.
+fn chart_feed(
+    store: &Store,
+    m: &clap::ArgMatches,
+    stored: Option<&Value>,
+    account: &Option<Option<(String, String)>>,
+) -> Result<Option<(Option<String>, String)>, Fault> {
+    let wanted = arg(m, "feed");
+    if wanted.is_none() && account.is_none() {
+        return Ok(None);
+    }
+    let feeds = crate::feeds::ordered(store);
+    if let Some(text) = wanted {
+        if text.eq_ignore_ascii_case("default") {
+            return Ok(Some((None, "data from its account's own feed, else the order".to_string())));
+        }
+        let named = omacharts_engine::providers::listed(text).map(|feed| feed.id);
+        let found = feeds.iter().find(|provider| {
+            provider.id().eq_ignore_ascii_case(text) || provider.label().eq_ignore_ascii_case(text) || Some(provider.id()) == named
+        });
+        return match found {
+            Some(provider) => Ok(Some((Some(provider.id().to_string()), format!("data from {}", provider.label())))),
+            None => {
+                let on: Vec<String> = feeds.iter().map(|provider| format!("{} ({})", provider.label(), provider.id())).collect();
+                Err(Fault::not_found(format!("no data feed called {text:?} on the order, which has {}", on.join(", "))))
+            }
+        };
+    }
+    let Some(stored) = stored else { return Ok(None) };
+    let index = crate::inventory::everything();
+    let (symbol, suffix) = match arg(m, "symbol") {
+        Some(text) => listing(&index, text, arg(m, "suffix").map(|s| s.to_uppercase())),
+        None => (stored["symbol"].as_str().unwrap_or("").to_string(), stored["suffix"].as_str().map(String::from)),
+    };
+    let Some(instrument) = index.resolve(&symbol, suffix.as_deref()) else { return Ok(None) };
+    let view = crate::trading::View::load(store);
+    let before = view.account_of(stored["account"].as_str());
+    let after = match account {
+        Some(Some((key, _))) => view.account_of(Some(key)),
+        _ => view.account_of(None),
+    };
+    let chosen = stored["source"].as_str().map(|id| crate::feeds::current_id(store, id));
+    // As the window would draw it with every feed signed in: this process
+    // signs in to none.
+    let every = || feeds.iter().map(|provider| (provider.as_ref(), true));
+    let pointed = crate::trading::feed_of(&view, before, chosen.as_deref(), every(), &instrument);
+    let at = match omacharts_engine::providers::route_chosen(every(), pointed, &instrument) {
+        Some(omacharts_engine::providers::Chosen::Route(route)) => Some(route.at),
+        Some(omacharts_engine::providers::Chosen::Refused { at, .. } | omacharts_engine::providers::Chosen::Missing { at }) => Some(at),
+        None => None,
+    };
+    let in_force = at.and_then(|at| feeds.get(at)).map(|provider| provider.id());
+    let next = crate::trading::feed_after_switch(
+        &view,
+        before,
+        after,
+        chosen.as_deref(),
+        in_force,
+        feeds.iter().map(|provider| provider.as_ref()),
+        &instrument,
+    );
+    if next == chosen {
+        return Ok(None);
+    }
+    let label_of = |id: Option<&str>| id.and_then(|id| feeds.iter().find(|provider| provider.id() == id)).map(|provider| provider.label());
+    let said = match &next {
+        Some(id) => format!("data kept on {}", label_of(Some(id)).unwrap_or(id)),
+        None => {
+            let own = crate::trading::own_feed(&view, after, every(), &instrument);
+            format!("data from {}", label_of(own).unwrap_or("the order"))
+        }
+    };
+    Ok(Some((next, said)))
 }
 
 fn pane_json(pane: &Value) -> String {
@@ -5347,6 +5442,9 @@ fn pane_json(pane: &Value) -> String {
         // own, what it charts while it trades nothing else, and the
         // quantity its Qty shows when one was picked.
         "account": pane["account"],
+        // The feed picked for it, by id; null while it follows its
+        // account's own feed and else the order.
+        "feed": pane["source"],
         "trading_symbol": pane["trading_symbol"].as_str().map(|symbol| spell(symbol, pane["trading_suffix"].as_str())),
         "quantity": pane["trading_size"]["size"],
         "shows_fills": pane["shows_fills"].as_bool().unwrap_or(false),
@@ -5998,6 +6096,9 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
             .collect();
         return Ok(wrap_list("providers", rows));
     }
+    // A login's feed is called by more than a word, `rithmic@<login>`, and
+    // the column is as wide as the widest name so the labels line up.
+    let width = providers::offered().map(|feed| feed.id.chars().count()).max().unwrap_or(0).max(8);
     Ok(providers::offered()
         .map(|feed| {
             let mut note = match (feed.id == stored, feed.id == in_use) {
@@ -6019,7 +6120,7 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
             if feed.experimental {
                 serves.push_str(" · experimental");
             }
-            format!("{:<8} {} · {}{}", feed.id, feed.label, serves, suffixed(&note))
+            format!("{:<width$} {} · {}{}", feed.id, feed.label, serves, suffixed(&note))
         })
         .collect::<Vec<_>>()
         .join("\n")

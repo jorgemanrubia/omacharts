@@ -32,6 +32,21 @@
 //! Feeds are an ordered list, with Yahoo always last: each chart is served
 //! by the first feed that can be used and has a name for its instrument —
 //! see [`ordered`] and [`route`].
+//!
+//! # One feed per login
+//!
+//! A feed whose login is a trading service connection ([`SignIn::trades`])
+//! is not one feed but one per login the app keeps for it: each login has
+//! its own market data, its own session and its own entitlements, so two
+//! Rithmic logins are two feeds, "Rithmic (Acme Futures)" and "Rithmic
+//! (Demo Prop)", each ordered, chosen and signed in apart. The app tells
+//! the engine which logins there are with [`remember_login_feeds`]; each is
+//! a [`Listed`] of its own, made from the one in [`LISTED`] by
+//! [`login_feed`], with an id of the feed's and the login's,
+//! `rithmic@<login id>`, that never changes while the login is kept. The
+//! feed's own id alone, `rithmic`, is what was stored before there were
+//! several: [`listed`] reads it as the feed of the login the app names for
+//! it, so an order or a chart saved then charts from the same login now.
 
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;
@@ -74,8 +89,9 @@ pub struct Listed {
     /// the kinds of instrument, as somebody choosing between sources thinks
     /// of them.
     pub covers: &'static str,
-    /// The feed, built and connected to nothing: see [`built`].
-    pub build: fn() -> Box<dyn Provider>,
+    /// The feed, built and connected to nothing: see [`built`]. Handed the
+    /// entry it is built from, which for a feed of one login names it.
+    pub build: fn(&'static Listed) -> Box<dyn Provider>,
     /// How signing in to it goes, for a feed that charts an account's own
     /// data. `None` for a feed anybody can use the moment they pick it,
     /// which is both the better kind and, so far, the default one.
@@ -95,6 +111,9 @@ pub struct Listed {
     /// until the app says that flag is on ([`gate_with`]), the feed is in
     /// no listing, no order and no route, and nothing of it is built.
     pub gate: Option<&'static str>,
+    /// The login, by the app's id for it, a feed of one login charts
+    /// through: see [`login_feed`]. `None` for every feed in [`LISTED`].
+    pub login: Option<&'static str>,
 }
 
 impl Listed {
@@ -112,7 +131,25 @@ impl Listed {
     pub fn asks_in_a_dialog(&self) -> bool {
         self.how() == Some(How::Dialog)
     }
+
+    /// The id of the entry in [`LISTED`] it is, or was made from: `rithmic`
+    /// for `rithmic@<login>`. What its dialog, its artwork and its trading
+    /// service are found by.
+    pub fn kind(&self) -> &'static str {
+        self.id.split(LOGIN_MARK).next().unwrap_or(self.id)
+    }
+
+    /// Is this one feed per login, rather than a feed of its own: a trading
+    /// service connection's entry in [`LISTED`]? Then what is ordered,
+    /// chosen and routed to is each login's, from [`login_feed`].
+    pub fn per_login(&self) -> bool {
+        self.login.is_none() && self.setup.is_some_and(|setup| setup.trades())
+    }
 }
+
+/// What joins a feed's id to its login's in the id of a feed of one login.
+/// Not `:`, which joins a feed's id to a symbol in a cache key.
+pub const LOGIN_MARK: char = '@';
 
 /// How a feed is signed in to, which decides what the Data page and
 /// `provider login` do about it.
@@ -291,6 +328,13 @@ pub trait SignIn: Sync + std::fmt::Debug {
     fn found(&self) -> Option<Saved> {
         None
     }
+    /// For a feed of one feed per login ([`Listed::per_login`]): signing in
+    /// to the login `login` alone, its saved login, its session and its
+    /// refusal kept apart from every other login's. `None` for a feed that
+    /// signs in once.
+    fn for_login(&self, _login: &'static str) -> Option<&'static dyn SignIn> {
+        None
+    }
 }
 
 /// How `id` stands, in a line and in its own words, or `None` for a feed
@@ -393,7 +437,7 @@ pub fn places(id: &str) -> Vec<(&'static str, String)> {
 /// The feeds whose login is a broker connection too, kept in Preferences →
 /// Trading: what "Add a trading account…" offers, in the order of [`LISTED`].
 pub fn connections() -> impl Iterator<Item = &'static Listed> {
-    offered().filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
+    kinds().filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
 }
 
 /// The app's version, as a feed that asks tells its vendor: handed over by
@@ -430,10 +474,10 @@ pub fn here() -> bool {
     HERE.load(Ordering::Acquire)
 }
 
-/// Call `listener`, on any thread, whenever a feed hears that what its
-/// login may chart has changed: Rithmic's entitlements, for one. Nothing
-/// moves until [`adopt_serving`] is called, so whoever listens can note
-/// where every chart is served from first.
+/// Call `listener`, on any thread, whenever a feed hears that what one of
+/// its logins may chart has changed: Rithmic's entitlements, for one.
+/// Nothing moves until [`adopt_serving`] is called, so whoever listens can
+/// note where every chart is served from first.
 pub fn on_serving_changed(listener: impl Fn() + Send + Sync + 'static) {
     rithmic::session::on_entitlements(listener);
 }
@@ -459,11 +503,171 @@ const FAKES: &[Listed] = &[fake::LISTED];
 #[cfg(not(any(test, feature = "fakes")))]
 const FAKES: &[Listed] = &[];
 
-/// Every feed this build knows, offered or not: [`LISTED`], then any fake.
-/// For handing each its saved login, where one that is never offered still
-/// has to be told.
+/// Every feed this build knows, offered or not: [`offered`], then any
+/// fake. For handing each its saved login, where one that is never offered
+/// still has to be told.
 pub fn every() -> impl Iterator<Item = &'static Listed> {
     offered().chain(FAKES)
+}
+
+/// The feeds of one login each, made so far in this process, every login
+/// and every name it has had: interned, so that each is made once and
+/// lives as long as the process, as a `&'static` the way [`LISTED`]'s are.
+/// A handful, one or two per login.
+static MADE: std::sync::Mutex<Vec<&'static Listed>> = std::sync::Mutex::new(Vec::new());
+
+/// The feeds of one login each that are kept now, by the entry they are
+/// made from, with the login an id of that entry's alone stands for: what
+/// the app last said with [`remember_login_feeds`].
+#[cfg(not(any(test, feature = "fakes")))]
+static KEPT: std::sync::RwLock<Vec<Kept>> = std::sync::RwLock::new(Vec::new());
+
+// A test build runs many apps at once, one per test, each with logins of
+// its own: a thread reads back what it was told, whatever another test told
+// the process since, and nothing until it is told. An id of one login's
+// feed is found on any thread all the same: see `made`.
+#[cfg(any(test, feature = "fakes"))]
+thread_local! {
+    static TOLD_HERE: std::cell::RefCell<Vec<Kept>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Read what is kept: the process's, or in a test build this thread's.
+fn with_kept<T>(read: impl FnOnce(&[Kept]) -> T) -> T {
+    #[cfg(any(test, feature = "fakes"))]
+    return TOLD_HERE.with(|told| read(&told.borrow()));
+    #[cfg(not(any(test, feature = "fakes")))]
+    read(&KEPT.read().unwrap_or_else(|e| e.into_inner()))
+}
+
+struct Kept {
+    kind: &'static str,
+    feeds: Vec<&'static Listed>,
+    /// The login the entry's own id, stored before there were several,
+    /// stands for.
+    legacy: Option<String>,
+}
+
+/// The feed of the login `login`, called `name`, of `kind`, an entry in
+/// [`LISTED`] that is one feed per login: `rithmic@<login>`, "Rithmic
+/// (`name`)". Made once and kept for the life of the process.
+///
+/// Always named after its login, the only one as much as one of several: a
+/// feed's name says which login its data comes through, and does not
+/// change under a chart when a second login is added.
+pub fn login_feed(kind: &'static Listed, login: &str, name: &str) -> &'static Listed {
+    let id = format!("{}{LOGIN_MARK}{login}", kind.kind());
+    let label = match name.trim() {
+        "" => kind.label.to_string(),
+        name => format!("{} ({name})", kind.label),
+    };
+    let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(feed) = made.iter().find(|feed| feed.id == id && feed.label == label) {
+        return feed;
+    }
+    // The same login under another name is the same strings but the label:
+    // its id and login are reused rather than leaked again.
+    let (id, login) = match made.iter().find(|feed| feed.id == id) {
+        Some(feed) => (feed.id, feed.login.unwrap_or_default()),
+        None => {
+            let id: &'static str = Box::leak(id.into_boxed_str());
+            (id, &id[kind.kind().len() + LOGIN_MARK.len_utf8()..])
+        }
+    };
+    let feed: &'static Listed = Box::leak(Box::new(Listed {
+        id,
+        label: Box::leak(label.into_boxed_str()),
+        setup: kind.setup.map(|setup| setup.for_login(login).unwrap_or(setup)),
+        login: Some(login),
+        ..*kind
+    }));
+    made.push(feed);
+    feed
+}
+
+/// The logins `kind` has a feed for now, each `(id, name)` in the order
+/// they were added, and the one `kind`'s own id stands for in what was
+/// stored before there were several — the first, when it is none of them.
+/// Called by the app whenever it reads its logins. A login no longer in the
+/// list is offered no more and forgets what was saved for it, so that
+/// nobody can sign in to its feed: an order or a chart naming it charts
+/// from the rest.
+pub fn remember_login_feeds(kind: &str, logins: &[(String, String)], legacy: Option<&str>) {
+    let Some(entry) = kinds_all().find(|feed| feed.id.eq_ignore_ascii_case(kind) && feed.per_login()) else {
+        return;
+    };
+    let feeds: Vec<&'static Listed> = logins.iter().map(|(id, name)| login_feed(entry, id, name)).collect();
+    let legacy = legacy
+        .filter(|legacy| logins.iter().any(|(id, _)| id == legacy))
+        .or_else(|| logins.first().map(|(id, _)| id.as_str()))
+        .map(str::to_string);
+    let gone: Vec<&'static Listed> = login_feeds(entry.id)
+        .into_iter()
+        .filter(|feed| !feeds.iter().any(|kept| kept.id == feed.id))
+        .collect();
+    for feed in gone {
+        if let Some(setup) = feed.setup {
+            setup.remember(Saved::default());
+        }
+    }
+    let told = Kept { kind: entry.id, feeds, legacy };
+    #[cfg(any(test, feature = "fakes"))]
+    TOLD_HERE.with(|here| {
+        let mut kept = here.borrow_mut();
+        kept.retain(|known| known.kind != entry.id);
+        kept.push(told);
+    });
+    #[cfg(not(any(test, feature = "fakes")))]
+    {
+        let mut kept = KEPT.write().unwrap_or_else(|e| e.into_inner());
+        kept.retain(|known| known.kind != entry.id);
+        kept.push(told);
+    }
+}
+
+/// Forget what this thread was told of the logins' feeds: for a test that
+/// runs on a thread another ran on before it, with a store of its own.
+#[cfg(any(test, feature = "fakes"))]
+pub fn forget_login_feeds() {
+    TOLD_HERE.with(|here| here.borrow_mut().clear());
+}
+
+/// The feeds of one login each kept now for `kind`, in the order of their
+/// logins.
+pub fn login_feeds(kind: &str) -> Vec<&'static Listed> {
+    with_kept(|kept| {
+        kept.iter().find(|known| known.kind.eq_ignore_ascii_case(kind)).map(|known| known.feeds.clone()).unwrap_or_default()
+    })
+}
+
+/// Has the app said which logins `kind` has, with [`remember_login_feeds`],
+/// in this process? Until it has, an id of one login's feed is unknown.
+pub fn told(kind: &str) -> bool {
+    with_kept(|kept| kept.iter().any(|known| known.kind.eq_ignore_ascii_case(kind)))
+}
+
+/// The entry in [`LISTED`], or a fake, with the id `id`, as itself: for a
+/// feed that is one per login, the entry its logins' feeds are made from,
+/// never one of them. What a login's trading service names.
+pub fn entry(id: &str) -> Option<&'static Listed> {
+    kinds_all().find(|feed| feed.id.eq_ignore_ascii_case(id.trim()))
+}
+
+/// The feed of one login with the id `id` made in this process, under the
+/// name it had last: a login's id is never another's, so a feed known once
+/// is that login's for as long as the process runs. Gone from the logins it
+/// is no longer offered, and with nothing saved for it, nobody can sign in
+/// to it; a thread the logins were told on another of finds it all the same.
+fn made(id: &str) -> Option<&'static Listed> {
+    MADE.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find(|feed| feed.id.eq_ignore_ascii_case(id)).copied()
+}
+
+/// The feed `kind`'s own id stands for: the legacy login's, else none.
+fn standing_for(kind: &str) -> Option<&'static Listed> {
+    with_kept(|kept| {
+        let known = kept.iter().find(|known| known.kind.eq_ignore_ascii_case(kind))?;
+        let legacy = known.legacy.as_deref()?;
+        known.feeds.iter().find(|feed| feed.login == Some(legacy)).copied()
+    })
 }
 
 /// What says whether a feature flag is on: the app's, which keeps the
@@ -481,10 +685,30 @@ pub fn open(feed: &Listed) -> bool {
     feed.gate.is_none_or(|flag| GATE.get().is_some_and(|open| open(flag)))
 }
 
-/// [`LISTED`], less the feeds behind a flag that is off: what is offered,
-/// listed and routed to. The table itself is every feed this build has.
-pub fn offered() -> impl Iterator<Item = &'static Listed> {
+/// [`LISTED`], less the feeds behind a flag that is off: the kinds of feed
+/// this build has, a feed that is one per login once. What "Add a trading
+/// service…" and the Data page's "Add a data feed…" choose among.
+pub fn kinds() -> impl Iterator<Item = &'static Listed> {
     LISTED.iter().filter(|feed| open(feed))
+}
+
+/// [`kinds`] and the fakes: every entry an id may name.
+fn kinds_all() -> impl Iterator<Item = &'static Listed> {
+    kinds().chain(FAKES)
+}
+
+/// What is offered, listed and routed to: [`kinds`], with a feed that is
+/// one per login standing for its logins' feeds, in the order of their
+/// logins — and for itself while it has none, which nobody can sign in to
+/// but by adding a login.
+pub fn offered() -> impl Iterator<Item = &'static Listed> {
+    kinds().flat_map(|feed| match feed.per_login() {
+        true => match login_feeds(feed.id) {
+            none if none.is_empty() => vec![feed],
+            theirs => theirs,
+        },
+        false => vec![feed],
+    })
 }
 
 /// What runs when nothing has been chosen.
@@ -574,9 +798,22 @@ pub fn described(feed: &Listed) -> String {
 
 /// The feed with this id, if it is one of ours. Case-insensitive, because a
 /// setting is typed by hand as often as it is clicked.
+///
+/// The id of a feed that is one per login, `rithmic`, is the login's the
+/// app named for it ([`remember_login_feeds`]): what was stored before
+/// there were several, charting from the same login now. With no login it
+/// is the entry itself, which has nobody to sign in with.
 pub fn listed(id: &str) -> Option<&'static Listed> {
     let id = id.trim();
-    every().find(|feed| feed.id.eq_ignore_ascii_case(id))
+    if id.contains(LOGIN_MARK) {
+        let kind = id.split(LOGIN_MARK).next().unwrap_or(id);
+        return login_feeds(kind).into_iter().find(|feed| feed.id.eq_ignore_ascii_case(id)).or_else(|| made(id));
+    }
+    let feed = kinds_all().find(|feed| feed.id.eq_ignore_ascii_case(id))?;
+    match feed.per_login() {
+        true => Some(standing_for(feed.id).unwrap_or(feed)),
+        false => Some(feed),
+    }
 }
 
 /// The feed with this id, built and connected to nothing, or `None` for an
@@ -596,7 +833,8 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
 /// A feed that serves each month of a root has its roots stitched from them
 /// here, by [`crate::continuous`], so every caller gets the same series.
 pub fn built(id: &str) -> Option<Box<dyn Provider>> {
-    Some(crate::continuous::wrapped((listed(id)?.build)()))
+    let feed = listed(id)?;
+    Some(crate::continuous::wrapped((feed.build)(feed)))
 }
 
 /// The feed with this id, or the default for one nobody has heard of. For
@@ -944,7 +1182,7 @@ mod tests {
         assert!(listed("sierra").is_none());
         let ids: Vec<&str> = ordered(&["sierra".to_string()]).iter().map(|p| p.id()).collect();
         assert_eq!(ids, vec![DEFAULT]);
-        assert_eq!((sierra.build)().label(), sierra.label);
+        assert_eq!((sierra.build)(sierra).label(), sierra.label);
     }
 
     /// Two feeds sharing an id would share a cache namespace, and the stored

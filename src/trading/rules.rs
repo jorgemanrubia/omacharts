@@ -266,27 +266,24 @@ pub fn account_label(account: &Account, logins: &[Login], accounts: &[Account]) 
     }
 }
 
-/// How an account is named: its login's name, "Lucid", with the account
-/// number after it only when the name alone would not say which, because
-/// the login holds several accounts or another login has the same name.
-pub fn account_name(account: &Account, logins: &[Login], accounts: &[Account]) -> String {
-    let Some(login) = login_in(logins, &account.login) else {
-        return account.id.clone();
-    };
-    let several = accounts.iter().filter(|other| other.login == account.login).count() > 1;
-    let shared = logins.iter().any(|other| other.id != login.id && other.name == login.name);
-    match several || shared {
-        true => format!("{} {}", login.name, account.id),
-        false => login.name.clone(),
+/// How an account is named: its login's name and its number, "Acme
+/// Futures ACME-0001", always, the only account of a login as much as one
+/// of several: the number is what the trading service and its statements
+/// call the account, and a name that grew a number when a second account
+/// was listed would be a different name for the same account.
+pub fn account_name(account: &Account, logins: &[Login]) -> String {
+    match login_in(logins, &account.login) {
+        Some(login) => format!("{} {}", login.name, account.id),
+        None => account.id.clone(),
     }
 }
 
 /// The feed a chart on `account` is drawn from when nobody chose one: the
-/// account's own login's feed while that login is the data login and the
-/// feed serves `instrument`, else the first feed in the order that serves
-/// it. Whether a feed can be used now does not move it: this is the one
-/// the menu lists first, and a chart falls back from it only for
-/// as long as it cannot be used.
+/// account's own login's feed when it is on the order and serves
+/// `instrument`, else the first feed in the order that serves it. Whether
+/// a feed can be used now does not move it: this is the one the menu lists
+/// first, and a chart falls back from it only for as long as it cannot be
+/// used.
 pub fn default_feed<'a>(
     view: &View,
     account: Option<&Account>,
@@ -298,29 +295,67 @@ pub fn default_feed<'a>(
     })
 }
 
-/// The account's own login's feed, when that login is the data login and
-/// the feed serves `instrument` and can be used.
-fn own_feed<'a>(
+/// The account's own login's feed, when it is on the order, `feeds`, and
+/// serves `instrument` and can be used.
+pub fn own_feed<'a>(
     view: &View,
     account: Option<&Account>,
     feeds: impl IntoIterator<Item = (&'a dyn omacharts_engine::Provider, bool)>,
     instrument: &omacharts_engine::Instrument,
 ) -> Option<&'static str> {
-    let account = account?;
-    if view.data_login.as_deref() != Some(account.login.as_str()) {
-        return None;
-    }
-    let service = &view.login(&account.login)?.service;
+    let own = data_feed_of(view.login(&account?.login)?)?;
     feeds
         .into_iter()
-        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(service))
+        .find(|(provider, _)| provider.id() == own.id)
         .filter(|(provider, usable)| *usable && provider.symbol_for(instrument).is_some())
         .map(|(provider, _)| provider.id())
 }
 
+/// What a chart's chosen feed becomes when its account changes from
+/// `before` to `after`, with `chosen` the feed picked for it, if any, and
+/// `in_force` the one it is drawn from now.
+///
+/// Changing the trading service changes the data with it: a chart moved to
+/// an account of another login, whose own feed is on the order and serves
+/// its instrument, follows that feed, as a chart nobody picked a feed for
+/// does, and so `None`. Picking another feed afterwards is the person's to
+/// do, and stays, as it does across a move between two accounts of the same
+/// login, which changes no service.
+///
+/// With no feed of its own to follow, because the new account's trading
+/// service has none, its feed is off the order or does not serve the
+/// instrument, or the chart goes back to no account at all, the data on
+/// screen stays where it is: a feed picked for the chart stays picked, and
+/// one it was following is picked for it when the order alone would now
+/// draw it from another, so that the chart does not jump.
+pub fn feed_after_switch<'a>(
+    view: &View,
+    before: Option<&Account>,
+    after: Option<&Account>,
+    chosen: Option<&'a str>,
+    in_force: Option<&'a str>,
+    feeds: impl IntoIterator<Item = &'a dyn omacharts_engine::Provider> + Clone,
+    instrument: &omacharts_engine::Instrument,
+) -> Option<String> {
+    if before.map(|account| &account.login) == after.map(|account| &account.login) {
+        return chosen.map(str::to_string);
+    }
+    // Whether it can be used now does not decide whose it is: a feed of
+    // its own not signed in yet is still the one the chart is about.
+    let anyway = feeds.clone().into_iter().map(|provider| (provider, true));
+    if own_feed(view, after, anyway, instrument).is_some() {
+        return None;
+    }
+    if let Some(chosen) = chosen {
+        return Some(chosen.to_string());
+    }
+    let followed = default_feed(view, after, feeds, instrument);
+    in_force.filter(|in_force| Some(*in_force) != followed).map(str::to_string)
+}
+
 /// Which feed a chart on `account` is pointed at: the one `chosen` for it,
-/// else the account's own login's feed while that login is the data login
-/// and the feed can serve `instrument` now. `None` leaves it to the order,
+/// else the account's own login's feed when it is on the order and can
+/// serve `instrument` now. `None` leaves it to the order,
 /// [`omacharts_engine::providers::route`]. The header and the order ticket
 /// both ask this, through the window's one route, so they never disagree.
 pub fn feed_of<'a>(
@@ -360,7 +395,7 @@ pub fn charted_price<'a>(
 }
 
 /// What the Account part says: the account's name, with its trouble
-/// after it when its login is in trouble, "Lucid 1234 signed out".
+/// after it when its login is in trouble, "Acme Futures ACME-0001 signed out".
 pub fn account_text(name: &str, trouble: Option<&str>) -> String {
     match trouble {
         Some(trouble) => format!("{name} {trouble}"),
@@ -427,33 +462,27 @@ mod tests {
     /// The Account part names the account, and its trouble after it.
     #[test]
     fn the_account_part_names_the_account_and_its_trouble() {
-        assert_eq!(account_text("Lucid 1234", None), "Lucid 1234");
-        assert_eq!(account_text("Lucid 1234", Some("signed out")), "Lucid 1234 signed out");
+        assert_eq!(account_text("Acme Futures ACME-0001", None), "Acme Futures ACME-0001");
+        assert_eq!(account_text("Acme Futures ACME-0001", Some("signed out")), "Acme Futures ACME-0001 signed out");
     }
 
-    /// An account goes by its login's name, with its number only when the
-    /// name alone would not say which: the login holds several, or another
-    /// login has the same name.
+    /// An account goes by its login's name and its number, always: the
+    /// only account of a login as much as one of several.
     #[test]
-    fn an_account_is_named_by_its_login() {
-        let rithmic = test_login("a", "Rithmic", TEST_SYSTEM);
-        let lucid = test_login("b", "Lucid", "LucidTrading");
-        let a951 = account("a", "951");
-        let b1234 = account("b", "1234");
-        let b1235 = account("b", "1235");
+    fn an_account_is_named_by_its_login_and_its_number() {
+        let acme = test_login("a", "Acme Futures", TEST_SYSTEM);
+        let demo = test_login("b", "Demo Prop", TEST_SYSTEM);
+        let only = account("a", "ACME-0001");
+        let first = account("b", "DEMO-1234");
+        let second = account("b", "DEMO-5678");
 
-        assert_eq!(account_name(&a951, std::slice::from_ref(&rithmic), std::slice::from_ref(&a951)), "Rithmic");
-        let logins = [rithmic.clone(), lucid.clone()];
-        let accounts = [a951.clone(), b1234.clone(), b1235.clone()];
-        assert_eq!(account_name(&a951, &logins, &accounts), "Rithmic");
-        assert_eq!(account_name(&b1234, &logins, &accounts), "Lucid 1234");
-        assert_eq!(account_name(&b1235, &logins, &accounts), "Lucid 1235");
-        // Two logins called the same.
-        let twin = Login { id: "c".into(), ..rithmic.clone() };
-        let c7 = account("c", "7");
-        assert_eq!(account_name(&a951, &[rithmic, twin], &[a951.clone(), c7.clone()]), "Rithmic 951");
+        assert_eq!(account_name(&only, std::slice::from_ref(&acme)), "Acme Futures ACME-0001");
+        let logins = [acme.clone(), demo.clone()];
+        assert_eq!(account_name(&only, &logins), "Acme Futures ACME-0001");
+        assert_eq!(account_name(&first, &logins), "Demo Prop DEMO-1234");
+        assert_eq!(account_name(&second, &logins), "Demo Prop DEMO-5678");
         // A login that is gone: the number is all there is.
-        assert_eq!(account_name(&c7, &[lucid], std::slice::from_ref(&c7)), "7");
+        assert_eq!(account_name(&first, &[acme]), "DEMO-1234");
     }
 
     /// The header calls an account by its number, and by its login too
@@ -476,43 +505,92 @@ mod tests {
         assert_eq!(account_label(&sim_r, &logins, &accounts), "Sim1 · Rithmic");
     }
 
-    /// A chart's feed: the one chosen for it; else its account's own,
-    /// while that account's login is the data login and the feed serves the
-    /// instrument and can be used; else the order decides. The default the
-    /// popover marks is the account's own whether or not it can be used
-    /// now, and the order's first that serves it otherwise.
+    /// Two logins' own feeds, `rithmic@a` and `rithmic@b`, as the app tells
+    /// the engine of them, built.
+    fn two_logins_feeds() -> (View, Box<dyn omacharts_engine::Provider>, Box<dyn omacharts_engine::Provider>) {
+        use omacharts_engine::providers::{built, remember_login_feeds};
+        let logins = [("a".to_string(), "Acme Futures".to_string()), ("b".to_string(), "Demo Prop".to_string())];
+        remember_login_feeds("rithmic", &logins, None);
+        let view = View {
+            logins: vec![test_login("a", "Acme Futures", TEST_SYSTEM), test_login("b", "Demo Prop", TEST_SYSTEM)],
+            accounts: vec![account("a", "ACME-0001"), account("b", "DEMO-1234"), account("b", "DEMO-5678")],
+            ..View::default()
+        };
+        (view, built("rithmic@a").expect("Acme's feed"), built("rithmic@b").expect("Demo's feed"))
+    }
+
+    /// A chart's feed: the one chosen for it; else its account's own login's,
+    /// while that is on the order and serves the instrument and can be
+    /// used; else the order decides. The default the popover marks is the
+    /// account's own whether or not it can be used now, and the order's
+    /// first that serves it otherwise.
     #[test]
     fn a_charts_feed_is_its_own_the_accounts_or_the_order() {
         use omacharts_engine::providers::built;
         use omacharts_engine::InstrumentKind;
         let yahoo = built("yahoo").expect("Yahoo");
-        let rithmic = built("rithmic").expect("Rithmic");
+        let (view, acme, demo) = two_logins_feeds();
+        assert_eq!((acme.id(), acme.label()), ("rithmic@a", "Rithmic (Acme Futures)"));
         let es = instrument("ES", InstrumentKind::FutureRoot);
         let spy = instrument("SPY", InstrumentKind::Etf);
-        assert!(rithmic.symbol_for(&spy).is_none() && rithmic.symbol_for(&es).is_some());
-        let data = account("a", "951");
-        let other = account("b", "1234");
-        let view = View {
-            logins: vec![test_login("a", "Rithmic", TEST_SYSTEM), test_login("b", "Lucid", "LucidTrading")],
-            accounts: vec![data.clone(), other.clone()],
-            data_login: Some("a".into()),
-            ..View::default()
-        };
+        assert!(acme.symbol_for(&spy).is_none() && acme.symbol_for(&es).is_some());
+        let (on_acme, on_demo) = (account("a", "ACME-0001"), account("b", "DEMO-1234"));
         // Yahoo on top of the order, so the account's own is seen to win.
-        let order = |rithmic_usable: bool| [(yahoo.as_ref(), true), (rithmic.as_ref(), rithmic_usable)];
-        let plain = [yahoo.as_ref(), rithmic.as_ref()];
+        // Demo Prop's feed is not on it.
+        let order = |usable: bool| [(yahoo.as_ref(), true), (acme.as_ref(), usable)];
+        let plain = [yahoo.as_ref(), acme.as_ref()];
 
-        assert_eq!(feed_of(&view, Some(&data), Some("yahoo"), order(true), &es), Some("yahoo"), "chosen wins");
-        assert_eq!(feed_of(&view, Some(&data), None, order(true), &es), Some("rithmic"), "the account's own");
-        assert_eq!(feed_of(&view, Some(&data), None, order(false), &es), None, "falls back to the order");
-        assert_eq!(feed_of(&view, Some(&data), None, order(true), &spy), None, "its own does not serve it");
-        assert_eq!(feed_of(&view, Some(&other), None, order(true), &es), None, "not the data login");
+        assert_eq!(feed_of(&view, Some(&on_acme), Some("yahoo"), order(true), &es), Some("yahoo"), "chosen wins");
+        assert_eq!(feed_of(&view, Some(&on_acme), None, order(true), &es), Some("rithmic@a"), "the account's own");
+        assert_eq!(feed_of(&view, Some(&on_acme), None, order(false), &es), None, "falls back to the order");
+        assert_eq!(feed_of(&view, Some(&on_acme), None, order(true), &spy), None, "its own does not serve it");
+        assert_eq!(feed_of(&view, Some(&on_demo), None, order(true), &es), None, "its own is not on the order");
         assert_eq!(feed_of(&view, None, None, order(true), &es), None, "no account");
+        let both = [(yahoo.as_ref(), true), (acme.as_ref(), true), (demo.as_ref(), true)];
+        assert_eq!(feed_of(&view, Some(&on_demo), None, both, &es), Some("rithmic@b"), "each login its own");
 
-        assert_eq!(default_feed(&view, Some(&data), plain, &es), Some("rithmic"));
-        assert_eq!(default_feed(&view, Some(&data), plain, &spy), Some("yahoo"), "the order's pick");
-        assert_eq!(default_feed(&view, Some(&other), plain, &es), Some("yahoo"));
-        assert_eq!(default_feed(&view, None, [rithmic.as_ref(), yahoo.as_ref()], &es), Some("rithmic"));
+        assert_eq!(default_feed(&view, Some(&on_acme), plain, &es), Some("rithmic@a"));
+        assert_eq!(default_feed(&view, Some(&on_acme), plain, &spy), Some("yahoo"), "the order's pick");
+        assert_eq!(default_feed(&view, Some(&on_demo), plain, &es), Some("yahoo"));
+        assert_eq!(default_feed(&view, None, [acme.as_ref(), yahoo.as_ref()], &es), Some("rithmic@a"));
+    }
+
+    /// Moving a chart to an account of another login moves its data to that
+    /// login's feed, over a feed picked for it; between two accounts of one
+    /// login, nothing moves. With no feed of the new login's to follow, the
+    /// data stays where it was.
+    #[test]
+    fn a_chart_moved_to_another_login_follows_its_feed() {
+        use omacharts_engine::providers::built;
+        use omacharts_engine::InstrumentKind;
+        let yahoo = built("yahoo").expect("Yahoo");
+        let (view, acme, demo) = two_logins_feeds();
+        let es = instrument("ES", InstrumentKind::FutureRoot);
+        let spy = instrument("SPY", InstrumentKind::Etf);
+        let (on_acme, on_demo, on_demo_too) =
+            (account("a", "ACME-0001"), account("b", "DEMO-1234"), account("b", "DEMO-5678"));
+        let all = [yahoo.as_ref(), acme.as_ref(), demo.as_ref()];
+        let without_demo = [yahoo.as_ref(), acme.as_ref()];
+        let after = |before, after, chosen, in_force, feeds: &[&dyn omacharts_engine::Provider], instrument| {
+            feed_after_switch(&view, before, after, chosen, in_force, feeds.iter().copied(), instrument)
+        };
+
+        // Another login whose feed is on the order: its feed, picked or not.
+        assert_eq!(after(Some(&on_acme), Some(&on_demo), None, Some("rithmic@a"), &all, &es), None);
+        assert_eq!(after(Some(&on_acme), Some(&on_demo), Some("rithmic@a"), Some("rithmic@a"), &all, &es), None);
+        assert_eq!(after(None, Some(&on_demo), Some("yahoo"), Some("yahoo"), &all, &es), None);
+        // The same login: whatever was picked stays.
+        assert_eq!(after(Some(&on_demo), Some(&on_demo_too), Some("yahoo"), Some("yahoo"), &all, &es).as_deref(), Some("yahoo"));
+        assert_eq!(after(Some(&on_demo), Some(&on_demo_too), None, Some("rithmic@b"), &all, &es), None);
+        // Nothing of the new login's to follow: what was picked stays, and
+        // the feed in force is pinned where the order would move it.
+        assert_eq!(after(Some(&on_acme), Some(&on_demo), Some("yahoo"), Some("yahoo"), &without_demo, &es).as_deref(), Some("yahoo"));
+        assert_eq!(
+            after(Some(&on_acme), Some(&on_demo), None, Some("rithmic@a"), &without_demo, &es).as_deref(),
+            Some("rithmic@a"),
+        );
+        assert_eq!(after(Some(&on_acme), Some(&on_demo), None, Some("yahoo"), &all, &spy), None, "the order draws it the same");
+        assert_eq!(after(Some(&on_acme), None, None, Some("rithmic@a"), &all, &es).as_deref(), Some("rithmic@a"));
     }
 
     /// A long closes by selling and a short by buying back; its target is
@@ -704,8 +782,8 @@ mod tests {
         };
         let found = target(true, &es).unwrap();
         assert_eq!((found.contract.as_str(), found.account.id.as_str()), ("ESZ6", "951"));
-        assert_eq!(target(true, &aapl).unwrap_err(), "AAPL is not tradable on Rithmic Test");
-        assert_eq!(target(false, &es).unwrap_err(), "Rithmic Test not signed in");
+        assert_eq!(target(true, &aapl).unwrap_err(), "AAPL is not tradable on Rithmic Test 951");
+        assert_eq!(target(false, &es).unwrap_err(), "Rithmic Test 951 not signed in");
         let nq = instrument("NQ", InstrumentKind::FutureRoot);
         assert_eq!(target(true, &nq).unwrap_err(), "Finding NQ's contract…");
         let unlisted = View { accounts: Vec::new(), ..view.clone() };

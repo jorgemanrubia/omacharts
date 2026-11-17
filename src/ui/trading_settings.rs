@@ -31,11 +31,6 @@ use crate::trading::{self, Account, Desk, Login, Standing};
 use crate::ui::chart::LabelSide;
 use crate::ui::sign_in_dialogs;
 
-/// What a login's data feed is called, in a sentence about it.
-fn feed_label(login: &Login) -> &'static str {
-    trading::data_feed_of(login).map_or("broker", |feed| feed.label)
-}
-
 /// The keyring a trading service keeps its passwords in.
 struct Keyring(Option<&'static dyn Secrets>);
 
@@ -214,15 +209,14 @@ fn rebuild(panel: &Rc<Panel>) {
     }
     let logins = trading::logins(&panel.store);
     let accounts = trading::accounts(&panel.store);
-    let data = trading::data_login_id(&panel.store, &logins);
     let default = trading::default_account(&accounts, panel.store.setting(trading::DEFAULT_ACCOUNT).as_deref())
         .map(Account::key);
     let accounts_group = adw::PreferencesGroup::new();
     accounts_group.set_title("Trading services");
     for login in &logins {
         let theirs: Vec<&Account> = accounts.iter().filter(|account| account.login == login.id).collect();
-        let is_data = data.as_deref() == Some(login.id.as_str());
-        accounts_group.add(&login_row(panel, login, is_data, logins.len() > 1, &theirs, default.as_deref()));
+        let fed = trading::feeds_charts(&panel.store, login);
+        accounts_group.add(&login_row(panel, login, fed, &theirs, default.as_deref()));
     }
     accounts_group.add(&add_button(panel));
     let mut groups = vec![accounts_group];
@@ -237,7 +231,8 @@ fn rebuild(panel: &Rc<Panel>) {
 }
 
 /// How a login stands, in words: progress while a sign-in runs, else its
-/// standing, and "data" on the data login.
+/// standing, with `data` while its own data feed is charted from, whose
+/// refusal is the login's to show too.
 fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
     let standing = match panel.notes.borrow().get(&login.id) {
         Some(note) => note.clone(),
@@ -250,9 +245,6 @@ fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
     let mut words: Vec<String> =
         panel.desk.service_for(login).and_then(|service| service.signs_in_to(login)).into_iter().collect();
     words.push(standing);
-    if data {
-        words.push("data".into());
-    }
     words.join(" · ")
 }
 
@@ -261,7 +253,6 @@ fn login_row(
     panel: &Rc<Panel>,
     login: &Login,
     data: bool,
-    several: bool,
     accounts: &[&Account],
     default: Option<&str>,
 ) -> adw::ExpanderRow {
@@ -272,19 +263,6 @@ fn login_row(
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     actions.set_valign(gtk::Align::Center);
-    // Only the data login feeds charts. Another can take over, which ends
-    // the data session and signs charts in through it from then on.
-    if several && !data && trading::data_feed_of(login).is_some() {
-        let feed = gtk::Button::with_label("Use for data");
-        feed.add_css_class("flat");
-        let panel_for_feed = panel.clone();
-        let id = login.id.clone();
-        feed.connect_clicked(move |_| {
-            trading::make_data_login(&panel_for_feed.store, &id);
-            panel_for_feed.changed();
-        });
-        actions.append(&feed);
-    }
     if panel.desk.opening(&login.id) {
         let spinner = gtk::Spinner::new();
         spinner.start();
@@ -530,70 +508,53 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
     panel.changed();
 }
 
-/// Ask before removing a login, saying what becomes of the data feed when
-/// market data came through it: another login takes it over, or the
-/// trader chooses whether the data feed goes too, or it stays
-/// because it is the last data feed.
+/// Ask before removing a login, saying when its own data feed goes with
+/// it.
 fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     let removal = trading::removal(&panel.store, id);
-    let (heading, body) = removal_words(&login.name, feed_label(&login), &removal);
+    let (heading, body) = removal_words(&login.name, &removal);
     let dialog = adw::AlertDialog::new(Some(&heading), body.as_deref());
     dialog.add_response("cancel", "Cancel");
-    match removal {
-        trading::Removal::Ask => {
-            dialog.add_response("keep", "Keep the data feed");
-            dialog.add_response("both", "Remove both");
-            dialog.set_response_appearance("both", adw::ResponseAppearance::Destructive);
-        }
-        _ => {
-            dialog.add_response("remove", "Remove");
-            dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
-        }
-    }
+    dialog.add_response("remove", "Remove");
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
     let panel = panel.clone();
     let id = id.to_string();
-    dialog.connect_response(None, move |_, response| match response {
-        "remove" | "keep" => remove_login(&panel, &id, false),
-        "both" => remove_login(&panel, &id, true),
-        _ => {}
+    dialog.connect_response(None, move |_, response| {
+        if response == "remove" {
+            remove_login(&panel, &id);
+        }
     });
     dialog.present(Some(anchor));
 }
 
 /// The dialog's heading and body, if it has one, for removing the login
 /// `name`.
-fn removal_words(name: &str, feed: &str, removal: &trading::Removal) -> (String, Option<String>) {
+fn removal_words(name: &str, removal: &trading::Removal) -> (String, Option<String>) {
     let body = match removal {
         trading::Removal::Login => None,
-        trading::Removal::HandOver { to } => Some(format!("Charts' {feed} data will come through {to}.")),
-        trading::Removal::Ask => Some("Kept, it stays on the Data page, not signed in.".to_string()),
-        trading::Removal::KeepFeed => {
-            Some(format!("The {feed} data feed stays on the Data page, not signed in: it is the last one."))
+        trading::Removal::Feed { feed } => {
+            Some(format!("Its data feed, {feed}, goes too: charts drawn from it move to the next feed."))
         }
     };
-    let heading = match removal {
-        trading::Removal::Ask => format!("Remove the {feed} data feed too?"),
-        _ => format!("Remove {name}?"),
-    };
-    (heading, body)
+    (format!("Remove {name}?"), body)
 }
 
-fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
+fn remove_login(panel: &Rc<Panel>, id: &str) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.service).as_ref(), id, feed_too) {
+    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.service).as_ref(), id) {
         eprintln!("omacharts: {error}");
         log_words::say(log_words::trouble(&login.name, "Trading service not removed completely", &error));
     }
     panel.changed();
 }
 
-/// Sign a login in through the desk, and for the data login its data
-/// session too. One at a time per login: the desk refuses a second while
+/// Sign a login in through the desk, and while its own data feed is
+/// charted from, its data session too. One at a time per login: the desk refuses a second while
 /// one is open or opening.
 fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
@@ -603,7 +564,7 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
         return rebuild(panel);
     }
     panel.notes.borrow_mut().remove(id);
-    let data = trading::data_login_id(&panel.store, &logins).as_deref() == Some(id);
+    let data = trading::feeds_charts(&panel.store, login);
     if panel.desk.sign_in(login, data) {
         rebuild(panel);
     }
@@ -860,9 +821,9 @@ mod tests {
         });
     }
 
-    /// Two logins with their accounts: each says how it stands, the data
-    /// login says so and the other offers to be it, and every account but
-    /// the default offers to become it.
+    /// Two logins with their accounts: each says how it stands, neither is
+    /// a data login any more, and every account but the default offers to
+    /// become it.
     #[test]
     fn logins_and_their_accounts_are_listed() {
         if omacharts_engine::providers::rithmic::session::development() {
@@ -871,17 +832,17 @@ mod tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
             let kept = Kept::default();
-            let lucid = trading::add_login(&store, &kept, &typed("Lucid")).unwrap();
+            let acme = trading::add_login(&store, &kept, &typed("Acme Futures")).unwrap();
             let test = trading::add_login(&store, &kept, &typed("Rithmic Test")).unwrap();
             let mut funded = crate::trading::Account {
-                login: lucid.clone(),
-                id: "1234".into(),
+                login: acme.clone(),
+                id: "ACME-0001".into(),
                 name: None,
                 currency: Some("USD".into()),
                     balance: Some(50_210.0),
             };
-            let other = crate::trading::Account { id: "1235".into(), balance: None, ..funded.clone() };
-            trading::cache_accounts(&store, &lucid, vec![funded.clone(), other]);
+            let other = crate::trading::Account { id: "ACME-0002".into(), balance: None, ..funded.clone() };
+            trading::cache_accounts(&store, &acme, vec![funded.clone(), other]);
             funded.login = test.clone();
             funded.id = "951".into();
             trading::cache_accounts(&store, &test, vec![funded]);
@@ -896,24 +857,31 @@ mod tests {
             assert!(words_under(groups[1].upcast_ref()).iter().any(|w| w == "Edit quantities…"));
             let rows = login_rows(&panel);
             assert_eq!(rows.len(), 2, "two logins");
-            assert_eq!(rows[0].title(), "Lucid");
-            assert_eq!(rows[0].subtitle(), "Rithmic Test · not signed in · data");
+            assert_eq!(rows[0].title(), "Acme Futures");
+            assert_eq!(rows[0].subtitle(), "Rithmic Test · not signed in");
             assert_eq!(rows[1].subtitle(), "Rithmic Test · not signed in");
-            let lucid_words = words_under(rows[0].upcast_ref());
-            for word in ["1234", "USD · $50,210", "Default", "1235", "Make default", "Sign in", "Remove"] {
-                assert!(lucid_words.iter().any(|w| w == word), "{word} missing: {lucid_words:?}");
+            let acme_words = words_under(rows[0].upcast_ref());
+            for word in ["ACME-0001", "USD · $50,210", "Default", "ACME-0002", "Make default", "Sign in", "Remove"] {
+                assert!(acme_words.iter().any(|w| w == word), "{word} missing: {acme_words:?}");
             }
-            assert!(!lucid_words.iter().any(|w| w == "Use for data"), "{lucid_words:?}");
             let test_words = words_under(rows[1].upcast_ref());
-            assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
+            for words in [&acme_words, &test_words] {
+                assert!(!words.iter().any(|w| w == "Use for data" || w.contains("data")), "{words:?}");
+            }
             assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
             assert!(page_words(&panel).iter().any(|w| w == "Edit quantities…"), "no way to the sizes with a login");
 
-            // Removing the data login hands data to the other, and says so.
-            let (_, body) = removal_words("Lucid", "Rithmic", &trading::removal(&store, &lucid));
-            assert_eq!(body.as_deref(), Some("Charts' Rithmic data will come through Rithmic Test."));
-            remove_login(&panel, &lucid, true);
-            assert_eq!(login_rows(&panel)[0].subtitle(), "Rithmic Test · not signed in · data");
+            // Removing a login says its feed goes with it, and leaves the
+            // other's.
+            let (_, body) = removal_words("Acme Futures", &trading::removal(&store, &acme));
+            assert_eq!(
+                body.as_deref(),
+                Some("Its data feed, Rithmic (Acme Futures), goes too: charts drawn from it move to the next feed.")
+            );
+            remove_login(&panel, &acme);
+            assert_eq!(login_rows(&panel).len(), 1);
+            assert_eq!(login_rows(&panel)[0].subtitle(), "Rithmic Test · not signed in");
+            assert_eq!(crate::feeds::stored_order(&store), vec![format!("rithmic@{test}"), "yahoo".into()]);
         });
     }
 
@@ -940,7 +908,7 @@ mod tests {
                 values: Vec::new(),
             };
             let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
-            assert_eq!(trading::data_login(&store), None, "no data feed to come through it");
+            assert_eq!(trading::removal(&store, &id), trading::Removal::Login, "no data feed of its own");
             assert_eq!(crate::feeds::stored_order(&store), vec!["yahoo"]);
 
             sign_in(&panel, &id);
@@ -1019,22 +987,17 @@ mod tests {
         });
     }
 
-    /// Each way removing a login can go is said in the dialog: nothing
-    /// about data, data handed over, the question with its two answers, and
-    /// the last data feed staying.
+    /// Removing a login says nothing about data when it has no feed on
+    /// the order, and names its feed when that goes with it.
     #[test]
     fn the_dialog_says_what_becomes_of_the_data_feed() {
-        let words = |removal| removal_words("Lucid", "Rithmic", &removal);
-        assert_eq!(words(trading::Removal::Login), ("Remove Lucid?".to_string(), None));
+        let words = |removal| removal_words("Acme Futures", &removal);
+        assert_eq!(words(trading::Removal::Login), ("Remove Acme Futures?".to_string(), None));
+        let feed = trading::Removal::Feed { feed: "Rithmic (Acme Futures)".into() };
+        assert_eq!(words(feed.clone()).0, "Remove Acme Futures?");
         assert_eq!(
-            words(trading::Removal::HandOver { to: "Tradeify".into() }).1.as_deref(),
-            Some("Charts' Rithmic data will come through Tradeify.")
-        );
-        assert_eq!(words(trading::Removal::Ask).0, "Remove the Rithmic data feed too?");
-        assert_eq!(words(trading::Removal::Ask).1.as_deref(), Some("Kept, it stays on the Data page, not signed in."));
-        assert_eq!(
-            words(trading::Removal::KeepFeed).1.as_deref(),
-            Some("The Rithmic data feed stays on the Data page, not signed in: it is the last one.")
+            words(feed).1.as_deref(),
+            Some("Its data feed, Rithmic (Acme Futures), goes too: charts drawn from it move to the next feed.")
         );
     }
 

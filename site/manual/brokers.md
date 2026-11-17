@@ -38,13 +38,13 @@ crop: 792x994 around the dialog
 
 The login is named after its system, such as **Rithmic Paper Trading**, and **Rithmic Paper Trading 2** for a second one. It signs in as soon as you press **Sign in**, and again each time Omacharts starts while its password is kept. The [Log](/manual/window/#the-log) says *Signed in · 3 accounts*, or why not.
 
-A Rithmic login also carries market data. The first one becomes a data feed, at the top of Preferences › Data, so charts of what it trades come from it ([Market data feeds](/manual/market-data/)).
+A Rithmic login also carries market data. Each login becomes a data feed of its own in Preferences › Data, named after it, such as **Rithmic (Rithmic Paper Trading)**; the first login's goes at the top, so charts of what it trades come from it ([Market data feeds](/manual/market-data/)). A chart given an account of another login switches to that login's feed, when it offers the symbol.
 
 Most futures prop firms run their accounts on Rithmic. Choose yours under **System** and sign in with the user it gave you.
 
 ## Logins and accounts
 
-Each login is a row in Preferences › Trading › **Trading services**, with its system and how it stands: *signing in*, *live*, *not signed in*, or Rithmic's own words when it refused. The login charts get their prices from adds *data*.
+Each login is a row in Preferences › Trading › **Trading services**, with its system and how it stands: *signing in*, *live*, *not signed in*, or Rithmic's own words when it refused.
 
 <!-- regenerate:
 theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
@@ -70,8 +70,7 @@ crop: 1956x1528+422+138
 | **Sign out** | Ends the session and forgets the password. The login stays, as not signed in |
 | **Sign in** | Signs in again with the kept password |
 | **Sign in…** | Opens the dialog again, filled in but for the password |
-| **Use for data** | Charts take their prices from this login instead. Offered when there are several |
-| **Remove** | Removes the login, its password and its accounts, after asking. When it is the last login the data feed comes through, it asks whether the feed goes too |
+| **Remove** | Removes the login, its password, its accounts and its data feed, after asking |
 
 Under each login are its accounts, each with its currency and balance. One account is the **Default**: a chart trades on it until you give the chart one of its own. **Make default** on another moves it.
 

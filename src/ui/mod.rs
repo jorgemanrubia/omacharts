@@ -75,6 +75,9 @@ pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
                     // Each test starts with the flags as they ship, whatever
                     // the one before switched on.
                     crate::features::reset();
+                    // And with no logins' feeds told, whatever the one before
+                    // had: every test has a store of its own.
+                    omacharts_engine::providers::forget_login_feeds();
                     let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(test)));
                 }
             })

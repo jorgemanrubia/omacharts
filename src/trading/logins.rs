@@ -1,5 +1,5 @@
-//! What is stored: the logins, their accounts as last listed, the default
-//! account and the data login, and changing them.
+//! What is stored: the logins, their accounts as last listed and the
+//! default account, and changing them.
 //!
 //! A login names its trading service, and whatever is particular to that trading service —
 //! where its password goes, which data feed its data comes through — is
@@ -15,8 +15,10 @@ use crate::store::Store;
 /// The logins, as a JSON list in the order they were added.
 pub const LOGINS: &str = "logins";
 
-/// The id of the login market data comes through. Missing, or naming a
-/// login that is gone, is the first login with a data feed.
+/// The id of the login market data came through when there was one such
+/// login, before each login had a data feed of its own. Read, never
+/// written: what a feed stored then by its own id alone stands for. See
+/// [`legacy_login_id`].
 pub const DATA_LOGIN: &str = "data_login";
 
 /// Every login's accounts as last listed, balances included.
@@ -113,20 +115,24 @@ pub(crate) fn login_in<'a>(logins: &'a [Login], id: &str) -> Option<&'a Login> {
     logins.iter().find(|login| login.id == id)
 }
 
-/// The data feed `login`'s market data comes through, when its trading service has
-/// one: the feed listed under the trading service's id whose login is a trading service
-/// connection.
+/// The data feed of `login`'s own, when its trading service has one: one
+/// per login, "Rithmic (Acme Futures)", its market data signed in with that
+/// login alone.
 pub fn data_feed_of(login: &Login) -> Option<&'static Listed> {
-    providers::listed(&login.service).filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
+    let kind = providers::entry(&login.service).filter(|feed| feed.per_login())?;
+    Some(providers::login_feed(kind, &login.id, &login.name))
 }
 
 fn sign_in_of(login: &Login) -> Option<&'static dyn SignIn> {
     data_feed_of(login).and_then(|feed| feed.setup)
 }
 
-/// The id of the data login: the one chosen if it is still there, else the
-/// first whose trading service has a data feed.
-pub fn data_login_id(store: &Store, logins: &[Login]) -> Option<String> {
+/// The login a feed stored by its own id alone, `rithmic`, before each
+/// login had one, stands for: the data login chosen then, if it is still
+/// there, else the first login with a data feed, which was the data login
+/// when none was chosen. An order, or a chart, saved then charts through
+/// the same login now.
+pub fn legacy_login_id(store: &Store, logins: &[Login]) -> Option<String> {
     let chosen = store.setting(DATA_LOGIN);
     let feeds_data = |login: &&Login| data_feed_of(login).is_some();
     chosen
@@ -134,11 +140,10 @@ pub fn data_login_id(store: &Store, logins: &[Login]) -> Option<String> {
         .or_else(|| logins.iter().find(feeds_data).map(|login| login.id.clone()))
 }
 
-/// The login market data comes through, if there is one.
-pub fn data_login(store: &Store) -> Option<Login> {
-    let logins = logins(store);
-    let id = data_login_id(store, &logins)?;
-    login_in(&logins, &id).cloned()
+/// Is `login`'s own feed on the order of data feeds: charted from, so
+/// that its data session, and anything it was refused, is the charts'?
+pub fn feeds_charts(store: &Store, login: &Login) -> bool {
+    data_feed_of(login).is_some_and(|feed| crate::feeds::stored_order(store).iter().any(|id| id == feed.id))
 }
 
 /// Every login's accounts, as last listed, in the order of the logins.
@@ -241,26 +246,25 @@ fn keep_password(secrets: &dyn Secrets, login: &Login, password: &str) -> Result
     service_for(&login.service).ok_or_else(|| no_service(login))?.keep_password(secrets, login, password)
 }
 
-/// Forget `login`'s password; for the data login, end its data session
-/// too.
-fn forget_password(secrets: &dyn Secrets, login: &Login, data: bool) -> Result<(), String> {
+/// Forget `login`'s password, and end its data session too.
+fn forget_password(secrets: &dyn Secrets, login: &Login) -> Result<(), String> {
     match service_for(&login.service) {
-        Some(service) => service.forget_password(secrets, login, data),
+        Some(service) => service.forget_password(secrets, login, true),
         None => Ok(()),
     }
 }
 
-/// The data login is another now, or none: the data session signed in
-/// through the one before, `login`'s, ends.
+/// `login`'s data session ends: its feed is not charted from any more.
 fn hand_over(login: &Login) {
     if let Some(setup) = sign_in_of(login) {
         setup.hand_over();
     }
 }
 
-/// Add a login, its password into `secrets`. The first with a data feed is
-/// the data login, and puts its feed on top of the data feeds; any other
-/// adds its trading service's feed if it is not there. Returns its id.
+/// Add a login, its password into `secrets`, and its data feed to the
+/// order: one of its own, on top for the first of its kind and after the
+/// others for any other, or its trading service's if it is not there.
+/// Returns its id.
 pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<String, String> {
     let mut logins = kept(store);
     let mut login = Login {
@@ -273,23 +277,21 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
     };
     typed_into(&mut login, typed, &self::logins(store));
     crate::log_words::conceal_logins(std::slice::from_ref(&login));
-    let first = data_login_id(store, &logins).is_none();
-    let feed = data_feed_of(&login);
     let id = login.id.clone();
     let kept = keep_password(secrets, &login, &typed.password);
     logins.push(login.clone());
     save_logins(store, &logins);
-    if first && let Some(feed) = feed {
-        store.set_setting(DATA_LOGIN, &id);
-        crate::feeds::put_on_top(store, feed);
-    }
+    // Before the order is read: an order naming a feed of its kind alone,
+    // stored before there were several, reads as the first login's.
+    crate::feeds::remember_logins(store);
     crate::feeds::follow_service(store, &login);
     crate::feeds::remember_logins(store);
     kept.map(|_| id)
 }
 
 /// Retype a login: what the dialog had when somebody signed it in again. An
-/// empty password keeps the one the keyring holds.
+/// empty password keeps the one the keyring holds. A new name renames its
+/// feed, whose id stays.
 pub fn retype_login(store: &Store, secrets: &dyn Secrets, id: &str, typed: &Typed) -> Result<(), String> {
     let mut logins = kept(store);
     let others = self::logins(store);
@@ -304,14 +306,13 @@ pub fn retype_login(store: &Store, secrets: &dyn Secrets, id: &str, typed: &Type
 }
 
 /// Sign a login out: its password leaves the keyring, and it stays listed,
-/// signed out, with its accounts. The data login's data session ends too.
+/// signed out, with its accounts. Its data session ends too.
 pub fn sign_out_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<(), String> {
     let mut logins = kept(store);
-    let data = data_login_id(store, &logins);
     let Some(login) = logins.iter_mut().find(|login| login.id == id) else { return Ok(()) };
     // The login is named rather than read back from what the engine was
-    // last told: that is the process's, and another test's beside this one.
-    let forgotten = forget_password(secrets, login, data.as_deref() == Some(id));
+    // last told.
+    let forgotten = forget_password(secrets, login);
     login.signed_out = true;
     save_logins(store, &logins);
     crate::feeds::remember_logins(store);
@@ -330,64 +331,46 @@ pub fn mark_signed_out(store: &Store, id: &str) {
     }
 }
 
-/// Make `id` the login market data comes through. The data session signed
-/// in through the one before ends, and the next chart signs in through this.
-pub fn make_data_login(store: &Store, id: &str) {
+/// Put the login `id`'s own data feed on top of the order, adding it if it
+/// was taken off: what was "the data login" when there could be one, and
+/// is now one feed among the others. False for a login with no feed.
+pub fn feed_on_top(store: &Store, id: &str) -> bool {
     let logins = logins(store);
-    let before = data_login_id(store, &logins);
-    let Some(login) = login_in(&logins, id).filter(|login| data_feed_of(login).is_some()) else { return };
-    if before.as_deref() == Some(id) {
-        return;
-    }
-    store.set_setting(DATA_LOGIN, id);
-    hand_over(before.as_deref().and_then(|before| login_in(&logins, before)).unwrap_or(login));
-    crate::feeds::remember_logins(store);
+    let Some(feed) = login_in(&logins, id).and_then(data_feed_of) else { return false };
+    crate::feeds::put_on_top(store, feed);
+    true
 }
 
-/// What removing a login does to its data feed, which the dialog asking to
-/// remove it says.
+/// What removing a login does to the data feeds, which the dialog asking
+/// to remove it says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Removal {
-    /// Not the data login: the data feed is not touched.
+    /// Its trading service has no feed of its own, or its feed is not on
+    /// the order: the data feeds are not touched.
     Login,
-    /// The data login, and another login takes the data over: this one.
-    HandOver { to: String },
-    /// The data login, and the last: whether its data feed goes too is
-    /// asked.
-    Ask,
-    /// The data login, the last, and its feed is the last data feed, which
-    /// cannot be removed: it stays, not signed in.
-    KeepFeed,
+    /// Its own data feed, called `feed`, goes with it, which charts drawn
+    /// from it notice: they chart from the next feed that serves them.
+    Feed { feed: String },
 }
 
-/// What removing the login `id` would do to the data feed.
+/// What removing the login `id` would do to the data feeds.
 pub fn removal(store: &Store, id: &str) -> Removal {
     let logins = logins(store);
-    if data_login_id(store, &logins).as_deref() != Some(id) {
-        return Removal::Login;
-    }
-    let Some(feed) = login_in(&logins, id).and_then(data_feed_of) else { return Removal::Login };
-    if let Some(next) = logins.iter().find(|login| login.id != id && data_feed_of(login).is_some()) {
-        return Removal::HandOver { to: next.name.clone() };
-    }
-    let fed = crate::feeds::stored_order(store).iter().any(|known| known.eq_ignore_ascii_case(feed.id));
-    match fed && crate::feeds::removable(store, feed.id) {
-        true => Removal::Ask,
-        false => Removal::KeepFeed,
+    match login_in(&logins, id).filter(|login| feeds_charts(store, login)).and_then(data_feed_of) {
+        Some(feed) => Removal::Feed { feed: feed.label.to_string() },
+        None => Removal::Login,
     }
 }
 
-/// Remove a login, its password and its accounts. If market data came
-/// through it, it comes through the next login now; with none left its data
-/// feed goes too when `feed_too` says so and it is not the last data feed,
-/// and otherwise stays, not signed in, to be signed in again.
-pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str, feed_too: bool) -> Result<(), String> {
-    let decided = removal(store, id);
+/// Remove a login, its password, its accounts and its own data feed, which
+/// has nothing to sign in with after it: its charts chart from the next
+/// feed that serves them, and with no feed left, from the default.
+pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<(), String> {
     let mut logins = kept(store);
     let Some(at) = logins.iter().position(|login| login.id == id) else { return Ok(()) };
-    let was_data = decided != Removal::Login;
     let login = logins.remove(at);
-    let forgotten = forget_password(secrets, &login, was_data);
+    let forgotten = forget_password(secrets, &login);
+    let own = data_feed_of(&login);
     save_logins(store, &logins);
 
     let mut accounts = accounts(store);
@@ -396,24 +379,12 @@ pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str, feed_too: bo
     if store.setting(DEFAULT_ACCOUNT).is_some_and(|key| key.split_once('/').is_some_and(|(login, _)| login == id)) {
         store.remove_setting(DEFAULT_ACCOUNT);
     }
-
-    match decided {
-        Removal::Login => {}
-        Removal::HandOver { .. } => {
-            if let Some(next) = logins.iter().find(|login| data_feed_of(login).is_some()) {
-                store.set_setting(DATA_LOGIN, &next.id);
-            }
-            hand_over(&login);
-        }
-        Removal::Ask | Removal::KeepFeed => {
-            store.remove_setting(DATA_LOGIN);
-            match (decided == Removal::Ask && feed_too, data_feed_of(&login)) {
-                (true, Some(feed)) => {
-                    crate::feeds::remove_feed(store, feed.id);
-                }
-                _ => hand_over(&login),
-            }
-        }
+    if store.setting(DATA_LOGIN).as_deref() == Some(id) {
+        store.remove_setting(DATA_LOGIN);
+    }
+    match own {
+        Some(feed) => crate::feeds::drop_feed(store, feed.id),
+        None => hand_over(&login),
     }
     crate::feeds::remember_logins(store);
     forgotten
@@ -427,129 +398,117 @@ mod tests {
     use std::sync::Arc;
 
     /// Adding a login keeps its password under its own id and nowhere in a
-    /// setting. The first is the data login and puts Rithmic on top of the
-    /// data feeds, above one already there.
+    /// setting, and brings its own data feed: the first on top of the
+    /// order, above a feed already there, and a second after the others.
     #[test]
-    fn the_first_login_is_the_data_login_and_puts_rithmic_on_top() {
+    fn each_login_brings_its_own_feed_and_the_first_goes_on_top() {
         if skip() {
             return;
         }
         let store = store();
         crate::feeds::add_feed(&store, "tos");
         let kept = Kept::default();
-        let lucid = add_login(&store, &kept, &typed("Lucid", "trader")).unwrap();
-        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
-        assert_eq!(data_login(&store).map(|l| l.id), Some(lucid.clone()));
-        assert_eq!(kept.0.borrow().as_slice(), &[(lucid.clone(), "PLANTED-PASSWORD".to_string())]);
+        let acme = add_login(&store, &kept, &typed("Acme Futures", "trader")).unwrap();
+        let acme_feed = format!("rithmic@{acme}");
+        assert_eq!(crate::feeds::stored_order(&store), vec![acme_feed.as_str(), "tos", "yahoo"]);
+        assert_eq!(kept.0.borrow().as_slice(), &[(acme.clone(), "PLANTED-PASSWORD".to_string())]);
         assert!(!store.setting(LOGINS).unwrap().contains("PLANTED"));
         let login = &logins(&store)[0];
-        assert_eq!((login.name.as_str(), login.value("system")), ("Lucid", Some(TEST_SYSTEM)));
+        assert_eq!((login.name.as_str(), login.value("system")), ("Acme Futures", Some(TEST_SYSTEM)));
         assert!(!format!("{login:?}").contains("trader"), "a user ID in Debug");
+        let feed = data_feed_of(login).expect("a feed of its own");
+        assert_eq!((feed.id, feed.label), (acme_feed.as_str(), "Rithmic (Acme Futures)"));
 
-        // A second login is not the data login, and leaves the order alone.
-        crate::feeds::save_order(&store, &["tos".into(), "rithmic".into()]);
-        let tradeify = add_login(&store, &kept, &typed("", "other")).unwrap();
-        assert_ne!(tradeify, lucid);
-        assert_eq!(data_login(&store).map(|l| l.id), Some(lucid));
-        assert_eq!(crate::feeds::stored_order(&store), vec!["tos", "rithmic"]);
+        let other = add_login(&store, &kept, &typed("", "other")).unwrap();
+        assert_ne!(other, acme);
+        let other_feed = format!("rithmic@{other}");
+        assert_eq!(crate::feeds::stored_order(&store), vec![acme_feed.as_str(), "tos", other_feed.as_str(), "yahoo"]);
         assert_eq!(logins(&store)[1].name, "Rithmic Test", "no name is what its system is called");
+        assert_eq!(omacharts_engine::providers::listed(&other_feed).map(|feed| feed.label), Some("Rithmic (Rithmic Test)"));
+        assert_eq!(store.setting(DATA_LOGIN), None, "no login is the data login");
     }
 
-    /// Exactly one login is the data login, whichever was picked, and the
-    /// engine signs charts in through it alone.
+    /// Each login's feed is handed that login and nobody else's, and a feed
+    /// stored by the service's name alone, before there were several, reads
+    /// as the login that was the data login then.
     #[test]
-    fn one_login_is_the_data_login_and_the_session_signs_in_through_it() {
+    fn each_feed_is_handed_its_own_login() {
         if skip() {
             return;
         }
         let store = store();
         let kept = Kept::default();
-        let lucid = add_login(&store, &kept, &typed("Lucid", "lucid-user")).unwrap();
-        let test = add_login(&store, &kept, &typed("Rithmic Test", "test-user")).unwrap();
-        // What the engine is handed, rather than what it holds: that is
-        // one per process, and other tests hand it theirs.
-        let through = || crate::feeds::saved_of(&store).login.unwrap_or_default();
-        assert_eq!(through(), lucid);
-        make_data_login(&store, &test);
-        assert_eq!(data_login_id(&store, &logins(&store)), Some(test.clone()));
-        assert_eq!(through(), test);
-        make_data_login(&store, "gone");
-        assert_eq!(data_login_id(&store, &logins(&store)), Some(test.clone()), "only a login there is");
-        // A stored choice that names nobody is the first login.
-        store.set_setting(DATA_LOGIN, "nobody");
-        assert_eq!(data_login_id(&store, &logins(&store)), Some(lucid));
+        let acme = add_login(&store, &kept, &typed("Acme Futures", "acme-user")).unwrap();
+        let demo = add_login(&store, &kept, &typed("Demo Prop", "demo-user")).unwrap();
+        assert_eq!(crate::feeds::saved_of(&store, &acme).user.as_deref(), Some("acme-user"));
+        assert_eq!(crate::feeds::saved_of(&store, &demo).user.as_deref(), Some("demo-user"));
+        assert_eq!(crate::feeds::saved_of(&store, &demo).login.as_deref(), Some(demo.as_str()));
+        assert_eq!(crate::feeds::saved_of(&store, "gone"), Default::default());
+
+        store.set_setting(crate::feeds::SETTING, r#"["rithmic","yahoo"]"#);
+        assert_eq!(crate::feeds::stored_order(&store), vec![format!("rithmic@{acme}"), "yahoo".into()], "the first");
+        store.set_setting(DATA_LOGIN, &demo);
+        crate::feeds::remember_logins(&store);
+        assert_eq!(crate::feeds::stored_order(&store), vec![format!("rithmic@{demo}"), "yahoo".into()], "the data login");
+        assert_eq!(crate::feeds::current_id(&store, "rithmic"), format!("rithmic@{demo}"));
+        assert_eq!(crate::feeds::current_id(&store, "tos"), "tos");
+
+        assert!(feed_on_top(&store, &acme));
+        assert_eq!(crate::feeds::stored_order(&store), vec![format!("rithmic@{acme}"), format!("rithmic@{demo}"), "yahoo".into()]);
+        assert!(!feed_on_top(&store, "gone"));
     }
 
-    /// Removing the data login hands data to the next one, with nothing to
-    /// ask. Each takes its accounts and its password with it.
+    /// Removing a login takes its feed off the order and leaves the others'
+    /// alone, with its accounts, its default account and its password.
     #[test]
-    fn removing_the_data_login_hands_data_to_another() {
+    fn removing_a_login_takes_its_feed_with_it() {
         if skip() {
             return;
         }
         let store = store();
         let kept = Kept::default();
-        let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
-        let test = add_login(&store, &kept, &typed("Rithmic Test", "b")).unwrap();
-        cache_accounts(&store, &lucid, vec![account(&lucid, "1234"), account(&lucid, "1235")]);
-        cache_accounts(&store, &test, vec![account(&test, "951")]);
-        set_default_account(&store, &format!("{lucid}/1235"));
+        let acme = add_login(&store, &kept, &typed("Acme Futures", "a")).unwrap();
+        let demo = add_login(&store, &kept, &typed("Demo Prop", "b")).unwrap();
+        cache_accounts(&store, &acme, vec![account(&acme, "ACME-0001")]);
+        cache_accounts(&store, &demo, vec![account(&demo, "DEMO-1234"), account(&demo, "DEMO-5678")]);
+        set_default_account(&store, &format!("{acme}/ACME-0001"));
+        store.set_setting(DATA_LOGIN, &acme);
 
-        assert_eq!(removal(&store, &test), Removal::Login, "not the data login");
-        assert_eq!(removal(&store, &lucid), Removal::HandOver { to: "Rithmic Test".into() });
-        remove_login(&store, &kept, &lucid, true).unwrap();
-        assert_eq!(data_login(&store).map(|l| l.id), Some(test.clone()));
-        assert_eq!(accounts(&store).iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["951"]);
+        assert_eq!(removal(&store, &acme), Removal::Feed { feed: "Rithmic (Acme Futures)".into() });
+        remove_login(&store, &kept, &acme).unwrap();
+        assert_eq!(accounts(&store).iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["DEMO-1234", "DEMO-5678"]);
         assert_eq!(store.setting(DEFAULT_ACCOUNT), None, "the default went with its login");
-        assert_eq!(kept.0.borrow().iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), vec![test.clone()]);
-        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "yahoo"], "the feed stays, through the other");
+        assert_eq!(store.setting(DATA_LOGIN), None);
+        assert_eq!(kept.0.borrow().iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), vec![demo.clone()]);
+        assert_eq!(crate::feeds::stored_order(&store), vec![format!("rithmic@{demo}"), "yahoo".into()]);
+        assert_eq!(crate::feeds::saved_of(&store, &acme).user, None, "nobody to sign in with");
+
+        // A login whose feed was taken off the order has nothing to drop.
+        crate::feeds::save_order(&store, &["yahoo".into()]);
+        assert_eq!(removal(&store, &demo), Removal::Login);
     }
 
-    /// The last login, asked: keeping the data feed leaves Rithmic on the
-    /// Data page with nobody signed in; removing both takes it off.
+    /// The last login's feed goes with it even when it is the last feed:
+    /// with nothing left to chart through, the order is the default's.
     #[test]
-    fn removing_the_last_login_keeps_the_data_feed_or_removes_both() {
-        if skip() {
-            return;
-        }
-        for feed_too in [false, true] {
-            let store = store();
-            let kept = Kept::default();
-            let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
-            assert_eq!(removal(&store, &lucid), Removal::Ask);
-            remove_login(&store, &kept, &lucid, feed_too).unwrap();
-            assert!(logins(&store).is_empty());
-            assert!(kept.0.borrow().is_empty());
-            assert_eq!(store.setting(ACCOUNTS), None);
-            assert_eq!(store.setting(DATA_LOGIN), None);
-            assert_eq!(crate::feeds::saved_of(&store).user, None, "nobody to sign in with");
-            let order = crate::feeds::stored_order(&store);
-            match feed_too {
-                false => assert_eq!(order, vec!["rithmic", "yahoo"], "kept, not signed in"),
-                true => assert_eq!(order, vec!["yahoo"], "removed both"),
-            }
-        }
-    }
-
-    /// When Rithmic is the last data feed, removing it is not offered: the
-    /// login goes and the feed stays, even if asked to go.
-    #[test]
-    fn the_last_data_feed_stays_when_its_login_goes() {
+    fn the_last_feed_goes_with_its_login() {
         if skip() {
             return;
         }
         let store = store();
         let kept = Kept::default();
-        let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
+        let acme = add_login(&store, &kept, &typed("Acme Futures", "a")).unwrap();
         assert!(crate::feeds::remove_feed(&store, "yahoo"));
-        assert_eq!(removal(&store, &lucid), Removal::KeepFeed);
-        remove_login(&store, &kept, &lucid, true).unwrap();
+        assert_eq!(crate::feeds::stored_order(&store), vec![format!("rithmic@{acme}")]);
+        remove_login(&store, &kept, &acme).unwrap();
         assert!(logins(&store).is_empty());
-        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic"]);
+        assert!(kept.0.borrow().is_empty());
+        assert_eq!(store.setting(ACCOUNTS), None);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["yahoo"]);
     }
 
     /// Signing a login out forgets its password and keeps it listed, with
-    /// its accounts; the data login's charts are told there is no login.
+    /// its accounts; its feed's charts are told there is no login.
     #[test]
     fn signing_out_keeps_the_login_and_forgets_the_password() {
         if skip() {
@@ -557,17 +516,17 @@ mod tests {
         }
         let store = store();
         let kept = Kept::default();
-        let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
-        cache_accounts(&store, &lucid, vec![account(&lucid, "1234")]);
-        sign_out_login(&store, &kept, &lucid).unwrap();
+        let acme = add_login(&store, &kept, &typed("Acme Futures", "a")).unwrap();
+        cache_accounts(&store, &acme, vec![account(&acme, "ACME-0001")]);
+        sign_out_login(&store, &kept, &acme).unwrap();
         assert!(kept.0.borrow().is_empty());
         assert!(logins(&store)[0].signed_out);
         assert_eq!(accounts(&store).len(), 1);
-        assert_eq!(crate::feeds::saved_of(&store).user, None, "the data session has no login to sign in with");
+        assert_eq!(crate::feeds::saved_of(&store, &acme).user, None, "its feed has no login to sign in with");
         let desk = Desk::new(Registry::of(vec![Arc::new(FakeService::default())]));
         assert_eq!(desk.standing(&logins(&store)[0], true), Standing::SignedOut);
 
-        retype_login(&store, &kept, &lucid, &typed("Lucid", "a")).unwrap();
+        retype_login(&store, &kept, &acme, &typed("Acme Futures", "a")).unwrap();
         assert!(!logins(&store)[0].signed_out);
         assert_eq!(kept.0.borrow().len(), 1);
     }

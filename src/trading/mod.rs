@@ -13,11 +13,14 @@
 //!   the order plant once it signs in. They are cached in [`ACCOUNTS`] as
 //!   bookkeeping, never in a backup, so the settings page and the header
 //!   draw without connecting and account numbers stay on this machine.
-//! - **A data feed** is a row on the Data page. Exactly one login is the
-//!   data login, [`DATA_LOGIN`], the first added whose trading service has a data
-//!   feed, unless somebody picks another: that feed signs in through it, and
-//!   the others sign in for orders and P&L only. Several logins streaming quotes could count
-//!   as several data sessions under CME's two-session rule.
+//! - **A data feed** is a row on the Data page. Each login whose trading
+//!   service has a data feed has one of its own, named after it, "Rithmic
+//!   (Acme Futures)", signed in with that login alone ([`data_feed_of`]).
+//!   Its data session opens only once a chart is drawn from it, so a login
+//!   no chart uses signs in for orders and P&L only, and none has a second
+//!   data session beside its own, which CME would count as a professional's.
+//!   A chart about an account is drawn from that account's login's feed
+//!   unless somebody picked another for it ([`rules::feed_of`]).
 //!
 //! Each login has at most one trading session, because a second sign-in on
 //! the same login forces the first one out: [`Desk`] holds them by login and
