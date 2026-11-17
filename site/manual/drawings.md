@@ -63,7 +63,7 @@ crop: 0,0,760,1100
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | The configuration the drawing will follow, shown as a number on the tool. With no tool selected, it applies to whatever is drawn next |
 | <kbd>Esc</kbd> | Drops the drawing and deselects the tool |
 
-A finished drawing is left selected.
+A finished drawing is left selected on its own, on the chart it was drawn on, ready to move, resize, restyle or delete.
 
 ## Selecting and moving
 
