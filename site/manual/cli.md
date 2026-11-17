@@ -1667,12 +1667,12 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 
 | Command | Does |
 |---|---|
-| `trading logins` | Each login, its service, and whether it is live and gives charts their data |
+| `trading logins` | Each login, its service, and whether it is live and its data feed is among the data feeds |
 | `trading login SERVICE` | Opens the service's sign-in dialog in the window, to add a login |
 | `trading sign-in LOGIN` | Signs a login in with its saved password, or opens its dialog when it has none |
 | `trading sign-out LOGIN` | Signs it out and forgets its password; the login stays |
-| `trading remove LOGIN [--with-feed]` | Removes the login, its password and its accounts, and with `--with-feed` the data feed that came through it |
-| `trading data LOGIN` | Charts' market data comes through this login |
+| `trading remove LOGIN` | Removes the login, its password, its accounts and its data feed |
+| `trading data LOGIN` | Puts this login's data feed at the top of the data feeds |
 | `trading sync` | Asks every signed-in login for its accounts again, and what they hold, as the panel's sync does: an account opened since sign-in is listed once its login answers. Nothing signs out |
 | `trading accounts` | Every account with its balance, the day's and the open P&L, its loss limit and liquidation level; `*` marks the default |
 | `trading default ACCOUNT` | The account charts trade on until given one of their own |
