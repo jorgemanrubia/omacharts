@@ -876,6 +876,25 @@ fn style_editor(
         // less what only a study has.
         Kind::Profile => {
             group.set_title("Parameters");
+            let (method_row, show_method) =
+                profile_rows::method_row(style.borrow().profile.method, {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |method| {
+                        style.borrow_mut().profile.method = method;
+                        emit();
+                    }
+                });
+            let (colouring_row, show) =
+                profile_rows::colouring_row(style.borrow().profile.colouring, {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |colouring| {
+                        style.borrow_mut().profile.colouring = colouring;
+                        emit();
+                    }
+                });
+            shows.push(Rc::new(move |s: &Style| show(s.profile.colouring)));
             let granularity =
                 profile_rows::granularity(style.borrow().profile.rows, drawn_rows.clone(), {
                     let style = style.clone();
@@ -950,7 +969,6 @@ fn style_editor(
                     emit();
                 });
             }
-            area_row.set_sensitive(style.borrow().profile.highlight);
             let (highlight, show) = profile_rows::switch_row(
                 profile_rows::HIGHLIGHT,
                 style.borrow().profile.highlight,
@@ -963,26 +981,20 @@ fn style_editor(
                     }
                 },
             );
-            {
-                let area_row = area_row.clone();
-                highlight.connect_active_notify(move |row| area_row.set_sensitive(row.is_active()));
-            }
-            {
-                let area_row = area_row.clone();
-                shows.push(Rc::new(move |s: &Style| {
-                    show(s.profile.highlight);
-                    area_row.set_sensitive(s.profile.highlight);
-                    show_area(s);
-                }));
-            }
+            shows.push(Rc::new(move |s: &Style| {
+                show(s.profile.highlight);
+                show_area(s);
+            }));
             profile_rows::add_parameters(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: Vec::new(),
+                    method: method_row.clone(),
+                    colouring: colouring_row.clone(),
                     granularity,
-                    value_area: area.upcast(),
-                    highlight,
-                    value_area_colour: area_row.upcast(),
+                    value_area: area.clone().upcast(),
+                    highlight: highlight.clone(),
+                    value_area_colour: area_row.clone().upcast(),
                 },
             );
 
@@ -1214,6 +1226,34 @@ fn style_editor(
                 show(aligns.iter().position(|x| *x == s.profile.align))
             }));
 
+            // Of the span, as the study's is of its period.
+            let (width, show) = profile_rows::width_row(style.borrow().profile.width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |share| {
+                    style.borrow_mut().profile.width = share;
+                    emit();
+                }
+            });
+            shows.push(Rc::new(move |s: &Style| show(s.profile.width)));
+
+            // A delta is painted in its colouring, outline and all: the
+            // background and the outline's colour are a total's.
+            let follow = profile_rows::follow_method(
+                &method_row,
+                profile_rows::ByMethod {
+                    value_area: area.upcast(),
+                    highlight,
+                    value_area_colour: area_row.upcast(),
+                    colouring: colouring_row,
+                    total_only: vec![outline_row.clone().upcast(), background.clone().upcast()],
+                },
+            );
+            shows.push(Rc::new(move |s: &Style| {
+                show_method(s.profile.method);
+                follow(s.profile.method);
+            }));
+
             more.push(profile_rows::style_group(profile_rows::StyleRows {
                 outline: edge,
                 outline_colour: outline_row.upcast(),
@@ -1227,7 +1267,7 @@ fn style_editor(
                 poc_thickness: poc_thickness.upcast(),
                 style: shape.upcast(),
                 alignment: alignment.upcast(),
-                width: None,
+                width: width.upcast(),
             }));
         }
         // The study's rows, in the study's order and groups: what it is
@@ -3134,21 +3174,14 @@ mod tests {
     use crate::store::Store;
 
     /// A profile drawing's properties are the study's, in the same groups
-    /// and the same order, less what only a study has: its period, whether
-    /// only the newest is drawn, what it measures, how a delta is painted,
-    /// and how wide it is drawn, which on a drawing is the span it covers.
+    /// and the same order, less what only a study has: its period, and
+    /// whether only the newest is drawn.
     #[test]
     fn a_profile_drawing_has_the_studys_rows_in_the_studys_order() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = crate::ui::window::test_window(&store);
-            let only_the_study = [
-                "Reset every",
-                "Only show in last period",
-                "Calculation method",
-                "Colouring",
-                chart_settings::PROFILE_WIDTH_LABEL,
-            ];
+            let only_the_study = ["Reset every", chart_settings::PROFILE_LAST_ONLY_LABEL];
             let study: Vec<(String, Vec<String>)> = chart_settings::profile_titles(&window)
                 .into_iter()
                 .map(|(title, rows)| {

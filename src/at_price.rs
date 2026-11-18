@@ -357,6 +357,11 @@ impl AtPrice {
         ladders.watch(symbol, tick_size, sink).ok()
     }
 
+    /// Whether chart `pane` is one of those whose ladders are held.
+    pub fn watches(&self, pane: u32) -> bool {
+        self.by_pane.borrow().contains_key(&pane)
+    }
+
     /// Chart `pane` no longer wants ladders. The last chart of a contract to
     /// go closes its live feed and lets its ladders go.
     pub fn unwatch(&self, pane: u32) {

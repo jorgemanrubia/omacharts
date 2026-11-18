@@ -7,7 +7,7 @@ nav_order: 9
 hotkey: "Alt + V"
 ---
 
-A profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it.
+A profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it. Or, measured as the study can be, what was bought at the ask less what was sold at the bid at each price.
 
 | Key | Placing it | CLI |
 |---|---|---|
@@ -39,8 +39,6 @@ Selected, it has a grip at each corner: the left two move its start and the righ
 | Left out | Because |
 |---|---|
 | **Reset every**, **Only show in last period** | The span is set by its ends |
-| **Calculation method**, **Colouring** | A drawing is worked out from its bars' volume alone |
-| **Width %** | A drawing is as wide as its span |
 
 Defaults are those of configuration 1 as shipped, with the other configurations' differences under [Configurations](#configurations).
 
@@ -48,21 +46,23 @@ Defaults are those of configuration 1 as shipped, with the other configurations'
 
 | Property | What it does | Default |
 |---|---|---|
+| **Calculation method** | **Total volume**, or **Ask volume - bid volume**, which is worked out from the chart's volume at price exactly as the study's [is](/manual/indicators/volume/volume-profile/#ask-volume---bid-volume). On a chart without it the drawing is not drawn, and the foot of the chart says why | Total volume |
+| **Colouring** | How Ask volume - bid volume paints its rows: **Default** follows the colouring chosen in Preferences, or **Vivid**, **Soft** or **Quiet**. Rows where buyers took more are in its up colour, rows where sellers took more in its down colour, outline and all. Shows only for Ask volume - bid volume | Default |
 | **Automatic** | Picks how many rows the profile has: each row a round multiple of the instrument's price step, about 600 rows over the span, or one price step a row on a short one. While it is on, **Rows** is greyed and shows how many rows are drawn | On |
 | **Rows** | With **Automatic** off, how many rows the span's price range is cut into, 4 to 800. Fewer rows give a coarser profile, more a finer one. Turning **Automatic** off starts from the count being drawn, so the profile only changes when you change the number | Automatic |
-| **Value area %** | The share of the span's volume the value area holds, 10 to 100% | 70% |
-| **Highlight value area** | Draws the value area's rows stronger than the others, which are a little under half as strong. Off draws every row alike | On |
-| **Value area colour** | Gives the value area a colour of its own while it is highlighted. **Reset** goes back to the background's colour. Greyed while **Highlight value area** is off | The background's |
+| **Value area %** | The share of the span's volume the value area holds, 10 to 100%. Greyed for Ask volume - bid volume, which has none | 70% |
+| **Highlight value area** | Draws the value area's rows stronger than the others, which are a little under half as strong. Off draws every row alike. Greyed for Ask volume - bid volume | On |
+| **Value area colour** | Gives the value area a colour of its own while it is highlighted. **Reset** goes back to the background's colour. Greyed while **Highlight value area** is off, and for Ask volume - bid volume | The background's |
 
 ### Style
 
 | Property | What it does | Default |
 |---|---|---|
 | **Outline** | Draws an edge round the filled rows. Always on, and greyed, while **Style** is Outline, since the edge is then all there is. The three outline rows below show while it is on | Off |
-| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the background | The configuration's |
+| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the background. Greyed for Ask volume - bid volume, whose edge is in its **Colouring** | The configuration's |
 | **Outline thickness** | How thick the edge is, 0.5 to 12 px in halves | 1 px on a filled profile, 1.5 px on an outline |
 | **Outline style** | **Solid**, **Dashed** or **Dotted** | Solid |
-| **Background** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour | The configuration's |
+| **Background** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** | The configuration's |
 | **Transparency %** | How much of the chart shows through the rows, 0 to 100%. At 0% the value area is solid; at 100% the profile is gone. The outline fades with the rows | 70% |
 | **Show point of control** | Draws a line across the price with the most volume. Off leaves the profile without it. The three rows below show while it is on | On |
 | **Point of control colour** | The colour of the line at the busiest price. Every configuration ships it in Ink, so it stands apart from the rows | Ink |
@@ -70,6 +70,7 @@ Defaults are those of configuration 1 as shipped, with the other configurations'
 | **Point of control style** | **Solid**, **Dashed** or **Dotted** | Solid |
 | **Style** | **Filled** draws the rows as solid bars. **Outline** draws only their edge, which leaves the candles under it clear | Filled |
 | **Alignment** | **Left** grows the rows to the right from the start of the span. **Right** grows them to the left from its end | Left |
+| **Width %** | How far the longest row reaches, 10 to 100% of the span's width | 100% |
 
 ## Configurations
 

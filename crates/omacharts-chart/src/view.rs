@@ -164,7 +164,45 @@ struct ProfileKey {
     last: (i64, u64, u64, u64),
     rows: Option<usize>,
     value_area: u64,
+    method: omacharts_engine::indicators::profile::Method,
+    /// What the chart's ladders held when it was worked out; see
+    /// [`ladders_now`].
+    ladders: LaddersNow,
 }
+
+/// What traded at each price on a chart's contract, for its volume profile
+/// drawings to be worked out from as the study's periods are: handed the
+/// first bar the chart holds, it calls back with the ladders held now, if
+/// there are any, and whether they are on their way. The window lends it;
+/// a chart of a feed without ladders has none.
+pub type VolumeAtPrice = Rc<dyn Fn(i64, &mut dyn FnMut(Option<&omacharts_engine::ladders::Held>, bool))>;
+
+/// A chart's ladders, as far as a profile worked out from them can tell
+/// whether it has to be worked out again: none, on their way, or held as of
+/// some change — days and pieces read, a minute forming.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum LaddersNow {
+    None,
+    Awaiting,
+    Held { generation: u64, pieces: usize, missing: usize, forming: Option<(i64, u64)> },
+}
+
+fn ladders_now(held: Option<&omacharts_engine::ladders::Held>, awaiting: bool) -> LaddersNow {
+    match held {
+        Some(held) => LaddersNow::Held {
+            generation: held.generation,
+            pieces: held.pieces.len(),
+            missing: held.missing.len(),
+            forming: held.forming.as_ref().map(|minute| (minute.ts, minute.ladder.total())),
+        },
+        None if awaiting => LaddersNow::Awaiting,
+        None => LaddersNow::None,
+    }
+}
+
+/// A profile drawing's profile as last worked out: drawn, nothing for now,
+/// or why it cannot be drawn on this chart at all.
+type SpanProfile = Result<Option<Profile>, &'static str>;
 
 /// What an anchored VWAP drawing's line depends on, for keeping it: the bar
 /// it starts from, the bars after it, and the price it weights.
@@ -204,7 +242,10 @@ struct State {
     /// The profiles the volume profile drawings show, as last worked out:
     /// a drawing is projected on every motion of the pointer, and its
     /// profile only changes with its span or the bars.
-    profile_cache: RefCell<Vec<(ProfileKey, Option<Profile>)>>,
+    profile_cache: RefCell<Vec<(ProfileKey, SpanProfile)>>,
+    /// Where the volume profile drawings read what traded at each price,
+    /// as the study's periods do. `None` on a chart of a feed without it.
+    volume_at_price: Option<VolumeAtPrice>,
     /// The lines the anchored VWAP drawings show, kept for the same reason:
     /// asked on every motion, changed only by the anchor or the bars.
     vwap_cache: RefCell<Vec<(VwapKey, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)>>,
@@ -1403,6 +1444,7 @@ impl State {
             latest: None,
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
+            volume_at_price: None,
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
@@ -1737,37 +1779,80 @@ impl State {
     /// The volume profile a profile drawing shows: of the bars between its
     /// two anchors, on this chart's own bars.
     fn span_profile(&self, drawing: &Drawing) -> Option<Profile> {
+        self.span_profile_or_why(drawing).ok().flatten()
+    }
+
+    /// [`Self::span_profile`], or why a profile drawing cannot be drawn on
+    /// this chart at all: a delta on a chart whose feed does not say which
+    /// side each trade took, which the study says in the same words.
+    ///
+    /// Worked out as the study works out each of its periods, from what
+    /// traded at each price when the chart's feed has it — waiting for it,
+    /// drawing nothing, while it is on its way — and estimated from the
+    /// bars when it has not.
+    fn span_profile_or_why(&self, drawing: &Drawing) -> SpanProfile {
         let (from, to) = (drawing.from.ts.min(drawing.to.ts), drawing.from.ts.max(drawing.to.ts));
         let first = self.bars.partition_point(|bar| bar.ts < from);
         let end = self.bars.partition_point(|bar| bar.ts <= to);
         if first >= end {
-            return None;
+            return Ok(None);
         }
         let look = &drawing.style(&self.configs).profile;
-        // The last bar's volume as well as its time: a live bar grows in
-        // place, and a profile over it has to grow with it.
-        let last = &self.bars[end - 1];
-        let key = ProfileKey {
-            span: (first, end),
-            first: self.bars[first].ts,
-            last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits()),
-            rows: look.rows,
-            value_area: look.value_area.to_bits(),
+        let mut out = None;
+        let mut work = |held: Option<&omacharts_engine::ladders::Held>, awaiting: bool| {
+            // The last bar's volume as well as its time: a live bar grows in
+            // place, and a profile over it has to grow with it.
+            let last = &self.bars[end - 1];
+            let key = ProfileKey {
+                span: (first, end),
+                first: self.bars[first].ts,
+                last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits()),
+                rows: look.rows,
+                value_area: look.value_area.to_bits(),
+                method: look.method,
+                ladders: ladders_now(held, awaiting),
+            };
+            if let Some((_, profile)) = self.profile_cache.borrow().iter().find(|(k, _)| *k == key) {
+                out = Some(profile.clone());
+                return;
+            }
+            let profile = match &self.instrument {
+                Some(instrument) => {
+                    let context = indicators::Context::of(instrument, self.timeframe, self.clock.zone)
+                        .with_ladders(held)
+                        .awaiting_ladders(awaiting);
+                    indicators::span_profile(&self.bars[first..end], first, look.rows, look.value_area, look.method, &context)
+                }
+                // Nothing says what is charted: no ladders, and the bars
+                // alone, as the study draws on such a chart.
+                None => {
+                    let context = indicators::Context {
+                        session_origin: 0,
+                        timeframe: self.timeframe,
+                        kind: None,
+                        instrument: None,
+                        zone: self.clock.zone,
+                        ladders: None,
+                        awaiting_ladders: false,
+                        memos: None,
+                    };
+                    indicators::span_profile(&self.bars[first..end], first, look.rows, look.value_area, look.method, &context)
+                }
+            };
+            let mut cache = self.profile_cache.borrow_mut();
+            // A handful of drawings, each dragged through a few spans: enough
+            // to keep, small enough never to sweep.
+            if cache.len() >= 32 {
+                let _ = cache.remove(0);
+            }
+            cache.push((key, profile.clone()));
+            out = Some(profile);
         };
-        if let Some((_, profile)) = self.profile_cache.borrow().iter().find(|(k, _)| *k == key) {
-            return profile.clone();
+        match &self.volume_at_price {
+            Some(read) => read(self.bars[0].ts, &mut work),
+            None => work(None, false),
         }
-        let kind = self.instrument.as_ref().map(|i| i.kind);
-        let profile =
-            omacharts_engine::indicators::profile::of_span(&self.bars[first..end], first, look.rows, look.value_area, kind);
-        let mut cache = self.profile_cache.borrow_mut();
-        // A handful of drawings, each dragged through a few spans: enough
-        // to keep, small enough never to sweep.
-        if cache.len() >= 32 {
-            cache.remove(0);
-        }
-        cache.push((key, profile.clone()));
-        profile
+        out.unwrap_or(Ok(None))
     }
 
     /// The anchored VWAP a VWAP drawing shows, and the bar it starts from:
@@ -2612,6 +2697,12 @@ impl State {
             | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
             _ => None,
         };
+        self.delta_pair(chosen)
+    }
+
+    /// The bought and sold colours of a delta painted in `chosen`, or in
+    /// the house colouring when it has none of its own.
+    fn delta_pair(&self, chosen: Option<BarColouring>) -> (&str, &str) {
         let at = chosen.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
         let (up, down) = &self.delta_inks[at];
         (up, down)
@@ -5370,6 +5461,23 @@ impl ChartView {
             state.delta_inks = delta_inks(&state.theme, state.house);
         }
         self.redraw();
+    }
+
+    /// Where this chart's volume profile drawings read what traded at each
+    /// price: see [`VolumeAtPrice`].
+    pub fn set_volume_at_price(&self, read: Option<VolumeAtPrice>) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.volume_at_price = read;
+            state.profile_cache.borrow_mut().clear();
+        }
+        self.redraw();
+    }
+
+    /// Whether any drawing on this chart is a volume profile, which reads
+    /// what traded at each price as the study does.
+    pub fn has_profile_drawing(&self) -> bool {
+        self.state.borrow().drawings.iter().any(|drawing| drawing.kind == DrawingKind::Profile)
     }
 
     pub fn timeframe(&self) -> Timeframe {
@@ -10244,9 +10352,20 @@ fn over_trouble_dot(state: &State, width: f64, x: f64, y: f64) -> bool {
 /// box, one above another if there are several. Nothing is drawn per bar.
 fn draw_unmet(cr: &cairo::Context, state: &State, plot_x: f64, bottom: f64) {
     let mut y = bottom - 10.0;
-    for drawn in state.shown_indicators() {
-        let Output::Unmet(why) = &drawn.output else { continue };
-        let text = format!("{} · {why}", drawn.indicator.kind.short_name());
+    let studies = state.shown_indicators().filter_map(|drawn| match &drawn.output {
+        Output::Unmet(why) => Some(format!("{} · {why}", drawn.indicator.kind.short_name())),
+        _ => None,
+    });
+    // A profile drawing that cannot be drawn says so as the study does,
+    // once however many there are: what is missing is the chart's.
+    let drawings = state
+        .show_drawings
+        .then(|| {
+            state.drawings.iter().filter(|d| d.kind == DrawingKind::Profile).find_map(|d| state.span_profile_or_why(d).err())
+        })
+        .flatten()
+        .map(|why| format!("{} · {why}", DrawingKind::Profile.label()));
+    for text in studies.chain(drawings) {
         colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
         cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         cr.set_font_size(12.0);
@@ -10623,6 +10742,19 @@ fn draw_profiles(
     let (inside, outside) = omacharts_engine::indicators::profile::row_alphas(alpha, highlight);
     let look = selection::placed_look(state, drawn);
     let style = look.style;
+    let paint = ProfilePaint {
+        method,
+        shape: style,
+        inks: &inks,
+        area_fill: area_fill.as_deref(),
+        inside,
+        outside,
+        edge_alpha: edged.then_some(drawings::PROFILE_EDGE_ALPHA),
+        outline_alpha: omacharts_engine::indicators::profile::line_alpha(0.75, alpha),
+        outline_width,
+        outline_style,
+        poc: poc_shown.then_some((poc.as_str(), poc_width, poc_style)),
+    };
 
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
@@ -10630,95 +10762,7 @@ fn draw_profiles(
         if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
-
-        match style {
-            omacharts_engine::indicators::profile::Style::Filled => {
-                let (area_low, area_high) = profile.value_area_bounds();
-                // Which pass a row is painted in: the value area's, or the
-                // rest's. A delta has no value area, and every row of it is
-                // painted as the value area of a total is.
-                let in_area = |row: &omacharts_engine::indicators::ProfileRow| match method {
-                    Method::Total => row.low >= area_low && row.high <= area_high,
-                    Method::Delta => true,
-                };
-                let passes: &[bool] = match method {
-                    Method::Total => &[true, false],
-                    Method::Delta => &[true],
-                };
-                // One path and one fill for every row of an ink at a
-                // strength, rather than a fill a row: a tick a row is
-                // hundreds of rows a period, and a fill is most of what a
-                // row costs. The rows of one pass are side by side, never
-                // over each other, so they composite as they did one by one.
-                for (at, ink) in inks.iter().enumerate() {
-                    for &pass in passes {
-                        let mut any = false;
-                        for row in &profile.rows {
-                            let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
-                            if !mine || in_area(row) != pass {
-                                continue;
-                            }
-                            let (from, to) = area.row(row.volume.abs() / profile.max_volume);
-                            let top = to_y(row.high);
-                            let height = (to_y(row.low) - top).max(1.0);
-                            cr.rectangle(from, top, to - from, height);
-                            any = true;
-                        }
-                        if any {
-                            let (fill, strength) = match pass {
-                                true => (area_fill.as_deref().unwrap_or(ink.fill.as_str()), inside),
-                                false => (ink.fill.as_str(), outside),
-                            };
-                            colors::set_source_alpha(cr, fill, strength);
-                            let _ = cr.fill();
-                        }
-                    }
-                }
-                if edged {
-                    cr.set_line_width(outline_width.max(0.5));
-                    cr.set_line_join(cairo::LineJoin::Miter);
-                    set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
-                    for ink in &inks {
-                        colors::set_source_alpha(cr, &ink.edge, drawings::PROFILE_EDGE_ALPHA);
-                        selection::profile_path(cr, &area, profile, to_y, ink.side);
-                        let _ = cr.stroke();
-                    }
-                    cr.set_dash(&[], 0.0);
-                }
-            }
-            // Only the shape the rows make, so the candles under it stay
-            // as plain as they are without it. With no rows to fade, the
-            // transparency fades the outline, which is all there is.
-            omacharts_engine::indicators::profile::Style::Outline => {
-                cr.set_line_width(outline_width.max(0.5));
-                cr.set_line_join(cairo::LineJoin::Miter);
-                set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
-                for ink in &inks {
-                    colors::set_source_alpha(cr, &ink.edge, omacharts_engine::indicators::profile::line_alpha(0.75, alpha));
-                    selection::profile_path(cr, &area, profile, to_y, ink.side);
-                    let _ = cr.stroke();
-                }
-                cr.set_dash(&[], 0.0);
-            }
-        }
-
-        // The point of control, across the period it belongs to, in a colour
-        // set against the profile rather than the same one brighter — it is a
-        // different fact about the period, drawn on top of it.
-        // Unless it is turned off, which leaves the rows to say it.
-        if poc_shown {
-            let y = to_y(profile.poc_price()).round() + 0.5;
-            let (from, to) = area.row(1.0);
-            colors::set_source_alpha(cr, &poc, 0.9);
-            cr.set_line_width(poc_width.max(0.5));
-            let (left, right) = (from.min(to), from.max(to));
-            set_edge_pattern(cr, poc_style, poc_width.max(0.5), left);
-            cr.move_to(left, y);
-            cr.line_to(right, y);
-            let _ = cr.stroke();
-            cr.set_dash(&[], 0.0);
-        }
-
+        paint_profile(cr, profile, &area, &paint, to_y);
         if state.picked == Some(drawn.indicator.id) {
             for ink in &inks {
                 selection::outline_profile(cr, &state.theme, ink.shown(style), profile, &area, to_y, ink.side);
@@ -10727,9 +10771,135 @@ fn draw_profiles(
     }
 }
 
-/// A volume profile drawing: the study's rows across the whole span it
-/// covers, set apart from the study by the edge round them, or drawn as only
-/// that edge, with a point of control at the drawing's own stroke.
+/// How a volume profile is painted, the study's and a drawing's alike: what
+/// each sets apart is only where its colours and strengths come from.
+struct ProfilePaint<'a> {
+    method: omacharts_engine::indicators::profile::Method,
+    shape: omacharts_engine::indicators::profile::Style,
+    /// One side for a total, two for a delta.
+    inks: &'a [ProfileInk],
+    /// The value area's own colour, when it is set apart in one.
+    area_fill: Option<&'a str>,
+    /// How strongly the value area's rows are filled, and the rest.
+    inside: f64,
+    outside: f64,
+    /// The edge round filled rows, at this strength; `None` for none.
+    edge_alpha: Option<f64>,
+    /// The outline style's strength: the outline is all of it.
+    outline_alpha: f64,
+    outline_width: f64,
+    outline_style: LineStyle,
+    /// The point of control, in its colour, thickness and pattern; `None`
+    /// when it is turned off, which leaves the rows to say it.
+    poc: Option<(&'a str, f64, LineStyle)>,
+}
+
+/// One volume profile, its rows grown from `area`'s edge.
+fn paint_profile(
+    cr: &cairo::Context,
+    profile: &Profile,
+    area: &selection::ProfileBox,
+    paint: &ProfilePaint,
+    to_y: &dyn Fn(f64) -> f64,
+) {
+    use omacharts_engine::indicators::profile::{Method, Style as Shape};
+    let inks = paint.inks;
+    match paint.shape {
+        Shape::Filled => {
+            let (area_low, area_high) = profile.value_area_bounds();
+            // Which pass a row is painted in: the value area's, or the
+            // rest's. A delta has no value area, and every row of it is
+            // painted as the value area of a total is.
+            let in_area = |row: &omacharts_engine::indicators::ProfileRow| match paint.method {
+                Method::Total => row.low >= area_low && row.high <= area_high,
+                Method::Delta => true,
+            };
+            let passes: &[bool] = match paint.method {
+                Method::Total => &[true, false],
+                Method::Delta => &[true],
+            };
+            // One path and one fill for every row of an ink at a
+            // strength, rather than a fill a row: a tick a row is
+            // hundreds of rows a period, and a fill is most of what a
+            // row costs. The rows of one pass are side by side, never
+            // over each other, so they composite as they did one by one.
+            for (at, ink) in inks.iter().enumerate() {
+                for &pass in passes {
+                    let mut any = false;
+                    for row in &profile.rows {
+                        let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
+                        if !mine || in_area(row) != pass {
+                            continue;
+                        }
+                        let (from, to) = area.row(row.volume.abs() / profile.max_volume);
+                        let top = to_y(row.high);
+                        let height = (to_y(row.low) - top).max(1.0);
+                        cr.rectangle(from, top, to - from, height);
+                        any = true;
+                    }
+                    if any {
+                        let (fill, strength) = match pass {
+                            true => (paint.area_fill.unwrap_or(ink.fill.as_str()), paint.inside),
+                            false => (ink.fill.as_str(), paint.outside),
+                        };
+                        colors::set_source_alpha(cr, fill, strength);
+                        let _ = cr.fill();
+                    }
+                }
+            }
+            if let Some(strength) = paint.edge_alpha {
+                cr.set_line_width(paint.outline_width.max(0.5));
+                cr.set_line_join(cairo::LineJoin::Miter);
+                set_edge_pattern(cr, paint.outline_style, paint.outline_width.max(0.5), 0.0);
+                for ink in inks {
+                    colors::set_source_alpha(cr, &ink.edge, strength);
+                    selection::profile_path(cr, area, profile, to_y, ink.side);
+                    let _ = cr.stroke();
+                }
+                cr.set_dash(&[], 0.0);
+            }
+        }
+        // Only the shape the rows make, so the candles under it stay
+        // as plain as they are without it. With no rows to fade, the
+        // transparency fades the outline, which is all there is.
+        Shape::Outline => {
+            cr.set_line_width(paint.outline_width.max(0.5));
+            cr.set_line_join(cairo::LineJoin::Miter);
+            set_edge_pattern(cr, paint.outline_style, paint.outline_width.max(0.5), 0.0);
+            for ink in inks {
+                colors::set_source_alpha(cr, &ink.edge, paint.outline_alpha);
+                selection::profile_path(cr, area, profile, to_y, ink.side);
+                let _ = cr.stroke();
+            }
+            cr.set_dash(&[], 0.0);
+        }
+    }
+
+    // The point of control, across the period it belongs to, in a colour
+    // set against the profile rather than the same one brighter — it is a
+    // different fact about the period, drawn on top of it.
+    if let Some((colour, width, pattern)) = paint.poc {
+        let y = to_y(profile.poc_price()).round() + 0.5;
+        let (from, to) = area.row(1.0);
+        colors::set_source_alpha(cr, colour, drawings::PROFILE_POC_ALPHA);
+        cr.set_line_width(width.max(0.5));
+        let (left, right) = (from.min(to), from.max(to));
+        set_edge_pattern(cr, pattern, width.max(0.5), left);
+        cr.move_to(left, y);
+        cr.line_to(right, y);
+        let _ = cr.stroke();
+        cr.set_dash(&[], 0.0);
+    }
+}
+
+/// A volume profile drawing: the study's rows across the span it covers,
+/// as far into it as its width says, set apart from the study by the edge
+/// round them, or drawn as only that edge, with a point of control at the
+/// drawing's own stroke.
+///
+/// A delta is painted as the study's is, bought and sold in the colouring's
+/// rise and fall, its outline too: one colour round both sides would leave
+/// an outline-only delta nothing to tell them apart by.
 fn draw_profile_drawing(
     cr: &cairo::Context,
     state: &State,
@@ -10739,82 +10909,51 @@ fn draw_profile_drawing(
     colour: &str,
     to_y: &dyn Fn(f64) -> f64,
 ) {
-    use omacharts_engine::indicators::profile::{Align, Style as Shape};
+    use omacharts_engine::indicators::profile::{line_alpha, row_alphas, Align, Method};
     let Some(profile) = state.span_profile(drawing) else { return };
     if profile.max_volume <= 0.0 || profile.rows.is_empty() {
         return;
     }
     let (x, _, w, _) = projected.bounds();
     let look = &style.profile;
+    let reach = w * look.drawn_width();
     let area = match look.align {
-        Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
-        Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
+        Align::Left => selection::ProfileBox { edge: x, span: reach, towards: 1.0 },
+        Align::Right => selection::ProfileBox { edge: x + w, span: reach, towards: -1.0 },
     };
-    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
     let alpha = style.profile_alpha();
-    match look.shape {
-        Shape::Filled => {
-            let fill = style.fill.hex(&state.theme);
-            // The value area in a colour of its own, when it is set apart and
-            // has one; otherwise the rows' own.
-            let area_fill = match (look.highlight, &look.value_area_paint) {
-                (true, Some(paint)) => paint.hex(&state.theme),
-                _ => fill.clone(),
-            };
-            let (inside_alpha, outside_alpha) = row_alphas(alpha, look.highlight);
-            let (area_low, area_high) = profile.value_area_bounds();
-            // The value area's rows in one fill and the rest in another, as
-            // the study's are: a fill a row is most of what a row costs.
-            for in_area in [true, false] {
-                let mut any = false;
-                for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
-                    let inside = row.low >= area_low && row.high <= area_high;
-                    if inside != in_area {
-                        continue;
-                    }
-                    let (from, to) = area.row(row.volume / profile.max_volume);
-                    let top = to_y(row.high);
-                    let height = (to_y(row.low) - top).max(1.0);
-                    cr.rectangle(from, top, to - from, height);
-                    any = true;
-                }
-                if any {
-                    let (paint, strength) = if in_area { (&area_fill, inside_alpha) } else { (&fill, outside_alpha) };
-                    colors::set_source_alpha(cr, paint, strength);
-                    let _ = cr.fill();
-                }
-            }
-            // An edge the drawing can go without: off, the rows are all of it.
-            let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, colour, line_alpha(edge, alpha));
-            cr.set_line_width(style.width.max(0.5));
+    let fill = style.fill.hex(&state.theme);
+    let inks = match look.method {
+        Method::Total => vec![ProfileInk { side: selection::Side::All, fill, edge: colour.to_string() }],
+        Method::Delta => {
+            let (up, down) = state.delta_pair(look.colouring);
+            let ink = |side, hex: &str| ProfileInk { side, fill: hex.to_string(), edge: hex.to_string() };
+            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
         }
-        Shape::Outline => {
-            colors::set_source_alpha(cr, colour, line_alpha(1.0, alpha));
-            cr.set_line_width(style.width.max(0.5));
-        }
-    }
-    cr.set_line_join(cairo::LineJoin::Miter);
-    set_edge_pattern(cr, style.line_style, style.width.max(0.5), 0.0);
-    selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
-    let _ = cr.stroke();
-
-    // Unless it is turned off, which leaves the rows to say it, as the
-    // study's does.
-    if !look.show_poc {
-        cr.set_dash(&[], 0.0);
-        return;
-    }
-    let y = to_y(profile.poc_price()).round() + 0.5;
-    colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
-    cr.set_line_width(look.poc_width.max(0.5));
-    let (from, to) = area.row(1.0);
-    let (left, right) = (from.min(to), from.max(to));
-    set_edge_pattern(cr, look.poc_style, look.poc_width.max(0.5), left);
-    cr.move_to(left, y);
-    cr.line_to(right, y);
-    let _ = cr.stroke();
-    cr.set_dash(&[], 0.0);
+    };
+    // The value area in a colour of its own, when it is set apart and has
+    // one; otherwise the rows' own.
+    let area_fill = match (look.method, look.highlight, &look.value_area_paint) {
+        (Method::Total, true, Some(paint)) => Some(paint.hex(&state.theme)),
+        _ => None,
+    };
+    let (inside, outside) = row_alphas(alpha, look.highlight);
+    let poc = look.poc.hex(&state.theme);
+    let paint = ProfilePaint {
+        method: look.method,
+        shape: look.shape,
+        inks: &inks,
+        area_fill: area_fill.as_deref(),
+        inside,
+        outside,
+        // An edge the drawing can go without: off, the rows are all of it.
+        edge_alpha: style.border.then(|| line_alpha(drawings::PROFILE_EDGE_ALPHA, alpha)),
+        outline_alpha: line_alpha(1.0, alpha),
+        outline_width: style.width,
+        outline_style: style.line_style,
+        poc: look.show_poc.then_some((poc.as_str(), look.poc_width, look.poc_style)),
+    };
+    paint_profile(cr, &profile, &area, &paint, to_y);
 }
 
 /// A Fibonacci retracement: a level across its span at each ratio it

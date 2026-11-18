@@ -3339,6 +3339,10 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "poc": style.profile.show_poc,
             // Null while automatic, as the study's.
             "rows": style.profile.rows,
+            "method": style.profile.method.key(),
+            // Null while it follows the colouring chosen in Preferences.
+            "colouring": style.profile.colouring.map(|c| c.key()),
+            "width": style.profile.drawn_width(),
         });
     }
     // And only an anchored VWAP has these.
@@ -3459,12 +3463,25 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                 true => format!("point of control {}", look.poc.spell()),
                 false => "no point of control".to_string(),
             };
+            let reach = match look.drawn_width() {
+                w if w >= omacharts_engine::indicators::profile::MAX_WIDTH => String::new(),
+                w => format!(", {:.0}% wide", w * 100.0),
+            };
+            // A delta has no value area, and is painted in its colouring.
+            let measured = match look.method {
+                omacharts_engine::drawings::ProfileMethod::Total => {
+                    format!("value area {:.0}%{area}", look.value_area * 100.0)
+                }
+                omacharts_engine::drawings::ProfileMethod::Delta => match look.colouring {
+                    Some(colouring) => format!("delta in {}", colouring.key()),
+                    None => "delta".to_string(),
+                },
+            };
             format!(
-                "{} {}{rows}, from the {}, {poc}, value area {:.0}%{area}, transparency {:.0}%",
+                "{} {}{rows}, from the {}{reach}, {poc}, {measured}, transparency {:.0}%",
                 style.colour.spell(),
                 look.shape.key(),
                 look.align.key(),
-                look.value_area * 100.0,
                 (1.0 - style.profile_alpha()) * 100.0
             )
         }
@@ -3582,6 +3599,22 @@ struct StyleEdits {
     edge_only: Option<bool>,
     /// A volume profile's point of control's pattern.
     poc_style: Option<LineStyle>,
+    /// What a volume profile's rows measure.
+    method: Option<omacharts_engine::drawings::ProfileMethod>,
+    /// How a delta's sides are painted; `Some(None)` for the colouring
+    /// chosen in Preferences.
+    colouring: Option<Option<omacharts_engine::BarColouring>>,
+    /// The word `--colouring` was given as, for saying why it is refused.
+    colouring_word: Option<String>,
+    /// How much of its span a volume profile's longest row reaches.
+    profile_width: Option<f64>,
+    /// The study's names for a profile's outline: `--outline`,
+    /// `--outline-color`, `--outline-width` and `--outline-style`, the same
+    /// as `--border`, `--color`, `--width` and `--line-style` on one.
+    outline: Option<bool>,
+    outline_colour: Option<omacharts_engine::Paint>,
+    outline_width: Option<f64>,
+    outline_style: Option<LineStyle>,
 }
 
 impl StyleEdits {
@@ -3715,7 +3748,34 @@ impl StyleEdits {
             Some("none") => Some(None),
             _ => paint("value-area-color")?.map(Some),
         };
+        let method = match arg(m, "profile-method") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::ProfileMethod::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not a calculation method; use total or delta"))
+            })?),
+        };
+        let colouring = match arg(m, "colouring").map(String::as_str) {
+            None => None,
+            Some("chart" | "default") => Some(None),
+            Some(text) => Some(Some(
+                omacharts_engine::BarColouring::from_key(text)
+                    .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar colouring")))?,
+            )),
+        };
         Ok(StyleEdits {
+            method,
+            colouring,
+            colouring_word: arg(m, "colouring").cloned(),
+            profile_width: bounded(
+                m,
+                "profile-width",
+                omacharts_engine::indicators::profile::MIN_WIDTH,
+                omacharts_engine::indicators::profile::MAX_WIDTH,
+            )?,
+            outline: switch("outline")?,
+            outline_colour: paint("outline-color")?,
+            outline_width: bounded(m, "outline-width", MIN_WIDTH, MAX_WIDTH)?,
+            outline_style: pattern("outline-style")?,
             line_style: pattern("line-style")?,
             edge_only: switch("select-by-border")?,
             poc_style: pattern("poc-style")?,
@@ -3806,6 +3866,20 @@ impl StyleEdits {
             && self.line_style.is_none()
             && self.edge_only.is_none()
             && self.poc_style.is_none()
+            && !self.edits_a_profile_only()
+    }
+
+    /// Whether anything is said that only a volume profile drawing has a
+    /// use for: what it measures, how a delta is painted, how far its rows
+    /// reach, and the study's names for its outline.
+    fn edits_a_profile_only(&self) -> bool {
+        self.method.is_some()
+            || self.colouring.is_some()
+            || self.profile_width.is_some()
+            || self.outline.is_some()
+            || self.outline_colour.is_some()
+            || self.outline_width.is_some()
+            || self.outline_style.is_some()
     }
 
     /// Whether anything is said about the look of a retracement's level, as
@@ -3886,6 +3960,38 @@ impl StyleEdits {
                 "--poc-style is a volume profile's; a {} has no point of control",
                 kind.label().to_lowercase()
             )));
+        }
+        if self.edits_a_profile_only() && kind != K::Profile {
+            return Err(Fault::usage(format!(
+                "--profile-method, --colouring, --profile-width and the --outline flags are a volume profile's; a {} has none",
+                kind.label().to_lowercase()
+            )));
+        }
+        // A delta's sides are a rise and a fall: a colouring that paints
+        // the two alike, or the chart's own, is the study's refusal too.
+        if let Some(colouring) = &self.colouring {
+            let word = self.colouring_word.as_deref().unwrap_or_default();
+            if word == "chart" {
+                return Err(Fault::usage(
+                    "a volume profile follows the colouring chosen in Preferences; use default".into(),
+                ));
+            }
+            if colouring.is_some_and(|c| !omacharts_engine::drawings::DELTA_COLOURINGS.contains(&c)) {
+                return Err(Fault::usage(format!(
+                    "{word} paints rises and falls alike; a volume profile takes default, theme, theme-soft or theme-quiet"
+                )));
+            }
+        }
+        // Two names for one thing, given two answers.
+        for (study, given, drawing, other) in [
+            ("outline", self.outline.is_some(), "border", self.border.is_some()),
+            ("outline-color", self.outline_colour.is_some(), "color", self.colour.is_some()),
+            ("outline-width", self.outline_width.is_some(), "width", self.width.is_some()),
+            ("outline-style", self.outline_style.is_some(), "line-style", self.line_style.is_some()),
+        ] {
+            if given && other {
+                return Err(Fault::usage(format!("--{study} and --{drawing} are the same on a volume profile; give one")));
+            }
         }
         Ok(())
     }
@@ -3988,6 +4094,27 @@ impl StyleEdits {
         }
         if let Some(on) = self.show_poc {
             style.profile.show_poc = on;
+        }
+        if let Some(method) = self.method {
+            style.profile.method = method;
+        }
+        if let Some(colouring) = self.colouring {
+            style.profile.colouring = colouring;
+        }
+        if let Some(share) = self.profile_width {
+            style.profile.width = share;
+        }
+        if let Some(on) = self.outline {
+            style.border = on;
+        }
+        if let Some(colour) = &self.outline_colour {
+            style.colour = colour.clone();
+        }
+        if let Some(width) = self.outline_width {
+            style.width = width;
+        }
+        if let Some(pattern) = self.outline_style {
+            style.line_style = pattern;
         }
         if let Some(source) = self.source {
             style.vwap.source = source;
@@ -10471,6 +10598,65 @@ mod tests {
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// A volume profile drawing measures, colours and reaches as the study
+    /// does, set by the study's own flags and read back by its own names;
+    /// and the study's names for its outline are the drawing's own.
+    #[test]
+    fn a_profile_drawing_measures_a_delta_by_the_studys_flags() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let span = "--book Macro --from 2026-10-14,1 --to 2026-10-21,1";
+        let plain = run(&format!("chart drawing add profile {span}"), &store);
+        assert_eq!(plain.code, 0, "{}", plain.err);
+        let out = run(
+            &format!(
+                "chart drawing add profile {span} --profile-method delta --colouring theme-soft --profile-width 0.4 \
+                 --outline on --outline-color amber --outline-width 2 --outline-style dashed"
+            ),
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let first = &listed["drawings"][0]["style"]["profile"];
+        assert_eq!(first["method"], "total", "as it always was: {first}");
+        assert!(first["colouring"].is_null(), "{first}");
+        assert_eq!(first["width"], 1.0, "the whole span: {first}");
+        let style = &listed["drawings"][1]["style"];
+        assert_eq!(style["profile"]["method"], "delta");
+        assert_eq!(style["profile"]["colouring"], "theme-soft");
+        assert_eq!(style["profile"]["width"], 0.4);
+        assert_eq!(style["border"], true);
+        assert_eq!(style["color"], "amber", "{style}");
+        assert_eq!(style["width"], 2.0);
+        assert_eq!(style["line_style"], "dashed");
+
+        let id = listed["drawings"][1]["id"].as_i64().unwrap();
+        let set = run(&format!("chart drawing set --book Macro --id {id} --profile-method total --colouring default"), &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(listed["drawings"][1]["style"]["profile"]["method"], "total");
+        assert!(listed["drawings"][1]["style"]["profile"]["colouring"].is_null());
+
+        let configured = run("chart drawing configure profile --config 3 --profile-method delta --profile-width 0.5", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
+        let configs = run("chart drawing configs profile", &store);
+        assert!(configs.out.contains("delta") && configs.out.contains("50% wide"), "{}", configs.out);
+
+        for bad in [
+            "profile --profile-method both",
+            "profile --colouring chart",
+            "profile --colouring vivid",
+            "profile --profile-width 2",
+            "profile --outline-color amber --color ink",
+            "rect --profile-method delta",
+            "line --colouring theme",
+            "rect --outline-width 2",
+        ] {
+            let out = run(&format!("chart drawing add {bad} {span}"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
     }
 
     /// A line's, a box's and an ellipse's pattern, a box taken by its edge

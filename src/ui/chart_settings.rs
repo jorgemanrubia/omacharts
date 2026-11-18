@@ -16,7 +16,7 @@ use omacharts_engine::indicators::{
     MIN_PANE_SHARE,
 };
 use omacharts_engine::indicators::cvd::Style;
-use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle, DELTA_COLOURINGS};
+use omacharts_engine::indicators::profile::{Align, Style as ProfileStyle};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
@@ -1961,21 +1961,30 @@ fn parameters_group(
                     refresh.run();
                 });
             }
-            let method_row = choice_row(
-                owner,
-                refresh,
-                id,
-                PROFILE_METHOD_LABEL,
-                &Method::ALL.map(Method::label),
-                Method::ALL.iter().position(|m| m == method),
-                |indicator, at| {
-                    if let Params::VolumeProfile { method, .. } = &mut indicator.params {
-                        *method = Method::ALL[at];
-                    }
-                },
-            );
-            let colouring_row = colouring_row(owner, refresh, id, *colouring);
-            colouring_row.set_visible(has_colouring(*method));
+            let (method_row, _) = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                profile_rows::method_row(*method, move |picked| {
+                    update(&owner, id, |indicator| {
+                        if let Params::VolumeProfile { method, .. } = &mut indicator.params {
+                            *method = picked;
+                        }
+                    });
+                    refresh.run();
+                })
+            };
+            let (colouring_row, _) = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                profile_rows::colouring_row(*colouring, move |chosen| {
+                    update(&owner, id, |indicator| {
+                        if let Params::VolumeProfile { colouring, .. } = &mut indicator.params {
+                            *colouring = chosen;
+                        }
+                    });
+                    refresh.run();
+                })
+            };
             let granularity = {
                 let owner = owner.clone();
                 let refresh = refresh.clone();
@@ -2004,43 +2013,24 @@ fn parameters_group(
                     refresh.run();
                 })
             };
-            // A delta has no value area: its rows cancel each other out, so
-            // a share of their sum is a share of nothing.
-            area_row.set_sensitive(has_value_area(*method));
             let (highlight_row, area_colour_row) =
                 value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
-            let set_apart = {
-                let highlight_row = highlight_row.clone();
-                let area_colour_row = area_colour_row.clone();
-                move |method: Method| {
-                    highlight_row.set_sensitive(has_value_area(method));
-                    area_colour_row.set_sensitive(has_value_area(method) && highlight_row.is_active());
-                }
-            };
-            set_apart(*method);
-            highlight_row.connect_active_notify({
-                let area_colour_row = area_colour_row.clone();
-                move |row| area_colour_row.set_sensitive(row.is_sensitive() && row.is_active())
-            });
-            method_row.connect_selected_notify({
-                let area_row = area_row.clone();
-                let colouring_row = colouring_row.clone();
-                move |row| {
-                    let method = Method::ALL.get(row.selected() as usize).copied().unwrap_or_default();
-                    area_row.set_sensitive(has_value_area(method));
-                    colouring_row.set_visible(has_colouring(method));
-                    set_apart(method);
-                }
-            });
+            profile_rows::follow_method(
+                &method_row,
+                profile_rows::ByMethod {
+                    value_area: area_row.clone().upcast(),
+                    highlight: highlight_row.clone(),
+                    value_area_colour: area_colour_row.clone().upcast(),
+                    colouring: colouring_row.clone(),
+                    total_only: Vec::new(),
+                },
+            );
             profile_rows::add_parameters(
                 &group,
                 &profile_rows::ParameterRows {
-                    leading: vec![
-                        reset_row.upcast(),
-                        last_row.upcast(),
-                        method_row.upcast(),
-                        colouring_row.upcast(),
-                    ],
+                    leading: vec![reset_row.upcast(), last_row.upcast()],
+                    method: method_row,
+                    colouring: colouring_row,
                     granularity,
                     value_area: area_row.upcast(),
                     highlight: highlight_row,
@@ -2187,22 +2177,18 @@ pub const VOLUME_OPACITY_LABEL: &str = "Opacity %";
 /// indicator already has — a volume pane painted Monochrome before — is
 /// offered last, so the row shows what is drawn.
 fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
-    let mut offered: Vec<BarColouring> = DELTA_COLOURINGS.to_vec();
-    if let Some(kept) = current.filter(|c| !offered.contains(c)) {
-        offered.push(kept);
-    }
-    let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
-    names.extend(offered.iter().map(|c| c.label()));
-    let at = current.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-    choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, at, move |indicator, at| {
-        let chosen = at.checked_sub(1).and_then(|at| offered.get(at).copied());
-        match &mut indicator.params {
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    profile_rows::colouring_row(current, move |chosen| {
+        update(&owner, id, |indicator| match &mut indicator.params {
             Params::Volume { colouring, .. }
             | Params::VolumeProfile { colouring, .. }
             | Params::Cvd { colouring, .. } => *colouring = chosen,
             _ => {}
-        }
+        });
+        refresh.run();
     })
+    .0
 }
 
 /// The cumulative delta row that picks candles or a line.
@@ -2211,17 +2197,6 @@ const CVD_STYLE_LABEL: &str = "Style";
 /// What a cumulative delta's settings say, once, on a chart whose feed
 /// cannot tell bought from sold.
 pub const CVD_ESTIMATED: &str = "Estimated from bar direction: this feed has no bid and ask volume";
-
-/// The volume profile row that says how much of its room it takes.
-pub const PROFILE_WIDTH_LABEL: &str = "Width %";
-
-/// The volume profile row that says what its rows measure.
-const PROFILE_METHOD_LABEL: &str = "Calculation method";
-
-/// Whether a volume profile measuring by `method` has a value area to set.
-fn has_value_area(method: Method) -> bool {
-    method == Method::Total
-}
 
 /// The volume profile switch that sets its value area apart from its other
 /// rows.
@@ -2287,20 +2262,6 @@ pub const PROFILE_TRANSPARENCY_LABEL: &str = profile_rows::TRANSPARENCY;
 /// The volume profile row that says whether its rows are filled or drawn
 /// round.
 pub const PROFILE_STYLE_LABEL: &str = profile_rows::STYLE;
-
-/// The volume profile row that says how a delta's two sides are painted.
-const PROFILE_COLOURING_LABEL: &str = "Colouring";
-
-/// What a delta profile's colouring row offers first: the colouring chosen
-/// on the Defaults page of Preferences, whatever that is.
-const PROFILE_FOLLOWS_DEFAULTS: &str = "Default";
-
-/// Whether a volume profile measuring by `method` is painted in a colouring:
-/// a delta is, bought and sold as rising and falling bars; a total is in
-/// the profile's own colour.
-fn has_colouring(method: Method) -> bool {
-    method == Method::Delta
-}
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape, side and width.
@@ -2561,20 +2522,18 @@ fn profile_style(
     );
     // A share of the room the profile has: its period, or the empty space
     // past the last bar for the session drawn there.
-    let width = percent_row(
-        owner,
-        refresh,
-        id,
-        PROFILE_WIDTH_LABEL,
-        omacharts_engine::indicators::profile::drawn_width(*width),
-        omacharts_engine::indicators::profile::MIN_WIDTH,
-        omacharts_engine::indicators::profile::MAX_WIDTH,
-        move |indicator, share| {
-            if let Params::VolumeProfile { width, .. } = &mut indicator.params {
-                *width = share;
-            }
-        },
-    );
+    let (width, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        profile_rows::width_row(*width, move |share| {
+            update(&owner, id, |indicator| {
+                if let Params::VolumeProfile { width, .. } = &mut indicator.params {
+                    *width = share;
+                }
+            });
+            refresh.run();
+        })
+    };
 
     profile_rows::style_group(profile_rows::StyleRows {
         outline: switch,
@@ -2589,7 +2548,7 @@ fn profile_style(
         poc_thickness: poc_width_row.upcast(),
         style: shape.upcast(),
         alignment: alignment.upcast(),
-        width: Some(width.upcast()),
+        width: width.upcast(),
     })
 }
 
@@ -3431,6 +3390,7 @@ pub(crate) fn profile_titles(window: &Rc<Window>) -> Vec<(String, Vec<String>)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 
     // GTK objects are not built in here. Starting GTK is something one test in
     // the suite may do, from its own thread, and a second one asking would
@@ -3443,8 +3403,8 @@ mod tests {
     fn a_profile_offers_its_methods_and_a_value_area_only_for_the_total() {
         assert_eq!(Method::ALL.map(Method::label), ["Total volume", "Ask volume - bid volume"]);
         assert_eq!(Method::ALL[0], Method::default());
-        assert!(has_value_area(Method::Total));
-        assert!(!has_value_area(Method::Delta));
+        assert!(profile_rows::has_value_area(Method::Total));
+        assert!(!profile_rows::has_value_area(Method::Delta));
     }
 
     /// A delta offers the colourings that tell a rise from a fall, by the
@@ -3455,9 +3415,9 @@ mod tests {
         let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label()).collect();
         assert_eq!(names, ["Vivid", "Soft", "Quiet"]);
         assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label() == *name)));
-        assert_eq!(PROFILE_FOLLOWS_DEFAULTS, "Default");
-        assert!(has_colouring(Method::Delta));
-        assert!(!has_colouring(Method::Total));
+        assert_eq!(profile_rows::FOLLOWS_DEFAULTS, "Default");
+        assert!(profile_rows::has_colouring(Method::Delta));
+        assert!(!profile_rows::has_colouring(Method::Total));
     }
 
     #[test]

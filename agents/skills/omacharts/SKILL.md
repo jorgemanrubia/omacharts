@@ -319,8 +319,10 @@ its outline, `--fill` its background, `--width` the outline's thickness,
 `--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
 `--profile-style filled|outline`, `--align
 left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`,
-`--value-area-color`, `--poc on|off` and `--rows N|auto` the rest, as the
-study's. The study takes
+`--value-area-color`, `--poc on|off`, `--rows N|auto`,
+`--profile-method total|delta`, `--colouring` and `--profile-width` the
+rest, as the study's; the study's `--outline*` names work too. A delta
+needs a feed with volume at price. The study takes
 `--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
 `--poc-style`, `--transparency` (0 is its colour solid, 1 invisible, 0.7 by
 default), `--highlight-value-area` and `--value-area-color` (`none` for the
