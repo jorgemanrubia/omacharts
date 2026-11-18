@@ -417,7 +417,18 @@ fn placeholder() -> Instrument {
 ///
 /// A snapshot that ends on a bar already closed leaves the next bar to the
 /// trades, and that first bar may have missed some from before the
-/// subscription began: it is asked for again the same way.
+/// subscription began: it is asked for again the same way. Before it
+/// closes, once the plant has the minute its first trade was in, the
+/// minutes it has so far are asked for too and put under the trades
+/// ([`Fold::mend`]): its open, and the high and low it made before
+/// anybody was listening, are the market's rather than the first trade's.
+///
+/// A snapshot can also end short of the bar before the one forming: the
+/// plant has a bar a few seconds after it closes, and a subscription that
+/// starts in those seconds — a switch of chartbook is one — is answered
+/// without it. Nothing else would ever fill that slot, so the first one
+/// missing is asked for once it is due, with everything after it, and so
+/// is a bar the plant folded as forming that closed before it answered.
 ///
 /// Only a trade for a bar older than the one forming is dropped. That bar is
 /// the snapshot's, or is asked for whole.
@@ -430,11 +441,14 @@ struct Fold {
     /// The snapshot's own forming bar, and when the plant answered, in
     /// nanoseconds: a trade in it matched no later than that may be in it.
     counted: Option<(i64, i64)>,
-    /// Bars that may be missing trades, by start: asked for again once they
-    /// have closed.
+    /// Bars that may be missing trades, or missing altogether, by start:
+    /// asked for again, with every bar after them, once they have closed.
     partial: Vec<i64>,
     /// The next new bar is partial.
     fresh: bool,
+    /// The forming bar the trades started part-way through, waiting for
+    /// its finished minutes.
+    seed: Option<Seed>,
     /// A snapshot has arrived: until one has, there is nothing to fold into.
     ready: bool,
     /// Snapshots asked for and not yet answered.
@@ -443,6 +457,24 @@ struct Fold {
     /// older than the newest of them, so they are folded onto it again.
     heard: Vec<rithmic::Trade>,
 }
+
+/// A forming bar started by the first trade heard, which the minutes
+/// before that trade belong in too.
+#[derive(Clone, Copy, Debug)]
+struct Seed {
+    /// The bar's start.
+    start: i64,
+    /// The end of the minute the first trade was in, in seconds: the
+    /// minutes the plant has by then hold every trade before it.
+    after: i64,
+    /// The size of the trades from `after` on, which those minutes do not.
+    volume: f64,
+    /// Asked for already: it is asked once.
+    asked: bool,
+}
+
+/// The plant has a closed minute a few seconds after it closes.
+const SETTLED: i64 = 30;
 
 impl Fold {
     fn new(timeframe: Timeframe, root: &str) -> Fold {
@@ -454,6 +486,7 @@ impl Fold {
             counted: None,
             partial: Vec::new(),
             fresh: true,
+            seed: None,
             ready: false,
             loading: 0,
             heard: Vec::new(),
@@ -473,28 +506,47 @@ impl Fold {
         }
     }
 
-    /// Start again from a snapshot the plant answered at `answered`, in
-    /// nanoseconds. The forming bar, if the trades heard while it was
-    /// fetched moved it past what the snapshot says.
-    fn snapshot(&mut self, bars: &[Bar], answered: i64) -> Option<Bar> {
+    fn bucket(&self, nanos: i64) -> i64 {
+        bucket(nanos.div_euclid(1_000_000_000), self.timeframe, &self.root)
+    }
+
+    /// Start again from a snapshot asked for at `asked` and answered at
+    /// `answered`, both in nanoseconds. The forming bar, if the trades
+    /// heard while it was fetched moved it past what the snapshot says.
+    fn snapshot(&mut self, bars: &[Bar], asked: i64, answered: i64) -> Option<Bar> {
         self.loading = self.loading.saturating_sub(1);
         self.ready = true;
         self.forming = None;
         self.counted = None;
-        let now = bucket(answered.div_euclid(1_000_000_000), self.timeframe, &self.root);
+        self.seed = None;
+        let now = self.bucket(answered);
         match bars.last() {
             Some(last) if last.ts == now => {
                 self.floor = Some(last.ts);
                 self.forming = Some(*last);
                 self.counted = Some((last.ts, answered));
-                if !self.partial.contains(&last.ts) {
-                    self.partial.push(last.ts);
-                }
+                self.owe(last.ts);
                 self.fresh = false;
             }
             last => {
                 self.floor = last.map(|bar| bar.ts + 1);
                 self.fresh = true;
+                if let Some(last) = last {
+                    // Forming when the plant was asked, and closed by the
+                    // time it answered: what it had of the bar then.
+                    if last.ts == self.bucket(asked) {
+                        self.owe(last.ts);
+                    }
+                    // The plant had not got as far as the bar before the
+                    // one forming: the first slot it left out, and the
+                    // rest with it. Intraday only, where every slot is
+                    // the same length and an empty one asked for costs
+                    // one answer with nothing in it.
+                    let next = last.ts + self.timeframe.seconds();
+                    if self.timeframe.is_intraday() && next < now {
+                        self.owe(next);
+                    }
+                }
             }
         }
         let heard = if self.loading == 0 { std::mem::take(&mut self.heard) } else { self.heard.clone() };
@@ -505,6 +557,13 @@ impl Fold {
             }
         }
         moved
+    }
+
+    /// The bar starting at `start` is to be asked for whole once closed.
+    fn owe(&mut self, start: i64) {
+        if !self.partial.contains(&start) {
+            self.partial.push(start);
+        }
     }
 
     /// One trade, as it arrives. The bar it changed, if it changed one.
@@ -532,13 +591,23 @@ impl Fold {
                 bar.low = bar.low.min(trade.price);
                 bar.close = trade.price;
                 bar.volume += volume;
+                if let Some(seed) = self.seed.as_mut().filter(|seed| seed.start == start && ts >= seed.after) {
+                    seed.volume += volume;
+                }
             }
             // A late trade for a bar already behind us: the bar it belongs to
             // is asked for whole once it has closed, so it is dropped here.
             Some(bar) if start < bar.ts => return None,
             _ => {
+                self.seed = None;
                 if std::mem::take(&mut self.fresh) {
-                    self.partial.push(start);
+                    self.owe(start);
+                    // A minute is the finest the plant has: a one-minute
+                    // bar has nothing to be seeded from.
+                    if self.timeframe.seconds() > 60 {
+                        let after = (ts.div_euclid(60) + 1) * 60;
+                        self.seed = Some(Seed { start, after, volume: 0.0, asked: false });
+                    }
                 }
                 self.forming = Some(Bar {
                     ts: start,
@@ -553,16 +622,58 @@ impl Fold {
         self.forming
     }
 
-    /// Partial bars that closed long enough ago for the history plant to
-    /// have them whole, taken off the list.
+    /// What to ask the plant for at `now`, by start: partial bars that
+    /// closed long enough ago for the plant to have them whole, taken off
+    /// the list, and the forming bar's minutes once it has the first.
     fn due(&mut self, now: i64) -> Vec<i64> {
-        // The plant has a closed minute a few seconds after it closes.
-        const SETTLED: i64 = 30;
         let length = self.timeframe.seconds();
-        let (due, waiting): (Vec<i64>, Vec<i64>) =
+        let (mut due, waiting): (Vec<i64>, Vec<i64>) =
             self.partial.iter().partition(|start| **start + length + SETTLED <= now);
         self.partial = waiting;
+        if let Some(seed) = self.seed.as_mut().filter(|seed| !seed.asked && seed.after + SETTLED <= now) {
+            seed.asked = true;
+            if !due.contains(&seed.start) {
+                due.push(seed.start);
+            }
+        }
         due
+    }
+
+    /// What the plant answered, asked at `asked` in nanoseconds, for bars
+    /// from a start on: the bars it changed, oldest first.
+    ///
+    /// A bar that had closed when the plant was asked is whole, and is
+    /// taken as it is. The one forming then is its finished minutes, and
+    /// only the bar the trades started part-way through is put on them:
+    /// their open, the trades' close — the market's last word — and the
+    /// high and low of both. The size is the minutes' and that of the
+    /// trades after them; the bar is asked for whole once closed, which
+    /// settles it.
+    fn mend(&mut self, bars: &[Bar], asked: i64) -> Vec<Bar> {
+        let open = self.bucket(asked);
+        let mut changed = Vec::new();
+        for bar in bars {
+            if bar.ts < open {
+                if let Some(forming) = self.forming.as_mut().filter(|forming| forming.ts == bar.ts) {
+                    *forming = *bar;
+                }
+                changed.push(*bar);
+                continue;
+            }
+            let Some(seed) = self.seed.filter(|seed| seed.asked && seed.start == bar.ts) else { continue };
+            let Some(forming) = self.forming.as_mut().filter(|forming| forming.ts == bar.ts) else { continue };
+            *forming = Bar {
+                ts: bar.ts,
+                open: bar.open,
+                high: bar.high.max(forming.high),
+                low: bar.low.min(forming.low),
+                close: forming.close,
+                volume: bar.volume + seed.volume,
+            };
+            self.seed = None;
+            changed.push(*forming);
+        }
+        changed
     }
 }
 
@@ -570,10 +681,12 @@ impl Fold {
 /// its history thread fetched.
 enum Event {
     Live(rithmic::Live),
-    /// A snapshot, and when the plant answered, in nanoseconds.
-    Loaded { bars: Result<Vec<Bar>, ProviderError>, at: i64 },
-    /// A partial bar, asked for again once it closed, as the plant has it.
-    Whole(Bar),
+    /// A snapshot, and when the plant was asked and answered, in
+    /// nanoseconds.
+    Loaded { bars: Result<Vec<Bar>, ProviderError>, asked: i64, at: i64 },
+    /// A partial bar asked for again once it closed, and the bars after it,
+    /// as the plant has them, and when it was asked, in nanoseconds.
+    Whole { bars: Vec<Bar>, asked: i64 },
     Stop,
 }
 
@@ -581,7 +694,7 @@ enum Event {
 enum Job {
     /// A snapshot, from this time on.
     Snapshot(i64),
-    /// The bar starting then, whole.
+    /// The bar starting then, whole, and every bar after it.
     Whole(i64),
 }
 
@@ -659,14 +772,17 @@ fn fetch(jobs: mpsc::Receiver<Job>, mut load: Load, clock: Clock, back: mpsc::Se
     for job in jobs {
         let event = match job {
             Job::Snapshot(from) => {
+                let asked = clock();
                 let bars = load(from);
-                Event::Loaded { bars, at: clock() }
+                Event::Loaded { bars, asked, at: clock() }
             }
             Job::Whole(start) => {
-                match load(start).ok().and_then(|bars| bars.into_iter().find(|bar| bar.ts == start)) {
-                    Some(whole) => Event::Whole(whole),
-                    None => continue,
+                let asked = clock();
+                let bars: Vec<Bar> = load(start).unwrap_or_default().into_iter().filter(|bar| bar.ts >= start).collect();
+                if bars.is_empty() {
+                    continue;
                 }
+                Event::Whole { bars, asked }
             }
         };
         if back.send(event).is_err() {
@@ -730,9 +846,9 @@ fn serve(
                     return;
                 }
             }
-            Event::Loaded { bars: Ok(bars), at } => {
+            Event::Loaded { bars: Ok(bars), asked, at } => {
                 served = true;
-                let moved = fold.snapshot(&bars, at);
+                let moved = fold.snapshot(&bars, asked, at);
                 if let Some(last) = bars.last() {
                     sent(last, &mut newest);
                 }
@@ -746,7 +862,12 @@ fn serve(
                 fold.failed();
                 say(Update::Lost(FetchFailure::from(&error)));
             }
-            Event::Whole(whole) => say(Update::Bar(whole)),
+            Event::Whole { bars, asked } => {
+                for bar in fold.mend(&bars, asked) {
+                    sent(&bar, &mut newest);
+                    say(Update::Bar(bar));
+                }
+            }
             // The trade a subscription opens with is folded as any other:
             // a finished bar the plant gave already has it and leaves it
             // out, and the bar forming now, which the plant does not give,
@@ -903,6 +1024,8 @@ impl Provider for Rithmic {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     fn instrument(kind: InstrumentKind, symbol: &str) -> Instrument {
@@ -1065,7 +1188,7 @@ mod tests {
         let minute = Timeframe::minutes(1);
         let mut fold = Fold::new(minute, "ES");
         let snapshot = [ohlc(600, 1.0, 1.0, 1.0, 1.0, 1.0), ohlc(660, 3.0, 4.0, 2.0, 3.0, 10.0)];
-        assert_eq!(fold.snapshot(&snapshot, 690 * NANOS), None);
+        assert_eq!(fold.snapshot(&snapshot, 690 * NANOS, 690 * NANOS), None);
 
         assert_eq!(fold.trade(&trade(630, 50.0, 1)), None, "a trade for a closed bar");
         let counted = fold.trade(&trade(689, 5.0, 2)).unwrap();
@@ -1091,7 +1214,7 @@ mod tests {
     fn after_a_snapshot_of_closed_bars_the_next_bar_is_built_and_asked_for_again() {
         let minute = Timeframe::minutes(1);
         let mut fold = Fold::new(minute, "ES");
-        fold.snapshot(&[ohlc(600, 1.0, 1.0, 1.0, 1.0, 1.0)], 665 * NANOS);
+        fold.snapshot(&[ohlc(600, 1.0, 1.0, 1.0, 1.0, 1.0)], 665 * NANOS, 665 * NANOS);
         assert_eq!(fold.trade(&trade(630, 5.0, 2)), None, "the snapshot's own minute");
 
         let first = fold.trade(&trade(666, 10.0, 2)).unwrap();
@@ -1111,7 +1234,7 @@ mod tests {
         fold.asking();
         assert_eq!(fold.trade(&trade(670, 2.0, 1)), None);
         assert_eq!(fold.trade(&trade(680, 9.0, 5)), None);
-        let moved = fold.snapshot(&[ohlc(660, 3.0, 4.0, 2.0, 3.0, 10.0)], 675 * NANOS).unwrap();
+        let moved = fold.snapshot(&[ohlc(660, 3.0, 4.0, 2.0, 3.0, 10.0)], 675 * NANOS, 675 * NANOS).unwrap();
         assert_eq!((moved.high, moved.low, moved.close, moved.volume), (9.0, 2.0, 9.0, 15.0));
     }
 
@@ -1489,6 +1612,192 @@ mod tests {
     /// The test that matters most about errors: a login refused, or
     /// missing, is something to sign in again about rather than a network
     /// failure to sit out; and none of them can carry a password.
+    /// The history plant as it is at `now`: the bars of `minutes` it has
+    /// finished and settled, `lag` seconds after each closes, at
+    /// `timeframe` from `from` on, and the bar forming at `now` folded from
+    /// the minutes it has of it, as [`front_month_bars`] asks.
+    fn plant(minutes: &[Bar], timeframe: Timeframe, lag: i64, now: i64, from: i64) -> Vec<Bar> {
+        let settled = |length: i64| move |bar: &Bar| bar.ts + length + lag <= now;
+        let finished: Vec<Bar> = minutes.iter().copied().filter(settled(60)).collect();
+        let mut bars: Vec<Bar> = Vec::new();
+        for minute in &finished {
+            let start = bucket(minute.ts, timeframe, "ES");
+            match bars.last_mut() {
+                Some(bar) if bar.ts == start => {
+                    bar.high = bar.high.max(minute.high);
+                    bar.low = bar.low.min(minute.low);
+                    bar.close = minute.close;
+                    bar.volume += minute.volume;
+                }
+                _ => bars.push(Bar { ts: start, ..*minute }),
+            }
+        }
+        bars.retain(|bar| bar.ts >= from && settled(timeframe.seconds())(bar));
+        with_forming(bars, timeframe, "ES", now, |from| Ok(finished.iter().copied().filter(|bar| bar.ts >= from).collect()))
+    }
+
+    /// Every update a served subscription sends, put together as the
+    /// window's series does, until `done` says it has enough.
+    fn drawn(served: &Served, series: &mut Vec<Bar>, done: impl Fn(&[Bar]) -> bool) {
+        while !done(series) {
+            match served.next() {
+                Update::Snapshot(bars) => *series = bars,
+                Update::Bar(bar) => {
+                    crate::stream::upsert(series, bar);
+                }
+                Update::Lost(why) => panic!("lost: {why:?}"),
+            }
+        }
+    }
+
+    /// The bug, as a switch of chartbook met it on two-minute bars: the
+    /// subscription opened a few seconds into a bar, before the plant had
+    /// settled the one that just closed. The snapshot ended a bar short,
+    /// the bar forming was started by the first trade heard, and nothing
+    /// ever asked for the bar in between: the chart's last bar sat far from
+    /// the close before it, with none of what its interval had done before
+    /// the switch. The missing bar is asked for once the plant has it, and
+    /// the forming bar is put on its finished minutes once there is one:
+    /// no slot is missing, and the last bar opens where its interval did.
+    #[test]
+    fn a_chart_switched_to_early_in_a_bar_misses_no_bar_and_none_of_the_forming_one() {
+        let two = Timeframe::minutes(2);
+        // A two-minute boundary, and the chart's cache ten minutes behind it.
+        let bar = AT;
+        let since = bar - 600;
+        // A market climbing a point a minute, and then the forming bar's
+        // first minute: its open, its high and its low all made before the
+        // switch, and the minute after it.
+        let mut minutes: Vec<Bar> = (0..20)
+            .map(|i| {
+                let price = 100.0 + f64::from(i);
+                ohlc(bar - 1_200 + 60 * i64::from(i), price, price + 0.75, price - 0.25, price + 0.5, 10.0)
+            })
+            .collect();
+        minutes.push(ohlc(bar, 120.0, 126.0, 119.0, 125.0, 10.0));
+        minutes.push(ohlc(bar + 60, 125.0, 127.0, 124.5, 127.0, 7.0));
+        let truth = plant(&minutes, two, 0, bar + 120, 0);
+
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let reading = clock.clone();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let asking = asked.clone();
+        let fed = minutes.clone();
+        let served = Served::start_at(two, Some(since), bar + 10, move |from| {
+            asking.lock().unwrap().push(from);
+            // The plant settles a bar twenty seconds after it closes.
+            Ok(plant(&fed, two, 20, reading.load(Ordering::SeqCst), from))
+        });
+        let at = |seconds: i64| {
+            served.at(seconds);
+            clock.store(seconds, Ordering::SeqCst);
+        };
+        at(bar + 10);
+        served.watching();
+        let mut series = Vec::new();
+        drawn(&served, &mut series, |series| !series.is_empty());
+        assert_eq!(series.last().map(|bar| bar.ts), Some(bar - 240), "the plant had not settled the bar before");
+
+        // The first trade heard starts the forming bar, part-way through.
+        served.trade(bar + 15, 124.0, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.ts == bar));
+        assert_eq!(series.last().map(|last| last.open), Some(124.0), "as far as the trades go");
+
+        // Once the plant has it, the bar left out is asked for, and drawn.
+        at(bar + 31);
+        served.trade(bar + 31, 125.0, 1);
+        drawn(&served, &mut series, |series| series.iter().any(|drawn| drawn.ts == bar - 120));
+
+        // Once the plant has the minute the first trade was in, the forming
+        // bar is put on its minutes: its open, high and low are the
+        // interval's, its close the last trade's.
+        at(bar + 91);
+        served.trade(bar + 91, 127.0, 2);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.open == 120.0));
+
+        let slots: Vec<i64> = series.iter().map(|drawn| drawn.ts).filter(|ts| *ts >= since).collect();
+        assert_eq!(slots, (0..=5).map(|i| since + 120 * i).collect::<Vec<_>>(), "no slot missing");
+        for drawn in series.iter().filter(|drawn| drawn.ts < bar) {
+            assert_eq!(Some(drawn), truth.iter().find(|whole| whole.ts == drawn.ts), "{}", drawn.ts);
+        }
+        let last = *series.last().unwrap();
+        assert_eq!((last.ts, last.open, last.high, last.low, last.close), (bar, 120.0, 127.0, 119.0, 127.0));
+        assert_eq!(last.volume, 12.0, "the first minute's, and the trades after it");
+        // Two asks besides the snapshot, each once.
+        assert_eq!(asked.lock().unwrap().len(), 3, "{:?}", asked.lock().unwrap());
+    }
+
+    /// The same switch half a bar later: the plant has the bar before, and
+    /// the forming bar's first minute, and the snapshot draws it from them,
+    /// with nothing more to ask until it closes.
+    #[test]
+    fn a_chart_switched_to_late_in_a_bar_draws_it_from_its_minutes() {
+        let two = Timeframe::minutes(2);
+        let bar = AT;
+        let minutes = vec![
+            ohlc(bar - 120, 100.0, 101.0, 99.0, 100.5, 10.0),
+            ohlc(bar - 60, 100.5, 102.0, 100.0, 101.0, 10.0),
+            ohlc(bar, 110.0, 115.0, 109.0, 114.0, 10.0),
+        ];
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = calls.clone();
+        let served = Served::start_at(two, Some(bar - 120), bar + 85, move |from| {
+            counting.fetch_add(1, Ordering::SeqCst);
+            Ok(plant(&minutes, two, 20, bar + 85, from))
+        });
+        served.watching();
+        let mut series = Vec::new();
+        drawn(&served, &mut series, |series| !series.is_empty());
+        served.trade(bar + 86, 113.0, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.close == 113.0));
+        let last = *series.last().unwrap();
+        assert_eq!((last.ts, last.open, last.high, last.low), (bar, 110.0, 115.0, 109.0));
+        assert_eq!(series.iter().map(|drawn| drawn.ts).collect::<Vec<_>>(), vec![bar - 120, bar]);
+        served.at(bar + 100);
+        served.trade(bar + 100, 112.0, 1);
+        assert_eq!(served.bar().close, 112.0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "nothing asked before the bar closes");
+    }
+
+    /// A bar the plant folded as forming when it was asked, and which had
+    /// closed by the time it answered, is only what it had then: it is
+    /// asked for whole, as the snapshot's forming bar would be.
+    #[test]
+    fn a_forming_bar_closed_before_the_plant_answered_is_asked_for_whole() {
+        let mut fold = Fold::new(Timeframe::minutes(2), "ES");
+        let snapshot = [ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0), ohlc(AT, 1.0, 2.0, 1.0, 2.0, 5.0)];
+        fold.snapshot(&snapshot, (AT + 110) * NANOS, (AT + 125) * NANOS);
+        assert!(fold.trade(&trade(AT + 126, 3.0, 1)).is_some());
+        assert!(fold.due(AT + 120 + 29).is_empty());
+        assert_eq!(fold.due(AT + 120 + 30), vec![AT]);
+    }
+
+    /// A one-minute bar has nothing finer to be seeded from: the trades
+    /// start it, it is asked for whole once closed, and nothing is asked
+    /// before then.
+    #[test]
+    fn a_minute_is_not_seeded() {
+        let mut fold = Fold::new(Timeframe::minutes(1), "ES");
+        fold.snapshot(&[ohlc(AT - 60, 1.0, 1.0, 1.0, 1.0, 1.0)], (AT + 5) * NANOS, (AT + 5) * NANOS);
+        fold.trade(&trade(AT + 10, 2.0, 1)).unwrap();
+        assert!(fold.due(AT + 59).is_empty());
+        assert_eq!(fold.due(AT + 90), vec![AT]);
+    }
+
+    /// A snapshot that ends at the close before a halt, answered as the
+    /// market reopens, asks once for the hour in between, which has
+    /// nothing, rather than a bar at a time.
+    #[test]
+    fn a_halt_is_asked_for_once() {
+        let mut fold = Fold::new(Timeframe::minutes(2), "ES");
+        let reopens = AT + 3_720;
+        fold.snapshot(&[ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0)], reopens * NANOS, (reopens + 2) * NANOS);
+        fold.trade(&trade(reopens + 3, 2.0, 1)).unwrap();
+        assert_eq!(fold.due(reopens + 4), vec![AT]);
+        assert_eq!(fold.mend(&[], reopens * NANOS), vec![]);
+        assert!(fold.due(reopens + 60).is_empty());
+    }
+
     #[test]
     fn a_refusal_is_a_sign_in_in_rithmics_words() {
         let mapped = map_err("acme-mapped", rithmic::Error::Refused("permission denied".into()));
