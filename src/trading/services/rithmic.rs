@@ -531,8 +531,9 @@ impl Session for RithmicSession {
     }
 
     /// The account list asked for again on the order plant the session
-    /// has, the new accounts' orders and P&L subscribed to there, and then
-    /// everything refreshed. Nothing signs out.
+    /// has, and then everything refreshed. A new account signs the trading
+    /// plants in again first, as Rithmic serves its P&L and limits only to
+    /// a sign-in made since it opened; the session stays as it is.
     fn sync(&self) -> Result<(), String> {
         self.trading.relist().map_err(said)?;
         self.refresh()

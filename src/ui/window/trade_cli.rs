@@ -444,6 +444,11 @@ mod tests {
             assert!(panel.can_sync());
             assert_eq!(listed(&window), 2, "the new account listed");
             assert!(panel.accounts_and_positions().iter().any(|text| text.contains("952")), "{:?}", panel.accounts_and_positions());
+            assert!(
+                panel.accounts_and_positions().iter().any(|text| text.contains("25,000")),
+                "the new account's balance, live: {:?}",
+                panel.accounts_and_positions()
+            );
             assert!(trading::accounts(&window.store).iter().any(|account| account.key() == format!("{login}/952")));
             assert!(window.desk.live(&login), "still signed in");
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "still held");
