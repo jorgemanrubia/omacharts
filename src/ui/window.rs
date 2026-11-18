@@ -10667,10 +10667,21 @@ impl Window {
         if let Some(first) = bars.first() {
             source.at_price.want(pane.id, &source.key, &source.symbol, instrument, first.ts);
         }
-        let drawn = source.at_price.with_held(&source.key, |held| compute(&context.with_ladders(held)));
+        // Ladders on their way are waited for: a profile drawn from the bars
+        // now would be redrawn from them in a moment, rows and shape.
+        let loading = source.at_price.loading(&source.key);
+        let draw = || {
+            source.at_price.with_held(&source.key, |held| {
+                compute(&context.with_ladders(held).awaiting_ladders(held.is_none() && loading))
+            })
+        };
+        let drawn = draw();
         // Days a period cut and whose minutes are not in memory yet: read,
-        // and the chart drawn again when they are.
-        source.at_price.load_wanted(&source.key);
+        // and the chart drawn again when they are. Those there is no room
+        // for are drawn estimated straight away.
+        if source.at_price.load_wanted(&source.key) {
+            return draw();
+        }
         drawn
     }
 
@@ -11738,6 +11749,10 @@ impl Window {
         for feed in self.feeds() {
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch_all();
+                // On idle, as a series is: the next chartbook's charts take
+                // up what they share with these first.
+                let at_price = at_price.clone();
+                glib::idle_add_local_once(move || at_price.reap());
             }
         }
     }

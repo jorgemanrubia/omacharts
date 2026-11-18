@@ -196,7 +196,7 @@ fn main() {
             let (first, last) = (slice.first()?, slice.last()?);
             Some(series.volume_at_price(first.ts, last.ts + seconds))
         };
-        let at = AtPrice { tick_size: TICK, of: &of };
+        let at = AtPrice { tick_size: TICK, of: &of, coming: &|_| false };
         for ((source, at_price), (period, reset)) in [("ladders", Some(&at)), ("estimated", None)]
             .into_iter()
             .flat_map(|source| [("session", Reset::Session), ("week", Reset::Week)].map(|reset| (source, reset)))

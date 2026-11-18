@@ -1232,6 +1232,11 @@ pub struct Context<'a> {
     /// its indicators wants it. `None` on every chart of a source without
     /// ladders, which is then computed exactly as it always was.
     pub ladders: Option<&'a Held>,
+    /// The chart's source has ladders of it and they are being read, so
+    /// `ladders` is `None` only for now. A volume profile draws nothing
+    /// until they come, rather than an estimate from the bars that would be
+    /// replaced, rows and shape, a moment later.
+    pub awaiting_ladders: bool,
     /// What a cumulative delta worked out on this chart last time, so a
     /// tick works out only the newest bars again. `None` works out every
     /// bar every time.
@@ -1248,6 +1253,7 @@ impl<'a> Context<'a> {
             instrument: Some(instrument),
             zone,
             ladders: None,
+            awaiting_ladders: false,
             memos: None,
         }
     }
@@ -1255,6 +1261,12 @@ impl<'a> Context<'a> {
     /// The same chart, with its ladders.
     pub fn with_ladders(self, ladders: Option<&'a Held>) -> Context<'a> {
         Context { ladders, ..self }
+    }
+
+    /// The same chart, its ladders on their way: see
+    /// [`Context::awaiting_ladders`].
+    pub fn awaiting_ladders(self, awaiting: bool) -> Context<'a> {
+        Context { awaiting_ladders: awaiting, ..self }
     }
 
     /// The same chart, keeping what it worked out from one computation to
@@ -1299,6 +1311,7 @@ pub fn compute(
         instrument: None,
         zone: crate::clock::ChartZone::default().for_instrument(None),
         ladders: None,
+        awaiting_ladders: false,
         memos: None,
     };
     compute_in(indicator, bars, &context)
@@ -1413,6 +1426,10 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             if let Some(unmet) = unmet(Needs::VolumeAtPrice, context).filter(|_| *method == profile::Method::Delta) {
                 return unmet;
             }
+            // Exact in a moment: nothing until then, never the estimate.
+            if context.ladders.is_none() && context.awaiting_ladders {
+                return Output::Profiles(Vec::new());
+            }
             // Days are cut by the exchange's calendar, which needs the
             // instrument; a chart without one has no ladders either.
             let days = context.ladders.and(context.instrument).map(Days::new);
@@ -1420,10 +1437,17 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 (Some(held), Some(days)) => ladder_of(held, days, timeframe, run),
                 _ => None,
             };
+            // A day's piece still being read; whole days need none.
+            let coming = |run: &[Bar]| match (context.ladders, run.first(), run.last()) {
+                (Some(held), Some(first), Some(last)) if timeframe.is_intraday() => {
+                    held.coming(first.ts, last.ts + timeframe.seconds())
+                }
+                _ => false,
+            };
             let at_price = context
                 .ladders
                 .filter(|_| days.is_some())
-                .map(|held| profile::AtPrice { tick_size: held.tick_size, of: &of });
+                .map(|held| profile::AtPrice { tick_size: held.tick_size, of: &of, coming: &coming });
             Output::Profiles(profile::compute_with(
                 bars,
                 reset.effective_for(timeframe),
@@ -2705,6 +2729,64 @@ mod tests {
             let whole = |p: &Profile| p.rows.iter().all(|r| r.volume.fract() == 0.0);
             assert!(!whole(&exact[0]) && !whole(&exact[1]), "before the floor");
             assert!(whole(&exact[2]), "after it");
+        }
+
+        /// Ladders on their way are waited for, never estimated meanwhile:
+        /// a chart whose ladders are still loading draws no profile, and a
+        /// period whose piece of a day is still being read draws none
+        /// either, then the exact one when it is in. Where the ladder will
+        /// not come — a piece the store lacks, a source with no ladders — the
+        /// estimate is drawn as it always was.
+        #[test]
+        fn a_profile_waits_for_ladders_on_their_way_rather_than_estimating() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            // Ten hours into the first session: its period cuts that day.
+            let bars = &bars[600..];
+            let days = series
+                .days
+                .iter()
+                .map(|d| crate::ladders::HeldDay::total(d.day, d.first_ts().unwrap(), d.last_ts().unwrap(), d.total.clone()))
+                .collect::<Vec<_>>();
+            let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
+            let mut held = Held { tick_size: TICK, days, floor, floor_day: i64::MIN, ..Held::default() };
+            let whole = |p: &Profile| p.rows.iter().all(|r| r.volume.fract() == 0.0);
+
+            // Loading: nothing at all, where the estimate used to be drawn.
+            let mut indicator = Indicator::new(1, Kind::VolumeProfile);
+            if let Params::VolumeProfile { reset, .. } = &mut indicator.params {
+                *reset = Reset::Session;
+            }
+            let bare = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC);
+            let profiles = |context: &Context| match compute_in(&indicator, bars, context) {
+                Output::Profiles(profiles) => profiles,
+                other => panic!("not profiles: {other:?}"),
+            };
+            assert!(profiles(&bare.awaiting_ladders(true)).is_empty(), "nothing while they load");
+            let estimated = profiles(&bare);
+            assert_eq!(estimated.len(), 3, "a source without ladders draws the estimate");
+            assert!(!whole(&estimated[0]));
+
+            // Loaded by day totals: the cut session waits for its piece.
+            let waiting = profile_of(bars, &instrument, None, Some(&held));
+            assert_eq!(waiting.len(), 2, "the cut session is not drawn yet");
+            assert!(waiting.iter().all(whole), "the others are exact");
+            let wanted = held.take_wanted();
+            assert_eq!(wanted.len(), 1);
+
+            // The store turns out not to have it: estimated, as before.
+            held.missing.insert(wanted[0]);
+            let kept = profile_of(bars, &instrument, None, Some(&held));
+            assert_eq!(kept.len(), 3);
+            assert!(!whole(&kept[0]), "estimated");
+
+            // In: exact, on the first frame it is drawn.
+            let day = series.days.iter().find(|d| d.day == wanted[0].day).unwrap();
+            assert!(held.put_piece(wanted[0], day.piece(wanted[0].from, wanted[0].to)));
+            assert!(held.missing.is_empty(), "no longer missing");
+            let exact = profile_of(bars, &instrument, None, Some(&held));
+            assert_eq!(exact.len(), 3);
+            assert!(exact.iter().all(whole), "every session exact");
         }
 
         /// The mechanism an indicator that needs volume at price stands on:

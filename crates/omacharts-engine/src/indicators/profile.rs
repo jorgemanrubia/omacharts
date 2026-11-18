@@ -579,6 +579,10 @@ pub struct AtPrice<'a> {
     /// whole — before the source's history begins, say. That period keeps
     /// the estimate.
     pub of: &'a dyn Fn(&[Bar]) -> Option<Ladder>,
+    /// Whether the ladder of these bars, unknown now, is on its way: that
+    /// period draws nothing rather than an estimate it would be redrawn
+    /// over a moment later.
+    pub coming: &'a dyn Fn(&[Bar]) -> bool,
 }
 
 /// [`compute`], drawing each period from the volume that actually traded at
@@ -586,7 +590,9 @@ pub struct AtPrice<'a> {
 /// not know, the volume of each bar is spread over its range as always.
 ///
 /// A [`Method::Delta`] profile has nothing to spread: which side a trade took
-/// is not in a bar. A period `at_price` does not know has no profile.
+/// is not in a bar. A period `at_price` does not know has no profile, and
+/// nor has one whose ladder it says is coming: the estimate would be drawn
+/// for a moment, a different shape on coarser rows, and then replaced.
 ///
 /// `last_only` profiles the newest period alone, exactly as it is profiled
 /// beside the others: its rows are still of the height every period's
@@ -624,6 +630,9 @@ pub fn compute_with(
             let ladder = (at.of)(slice)?;
             ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
         });
+        if exact.is_none() && at_price.is_some_and(|at| (at.coming)(slice)) {
+            continue;
+        }
         let profile = match (exact, method) {
             (Some((ladder, tick)), _) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick, method),
             (None, Method::Total) => one(slice, start, bucket, grid, value_area),
@@ -1358,7 +1367,7 @@ mod tests {
                     asked.borrow_mut().push(run[0].ts / DAY);
                     None
                 };
-                let at = AtPrice { tick_size: 0.01, of: &of };
+                let at = AtPrice { tick_size: 0.01, of: &of, coming: &|_| false };
                 let kind = Some(InstrumentKind::Equity);
                 let all = compute_with(&bars, Reset::Session, 0, rows, 0.7, kind, merged, Some(&at), Method::Total, false);
                 asked.borrow_mut().clear();
@@ -1495,7 +1504,7 @@ mod tests {
 
     fn with_ladders(bars: &[Bar], rows: Option<usize>, tick: f64) -> Vec<Profile> {
         let of = |run: &[Bar]| every_tick_of(run, tick);
-        let at = AtPrice { tick_size: tick, of: &of };
+        let at = AtPrice { tick_size: tick, of: &of, coming: &|_| false };
         let kind = Some(InstrumentKind::FutureRoot);
         compute_with(bars, Reset::Session, 0, rows, 0.7, kind, &[], Some(&at), Method::Total, false)
     }
