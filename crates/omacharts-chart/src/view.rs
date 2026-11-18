@@ -1779,10 +1779,16 @@ impl State {
     /// The volume profile a profile drawing shows: of the bars between its
     /// two anchors, on this chart's own bars.
     fn span_profile(&self, drawing: &Drawing) -> Option<Profile> {
-        self.span_profile_or_why(drawing).ok().flatten()
+        self.with_span_profile(drawing, |profile| profile.as_ref().ok().cloned().flatten())
     }
 
-    /// [`Self::span_profile`], or why a profile drawing cannot be drawn on
+    /// Why a profile drawing cannot be drawn on this chart at all, if it
+    /// cannot: read where it is kept, nothing copied.
+    fn span_refused(&self, drawing: &Drawing) -> Option<&'static str> {
+        self.with_span_profile(drawing, |profile| profile.as_ref().err().copied())
+    }
+
+    /// What `read_it` makes of [`Self::span_profile`], or of why a profile drawing cannot be drawn on
     /// this chart at all: a delta on a chart whose feed does not say which
     /// side each trade took, which the study says in the same words.
     ///
@@ -1790,15 +1796,16 @@ impl State {
     /// traded at each price when the chart's feed has it — waiting for it,
     /// drawing nothing, while it is on its way — and estimated from the
     /// bars when it has not.
-    fn span_profile_or_why(&self, drawing: &Drawing) -> SpanProfile {
+    fn with_span_profile<T>(&self, drawing: &Drawing, read_it: impl FnOnce(&SpanProfile) -> T) -> T {
         let (from, to) = (drawing.from.ts.min(drawing.to.ts), drawing.from.ts.max(drawing.to.ts));
         let first = self.bars.partition_point(|bar| bar.ts < from);
         let end = self.bars.partition_point(|bar| bar.ts <= to);
         if first >= end {
-            return Ok(None);
+            return read_it(&Ok(None));
         }
+        // Where it is kept once worked out; read there, nothing copied.
+        let mut kept = None;
         let look = &drawing.style(&self.configs).profile;
-        let mut out = None;
         let mut work = |held: Option<&omacharts_engine::ladders::Held>, awaiting: bool| {
             // The last bar's volume as well as its time: a live bar grows in
             // place, and a profile over it has to grow with it.
@@ -1812,8 +1819,8 @@ impl State {
                 method: look.method,
                 ladders: ladders_now(held, awaiting),
             };
-            if let Some((_, profile)) = self.profile_cache.borrow().iter().find(|(k, _)| *k == key) {
-                out = Some(profile.clone());
+            kept = Some(key);
+            if self.profile_cache.borrow().iter().any(|(k, _)| *k == key) {
                 return;
             }
             let profile = match &self.instrument {
@@ -1845,14 +1852,17 @@ impl State {
             if cache.len() >= 32 {
                 let _ = cache.remove(0);
             }
-            cache.push((key, profile.clone()));
-            out = Some(profile);
+            cache.push((key, profile));
         };
         match &self.volume_at_price {
             Some(read) => read(self.bars[0].ts, &mut work),
             None => work(None, false),
         }
-        out.unwrap_or(Ok(None))
+        let cache = self.profile_cache.borrow();
+        match kept.and_then(|key| cache.iter().find(|(k, _)| *k == key)) {
+            Some((_, profile)) => read_it(profile),
+            None => read_it(&Ok(None)),
+        }
     }
 
     /// The anchored VWAP a VWAP drawing shows, and the bar it starts from:
@@ -10361,7 +10371,7 @@ fn draw_unmet(cr: &cairo::Context, state: &State, plot_x: f64, bottom: f64) {
     let drawings = state
         .show_drawings
         .then(|| {
-            state.drawings.iter().filter(|d| d.kind == DrawingKind::Profile).find_map(|d| state.span_profile_or_why(d).err())
+            state.drawings.iter().filter(|d| d.kind == DrawingKind::Profile).find_map(|d| state.span_refused(d))
         })
         .flatten()
         .map(|why| format!("{} · {why}", DrawingKind::Profile.label()));
