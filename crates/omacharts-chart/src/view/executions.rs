@@ -60,6 +60,10 @@ pub struct Executions {
     pub won: String,
     pub lost: String,
     pub even: String,
+    /// One trip to read the chart for, as the moments it opened and closed:
+    /// its fills and its line drawn as always, every other one faint. `None`
+    /// draws them all alike.
+    pub emphasis: Option<(i64, i64)>,
 }
 
 impl Executions {
@@ -85,6 +89,14 @@ const TRIP_DASH: [f64; 2] = [1.5, 2.5];
 /// How strongly the trip line is drawn: under the triangles, quieter than
 /// they are, so a busy day reads as its fills first.
 const TRIP_ALPHA: f64 = 0.85;
+
+/// How strongly everything but the emphasised trip is drawn, when one is.
+const MUTED_ALPHA: f64 = 0.25;
+
+/// Whether a moment is inside the emphasised trip, if there is one.
+fn emphasised(emphasis: Option<(i64, i64)>, ts: i64) -> bool {
+    emphasis.is_none_or(|(from, to)| ts >= from && ts <= to)
+}
 
 /// Where a fill falls among the bars: the index of the bar it is part of,
 /// or `None` when it falls in a gap between two, out of the hours the
@@ -143,7 +155,11 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             Some(false) => &executions.lost,
             None => &executions.even,
         };
-        colors::set_source_alpha(cr, colour, TRIP_ALPHA);
+        let alpha = match executions.emphasis {
+            Some((from, _)) if trip.from.0 != from => MUTED_ALPHA,
+            _ => TRIP_ALPHA,
+        };
+        colors::set_source_alpha(cr, colour, alpha);
         cr.move_to(x_of(state, plan, trip.from.0), to_y(trip.from.1));
         cr.line_to(x_of(state, plan, trip.to.0), to_y(trip.to.1));
         let _ = cr.stroke();
@@ -155,6 +171,7 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
     let end = executions.marks.partition_point(|mark| mark.ts < to);
     // Just past the body, which is most of the column.
     let off = bar_w * BODY_HALF + STAND_OFF;
+    let (length, half) = (LENGTH * state.execution_scale, HALF * state.execution_scale);
     cr.set_line_width(1.0);
     for mark in &executions.marks[start..end] {
         let Some(at) = bar_of(state, mark.ts) else { continue };
@@ -169,10 +186,14 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             }
             let tip = x + side * off;
             cr.move_to(tip, y);
-            cr.line_to(tip + side * LENGTH, y - HALF);
-            cr.line_to(tip + side * LENGTH, y + HALF);
+            cr.line_to(tip + side * length, y - half);
+            cr.line_to(tip + side * length, y + half);
             cr.close_path();
-            colors::set_source(cr, colour);
+            if emphasised(executions.emphasis, mark.ts) {
+                colors::set_source(cr, colour);
+            } else {
+                colors::set_source_alpha(cr, colour, MUTED_ALPHA);
+            }
             let _ = cr.fill_preserve();
             // A hairline of the ground round it, so it reads over a candle
             // of its own colour.
@@ -250,5 +271,37 @@ mod tests {
             ..colours
         };
         assert!(picture(&state) != bare, "a fill in view was not drawn");
+    }
+
+    /// Emphasis covering every fill draws what no emphasis draws; one that
+    /// leaves a fill out draws that fill fainter.
+    #[test]
+    fn an_emphasised_trip_leaves_itself_alone_and_quiets_the_rest() {
+        let mut state = state();
+        let (width, height) = (400.0, 300.0);
+        let picture = |state: &State| {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32).unwrap();
+            super::super::draw(&cairo::Context::new(&surface).unwrap(), width, height, state);
+            surface.data().unwrap().to_vec()
+        };
+        let (open, close) = (state.bars[1].ts + 60, state.bars[2].ts + 60);
+        state.executions = Executions {
+            marks: vec![
+                ExecutionMark { ts: open, price: 100.0, buy: true, opens: true, closes: false },
+                ExecutionMark { ts: close, price: 100.5, buy: false, opens: false, closes: true },
+            ],
+            trips: vec![TripLine { from: (open, 100.0), to: (close, 100.5), won: Some(true) }],
+            buy: "#00ff00".into(),
+            sell: "#ff0000".into(),
+            won: "#00ff00".into(),
+            lost: "#ff0000".into(),
+            even: "#888888".into(),
+            emphasis: None,
+        };
+        let plain = picture(&state);
+        state.executions.emphasis = Some((open, close));
+        assert!(picture(&state) == plain, "emphasising the only trip changed it");
+        state.executions.emphasis = Some((close + 1, close + 2));
+        assert!(picture(&state) != plain, "a trip outside the emphasis was drawn as before");
     }
 }

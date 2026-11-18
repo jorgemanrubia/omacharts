@@ -42,15 +42,17 @@ impl Scale {
     }
 }
 
-/// Scales stored prices, by division where that is exact.
+/// Scales stored prices, by division where that is exact: what
+/// [`Scale::real`] does, made once for a run of records rather than once a
+/// price, and what the folds price every record with.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Scaler {
+pub enum Scaler {
     Multiply(f64),
     Divide(f64),
 }
 
 impl Scaler {
-    pub(crate) fn new(multiplier: f64) -> Scaler {
+    pub fn new(multiplier: f64) -> Scaler {
         if multiplier > 0.0 && multiplier < 1.0 {
             let d = (1.0 / multiplier).round();
             if d <= 1e15 && (1.0 / d - multiplier).abs() <= multiplier * 1e-12 {
@@ -61,7 +63,7 @@ impl Scaler {
     }
 
     #[inline(always)]
-    pub(crate) fn apply(self, stored: f32) -> f64 {
+    pub fn apply(self, stored: f32) -> f64 {
         match self {
             Scaler::Multiply(m) => f64::from(stored) * m,
             Scaler::Divide(d) => f64::from(stored) / d,

@@ -409,7 +409,9 @@ fn daily(opened: &Opened, stem: &str, since: Option<i64>) -> Result<Vec<Bar>, Pr
             close: day.close * multiplier,
             volume: day.volume as f64,
         })
-        .filter(|bar| bar.ts >= from && bar.close.is_finite() && bar.close > 0.0)
+        // A negative or zero settlement is a price — crude oil, April 2020 —
+        // and only a close that is not a number is left out.
+        .filter(|bar| bar.ts >= from && bar.close.is_finite())
         .collect())
 }
 
@@ -609,18 +611,20 @@ impl Forming {
         let mut changed: Vec<Bar> = Vec::new();
         for record in records {
             let close = f64::from(record.close) * self.multiplier;
-            if !close.is_finite() || close <= 0.0 {
+            // A negative or zero price is a price; only a close that is not
+            // a number is left out, as the fold of the file leaves it out.
+            if !close.is_finite() {
                 continue;
             }
             // A trade's open, high and low are not trade prices: its high
-            // and low are the ask and the bid.
+            // and low are the ask and the bid. A bar written with its high
+            // below its low has the two the wrong way round.
             let (open, high, low) = match record.is_tick() {
                 true => (close, close, close),
-                false => (
-                    f64::from(record.open) * self.multiplier,
-                    f64::from(record.high) * self.multiplier,
-                    f64::from(record.low) * self.multiplier,
-                ),
+                false => {
+                    let (high, low) = (f64::from(record.high) * self.multiplier, f64::from(record.low) * self.multiplier);
+                    (f64::from(record.open) * self.multiplier, high.max(low), high.min(low))
+                }
             };
             let start = self.buckets.start(record.unix_seconds());
             let volume = f64::from(record.volume);

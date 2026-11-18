@@ -137,13 +137,7 @@ impl Memos {
 /// closed above its open, sold below, and for one that closed where it
 /// opened, the side of its close against `previous`, or nought.
 pub fn estimate(bar: &Bar, previous: Option<f64>) -> f64 {
-    let volume = if bar.volume.is_finite() { bar.volume.max(0.0) } else { 0.0 };
-    let sign = |a: f64, b: f64| if a > b { 1.0 } else if a < b { -1.0 } else { 0.0 };
-    let side = match sign(bar.close, bar.open) {
-        0.0 => previous.map_or(0.0, |previous| sign(bar.close, previous)),
-        side => side,
-    };
-    side * volume
+    omacharts_studies::cvd::estimate(bar, previous)
 }
 
 /// The running delta of `bars`, starting again at each `reset` period

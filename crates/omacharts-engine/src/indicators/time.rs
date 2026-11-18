@@ -525,4 +525,32 @@ mod tests {
             assert_eq!(Preset::from_key(preset.key()), Some(preset));
         }
     }
+
+    /// Hours a program keeps itself replace the exchange's: the regular
+    /// session shaded is the one it says, ten to eleven New York time.
+    #[test]
+    fn a_schedule_of_the_programs_own_is_the_one_kept() {
+        use crate::exchanges::{Exchange, Hours, Part, Segment};
+        let bars = half_hourly_es();
+        let hours = Hours::new(
+            "own",
+            [true, true, true, true, true, false, true],
+            18 * 60,
+            true,
+            vec![
+                Segment { part: Part::Overnight, start: 18 * 60, end: 24 * 60 + 10 * 60 },
+                Segment { part: Part::Regular, start: 24 * 60 + 10 * 60, end: 24 * 60 + 11 * 60 },
+                Segment { part: Part::Post, start: 24 * 60 + 11 * 60, end: 24 * 60 + 17 * 60 },
+            ],
+        );
+        let exchange = Exchange::new("OWN", New_York);
+        let own = Some(Schedule { exchange: &exchange, hours: &hours });
+        let rth = session_times(&bars, half_hour(), &[Preset::Rth.range()], New_York, own);
+        assert_eq!(rth.spans.len(), 3, "one regular session a day");
+        for span in &rth.spans {
+            let opens = New_York.timestamp_opt(bars[span.from].ts, 0).unwrap();
+            assert_eq!(opens.format("%H:%M").to_string(), "10:00");
+            assert_eq!(span.to - span.from + 1, 2, "two half hours");
+        }
+    }
 }

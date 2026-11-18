@@ -353,10 +353,12 @@ fn drawing(rows: &mut Vec<Row>) {
     // every tick pays and what the first frame of a chart pays. A row each
     // rather than one pass over all of them, because the question a regression
     // raises is always which one — and RSI is in the list so that the two new
-    // ones are read beside something whose cost is already known.
+    // ones are read beside something whose cost is already known. Every
+    // indicator computed bar by bar has a row, so a change to the shared
+    // arithmetic is measured where each of them pays for it.
     for bars in [10_000usize, 100_000] {
         let series = bench::series(bars);
-        for key in ["rsi", "bollinger", "macd"] {
+        for key in ["rsi", "bollinger", "macd", "sma", "ema", "vwap", "atr", "stochastic", "cvd", "volume"] {
             let Some(indicator) = named(key) else { continue };
             rows.push(row("draw", &format!("compute {key} over {bars} bars"), || {
                 black_box(indicators::compute(&indicator, &series, 0, Timeframe::days(1), None));

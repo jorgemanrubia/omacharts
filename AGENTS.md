@@ -350,6 +350,40 @@ single run after a warm-up, and the two passes of a side have to agree on them
 to the byte. One that leaves something behind measures a different thing the
 second time, and the comparison says so rather than picking a number.
 
+## An indicator's numbers live in one crate
+
+`crates/omacharts-studies` is every indicator's arithmetic, one bar at a
+time: a `Study` is handed a bar and answers its value there, and `peek`
+answers a bar still forming without taking it. The functions in
+`omacharts-engine/src/indicators` are those studies folded over a series —
+or, for the ones with a window (SMA, Bollinger, stochastic), the same
+arithmetic read off the series in place through `omacharts_studies::series`,
+which a test holds to the studies bit for bit. There is no second copy of
+any indicator's sums anywhere.
+
+It is also a public API: anything that wants an indicator computed the way
+the chart computes it links this crate. So:
+
+- **It has no dependencies**, and a test fails if one is added. Periods —
+  where a session or a week starts — are the caller's to say, through
+  `new_period`, because they are a question of exchanges and time zones.
+- **A change to any value any study produces bumps `NUMBERS_VERSION`.**
+  Whoever keeps an indicator's output uses it to tell old numbers from new.
+- **The numbers are held to the bit.** `tests/indicator_golden.rs` in the
+  engine fingerprints every indicator at every parameter that changes its
+  arithmetic, over series built to be awkward (gaps, flat bars, zero and
+  missing volume, a close that is not a number, daylight saving, the turn of
+  a year) and over a bar forming print by print. A change that moves a value
+  fails it; re-record it (`INDICATOR_GOLDEN=record`) only when moving the
+  value is the point, and bump `NUMBERS_VERSION` in the same change.
+- **Every indicator is in `omacharts_studies::INDICATORS`**, with whether it
+  is a study, a whole-period drawing or a calendar. `tests/studies_catalog.rs`
+  fails when `Kind::ALL` and the list disagree, so a new indicator has to say
+  how it can be computed.
+- **Nothing allocates per bar.** A study sizes its windows when it is made.
+  `cargo run --release -p omacharts-studies --example bench` prints what each
+  costs a bar and a print.
+
 ## Verifying parity
 
 Before calling a feature done:

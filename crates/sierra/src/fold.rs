@@ -9,8 +9,15 @@
 //!
 //! A tick's price is its `close`: in a tick file `high` and `low` are the
 //! ask and bid, never trade prices, and `open` is a marker. A record that
-//! is already a bar contributes its own open, high, low and close. Either
-//! way a record whose close is not a positive number is skipped.
+//! is already a bar contributes its own open, high, low and close, its high
+//! and low the right way round even where they were written the wrong way.
+//! A record whose close is not a number is skipped; a negative or zero
+//! price is a price, and kept — crude oil settled below zero in April 2020.
+//!
+//! A file is almost in time order, but a record can come a few seconds
+//! before the one written ahead of it. Such a record is taken as part of
+//! the bar already open, so the bars stay in time order and none of the
+//! volume is lost.
 //!
 //! Above [`PARALLEL_THRESHOLD`] records the slice is cut into one piece per
 //! core and each piece folded on its own thread. Where a bucket straddles
@@ -89,13 +96,7 @@ pub fn bars_reporting(records: &[Record], step_seconds: i64, multiplier: f64, mu
     let mut done = 0;
     for piece in records.chunks(REPORT_EVERY) {
         let folded = bars(piece, step_seconds, multiplier);
-        let mut rest = folded.as_slice();
-        if let (Some(last), Some(first)) = (out.last_mut(), rest.first())
-            && last.start == first.start
-        {
-            last.merge(first);
-            rest = &rest[1..];
-        }
+        let rest = join(&mut out, &folded);
         out.extend_from_slice(rest);
         done += piece.len();
         report(done as f64 / records.len() as f64);
@@ -165,16 +166,23 @@ fn parallel(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing, piec
     });
     let mut out: Vec<Bar> = Vec::with_capacity(folded.iter().map(Vec::len).sum());
     for piece in folded {
-        let mut rest = piece.as_slice();
-        if let (Some(last), Some(first)) = (out.last_mut(), rest.first())
-            && last.start == first.start
-        {
-            last.merge(first);
-            rest = &rest[1..];
-        }
+        let rest = join(&mut out, &piece);
         out.extend_from_slice(rest);
     }
     out
+}
+
+/// Fold the start of a later piece into the bars so far: a bucket that
+/// straddles the two, and any the later piece opened before the last bar
+/// began — records written out of order, which the serial fold would have
+/// taken into that bar. What is left goes on the end.
+fn join<'a>(out: &mut [Bar], later: &'a [Bar]) -> &'a [Bar] {
+    let Some(last) = out.last_mut() else { return later };
+    let joined = later.iter().take_while(|bar| bar.start <= last.start).count();
+    for bar in &later[..joined] {
+        last.merge(bar);
+    }
+    &later[joined..]
 }
 
 /// A bar being built, still in stored prices: scaling by a positive
@@ -210,8 +218,8 @@ impl Building {
 }
 
 #[inline(always)]
-fn positive(p: f32) -> bool {
-    p > 0.0 && p.is_finite()
+fn finite(p: f32) -> bool {
+    p.is_finite()
 }
 
 fn fold(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing) -> Vec<Bar> {
@@ -219,11 +227,15 @@ fn fold(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing) -> Vec<B
     let (mut lo, mut hi) = (i64::MAX, i64::MIN);
     let mut b = Building { start: 0, open: 0.0, high: 0.0, low: 0.0, close: 0.0, volume: 0, bid_volume: 0, ask_volume: 0, trades: 0 };
     let mut have = false;
+    // The latest time seen, which a record written before it is taken at.
+    let mut latest = i64::MIN;
     for r in records {
         let close = r.close;
-        if !positive(close) {
+        if !finite(close) {
             continue;
         }
+        let datetime = r.datetime.max(latest);
+        latest = datetime;
         // Worked out without branches: in a tick file a third of the
         // records carry an unbundled-trade marker, in no pattern a branch
         // predictor could learn.
@@ -231,11 +243,15 @@ fn fold(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing) -> Vec<B
         let (open, high, low) = if tick {
             (close, close, close)
         } else {
-            let or_close = |v: f32| if positive(v) { v } else { close };
-            (or_close(r.open), or_close(r.high).max(close), or_close(r.low).min(close))
+            let or_close = |v: f32| if finite(v) { v } else { close };
+            // A bar written with its high below its low has the two the
+            // wrong way round, not a range of less than nothing.
+            let (high, low) = (or_close(r.high), or_close(r.low));
+            let (high, low) = if high < low { (low, high) } else { (high, low) };
+            (or_close(r.open), high.max(close), low.min(close))
         };
-        if r.datetime < lo || r.datetime >= hi {
-            let (start, l, h) = bucketing.locate(r.datetime);
+        if datetime < lo || datetime >= hi {
+            let (start, l, h) = bucketing.locate(datetime);
             (lo, hi) = (l, h);
             if !have || start != b.start {
                 if have {
@@ -304,6 +320,9 @@ mod tests {
                         rec.trades = 7;
                     }
                     3 => rec.open = crate::scid::FIRST_SUB_TRADE_OF_UNBUNDLED_TRADE,
+                    // A record written a few seconds before the one ahead
+                    // of it, as files carry now and then.
+                    4 => rec.datetime -= 3_000_000,
                     _ => {}
                 }
                 rec
@@ -376,17 +395,63 @@ mod tests {
     }
 
     #[test]
-    fn records_without_a_real_price_are_skipped() {
-        let mut bad = vec![trade(0, 0.0, 5, true), trade(1, -3.0, 5, true), trade(2, f32::NAN, 5, true), trade(3, f32::INFINITY, 5, true)];
+    fn records_without_a_number_for_a_price_are_skipped() {
+        let mut bad = vec![trade(2, f32::NAN, 5, true), trade(3, f32::INFINITY, 5, true), trade(3, f32::NEG_INFINITY, 5, true)];
         assert!(bars(&bad, 60, 1.0).is_empty());
         bad.push(trade(4, 2.0, 1, true));
         assert_eq!(bars(&bad, 60, 1.0)[0].volume, 1);
     }
 
+    /// A negative or a zero price is a price: crude oil settled below zero
+    /// in April 2020, and a chart that drops those records draws a market
+    /// that did not happen.
+    #[test]
+    fn negative_and_zero_prices_are_kept() {
+        let records = [trade(0, 1_000.0, 1, true), trade(1, 0.0, 2, true), trade(2, -3_763.0, 3, false), trade(3, 500.0, 4, true)];
+        let b = bars(&records, 60, 0.01)[0];
+        assert_eq!((b.open, b.high, b.low, b.close), (10.0, 10.0, -37.63, 5.0));
+        assert_eq!(b.volume, 10, "every record counted");
+        // A bar record below zero brings its own prices too.
+        let mut bar = trade(0, -10.0, 1, true);
+        (bar.open, bar.high, bar.low) = (-5.0, -1.0, -20.0);
+        let b = bars(&[bar], 60, 1.0)[0];
+        assert_eq!((b.open, b.high, b.low, b.close), (-5.0, -1.0, -20.0, -10.0));
+    }
+
+    /// A bar written with its high below its low is a bar with the two the
+    /// wrong way round.
+    #[test]
+    fn an_inverted_bar_is_set_right() {
+        let mut r = trade(0, 105.0, 10, true);
+        (r.open, r.high, r.low) = (101.0, 99.0, 110.0);
+        let b = bars(&[r], 60, 1.0)[0];
+        assert_eq!((b.open, b.high, b.low, b.close), (101.0, 110.0, 99.0, 105.0));
+    }
+
+    /// A record written before the one ahead of it is part of the bar
+    /// already open: the bars stay in time order and none of the volume is
+    /// lost, folded in one piece or in many.
+    #[test]
+    fn a_record_out_of_time_order_joins_the_bar_already_open() {
+        let records = [
+            trade(100, 1.0, 1, true),
+            trade(130, 2.0, 1, true),
+            // Back into the bar before: it goes in the bar open at 120.
+            trade(115, 9.0, 4, true),
+            trade(185, 3.0, 1, true),
+        ];
+        let b = bars_serial(&records, 60, 1.0);
+        assert_eq!(b.iter().map(|b| b.start).collect::<Vec<_>>(), [60, 120, 180]);
+        assert_eq!((b[1].high, b[1].close, b[1].volume), (9.0, 9.0, 5));
+        for pieces in 2..=4 {
+            assert_eq!(bars_in_pieces(&records, 60, 1.0, pieces), b, "{pieces} pieces");
+        }
+    }
+
     #[test]
     fn buckets_before_the_epoch_round_down() {
-        let b = bars(&[trade(-1, 1.0, 1, true), trade(-61, 1.0, 1, true)], 60, 1.0);
-        assert_eq!(b.iter().map(|b| b.start).collect::<Vec<_>>(), [-60, -120]);
+        let b = bars(&[trade(-61, 1.0, 1, true), trade(-1, 1.0, 1, true)], 60, 1.0);
+        assert_eq!(b.iter().map(|b| b.start).collect::<Vec<_>>(), [-120, -60]);
     }
 
     #[test]

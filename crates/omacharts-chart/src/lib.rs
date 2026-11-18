@@ -44,6 +44,7 @@ pub mod marks;
 pub mod shapes;
 pub mod text;
 mod text_editor;
+pub mod theming;
 mod view;
 pub mod zoom;
 

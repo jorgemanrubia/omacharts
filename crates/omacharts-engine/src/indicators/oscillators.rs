@@ -13,6 +13,8 @@
 //! The MACD is also the one strip here whose values go either side of nothing,
 //! so it is where the strip drawing learned not to assume a floor of zero.
 
+use omacharts_studies::{self as studies, Study};
+
 use crate::bars::Bar;
 
 /// What a strip draws: a value per bar, and `None` on a bar it has none for.
@@ -21,80 +23,27 @@ use crate::bars::Bar;
 /// spelling in one signature says less than three of the short one.
 pub type Series = Vec<Option<f64>>;
 
-/// Wilder's smoothing, seeded with the simple average of the first `period`.
-///
-/// `None` until there is enough history, never a number made up to fill the
-/// gap: a chart that draws an RSI from bar one is drawing a guess.
-fn wilder(values: &[f64], period: usize) -> Vec<Option<f64>> {
-    let mut out = vec![None; values.len()];
-    if period == 0 || values.len() < period {
-        return out;
-    }
-    let mut average: f64 = values[..period].iter().sum::<f64>() / period as f64;
-    out[period - 1] = Some(average);
-    for (i, value) in values.iter().enumerate().skip(period) {
-        average += (value - average) / period as f64;
-        out[i] = Some(average);
-    }
-    out
-}
-
 /// Relative strength index, 0 to 100.
 ///
 /// The first bar has no change to measure, so everything is shifted one place:
 /// the first reading lands on bar `period`, not `period - 1`.
 pub fn rsi(bars: &[Bar], period: usize) -> Vec<Option<f64>> {
-    let mut out = vec![None; bars.len()];
     if period == 0 || bars.len() <= period {
-        return out;
+        return vec![None; bars.len()];
     }
-
-    let mut gains = Vec::with_capacity(bars.len() - 1);
-    let mut losses = Vec::with_capacity(bars.len() - 1);
-    for pair in bars.windows(2) {
-        let change = pair[1].close - pair[0].close;
-        gains.push(change.max(0.0));
-        losses.push((-change).max(0.0));
-    }
-
-    let average_gain = wilder(&gains, period);
-    let average_loss = wilder(&losses, period);
-    for i in 0..gains.len() {
-        let (Some(gain), Some(loss)) = (average_gain[i], average_loss[i]) else { continue };
-        // A run with no down closes at all is RSI 100, not a division by zero.
-        out[i + 1] = Some(if loss <= f64::EPSILON {
-            100.0
-        } else {
-            100.0 - 100.0 / (1.0 + gain / loss)
-        });
-    }
-    out
+    let mut study = studies::Rsi::new(period);
+    bars.iter().map(|bar| study.step(bar, false)).collect()
 }
 
 /// Average true range, in the instrument's own price units.
 pub fn atr(bars: &[Bar], period: usize) -> Vec<Option<f64>> {
-    let mut out = vec![None; bars.len()];
-    if period == 0 || bars.is_empty() {
-        return out;
-    }
-
     // The first bar has no previous close, so its true range is just its own
     // range. Dropping it instead would shift every later value by one.
-    let mut ranges = Vec::with_capacity(bars.len());
-    ranges.push(bars[0].high - bars[0].low);
-    for pair in bars.windows(2) {
-        let (previous, bar) = (&pair[0], &pair[1]);
-        ranges.push(
-            (bar.high - bar.low)
-                .max((bar.high - previous.close).abs())
-                .max((bar.low - previous.close).abs()),
-        );
+    if period == 0 || bars.is_empty() {
+        return vec![None; bars.len()];
     }
-
-    for (i, value) in wilder(&ranges, period).into_iter().enumerate() {
-        out[i] = value;
-    }
-    out
+    let mut study = studies::Atr::new(period);
+    bars.iter().map(|bar| study.step(bar, false)).collect()
 }
 
 /// Stochastic oscillator: %K and %D, both 0 to 100.
@@ -112,33 +61,7 @@ pub fn stochastic(
     k_smooth: usize,
     d_period: usize,
 ) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
-    if period == 0 || k_smooth == 0 || d_period == 0 {
-        return (vec![None; bars.len()], vec![None; bars.len()]);
-    }
-
-    let mut raw = vec![None; bars.len()];
-    for i in period - 1..bars.len() {
-        let window = &bars[i + 1 - period..=i];
-        let low = window.iter().map(|bar| bar.low).fold(f64::INFINITY, f64::min);
-        let high = window.iter().map(|bar| bar.high).fold(f64::NEG_INFINITY, f64::max);
-        if high - low > f64::EPSILON {
-            raw[i] = Some(100.0 * (bars[i].close - low) / (high - low));
-        }
-    }
-
-    let k = mean_of(&raw, k_smooth);
-    let d = mean_of(&k, d_period);
-    (k, d)
-}
-
-/// Simple average of the last `period` values, `None` while any of them is.
-fn mean_of(values: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
-    let mut out = vec![None; values.len()];
-    for i in period.saturating_sub(1)..values.len() {
-        let window = &values[i + 1 - period..=i];
-        out[i] = window.iter().copied().sum::<Option<f64>>().map(|sum| sum / period as f64);
-    }
-    out
+    studies::series::stochastic(bars, period, k_smooth, d_period)
 }
 
 /// Moving average convergence/divergence: the line, its signal, and the
@@ -164,35 +87,20 @@ fn mean_of(values: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
 /// those before it has a seed of its own, so it starts at bar
 /// `slow + signal - 2`. For the usual 12, 26 and 9 that is bar 25 and bar 33.
 pub fn macd(bars: &[Bar], fast: usize, slow: usize, signal: usize) -> (Series, Series, Series) {
-    let blank = || vec![None; bars.len()];
-    if fast == 0 || slow == 0 || signal == 0 {
-        return (blank(), blank(), blank());
+    // A close that is not a number turns an exponential average into one too,
+    // from that bar on, and a figure that is not a figure must not reach the
+    // renderer: the study leaves a hole there, and the signal seeds again on
+    // the far side of it.
+    let mut line = Vec::with_capacity(bars.len());
+    let mut signal_line = Vec::with_capacity(bars.len());
+    let mut histogram = Vec::with_capacity(bars.len());
+    let mut study = studies::Macd::new(fast, slow, signal);
+    for bar in bars {
+        let value = study.step(bar, false);
+        line.push(value.map(|value| value.line));
+        signal_line.push(value.and_then(|value| value.signal));
+        histogram.push(value.and_then(|value| value.histogram));
     }
-
-    let quick = super::ema(bars, fast);
-    let slower = super::ema(bars, slow);
-    let line: Series = quick
-        .iter()
-        .zip(&slower)
-        .map(|pair| match pair {
-            (Some(quick), Some(slower)) => Some(quick - slower),
-            _ => None,
-        })
-        // A close that is not a number turns an exponential average into one
-        // too, from that bar on, and a figure that is not a figure must not
-        // reach the renderer. There is nothing to draw, so nothing is drawn.
-        .map(|value| value.filter(|v: &f64| v.is_finite()))
-        .collect();
-
-    let signal_line = ema_of(&line, signal);
-    let histogram = line
-        .iter()
-        .zip(&signal_line)
-        .map(|pair| match pair {
-            (Some(line), Some(signal)) => Some(line - signal),
-            _ => None,
-        })
-        .collect();
     (line, signal_line, histogram)
 }
 
@@ -205,40 +113,10 @@ pub fn macd(bars: &[Bar], fast: usize, slow: usize, signal: usize) -> (Series, S
 /// A hole in the middle, which only a series that stopped being a number can
 /// produce, ends the average and seeds a fresh one on the far side. Carrying a
 /// value across a gap would draw a line through bars it was never told about.
+#[cfg(test)]
 fn ema_of(values: &[Option<f64>], period: usize) -> Series {
-    let mut out = vec![None; values.len()];
-    if period == 0 {
-        return out;
-    }
-    let alpha = 2.0 / (period as f64 + 1.0);
-    let mut average: Option<f64> = None;
-    let (mut run, mut seed) = (0usize, 0.0f64);
-
-    for (i, value) in values.iter().enumerate() {
-        let Some(value) = *value else {
-            average = None;
-            run = 0;
-            seed = 0.0;
-            continue;
-        };
-        match average {
-            Some(previous) => {
-                let next = value * alpha + previous * (1.0 - alpha);
-                average = Some(next);
-                out[i] = Some(next);
-            }
-            None => {
-                run += 1;
-                seed += value;
-                if run == period {
-                    let mean = seed / period as f64;
-                    average = Some(mean);
-                    out[i] = Some(mean);
-                }
-            }
-        }
-    }
-    out
+    let mut average = studies::EmaOf::new(period);
+    values.iter().map(|value| average.push(*value)).collect()
 }
 
 #[cfg(test)]
