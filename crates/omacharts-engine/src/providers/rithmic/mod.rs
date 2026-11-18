@@ -231,7 +231,81 @@ fn now() -> i64 {
 }
 
 /// Bars of `root`'s continuous series, or of the dated contract `root`
-/// names, from `from` and starting before `to`, or up to now with no `to`.
+/// names, from `from` and starting before `to`, or up to now with no `to`
+/// and the bar forming now with them ([`with_forming`]).
+fn front_month_bars(
+    login: &str,
+    client: &rithmic::Client,
+    root: &str,
+    timeframe: Timeframe,
+    from: i64,
+    to: Option<i64>,
+) -> Result<Vec<Bar>, ProviderError> {
+    let bars = plant_bars(login, client, root, timeframe, from, to)?;
+    if to.is_some() {
+        return Ok(bars);
+    }
+    let minutes = |from: i64| plant_bars(login, client, root, Timeframe::minutes(1), from, None);
+    Ok(with_forming(bars, timeframe, root, now(), minutes))
+}
+
+/// `bars` up to `now`, and the bar forming at `now` after them, folded from
+/// the one-minute bars `minutes` fetches from a time on.
+///
+/// The history plant gives finished bars only. Without this the bar forming
+/// now would be the trades' alone, and they are only heard from when a
+/// chart subscribes: today's daily bar, opened on a chart in the afternoon,
+/// would be the one price the market last traded at, with none of the
+/// session's range behind it, and an hour's bar the same for its first
+/// minutes. Its finished minutes say what it has done so far, from the
+/// first: a daily bar from the evening its trading day opens, extended
+/// hours and all, as the plant's own daily bars are. The trades then move
+/// it from there, and once it has closed it is asked for whole.
+///
+/// A one-minute chart has no finer bars to fold, and a plant that does give
+/// the bar forming now is taken at its word. When the minutes cannot be had
+/// the bars are as they came, and the trades start the bar as before.
+fn with_forming(
+    mut bars: Vec<Bar>,
+    timeframe: Timeframe,
+    root: &str,
+    now: i64,
+    minutes: impl FnOnce(i64) -> Result<Vec<Bar>, ProviderError>,
+) -> Vec<Bar> {
+    if timeframe == Timeframe::minutes(1) {
+        return bars;
+    }
+    let forming = bucket(now, timeframe, root);
+    if bars.last().is_some_and(|bar| bar.ts >= forming) {
+        return bars;
+    }
+    // A daily bar is stamped with its trading date, and CME's trading day
+    // opens the evening before it.
+    let from = match timeframe.unit {
+        Unit::Day => forming - 86_400,
+        _ => forming,
+    };
+    let Ok(minutes) = minutes(from) else {
+        return bars;
+    };
+    let mut inside = minutes.into_iter().filter(|minute| minute.ts >= from && bucket(minute.ts, timeframe, root) == forming);
+    let Some(first) = inside.next() else {
+        return bars;
+    };
+    let bar = inside.fold(Bar { ts: forming, ..first }, |bar, minute| Bar {
+        high: bar.high.max(minute.high),
+        low: bar.low.min(minute.low),
+        close: minute.close,
+        volume: bar.volume + minute.volume,
+        ..bar
+    });
+    bars.push(bar);
+    bars
+}
+
+/// The plant's bars of `root`'s continuous series, or of the dated
+/// contract `root` names, from `from` and starting before `to`, or up to
+/// now with no `to`: finished bars only.
 ///
 /// A root is asked for as itself, which Rithmic answers with its continuous
 /// series. Where it has none for the root, its front month stands in: asked
@@ -240,7 +314,7 @@ fn now() -> i64 {
 /// reason and the next front month is the cure. A span that ends before
 /// now is older history, where having nothing is the answer rather than a
 /// sign of a roll, so the front month is not asked again for it.
-fn front_month_bars(
+fn plant_bars(
     login: &str,
     client: &rithmic::Client,
     root: &str,
@@ -1056,6 +1130,15 @@ mod tests {
             now: i64,
             load: impl FnMut(i64) -> Result<Vec<Bar>, ProviderError> + Send + 'static,
         ) -> Served {
+            Served::start_at(Timeframe::minutes(1), since, now, load)
+        }
+
+        fn start_at(
+            timeframe: Timeframe,
+            since: Option<i64>,
+            now: i64,
+            load: impl FnMut(i64) -> Result<Vec<Bar>, ProviderError> + Send + 'static,
+        ) -> Served {
             let (send, events) = mpsc::channel();
             let (tell, heard) = mpsc::channel();
             let clock = Arc::new(std::sync::atomic::AtomicI64::new(now * NANOS));
@@ -1066,7 +1149,7 @@ mod tests {
                     let _ = tell.send(update);
                 };
                 let clock: Clock = Arc::new(move || reading.load(Ordering::SeqCst));
-                let fold = Fold::new(Timeframe::minutes(1), "ES");
+                let fold = Fold::new(timeframe, "ES");
                 serve(&events, back, fold, since, Box::new(load), clock, &say, &AtomicBool::new(false));
             });
             Served { send, heard, clock, thread: Some(thread) }
@@ -1279,6 +1362,128 @@ mod tests {
         let tuesday = 1_793_664_000;
         assert_eq!(bucket(evening, Timeframe::days(1), "ES"), tuesday);
         assert_eq!(bucket(tuesday + 3_600, Timeframe::days(1), "ES"), tuesday);
+    }
+
+    /// Tuesday 2026-11-03, ES's trading date: its session opened at 17:00
+    /// in Chicago on the Monday, 23:00 UTC, and it is now 15:00 UTC, 09:00
+    /// in Chicago, into the regular session.
+    const TUESDAY: i64 = 1_793_664_000;
+    const TUESDAY_OPENS: i64 = TUESDAY - 3_600;
+    const NOW: i64 = TUESDAY + 15 * 3_600;
+
+    /// What the plant has of Tuesday so far at 15:00 UTC: finished minutes
+    /// from the Monday afternoon, which are Monday's, through the overnight
+    /// and into the regular session. The overnight makes the low, the
+    /// regular session the high.
+    fn tuesdays_minutes() -> Vec<Bar> {
+        vec![
+            ohlc(TUESDAY_OPENS - 7_200, 6_900.0, 6_910.0, 6_890.0, 6_905.0, 50.0),
+            ohlc(TUESDAY_OPENS, 6_800.0, 6_802.0, 6_799.0, 6_801.0, 10.0),
+            ohlc(TUESDAY_OPENS + 3 * 3_600, 6_801.0, 6_801.0, 6_750.0, 6_760.0, 20.0),
+            ohlc(TUESDAY + 14 * 3_600 + 1_800, 6_760.0, 6_840.0, 6_760.0, 6_830.0, 30.0),
+            ohlc(NOW - 60, 6_830.0, 6_831.0, 6_820.0, 6_825.0, 40.0),
+        ]
+    }
+
+    /// The days the plant gives: Monday's, finished, and not Tuesday's.
+    fn finished_days() -> Vec<Bar> {
+        vec![
+            ohlc(TUESDAY - 2 * 86_400, 6_850.0, 6_880.0, 6_840.0, 6_870.0, 900.0),
+            ohlc(TUESDAY - 86_400, 6_870.0, 6_920.0, 6_860.0, 6_905.0, 1_000.0),
+        ]
+    }
+
+    /// The bug: the plant gives finished days only, and today's bar was the
+    /// trade a watch opened with, one price with no range. Today's bar is
+    /// folded from its finished minutes, from the evening its trading day
+    /// opened, the overnight with them, and Monday's afternoon left out.
+    #[test]
+    fn todays_daily_bar_is_the_whole_session_so_far() {
+        let day = Timeframe::days(1);
+        let asked = std::cell::Cell::new(None);
+        let bars = with_forming(finished_days(), day, "ES", NOW, |from| {
+            asked.set(Some(from));
+            Ok(tuesdays_minutes())
+        });
+        assert!(asked.get().is_some_and(|from| from <= TUESDAY_OPENS), "asked from {:?}", asked.get());
+        assert_eq!(bars.len(), 3);
+        assert_eq!(&bars[..2], &finished_days()[..]);
+        let today = bars[2];
+        assert_eq!(today.ts, TUESDAY);
+        assert_eq!((today.open, today.high, today.low, today.close), (6_800.0, 6_840.0, 6_750.0, 6_825.0));
+        assert_eq!(today.volume, 100.0);
+    }
+
+    /// On regular hours a daily bar is still the trading day's, as every
+    /// day before it is: the session filter leaves daily bars whole, so
+    /// today's keeps the overnight's open and low, the same as on extended
+    /// hours.
+    #[test]
+    fn todays_daily_bar_is_the_same_on_extended_and_regular_hours() {
+        let bars = with_forming(finished_days(), Timeframe::days(1), "ES", NOW, |_| Ok(tuesdays_minutes()));
+        let es = instrument(InstrumentKind::FutureRoot, "ES");
+        for session in crate::Session::ALL {
+            let drawn = crate::session::filter(&bars, session, &es, false);
+            let today = drawn.last().copied().expect("today's bar");
+            assert_eq!((today.ts, today.open, today.high, today.low), (TUESDAY, 6_800.0, 6_840.0, 6_750.0), "{session:?}");
+        }
+    }
+
+    /// An hour, the bars a four-hour chart folds from, starts the same way:
+    /// its finished minutes, and none from the hour before.
+    #[test]
+    fn the_forming_hour_is_its_finished_minutes() {
+        let hour = Timeframe::hours(1);
+        let now = TUESDAY + 14 * 3_600 + 2_000;
+        let finished = vec![ohlc(TUESDAY + 13 * 3_600, 6_770.0, 6_775.0, 6_765.0, 6_760.0, 5.0)];
+        let minutes = vec![
+            ohlc(TUESDAY + 13 * 3_600 + 3_540, 6_760.0, 6_790.0, 6_700.0, 6_760.0, 9.0),
+            ohlc(TUESDAY + 14 * 3_600, 6_760.0, 6_765.0, 6_755.0, 6_762.0, 3.0),
+            ohlc(TUESDAY + 14 * 3_600 + 1_800, 6_762.0, 6_840.0, 6_760.0, 6_830.0, 30.0),
+        ];
+        let bars = with_forming(finished.clone(), hour, "ES", now, |from| {
+            assert_eq!(from, TUESDAY + 14 * 3_600);
+            Ok(minutes)
+        });
+        let forming = bars[1];
+        assert_eq!((forming.ts, forming.open, forming.high, forming.low, forming.close), (TUESDAY + 14 * 3_600, 6_760.0, 6_840.0, 6_755.0, 6_830.0));
+        assert_eq!(forming.volume, 33.0);
+    }
+
+    /// The plant's own forming bar is taken as it is, a one-minute chart
+    /// has nothing finer, and minutes that cannot be had leave the bars as
+    /// they came: none of them asks for minutes it will not use.
+    #[test]
+    fn nothing_is_folded_where_there_is_nothing_to_fold() {
+        let day = Timeframe::days(1);
+        let unasked = |_| -> Result<Vec<Bar>, ProviderError> { panic!("minutes asked for") };
+        let mut given = finished_days();
+        given.push(ohlc(TUESDAY, 6_800.0, 6_850.0, 6_700.0, 6_820.0, 99.0));
+        assert_eq!(with_forming(given.clone(), day, "ES", NOW, unasked), given);
+        let minute = Timeframe::minutes(1);
+        assert_eq!(with_forming(tuesdays_minutes(), minute, "ES", NOW, unasked), tuesdays_minutes());
+
+        let down = with_forming(finished_days(), day, "ES", NOW, |_| Err(ProviderError::Network("down".into())));
+        assert_eq!(down, finished_days());
+        let quiet = with_forming(finished_days(), day, "ES", NOW, |_| Ok(Vec::new()));
+        assert_eq!(quiet, finished_days());
+    }
+
+    /// End to end on a daily chart, the way it went wrong after a switch of
+    /// chartbook: a fresh watch, a snapshot of finished days, and the trade
+    /// the watch opens with. Today's bar keeps the session's open, high and
+    /// low, and the trade only moves its close.
+    #[test]
+    fn a_daily_chart_watched_mid_session_draws_today_whole() {
+        let day = Timeframe::days(1);
+        let load = |_| Ok(with_forming(finished_days(), Timeframe::days(1), "ES", NOW, |_| Ok(tuesdays_minutes())));
+        let served = Served::start_at(day, Some(TUESDAY - 86_400), NOW + 5, load);
+        served.watching();
+        let snapshot = served.snapshot();
+        assert_eq!(snapshot.last().map(|bar| bar.ts), Some(TUESDAY));
+        served.send.send(Event::Live(rithmic::Live::Last(trade(NOW + 10, 6_822.0, 1)))).unwrap();
+        let today = served.bar();
+        assert_eq!((today.ts, today.open, today.high, today.low, today.close), (TUESDAY, 6_800.0, 6_840.0, 6_750.0, 6_822.0));
     }
 
     /// The test that matters most about errors: a login refused, or
