@@ -5047,6 +5047,10 @@ pub struct Window {
     /// exactly as it was left. Only in memory — scroll and zoom are not
     /// written down.
     viewports: RefCell<HashMap<String, crate::ui::chart::Viewport>>,
+    /// The session each series' stale daily bars were last asked for again,
+    /// by its cache key: once a session, whatever the feed answered. See
+    /// [`crate::cli::stale_daily`].
+    daily_asked: RefCell<HashMap<String, chrono::NaiveDate>>,
     /// What an open chart settings dialog reads off the focused chart, asked
     /// to read it again when something else changed it. Each says whether
     /// it is still on screen, and goes once it is not.
@@ -5258,6 +5262,7 @@ impl Window {
             next_pane: Cell::new(1),
             template_leaves: RefCell::new(Vec::new()),
             viewports: RefCell::new(HashMap::new()),
+            daily_asked: RefCell::new(HashMap::new()),
             chart_watchers: RefCell::new(Vec::new()),
             save_pending: Cell::new(false),
             linked_action: RefCell::new(None),
@@ -12020,7 +12025,8 @@ impl Window {
     }
 
     /// Ask the chart's own feed for the daily bars its day's move is read
-    /// from, when the header shows the move and that feed has none cached.
+    /// from, when the header shows the move and that feed has none cached,
+    /// or the ones it has are behind.
     ///
     /// The rail fetches daily bars too, but through the order's feed for
     /// each symbol, so a chart on any other feed — a second Rithmic login's,
@@ -12029,7 +12035,18 @@ impl Window {
     /// changes, and never from [`Window::write_change_of`], which runs on
     /// every flush and would ask again after every refusal. A chart at 1D
     /// fetches the series itself.
+    ///
+    /// A streamed feed's daily bars are fetched by nothing else, so once
+    /// cached they used to stay as they were: a session behind by the next
+    /// morning, and holding a mid-session price when they were fetched
+    /// mid-session. Behind is asked about again once per session, see
+    /// [`crate::cli::stale_daily`], and also when a trade crosses into a new
+    /// one ([`Window::write_live_change_of`]).
     fn fetch_daily_for_change(self: &Rc<Self>, pane: &ChartPane) {
+        self.fetch_daily_for_change_at(pane, chrono::Utc::now().timestamp());
+    }
+
+    fn fetch_daily_for_change_at(self: &Rc<Self>, pane: &ChartPane, now: i64) {
         let daily = Timeframe::days(1);
         if !pane.shows(crate::header::Part::Change) || pane.timeframe.get().native() == daily {
             return;
@@ -12044,7 +12061,10 @@ impl Window {
             return;
         };
         if self.store.coverage(&key, daily).is_some() {
-            return;
+            let Some(session) = crate::cli::stale_daily(&self.store, &key, &instrument, now) else { return };
+            if self.daily_asked.borrow_mut().insert(key.clone(), session) == Some(session) {
+                return;
+            }
         }
         routed.feed.loader.fetch(Request { key, symbol, timeframe: daily, speculative: true }, BACKGROUND);
     }
@@ -12161,7 +12181,16 @@ impl Window {
     /// trade is drawn on, rather than when the cache next catches up. Only
     /// a bar of the session the move was last read for, and only written
     /// when the figure shown changes.
+    ///
+    /// A bar of a later session than the last one seen is the session
+    /// rolling over under a chart left on screen: the move is read again,
+    /// and the daily bars it is read from are asked for if they are behind.
     fn write_live_change_of(self: &Rc<Self>, pane: &Rc<ChartPane>, newest: &omacharts_engine::Bar) {
+        let session = crate::cli::session_day(newest.ts);
+        if pane.live_session.replace(Some(session)).is_some_and(|seen| seen < session) {
+            self.fetch_daily_for_change(pane);
+            self.write_change_of(pane);
+        }
         let Some((previous, day)) = pane.change_basis.get() else { return };
         if previous == 0.0 || crate::cli::session_day(newest.ts) != day {
             return;
