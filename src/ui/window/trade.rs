@@ -3902,11 +3902,22 @@ pub(super) mod tests {
         label: &'static str,
         futures_only: bool,
         bars: omacharts_engine::providers::Synthetic,
+        /// Every series it was asked for, symbol and resolution.
+        asked: Asked,
     }
+
+    type Asked = Arc<std::sync::Mutex<Vec<(String, omacharts_engine::Timeframe)>>>;
 
     impl Posing {
         fn feed(id: &'static str, label: &'static str, futures_only: bool) -> Arc<dyn omacharts_engine::Provider> {
-            Arc::new(Posing { id, label, futures_only, bars: omacharts_engine::providers::Synthetic::new(None) })
+            Posing::recording(id, label, futures_only).0
+        }
+
+        /// [`Posing::feed`], and what it is asked for.
+        fn recording(id: &'static str, label: &'static str, futures_only: bool) -> (Arc<dyn omacharts_engine::Provider>, Asked) {
+            let asked = Asked::default();
+            let bars = omacharts_engine::providers::Synthetic::new(None);
+            (Arc::new(Posing { id, label, futures_only, bars, asked: asked.clone() }), asked)
         }
     }
 
@@ -3933,6 +3944,7 @@ pub(super) mod tests {
             timeframe: omacharts_engine::Timeframe,
             since: Option<i64>,
         ) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
+            self.asked.lock().unwrap_or_else(|e| e.into_inner()).push((symbol.to_string(), timeframe));
             self.bars.bars(symbol, timeframe, since)
         }
         /// A futures feed draws a root as its front month, as Sierra Chart
@@ -5529,6 +5541,79 @@ pub(super) mod tests {
             assert_eq!(pane.account_text().as_deref(), Some("ACME-0001"));
             assert_eq!(pane.feed.borrow().as_deref(), None);
             assert_eq!(dot(&pane).map(|dot| dot.0), Some(format!("{acme_own} · Connecting…")));
+        });
+    }
+
+    /// A chart on a second Rithmic login's feed shows the day's move in its
+    /// header, as a chart on the first login's does. The rail asks for
+    /// daily bars through the order's feed for each symbol, so a chart on
+    /// any other feed has to ask its own: nothing did, and the move was
+    /// missing from every chart whose feed was not the order's. Neither
+    /// chart is the focused one, whose warm-up would fetch a daily of its
+    /// own anyway.
+    #[test]
+    fn a_chart_on_a_second_logins_feed_shows_the_days_move() {
+        use omacharts_engine::Provider as _;
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let store = Rc::new(Store::memory().expect("a store"));
+            let ids: Vec<String> = ["First Login", "Second Login"]
+                .iter()
+                .map(|name| {
+                    let typed = trading::Typed { name: name.to_string(), ..typed() };
+                    trading::add_login(&store, &Kept::default(), &typed).expect("a login")
+                })
+                .collect();
+            let first_login: &'static str = Box::leak(format!("rithmic@{}", ids[0]).into_boxed_str());
+            let second_login: &'static str = Box::leak(format!("rithmic@{}", ids[1]).into_boxed_str());
+            let (first, first_asked) = Posing::recording(first_login, "Rithmic (First Login)", true);
+            let (second, second_asked) = Posing::recording(second_login, "Rithmic (Second Login)", true);
+            let feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false), first, second];
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build_with(&app, store.clone(), feeds);
+            for feed in window.feeds() {
+                feed.usable.set(true);
+            }
+
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            let on_first = window.focused_pane();
+            window.split_focused(true);
+            let on_second = window.focused_pane();
+            window.split_focused(true);
+            assert!(on_first.shows(crate::header::Part::Change), "the standard header shows the move");
+            for (pane, feed) in [(&on_first, first_login), (&on_second, second_login)] {
+                pane.timeframe.set(omacharts_engine::Timeframe::minutes(5));
+                pane.feed.replace(Some(feed.to_string()));
+                window.show_in(pane, es.clone());
+                assert_eq!(feed_on(&window, pane).as_deref(), Some(feed));
+                assert_ne!(window.focused_pane().id, pane.id);
+            }
+
+            let daily = omacharts_engine::Timeframe::days(1);
+            let asked_for_daily =
+                |asked: &Asked| asked.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(symbol, tf)| symbol == "ES" && *tf == daily);
+            assert!(
+                settle_for(&window, 20, || asked_for_daily(&first_asked) && asked_for_daily(&second_asked)),
+                "each login's feed is asked for ES's daily bars: first {:?}, second {:?}",
+                first_asked.lock().unwrap_or_else(|e| e.into_inner()),
+                second_asked.lock().unwrap_or_else(|e| e.into_inner()),
+            );
+
+            // What arrives under the second login's key is the move its
+            // chart shows. The loader writes to the store on disk, not this
+            // one in memory, so the bars are put here as it would have.
+            let key = crate::cli::cache_key(window.feeds()[2].provider.as_ref(), &es).expect("a key");
+            assert_eq!(key, format!("{second_login}:ES"));
+            let bars = omacharts_engine::providers::Synthetic::new(None).bars("ES", daily, None).expect("bars");
+            store.write_bars(&key, daily, &bars);
+            assert_eq!(on_second.change_label.text(), "", "nothing to show before");
+            window.write_changes();
+            let quote = crate::cli::quote(&store, window.feeds()[2].provider.as_ref(), &es).expect("a move");
+            assert_eq!(
+                on_second.change_label.text(),
+                crate::header::change_text(quote.change_pct),
+                "the second login's chart shows the day's move"
+            );
         });
     }
 
