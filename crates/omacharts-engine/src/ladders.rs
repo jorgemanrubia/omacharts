@@ -868,6 +868,11 @@ pub struct Held {
     /// Pieces that answered a span since [`Held::take_used`] last took them:
     /// what is not to be let go to make room.
     pub used: RefCell<HashSet<Piece>>,
+    /// Pieces that are not on their way: the store did not have them when
+    /// asked, or there was no room to hold them. A span that needs one keeps
+    /// the estimate; one that needs a piece still coming waits for it. See
+    /// [`Held::coming`].
+    pub missing: HashSet<Piece>,
     /// Each minute's ask volume less its bid volume, oldest first, for days
     /// held without their minutes: what a cumulative delta walks minute by
     /// minute, some twenty kilobytes a day where the minutes are a megabyte.
@@ -934,6 +939,7 @@ impl Held {
         if self.days[at].whole {
             return false;
         }
+        self.missing.remove(&piece);
         self.pieces.insert(piece, ladder);
         true
     }
@@ -1104,6 +1110,23 @@ impl Held {
             parts.push(&forming.ladder);
         }
         Some(sum(&parts))
+    }
+
+    /// Whether [`Self::between`] cannot answer `from..to` only because a
+    /// piece of it is still to be read: the span is not before
+    /// [`Self::floor`], and some day it cuts has neither its minutes nor
+    /// that piece, which is not among the [`Self::missing`]. Such a span is
+    /// answered exactly in a moment, so a profile of it is better drawn
+    /// nothing than estimated now and redrawn then.
+    pub fn coming(&self, from: i64, to: i64) -> bool {
+        from >= self.floor
+            && self.span(from, to).any(|held| {
+                if held.whole || held.inside(from, to) {
+                    return false;
+                }
+                let piece = Piece::of(held, from, to);
+                !self.pieces.contains_key(&piece) && !self.missing.contains(&piece)
+            })
     }
 
     /// The trading days numbered `from_day..to_day` by their totals, and the
