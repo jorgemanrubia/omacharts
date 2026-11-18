@@ -237,6 +237,9 @@ pub fn method_row(
     (row, Rc::new(move |method| show(at(method))))
 }
 
+/// The way to show a Colouring row another colouring without calling back.
+pub type ShowColouring = Rc<dyn Fn(Option<BarColouring>)>;
+
 /// How a delta's bought and sold rows are painted: in the colouring chosen in
 /// Preferences, followed as it changes, or in one of the theme's own. A
 /// colouring outside those that a profile already has is offered last, so
@@ -244,7 +247,7 @@ pub fn method_row(
 pub fn colouring_row(
     current: Option<BarColouring>,
     changed: impl Fn(Option<BarColouring>) + 'static,
-) -> (adw::ComboRow, Rc<dyn Fn(Option<BarColouring>)>) {
+) -> (adw::ComboRow, ShowColouring) {
     let mut offered: Vec<BarColouring> = DELTA_COLOURINGS.to_vec();
     if let Some(kept) = current.filter(|c| !offered.contains(c)) {
         offered.push(kept);
