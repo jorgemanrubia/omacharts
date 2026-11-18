@@ -347,6 +347,37 @@ pub fn follow_method(method_row: &adw::ComboRow, rows: ByMethod) -> Rc<dyn Fn(Me
     apply
 }
 
+/// Grey `style`'s Background while `parameters`' Calculation method is a
+/// delta, whose rows are painted in its colouring: for a dialog whose two
+/// groups are built apart.
+pub fn background_follows_method(parameters: &adw::PreferencesGroup, style: &adw::PreferencesGroup) {
+    let (Some(method), Some(background)) = (row_titled(parameters.upcast_ref(), METHOD), row_titled(style.upcast_ref(), BACKGROUND))
+    else {
+        return;
+    };
+    let Ok(method) = method.downcast::<adw::ComboRow>() else { return };
+    let follow = move |row: &adw::ComboRow| {
+        background.set_sensitive(has_value_area(Method::ALL.get(row.selected() as usize).copied().unwrap_or_default()))
+    };
+    follow(&method);
+    method.connect_selected_notify(follow);
+}
+
+/// The row titled `title` anywhere under `widget`.
+fn row_titled(widget: &gtk::Widget, title: &str) -> Option<gtk::Widget> {
+    if widget.downcast_ref::<adw::PreferencesRow>().is_some_and(|row| row.title() == title) {
+        return Some(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = row_titled(&widget, title) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 /// How much of its room the longest row reaches, 10 to 100%.
 pub fn width_row(share: f64, changed: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
     use omacharts_engine::indicators::profile::{drawn_width, MAX_WIDTH, MIN_WIDTH};

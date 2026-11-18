@@ -41,7 +41,7 @@ crop: none
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Background** colour | The next free colour | A palette name, or a custom colour |
+| **Background** colour | The next free colour | A palette name, or a custom colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** |
 | **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
 | **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, thickness and style show while it is on |
 | **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |

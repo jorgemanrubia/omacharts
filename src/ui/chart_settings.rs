@@ -1287,8 +1287,13 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
     if indicator.kind == Kind::SessionTimes {
         time::fill(owner, refresh, &page, indicator.id);
     } else {
-        page.add(&parameters_group(owner, refresh, &indicator));
+        let parameters = parameters_group(owner, refresh, &indicator);
+        page.add(&parameters);
         if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
+            // A delta is painted in its colouring, as a drawing's is.
+            if indicator.kind == Kind::VolumeProfile {
+                profile_rows::background_follows_method(&parameters, &group);
+            }
             page.add(&group);
         }
         for group in band_groups(owner, refresh, &colour, &indicator) {
