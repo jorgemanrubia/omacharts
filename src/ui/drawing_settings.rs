@@ -73,6 +73,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     }
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
+    HOUSE_LOOK.set(window.house_look());
     let kind = drawing.kind;
     let configs_now = window.drawing_configurations();
 
@@ -389,6 +390,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 /// and a way back to the defaults.
 pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
     let theme = window.theme();
+    HOUSE_LOOK.set(window.house_look());
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
     // It opens on the properties' own rows, so at their width.
@@ -876,6 +878,25 @@ fn style_editor(
         // less what only a study has.
         Kind::Profile => {
             group.set_title("Parameters");
+            let (method_row, show_method) =
+                profile_rows::method_row(style.borrow().profile.method, {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |method| {
+                        style.borrow_mut().profile.method = method;
+                        emit();
+                    }
+                });
+            let (colouring_row, show) =
+                profile_rows::colouring_row(style.borrow().profile.colouring, {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |colouring| {
+                        style.borrow_mut().profile.colouring = colouring;
+                        emit();
+                    }
+                });
+            shows.push(Rc::new(move |s: &Style| show(s.profile.colouring)));
             let granularity =
                 profile_rows::granularity(style.borrow().profile.rows, drawn_rows.clone(), {
                     let style = style.clone();
@@ -950,7 +971,6 @@ fn style_editor(
                     emit();
                 });
             }
-            area_row.set_sensitive(style.borrow().profile.highlight);
             let (highlight, show) = profile_rows::switch_row(
                 profile_rows::HIGHLIGHT,
                 style.borrow().profile.highlight,
@@ -963,26 +983,20 @@ fn style_editor(
                     }
                 },
             );
-            {
-                let area_row = area_row.clone();
-                highlight.connect_active_notify(move |row| area_row.set_sensitive(row.is_active()));
-            }
-            {
-                let area_row = area_row.clone();
-                shows.push(Rc::new(move |s: &Style| {
-                    show(s.profile.highlight);
-                    area_row.set_sensitive(s.profile.highlight);
-                    show_area(s);
-                }));
-            }
+            shows.push(Rc::new(move |s: &Style| {
+                show(s.profile.highlight);
+                show_area(s);
+            }));
             profile_rows::add_parameters(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: Vec::new(),
+                    method: method_row.clone(),
+                    colouring: colouring_row.clone(),
                     granularity,
-                    value_area: area.upcast(),
-                    highlight,
-                    value_area_colour: area_row.upcast(),
+                    value_area: area.clone().upcast(),
+                    highlight: highlight.clone(),
+                    value_area_colour: area_row.clone().upcast(),
                 },
             );
 
@@ -1214,6 +1228,34 @@ fn style_editor(
                 show(aligns.iter().position(|x| *x == s.profile.align))
             }));
 
+            // Of the span, as the study's is of its period.
+            let (width, show) = profile_rows::width_row(style.borrow().profile.width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |share| {
+                    style.borrow_mut().profile.width = share;
+                    emit();
+                }
+            });
+            shows.push(Rc::new(move |s: &Style| show(s.profile.width)));
+
+            // A delta is painted in its colouring, outline and all: the
+            // background and the outline's colour are a total's.
+            let follow = profile_rows::follow_method(
+                &method_row,
+                profile_rows::ByMethod {
+                    value_area: area.upcast(),
+                    highlight,
+                    value_area_colour: area_row.upcast(),
+                    colouring: colouring_row,
+                    total_only: vec![outline_row.clone().upcast(), background.clone().upcast()],
+                },
+            );
+            shows.push(Rc::new(move |s: &Style| {
+                show_method(s.profile.method);
+                follow(s.profile.method);
+            }));
+
             more.push(profile_rows::style_group(profile_rows::StyleRows {
                 outline: edge,
                 outline_colour: outline_row.upcast(),
@@ -1227,7 +1269,7 @@ fn style_editor(
                 poc_thickness: poc_thickness.upcast(),
                 style: shape.upcast(),
                 alignment: alignment.upcast(),
-                width: None,
+                width: width.upcast(),
             }));
         }
         // The study's rows, in the study's order and groups: what it is
@@ -1930,10 +1972,28 @@ fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, R
     (row, shower)
 }
 
+thread_local! {
+    /// The colouring chosen in Preferences, and whether it is swapped, as
+    /// the window that opened the dialog last had it: what a delta's
+    /// Default colouring paints its sample in.
+    static HOUSE_LOOK: Cell<(omacharts_engine::BarColouring, bool)> =
+        const { Cell::new((omacharts_engine::BarColouring::Vivid, false)) };
+}
+
 /// A row that picks a width, in pixels, by number.
 /// A small profile in a style's look, for a swatch or a preview: rows off
 /// the edge it grows from, and the busiest marked across.
 fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64, y: f64, w: f64, h: f64) {
+    // As far across as its rows reach on the chart.
+    let reach = w * style.profile.drawn_width();
+    let x = match style.profile.align {
+        ProfileAlign::Right => x + w - reach,
+        _ => x,
+    };
+    let w = reach;
+    if style.profile.method == omacharts_engine::drawings::ProfileMethod::Delta {
+        return delta_sample(cr, theme, style, (x, y, w, h));
+    }
     let rows = [0.3, 0.55, 0.85, 1.0, 0.7, 0.45, 0.25];
     let row_h = h / rows.len() as f64;
     let colour = style.colour.hex(theme);
@@ -1999,6 +2059,55 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
     let (left, width) = span(1.0);
     cr.move_to(left, poc);
     cr.line_to(left + width, poc);
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+}
+
+/// A small delta profile in a style's look: rows bought and sold, each in
+/// its side's colour of the profile's colouring, fill and edge alike, as
+/// the chart paints them, and the point of control at the greatest.
+fn delta_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w, h): (f64, f64, f64, f64)) {
+    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    let rows: [f64; 7] = [0.25, -0.4, 0.6, 1.0, -0.7, -0.35, 0.2];
+    let row_h = h / rows.len() as f64;
+    let (house, swapped) = HOUSE_LOOK.get();
+    let (up, down) = crate::ui::chart::delta_colours(style.profile.colouring, theme, house, swapped);
+    let alpha = style.profile_alpha();
+    let (strength, _) = row_alphas(alpha, true);
+    let least = 0.12 * line_alpha(1.0, alpha);
+    let right = style.profile.align == ProfileAlign::Right;
+    for (n, share) in rows.iter().enumerate() {
+        let side = if *share >= 0.0 { &up } else { &down };
+        let width = w * share.abs();
+        let left = if right { x + w - width } else { x };
+        cr.rectangle(left, y + n as f64 * row_h, width, row_h);
+        match style.profile.shape {
+            ProfileShape::Filled => {
+                colors::set_source_alpha(cr, side, strength.max(least));
+                let _ = cr.fill_preserve();
+                let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
+                colors::set_source_alpha(cr, side, line_alpha(edge, alpha));
+                cr.set_line_width(1.0);
+            }
+            ProfileShape::Outline => {
+                colors::set_source_alpha(cr, side, line_alpha(1.0, alpha));
+                cr.set_line_width(style.width.clamp(1.0, 2.0));
+            }
+        }
+        cr.set_dash(&style.line_style.dashes(cr.line_width()), 0.0);
+        let _ = cr.stroke();
+    }
+    cr.set_dash(&[], 0.0);
+    if !style.profile.show_poc {
+        return;
+    }
+    let poc = (y + 3.5 * row_h).round() + 0.5;
+    colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
+    let poc_w = style.profile.poc_width.clamp(1.0, 2.0);
+    cr.set_line_width(poc_w);
+    cr.set_dash(&style.profile.poc_style.dashes(poc_w), 0.0);
+    cr.move_to(x, poc);
+    cr.line_to(x + w, poc);
     let _ = cr.stroke();
     cr.set_dash(&[], 0.0);
 }
@@ -3134,21 +3243,14 @@ mod tests {
     use crate::store::Store;
 
     /// A profile drawing's properties are the study's, in the same groups
-    /// and the same order, less what only a study has: its period, whether
-    /// only the newest is drawn, what it measures, how a delta is painted,
-    /// and how wide it is drawn, which on a drawing is the span it covers.
+    /// and the same order, less what only a study has: its period, and
+    /// whether only the newest is drawn.
     #[test]
     fn a_profile_drawing_has_the_studys_rows_in_the_studys_order() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = crate::ui::window::test_window(&store);
-            let only_the_study = [
-                "Reset every",
-                "Only show in last period",
-                "Calculation method",
-                "Colouring",
-                chart_settings::PROFILE_WIDTH_LABEL,
-            ];
+            let only_the_study = ["Reset every", chart_settings::PROFILE_LAST_ONLY_LABEL];
             let study: Vec<(String, Vec<String>)> = chart_settings::profile_titles(&window)
                 .into_iter()
                 .map(|(title, rows)| {

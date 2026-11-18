@@ -1289,6 +1289,81 @@ fn ladder_of(held: &Held, days: &Days, timeframe: Timeframe, bars: &[Bar]) -> Op
     }
 }
 
+/// Why a volume profile on a chart of `context` draws nothing, before any
+/// bar is read.
+enum Withheld {
+    /// It cannot be drawn on this chart at all.
+    Unmet(&'static str),
+    /// Its ladders are on their way.
+    Awaiting,
+}
+
+/// Whether a volume profile measuring by `method` is drawn nothing on a
+/// chart of `context`, the study and a drawing alike.
+fn profile_withheld(method: profile::Method, context: &Context) -> Option<Withheld> {
+    // Which side each trade took is in no bar: a delta is drawn from
+    // volume at price or not at all.
+    if method == profile::Method::Delta && context.ladders.is_none() {
+        return Some(Withheld::Unmet(NEEDS_VOLUME_AT_PRICE));
+    }
+    // Exact in a moment: nothing until then, never the estimate.
+    (context.ladders.is_none() && context.awaiting_ladders).then_some(Withheld::Awaiting)
+}
+
+/// What a volume profile on a chart of `context` reads what traded at each
+/// price from: the ladder of any run of its bars, and whether one it does
+/// not hold yet is on its way. `None` on a chart without ladders, which is
+/// then drawn from its bars. One source for the study and a drawing alike.
+fn with_at_price<T>(context: &Context, read: impl FnOnce(Option<&profile::AtPrice>) -> T) -> T {
+    let timeframe = context.timeframe;
+    // Days are cut by the exchange's calendar, which needs the instrument; a
+    // chart without one has no ladders either.
+    let days = context.ladders.and(context.instrument).map(Days::new);
+    let of = |run: &[Bar]| match (context.ladders, &days) {
+        (Some(held), Some(days)) => ladder_of(held, days, timeframe, run),
+        _ => None,
+    };
+    // A day's piece still being read; whole days need none.
+    let coming = |run: &[Bar]| match (context.ladders, run.first(), run.last()) {
+        (Some(held), Some(first), Some(last)) if timeframe.is_intraday() => {
+            held.coming(first.ts, last.ts + timeframe.seconds())
+        }
+        _ => false,
+    };
+    let at_price = context
+        .ladders
+        .filter(|_| days.is_some())
+        .map(|held| profile::AtPrice { tick_size: held.tick_size, of: &of, coming: &coming });
+    read(at_price.as_ref())
+}
+
+/// The volume profile of every bar in `bars`, which start at `offset` on the
+/// chart, worked out as the study works out each of its periods: what a
+/// volume profile drawing shows of the span it covers, on a chart of
+/// `context`.
+///
+/// `Err` with the reason when it cannot be drawn on this chart at all — a
+/// delta where nothing says which side each trade took — which is what the
+/// study says in that case; `Ok(None)` when there is nothing to draw now,
+/// its ladders being on their way among other things.
+pub fn span_profile(
+    bars: &[Bar],
+    offset: usize,
+    rows: Option<usize>,
+    value_area: f64,
+    method: profile::Method,
+    context: &Context,
+) -> Result<Option<Profile>, &'static str> {
+    match profile_withheld(method, context) {
+        Some(Withheld::Unmet(why)) => return Err(why),
+        Some(Withheld::Awaiting) => return Ok(None),
+        None => {}
+    }
+    Ok(with_at_price(context, |at_price| {
+        profile::of_span_with(bars, offset, rows, value_area, context.kind, at_price, method)
+    }))
+}
+
 /// Compute an indicator over `bars`, knowing nothing of the instrument beyond
 /// its kind.
 ///
@@ -1421,45 +1496,25 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
         (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, method, last_only, .. }) => {
-            // Which side each trade took is in no bar: a delta is drawn from
-            // volume at price or not at all.
-            if let Some(unmet) = unmet(Needs::VolumeAtPrice, context).filter(|_| *method == profile::Method::Delta) {
-                return unmet;
+            match profile_withheld(*method, context) {
+                Some(Withheld::Unmet(why)) => return Output::Unmet(why),
+                Some(Withheld::Awaiting) => return Output::Profiles(Vec::new()),
+                None => {}
             }
-            // Exact in a moment: nothing until then, never the estimate.
-            if context.ladders.is_none() && context.awaiting_ladders {
-                return Output::Profiles(Vec::new());
-            }
-            // Days are cut by the exchange's calendar, which needs the
-            // instrument; a chart without one has no ladders either.
-            let days = context.ladders.and(context.instrument).map(Days::new);
-            let of = |run: &[Bar]| match (context.ladders, &days) {
-                (Some(held), Some(days)) => ladder_of(held, days, timeframe, run),
-                _ => None,
-            };
-            // A day's piece still being read; whole days need none.
-            let coming = |run: &[Bar]| match (context.ladders, run.first(), run.last()) {
-                (Some(held), Some(first), Some(last)) if timeframe.is_intraday() => {
-                    held.coming(first.ts, last.ts + timeframe.seconds())
-                }
-                _ => false,
-            };
-            let at_price = context
-                .ladders
-                .filter(|_| days.is_some())
-                .map(|held| profile::AtPrice { tick_size: held.tick_size, of: &of, coming: &coming });
-            Output::Profiles(profile::compute_with(
-                bars,
-                reset.effective_for(timeframe),
-                session_origin,
-                *rows,
-                *value_area,
-                kind,
-                merged,
-                at_price.as_ref(),
-                *method,
-                *last_only,
-            ))
+            Output::Profiles(with_at_price(context, |at_price| {
+                profile::compute_with(
+                    bars,
+                    reset.effective_for(timeframe),
+                    session_origin,
+                    *rows,
+                    *value_area,
+                    kind,
+                    merged,
+                    at_price,
+                    *method,
+                    *last_only,
+                )
+            }))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
             Output::Time(time::session_times(bars, timeframe, ranges, context.zone, schedule()))
@@ -2811,6 +2866,52 @@ mod tests {
             }
             let users: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.uses_volume_at_price()).collect();
             assert_eq!(users, vec![Kind::VolumeProfile, Kind::Cvd]);
+        }
+
+        /// A volume profile drawn over a span that is one of the study's
+        /// sessions is that session's profile, row for row, whichever it
+        /// measures: the two are worked out by the same code from the same
+        /// ladders.
+        #[test]
+        fn a_drawn_profile_over_a_session_is_the_studys_profile_of_it() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            let held = Held::of(&series);
+            let context = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC).with_ladders(Some(&held));
+            for rows in [None, Some(24)] {
+                let Output::Profiles(deltas) = delta_of(&bars, &instrument, rows, Some(&held)) else {
+                    panic!("a delta profile on a chart with ladders")
+                };
+                let totals = profile_of(&bars, &instrument, rows, Some(&held));
+                for (method, study) in [(profile::Method::Delta, &deltas), (profile::Method::Total, &totals)] {
+                    assert_eq!(study.len(), 3);
+                    for session in study {
+                        let span = &bars[session.first_bar..=session.last_bar];
+                        let drawn = span_profile(span, session.first_bar, rows, 0.70, method, &context);
+                        assert_eq!(drawn, Ok(Some(session.clone())), "{method:?} {rows:?}");
+                    }
+                }
+            }
+        }
+
+        /// Without volume at price, a drawn delta is refused for the reason
+        /// the study gives, and a drawn total is estimated from the bars, as
+        /// the study's is, unless the ladders are on their way: then it waits
+        /// for them, drawing nothing rather than an estimate.
+        #[test]
+        fn a_drawn_delta_without_ladders_is_refused_as_the_studys_is() {
+            let instrument = es();
+            let (_, bars) = sessions(&instrument);
+            let bare = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC);
+            let span = &bars[..600];
+            let Output::Unmet(why) = delta_of(&bars, &instrument, None, None) else { panic!("the study is refused") };
+            assert_eq!(span_profile(span, 0, None, 0.70, profile::Method::Delta, &bare), Err(why));
+            assert!(matches!(
+                span_profile(span, 0, None, 0.70, profile::Method::Total, &bare),
+                Ok(Some(_))
+            ));
+            let waiting = bare.awaiting_ladders(true);
+            assert_eq!(span_profile(span, 0, None, 0.70, profile::Method::Total, &waiting), Ok(None));
         }
     }
 }

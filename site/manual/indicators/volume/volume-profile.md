@@ -41,7 +41,7 @@ crop: none
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Background** colour | The next free colour | A palette name, or a custom colour |
+| **Background** colour | The next free colour | A palette name, or a custom colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** |
 | **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
 | **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, thickness and style show while it is on |
 | **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |
@@ -67,7 +67,7 @@ Which side a trade took is not in a bar, so this needs a data feed with volume a
 
 On any other feed it gives every period rows of the same height, a round multiple of the instrument's price step, about 600 to a typical period. A period too quiet for 60 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too.
 
-With **Automatic** off, **Rows** is the number of rows each period is divided into, on either feed. A [volume profile drawing](/manual/drawings/volume-profile/) has the same two rows and divides its span the same way, worked out from its bars alone.
+With **Automatic** off, **Rows** is the number of rows each period is divided into, on either feed. A [volume profile drawing](/manual/drawings/volume-profile/) has the same two rows and divides its span the same way, from the same volume at price, or from its bars on any other feed. It measures Ask volume - bid volume too.
 
 ## Aligned right
 

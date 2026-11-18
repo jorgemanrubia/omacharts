@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::theme::{ContrastBand, Oklch, Theme, contrast_ratio, delta_e, held_to, mix, theme_bars};
+use crate::theme::{BarColouring, ContrastBand, Oklch, Theme, contrast_ratio, delta_e, held_to, mix, theme_bars};
 
 /// One of the nine, in the order the picker shows them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -1481,6 +1481,26 @@ pub struct ProfileLook {
     /// `line_style`.
     #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
     pub poc_style: LineStyle,
+    /// What each row measures, as the study's: all the volume at its price,
+    /// or the ask volume less the bid volume there, which only a feed with
+    /// volume at price can say. Missing, the total it always was.
+    #[serde(default, skip_serializing_if = "is_total")]
+    pub method: ProfileMethod,
+    /// The colouring a delta's bought and sold rows are painted in, as the
+    /// study's: unset, the colouring chosen in Preferences, following it as
+    /// it changes; set, one of [`DELTA_COLOURINGS`] of its own. A total is
+    /// in the drawing's background and pays this no mind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colouring: Option<BarColouring>,
+    /// How much of the span the longest row reaches, as a share, as the
+    /// study's Width is of its period. Missing, the whole span, edge to
+    /// edge, as every profile drawing was drawn before it could be chosen.
+    #[serde(default = "ProfileLook::whole_span", skip_serializing_if = "ProfileLook::is_whole_span")]
+    pub width: f64,
+}
+
+fn is_total(method: &ProfileMethod) -> bool {
+    *method == ProfileMethod::Total
 }
 
 impl ProfileLook {
@@ -1496,8 +1516,22 @@ impl ProfileLook {
         true
     }
 
+    fn whole_span() -> f64 {
+        crate::indicators::profile::MAX_WIDTH
+    }
+
+    fn is_whole_span(width: &f64) -> bool {
+        *width == ProfileLook::whole_span()
+    }
+
     fn is_default(&self) -> bool {
         *self == ProfileLook::default()
+    }
+
+    /// How much of its span the longest row reaches, inside the study's
+    /// range.
+    pub fn drawn_width(&self) -> f64 {
+        crate::indicators::profile::drawn_width(self.width)
     }
 }
 
@@ -1515,11 +1549,16 @@ impl Default for ProfileLook {
             show_poc: true,
             poc_width: DEFAULT_WIDTH,
             poc_style: LineStyle::Solid,
+            method: ProfileMethod::Total,
+            colouring: None,
+            width: ProfileLook::whole_span(),
         }
     }
 }
 
-pub use crate::indicators::profile::{Align as ProfileAlign, Style as ProfileShape};
+pub use crate::indicators::profile::{
+    Align as ProfileAlign, Method as ProfileMethod, Style as ProfileShape, DELTA_COLOURINGS,
+};
 
 /// The value area's fill: the study's own. A drawing over a study is already
 /// on top, and being louder would only cost the candles under it — at 0.36
@@ -3347,6 +3386,31 @@ mod tests {
         let back: ProfileLook =
             serde_json::from_str(&serde_json::to_string(&hidden).unwrap()).unwrap();
         assert_eq!(back, hidden);
+    }
+
+    /// A profile drawing stored before it could measure a delta or be
+    /// drawn narrower than its span reads back a total over the whole span,
+    /// as it was drawn, and one nobody changed is stored without any of the
+    /// three; a delta, its colouring and its width come back as they went.
+    #[test]
+    fn a_profile_stored_before_its_method_and_width_reads_as_a_total_over_its_span() {
+        let stored = serde_json::to_string(&ProfileLook::default()).expect("stored");
+        for field in ["method", "colouring", "width"] {
+            assert!(!stored.contains(&format!("\"{field}\"")), "{stored}");
+        }
+        let look: ProfileLook = serde_json::from_str(&stored).expect("an old profile look");
+        assert_eq!(look.method, ProfileMethod::Total);
+        assert_eq!(look.colouring, None);
+        assert_eq!(look.drawn_width(), 1.0);
+
+        let delta = ProfileLook {
+            method: ProfileMethod::Delta,
+            colouring: Some(BarColouring::Soft),
+            width: 0.4,
+            ..ProfileLook::default()
+        };
+        let back: ProfileLook = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        assert_eq!(back, delta);
     }
     use crate::omarchy;
     use crate::theme::builtin_themes;

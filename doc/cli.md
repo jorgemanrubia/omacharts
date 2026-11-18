@@ -809,8 +809,13 @@ and `--fill` its background, `--border on|off` whether filled rows have it,
 `--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
 `--transparency` (0 its background solid, 0.7 by default),
 `--highlight-value-area on|off`, `--value-area-color` (or `none` for its
-background's), `--poc on|off` and `--rows` (a number, or `auto`, as the
-study's) are the rest. It is never moved whole, only
+background's), `--poc on|off`, `--rows` (a number, or `auto`, as the
+study's), `--profile-method total|delta`, `--colouring` (for a delta:
+`default`, `theme`, `theme-soft` or `theme-quiet`) and `--profile-width`
+(0.1 to 1, the whole span by default) are the rest. The study's
+`--outline`, `--outline-color`, `--outline-width` and `--outline-style` are
+taken too, as `--border`, `--color`, `--width` and `--line-style`. A delta
+needs a feed with volume at price, as the study's does. It is never moved whole, only
 re-spanned, and it takes no words.
 
 **An anchored VWAP** (`avwap`, or `vwap`) reads only the time of its anchor,

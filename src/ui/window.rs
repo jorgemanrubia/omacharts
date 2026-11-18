@@ -5726,6 +5726,7 @@ impl Window {
         // and every chart showing that symbol is told.
         let keeper = self.clone();
         pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
+        pane.view.set_volume_at_price(Some(self.volume_at_price_for(&pane)));
         // What the hand did to the orders and the position on it, which the
         // window sends, never the chart.
         let trader = self.clone();
@@ -10623,6 +10624,48 @@ impl Window {
         drawn
     }
 
+    /// Where chart `pane`'s volume profile drawings read what traded at each
+    /// price: its feed's ladders, as its studies do.
+    ///
+    /// A drawing is worked out when the chart is painted, which is no time
+    /// to send for anything, so what it finds missing is sent for on the
+    /// next turn of the loop: the contract, the first time a chart with no
+    /// study that wants it has a profile drawn on it, and the pieces of the
+    /// days its span cuts. Both come back as the study's do, and the chart
+    /// is worked out again then. Until they do the drawing waits, drawing
+    /// nothing, rather than an estimate it would be redrawn over.
+    fn volume_at_price_for(self: &Rc<Self>, pane: &Rc<ChartPane>) -> crate::ui::chart::VolumeAtPrice {
+        let (this, pane) = (Rc::downgrade(self), Rc::downgrade(pane));
+        let asking = Rc::new(Cell::new(false));
+        Rc::new(move |_first, read| {
+            let Some(pane) = pane.upgrade() else { return read(None, false) };
+            let source = pane.ladders.borrow().clone();
+            let Some(source) = source else { return read(None, false) };
+            let watching = source.at_price.watches(pane.id);
+            let loading = source.at_price.loading(&source.key);
+            let wants = source.at_price.with_held(&source.key, |held| {
+                read(held, held.is_none() && (loading || !watching));
+                held.is_some_and(|held| !held.wanted.borrow().is_empty())
+            });
+            if (watching && !wants) || asking.replace(true) {
+                return;
+            }
+            let (this, pane, asking) = (this.clone(), Rc::downgrade(&pane), asking.clone());
+            glib::idle_add_local_once(move || {
+                asking.set(false);
+                let (Some(this), Some(pane)) = (this.upgrade(), pane.upgrade()) else { return };
+                let source = pane.ladders.borrow().clone();
+                let Some(source) = source else { return };
+                // Worked out again, the chart asks for its contract as a
+                // study's would; and a piece there is no room for is drawn
+                // estimated, as a study's period is.
+                if !source.at_price.watches(pane.id) || source.at_price.load_wanted(&source.key) {
+                    this.recompute_panes(&[pane.id]);
+                }
+            });
+        })
+    }
+
     /// [`Self::drawn_indicators`]'s computation, on the context it made.
     #[allow(clippy::too_many_arguments)]
     fn compute_drawn(
@@ -10663,7 +10706,8 @@ impl Window {
         // to the bars.
         let source = pane.ladders.borrow().clone();
         let Some(source) = source else { return compute(&context) };
-        if !all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) {
+        // A volume profile drawing reads them as the study does.
+        if !all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) && !pane.view.has_profile_drawing() {
             source.at_price.unwatch(pane.id);
             return compute(&context);
         }

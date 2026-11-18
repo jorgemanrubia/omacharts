@@ -626,24 +626,42 @@ pub fn compute_with(
     for (start, end) in periods.into_iter().skip(skipped) {
         let slice = &bars[start..end];
         let bucket = reset.bucket(bars[start].ts, session_origin);
-        let exact = at_price.and_then(|at| {
-            let ladder = (at.of)(slice)?;
-            ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
-        });
-        if exact.is_none() && at_price.is_some_and(|at| (at.coming)(slice)) {
-            continue;
-        }
-        let profile = match (exact, method) {
-            (Some((ladder, tick)), _) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick, method),
-            (None, Method::Total) => one(slice, start, bucket, grid, value_area),
-            (None, Method::Delta) => None,
-        };
-        if let Some(mut profile) = profile {
+        if let Some(mut profile) = period(slice, start, bucket, grid, value_area, at_price, method) {
             profile.parts = parts(slice, reset, session_origin);
             out.push(profile);
         }
     }
     out
+}
+
+/// One period's profile, `bars` starting at `offset` on the chart: from what
+/// traded at each price when `at_price` knows it, estimated from the bars
+/// when it does not, and nothing while its ladder is on its way or, for a
+/// delta, when there is no ladder to tell bought from sold.
+///
+/// What the study draws each period with, and a drawing its span.
+#[allow(clippy::too_many_arguments)]
+fn period(
+    bars: &[Bar],
+    offset: usize,
+    bucket: i64,
+    grid: Grid,
+    value_area: f64,
+    at_price: Option<&AtPrice>,
+    method: Method,
+) -> Option<Profile> {
+    let exact = at_price.and_then(|at| {
+        let ladder = (at.of)(bars)?;
+        ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
+    });
+    if exact.is_none() && at_price.is_some_and(|at| (at.coming)(bars)) {
+        return None;
+    }
+    match (exact, method) {
+        (Some((ladder, tick)), _) => one_exact(bars, offset, bucket, grid, value_area, &ladder, tick, method),
+        (None, Method::Total) => one(bars, offset, bucket, grid, value_area),
+        (None, Method::Delta) => None,
+    }
 }
 
 /// The periods with each one that starts at a merged bucket joined onto the
@@ -688,10 +706,26 @@ pub fn of_span(
     value_area: f64,
     kind: Option<InstrumentKind>,
 ) -> Option<Profile> {
+    of_span_with(bars, offset, rows, value_area, kind, None, Method::Total)
+}
+
+/// [`of_span`] as the study draws a period: from what traded at each price
+/// when `at_price` knows it, measuring what `method` says, and nothing
+/// while its ladder is on its way or, for a delta, when nothing says which
+/// side each trade took.
+pub fn of_span_with(
+    bars: &[Bar],
+    offset: usize,
+    rows: Option<usize>,
+    value_area: f64,
+    kind: Option<InstrumentKind>,
+    at_price: Option<&AtPrice>,
+    method: Method,
+) -> Option<Profile> {
     let first = bars.first()?;
     // The span is one period, divided by the study's own rule.
-    let grid = grid(bars, &[(0, bars.len())], rows, kind, None);
-    one(bars, offset, first.ts, grid, value_area)
+    let grid = grid(bars, &[(0, bars.len())], rows, kind, at_price);
+    period(bars, offset, first.ts, grid, value_area, at_price, method)
 }
 
 /// How a chart's periods are divided, for the study and a drawing alike:

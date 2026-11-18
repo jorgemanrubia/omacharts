@@ -1046,6 +1046,10 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--poc-style S` | `solid`, `dashed`, `dotted` | How a volume profile's point of control is drawn; `--line-style` is its outline's |
 | `--poc B` | `on`, `off` | Whether a volume profile draws its point of control; on by default |
 | `--rows N` | `auto`, or a number of rows, held between 4 and 800 | How finely a volume profile divides its span; `auto` by default, as the study |
+| `--profile-method M` | `total`, `delta` | What a volume profile's rows measure: all the volume, or the ask volume less the bid volume, which needs a feed with volume at price; `total` by default, as the study |
+| `--colouring C` | `default`, `theme`, `theme-soft`, `theme-quiet` | How a delta volume profile's bought and sold rows are painted; `default` follows Preferences |
+| `--profile-width F` | 0.1 to 1 | How much of its span a volume profile's longest row reaches; 1, the whole span, by default |
+| `--outline B`, `--outline-color C`, `--outline-width F`, `--outline-style S` | As `--border`, `--color`, `--width`, `--line-style` | The study's names for a volume profile's outline; give one name or the other |
 | `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
 | `--style S` | `solid`, `dashed`, `dotted` | The older name of `--line-style` on an anchored VWAP |
 | `--bands LIST` | `1,2,3` or any of them; `none` | Which of an anchored VWAP's three bands are drawn, by place from the line out; none by default |
@@ -1070,7 +1074,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--poc-style`, `--poc`, `--rows`, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--poc-style`, `--poc`, `--rows`, `--profile-method`, `--colouring`, `--profile-width`, the `--outline*` flags, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 
