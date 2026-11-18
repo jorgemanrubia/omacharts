@@ -9963,6 +9963,8 @@ impl Window {
         }
         pane.follow_load(load);
         self.load_comparisons(pane);
+        // Behind the chart's own bars, which are what somebody is waiting on.
+        self.fetch_daily_for_change(pane);
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
         }
@@ -10493,12 +10495,13 @@ impl Window {
 
         if waiting.is_empty() {
             // Something we prefetched. Not on any chart, but the rail's change
-            // column may now have numbers it did not have a moment ago.
+            // column and a header's day's move may now have numbers they did
+            // not have a moment ago.
             if let Some(watchlist) = self.watchlist.borrow().as_ref() {
                 watchlist.refresh_quotes();
-                self.write_changes();
                 watchlist.set_trouble(trouble);
             }
+            self.write_changes();
             return;
         }
 
@@ -11998,6 +12001,37 @@ impl Window {
         *pane.header.borrow_mut() = crate::header::load(&self.store);
         pane.arrange_header();
         self.write_header_of(pane);
+        self.fetch_daily_for_change(pane);
+    }
+
+    /// Ask the chart's own feed for the daily bars its day's move is read
+    /// from, when the header shows the move and that feed has none cached.
+    ///
+    /// The rail fetches daily bars too, but through the order's feed for
+    /// each symbol, so a chart on any other feed — a second Rithmic login's,
+    /// a feed picked for it — found nothing under its own key and showed no
+    /// move at all. Once, when the chart is put on screen or the header
+    /// changes, and never from [`Window::write_change_of`], which runs on
+    /// every flush and would ask again after every refusal. A chart at 1D
+    /// fetches the series itself.
+    fn fetch_daily_for_change(self: &Rc<Self>, pane: &ChartPane) {
+        let daily = Timeframe::days(1);
+        if !pane.shows(crate::header::Part::Change) || pane.timeframe.get().native() == daily {
+            return;
+        }
+        let Some(instrument) = pane.instrument.borrow().clone() else { return };
+        let Some(routed) = self.route_pane(pane, &instrument) else { return };
+        let provider = routed.feed.provider.as_ref();
+        // The key `write_change_of` reads, which is the instrument's own
+        // rather than the chart's adjusted spelling.
+        let (Some(key), Some(symbol)) = (crate::cli::cache_key(provider, &instrument), provider.symbol_for(&instrument))
+        else {
+            return;
+        };
+        if self.store.coverage(&key, daily).is_some() {
+            return;
+        }
+        routed.feed.loader.fetch(Request { key, symbol, timeframe: daily, speculative: true }, BACKGROUND);
     }
 
     /// Fill in the parts of a chart's header only the window knows: the
