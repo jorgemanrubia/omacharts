@@ -20,6 +20,34 @@ pub struct Bar {
     pub volume: f64,
 }
 
+/// The indicators read a bar in place, as it is.
+impl omacharts_studies::Ohlcv for Bar {
+    #[inline(always)]
+    fn ts(&self) -> i64 {
+        self.ts
+    }
+    #[inline(always)]
+    fn open(&self) -> f64 {
+        self.open
+    }
+    #[inline(always)]
+    fn high(&self) -> f64 {
+        self.high
+    }
+    #[inline(always)]
+    fn low(&self) -> f64 {
+        self.low
+    }
+    #[inline(always)]
+    fn close(&self) -> f64 {
+        self.close
+    }
+    #[inline(always)]
+    fn volume(&self) -> f64 {
+        self.volume
+    }
+}
+
 /// How each bar is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

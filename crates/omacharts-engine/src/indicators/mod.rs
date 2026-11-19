@@ -1241,6 +1241,12 @@ pub struct Context<'a> {
     /// tick works out only the newest bars again. `None` works out every
     /// bar every time.
     pub memos: Option<&'a cvd::Memos>,
+    /// Trading hours the embedding program keeps itself, in place of the
+    /// instrument's exchange's from the registry, for the sessions Session
+    /// Times shades. `None` uses the registry. Nothing else reads it: a
+    /// session VWAP, a cumulative delta and a volume profile reset on
+    /// [`Context::session_origin`], and trading days are the registry's.
+    pub schedule: Option<crate::exchanges::Schedule<'a>>,
 }
 
 impl<'a> Context<'a> {
@@ -1255,7 +1261,14 @@ impl<'a> Context<'a> {
             ladders: None,
             awaiting_ladders: false,
             memos: None,
+            schedule: None,
         }
+    }
+
+    /// The same chart, the sessions Session Times shades the embedding
+    /// program's own rather than the registry's: see [`Context::schedule`].
+    pub fn with_schedule(self, schedule: Option<crate::exchanges::Schedule<'a>>) -> Context<'a> {
+        Context { schedule, ..self }
     }
 
     /// The same chart, with its ladders.
@@ -1388,6 +1401,7 @@ pub fn compute(
         ladders: None,
         awaiting_ladders: false,
         memos: None,
+        schedule: None,
     };
     compute_in(indicator, bars, &context)
 }
@@ -1398,7 +1412,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
     if let Some(unmet) = unmet(indicator.kind.needs(), context) {
         return unmet;
     }
-    let schedule = || time::schedule_for(context.instrument);
+    let schedule = || context.schedule.or_else(|| time::schedule_for(context.instrument));
     match (&indicator.kind, &indicator.params) {
         (Kind::Sma, Params::MovingAverage { period }) => Output::Line(sma(bars, *period)),
         (Kind::Ema, Params::MovingAverage { period }) => Output::Line(ema(bars, *period)),
@@ -1527,39 +1541,19 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
 
 /// Simple moving average of closes.
 pub fn sma(bars: &[Bar], period: usize) -> Vec<Option<f64>> {
-    let mut out = vec![None; bars.len()];
     if period == 0 || bars.len() < period {
-        return out;
+        return vec![None; bars.len()];
     }
-    let mut sum = 0.0;
-    for (i, bar) in bars.iter().enumerate() {
-        sum += bar.close;
-        if i >= period {
-            sum -= bars[i - period].close;
-        }
-        if i + 1 >= period {
-            out[i] = Some(sum / period as f64);
-        }
-    }
-    out
+    omacharts_studies::series::sma(bars, period)
 }
 
 /// Exponential moving average of closes, seeded with the simple average of
 /// the first `period` bars so it does not start from an arbitrary value.
 pub fn ema(bars: &[Bar], period: usize) -> Vec<Option<f64>> {
-    let mut out = vec![None; bars.len()];
     if period == 0 || bars.len() < period {
-        return out;
+        return vec![None; bars.len()];
     }
-    let alpha = 2.0 / (period as f64 + 1.0);
-    let seed: f64 = bars[..period].iter().map(|b| b.close).sum::<f64>() / period as f64;
-    let mut value = seed;
-    out[period - 1] = Some(value);
-    for (i, bar) in bars.iter().enumerate().skip(period) {
-        value = bar.close * alpha + value * (1.0 - alpha);
-        out[i] = Some(value);
-    }
-    out
+    omacharts_studies::series::ema(bars, period)
 }
 
 /// A search over the indicators, for the picker.

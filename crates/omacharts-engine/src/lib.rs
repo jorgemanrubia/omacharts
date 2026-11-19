@@ -27,6 +27,7 @@ pub mod provider;
 pub mod refresh;
 pub mod session;
 pub mod specs;
+#[cfg(feature = "feeds")]
 pub mod providers;
 pub mod range;
 pub mod stream;

@@ -267,6 +267,7 @@ fn which_series_a_feed_draws_is_its_own_declaration() {
     assert_eq!(source(&months), Source::Native);
     months.native = &[];
     assert_eq!(source(&months), Source::FrontMonth);
+    #[cfg(feature = "feeds")]
     assert_eq!(source(&crate::providers::Yahoo::new()), Source::Native);
 }
 

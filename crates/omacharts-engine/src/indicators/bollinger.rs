@@ -93,53 +93,7 @@ pub fn compute(bars: &[Bar], period: usize, bands: &[Band]) -> Bands {
     // be a figure: anchoring on a close that is not a number would make every
     // distance from it one too, and the count below, which watches the
     // closes, would never notice.
-    let anchor =
-        bars.iter().map(|bar| bar.close).find(|close| close.is_finite()).unwrap_or(0.0);
-    let n = period as f64;
-    let (mut sum, mut sum_sq) = (0.0f64, 0.0f64);
-    // How many bars in the window are not a number. A provider that sends one
-    // must not silently turn the rest of the series into NaN, so a window
-    // holding one has no value — and gets one back the moment it falls out of
-    // the window, because the sums never took it in.
-    let mut broken = 0usize;
-
-    for i in 0..bars.len() {
-        let add = bars[i].close;
-        match add.is_finite() {
-            true => {
-                let d = add - anchor;
-                sum += d;
-                sum_sq += d * d;
-            }
-            false => broken += 1,
-        }
-        if i >= period {
-            let drop = bars[i - period].close;
-            match drop.is_finite() {
-                true => {
-                    let d = drop - anchor;
-                    sum -= d;
-                    sum_sq -= d * d;
-                }
-                // Saturating because the count cannot go below zero — every
-                // bar that leaves the window was added to it once — and a
-                // subtraction that underflows in a draw path takes the app
-                // down rather than drawing something odd.
-                false => broken = broken.saturating_sub(1),
-            }
-        }
-        if i + 1 < period || broken > 0 {
-            continue;
-        }
-
-        let mean = sum / n;
-        // Σ(x-mean)² written in terms of the two running sums. Clamped at zero
-        // because a window with no movement can land a hair below it — which
-        // it does whenever the distances above are not exactly representable,
-        // and not only there.
-        let variance = ((sum_sq - sum * mean) / n).max(0.0);
-        out.set(i, anchor + mean, variance.sqrt());
-    }
+    omacharts_studies::series::bollinger(bars, period, |i, spread| out.set(i, spread.center, spread.deviation));
     out
 }
 

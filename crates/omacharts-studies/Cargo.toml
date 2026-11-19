@@ -1,0 +1,11 @@
+[package]
+name = "omacharts-studies"
+version = "0.1.0"
+edition = "2024"
+description = "Indicator arithmetic computed one bar at a time, with no lookahead. No dependencies."
+license = "MIT"
+
+# Nothing. A test reads this file and fails if a dependency is added: this
+# crate is linked by anything that wants an indicator's numbers, and has to
+# stay cheap to build for all of them.
+[dependencies]

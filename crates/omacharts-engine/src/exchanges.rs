@@ -106,6 +106,21 @@ pub struct Hours {
 }
 
 impl Hours {
+    /// A shape of day an embedding program defines for itself, rather than
+    /// one from the registry: `days` indexed from Monday, the day beginning
+    /// `day_starts` minutes past midnight (the evening before its date when
+    /// `evening_before`), and its segments in order.
+    ///
+    /// # Panics
+    ///
+    /// If a segment ends before it starts, or starts before the one ahead
+    /// of it ends: the hours would be no shape of day.
+    pub fn new(id: &str, days: [bool; 7], day_starts: u32, evening_before: bool, segments: Vec<Segment>) -> Hours {
+        assert!(segments.iter().all(|s| s.start <= s.end), "a segment of {id} ends before it starts: {segments:?}");
+        assert!(segments.windows(2).all(|pair| pair[0].end <= pair[1].start), "the segments of {id} are out of order: {segments:?}");
+        Hours { id: id.to_string(), days, day_starts, evening_before, segments }
+    }
+
     /// Is a trading day named for this date one this market keeps?
     pub fn trades_on(&self, day: Weekday) -> bool {
         self.days[day.num_days_from_monday() as usize]
@@ -131,6 +146,21 @@ pub struct Exchange {
 }
 
 impl Exchange {
+    /// An exchange an embedding program defines for itself, to pair with
+    /// its own [`Hours`] in a [`Schedule`]: a code and the zone its clock
+    /// reads, and nothing for the registry to look up.
+    pub fn new(code: &str, zone: Tz) -> Exchange {
+        Exchange {
+            code: code.to_string(),
+            name: code.to_string(),
+            mic: None,
+            zone,
+            hours: usize::MAX,
+            suffixes: Vec::new(),
+            aliases: Vec::new(),
+        }
+    }
+
     /// Does this name, as a listing or a person spells it, mean this exchange?
     fn answers_to(&self, name: &str) -> bool {
         self.code.eq_ignore_ascii_case(name)

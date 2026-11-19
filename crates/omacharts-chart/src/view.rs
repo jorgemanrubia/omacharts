@@ -343,6 +343,9 @@ struct State {
     /// Past fills and the round trips joining them, laid over the chart
     /// by whoever embeds it; empty unless somebody asks for them.
     executions: Executions,
+    /// How large the execution triangles are drawn, as a multiple of their
+    /// usual size: 1 unless the app embedding the chart asks for more.
+    execution_scale: f64,
     /// The step a mark is dragged on, set by whoever lays the marks: the
     /// contract it trades, which need not step as the series charted does
     /// — a 6E chart trading M6E. The series' own step when unset.
@@ -1476,6 +1479,7 @@ impl State {
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
             executions: Executions::default(),
+            execution_scale: 1.0,
             mark_tick: None,
             hover_mark: None,
             loading: false,
@@ -1842,6 +1846,7 @@ impl State {
                         ladders: None,
                         awaiting_ladders: false,
                         memos: None,
+                        schedule: None,
                     };
                     indicators::span_profile(&self.bars[first..end], first, look.rows, look.value_area, look.method, &context)
                 }
@@ -2867,6 +2872,42 @@ impl State {
     fn show_range(&mut self, range: Range) {
         self.range = Some(range);
         self.fit_range();
+    }
+
+    /// Put the bars between two moments in the middle of the view, at the
+    /// zoom it has unless they would not fit in it, and let go of any range
+    /// it was holding to.
+    fn centre_on(&mut self, from: i64, to: i64) {
+        self.place_on(from, to, false);
+    }
+
+    /// `centre_on`, and zoomed in as well as out: the span takes the middle
+    /// two thirds of the view, so a few hours of a day open at a width where
+    /// their bars can be read.
+    fn frame(&mut self, from: i64, to: i64) {
+        self.place_on(from, to, true);
+    }
+
+    fn place_on(&mut self, from: i64, to: i64, zoom_in: bool) {
+        let len = self.bars.len();
+        if len == 0 {
+            return;
+        }
+        let first = self.bars.partition_point(|bar| bar.ts < from).min(len - 1);
+        let last = self.bars.partition_point(|bar| bar.ts <= to).max(first + 1);
+        // Too wide for the view: wide enough for it, with room either side.
+        let wanted = (last - first) + (last - first) / 2 + 2;
+        if wanted > self.columns() || zoom_in {
+            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
+        }
+        let visible = self.columns().max(1);
+        let middle = (first + last) / 2;
+        self.range = None;
+        self.lead = 0;
+        self.anchored = false;
+        self.overhang = 0;
+        self.overhang_by_hand = true;
+        self.first = middle.saturating_sub(visible / 2).min(len.saturating_sub(visible));
     }
 
     /// Lay the view across the range it holds, if it holds one: from the
@@ -5577,6 +5618,39 @@ impl ChartView {
     /// symbol, new bars and a new day — until a hand moves the view.
     pub fn show_range(&self, range: Range) {
         self.state.borrow_mut().show_range(range);
+        self.redraw();
+    }
+
+    /// Bring the bars between `from` and `to`, unix seconds, to the middle
+    /// of the view, zooming out only if they would not fit. Moments outside
+    /// the bars loaded are taken at the nearest bar, and with no bars
+    /// loaded nothing moves.
+    pub fn centre_on(&self, from: i64, to: i64) {
+        self.state.borrow_mut().centre_on(from, to);
+        self.redraw();
+    }
+
+    /// Bring the moments from `from` to `to` (unix seconds) into view at a
+    /// width that suits them, zooming in or out, with room either side.
+    /// Moments outside the bars loaded are taken at the nearest bar, and
+    /// with no bars loaded nothing moves.
+    pub fn frame(&self, from: i64, to: i64) {
+        self.state.borrow_mut().frame(from, to);
+        self.redraw();
+    }
+
+    /// Draw the execution triangles `scale` times their usual size, where
+    /// the fills are what the chart is read for. 1 is the usual size; a
+    /// scale that is not a positive number is taken as 1.
+    pub fn set_execution_scale(&self, scale: f64) {
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        {
+            let mut state = self.state.borrow_mut();
+            if state.execution_scale == scale {
+                return;
+            }
+            state.execution_scale = scale;
+        }
         self.redraw();
     }
 
@@ -12691,6 +12765,66 @@ mod tests {
         state.replace_series(named("AAPL"), Timeframe::days(1), stock);
         assert_eq!(state.slice().1, weekdays, "the stock's year to date, weekdays only");
         assert_eq!(state.range, Some(Range::ToDate(1, Period::Year)));
+    }
+
+    /// Centring on a moment keeps the zoom and puts that moment in the
+    /// middle, wherever the view was, and lets go of a range.
+    #[test]
+    fn centring_on_a_span_keeps_the_zoom_and_shows_the_span() {
+        use omacharts_engine::range::Period;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let bars = days(ymd(2025, 1, 1), ymd(2026, 10, 19), true);
+        state.replace_series(named("BTC"), Timeframe::days(1), bars.clone());
+        state.show_range(Range::ToDate(1, Period::Month));
+        let columns = state.columns();
+        let (from, to) = (bars[100].ts, bars[104].ts);
+        state.centre_on(from, to);
+        assert_eq!(state.columns(), columns, "the zoom is the one it had");
+        assert_eq!(state.range, None);
+        let (first, visible) = state.slice();
+        assert!(first <= 100 && first + visible > 104, "the span is in view: {first}+{visible}");
+        let middle = first + visible / 2;
+        assert!(middle.abs_diff(102) <= 1, "and in the middle: {middle}");
+        // Near the start there is nothing to the left to centre with.
+        state.centre_on(bars[0].ts, bars[1].ts);
+        assert_eq!(state.slice().0, 0);
+        // Wider than the view: the view widens to hold it.
+        state.centre_on(bars[200].ts, bars[400].ts);
+        let (first, visible) = state.slice();
+        assert!(first <= 200 && first + visible > 400, "the whole span: {first}+{visible}");
+    }
+
+    /// Framing a span zooms in as well as out, so the span fills most of
+    /// the view rather than sitting small in the middle of a wide one.
+    #[test]
+    fn framing_a_span_zooms_to_it() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let bars = days(ymd(2024, 1, 1), ymd(2026, 10, 19), true);
+        state.replace_series(named("BTC"), Timeframe::days(1), bars.clone());
+        state.visible = 600;
+        state.frame(bars[300].ts, bars[340].ts);
+        let (first, visible) = state.slice();
+        assert!(visible < 100, "zoomed in to the span: {visible} columns");
+        assert!(first <= 300 && first + visible > 340, "the whole span: {first}+{visible}");
+        // Wider than the view: wider, as centring does.
+        state.frame(bars[100].ts, bars[700].ts);
+        let (first, visible) = state.slice();
+        assert!(first <= 100 && first + visible > 700, "the whole span: {first}+{visible}");
+        // Never narrower than the fewest bars a chart shows.
+        state.frame(bars[500].ts, bars[500].ts);
+        assert!(state.columns() >= MIN_VISIBLE);
+    }
+
+    /// Executions draw at their usual size unless the embedding app asks.
+    #[test]
+    fn executions_are_their_usual_size_by_default() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        assert_eq!(State::blank(theme, scheme).execution_scale, 1.0);
     }
 
     /// The month to date grows a bar a day.

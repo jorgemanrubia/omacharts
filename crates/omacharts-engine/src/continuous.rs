@@ -186,6 +186,7 @@ pub fn offers_choice(provider: &dyn Provider, instrument: &Instrument) -> bool {
 /// Does any feed this build offers have a choice of adjustment for its
 /// roots? Where none does, there is no default to choose either. Builds each
 /// feed, which connects to nothing.
+#[cfg(feature = "feeds")]
 pub fn any_offered() -> bool {
     crate::providers::offered().filter_map(|feed| crate::providers::built(feed.id)).any(|provider| {
         match source(provider.as_ref()) {

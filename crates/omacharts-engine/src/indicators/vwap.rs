@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use omacharts_studies::Study;
+
 use crate::bars::Bar;
 
 use super::bands::{Band, Bands};
@@ -68,38 +70,19 @@ pub fn compute(bars: &[Bar], reset: Reset, session_origin: i64, bands: &[Band]) 
     }
 
     let mut bucket = i64::MIN;
-    let (mut sum_w, mut sum_wp, mut sum_wp2) = (0.0f64, 0.0f64, 0.0f64);
-
+    let mut study = omacharts_studies::Vwap::new(omacharts_studies::Source::Hlc3);
     for (i, bar) in bars.iter().enumerate() {
         let this_bucket = reset.bucket(bar.ts, session_origin);
-        if this_bucket != bucket {
-            // The first bar starts nothing: there is no line before it.
+        let starts = this_bucket != bucket;
+        if starts {
             if bucket != i64::MIN {
                 out.start(i);
             }
             bucket = this_bucket;
-            sum_w = 0.0;
-            sum_wp = 0.0;
-            sum_wp2 = 0.0;
         }
-
-        // Indexes report no volume at all. Weighting every bar equally keeps
-        // the line meaningful there instead of producing nothing; with real
-        // volume this has no effect.
-        let weight = if bar.volume > 0.0 { bar.volume } else { 1.0 };
-        let price = typical(bar);
-
-        sum_w += weight;
-        sum_wp += weight * price;
-        sum_wp2 += weight * price * price;
-
-        if sum_w <= 0.0 {
-            continue;
+        if let Some(spread) = study.step(bar, starts) {
+            out.set(i, spread.center, spread.deviation);
         }
-        let vwap = sum_wp / sum_w;
-        // Floating point can push this a hair below zero on a flat period.
-        let variance = (sum_wp2 / sum_w - vwap * vwap).max(0.0);
-        out.set(i, vwap, variance.sqrt());
     }
     out
 }
@@ -149,6 +132,16 @@ impl Source {
         Source::ALL.into_iter().find(|s| s.key().eq_ignore_ascii_case(key))
     }
 
+    /// The same price, as the indicator arithmetic names it.
+    pub fn study(self) -> omacharts_studies::Source {
+        match self {
+            Source::Hlc3 => omacharts_studies::Source::Hlc3,
+            Source::Hl2 => omacharts_studies::Source::Hl2,
+            Source::Ohlc4 => omacharts_studies::Source::Ohlc4,
+            Source::Close => omacharts_studies::Source::Close,
+        }
+    }
+
     pub fn of(self, bar: &Bar) -> f64 {
         match self {
             Source::Hlc3 => typical(bar),
@@ -175,17 +168,12 @@ pub struct Anchored {
 /// agree to the cent over a span where neither has reset — and the same
 /// equal weighting where a bar has no volume.
 pub fn anchored(bars: &[Bar], source: Source) -> Vec<Anchored> {
-    let (mut sum_w, mut sum_wp, mut sum_wp2) = (0.0f64, 0.0f64, 0.0f64);
+    let mut study = omacharts_studies::Vwap::new(source.study());
     bars.iter()
         .map(|bar| {
-            let weight = if bar.volume > 0.0 { bar.volume } else { 1.0 };
-            let price = source.of(bar);
-            sum_w += weight;
-            sum_wp += weight * price;
-            sum_wp2 += weight * price * price;
-            let vwap = sum_wp / sum_w;
-            let variance = (sum_wp2 / sum_w - vwap * vwap).max(0.0);
-            Anchored { vwap, deviation: variance.sqrt() }
+            study.step(bar, false);
+            let spread = study.current();
+            Anchored { vwap: spread.center, deviation: spread.deviation }
         })
         .collect()
 }

@@ -1,0 +1,13 @@
+[package]
+name = "omacharts-ticks"
+version = "0.1.0"
+edition = "2024"
+description = "Prints, minute ladders and the folds between them: the tick and volume-at-price model, without the app's providers."
+license = "MIT"
+
+# Only the indicator arithmetic, itself dependency-free, so a ladder bar can
+# be stepped through the studies of volume at price. This is the model a
+# print becomes a bar and a ladder through, linked by anything that folds
+# trades; it has to stay cheap to build.
+[dependencies]
+omacharts-studies = { path = "../omacharts-studies" }

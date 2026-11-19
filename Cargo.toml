@@ -9,7 +9,7 @@ description = "Fast, beautiful charting software for Omarchy"
 license = "MIT"
 
 [workspace]
-members = [".", "crates/omacharts-engine", "crates/omacharts-chart", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
+members = [".", "crates/omacharts-studies", "crates/omacharts-ticks", "crates/omacharts-engine", "crates/omacharts-chart", "crates/tos-market", "crates/rithmic", "crates/sierra", "crates/dtc"]
 # Somebody else's crate, patched in below: built, never tested here.
 exclude = ["vendor/rithmic-rs"]
 
