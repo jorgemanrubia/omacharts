@@ -10,7 +10,7 @@ use omacharts_engine::Theme;
 
 use crate::colors;
 use omacharts_engine::indicators::profile::{self, Align, Style};
-use omacharts_engine::indicators::{Output, Pane, Profile};
+use omacharts_engine::indicators::{Output, Pane, Profile, market};
 
 use super::{frame, layout, on_screen, pane_plot, pane_range, Columns, Drawn, Frame, Row, State};
 
@@ -77,7 +77,7 @@ impl State {
         let at = profiles.iter().position(|p| {
             (columns.left_of(p.first_bar)..columns.left_of(p.last_bar + 1)).contains(&x)
         })?;
-        Some(ProfileSpot { parts: profiles[at].parts.clone(), has_previous: at > 0 })
+        Some(spot_of(drawn, &profiles, at))
     }
 
     /// The profile of a volume or market profile indicator holding the
@@ -93,7 +93,7 @@ impl State {
             .position(|p| p.start_ts <= ts && ts <= p.end_ts)
             .or_else(|| profiles.iter().position(|p| p.start_ts > ts && p.start_ts < ts + 86_400))
             .or_else(|| profiles.iter().rposition(|p| p.start_ts <= ts))?;
-        Some(ProfileSpot { parts: profiles[at].parts.clone(), has_previous: at > 0 })
+        Some(spot_of(drawn, &profiles, at))
     }
 
     /// Whether a drawing is within the clearance of a pixel.
@@ -105,6 +105,28 @@ impl State {
                 .drawings
                 .iter()
                 .any(|drawing| self.project(plan, scale, drawing).near(x, y, DRAWING_CLEARANCE))
+    }
+}
+
+/// What a menu needs of the `at`th of `drawn`'s `profiles`.
+fn spot_of(drawn: &Drawn, profiles: &[&Profile], at: usize) -> ProfileSpot {
+    let profile = profiles[at];
+    let expanded = match &drawn.indicator.params {
+        omacharts_engine::Params::MarketProfile {
+            expanded,
+            expand_last,
+            ..
+        } => {
+            let by_hand = market::by_hand(expanded, profile);
+            let by_study = *expand_last && at + 1 == profiles.len();
+            (by_hand || !by_study).then_some(by_hand)
+        }
+        _ => None,
+    };
+    ProfileSpot {
+        parts: profile.parts.clone(),
+        has_previous: at > 0,
+        expanded,
     }
 }
 
@@ -124,11 +146,18 @@ fn on_overlay_line(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl 
                 })
         }
         // The point of control is its line, while it is drawn.
-        Output::Profiles(profiles) => poc_shown(drawn) && profiles.iter().any(|profile| {
-            let area = profile_box(profile, columns, &placed_look(state, drawn));
-            let poc = to_y(profile.poc_price());
-            area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
-        }),
+        Output::Profiles(profiles) => {
+            poc_shown(drawn) && {
+                let (look, partner) = (placed_look(state, drawn), expanding_partner(state, drawn));
+                profiles.iter().any(|profile| {
+                    let Some(area) = placed_box(state, profile, columns, &look, partner) else {
+                        return false;
+                    };
+                    let poc = to_y(profile.poc_price());
+                    area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
+                })
+            }
+        }
         // A market profile has no line: its point of control is a row.
         Output::MarketProfiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {
             false
@@ -146,9 +175,12 @@ fn poc_shown(drawn: &Drawn) -> bool {
 /// a press anywhere in it would pick the band rather than pan.
 fn on_overlay_shape(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
     let look = placed_look(state, drawn);
+    let partner = expanding_partner(state, drawn);
     let on = |profile: &Profile| {
-        let area = profile_box(profile, columns, &look);
-        if area.span <= 0.0 || profile.max_volume <= 0.0 {
+        let Some(area) = placed_box(state, profile, columns, &look, partner) else {
+            return false;
+        };
+        if profile.max_volume <= 0.0 {
             return false;
         }
         profile.rows.iter().any(|row| {
@@ -159,19 +191,10 @@ fn on_overlay_shape(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl
     };
     match &drawn.output {
         Output::Profiles(profiles) => profiles.iter().any(on),
-        // A row's TPOs, a cell each, as they are drawn.
-        Output::MarketProfiles(profiles) => profiles.iter().any(|market| {
-            let profile = &market.profile;
-            let area = profile_box(profile, columns, &look);
-            if area.span <= 0.0 || profile.max_volume <= 0.0 {
-                return false;
-            }
-            let (area, _, _) = super::market::cells(state, &drawn.indicator.params, profile, area, to_y);
-            profile.rows.iter().any(|row| {
-                let top = to_y(row.high);
-                let bottom = top + (to_y(row.low) - top).max(1.0);
-                row.volume > 0.0 && area.covers(x, row.volume / profile.max_volume) && (top..=bottom).contains(&y)
-            })
+        // A row's TPOs, a cell each, as they are drawn, stacked or
+        // expanded.
+        Output::MarketProfiles(profiles) => (0..profiles.len()).any(|at| {
+            super::market::hits(state, drawn, profiles, at, columns, &look, to_y, (x, y))
         }),
         _ => false,
     }
@@ -184,6 +207,11 @@ pub struct ProfileSpot {
     pub parts: Vec<i64>,
     /// Whether a profile before it is on the chart to merge it into.
     pub has_previous: bool,
+    /// For a market profile's, whether it is expanded by hand, its TPOs
+    /// laid out over time: what the menu offers to undo. `None` for a
+    /// volume profile's, and for the forming one while its study expands
+    /// the last, which only the study's setting collapses.
+    pub expanded: Option<bool>,
 }
 
 /// How a volume profile indicator is drawn: filled or outlined, from which
@@ -272,11 +300,13 @@ fn stacks(state: &State, drawn: &Drawn, align: Align) -> Option<f64> {
 ///
 /// A pair that grows apart — one profile set Left, the other Right — is
 /// drawn back to back instead, on a spine inside the session, each growing
-/// away from it the way it is set, centred in the session with the room
-/// left over split either side. Drawn from the session's two edges, each
-/// would have its base against a boundary, beside the next session's or
-/// the last one's, and read as their pair. Squeezed alike, as side by side,
-/// when their widths come to more than the session.
+/// away from it the way it is set, the pair starting at the session's open
+/// and the room left over after it. Drawn from the session's two edges,
+/// each would have its base against a boundary, beside the next session's
+/// or the last one's, and read as their pair; centred, a market profile's
+/// open and close arrows sat beside bars from mid-session, whose prices
+/// say nothing of either. Squeezed alike, as side by side, when their
+/// widths come to more than the session.
 pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
     let mut look = profile_look(drawn);
     // Where each sits, from its base outward: by kind, then by legend.
@@ -316,10 +346,13 @@ pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
                 false => opposite += theirs.width,
             }
         }
+        // From the session's open: those growing leftward first, their
+        // base on the spine, then those growing rightward from it, and the
+        // room left over after them all.
         let total = before + look.width + after + opposite;
-        let slack = (total.max(1.0) - total) / 2.0;
+        let slack = total.max(1.0) - total;
         match look.align {
-            Align::Left => before += slack + opposite,
+            Align::Left => before += opposite,
             Align::Right => after += slack + opposite,
         }
         look.total = total;
@@ -339,6 +372,90 @@ pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
     look.later = later;
     look.count = count;
     look
+}
+
+/// The market profile drawn as one pair with `drawn`, a volume profile,
+/// when it draws any of its profiles expanded: see [`placed_box`].
+pub(super) fn expanding_partner<'a>(state: &'a State, drawn: &Drawn) -> Option<&'a Drawn> {
+    let expanding = |other: &Drawn| {
+        matches!(&other.indicator.params, omacharts_engine::Params::MarketProfile { expand_last, expanded, .. }
+            if *expand_last || !expanded.is_empty())
+    };
+    // Asked of every volume profile on every frame: nothing worked out,
+    // nothing allocated, unless a market profile expands any.
+    if !matches!(drawn.indicator.params, omacharts_engine::Params::VolumeProfile { .. })
+        || !state.shown_indicators().any(expanding)
+    {
+        return None;
+    }
+    pair(state, drawn).into_iter().map(|(_, other)| other).find(|other| expanding(other))
+}
+
+/// Whether `partner`, a market profile, draws the session `profile`
+/// covers expanded.
+fn expands_session(partner: &Drawn, profile: &Profile) -> bool {
+    let Output::MarketProfiles(markets) = &partner.output else {
+        return false;
+    };
+    markets
+        .binary_search_by_key(&profile.start_ts, |market| market.profile.start_ts)
+        .is_ok_and(|at| {
+            market::expands(&partner.indicator.params, at, markets.len(), &markets[at].profile)
+        })
+}
+
+/// Where a volume profile's `profile` is drawn across, beside `partner`,
+/// the market profile it pairs with, if any.
+///
+/// Where that one draws the session expanded, its TPOs over every bar of
+/// it, no room in the session is left that a volume profile would not
+/// cover them in. The session still forming is drawn in the empty space
+/// past the last bar instead, back from the price axis, while there is
+/// room; an earlier one is set aside until the market profile is
+/// collapsed again. Nothing, too, for one off screen.
+pub(super) fn placed_box(
+    state: &State,
+    profile: &Profile,
+    columns: &Columns,
+    look: &ProfileLook,
+    partner: Option<&Drawn>,
+) -> Option<ProfileBox> {
+    if partner.is_some_and(|partner| expands_session(partner, profile)) {
+        let live = profile.last_bar + 1 == state.bars.len()
+            && profile.last_bar + 1 == columns.first + columns.visible;
+        let room = columns.room_after();
+        if !live || room < PROFILE_ROOM_MIN {
+            return None;
+        }
+        let alone = ProfileLook {
+            before: 0.0,
+            after: 0.0,
+            total: look.width,
+            later: 0,
+            count: 1,
+            spine: false,
+            ..*look
+        };
+        let (edge, span) = in_margin(columns, room, &alone);
+        return Some(ProfileBox {
+            edge,
+            span,
+            towards: -1.0,
+        });
+    }
+    let area = profile_box(profile, columns, look);
+    (area.span > 0.0).then_some(area)
+}
+
+/// Whether a market profile's newest profile is drawn expanded, on its
+/// bars rather than past the last one.
+fn live_expanded(drawn: &Drawn) -> bool {
+    match &drawn.output {
+        Output::MarketProfiles(markets) => markets.last().is_some_and(|last| {
+            market::expands(&drawn.indicator.params, markets.len() - 1, markets.len(), &last.profile)
+        }),
+        _ => false,
+    }
 }
 
 /// Of the plot, how much a profile at 100% takes past the last bar.
@@ -361,7 +478,20 @@ pub(super) fn margin_share(state: &State) -> f64 {
     let len = state.bars.len();
     let (mut total, mut count) = (0.0, 0usize);
     for drawn in state.shown_indicators() {
-        let Some(width) = stacks(state, drawn, Align::Right) else { continue };
+        // A volume profile beside its market profile's expanded forming
+        // session is in that space whichever edge it is set to; the
+        // market profile is on its bars.
+        let beside = expanding_partner(state, drawn).filter(|partner| match &drawn.output {
+            Output::Profiles(profiles) => profiles
+                .last()
+                .is_some_and(|last| expands_session(partner, last)),
+            _ => false,
+        });
+        let width = match (beside, stacks(state, drawn, Align::Right)) {
+            (Some(_), _) => profile_look(drawn).width,
+            (None, Some(width)) if !live_expanded(drawn) => width,
+            _ => continue,
+        };
         let last = match &drawn.output {
             Output::Profiles(profiles) => profiles.last(),
             Output::MarketProfiles(profiles) => profiles.last().map(|p| &p.profile),
@@ -785,7 +915,18 @@ pub(super) fn outline_profile(
     if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
         return;
     }
-    let path = |cr: &cairo::Context| profile_path(cr, area, profile, to_y, side);
+    outline_with(cr, theme, colour, |cr| {
+        profile_path(cr, area, profile, to_y, side)
+    });
+}
+
+/// A picked shape's glow and line, round whatever `path` traces.
+pub(super) fn outline_with(
+    cr: &cairo::Context,
+    theme: &Theme,
+    colour: &str,
+    path: impl Fn(&cairo::Context),
+) {
     cr.save().ok();
     cr.set_line_join(cairo::LineJoin::Round);
     cr.set_line_width(5.0);
@@ -1388,11 +1529,149 @@ mod tests {
         (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
     }
 
+    /// Expanded, a market profile's TPOs are laid out over time: each TPO
+    /// period's in a column centred on its first bar, so they line up with
+    /// the bars, the open's arrow beside the first period's TPO pointing at
+    /// it and the close's beside the last's. Its volume profile is set
+    /// aside in an earlier session, where there is no room in the session
+    /// that would not cover the TPOs, and drawn past the last bar in the
+    /// one forming, clear of the bars.
+    #[test]
+    fn an_expanded_market_profile_lays_its_tpos_over_its_bars() {
+        use omacharts_engine::Reset;
+        use profile::Align::Left;
+        for legend in [
+            [
+                (Kind::MarketProfile, Left, 0.4, Reset::Session),
+                (Kind::VolumeProfile, Left, 0.4, Reset::Session),
+            ],
+            [
+                (Kind::VolumeProfile, Left, 0.4, Reset::Session),
+                (Kind::MarketProfile, Left, 0.4, Reset::Session),
+            ],
+        ] {
+            let mut state = with_studies(&legend);
+            let market = legend
+                .iter()
+                .position(|study| study.0 == Kind::MarketProfile)
+                .expect("one");
+            let profiles = match &state.indicators[market].output {
+                Output::MarketProfiles(profiles) => profiles.clone(),
+                _ => unreachable!(),
+            };
+            let first = frame(&state, W, H).expect("a frame").columns.first;
+            let whole = (0..profiles.len() - 1)
+                .find(|&at| profiles[at].profile.first_bar >= first)
+                .expect("a whole session");
+            if let omacharts_engine::Params::MarketProfile {
+                expanded,
+                expand_last,
+                open_close,
+                ..
+            } = &mut state.indicators[market].indicator.params
+            {
+                expanded.push(profiles[whole].profile.parts[0]);
+                *expand_last = true;
+                *open_close = true;
+            }
+            let frame = frame(&state, W, H).expect("a frame");
+            let columns = &frame.columns;
+            let to_y = |price: f64| {
+                frame
+                    .scale
+                    .to_y(price, frame.plan.price_y, frame.plan.price_h)
+            };
+            let drawn = &state.indicators[market];
+            let middle = |bar: usize| columns.left_of(bar) + columns.bar_px / 2.0;
+            for at in [whole, profiles.len() - 1] {
+                let market_profile = &profiles[at];
+                let (tpos, [open, close]) =
+                    super::super::market::laid_out(&state, drawn, &profiles, at, columns, &to_y)
+                        .expect("drawn");
+                assert!(!tpos.is_empty());
+                for &(_, column, left, right) in &tpos {
+                    let bar = market_profile.column_bars[column as usize];
+                    assert!(
+                        ((left + right) / 2.0 - middle(bar)).abs() < 1e-6,
+                        "on its bar: {legend:?} {at}"
+                    );
+                    assert!(
+                        right - left <= columns.bar_px * 6.0 + 1e-6,
+                        "no wider than a TPO period's bars"
+                    );
+                }
+                // No two TPOs of a row overlap.
+                let mut by_row = tpos.clone();
+                by_row.sort_by(|a, b| (a.0, a.2).partial_cmp(&(b.0, b.2)).unwrap());
+                for pair in by_row.windows(2).filter(|pair| pair[0].0 == pair[1].0) {
+                    assert!(pair[0].3 <= pair[1].2 + 1e-6, "apart: {pair:?}");
+                }
+                // The open's arrow points right at the first column's TPO,
+                // beside the session's first bar; the close's back left at
+                // the last's.
+                let opening = tpos
+                    .iter()
+                    .find(|tpo| tpo.0 == market_profile.open_row)
+                    .expect("the open's TPO");
+                assert_eq!(opening.1, 0, "the first TPO period's");
+                let (tip, _, points) = open;
+                assert_eq!(points, 1.0);
+                assert!(
+                    tip.unwrap() <= opening.2 && tip.unwrap() >= opening.2 - 4.0,
+                    "beside the open's TPO, on the first bar"
+                );
+                let closing = tpos
+                    .iter()
+                    .rev()
+                    .find(|tpo| tpo.0 == market_profile.close_row)
+                    .expect("the close's TPO");
+                assert_eq!(
+                    closing.1 as usize + 1,
+                    market_profile.column_bars.len(),
+                    "the last TPO period's"
+                );
+                let (tip, _, points) = close;
+                assert_eq!(points, -1.0);
+                assert!(
+                    tip.unwrap() >= closing.3 && tip.unwrap() <= closing.3 + 4.0,
+                    "beside the close's TPO"
+                );
+            }
+            // The volume profile: set aside in the earlier session, past the
+            // last bar in the one forming.
+            let volume = &state.indicators[1 - market];
+            let partner = super::expanding_partner(&state, volume);
+            assert!(partner.is_some());
+            let look = super::placed_look(&state, volume);
+            let vp = volume.output.periods().expect("profiles");
+            assert_eq!(
+                super::placed_box(&state, vp[whole], columns, &look, partner),
+                None,
+                "set aside"
+            );
+            let live = super::placed_box(&state, vp[vp.len() - 1], columns, &look, partner)
+                .expect("past the last bar");
+            let (from, _) = live.row(1.0);
+            assert!(
+                from >= last_bar_end(&state) - 1e-6,
+                "clear of the bars: {legend:?}"
+            );
+            // And a session nobody expanded is where it always was.
+            let other = (0..whole).rev().find(|&at| vp[at].first_bar >= first);
+            if let Some(other) = other {
+                assert_eq!(
+                    super::placed_box(&state, vp[other], columns, &look, partner),
+                    Some(profile_box(vp[other], columns, &look))
+                );
+            }
+        }
+    }
+
     /// Every way a market profile and a volume profile of one period can
     /// be set: each grows from the edge it is set to, both inside each
     /// session. Growing the same way, side by side from that edge, the
     /// volume profile against it; growing apart, back to back on a spine,
-    /// centred in the session. Whichever the legend lists first, at widths
+    /// the pair from the session's open. Whichever the legend lists first, at widths
     /// that fit and widths that come to more than the session.
     #[test]
     fn a_market_and_a_volume_profile_of_one_period_each_grow_their_own_way_inside_it() {
@@ -1436,13 +1715,14 @@ mod tests {
                                 assert!(touching(market, volume), "side by side: {case} {boxes:?}");
                             }
                             // Back to back: the bases meet at the spine,
-                            // the room left over split either side.
+                            // the pair from the open, the room left over
+                            // after it.
                             (Right, Left) | (Left, Right) => {
                                 let (left, right) = if tpo_edge == Right { (market, volume) } else { (volume, market) };
                                 assert!(touching(left, right), "back to back: {case} {boxes:?}");
                                 let (before, after) = (left.0 - start, end - right.1);
-                                assert!((before - after).abs() < 1e-6, "centred: {case} {boxes:?}");
-                                assert!(before > 1e-6 || tpo_width + vp_width >= 1.0, "{case}");
+                                assert!(before.abs() < 1e-6, "from the open: {case} {boxes:?}");
+                                assert!(after > 1e-6 || tpo_width + vp_width >= 1.0, "{case}");
                             }
                         }
                     }

@@ -2145,6 +2145,7 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         outline_color,
         outline_width,
         outline_style,
+        expand_last,
         ..
     } = &indicator.params
     else {
@@ -2459,8 +2460,27 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             refresh.run();
         })
     };
-    let (highlight_row, area_colour_row) =
-        value_area_rows(owner, refresh, id, *highlight, value_area_color.clone(), area_strength);
+    let (expand_row, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        profile_rows::switch_row(profile_rows::EXPAND_LAST, *expand_last, move |on| {
+            update(&owner, id, |indicator| {
+                if let Params::MarketProfile { expand_last, .. } = &mut indicator.params {
+                    *expand_last = on;
+                }
+            });
+            refresh.run();
+        })
+    };
+    expand_row.set_tooltip_text(Some(profile_rows::EXPAND_LAST_TIP));
+    let (highlight_row, area_colour_row) = value_area_rows(
+        owner,
+        refresh,
+        id,
+        *highlight,
+        value_area_color.clone(),
+        area_strength,
+    );
     profile_rows::look_groups(profile_rows::LookRows {
         style: profile_rows::StyleRows {
             display: shape.upcast(),
@@ -2478,6 +2498,7 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             }),
             alignment: alignment.upcast(),
             width: width_row.upcast(),
+            expand_last: Some(expand_row.upcast()),
         },
         value_area: profile_rows::ValueAreaRows {
             highlight: highlight_row,
@@ -3064,6 +3085,7 @@ fn profile_style(
             ends: None,
             alignment: alignment.upcast(),
             width: width.upcast(),
+            expand_last: None,
         },
         value_area: profile_rows::ValueAreaRows {
             highlight: highlight_row,

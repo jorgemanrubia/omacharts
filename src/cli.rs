@@ -276,10 +276,34 @@ pub trait Live {
         Err(Fault::no_window("focused chart"))
     }
 
+    /// Expand the focused chart's market profile holding `ts`, its TPOs
+    /// laid out over time, or collapse it back into a stack.
+    fn expand_profile(&self, _id: Option<u32>, _ts: i64, _expand: bool) -> Result<String, Fault> {
+        Err(Fault::no_window("focused chart"))
+    }
+
     /// The focused chart's volume profiles, each with whether it is on
     /// screen, and the chart they are on.
     fn profiles(&self, _id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
         Err(Fault::no_window("focused chart"))
+    }
+
+    /// The focused chart's volume or market profile study as it is drawn:
+    /// [`Live::profiles`], with a market profile's TPOs and the profiles it
+    /// is drawn as one pair with. Without a window's own, the profiles
+    /// alone, as a volume profile's.
+    fn profile_listing(&self, id: Option<u32>) -> Result<ProfileListing, Fault> {
+        let (chart, profiles) = self.profiles(id)?;
+        Ok(ProfileListing {
+            chart,
+            indicator: id,
+            market: None,
+            partners: Vec::new(),
+            profiles: profiles
+                .into_iter()
+                .map(|(profile, visible)| ListedProfile { profile, visible, tpo: None, paired: Vec::new() })
+                .collect(),
+        })
     }
 
     /// Read the arrangement back and rebuild from it.
@@ -584,6 +608,56 @@ pub fn run(args: &[String], store: &Store, live: Option<&dyn Live>, caller: &dyn
             ),
         ))
     })
+}
+
+/// A volume or market profile study's profiles as its chart draws them,
+/// for `chart profile list`.
+pub struct ProfileListing {
+    /// The chart, as a command names it.
+    pub chart: String,
+    /// The study's id, when known.
+    pub indicator: Option<u32>,
+    /// A market profile's TPO period, in minutes: none for a volume profile.
+    pub market: Option<u32>,
+    /// The other profile studies drawn as one pair with it, by id.
+    pub partners: Vec<u32>,
+    pub profiles: Vec<ListedProfile>,
+}
+
+/// One profile of a [`ProfileListing`].
+pub struct ListedProfile {
+    /// Begun at its first bar, with its periods' starts.
+    pub profile: omacharts_engine::indicators::Profile,
+    /// Whether any of it is on screen.
+    pub visible: bool,
+    /// A market profile's TPOs, as drawn.
+    pub tpo: Option<ListedTpo>,
+    /// The profiles of the same span its partners draw beside it: each
+    /// one's study and start.
+    pub paired: Vec<(u32, i64)>,
+}
+
+/// A market profile's TPO structure, as the chart draws it.
+pub struct ListedTpo {
+    pub market: std::sync::Arc<omacharts_engine::indicators::market::MarketProfile>,
+    /// Whether it is drawn expanded, its TPOs over its bars.
+    pub expanded: bool,
+    /// Its opening price, its first bar's open, and its closing price, its
+    /// last bar's close: the latest, while it forms.
+    pub open: f64,
+    pub close: f64,
+    /// Each TPO period that has bars, in its column's order: its letter,
+    /// its first and last bars' times, and its high and low.
+    pub periods: Vec<TpoPeriod>,
+}
+
+/// One TPO period of a [`ListedTpo`].
+pub struct TpoPeriod {
+    pub letter: char,
+    pub start: i64,
+    pub end: i64,
+    pub high: f64,
+    pub low: f64,
 }
 
 /// How many closes the row's sparkline gets.
@@ -1252,8 +1326,19 @@ impl Live for Rc<crate::ui::Window> {
         crate::ui::Window::change_profile_at(self, id, ts, merge).map_err(Fault::not_found)
     }
 
-    fn profiles(&self, id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
+    fn expand_profile(&self, id: Option<u32>, ts: i64, expand: bool) -> Result<String, Fault> {
+        crate::ui::Window::expand_profile_at(self, id, ts, expand).map_err(Fault::not_found)
+    }
+
+    fn profiles(
+        &self,
+        id: Option<u32>,
+    ) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
         crate::ui::Window::profiles_on_focused(self, id).map_err(Fault::not_found)
+    }
+
+    fn profile_listing(&self, id: Option<u32>) -> Result<ProfileListing, Fault> {
+        crate::ui::Window::profile_listing(self, id).map_err(Fault::not_found)
     }
 
     fn flush_workspace(&self) {

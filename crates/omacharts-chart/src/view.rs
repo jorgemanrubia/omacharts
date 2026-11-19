@@ -10877,10 +10877,13 @@ fn draw_profiles(
         poc: poc_shown.then_some((poc.as_str(), poc_width, poc_style, strengths.poc)),
     };
 
+    let partner = selection::expanding_partner(state, drawn);
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
-        let area = selection::profile_box(profile, columns, &look);
-        if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
+        let Some(area) = selection::placed_box(state, profile, columns, &look, partner) else {
+            continue;
+        };
+        if profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
         paint_profile(cr, profile, &area, &paint, to_y);

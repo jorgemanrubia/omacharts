@@ -167,8 +167,53 @@ pub fn colour_row(title: &str, picker: &impl IsA<gtk::Widget>, transparency: Opt
         row.add_suffix(&word);
         row.add_suffix(&transparency.slider);
         row.add_suffix(&transparency.entry);
+        bare_figure(&transparency.slider, &transparency.entry);
     }
     row
+}
+
+/// The colour row's figure without its − and +: the row holds a swatch and
+/// a word already, and the slider and the box say all a stepper would. The
+/// box still takes a typed figure, the arrow keys and, once clicked into,
+/// the wheel.
+///
+/// The slider takes the steppers' room, so both ends of the column line up
+/// with every other slider row's: the slider starts where theirs do, and
+/// the box ends where their + does. Measured once styled, as the steppers'
+/// width is the theme's.
+fn bare_figure(slider: &gtk::Scale, entry: &gtk::SpinButton) {
+    let steppers = steppers(entry);
+    for stepper in &steppers {
+        stepper.set_visible(false);
+    }
+    let slider = slider.clone();
+    let base = slider.width_request();
+    // A hidden widget measures nothing, so each is shown for its measure.
+    entry.connect_realize(move |_| {
+        let room: i32 = steppers
+            .iter()
+            .map(|stepper| {
+                stepper.set_visible(true);
+                let width = stepper.measure(gtk::Orientation::Horizontal, -1).1;
+                stepper.set_visible(false);
+                width
+            })
+            .sum();
+        slider.set_width_request(base + room);
+    });
+}
+
+/// A spin button's − and +.
+fn steppers(entry: &gtk::SpinButton) -> Vec<gtk::Widget> {
+    let mut out = Vec::new();
+    let mut child = entry.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if widget.is::<gtk::Button>() {
+            out.push(widget);
+        }
+    }
+    out
 }
 
 /// A line's thickness in pixels, 0.5 to 12 by halves, and the way to show
@@ -262,6 +307,67 @@ mod tests {
     /// transparency, named for a screen reader by the colour, as wide as
     /// every other slider; and with no transparency, the name and the swatch
     /// alone.
+    /// On screen, a colour row's slider starts where every other slider
+    /// row's does and its box ends where their + does: one column, though
+    /// the colour row has no − or +.
+    #[test]
+    fn a_colour_rows_figure_lines_up_with_the_other_sliders() {
+        crate::ui::on_gtk(|| {
+            let (transparency, _) = Transparency::new(0.3, |_| {});
+            let swatch = gtk::MenuButton::new();
+            let colour = colour_row("Colour", &swatch, Some(transparency));
+            let other = controls::bounded_row("Width %", None, 40.0, 10.0, 100.0, 1.0, 0, |_| {});
+            let list = gtk::ListBox::new();
+            list.append(&colour);
+            list.append(&other.row);
+            let window = gtk::Window::new();
+            window.set_default_size(560, -1);
+            window.set_child(Some(&list));
+            window.present();
+            let context = gtk::glib::MainContext::default();
+            for _ in 0..50 {
+                while context.iteration(false) {}
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let find = |row: &gtk::Widget, pick: &dyn Fn(&gtk::Widget) -> bool| {
+                let mut stack = vec![row.clone()];
+                let mut found = Vec::new();
+                while let Some(widget) = stack.pop() {
+                    if pick(&widget) && widget.is_visible() {
+                        found.push(widget.clone());
+                    }
+                    let mut child = widget.first_child();
+                    while let Some(next) = child {
+                        child = next.next_sibling();
+                        stack.push(next);
+                    }
+                }
+                found
+            };
+            let colour = colour.upcast::<gtk::Widget>();
+            let other = other.row.upcast::<gtk::Widget>();
+            let bounds = |widget: &gtk::Widget| widget.compute_bounds(&list).expect("placed");
+            let slider = |row: &gtk::Widget| bounds(&find(row, &|w| w.is::<gtk::Scale>())[0]);
+            let spin = |row: &gtk::Widget| bounds(&find(row, &|w| w.is::<gtk::SpinButton>())[0]);
+            let (a, b) = (slider(&colour), slider(&other));
+            assert!(
+                (a.x() - b.x()).abs() <= 1.0,
+                "the sliders start together: {} {}",
+                a.x(),
+                b.x()
+            );
+            let (a, b) = (spin(&colour), spin(&other));
+            let ends = |r: &gtk::graphene::Rect| r.x() + r.width();
+            assert!(
+                (ends(&a) - ends(&b)).abs() <= 1.0,
+                "the figures end together: {} {}",
+                ends(&a),
+                ends(&b)
+            );
+            window.destroy();
+        });
+    }
+
     #[test]
     fn a_colour_row_carries_its_swatch_then_its_transparency() {
         crate::ui::on_gtk(|| {
@@ -304,8 +410,20 @@ mod tests {
                     stack.push(next);
                 }
             }
-            assert_eq!(widths, [slider.width_request()], "as wide as every other slider");
-            assert!((slider.value() - 70.0).abs() < 1e-9, "a transparency of 0.3 shown as 70% opaque");
+            assert_eq!(
+                widths,
+                [slider.width_request()],
+                "as wide as every other slider, until styled"
+            );
+            let entry = order[2].clone().downcast::<gtk::SpinButton>().unwrap();
+            assert!(
+                steppers(&entry).len() == 2 && steppers(&entry).iter().all(|s| !s.is_visible()),
+                "no − or +"
+            );
+            assert!(
+                (slider.value() - 70.0).abs() < 1e-9,
+                "a transparency of 0.3 shown as 70% opaque"
+            );
 
             show(0.5);
             assert_eq!(heard.get(), None, "shown, not heard");

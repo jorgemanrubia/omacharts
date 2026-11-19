@@ -1277,6 +1277,7 @@ fn style_editor(
                     ends: None,
                     alignment: alignment.upcast(),
                     width: width.upcast(),
+                    expand_last: None,
                 },
                 value_area: profile_rows::ValueAreaRows {
                     highlight,
@@ -3358,14 +3359,14 @@ mod tests {
                         chart_settings::MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
                     ])),
                     (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::OUTLINE,
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::EXPAND_LAST, r::COLOUR, r::OUTLINE,
                         r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OPEN_CLOSE,
                         r::OPEN_COLOUR, r::CLOSE_COLOUR,
                     ])),
                     (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
                     (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
                 ],
-                "the volume profile's, less its method, with its open and close after the outline"
+                "the volume profile's, less its method, with its open and close after the outline and its last profile expanded under where it is placed"
             );
             assert!(
                 drawing

@@ -441,6 +441,8 @@ impl Kind {
                 poc_alpha: None,
                 last_only: false,
                 merged: Vec::new(),
+                expand_last: false,
+                expanded: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
             Kind::Cvd => Params::Cvd {
@@ -739,6 +741,17 @@ pub enum Params {
         /// indicator, and handed in to be drawn. See [`profile::Merge`].
         #[serde(skip)]
         merged: Vec<i64>,
+        /// Whether the newest profile, the one forming, is always drawn
+        /// expanded: its TPOs laid out over time, a column for each TPO
+        /// period at that period's bars, rather than stacked against its
+        /// edge. Missing, it is stacked unless expanded by hand.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        expand_last: bool,
+        /// Where each profile starts that was expanded by hand: kept by the
+        /// chart, as its merges are, and handed in to be drawn. See
+        /// [`profile::Merge`].
+        #[serde(skip)]
+        expanded: Vec<i64>,
     },
     Volume {
         /// How much of the chart's height the pane takes.
@@ -1263,7 +1276,7 @@ pub enum Output {
     /// One profile per reset period.
     Profiles(Vec<Profile>),
     /// One market profile per reset period.
-    MarketProfiles(Vec<MarketProfile>),
+    MarketProfiles(Vec<std::sync::Arc<MarketProfile>>),
     /// Volume per bar, with the share of the chart its pane takes.
     Volume { values: Vec<f64>, height: f64 },
     /// A series drawn in a strip of its own, on its own scale.
@@ -1517,10 +1530,10 @@ pub struct Context<'a> {
     /// until they come, rather than an estimate from the bars that would be
     /// replaced, rows and shape, a moment later.
     pub awaiting_ladders: bool,
-    /// What a cumulative delta worked out on this chart last time, so a
-    /// tick works out only the newest bars again. `None` works out every
-    /// bar every time.
-    pub memos: Option<&'a cvd::Memos>,
+    /// What a cumulative delta and a market profile worked out on this
+    /// chart last time, so a tick works out only the newest bars, or the
+    /// forming period, again. `None` works out every bar every time.
+    pub memos: Option<&'a Memos>,
     /// Trading hours the embedding program keeps itself, in place of the
     /// instrument's exchange's from the registry, for the sessions Session
     /// Times shades. `None` uses the registry. Nothing else reads it: a
@@ -1564,8 +1577,28 @@ impl<'a> Context<'a> {
 
     /// The same chart, keeping what it worked out from one computation to
     /// the next.
-    pub fn with_memos(self, memos: Option<&'a cvd::Memos>) -> Context<'a> {
+    pub fn with_memos(self, memos: Option<&'a Memos>) -> Context<'a> {
         Context { memos, ..self }
+    }
+}
+
+/// What a chart's indicators worked out last time, kept for the next
+/// computation on it, by the indicator's id: see [`Context::memos`].
+#[derive(Debug, Default)]
+pub struct Memos {
+    pub cvd: cvd::Memos,
+    pub market: market::Memos,
+}
+
+impl Memos {
+    pub fn new() -> Memos {
+        Memos::default()
+    }
+
+    /// Forget every memo but those of `ids`: an indicator taken off.
+    pub fn keep(&self, ids: &[u32]) {
+        self.cvd.keep(ids);
+        self.market.keep(ids);
     }
 }
 
@@ -1769,7 +1802,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 cvd::compute(bars, reset, session_origin, timeframe, source.as_ref(), memo)
             };
             let delta = match context.memos {
-                Some(memos) => memos.with(indicator.id, |memo| work(Some(memo))),
+                Some(memos) => memos.cvd.with(indicator.id, |memo| work(Some(memo))),
                 None => work(None),
             };
             Output::Pane(Pane {
@@ -1810,19 +1843,40 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 )
             }))
         }
-        (Kind::MarketProfile, Params::MarketProfile { reset, minutes, row_ticks, value_area, merged, last_only, .. }) => {
-            let known = context.instrument.and_then(Instrument::tick_size).or(context.ladders.map(|held| held.tick_size));
-            Output::MarketProfiles(market::compute(
-                bars,
-                reset.effective_for(timeframe),
-                session_origin,
-                *minutes,
-                *row_ticks,
-                *value_area,
-                market::tick_size(bars, known, kind),
+        (
+            Kind::MarketProfile,
+            Params::MarketProfile {
+                reset,
+                minutes,
+                row_ticks,
+                value_area,
                 merged,
-                *last_only,
-            ))
+                last_only,
+                ..
+            },
+        ) => {
+            let known = context
+                .instrument
+                .and_then(Instrument::tick_size)
+                .or(context.ladders.map(|held| held.tick_size));
+            let work = |memo: &mut market::Memo| {
+                market::compute_kept(
+                    bars,
+                    reset.effective_for(timeframe),
+                    session_origin,
+                    *minutes,
+                    *row_ticks,
+                    *value_area,
+                    market::tick_size(bars, known, kind),
+                    merged,
+                    *last_only,
+                    memo,
+                )
+            };
+            Output::MarketProfiles(match context.memos {
+                Some(memos) => memos.market.with(indicator.id, work),
+                None => work(&mut market::Memo::default()),
+            })
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
             Output::Time(time::session_times(bars, timeframe, ranges, context.zone, schedule()))

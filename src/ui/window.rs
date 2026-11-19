@@ -737,6 +737,7 @@ mod tests {
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 profile_merges: Vec::new(),
+                profile_expanded: Vec::new(),
                 compare: Default::default(),
                 source: None,
                 account: None,
@@ -875,6 +876,7 @@ mod tests {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
+            profile_expanded: Vec::new(),
             compare: Default::default(),
             source: None,
             account: None,
@@ -4377,6 +4379,10 @@ struct StoredPane {
     /// Volume profile periods merged into composites on this chart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profile_merges: Vec<omacharts_engine::indicators::profile::Merge>,
+    /// Market profiles expanded on this chart, their TPOs laid out over
+    /// time: kept as its merges are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    profile_expanded: Vec<omacharts_engine::indicators::profile::Merge>,
     /// The markets drawn against this chart's own, where they are measured
     /// from, and whether its bars give way to a line. Missing for a chart
     /// that compares nothing, which is every chart written before any could.
@@ -4446,6 +4452,7 @@ impl StoredPane {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
+            profile_expanded: Vec::new(),
             compare: Default::default(),
             source: None,
             account: None,
@@ -7032,6 +7039,7 @@ impl Window {
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     profile_merges: pane.profile_merges.borrow().clone(),
+                    profile_expanded: pane.profile_expanded.borrow().clone(),
                     compare: pane.compare.borrow().clone(),
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
@@ -7401,6 +7409,7 @@ impl Window {
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
+            *pane.profile_expanded.borrow_mut() = stored.profile_expanded.clone();
             *pane.compare.borrow_mut() = stored.compare.clone();
             *pane.feed.borrow_mut() = stored.source.as_deref().map(|id| crate::feeds::current_id(&self.store, id));
             *pane.account.borrow_mut() = stored.account.clone();
@@ -10718,9 +10727,9 @@ impl Window {
             timeframe,
             self.clock_for(instrument).zone,
         )
-        .with_memos(Some(&pane.cvd_memos));
+        .with_memos(Some(&pane.memos));
         let ids: Vec<u32> = all.iter().map(|indicator| indicator.id).collect();
-        pane.cvd_memos.keep(&ids);
+        pane.memos.keep(&ids);
         let drawn = self.compute_drawn(pane, instrument, timeframe, bars, &all, colors, &context);
         // The legend marks a cumulative delta that is estimated anywhere,
         // and is built again only when which ones are changes — after this
@@ -10796,6 +10805,7 @@ impl Window {
         let context = *context;
         pane.computed.set(pane.computed.get() + 1);
         let merges = pane.profile_merges.borrow();
+        let expanded = pane.profile_expanded.borrow();
         let compute = |context: &omacharts_engine::indicators::Context| -> Vec<Drawn> {
             all.iter()
                 .zip(colors.iter().cloned())
@@ -10813,6 +10823,22 @@ impl Window {
                     {
                         let reset = reset.effective_for(timeframe);
                         *merged = omacharts_engine::indicators::profile::merged_starts(&merges, &together, instrument, reset);
+                    }
+                    // And the profiles expanded by hand, as the chart keeps
+                    // them too.
+                    if let omacharts_engine::Params::MarketProfile {
+                        expanded: starts,
+                        reset,
+                        ..
+                    } = &mut indicator.params
+                    {
+                        let reset = reset.effective_for(timeframe);
+                        *starts = omacharts_engine::indicators::profile::expanded_starts(
+                            &expanded,
+                            indicator.id,
+                            instrument,
+                            reset,
+                        );
                     }
                     Drawn {
                         color,
@@ -12049,6 +12075,13 @@ impl Window {
                     {
                         std::mem::swap(kept, merged);
                     }
+                    // And the profiles it draws expanded, kept by the chart
+                    // as its composites are.
+                    if let (MarketProfile { expanded: kept, .. }, MarketProfile { expanded, .. }) =
+                        (&mut computed_for.params, &mut indicator.params)
+                    {
+                        std::mem::swap(kept, expanded);
+                    }
                     let mut output = drawn.output.clone();
                     output.repaint(&computed_for, now).then_some(Drawn { indicator, output, color })
                 })
@@ -12793,6 +12826,16 @@ impl Window {
             if spot.as_ref().is_some_and(|s| s.parts.len() > 1) {
                 profile.append(Some("Split composite profile"), Some("chart.profile-split"));
             }
+            // A market profile's TPOs laid out over time, or stacked
+            // again: not offered for the forming one while the study
+            // expands it, which only the study's setting undoes.
+            match spot.as_ref().and_then(|s| s.expanded) {
+                Some(false) => profile.append(Some("Expand profile"), Some("chart.profile-expand")),
+                Some(true) => {
+                    profile.append(Some("Collapse profile"), Some("chart.profile-collapse"))
+                }
+                None => {}
+            }
             if profile.n_items() > 0 {
                 menu.append_section(None, &profile);
             }
@@ -12854,6 +12897,45 @@ impl Window {
             let drawn = pane.view.with_bars(|bars| self.drawn_indicators(&pane, &instrument, timeframe, bars));
             pane.view.set_indicators(drawn);
         }
+        self.save_workspace();
+    }
+
+    /// Expand the market profile the menu was opened over, its TPOs laid
+    /// out over time, or collapse it back into a stack. The chart's alone,
+    /// and for the symbol it is showing, as its merges are.
+    fn change_profile_expanded(
+        self: &Rc<Self>,
+        id: u32,
+        spot: &crate::ui::chart::ProfileSpot,
+        expand: bool,
+    ) {
+        let pane = self.focused_pane();
+        let Some(instrument) = pane.instrument.borrow().clone() else {
+            return;
+        };
+        let Some(&start) = spot.parts.first() else {
+            return;
+        };
+        let timeframe = pane.timeframe.get();
+        let reset = {
+            let all = pane.indicators.borrow();
+            match all.iter().find(|i| i.id == id).map(|me| &me.params) {
+                Some(Params::MarketProfile { reset, .. }) => reset.effective_for(timeframe),
+                _ => return,
+            }
+        };
+        omacharts_engine::indicators::profile::change_expanded(
+            &mut pane.profile_expanded.borrow_mut(),
+            id,
+            &instrument,
+            reset,
+            start,
+            expand,
+        );
+        let drawn = pane
+            .view
+            .with_bars(|bars| self.drawn_indicators(&pane, &instrument, timeframe, bars));
+        pane.view.set_indicators(drawn);
         self.save_workspace();
     }
 
@@ -13273,6 +13355,93 @@ impl Window {
         Ok((label, profiles))
     }
 
+    /// The focused chart's volume or market profile study `id` names, as
+    /// [`Self::profiles_on_focused`], with a market profile's TPOs as they
+    /// are drawn and the profiles it is drawn as one pair with: what
+    /// `chart profile list` reads.
+    pub fn profile_listing(&self, id: Option<u32>) -> Result<crate::cli::ProfileListing, String> {
+        use crate::cli::{ListedProfile, ListedTpo, TpoPeriod};
+        use omacharts_engine::indicators::{market, Output};
+        let pane = self.focused_pane();
+        let chart = self.chart_named(&pane);
+        let indicator = self.profile_indicator(&pane, &chart, id)?;
+        let timeframe = pane.timeframe.get();
+        let (minutes, partners, tpos) = pane.view.with_indicators(|drawn| {
+            let me = drawn.iter().find(|d| d.indicator.id == indicator);
+            let minutes = me.and_then(|me| match me.indicator.params {
+                Params::MarketProfile { minutes, .. } => Some(minutes),
+                _ => None,
+            });
+            let shown: Vec<&Indicator> = drawn.iter().map(|d| &d.indicator).filter(|i| i.visible).collect();
+            let partners: Vec<u32> = me
+                .map(|me| omacharts_engine::indicators::pair(&me.indicator, &shown, Some(timeframe)))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|i| i.id)
+                .filter(|other| *other != indicator)
+                .collect();
+            let tpos = me.and_then(|me| match &me.output {
+                Output::MarketProfiles(markets) => Some(
+                    markets
+                        .iter()
+                        .enumerate()
+                        .map(|(at, m)| (m.clone(), market::expands(&me.indicator.params, at, markets.len(), &m.profile)))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            });
+            (minutes, partners, tpos)
+        });
+        let theirs: Vec<(u32, Vec<i64>)> = partners
+            .iter()
+            .map(|&other| {
+                let starts = pane.view.profiles(other).unwrap_or_default().into_iter().map(|(p, _)| p.start_ts).collect();
+                (other, starts)
+            })
+            .collect();
+        let profiles = pane.view.profiles(indicator).unwrap_or_default();
+        let listed = pane.view.with_bars(|bars| {
+            profiles
+                .into_iter()
+                .enumerate()
+                .map(|(at, (profile, visible))| {
+                    let tpo = tpos.as_ref().and_then(|tpos| tpos.get(at)).map(|(m, expanded)| {
+                        let bar = |at: usize| bars.get(at);
+                        let periods = (0..m.column_bars.len())
+                            .filter_map(|column| {
+                                let from = m.column_bars[column];
+                                let to = m.column_bars.get(column + 1).copied().unwrap_or(m.profile.last_bar + 1);
+                                let span = bars.get(from..to.min(bars.len()))?;
+                                let k = m.columns.iter().position(|c| *c as usize == column)?;
+                                Some(TpoPeriod {
+                                    letter: market::letter(m.letters[k]),
+                                    start: span.first()?.ts,
+                                    end: span.last()?.ts,
+                                    high: span.iter().map(|b| b.high).fold(f64::MIN, f64::max),
+                                    low: span.iter().map(|b| b.low).fold(f64::MAX, f64::min),
+                                })
+                            })
+                            .collect();
+                        ListedTpo {
+                            market: m.clone(),
+                            expanded: *expanded,
+                            open: bar(m.profile.first_bar).map_or(f64::NAN, |b| b.open),
+                            close: bar(m.profile.last_bar).map_or(f64::NAN, |b| b.close),
+                            periods,
+                        }
+                    });
+                    let paired = theirs
+                        .iter()
+                        .filter(|(_, starts)| starts.contains(&profile.start_ts))
+                        .map(|(other, _)| (*other, profile.start_ts))
+                        .collect();
+                    ListedProfile { profile, visible, tpo, paired }
+                })
+                .collect()
+        });
+        Ok(crate::cli::ProfileListing { chart, indicator: Some(indicator), market: minutes, partners, profiles: listed })
+    }
+
     /// The volume or market profile `id` names, or with none named the
     /// chart's one volume profile, else its one market profile: a chart
     /// with one of each pairs them when their periods match, and merging
@@ -13322,6 +13491,67 @@ impl Window {
         }
         self.change_profile_merges(indicator, &spot, merge);
         Ok(label)
+    }
+
+    /// Expand the focused chart's market profile holding `ts`, or collapse
+    /// it, for a command.
+    pub fn expand_profile_at(
+        self: &Rc<Self>,
+        id: Option<u32>,
+        ts: i64,
+        expand: bool,
+    ) -> Result<String, String> {
+        let pane = self.focused_pane();
+        let label = self.chart_named(&pane);
+        let indicator = self.market_profile_indicator(&pane, &label, id)?;
+        let Some(spot) = pane.view.profile_of(indicator, ts) else {
+            return Err(format!("{label} draws no market profile at that moment"));
+        };
+        match (spot.expanded, expand) {
+            (None, _) => {
+                return Err(format!(
+                    "that profile on {label} is the forming one, which its study expands"
+                ));
+            }
+            (Some(true), true) => {
+                return Err(format!("that profile on {label} is expanded already"));
+            }
+            (Some(false), false) => return Err(format!("that profile on {label} is not expanded")),
+            _ => {}
+        }
+        self.change_profile_expanded(indicator, &spot, expand);
+        Ok(label)
+    }
+
+    /// The focused chart's one market profile, or the one `id` names.
+    fn market_profile_indicator(
+        &self,
+        pane: &ChartPane,
+        label: &str,
+        id: Option<u32>,
+    ) -> Result<u32, String> {
+        let all = pane.indicators.borrow();
+        let found: Vec<u32> = all
+            .iter()
+            .filter(|i| matches!(i.params, Params::MarketProfile { .. }))
+            .filter(|i| id.is_none_or(|id| i.id == id))
+            .map(|i| i.id)
+            .collect();
+        match found.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(format!(
+                "{label} has no market profile{}",
+                id.map(|id| format!(" with id {id}")).unwrap_or_default()
+            )),
+            many => {
+                let ids: Vec<String> = many.iter().map(|id| id.to_string()).collect();
+                Err(format!(
+                    "{label} has {} market profiles; say which with --id {}",
+                    many.len(),
+                    ids.join(" or ")
+                ))
+            }
+        }
     }
 
     /// A temporary measurement belongs to the live focused chart, never the store.
@@ -14517,6 +14747,18 @@ impl Window {
             }
         });
         actions.add_action(&reset);
+        for (name, expand) in [("profile-expand", true), ("profile-collapse", false)] {
+            let action = gio::SimpleAction::new(name, None);
+            let this = self.clone();
+            action.connect_activate(move |_, _| {
+                let id = this.menu_indicator.borrow_mut().take();
+                let spot = this.menu_profile.borrow_mut().take();
+                if let (Some(id), Some(spot)) = (id, spot) {
+                    this.change_profile_expanded(id, &spot, expand);
+                }
+            });
+            actions.add_action(&action);
+        }
         for (name, merge) in [("profile-merge", true), ("profile-split", false)] {
             let action = gio::SimpleAction::new(name, None);
             let this = self.clone();

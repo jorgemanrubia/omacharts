@@ -570,6 +570,7 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 | `--tpo-style S` | `letters`, `blocks` | Market profile |
 | `--open-close B` | `on`, `off`; off when not given | Market profile: whether it marks its open and its close with an arrow each, beside the TPO at its opening price and the one at its closing price |
 | `--open-color C`, `--close-color C` | A colour, or `none` for the theme's | Market profile |
+| `--expand-last B` | `on`, `off`; off when not given | Market profile: whether its newest profile, the one still forming, is drawn expanded, its TPOs laid out over its bars |
 | `--open-transparency F`, `--close-transparency F` | 0 to 1, or `default` for solid | Market profile: how much of the chart shows through its open or close arrow |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile, market profile |
 | `--poc B` | `on`, `off` | Volume profile, market profile: whether it draws its point of control |
@@ -971,6 +972,37 @@ $ omacharts chart profile list --on-screen
   [exit 0]
 ```
 
+A market profile also reads as the chart draws it. Each profile names its
+open, its first bar's opening price, and its close, its last bar's closing
+price (the latest one while the session forms), and whether it is drawn
+expanded. With `--json` it has `open` and `close`, each a `price` and the
+`row` it is in; `expanded`; `tick_size`, `row_ticks` and `row_height`, how
+tall a row is; and `tpo_count`, every TPO in it. A row is named by its lowest
+tick. `--tpos` adds each TPO period, its letter, the times of its first and
+last bars, and its high and low, and each row's letters from its lowest
+price. With `--json` the periods are `tpo_periods`, each with `letter`,
+`start`, `end`, `high` and `low`, and the rows are `rows`, a list of
+`[price, count, letters]`.
+
+The listing as a whole says which study it is: `indicator`, its id, `kind`,
+`volume_profile` or `market_profile`, and a market profile's `tpo_minutes`.
+`paired_with` lists the ids of the profile studies drawn as one pair with it,
+and each profile's `paired_with` names the profile of that study it is drawn
+beside, by `indicator` and `start`.
+
+```
+$ omacharts chart profile list --id 2 --last --tpos
+1 profiles on pos:0 SPY 5m in "Chartbook 1"
+●  2026-11-18 09:30 → 2026-11-18 15:55  POC 676.40  VA 675.10–677.90  open 676.12 close 677.35  expanded
+   A 2026-11-18 09:30 → 2026-11-18 09:55  675.60–677.20
+   B 2026-11-18 10:00 → 2026-11-18 10:25  675.05–676.70
+   …
+   675.00 B
+   675.10 AB
+   …
+  [exit 0]
+```
+
 `omacharts chart profile merge --at WHEN` folds the focused chart's volume
 profile holding that moment into the one before it, and `omacharts chart
 profile split --at WHEN` puts a composite back into its periods
@@ -982,6 +1014,18 @@ is a day, a day and a time, read in the chart's time zone, or Unix seconds,
 such as `start` from `list`. `--id N` says which profile when the chart has more
 than one, a market profile's id included. A window must be open;
 otherwise it exits 6.
+
+`omacharts chart profile expand --at WHEN` draws the focused chart's market
+profile holding that moment expanded, its TPOs laid out over its bars, and
+`omacharts chart profile collapse --at WHEN` stacks it again
+([Expanded profiles](/manual/indicators/volume/market-profile/#expanded-profiles)).
+Kept with the chart, as a merge is.
+
+```
+$ omacharts chart profile expand --at 2026-10-28
+expanded the market profile on pos:0 SPY 30m in "Chartbook 1"
+  [exit 0]
+```
 
 ```
 $ omacharts chart profile merge --at 2026-10-28
@@ -1010,6 +1054,13 @@ omacharts chart indicator set market_profile --align right
 # Merge a session into the one before it, and split it again; a pair does both
 omacharts chart profile merge --at 2026-11-18
 omacharts chart profile split --at 2026-11-18
+
+# Lay a session's TPOs out over its bars, and stack them again
+omacharts chart profile expand --at 2026-11-18
+omacharts chart profile collapse --at 2026-11-18
+
+# Keep the session still forming expanded
+omacharts chart indicator set market_profile --expand-last on
 ```
 
 ## Drawings

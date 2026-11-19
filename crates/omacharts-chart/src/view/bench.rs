@@ -29,6 +29,34 @@ use crate::marks::{AnyPrice, PriceMark};
 /// A chart set up to be drawn, with no window under it.
 pub struct Scene {
     state: State,
+    /// How the window computes a chart's indicators: through the memos it
+    /// keeps from one computation to the next.
+    compute: Compute,
+}
+
+type Compute = Box<dyn FnMut(&Indicator, &[Bar], Timeframe) -> indicators::Output>;
+
+/// A computation that keeps a chart's memos, as the window's does.
+///
+/// The memos' type is the one the context takes, never named here:
+/// `bin/perf-compare` builds this file on the revision a branch came off
+/// too, where it may be another type.
+fn computing() -> Compute {
+    let memos = Default::default();
+    Box::new(move |indicator, bars, timeframe| {
+        let context = indicators::Context {
+            session_origin: 0,
+            timeframe,
+            kind: None,
+            instrument: None,
+            zone: omacharts_engine::clock::ChartZone::default().for_instrument(None),
+            ladders: None,
+            awaiting_ladders: false,
+            memos: Some(&memos),
+            schedule: None,
+        };
+        indicators::compute_in(indicator, bars, &context)
+    })
 }
 
 impl Scene {
@@ -63,12 +91,13 @@ impl Scene {
             .collect::<Option<Vec<Indicator>>>()?;
         let colors = indicators::palette_colors(&indicators, &theme);
         let timeframe = Timeframe::days(1);
+        let mut compute = computing();
         let drawn: Vec<Drawn> = indicators
             .iter()
             .zip(colors)
             .map(|(indicator, color)| Drawn {
                 color,
-                output: indicators::compute(indicator, &series, 0, timeframe, None),
+                output: compute(indicator, &series, timeframe),
                 indicator: indicator.clone(),
             })
             .collect();
@@ -82,7 +111,7 @@ impl Scene {
         // rest, so a change to the resting margin moves no bars in the frame
         // and is not read as a change in what drawing them costs.
         state.overhang = 0;
-        Some(Scene { state })
+        Some(Scene { state, compute })
     }
 
     /// Every indicator changed by `restyle` and drawn again, which is how a
@@ -93,7 +122,7 @@ impl Scene {
         let (timeframe, series) = (self.state.timeframe, &self.state.bars);
         for drawn in &mut self.state.indicators {
             restyle(&mut drawn.indicator);
-            drawn.output = indicators::compute(&drawn.indicator, series, 0, timeframe, None);
+            drawn.output = (self.compute)(&drawn.indicator, series, timeframe);
         }
     }
 
@@ -104,7 +133,8 @@ impl Scene {
     }
 
     /// What a drained tick costs a chart: the tail put in place, and the
-    /// indicators recomputed over the series — which is the whole of the
+    /// indicators recomputed over the series, through the memos the window
+    /// keeps — which is the whole of the
     /// per-frame work the window does for a chart whose bars moved, apart
     /// from the frame itself.
     pub fn tick(&mut self, tail: &[Bar]) {
@@ -114,7 +144,7 @@ impl Scene {
         let timeframe = self.state.timeframe;
         let series = &self.state.bars;
         for drawn in &mut self.state.indicators {
-            drawn.output = indicators::compute(&drawn.indicator, series, 0, timeframe, None);
+            drawn.output = (self.compute)(&drawn.indicator, series, timeframe);
         }
     }
 

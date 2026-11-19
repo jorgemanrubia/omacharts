@@ -42,6 +42,11 @@ pub const OPEN_CLOSE: &str = "Open and close";
 pub const OPEN_COLOUR: &str = "Open";
 pub const CLOSE_COLOUR: &str = "Close";
 pub const ALIGNMENT: &str = "Alignment";
+/// A market profile's newest profile, the one forming, laid out over
+/// time: expanded, as the chart's menu says of any one.
+pub const EXPAND_LAST: &str = "Expand the last profile";
+pub const EXPAND_LAST_TIP: &str =
+    "Lay the forming profile's TPOs out over time, a column for each TPO period at its bars";
 /// The Value area group's switch; its Colour and Transparency are the
 /// shared ones.
 pub const HIGHLIGHT: &str = "Highlight";
@@ -100,6 +105,9 @@ pub struct StyleRows {
     /// How much of its room the longest row reaches: of a study's period,
     /// of a drawing's span.
     pub width: gtk::Widget,
+    /// A market profile's: whether its newest profile is always drawn
+    /// expanded, its TPOs over time. Under the rows that place it.
+    pub expand_last: Option<gtk::Widget>,
 }
 
 /// The rows of the Value area group.
@@ -146,6 +154,9 @@ pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
     styled.add(&style.display);
     styled.add(&style.alignment);
     styled.add(&style.width);
+    if let Some(row) = &style.expand_last {
+        styled.add(row);
+    }
     styled.add(&style.colour);
     if let Some(outline) = style.outline {
         styled.add(&outline.switch);

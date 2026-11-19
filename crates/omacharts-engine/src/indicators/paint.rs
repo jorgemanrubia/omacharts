@@ -135,7 +135,11 @@ impl Params {
                 poc_alpha,
                 last_only: _,
                 merged: _,
+                expand_last,
+                expanded,
             } => blank!(
+                expand_last,
+                expanded,
                 style,
                 align,
                 width,

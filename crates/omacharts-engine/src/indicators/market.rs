@@ -18,6 +18,8 @@ use omacharts_studies::market_profile as tpo;
 use omacharts_studies::ProfileReading;
 use serde::{Deserialize, Serialize};
 
+use std::sync::Arc;
+
 use crate::bars::{price_decimals, Bar};
 use crate::symbols::InstrumentKind;
 
@@ -183,6 +185,13 @@ pub struct MarketProfile {
     pub letters: Vec<u8>,
     /// Where each row's letters begin in `letters`, and one past the last.
     pub starts: Vec<u32>,
+    /// Each TPO's column, beside `letters`: its TPO period's place among
+    /// the profile's, counted from nought across every part of a
+    /// composite. What an expanded profile lays its TPOs out by.
+    pub columns: Vec<u16>,
+    /// The chart's index of each column's first bar: where an expanded
+    /// profile draws that column.
+    pub column_bars: Vec<usize>,
     /// The row of the profile's open, its first bar's opening price, and
     /// the row of its close, its last bar's closing price (the latest, while
     /// the period forms). The open's TPO is the first letter of its row and
@@ -208,11 +217,37 @@ impl MarketProfile {
         (row == self.open_row && k == 0, row == self.close_row && k + 1 == len)
     }
 
+    /// The columns of row `row`'s TPOs, beside [`Self::letters_of`].
+    pub fn columns_of(&self, row: usize) -> &[u16] {
+        let (from, to) = (self.starts[row] as usize, self.starts[row + 1] as usize);
+        &self.columns[from..to]
+    }
+
     /// The letters of row `row`, in the order their periods came.
     pub fn letters_of(&self, row: usize) -> &[u8] {
         let (from, to) = (self.starts[row] as usize, self.starts[row + 1] as usize);
         &self.letters[from..to]
     }
+}
+
+/// Whether the `at`th of a market profile's `count` profiles, `profile`,
+/// is drawn expanded: its TPOs laid out over time, a column for each TPO
+/// period at that period's bars. One expanded by hand is; and the newest,
+/// while the study expands the last.
+pub fn expands(params: &super::Params, at: usize, count: usize, profile: &Profile) -> bool {
+    match params {
+        super::Params::MarketProfile { expanded, expand_last, .. } => {
+            by_hand(expanded, profile) || (*expand_last && at + 1 == count)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `profile` is one of those `expanded` names. A profile is kept
+/// by its first period's start, as a merge is: the period it was cut
+/// from, not its first bar, so it is the same one whatever bars came in.
+pub fn by_hand(expanded: &[i64], profile: &Profile) -> bool {
+    profile.parts.first().is_some_and(|start| expanded.contains(start))
 }
 
 /// The character a letter index stands for.
@@ -244,32 +279,11 @@ pub fn tick_size(bars: &[Bar], known: Option<f64>, kind: Option<InstrumentKind>)
 
 /// How tall a row is, in ticks, when nobody said: see [`TARGET_ROWS`].
 pub fn auto_row_ticks(bars: &[Bar], periods: &[(usize, usize)], tick_size: f64) -> u32 {
-    let mut spans: Vec<f64> = periods
+    let spans: Vec<Option<f64>> = periods
         .iter()
-        .filter_map(|&(from, to)| {
-            let (mut low, mut high) = (f64::MAX, f64::MIN);
-            for bar in &bars[from..to] {
-                low = low.min(bar.low);
-                high = high.max(bar.high);
-            }
-            let ticks = (high - low) / tick_size;
-            (ticks.is_finite() && ticks > 0.0).then_some(ticks)
-        })
+        .map(|&(from, to)| span_in_ticks(&bars[from..to], tick_size))
         .collect();
-    if spans.is_empty() {
-        return 1;
-    }
-    spans.sort_by(f64::total_cmp);
-    let typical = spans[spans.len() / 2];
-    for decade in 0..9u32 {
-        for base in [1u32, 2, 4, 5] {
-            let ticks = base * 10u32.pow(decade);
-            if typical / f64::from(ticks) <= TARGET_ROWS {
-                return ticks.min(MAX_ROW_TICKS);
-            }
-        }
-    }
-    MAX_ROW_TICKS
+    auto_from_spans(&spans)
 }
 
 /// One market profile per period of `reset`, in rows of `row_ticks` ticks of
@@ -293,26 +307,164 @@ pub fn compute(
     tick_size: f64,
     merged: &[i64],
     last_only: bool,
-) -> Vec<MarketProfile> {
+) -> Vec<Arc<MarketProfile>> {
+    let mut memo = Memo::default();
+    compute_kept(
+        bars,
+        reset,
+        session_origin,
+        minutes,
+        row_ticks,
+        value_area,
+        tick_size,
+        merged,
+        last_only,
+        &mut memo,
+    )
+}
+
+/// What a computation leaves for the next one on the same chart: the bars
+/// it was worked out over, their periods apart and each one's span, and
+/// the profiles. A chart computes its indicators again on every tick, and
+/// a tick moves the forming period alone; every period before it is kept.
+#[derive(Clone, Debug, Default)]
+pub struct Memo {
+    key: Option<Key>,
+    bars: Vec<Bar>,
+    alone: Vec<(usize, usize)>,
+    spans: Vec<Option<f64>>,
+    row_ticks: u32,
+    /// Shared with what the chart draws, so keeping one costs nothing.
+    out: Vec<Arc<MarketProfile>>,
+    /// How many periods the last computation worked out rather than kept.
+    pub worked: usize,
+}
+
+/// Everything besides the bars that the profiles depend on.
+#[derive(Clone, PartialEq, Debug)]
+struct Key {
+    reset: Reset,
+    session_origin: i64,
+    minutes: u32,
+    row_ticks: Option<u32>,
+    value_area: u64,
+    tick_size: u64,
+    merged: Vec<i64>,
+    last_only: bool,
+}
+
+/// Each chart's memos, by the indicator's id.
+#[derive(Debug, Default)]
+pub struct Memos(std::cell::RefCell<std::collections::HashMap<u32, Memo>>);
+
+impl Memos {
+    /// Run `work` with the memo kept for indicator `id`.
+    pub fn with<T>(&self, id: u32, work: impl FnOnce(&mut Memo) -> T) -> T {
+        let mut memos = self.0.borrow_mut();
+        work(memos.entry(id).or_default())
+    }
+
+    /// Forget every memo but those of `ids`: an indicator taken off.
+    pub fn keep(&self, ids: &[u32]) {
+        self.0.borrow_mut().retain(|id, _| ids.contains(id));
+    }
+}
+
+/// [`compute`], keeping in `memo` what the next computation over the same
+/// bars and a tick more need not work out again: every period that ended
+/// before the first bar that changed, and the newest one before that
+/// besides, which the next bar may yet belong to.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_kept(
+    bars: &[Bar],
+    reset: Reset,
+    session_origin: i64,
+    minutes: u32,
+    row_ticks: Option<u32>,
+    value_area: f64,
+    tick_size: f64,
+    merged: &[i64],
+    last_only: bool,
+    memo: &mut Memo,
+) -> Vec<Arc<MarketProfile>> {
+    memo.worked = 0;
     if bars.is_empty() || !(tick_size > 0.0 && tick_size.is_finite()) {
+        *memo = Memo::default();
         return Vec::new();
     }
-    let alone = super::profile::periods(bars, reset, session_origin);
+    let key = Key {
+        reset,
+        session_origin,
+        minutes,
+        row_ticks,
+        value_area: value_area.to_bits(),
+        tick_size: tick_size.to_bits(),
+        merged: merged.to_vec(),
+        last_only,
+    };
+    if memo.key.as_ref() != Some(&key) {
+        *memo = Memo {
+            key: Some(key),
+            ..Memo::default()
+        };
+    }
+
+    // The periods apart that are kept: each that ended before the first
+    // bar that changed, short of the memo's newest, which may go on.
+    let same = memo
+        .bars
+        .iter()
+        .zip(bars)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let kept = memo
+        .alone
+        .len()
+        .saturating_sub(1)
+        .min(memo.alone.iter().take_while(|&&(_, to)| to <= same).count());
+    let restart = kept.checked_sub(1).map_or(0, |last| memo.alone[last].1);
+    memo.alone.truncate(kept);
+    memo.spans.truncate(kept);
+    memo.alone.extend(
+        super::profile::periods(&bars[restart..], reset, session_origin)
+            .into_iter()
+            .map(|(from, to)| (from + restart, to + restart)),
+    );
+    for &(from, to) in &memo.alone[kept..] {
+        memo.spans.push(span_in_ticks(&bars[from..to], tick_size));
+    }
+    memo.bars.truncate(restart);
+    memo.bars.extend_from_slice(&bars[restart..]);
+
     // One height for every period, so a quiet session is drawn short beside
-    // a busy one rather than stretched to match it.
+    // a busy one rather than stretched to match it; and a new height is a
+    // new look for every one of them.
     let row_ticks = match row_ticks {
         Some(ticks) => ticks.clamp(1, MAX_ROW_TICKS),
-        None => auto_row_ticks(bars, &alone, tick_size),
+        None => auto_from_spans(&memo.spans),
     };
+    let reuse = if row_ticks == memo.row_ticks {
+        std::mem::take(&mut memo.out)
+    } else {
+        Vec::new()
+    };
+    memo.row_ticks = row_ticks;
     let minutes = minutes.clamp(MIN_MINUTES, MAX_MINUTES);
-    let joined = (!merged.is_empty())
-        .then(|| super::profile::composites(bars, alone.clone(), reset, session_origin, merged));
-    let periods = joined.as_deref().unwrap_or(&alone);
+    let joined = (!merged.is_empty()).then(|| {
+        super::profile::composites(bars, memo.alone.clone(), reset, session_origin, merged)
+    });
+    let periods = joined.as_deref().unwrap_or(&memo.alone);
+    // A profile kept is one of a period that ends where it did, short of
+    // the restart; one whose period goes on past it is worked out again.
+    let mut reuse = reuse
+        .into_iter()
+        .filter(|kept| kept.profile.last_bar < restart)
+        .peekable();
     let mut out = Vec::with_capacity(periods.len());
     // Room for counting, reused from period to period.
     let mut scratch = Scratch::default();
     // Where each period apart starts: a composite's parts.
-    let mut alone = alone.iter().map(|&(from, _)| from).peekable();
+    let mut alone = memo.alone.iter().map(|&(from, _)| from).peekable();
     let mut cuts = Vec::new();
     let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
     for (at, &(from, to)) in periods.iter().enumerate() {
@@ -329,16 +481,71 @@ pub fn compute(
         if at < skipped {
             continue;
         }
+        while reuse
+            .next_if(|kept| kept.profile.first_bar < from)
+            .is_some()
+        {}
+        if to <= restart
+            && let Some(kept) = reuse
+                .next_if(|kept| kept.profile.first_bar == from && kept.profile.last_bar + 1 == to)
+        {
+            out.push(kept);
+            continue;
+        }
+        memo.worked += 1;
         let bucket = reset.bucket(bars[from].ts, session_origin);
         let slice = &bars[from..to];
-        if let Some(mut profile) =
-            period(slice, from, bucket, minutes, row_ticks, value_area, tick_size, &cuts, &mut scratch)
-        {
-            profile.profile.parts.extend(cuts.iter().map(|&at| reset.bucket(slice[at].ts, session_origin)));
-            out.push(profile);
+        if let Some(mut profile) = period(
+            slice,
+            from,
+            bucket,
+            minutes,
+            row_ticks,
+            value_area,
+            tick_size,
+            &cuts,
+            &mut scratch,
+        ) {
+            profile.profile.parts.extend(
+                cuts.iter()
+                    .map(|&at| reset.bucket(slice[at].ts, session_origin)),
+            );
+            out.push(Arc::new(profile));
         }
     }
+    memo.out = out.clone();
     out
+}
+
+/// How many ticks a period's bars span, low to high, or `None` for one
+/// that spans none.
+fn span_in_ticks(bars: &[Bar], tick_size: f64) -> Option<f64> {
+    let (mut low, mut high) = (f64::MAX, f64::MIN);
+    for bar in bars {
+        low = low.min(bar.low);
+        high = high.max(bar.high);
+    }
+    let ticks = (high - low) / tick_size;
+    (ticks.is_finite() && ticks > 0.0).then_some(ticks)
+}
+
+/// [`auto_row_ticks`] from each period's span, in ticks.
+fn auto_from_spans(spans: &[Option<f64>]) -> u32 {
+    let mut spans: Vec<f64> = spans.iter().flatten().copied().collect();
+    if spans.is_empty() {
+        return 1;
+    }
+    spans.sort_by(f64::total_cmp);
+    let typical = spans[spans.len() / 2];
+    for decade in 0..9u32 {
+        for base in [1u32, 2, 4, 5] {
+            let ticks = base * 10u32.pow(decade);
+            if typical / f64::from(ticks) <= TARGET_ROWS {
+                return ticks.min(MAX_ROW_TICKS);
+            }
+        }
+    }
+    MAX_ROW_TICKS
 }
 
 /// What counting a period needs and does not keep: each row's TPOs, the
@@ -348,8 +555,9 @@ struct Scratch {
     counts: Vec<u32>,
     marks: Vec<i64>,
     next: Vec<u32>,
-    /// Each bar's letter, and its TPO period as a mark of its own.
-    tpos: Vec<(u8, i64)>,
+    /// Each bar's letter, its TPO period as a mark of its own, and its
+    /// column.
+    tpos: Vec<(u8, i64, u16)>,
 }
 
 /// The market profile of `bars`, one period, which start at `offset` on the
@@ -386,13 +594,20 @@ fn period(
     // Each bar's TPO period as the letter it is drawn with, and as a mark
     // no other part's TPO period shares.
     tpos.clear();
+    let mut column_bars: Vec<usize> = Vec::new();
     let (mut first_ts, mut index, mut cuts) = (bars[0].ts, 0i64, cuts.iter().peekable());
     for (at, bar) in bars.iter().enumerate() {
         if cuts.next_if_eq(&&at).is_some() {
             (first_ts, index) = (bar.ts, index + 1);
         }
         let tpo = tpo::tpo_of(bar.ts, first_ts, minutes);
-        tpos.push((tpo::letter_of(tpo), (index << 40) + tpo));
+        let mark = (index << 40) + tpo;
+        // The bars come in order, so a TPO period's are together.
+        if tpos.last().is_none_or(|&(_, last, _)| last != mark) {
+            column_bars.push(offset + at);
+        }
+        let column = (column_bars.len() - 1).min(u16::MAX as usize) as u16;
+        tpos.push((tpo::letter_of(tpo), mark, column));
     }
 
     // How many TPOs each row holds, then each row's letters in place.
@@ -400,8 +615,10 @@ fn period(
     counts.resize(len, 0);
     marks.clear();
     marks.resize(len, i64::MIN);
-    for (bar, &(_, at)) in bars.iter().zip(tpos.iter()) {
-        let Some((from, to)) = rows_of(bar) else { continue };
+    for (bar, &(_, at, _)) in bars.iter().zip(tpos.iter()) {
+        let Some((from, to)) = rows_of(bar) else {
+            continue;
+        };
         for row in from..=to {
             let row = (row - low) as usize;
             if marks[row] != at {
@@ -418,17 +635,21 @@ fn period(
         starts.push(total);
     }
     let mut letters = vec![0u8; total as usize];
+    let mut columns = vec![0u16; total as usize];
     next.clear();
     next.extend_from_slice(&starts[..len]);
     marks.clear();
     marks.resize(len, i64::MIN);
-    for (bar, &(letter, at)) in bars.iter().zip(tpos.iter()) {
-        let Some((from, to)) = rows_of(bar) else { continue };
+    for (bar, &(letter, at, column)) in bars.iter().zip(tpos.iter()) {
+        let Some((from, to)) = rows_of(bar) else {
+            continue;
+        };
         for row in from..=to {
             let row = (row - low) as usize;
             if marks[row] != at {
                 marks[row] = at;
                 letters[next[row] as usize] = letter;
+                columns[next[row] as usize] = column;
                 next[row] += 1;
             }
         }
@@ -472,6 +693,8 @@ fn period(
         },
         letters,
         starts,
+        columns,
+        column_bars,
         open_row,
         close_row,
         reading,
@@ -501,8 +724,26 @@ mod tests {
         let profiles = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false);
         assert_eq!(profiles.len(), 1);
         let profile = &profiles[0];
-        let text = |row: usize| profile.letters_of(row).iter().map(|l| letter(*l)).collect::<String>();
-        assert_eq!((0..4).map(text).collect::<Vec<_>>(), vec!["A", "AE", "AB", "B"]);
+        let text = |row: usize| {
+            profile
+                .letters_of(row)
+                .iter()
+                .map(|l| letter(*l))
+                .collect::<String>()
+        };
+        assert_eq!(
+            (0..4).map(text).collect::<Vec<_>>(),
+            vec!["A", "AE", "AB", "B"]
+        );
+        // Laid out over time, a column for each TPO period that has bars,
+        // starting at its first: A at the first bar, B at the third, E at
+        // the fourth, an hour of nothing between B and E taking none.
+        assert_eq!(profile.column_bars, vec![0, 2, 3]);
+        let columns = |row: usize| profile.columns_of(row).to_vec();
+        assert_eq!(
+            (0..4).map(columns).collect::<Vec<_>>(),
+            vec![vec![0], vec![0, 2], vec![0, 1], vec![1]]
+        );
         let counts: Vec<f64> = profile.profile.rows.iter().map(|row| row.volume).collect();
         assert_eq!(counts, vec![1.0, 2.0, 2.0, 1.0]);
         assert_eq!(profile.profile.total_volume, 6.0);
@@ -511,6 +752,196 @@ mod tests {
         assert_eq!(profile.reading.poc, 12.0);
         assert_eq!(profile.profile.rows[0].low, 9.5);
         assert_eq!(profile.profile.rows[3].high, 13.5);
+    }
+
+    /// Kept from the last computation, a tick works out the forming
+    /// period alone, its profile growing with it — a new TPO period's
+    /// letter, the value area, the point of control and the close — and
+    /// every session before it is the one already worked out.
+    #[test]
+    fn a_tick_works_out_the_forming_period_alone() {
+        const DAY: i64 = 86_400;
+        // Five sessions of minute bars, the last forming.
+        let mut bars: Vec<Bar> = Vec::new();
+        for day in 0..5i64 {
+            for minute in 0..120i64 {
+                let low = 100.0 + day as f64 + (minute % 13) as f64 * 0.25;
+                bars.push(Bar {
+                    ts: day * DAY + minute * 60,
+                    open: low,
+                    high: low + 1.0,
+                    low,
+                    close: low + 0.5,
+                    volume: 1.0,
+                });
+            }
+        }
+        let run = |bars: &[Bar], memo: &mut Memo| {
+            compute_kept(
+                bars,
+                Reset::Session,
+                0,
+                30,
+                Some(1),
+                0.7,
+                0.25,
+                &[],
+                false,
+                memo,
+            )
+        };
+        let fresh =
+            |bars: &[Bar]| compute(bars, Reset::Session, 0, 30, Some(1), 0.7, 0.25, &[], false);
+        let mut memo = Memo::default();
+        let first = run(&bars, &mut memo);
+        assert_eq!(first, fresh(&bars));
+        assert_eq!(memo.worked, 5);
+
+        // A tick into the forming bar, high above everything so far.
+        let last = bars.len() - 1;
+        bars[last].high += 5.0;
+        bars[last].close = bars[last].high;
+        let ticked = run(&bars, &mut memo);
+        assert_eq!(memo.worked, 1, "the forming session alone");
+        assert_eq!(
+            ticked,
+            fresh(&bars),
+            "what working out every session comes to"
+        );
+        assert_eq!(ticked[..4], first[..4]);
+        assert_ne!(ticked[4], first[4], "the forming profile grew");
+        assert_eq!(
+            ticked[4].close_row,
+            ticked[4].profile.rows.len() - 1,
+            "the close follows the latest price"
+        );
+
+        // A new bar opening the next TPO period: its letter appears.
+        let at = bars[last].ts + 60 * 15;
+        bars.push(Bar {
+            ts: at,
+            open: 101.0,
+            high: 101.5,
+            low: 99.0,
+            close: 99.0,
+            volume: 1.0,
+        });
+        let grown = run(&bars, &mut memo);
+        assert_eq!(memo.worked, 1);
+        assert_eq!(grown, fresh(&bars));
+        let letters = |p: &MarketProfile| p.letters.iter().copied().max();
+        assert_eq!(
+            letters(&grown[4]),
+            letters(&ticked[4]).map(|l| l + 1),
+            "a new period's letter"
+        );
+
+        // What was kept is not worked out again: spoiled in the memo, it
+        // stays spoiled through a tick.
+        Arc::make_mut(&mut memo.out[1]).open_row = 9_999;
+        bars.last_mut().unwrap().close = 99.5;
+        let again = run(&bars, &mut memo);
+        assert_eq!(
+            again[1].open_row, 9_999,
+            "the sessions before the forming one were kept"
+        );
+        assert_eq!(memo.worked, 1);
+
+        // A bar of a new session starts it, and the one before is kept.
+        let mut memo = Memo::default();
+        let _ = run(&bars, &mut memo);
+        bars.push(Bar {
+            ts: 5 * DAY,
+            open: 110.0,
+            high: 111.0,
+            low: 110.0,
+            close: 110.5,
+            volume: 1.0,
+        });
+        let next = run(&bars, &mut memo);
+        assert_eq!(next, fresh(&bars));
+        assert_eq!(next.len(), 6);
+        assert_eq!(
+            memo.worked, 2,
+            "the session that was forming, and the new one"
+        );
+
+        // Another setting is worked out from the start.
+        let other = compute_kept(
+            &bars,
+            Reset::Session,
+            0,
+            15,
+            Some(1),
+            0.7,
+            0.25,
+            &[],
+            false,
+            &mut memo,
+        );
+        assert_eq!(memo.worked, 6);
+        assert_eq!(
+            other,
+            compute(&bars, Reset::Session, 0, 15, Some(1), 0.7, 0.25, &[], false)
+        );
+    }
+
+    /// The automatic row height reads every session, the forming one
+    /// among them: when a tick changes it, every profile is worked out in
+    /// the new height, and merged sessions stay one composite.
+    #[test]
+    fn a_tick_that_changes_the_automatic_height_works_out_every_session() {
+        const DAY: i64 = 86_400;
+        let mut bars: Vec<Bar> = Vec::new();
+        // A session eleven points tall, then two of two points, the last
+        // forming: the median is two points until it grows past eleven.
+        for day in 0..3i64 {
+            for minute in 0..60i64 {
+                let low = if day == 0 {
+                    100.0 + (minute % 10) as f64
+                } else {
+                    100.0
+                };
+                bars.push(Bar {
+                    ts: day * DAY + minute * 60,
+                    open: low,
+                    high: low + 2.0,
+                    low,
+                    close: low + 1.0,
+                    volume: 1.0,
+                });
+            }
+        }
+        let merged = [DAY];
+        let run = |bars: &[Bar], memo: &mut Memo| {
+            compute_kept(
+                bars,
+                Reset::Session,
+                0,
+                30,
+                None,
+                0.7,
+                0.01,
+                &merged,
+                false,
+                memo,
+            )
+        };
+        let fresh =
+            |bars: &[Bar]| compute(bars, Reset::Session, 0, 30, None, 0.7, 0.01, &merged, false);
+        let mut memo = Memo::default();
+        let first = run(&bars, &mut memo);
+        assert_eq!(first.len(), 2, "the first two sessions merged");
+        for (at, wild) in [(bars.len() - 1, 30.0), (bars.len() - 2, 10.0)] {
+            bars[at].high += wild;
+            let ticked = run(&bars, &mut memo);
+            assert_eq!(ticked, fresh(&bars));
+        }
+        assert_ne!(
+            run(&bars, &mut memo)[0].row_ticks,
+            first[0].row_ticks,
+            "a new height, for every session"
+        );
     }
 
     #[test]

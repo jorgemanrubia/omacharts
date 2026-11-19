@@ -322,8 +322,8 @@ work on it as on a volume profile. On one chart with a volume profile study
 of the same `--anchor`, the two pair: each session's two are drawn inside
 it, and `chart profile merge` / `split` on either does both. Each grows from
 its own `--align`: set alike, side by side from that edge, the volume
-profile against it; one `left` and one `right`, back to back on a spine
-centred in the session. With different anchors each keeps to itself, with
+profile against it; one `left` and one `right`, back to back on a spine,
+the pair starting at the session's open. With different anchors each keeps to itself, with
 its own merges. `--align right` mirrors a profile; `--tpo-style blocks` swaps
 letters for squares; `--open-close on` marks each profile's open and close with
 an arrow beside the TPO at its opening price and one beside the TPO at its
@@ -334,7 +334,10 @@ stepped edge round its TPOs. `--outline-color`, `--outline-width`,
 line across the profile, 2 px unless set), `--transparency`,
 `--value-area-transparency`, `--outside-transparency`,
 `--outline-transparency`, `--poc-transparency` and `--last-only` work as on
-a volume profile. `chart values --json` reads each one's latest `poc`,
+a volume profile. `chart profile expand --at WHEN` lays one profile's TPOs
+out over its bars ("expanded": a column per TPO period at its bars) and
+`collapse` stacks it again; `--expand-last on` keeps the forming one
+expanded. `chart values --json` reads each one's latest `poc`,
 `vah` and `val`.
 
 ```
@@ -347,6 +350,10 @@ omacharts chart indicator add volume_profile --anchor session --profile-width 0.
 # Merge a session into the one before it, and split it again; a pair does both
 omacharts chart profile merge --at 2026-11-18
 omacharts chart profile split --at 2026-11-18
+
+# Lay a session's TPOs out over its bars, and keep the forming one so
+omacharts chart profile expand --at 2026-11-18
+omacharts chart indicator set market_profile --expand-last on
 
 # Its look
 omacharts chart indicator set market_profile --tpo-style blocks --poc-color Amber --value-area-color Teal
@@ -372,11 +379,16 @@ takes `--signal-style` and a stochastic's %D `--d-style`. It takes no `--text`. 
 `chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds
 the one starting there into the one before it — read again after each merge,
-since the composite's value area is new. `split --at` undoes it.
+since the composite's value area is new. `split --at` undoes it. A market
+profile's listing adds `open` and `close` (each a `price` and its `row`),
+`expanded` and `row_height`; `--tpos` adds `tpo_periods` (each `letter`,
+`start`, `end`, `high`, `low`) and `rows` as `[price, count, letters]`, and
+`paired_with` names the volume profile drawn beside it.
 
 ```
 omacharts chart drawing add profile --from 2026-10-14,0 --to 2026-10-21,0 --config 9
 omacharts chart profile list --on-screen --json
+omacharts chart profile list --id 2 --last --tpos --json
 omacharts chart profile merge --at 1793836800
 ```
 

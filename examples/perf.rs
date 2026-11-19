@@ -432,6 +432,36 @@ fn market_profile(rows: &mut Vec<Row>) {
         }
     }
 
+    // A tick into a chart with a market profile, as the one into a chart
+    // of the usual furniture: the profile of the forming period is what
+    // moves, so its cost is what a tick pays, however long the series.
+    for (kinds, label) in [
+        (&["market_profile"][..], "a market profile"),
+        (
+            &["volume_profile", "market_profile"][..],
+            "volume and market profiles",
+        ),
+    ] {
+        for bars in [2_000usize, 8_000] {
+            let Some(mut scene) = Scene::of(bars, 160, kinds) else {
+                continue;
+            };
+            // Between the bar's own low and high, so every run of it does
+            // the same work however many times it is taken.
+            let last = scene.last_bar().expect("a series");
+            let mut up = false;
+            rows.push(row(
+                "interact",
+                &format!("tick into a chart of {bars} bars with {label}"),
+                || {
+                    up = !up;
+                    let close = if up { last.high } else { last.low };
+                    scene.tick(&[Bar { close, ..last }]);
+                },
+            ));
+        }
+    }
+
     for bars in [10_000usize, 100_000] {
         let series = bench::series(bars);
         let Some(indicator) = named("market_profile") else { continue };

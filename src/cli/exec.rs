@@ -1560,8 +1560,13 @@ fn charts_verb(
     said(as_json, json!({"message": text}), text)
 }
 
-/// Merge or split a volume or market profile on the chart on screen.
-fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+/// Merge or split a volume or market profile on the chart on screen, or
+/// expand or collapse a market profile.
+fn chart_profile(
+    live: Option<&dyn Live>,
+    m: &clap::ArgMatches,
+    as_json: bool,
+) -> Result<String, Fault> {
     let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
     let id = match arg(m, "id") {
         None => None,
@@ -1569,12 +1574,35 @@ fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -
     };
     let merge = match required(m, "ACTION")?.as_str() {
         "list" => {
-            let detail = Detail { rows: flag(m, "rows"), nodes: flag(m, "nodes"), last: flag(m, "last") };
+            let detail = Detail { rows: flag(m, "rows"), nodes: flag(m, "nodes"), last: flag(m, "last"), tpos: flag(m, "tpos") };
             return list_profiles(live, id, flag(m, "on-screen"), detail, as_json);
         }
         "merge" => true,
         "split" => false,
-        other => return Err(Fault::usage(format!("{other:?} is not list, merge or split"))),
+        expand @ ("expand" | "collapse") => {
+            let expand = expand == "expand";
+            let Some(when) = arg(m, "at") else {
+                return Err(Fault::usage(
+                    "say which profile with --at, a moment inside it".into(),
+                ));
+            };
+            let ts = read_when(when, "at", live.measurement_zone())?;
+            let chart = live.expand_profile(id, ts, expand)?;
+            let (done, action) = match expand {
+                true => ("expanded the market profile", "expand"),
+                false => ("collapsed the market profile", "collapse"),
+            };
+            return said(
+                as_json,
+                json!({"chart": chart, "action": action, "at": ts}),
+                format!("{done} on {chart}"),
+            );
+        }
+        other => {
+            return Err(Fault::usage(format!(
+                "{other:?} is not list, merge, split, expand or collapse"
+            )));
+        }
     };
     let Some(when) = arg(m, "at") else {
         return Err(Fault::usage("say which profile with --at, a moment inside it".into()));
@@ -1593,6 +1621,8 @@ struct Detail {
     rows: bool,
     nodes: bool,
     last: bool,
+    /// A market profile's TPO periods, and the letters in each row.
+    tpos: bool,
 }
 
 /// The profiles a chart draws, as numbers a script can compare: where each
@@ -1600,20 +1630,22 @@ struct Detail {
 /// and on request its rows, and the high- and low-volume nodes in them.
 fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail, as_json: bool) -> Result<String, Fault> {
     let zone = live.measurement_zone();
-    let (chart, profiles) = live.profiles(id)?;
+    let listing = live.profile_listing(id)?;
+    let chart = &listing.chart;
     let day = |ts: i64| {
         chrono::DateTime::from_timestamp(ts, 0)
             .map(|at| at.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default()
     };
-    let mut shown: Vec<_> = profiles.iter().filter(|(p, on)| (!visible || *on) && !p.rows.is_empty()).collect();
+    let mut shown: Vec<_> = listing.profiles.iter().filter(|l| (!visible || l.visible) && !l.profile.rows.is_empty()).collect();
     if detail.last {
         shown = shown.split_off(shown.len().saturating_sub(1));
     }
     if as_json {
         let rows: Vec<Value> = shown
             .iter()
-            .map(|(p, on)| {
+            .map(|listed| {
+                let p = &listed.profile;
                 let (low, high) = p.value_area_bounds();
                 let mut row = json!({
                     "start": p.start_ts,
@@ -1626,32 +1658,133 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail
                     "value_area_low": low,
                     "value_area_high": high,
                     "volume": p.total_volume,
-                    "visible": on,
+                    "visible": listed.visible,
                 });
                 if let Some(fields) = row.as_object_mut() {
                     fields.extend(profile_detail_json(p, detail));
+                    if let Some(tpo) = &listed.tpo {
+                        fields.extend(tpo_json(p, tpo, detail));
+                    }
+                    if !listed.paired.is_empty() {
+                        let paired: Vec<Value> =
+                            listed.paired.iter().map(|(indicator, start)| json!({"indicator": indicator, "start": start})).collect();
+                        fields.insert("paired_with".into(), Value::Array(paired));
+                    }
                 }
                 row
             })
             .collect();
-        return Ok(format!("{}\n", json!({"chart": chart, "profiles": rows})));
+        let mut out = json!({"chart": chart, "profiles": rows});
+        if let (Some(fields), Some(indicator)) = (out.as_object_mut(), listing.indicator) {
+            fields.insert("indicator".into(), json!(indicator));
+            let kind = if listing.market.is_some() { "market_profile" } else { "volume_profile" };
+            fields.insert("kind".into(), json!(kind));
+            if let Some(minutes) = listing.market {
+                fields.insert("tpo_minutes".into(), json!(minutes));
+            }
+            fields.insert("paired_with".into(), json!(listing.partners));
+        }
+        return Ok(format!("{out}\n"));
     }
     let mut out = format!("{} profiles on {chart}\n", shown.len());
-    for (p, on) in shown {
+    for listed in shown {
+        let p = &listed.profile;
         let (low, high) = p.value_area_bounds();
+        let places = listed.tpo.as_ref().map_or(profile_places(p), |tpo| {
+            crate::trading::reading::places(Some(tpo.market.tick_size)).min(6).max(profile_places(p))
+        });
+        let n = |price: f64| crate::trading::reading::num(price, places);
         out.push_str(&format!(
-            "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}\n",
-            if *on { "●" } else { "○" },
+            "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}{}\n",
+            if listed.visible { "●" } else { "○" },
             day(p.start_ts),
             day(p.end_ts),
             p.poc_price(),
             low,
             high,
             if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
+            match &listed.tpo {
+                Some(tpo) => format!(
+                    "  open {} close {}{}",
+                    n(tpo.open),
+                    n(tpo.close),
+                    if tpo.expanded { "  expanded" } else { "" }
+                ),
+                None => String::new(),
+            },
         ));
         out.push_str(&profile_detail_text(p, detail));
+        if let (Some(tpo), true) = (&listed.tpo, detail.tpos) {
+            for period in &tpo.periods {
+                out.push_str(&format!(
+                    "   {} {} → {}  {}–{}\n",
+                    period.letter,
+                    day(period.start),
+                    day(period.end),
+                    n(period.low),
+                    n(period.high)
+                ));
+            }
+            for (at, row) in p.rows.iter().enumerate() {
+                let letters: String = tpo.market.letters_of(at).iter().map(|l| omacharts_engine::indicators::market::letter(*l)).collect();
+                out.push_str(&format!("   {} {}\n", n(row.low + tpo.market.tick_size / 2.0), letters));
+            }
+        }
     }
     Ok(out)
+}
+
+/// A market profile's TPO structure, as it is drawn: its row height in
+/// ticks and price, whether it is expanded, its open and close with the
+/// rows they are in (a row named by its lowest tick); and on
+/// request each TPO period, with its letter, its first and last bars'
+/// times and its high and low, and each row's letters.
+fn tpo_json(p: &omacharts_engine::indicators::Profile, tpo: &crate::cli::ListedTpo, detail: Detail) -> serde_json::Map<String, Value> {
+    use omacharts_engine::indicators::market::letter;
+    // To the tick, which every row's price and every TPO period's high and
+    // low are a whole number of.
+    let places = crate::trading::reading::places(Some(tpo.market.tick_size)).min(6).max(profile_places(p));
+    let price = |value: f64| crate::trading::reading::price(Some(value), places);
+    let m = &tpo.market;
+    // A market profile's row is named by its lowest tick: its low is the
+    // edge half a tick below it.
+    let half = tpo.market.tick_size / 2.0;
+    let row_price = |row: usize| p.rows.get(row).map(|r| price(r.low + half)).unwrap_or(Value::Null);
+    let mut fields = serde_json::Map::new();
+    fields.insert("expanded".into(), json!(tpo.expanded));
+    fields.insert("tick_size".into(), json!(m.tick_size));
+    fields.insert("row_ticks".into(), json!(m.row_ticks));
+    fields.insert("row_height".into(), price(m.tick_size * m.row_ticks as f64));
+    fields.insert("tpo_count".into(), json!(m.letters.len()));
+    fields.insert("open".into(), json!({"price": price(tpo.open), "row": row_price(m.open_row)}));
+    fields.insert("close".into(), json!({"price": price(tpo.close), "row": row_price(m.close_row)}));
+    if detail.tpos {
+        let periods: Vec<Value> = tpo
+            .periods
+            .iter()
+            .map(|period| {
+                json!({
+                    "letter": period.letter.to_string(),
+                    "start": period.start,
+                    "end": period.end,
+                    "high": price(period.high),
+                    "low": price(period.low),
+                })
+            })
+            .collect();
+        fields.insert("tpo_periods".into(), Value::Array(periods));
+    }
+    if detail.tpos || detail.rows {
+        let rows: Vec<Value> = (0..p.rows.len())
+            .map(|at| {
+                let letters: String = m.letters_of(at).iter().map(|l| letter(*l)).collect();
+                json!([row_price(at), letters.len(), letters])
+            })
+            .collect();
+        fields.insert("rows".into(), Value::Array(rows));
+        fields.insert("row_height".into(), price(m.tick_size * m.row_ticks as f64));
+    }
+    fields
 }
 
 /// How many places a profile's prices are given to: those of its row
@@ -4448,6 +4581,8 @@ struct Edits {
     tpo_style: Option<omacharts_engine::indicators::market::Style>,
     /// Whether a market profile marks its open and its close.
     open_close: Option<bool>,
+    /// Whether a market profile always draws its newest profile expanded.
+    expand_last: Option<bool>,
     /// Their colours; `Some(None)` is `none`, the theme's.
     open_color: Option<Option<ColorChoice>>,
     close_color: Option<Option<ColorChoice>>,
@@ -4614,6 +4749,12 @@ impl Edits {
                 Some("on") => Some(true),
                 Some("off") => Some(false),
                 Some(other) => return Err(Fault::usage(format!("--open-close is on or off, not {other:?}"))),
+            },
+            expand_last: match arg(m, "expand-last").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--expand-last is on or off, not {other:?}"))),
             },
             open_color: match arg(m, "open-color").map(String::as_str) {
                 Some("none") => Some(None),
@@ -4785,6 +4926,7 @@ impl Edits {
             && self.row_ticks.is_none()
             && self.tpo_style.is_none()
             && self.open_close.is_none()
+            && self.expand_last.is_none()
             && self.open_color.is_none()
             && self.close_color.is_none()
             && self.open_alpha.is_none()
@@ -4961,6 +5103,18 @@ impl Edits {
             match kind == IndicatorKind::MarketProfile {
                 true => params["open_close"] = json!(on),
                 false => return Err(refuse("open and close marks")),
+            }
+        }
+        if let Some(on) = self.expand_last {
+            match kind == IndicatorKind::MarketProfile {
+                // Off is the default, and not written, as the app leaves it.
+                true if on => params["expand_last"] = json!(true),
+                true => {
+                    if let Some(params) = params.as_object_mut() {
+                        params.remove("expand_last");
+                    }
+                }
+                false => return Err(refuse("expanded last profile")),
             }
         }
         for (alpha, key, what) in [
@@ -9329,6 +9483,30 @@ mod tests {
         assert!(stored["open_color"].is_null(), "{stored}");
         assert_eq!(stored["close_color"]["hex"], "#aa5e57", "kept while off");
 
+        // The newest profile expanded, its TPOs over time: off until set.
+        assert!(stored["expand_last"].is_null(), "{stored}");
+        let out = run(
+            "chart indicator set market_profile --book Macro --expand-last on",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(params(&store)["expand_last"], true);
+        let out = run(
+            "chart indicator set market_profile --book Macro --expand-last off",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(
+            params(&store)["expand_last"].is_null(),
+            "off is the default, not written"
+        );
+        run("chart indicator add volume_profile --book Macro", &store);
+        let out = run(
+            "chart indicator set volume_profile --book Macro --expand-last on",
+            &store,
+        );
+        assert_ne!(out.code, 0, "a volume profile has no TPOs to expand");
+
         for refused in [
             "chart indicator set market_profile --book Macro --open-close maybe",
             "chart indicator set market_profile --book Macro --open-color nonsense",
@@ -10697,6 +10875,14 @@ mod tests {
         fn profile(&self, _id: Option<u32>, _ts: i64, _merge: bool) -> Result<String, Fault> {
             Ok("pos:0 SPY 1h in Main".into())
         }
+        fn expand_profile(
+            &self,
+            _id: Option<u32>,
+            _ts: i64,
+            _expand: bool,
+        ) -> Result<String, Fault> {
+            Ok("pos:0 SPY 1h in Main".into())
+        }
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
@@ -10758,6 +10944,48 @@ mod tests {
             assert_eq!(invoke(&bad, Some(&NoWindow)).code, crate::cli::EXIT_USAGE);
         }
         assert_eq!(invoke(&["--clear"], Some(&NoWindow)).code, 0);
+    }
+
+    /// A market profile is expanded and collapsed at a moment inside it,
+    /// on the chart on screen.
+    #[test]
+    fn a_market_profile_is_expanded_and_collapsed_from_a_terminal() {
+        let store = seeded();
+        let invoke = |tail: &str, live: Option<&dyn Live>| {
+            let args: Vec<String> = ["omacharts", "chart", "profile"]
+                .into_iter()
+                .map(str::to_string)
+                .chain(tail.split_whitespace().map(str::to_string))
+                .collect();
+            dispatch(&args, &store, live, &super::super::Here)
+        };
+        for (action, said) in [
+            ("expand", "expanded the market profile"),
+            ("collapse", "collapsed the market profile"),
+        ] {
+            let out = invoke(
+                &format!("{action} --at 2026-09-01T10:00 --json"),
+                Some(&NoWindow),
+            );
+            assert_eq!(out.code, 0, "{}", out.err);
+            let value: Value = serde_json::from_str(&out.out).unwrap();
+            assert_eq!(value["action"], action);
+            let plain = invoke(&format!("{action} --at 2026-09-01T10:00"), Some(&NoWindow));
+            assert!(plain.out.starts_with(said), "{}", plain.out);
+            assert_eq!(
+                invoke(&format!("{action} --at 2026-09-01"), None).code,
+                crate::cli::EXIT_NO_WINDOW
+            );
+            assert_eq!(
+                invoke(action, Some(&NoWindow)).code,
+                crate::cli::EXIT_USAGE,
+                "which one, with --at"
+            );
+        }
+        assert_eq!(
+            invoke("unfold --at 2026-09-01", Some(&NoWindow)).code,
+            crate::cli::EXIT_USAGE
+        );
     }
 
     #[test]

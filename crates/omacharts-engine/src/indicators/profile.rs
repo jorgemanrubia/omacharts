@@ -103,6 +103,58 @@ pub fn change_merges(
     merges.retain(|m| !m.starts.is_empty());
 }
 
+/// Expand the market profile `id` starting at `start` on this instrument,
+/// under this period, or collapse it again. Kept as merges are, by the
+/// chart and by symbol, in a list of their own: a [`Merge`]'s starts are
+/// the profiles' it expands.
+pub fn change_expanded(
+    expanded: &mut Vec<Merge>,
+    id: u32,
+    instrument: &crate::symbols::Instrument,
+    reset: Reset,
+    start: i64,
+    expand: bool,
+) {
+    let at = match expanded.iter().position(|m| m.is(id, instrument, reset)) {
+        Some(at) => at,
+        None => {
+            expanded.push(Merge {
+                indicator: id,
+                symbol: instrument.symbol.clone(),
+                suffix: instrument.suffix.clone(),
+                reset,
+                starts: Vec::new(),
+            });
+            expanded.len() - 1
+        }
+    };
+    let starts = &mut expanded[at].starts;
+    match expand {
+        true if !starts.contains(&start) => {
+            starts.push(start);
+            starts.sort_unstable();
+        }
+        true => {}
+        false => starts.retain(|kept| *kept != start),
+    }
+    expanded.retain(|m| !m.starts.is_empty());
+}
+
+/// Where each profile of market profile `id` starts that is expanded on
+/// this instrument under this period.
+pub fn expanded_starts(
+    expanded: &[Merge],
+    id: u32,
+    instrument: &crate::symbols::Instrument,
+    reset: Reset,
+) -> Vec<i64> {
+    expanded
+        .iter()
+        .filter(|m| m.is(id, instrument, reset))
+        .flat_map(|m| m.starts.iter().copied())
+        .collect()
+}
+
 /// The study's lines as they have always been drawn: a hairline.
 pub fn hairline() -> f64 {
     1.0

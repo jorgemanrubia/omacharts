@@ -333,13 +333,16 @@ pub struct ChartPane {
     /// The volume profile periods merged on this chart, kept with it: a
     /// composite is a study of this chart's, not of the indicator's.
     pub profile_merges: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
+    /// Market profiles expanded on this chart, kept as its merges are.
+    pub profile_expanded: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
     /// The markets compared on this chart, as they are kept.
     pub compare: RefCell<omacharts_engine::compare::Compare>,
     /// Their bars as they arrive, one for each in `compare`, in its order.
     pub compared: RefCell<Vec<crate::ui::window::compare::Loaded>>,
-    /// What each cumulative delta on this chart worked out last, so a tick
-    /// works out only its newest bars again.
-    pub cvd_memos: omacharts_engine::indicators::cvd::Memos,
+    /// What each cumulative delta and market profile on this chart worked
+    /// out last, so a tick works out only its newest bars, or the forming
+    /// period, again.
+    pub memos: omacharts_engine::indicators::Memos,
     /// How many times this chart's indicators have been worked out: what a
     /// change that should only repaint them is held to.
     pub computed: Cell<u64>,
@@ -875,9 +878,10 @@ impl ChartPane {
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             profile_merges: RefCell::new(Vec::new()),
+            profile_expanded: RefCell::new(Vec::new()),
             compare: RefCell::new(Default::default()),
             compared: RefCell::new(Vec::new()),
-            cvd_memos: omacharts_engine::indicators::cvd::Memos::new(),
+            memos: omacharts_engine::indicators::Memos::new(),
             computed: Cell::new(0),
             estimated: RefCell::new(Vec::new()),
             link_colour,

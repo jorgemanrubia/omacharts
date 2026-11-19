@@ -49,6 +49,13 @@ omacharts chart indicator set market_profile --align right
 # Merge a session into the one before it, and split it again; a pair does both
 omacharts chart profile merge --at 2026-11-18
 omacharts chart profile split --at 2026-11-18
+
+# Lay a session's TPOs out over its bars, and stack them again
+omacharts chart profile expand --at 2026-11-18
+omacharts chart profile collapse --at 2026-11-18
+
+# Keep the session still forming expanded
+omacharts chart indicator set market_profile --expand-last on
 ```
 
 ## Settings
@@ -74,6 +81,7 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 | **Display** | Letters | Letters, or Blocks: a square for each letter. Letters too small to read are drawn as blocks |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). Beside a volume profile with the same period, each keeps its own ([Beside a volume profile](#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: the furthest the row with the most letters may reach, of the period's width. Each letter or block is about as wide as its row is tall, so a profile with room to spare stays that compact |
+| **Expand the last profile** | Off | On draws the newest profile, the one still forming, [expanded](#expanded-profiles): its TPOs laid out over its bars. Its earlier profiles stay as they are |
 | **Colour** | The next free colour, at 95% opacity | A palette name, or a custom colour. Its **Opacity** is how solid the letters are drawn, 0 to 100%. Blocks are drawn fainter than letters at the same setting, so they do not cover the candles. The value area's two opacities follow it until they are set |
 | **Outline** | Off | On draws the stepped edge round the letters' cells, as a volume profile's round its rows: the same for letters and blocks, a gap in the profile left open |
 | **Outline colour** | The profile's **Colour**, solid | A palette name, or a custom colour. Its **Opacity** is how solid the outline is drawn, 0 to 100% |
@@ -134,10 +142,10 @@ A market profile and a [volume profile](/manual/indicators/volume/volume-profile
 |---|---|---|
 | Left | Left | Side by side from the session's start: the volume profile against it, the letters starting where its longest rows end |
 | Right | Right | Side by side back from the session's end, mirrored: the volume profile against it, the letters before it. The session still forming is drawn past the last bar, both in it |
-| Right | Left | Back to back: the letters grow left and the volume profile's rows right, from a spine they share, centred in the session |
-| Left | Right | Back to back the other way: the volume profile's rows grow left and the letters right, from a shared spine, centred in the session |
+| Right | Left | Back to back: the letters grow left and the volume profile's rows right, from a spine they share, the pair starting at the session's open |
+| Left | Right | Back to back the other way: the volume profile's rows grow left and the letters right, from a shared spine, the pair starting at the session's open |
 
-Back to back, the two are centred with the room left over split either side, so neither has its base against the session's edge, where it would sit beside the next session's profile or the last one's and read as their pair. The session still forming is drawn on its bars, both of it. Side by side or back to back, the two are squeezed alike when their widths come to more than the session.
+Back to back, the pair starts at the session's open and the room left over is after it, so neither has its base against the session's edge, where it would sit beside the next session's profile or the last one's and read as their pair. The session still forming is drawn on its bars, both of it. Side by side or back to back, the two are squeezed alike when their widths come to more than the session.
 
 With different periods, each is drawn from its own **Alignment**, as it is alone. Change either's **Reset every** to match the other's and they pair again. Profiles of different periods drawn from the same edge still share their room side by side, as several volume profiles do.
 
@@ -146,3 +154,13 @@ With different periods, each is drawn from its own **Alignment**, as it is alone
 Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile over both periods, with one point of control and one value area. Each period's TPO periods keep their letters, counted from that period's first bar. Merge again to take in another. **Split composite profile**, on a composite, puts its periods back as they were. A composite is kept as a [volume profile's](/manual/indicators/volume/volume-profile/#composite-profiles) is: with the chart, for the symbol and the period it was made under.
 
 Paired with a volume profile, merging or splitting either merges or splits both, so a session's two always cover the same span. Merges made while they had different periods are joined when they pair again. With different periods, or with no volume profile, a market profile merges and splits on its own.
+
+## Expanded profiles
+
+A profile is drawn stacked: each row's letters packed side by side from the profile's edge, so the rows' lengths make its shape. Expanded, the same letters are laid out over time instead: each TPO period's letters stand in a column of their own, centred on that period's first bar, so A sits over the session's first bars, B over the next, and so on. The shape is gone, and what shows is when each price was traded.
+
+Right-click a profile and choose **Expand profile** to expand it, and **Collapse profile** to stack it again. It is one profile at a time, kept with the chart as a merge is, for the symbol and the period it was made under. **Expand the last profile**, in the Style settings, keeps the newest profile, the one still forming, expanded as it grows: each new TPO period's letters appear in a new column at its bars. The menu offers nothing on that one while the setting is on.
+
+Expanded, a profile keeps everything else: the value area's colours, the point of control across its whole width, the outline round its letters and **Display** as letters or blocks. The open's arrow stands beside the first TPO period's letter on the session's first bar, pointing at it, and the close's beside the last TPO period's letter, pointing back. A composite is spread over every bar of its periods.
+
+Beside a volume profile of the same period, the pair cannot share the session while the letters cover it. The session still forming keeps its volume profile, drawn past the last bar in the room the chart keeps there, as a volume profile [aligned right](/manual/indicators/volume/volume-profile/#aligned-right) is. An earlier session's volume profile is left out while its market profile is expanded, and comes back when it is collapsed.
