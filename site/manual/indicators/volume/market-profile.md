@@ -39,7 +39,7 @@ crop: none
 | **Colour** | The next free colour | A palette name, or a custom colour |
 | **Show point of control** | On | Off draws the point of control's row as the value area's |
 | **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |
-| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)) |
+| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). A volume profile with the same period is drawn from this edge too ([Beside a volume profile](#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: the furthest the row with the most letters may reach, of the period's width. Each letter or block is about as wide as its row is tall, so a profile with room to spare stays that compact |
 
 ## Rows
@@ -50,4 +50,14 @@ The point of control is the row with the most letters. Of two with as many, it i
 
 ## Beside a volume profile
 
-A market profile and a [volume profile](/manual/indicators/volume/volume-profile/) aligned to the same edge share each period side by side, in the order the legend lists them, each as wide as its **Width %**, and never on top of each other. Aligned right, both are mirrored and run back from the end of the period.
+A market profile and a [volume profile](/manual/indicators/volume/volume-profile/) with the same **Reset every** are drawn as a pair: each session's two sit side by side inside that session, touching, the volume profile against the edge they are drawn from and the market profile's letters starting where its longest rows end. Each is as wide as its **Width %**, and the two are squeezed alike when they come to more than the session. They are drawn from the market profile's **Alignment**, whatever the volume profile's says: from the session's start when it is Left, and back from the session's end, mirrored, when it is Right, the session still forming then drawn past the last bar with both in it. A volume profile's own **Alignment** is greyed while it is paired, and reads *Set by the market profile beside it*.
+
+So a session's volume profile is never drawn against the next session's market profile. With each from an edge of its own, one's rows would grow back from the session's end and the other's on from the next session's start, and the two would read as one pair across the boundary.
+
+With different periods, each is drawn from its own **Alignment**, as it is alone. Change either's **Reset every** to match the other's and they pair again. Profiles drawn from the same edge still share their room side by side, as several volume profiles do: volume profiles nearest the edge, then market profiles, each kind in the order the legend lists it.
+
+## Composite profiles
+
+Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile over both periods, with one point of control and one value area. Each period's TPO periods keep their letters, counted from that period's first bar. Merge again to take in another. **Split composite profile**, on a composite, puts its periods back as they were. A composite is kept as a [volume profile's](/manual/indicators/volume/volume-profile/#composite-profiles) is: with the chart, for the symbol and the period it was made under.
+
+Paired with a volume profile, merging or splitting either merges or splits both, so a session's two always cover the same span. Merges made while they had different periods are joined when they pair again. With different periods, or with no volume profile, a market profile merges and splits on its own.

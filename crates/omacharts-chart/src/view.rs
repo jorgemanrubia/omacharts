@@ -3334,12 +3334,12 @@ impl ChartView {
         s.profile_at(self.area.width() as f64, self.area.height() as f64, id, x)
     }
 
-    /// Every profile indicator `id` draws, and whether each is on screen,
-    /// for a command that reads them.
+    /// Every profile volume or market profile `id` draws, and whether each
+    /// is on screen, for a command that reads them.
     pub fn profiles(&self, id: u32) -> Option<Vec<(Profile, bool)>> {
         let s = self.state.borrow();
         let drawn = s.indicators.iter().find(|d| d.indicator.id == id)?;
-        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let profiles = drawn.output.periods()?;
         let (first, count, _) = s.view();
         let end = first + count;
         // Begun at its first bar rather than at its period's start, which for
@@ -3349,7 +3349,7 @@ impl ChartView {
             profiles
                 .iter()
                 .map(|p| {
-                    let mut p = p.clone();
+                    let mut p = (*p).clone();
                     if let Some(bar) = s.bars.get(p.first_bar) {
                         p.start_ts = bar.ts;
                     }

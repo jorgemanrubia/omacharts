@@ -1560,7 +1560,7 @@ fn charts_verb(
     said(as_json, json!({"message": text}), text)
 }
 
-/// Merge or split a volume profile on the chart on screen.
+/// Merge or split a volume or market profile on the chart on screen.
 fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
     let id = match arg(m, "id") {

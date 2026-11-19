@@ -10749,12 +10749,17 @@ impl Window {
                 .map(|(indicator, color)| {
                     let mut indicator = indicator.clone();
                     // The chart's own composites, put into the profile only to
-                    // be drawn: the indicator itself may be a template's.
-                    if let omacharts_engine::Params::VolumeProfile { merged, reset, .. } = &mut indicator.params {
+                    // be drawn: the indicator itself may be a template's. A
+                    // market profile and the volume profiles of its period
+                    // are drawn with every merge any of them holds, so a
+                    // session's two always cover the same span — however
+                    // their periods came to match.
+                    let together = omacharts_engine::indicators::merged_together(&indicator, all, Some(timeframe));
+                    if let omacharts_engine::Params::VolumeProfile { merged, reset, .. }
+                    | omacharts_engine::Params::MarketProfile { merged, reset, .. } = &mut indicator.params
+                    {
                         let reset = reset.effective_for(timeframe);
-                        if let Some(merge) = merges.iter().find(|m| m.is(indicator.id, instrument, reset)) {
-                            *merged = merge.starts.clone();
-                        }
+                        *merged = omacharts_engine::indicators::profile::merged_starts(&merges, &together, instrument, reset);
                     }
                     Drawn {
                         color,
@@ -12710,7 +12715,9 @@ impl Window {
                 let choices = AVERAGE_PERIODS.map(|n| (n.to_string(), (n as i32).to_variant(), n == *period));
                 rows.push(("period".to_string(), choice_strip(&choices, "chart.indicator-period", "Period")));
             }
-            Some(Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. }) => {
+            Some(
+                Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } | Params::MarketProfile { reset, .. },
+            ) => {
                 reset_strip(&pane, &presets, &mut rows, Some(*reset), false);
             }
             Some(Params::Cvd { reset, .. }) => reset_strip(&pane, &presets, &mut rows, *reset, true),
@@ -12722,7 +12729,7 @@ impl Window {
 
         // A composite is made one profile at a time, from the one under the
         // pointer back into the one before it.
-        if matches!(params, Some(Params::VolumeProfile { .. })) {
+        if matches!(params, Some(Params::VolumeProfile { .. } | Params::MarketProfile { .. })) {
             let spot = chart_x.and_then(|x| pane.view.profile_at(indicator, x));
             let profile = gio::Menu::new();
             if spot.as_ref().is_some_and(|s| s.has_previous) {
@@ -12761,43 +12768,31 @@ impl Window {
     /// Merge the profile the menu was opened over into the one before it, or
     /// split the composite it is back into its periods. The chart's alone,
     /// and for the symbol it is showing.
+    ///
+    /// A market profile and the volume profiles of its period merge and
+    /// split together, so a session's two stay side by side over one span;
+    /// see [`omacharts_engine::indicators::merged_together`].
     fn change_profile_merges(self: &Rc<Self>, id: u32, spot: &crate::ui::chart::ProfileSpot, merge: bool) {
         let pane = self.focused_pane();
         let Some(instrument) = pane.instrument.borrow().clone() else { return };
-        let reset = pane.indicators.borrow().iter().find(|i| i.id == id).and_then(|i| match i.params {
-            Params::VolumeProfile { reset, .. } => Some(reset.effective_for(pane.timeframe.get())),
-            _ => None,
-        });
-        let Some(reset) = reset else { return };
-        {
-            let mut merges = pane.profile_merges.borrow_mut();
-            let at = match merges.iter().position(|m| m.is(id, &instrument, reset)) {
-                Some(at) => at,
-                None => {
-                    merges.push(omacharts_engine::indicators::profile::Merge {
-                        indicator: id,
-                        symbol: instrument.symbol.clone(),
-                        suffix: instrument.suffix.clone(),
-                        reset,
-                        starts: Vec::new(),
-                    });
-                    merges.len() - 1
-                }
+        let timeframe = pane.timeframe.get();
+        let (reset, together) = {
+            let all = pane.indicators.borrow();
+            let Some(me) = all.iter().find(|i| i.id == id) else { return };
+            let reset = match me.params {
+                Params::VolumeProfile { reset, .. } | Params::MarketProfile { reset, .. } => reset.effective_for(timeframe),
+                _ => return,
             };
-            let starts = &mut merges[at].starts;
-            match merge {
-                true => {
-                    if let Some(first) = spot.parts.first()
-                        && !starts.contains(first)
-                    {
-                        starts.push(*first);
-                        starts.sort_unstable();
-                    }
-                }
-                false => starts.retain(|start| !spot.parts[1..].contains(start)),
-            }
-            merges.retain(|m| !m.starts.is_empty());
-        }
+            (reset, omacharts_engine::indicators::merged_together(me, &all, Some(timeframe)))
+        };
+        omacharts_engine::indicators::profile::change_merges(
+            &mut pane.profile_merges.borrow_mut(),
+            &together,
+            &instrument,
+            reset,
+            &spot.parts,
+            merge,
+        );
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
             let timeframe = pane.timeframe.get();
@@ -13223,22 +13218,33 @@ impl Window {
         Ok((label, profiles))
     }
 
-    /// The one volume profile on a chart, or the one `id` names.
+    /// The volume or market profile `id` names, or with none named the
+    /// chart's one volume profile, else its one market profile: a chart
+    /// with one of each pairs them when their periods match, and merging
+    /// either merges both.
     fn profile_indicator(&self, pane: &ChartPane, label: &str, id: Option<u32>) -> Result<u32, String> {
-        let profiles: Vec<u32> = pane
-            .indicators
-            .borrow()
-            .iter()
-            .filter(|i| matches!(i.params, Params::VolumeProfile { .. }))
-            .filter(|i| id.is_none_or(|id| i.id == id))
-            .map(|i| i.id)
-            .collect();
+        let all = pane.indicators.borrow();
+        let of = |market: bool| -> Vec<u32> {
+            all.iter()
+                .filter(|i| match market {
+                    false => matches!(i.params, Params::VolumeProfile { .. }),
+                    true => matches!(i.params, Params::MarketProfile { .. }),
+                })
+                .filter(|i| id.is_none_or(|id| i.id == id))
+                .map(|i| i.id)
+                .collect()
+        };
+        let (volume, market) = (of(false), of(true));
+        let (profiles, what) = match volume.is_empty() {
+            false => (volume, "volume profiles"),
+            true => (market, "market profiles"),
+        };
         match profiles.as_slice() {
             [one] => Ok(*one),
-            [] => Err(format!("{label} has no volume profile")),
+            [] => Err(format!("{label} has no volume or market profile")),
             many => {
                 let ids: Vec<String> = many.iter().map(|id| id.to_string()).collect();
-                Err(format!("{label} has {} volume profiles; say which with --id {}", many.len(), ids.join(" or ")))
+                Err(format!("{label} has {} {what}; say which with --id {}", many.len(), ids.join(" or ")))
             }
         }
     }
@@ -14443,7 +14449,9 @@ impl Window {
             };
             if let Some(id) = this.menu_indicator.borrow_mut().take() {
                 this.edit_indicator(id, |params| match params {
-                    Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } => {
+                    Params::Vwap { reset, .. }
+                    | Params::VolumeProfile { reset, .. }
+                    | Params::MarketProfile { reset, .. } => {
                         if let Some(chosen) = chosen {
                             *reset = chosen;
                         }

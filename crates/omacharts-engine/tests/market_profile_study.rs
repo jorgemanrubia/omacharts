@@ -35,7 +35,7 @@ fn minutes() -> Vec<Bar> {
 fn a_developing_market_profile_ends_its_period_as_the_periods_profile() {
     let bars = minutes();
     for (minutes, row_ticks, value_area) in [(30, 1, 0.7), (30, 4, 0.7), (15, 2, 0.6), (60, 1, 0.8)] {
-        let profiles = market::compute(&bars, Reset::Session, ORIGIN, minutes, Some(row_ticks), value_area, TICK);
+        let profiles = market::compute(&bars, Reset::Session, ORIGIN, minutes, Some(row_ticks), value_area, TICK, &[]);
         assert!(profiles.len() >= 4, "{} profiles", profiles.len());
 
         let mut study = DevelopingMarketProfile::new(TICK, row_ticks, minutes).value_area(value_area);

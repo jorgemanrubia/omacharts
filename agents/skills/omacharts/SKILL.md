@@ -317,9 +317,11 @@ matter.
 "market profile" in the picker) is time at price: each period cut into
 lettered TPO periods of `--tpo-minutes`, rows `--row-ticks` ticks tall or
 `auto`. "TPO" means this, not the volume profile. On one chart with a volume
-profile, both aligned to the same edge share each period side by side in the
-order they are listed — add the volume profile first for it to sit nearest
-the period's start. `--align right` mirrors them; `--tpo-style blocks` swaps
+profile of the same `--anchor`, the two pair: each session's sit side by side
+inside it, the volume profile against the edge and the letters after it,
+drawn from the market profile's `--align`,
+and `chart profile merge` / `split` on either does both. `--align right` on
+the market profile mirrors them; `--tpo-style blocks` swaps
 letters for squares. `chart values --json` reads each one's latest `poc`,
 `vah` and `val`.
 

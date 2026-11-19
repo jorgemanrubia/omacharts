@@ -166,6 +166,11 @@ pub fn auto_row_ticks(bars: &[Bar], periods: &[(usize, usize)], tick_size: f64) 
 /// One market profile per period of `reset`, in rows of `row_ticks` ticks of
 /// `tick_size`, or of the automatic height when `None`, cut into TPO periods
 /// of `minutes`.
+///
+/// A period whose start is in `merged` is folded into the one before it,
+/// as a volume profile's is: one composite of them all, its TPO periods
+/// lettered afresh from each part's first bar, as they were apart.
+#[allow(clippy::too_many_arguments)]
 pub fn compute(
     bars: &[Bar],
     reset: Reset,
@@ -174,24 +179,45 @@ pub fn compute(
     row_ticks: Option<u32>,
     value_area: f64,
     tick_size: f64,
+    merged: &[i64],
 ) -> Vec<MarketProfile> {
     if bars.is_empty() || !(tick_size > 0.0 && tick_size.is_finite()) {
         return Vec::new();
     }
-    let periods = super::profile::periods(bars, reset, session_origin);
+    let alone = super::profile::periods(bars, reset, session_origin);
     // One height for every period, so a quiet session is drawn short beside
     // a busy one rather than stretched to match it.
     let row_ticks = match row_ticks {
         Some(ticks) => ticks.clamp(1, MAX_ROW_TICKS),
-        None => auto_row_ticks(bars, &periods, tick_size),
+        None => auto_row_ticks(bars, &alone, tick_size),
     };
     let minutes = minutes.clamp(MIN_MINUTES, MAX_MINUTES);
+    let joined = (!merged.is_empty())
+        .then(|| super::profile::composites(bars, alone.clone(), reset, session_origin, merged));
+    let periods = joined.as_deref().unwrap_or(&alone);
     let mut out = Vec::with_capacity(periods.len());
     // Room for counting, reused from period to period.
     let mut scratch = Scratch::default();
-    for (from, to) in periods {
+    // Where each period apart starts: a composite's parts.
+    let mut alone = alone.iter().map(|&(from, _)| from).peekable();
+    let mut cuts = Vec::new();
+    for &(from, to) in periods {
+        cuts.clear();
+        while let Some(&start) = alone.peek() {
+            if start >= to {
+                break;
+            }
+            if start > from {
+                cuts.push(start - from);
+            }
+            alone.next();
+        }
         let bucket = reset.bucket(bars[from].ts, session_origin);
-        if let Some(profile) = period(&bars[from..to], from, bucket, minutes, row_ticks, value_area, tick_size, &mut scratch) {
+        let slice = &bars[from..to];
+        if let Some(mut profile) =
+            period(slice, from, bucket, minutes, row_ticks, value_area, tick_size, &cuts, &mut scratch)
+        {
+            profile.profile.parts.extend(cuts.iter().map(|&at| reset.bucket(slice[at].ts, session_origin)));
             out.push(profile);
         }
     }
@@ -205,10 +231,15 @@ struct Scratch {
     counts: Vec<u32>,
     marks: Vec<i64>,
     next: Vec<u32>,
+    /// Each bar's letter, and its TPO period as a mark of its own.
+    tpos: Vec<(u8, i64)>,
 }
 
 /// The market profile of `bars`, one period, which start at `offset` on the
-/// chart and whose period begins at `start_ts`.
+/// chart and whose period begins at `start_ts`. `cuts` are where each
+/// period merged into it begins, as indices into `bars`: each part's TPO
+/// periods are counted from its own first bar, and a letter in one part is
+/// a TPO apart from the same letter in another.
 #[allow(clippy::too_many_arguments)]
 fn period(
     bars: &[Bar],
@@ -218,10 +249,11 @@ fn period(
     row_ticks: u32,
     value_area: f64,
     tick_size: f64,
+    cuts: &[usize],
     scratch: &mut Scratch,
 ) -> Option<MarketProfile> {
-    let Scratch { counts, marks, next } = scratch;
-    let first = bars.first()?;
+    let Scratch { counts, marks, next, tpos } = scratch;
+    bars.first()?;
     let rows_of = |bar: &Bar| tpo::rows_of(bar, tick_size, row_ticks);
     let (mut low, mut high) = (i64::MAX, i64::MIN);
     for (from, to) in bars.iter().filter_map(rows_of) {
@@ -233,17 +265,26 @@ fn period(
     }
     let len = (high - low + 1) as usize;
     // The TPO periods are counted from the period's first bar, as the
-    // developing profile counts them.
-    let tpo_of = |bar: &Bar| tpo::tpo_of(bar.ts, first.ts, minutes);
+    // developing profile counts them; in a composite, from each part's.
+    // Each bar's TPO period as the letter it is drawn with, and as a mark
+    // no other part's TPO period shares.
+    tpos.clear();
+    let (mut first_ts, mut index, mut cuts) = (bars[0].ts, 0i64, cuts.iter().peekable());
+    for (at, bar) in bars.iter().enumerate() {
+        if cuts.next_if_eq(&&at).is_some() {
+            (first_ts, index) = (bar.ts, index + 1);
+        }
+        let tpo = tpo::tpo_of(bar.ts, first_ts, minutes);
+        tpos.push((tpo::letter_of(tpo), (index << 40) + tpo));
+    }
 
     // How many TPOs each row holds, then each row's letters in place.
     counts.clear();
     counts.resize(len, 0);
     marks.clear();
     marks.resize(len, i64::MIN);
-    for bar in bars {
+    for (bar, &(_, at)) in bars.iter().zip(tpos.iter()) {
         let Some((from, to)) = rows_of(bar) else { continue };
-        let at = tpo_of(bar);
         for row in from..=to {
             let row = (row - low) as usize;
             if marks[row] != at {
@@ -264,14 +305,13 @@ fn period(
     next.extend_from_slice(&starts[..len]);
     marks.clear();
     marks.resize(len, i64::MIN);
-    for bar in bars {
+    for (bar, &(letter, at)) in bars.iter().zip(tpos.iter()) {
         let Some((from, to)) = rows_of(bar) else { continue };
-        let at = tpo_of(bar);
         for row in from..=to {
             let row = (row - low) as usize;
             if marks[row] != at {
                 marks[row] = at;
-                letters[next[row] as usize] = tpo::letter_of(at);
+                letters[next[row] as usize] = letter;
                 next[row] += 1;
             }
         }
@@ -330,7 +370,7 @@ mod tests {
             bar(1_800, 12.0, 13.0),
             bar(4 * 1_800, 11.0, 11.0),
         ];
-        let profiles = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0);
+        let profiles = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[]);
         assert_eq!(profiles.len(), 1);
         let profile = &profiles[0];
         let text = |row: usize| profile.letters_of(row).iter().map(|l| letter(*l)).collect::<String>();
@@ -349,7 +389,7 @@ mod tests {
     fn one_profile_per_period_at_one_row_height() {
         const DAY: i64 = 86_400;
         let bars = vec![bar(0, 100.0, 101.0), bar(60, 100.5, 102.0), bar(DAY, 200.0, 230.0), bar(DAY + 60, 199.0, 200.0)];
-        let profiles = compute(&bars, Reset::Session, 0, 30, None, 0.7, 0.25);
+        let profiles = compute(&bars, Reset::Session, 0, 30, None, 0.7, 0.25, &[]);
         assert_eq!(profiles.len(), 2);
         assert_eq!((profiles[0].profile.first_bar, profiles[0].profile.last_bar), (0, 1));
         assert_eq!((profiles[1].profile.first_bar, profiles[1].profile.last_bar), (2, 3));
@@ -379,9 +419,44 @@ mod tests {
         assert_eq!(tick_size(&bars, None, None), 0.01);
     }
 
+    /// Merged as a volume profile's periods are: one composite of the
+    /// sessions, each session's TPO periods lettered from its own first bar
+    /// and counted apart, so Tuesday's A at a price is a second TPO there,
+    /// not Monday's A again.
+    #[test]
+    fn a_merged_period_joins_the_one_before_it_its_letters_counted_apart() {
+        const DAY: i64 = 86_400;
+        let bars = vec![
+            bar(0, 10.0, 11.0),
+            bar(1_800, 11.0, 11.0),
+            bar(DAY, 10.0, 10.0),
+            bar(DAY + 1_800, 12.0, 12.0),
+            bar(2 * DAY, 20.0, 20.0),
+        ];
+        let apart = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[]);
+        assert_eq!(apart.len(), 3);
+        let merged = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY]);
+        assert_eq!(merged.len(), 2);
+        let composite = &merged[0];
+        assert_eq!(composite.profile.parts, vec![0, DAY]);
+        assert!(composite.profile.is_composite());
+        assert_eq!((composite.profile.first_bar, composite.profile.last_bar), (0, 3));
+        let text = |row: usize| composite.letters_of(row).iter().map(|l| letter(*l)).collect::<String>();
+        assert_eq!((0..3).map(text).collect::<Vec<_>>(), vec!["AA", "AB", "B"]);
+        assert_eq!(composite.profile.total_volume, 5.0);
+        // The session after it is as it was apart.
+        assert_eq!(merged[1], apart[2]);
+        // Every period merged: one profile of them all.
+        let all = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY, 2 * DAY]);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].profile.parts, vec![0, DAY, 2 * DAY]);
+        // A merge with nothing before it on the chart is left alone.
+        assert_eq!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[0]), apart);
+    }
+
     #[test]
     fn a_wild_bar_leaves_its_period_without_a_profile_rather_than_millions_of_rows() {
         let bars = vec![bar(0, 1.0, 1e9)];
-        assert!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 0.01).is_empty());
+        assert!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 0.01, &[]).is_empty());
     }
 }

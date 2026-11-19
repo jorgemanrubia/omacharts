@@ -2119,6 +2119,35 @@ pub const MARKET_MINUTES_LABEL: &str = "TPO period (minutes)";
 /// The market profile box that sets how many ticks tall a row is.
 pub const MARKET_ROW_TICKS_LABEL: &str = "Row height (ticks)";
 
+/// What a market profile's Alignment row says while a volume profile of
+/// the same period is drawn beside it, from its edge.
+pub const ALIGNMENT_LEADS: &str = "Sets the volume profile beside it too";
+/// What a volume profile's Alignment row says while it is drawn beside a
+/// market profile of the same period, from the market profile's edge.
+pub const ALIGNMENT_FOLLOWS: &str = "Set by the market profile beside it";
+
+/// Says on a profile's Alignment row when it is paired with a market
+/// profile of the same period, which draws the two side by side from its
+/// own edge. The follower's row is greyed: choosing an edge there changes
+/// nothing while they are paired.
+fn note_pairing(owner: &Owner, indicator: &Indicator, row: &adw::ComboRow) {
+    let all = owner.indicators();
+    let shown: Vec<&Indicator> = all.iter().filter(|other| other.visible).collect();
+    let leader = |of: &Indicator| {
+        omacharts_engine::indicators::paired_with(&of.params, shown.iter().copied(), None).map(|leader| leader.id)
+    };
+    match leader(indicator) {
+        Some(id) if id != indicator.id => {
+            row.set_subtitle(ALIGNMENT_FOLLOWS);
+            row.set_sensitive(false);
+        }
+        Some(_) if shown.iter().any(|other| other.id != indicator.id && leader(other) == Some(indicator.id)) => {
+            row.set_subtitle(ALIGNMENT_LEADS);
+        }
+        _ => {}
+    }
+}
+
 /// How a market profile is drawn: letters or blocks, its colour, its point
 /// of control, and its side and width, which it shares a period's room
 /// with a volume profile by.
@@ -2192,6 +2221,7 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             }
         },
     );
+    note_pairing(owner, indicator, &alignment);
     let (width_row, _) = {
         let owner = owner.clone();
         let refresh = refresh.clone();
@@ -2693,6 +2723,7 @@ fn profile_style(
             }
         },
     );
+    note_pairing(owner, indicator, &alignment);
     // A share of the room the profile has: its period, or the empty space
     // past the last bar for the session drawn there.
     let (width, _) = {

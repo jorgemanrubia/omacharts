@@ -592,7 +592,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("value-area", "F", "the share of volume, or of a market profile's TPOs, the value area covers, 0-1"),
     Flag::valued("poc-color", "COLOUR", "the volume or market profile's point of control"),
     Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
-    Flag::valued("align", "EDGE", "the edge of its period a volume or market profile grows from; right mirrors it").of(PROFILE_ALIGNS),
+    Flag::valued("align", "EDGE", "the edge of its period a volume or market profile grows from; right mirrors it. A volume profile beside a market profile of the same period is drawn from the market profile's").of(PROFILE_ALIGNS),
     Flag::valued("profile-width", "F", "how much of its period a volume or market profile's longest row reaches, 0.1-1; of the space past the last bar for the live session aligned right. Profiles on one edge share their period side by side"),
     Flag::valued("profile-method", "WHAT", "what a volume profile's rows measure: all the volume at each price, or the ask volume less the bid volume, which needs a feed with volume at price").of(PROFILE_METHODS),
     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),
@@ -1363,7 +1363,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "profile",
-                about: "List the focused chart's volume profiles, with their rows and high- and low-volume nodes on request, merge one at a moment into the one before it, or split a composite back into its periods; requires a window",
+                about: "List the focused chart's volume or market profiles, with their rows and high- and low-volume nodes on request (a market profile's rows count TPOs), merge one at a moment into the one before it, or split a composite back into its periods; a market profile and the volume profiles of the same period merge and split together; requires a window",
                 args: &[Arg::req("ACTION", "what to do").of(&["list", "merge", "split"])],
                 flags: &[
                     Flag::switch("on-screen", "for list: only the profiles on screen"),
@@ -1371,7 +1371,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::switch("rows", "for list: each profile's rows as a price and volume table, from its lowest price; a row is named by its low"),
                     Flag::switch("nodes", "for list: each profile's high-volume nodes and the low-volume nodes between them, with the prices each spans and its strength as a share of the point of control"),
                     Flag::valued("at", "WHEN", "for merge and split, a moment inside the profile: 2026-09-01 or 2026-09-01T14:30, in the chart's clock"),
-                    Flag::valued("id", "N", "which volume profile, when the chart has more than one"),
+                    Flag::valued("id", "N", "which volume or market profile; without it, the chart's one volume profile, else its one market profile"),
                 ],
                 example: "omacharts chart profile list --last --nodes --json",
                 json: true,

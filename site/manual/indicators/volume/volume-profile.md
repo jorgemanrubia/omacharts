@@ -48,10 +48,12 @@ crop: none
 | **Point of control thickness** | 1 px | 0.5 to 12 px |
 | **Point of control style** | Solid | Solid, Dashed, Dotted |
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
-| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)) |
+| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period, greyed: the market profile's is used |
 | **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
-Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A [market profile](/manual/indicators/volume/market-profile/) takes its place among them the same way.
+Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A market profile among them sits beyond the volume profiles.
+
+A [market profile](/manual/indicators/volume/market-profile/) with the same **Reset every** pairs with the volume profile: each session's two are drawn side by side inside it, from the market profile's **Alignment**, and they merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With a different period, each keeps its own.
 
 ## Ask volume - bid volume
 
@@ -77,7 +79,7 @@ That space is widened to fit it, and narrowed again when no profile is aligned r
 
 ## Composite profiles
 
-Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. With **Only show in last period** on there is no profile before it drawn to merge into, so it is not offered. **Split composite profile**, on a composite, puts its periods back as they were.
+Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. With **Only show in last period** on there is no profile before it drawn to merge into, so it is not offered. **Split composite profile**, on a composite, puts its periods back as they were. Paired with a [market profile](/manual/indicators/volume/market-profile/#composite-profiles) of the same period, merging or splitting either does both.
 
 A composite belongs to the chart it was made on, to the symbol it is showing and to the period it was made under, even when the profile is a template's, and it is kept with the chart. Changing **Reset every**, or a resolution that changes the period in use, draws the new periods without it; going back brings it back. For a profile over any span you choose, use the [volume profile drawing](/manual/drawings/volume-profile/).
 

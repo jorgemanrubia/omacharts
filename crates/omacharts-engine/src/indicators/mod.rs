@@ -419,6 +419,7 @@ impl Kind {
                 highlight: true,
                 poc_color: None,
                 value_area_color: None,
+                merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
             Kind::Cvd => Params::Cvd {
@@ -634,6 +635,11 @@ pub enum Params {
         /// profile's own, the rest drawn fainter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_area_color: Option<ColorChoice>,
+        /// Where each period starts that was merged into the one before it,
+        /// as a volume profile's: kept by the chart, never with the
+        /// indicator, and handed in to be drawn. See [`profile::Merge`].
+        #[serde(skip)]
+        merged: Vec<i64>,
     },
     Volume {
         /// How much of the chart's height the pane takes.
@@ -770,6 +776,85 @@ impl Params {
             | Params::MarketProfile { .. }
             | Params::SessionTimes { .. } => None,
         }
+    }
+
+    /// A volume or market profile's reset and the edge it is set to grow
+    /// from; nothing for any other kind.
+    fn profile_edge(&self) -> Option<(Reset, profile::Align)> {
+        match self {
+            Params::VolumeProfile { reset, align, .. } | Params::MarketProfile { reset, align, .. } => {
+                Some((*reset, *align))
+            }
+            Params::MovingAverage { .. }
+            | Params::Vwap { .. }
+            | Params::Bollinger { .. }
+            | Params::Volume { .. }
+            | Params::Cvd { .. }
+            | Params::Rsi { .. }
+            | Params::Atr { .. }
+            | Params::Macd { .. }
+            | Params::Stochastic { .. }
+            | Params::SessionTimes { .. } => None,
+        }
+    }
+}
+
+/// The market profile a volume or market profile is paired with on a chart
+/// of `shown` indicators, in legend order: the first market profile among
+/// them that resets on the same period, on `timeframe` when it is known.
+/// Nothing when there is none, and for any other kind.
+///
+/// Paired, a session's two profiles are drawn side by side from one edge of
+/// it, the market profile's, whichever edge each was set to on its own:
+/// each from an edge of its own would put one's base against the session's
+/// close, beside the next session's profile growing from its open, and the
+/// two read as a pair that is not one.
+pub fn paired_with<'a>(
+    me: &Params,
+    shown: impl IntoIterator<Item = &'a Indicator>,
+    timeframe: Option<Timeframe>,
+) -> Option<&'a Indicator> {
+    let effective = |reset: Reset| timeframe.map_or(reset, |timeframe| reset.effective_for(timeframe));
+    let (reset, _) = me.profile_edge()?;
+    shown.into_iter().find(|other| {
+        matches!(other.params, Params::MarketProfile { .. })
+            && other.params.profile_edge().is_some_and(|(theirs, _)| effective(theirs) == effective(reset))
+    })
+}
+
+/// The edge a volume or market profile is drawn from among `shown`: the
+/// market profile's it is paired with (see [`paired_with`]), or its own.
+pub fn drawn_align<'a>(
+    me: &Params,
+    shown: impl IntoIterator<Item = &'a Indicator>,
+    timeframe: Option<Timeframe>,
+) -> profile::Align {
+    let own = me.profile_edge().map_or(profile::Align::Left, |(_, align)| align);
+    paired_with(me, shown, timeframe).and_then(|leader| leader.params.profile_edge()).map_or(own, |(_, align)| align)
+}
+
+/// The volume and market profiles of `all` that merge and split together
+/// with `me`, itself among them: every one resetting on the same period as
+/// it, once a market profile is among those, since a session's market
+/// profile and volume profile drawn side by side have to cover the same
+/// span. Without a market profile, or for a profile whose period no other
+/// shares, it alone. Nothing for any other kind.
+///
+/// Hidden ones too: a market profile shown again has to cover what its
+/// volume profile was merged into while it was hidden.
+pub fn merged_together(me: &Indicator, all: &[Indicator], timeframe: Option<Timeframe>) -> Vec<u32> {
+    let effective = |reset: Reset| timeframe.map_or(reset, |timeframe| reset.effective_for(timeframe));
+    let Some((reset, _)) = me.params.profile_edge() else { return Vec::new() };
+    let together: Vec<&Indicator> = all
+        .iter()
+        .filter(|other| {
+            other.id == me.id
+                || other.params.profile_edge().is_some_and(|(theirs, _)| effective(theirs) == effective(reset))
+        })
+        .collect();
+    match together.iter().any(|other| matches!(other.params, Params::MarketProfile { .. })) {
+        true => together.iter().map(|other| other.id).collect(),
+        false => vec![me.id],
     }
 }
 
@@ -1257,6 +1342,17 @@ fn reslot(indicators: &mut [Indicator], above: &[u32], below: &[u32]) {
 }
 
 impl Output {
+    /// The periods a volume or market profile draws, in order, as profiles:
+    /// what merging and splitting them, and reading them, go by. Nothing
+    /// for any other output.
+    pub fn periods(&self) -> Option<Vec<&Profile>> {
+        match self {
+            Output::Profiles(profiles) => Some(profiles.iter().collect()),
+            Output::MarketProfiles(profiles) => Some(profiles.iter().map(|market| &market.profile).collect()),
+            _ => None,
+        }
+    }
+
     /// Whether any part of it was estimated rather than read: a cumulative
     /// delta's bars taken from their direction.
     pub fn is_estimated(&self) -> bool {
@@ -1606,7 +1702,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 )
             }))
         }
-        (Kind::MarketProfile, Params::MarketProfile { reset, minutes, row_ticks, value_area, .. }) => {
+        (Kind::MarketProfile, Params::MarketProfile { reset, minutes, row_ticks, value_area, merged, .. }) => {
             let known = context.instrument.and_then(Instrument::tick_size).or(context.ladders.map(|held| held.tick_size));
             Output::MarketProfiles(market::compute(
                 bars,
@@ -1616,6 +1712,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 *row_ticks,
                 *value_area,
                 market::tick_size(bars, known, kind),
+                merged,
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {

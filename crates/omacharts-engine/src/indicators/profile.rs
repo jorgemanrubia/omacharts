@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::periods::Reset;
 
-/// Periods of one volume profile on one chart that were merged into the one
+/// Periods of one volume or market profile on one chart that were merged into the one
 /// before them, for one symbol.
 ///
 /// Kept by the chart rather than in the indicator, because the indicator may
@@ -44,6 +44,63 @@ impl Merge {
     pub fn is(&self, id: u32, instrument: &crate::symbols::Instrument, reset: Reset) -> bool {
         self.indicator == id && self.symbol == instrument.symbol && self.suffix == instrument.suffix && self.reset == reset
     }
+}
+
+/// Every period start merged for any of the profiles `together` on this
+/// instrument under this period, in order: what each of them is drawn
+/// with, so a market profile and the volume profiles of its period cover
+/// the same spans however their merges came to be kept.
+pub fn merged_starts(merges: &[Merge], together: &[u32], instrument: &crate::symbols::Instrument, reset: Reset) -> Vec<i64> {
+    let mut starts: Vec<i64> = merges
+        .iter()
+        .filter(|merge| together.iter().any(|id| merge.is(*id, instrument, reset)))
+        .flat_map(|merge| merge.starts.iter().copied())
+        .collect();
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
+/// Merge the profile whose periods start at `parts` into the one before it,
+/// or split it back into them, for each of the profiles `together`: a
+/// market profile and the volume profiles of its period merge and split as
+/// one. A merge none is left holding is dropped.
+pub fn change_merges(
+    merges: &mut Vec<Merge>,
+    together: &[u32],
+    instrument: &crate::symbols::Instrument,
+    reset: Reset,
+    parts: &[i64],
+    merge: bool,
+) {
+    for &id in together {
+        let at = match merges.iter().position(|m| m.is(id, instrument, reset)) {
+            Some(at) => at,
+            None => {
+                merges.push(Merge {
+                    indicator: id,
+                    symbol: instrument.symbol.clone(),
+                    suffix: instrument.suffix.clone(),
+                    reset,
+                    starts: Vec::new(),
+                });
+                merges.len() - 1
+            }
+        };
+        let starts = &mut merges[at].starts;
+        match merge {
+            true => {
+                if let Some(first) = parts.first()
+                    && !starts.contains(first)
+                {
+                    starts.push(*first);
+                    starts.sort_unstable();
+                }
+            }
+            false => starts.retain(|start| !parts.get(1..).unwrap_or_default().contains(start)),
+        }
+    }
+    merges.retain(|m| !m.starts.is_empty());
 }
 
 /// The study's lines as they have always been drawn: a hairline.
@@ -667,7 +724,7 @@ fn period(
 /// The periods with each one that starts at a merged bucket joined onto the
 /// one before it. A merged start with no period before it on the chart is
 /// left alone: there is nothing loaded to join it to.
-fn composites(
+pub(super) fn composites(
     bars: &[Bar],
     periods: Vec<(usize, usize)>,
     reset: Reset,

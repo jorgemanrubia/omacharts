@@ -66,13 +66,13 @@ impl State {
         }
     }
 
-    /// The profile of a volume profile indicator whose period is under `x`:
-    /// where its periods start, and whether there is one before it on the
-    /// chart to merge it with.
+    /// The profile of a volume or market profile indicator whose period is
+    /// under `x`: where its periods start, and whether there is one before
+    /// it on the chart to merge it with.
     pub(super) fn profile_at(&self, width: f64, height: f64, id: u32, x: f64) -> Option<ProfileSpot> {
         let frame = frame(self, width, height)?;
         let drawn = self.shown_indicators().find(|d| d.indicator.id == id)?;
-        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let profiles = drawn.output.periods()?;
         let columns = &frame.columns;
         let at = profiles.iter().position(|p| {
             (columns.left_of(p.first_bar)..columns.left_of(p.last_bar + 1)).contains(&x)
@@ -80,11 +80,11 @@ impl State {
         Some(ProfileSpot { parts: profiles[at].parts.clone(), has_previous: at > 0 })
     }
 
-    /// The profile of a volume profile indicator holding the moment `ts`: the
-    /// last one to begin at or before it.
+    /// The profile of a volume or market profile indicator holding the
+    /// moment `ts`: the last one to begin at or before it.
     pub(super) fn profile_of(&self, id: u32, ts: i64) -> Option<ProfileSpot> {
         let drawn = self.indicators.iter().find(|d| d.indicator.id == id)?;
-        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let profiles = drawn.output.periods()?;
         // The one holding the moment; else one starting within the day after
         // it, since a day typed in a clock east of the exchange's is read
         // as the evening before its session; else the last to start before.
@@ -219,41 +219,70 @@ pub(super) fn profile_look(drawn: &Drawn) -> ProfileLook {
     ProfileLook { style, align, width, before: 0.0, after: 0.0, total: width, later: 0, count: 1 }
 }
 
-/// A volume or market profile on screen with profiles to draw, aligned to
-/// `align`: the two share their periods' room alike, side by side.
-fn stacks(drawn: &Drawn, align: Align) -> Option<f64> {
-    match (&drawn.indicator.params, &drawn.output) {
-        (omacharts_engine::Params::VolumeProfile { align: a, width, .. }, Output::Profiles(profiles))
-            if *a == align && !profiles.is_empty() =>
-        {
-            Some(profile::drawn_width(*width))
-        }
-        (omacharts_engine::Params::MarketProfile { align: a, width, .. }, Output::MarketProfiles(profiles))
-            if *a == align && !profiles.is_empty() =>
-        {
-            Some(profile::drawn_width(*width))
-        }
-        _ => None,
-    }
+/// The edge a volume or market profile is drawn from: the market
+/// profile's it is paired with, when one on screen resets on the same
+/// period, or its own. See [`omacharts_engine::indicators::paired_with`].
+pub(super) fn drawn_align(state: &State, drawn: &Drawn) -> Align {
+    omacharts_engine::indicators::drawn_align(
+        &drawn.indicator.params,
+        state.shown_indicators().map(|shown| &shown.indicator),
+        Some(state.timeframe),
+    )
 }
 
-/// A profile's look among the others on screen aligned to the same edge:
-/// side by side in the order the legend lists them, so none is drawn over
-/// another.
+/// A volume or market profile on screen with profiles to draw, drawn from
+/// `align`: the two share their periods' room alike, side by side.
+fn stacks(state: &State, drawn: &Drawn, align: Align) -> Option<f64> {
+    let width = match (&drawn.indicator.params, &drawn.output) {
+        (omacharts_engine::Params::VolumeProfile { width, .. }, Output::Profiles(profiles)) if !profiles.is_empty() => {
+            *width
+        }
+        (omacharts_engine::Params::MarketProfile { width, .. }, Output::MarketProfiles(profiles))
+            if !profiles.is_empty() =>
+        {
+            *width
+        }
+        _ => return None,
+    };
+    (drawn_align(state, drawn) == align).then(|| profile::drawn_width(width))
+}
+
+/// A profile's look among the others on screen drawn from the same edge:
+/// side by side, so none is drawn over another. A volume profile paired
+/// with a market profile is drawn from the market profile's edge, so a
+/// session's two sit together.
+///
+/// Volume profiles sit nearest the edge and market profiles beyond them,
+/// each kind in the order the legend lists it. A market profile's letters
+/// keep to a compact block at the start of its slot, so beyond the volume
+/// profile they begin where its longest rows end, and the room left over
+/// falls between this session's pair and the next one's; the other way
+/// round, the volume profile would reach across that room to the next
+/// session's letters and read as theirs.
 pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
     let mut look = profile_look(drawn);
-    let (mut before, mut after, mut later, mut count, mut seen) = (0.0, 0.0, 0, 0, false);
-    for other in state.shown_indicators() {
+    look.align = drawn_align(state, drawn);
+    // Where each sits, left to right: by kind, then by legend.
+    let rank = |at: usize, other: &Drawn| {
+        let market = matches!(other.indicator.params, omacharts_engine::Params::MarketProfile { .. });
+        let beyond = match look.align {
+            Align::Left => market,
+            Align::Right => !market,
+        };
+        (beyond, at)
+    };
+    let mine = state.shown_indicators().position(|other| other.indicator.id == drawn.indicator.id).unwrap_or(0);
+    let mine = rank(mine, drawn);
+    let (mut before, mut after, mut later, mut count) = (0.0, 0.0, 0, 1);
+    for (at, other) in state.shown_indicators().enumerate() {
         if other.indicator.id == drawn.indicator.id {
-            seen = true;
-            count += 1;
             continue;
         }
-        let Some(width) = stacks(other, look.align) else { continue };
+        let Some(width) = stacks(state, other, look.align) else { continue };
         count += 1;
-        match seen {
-            false => before += width,
-            true => {
+        match rank(at, other) < mine {
+            true => before += width,
+            false => {
                 after += width;
                 later += 1;
             }
@@ -263,7 +292,7 @@ pub(super) fn placed_look(state: &State, drawn: &Drawn) -> ProfileLook {
     look.after = after;
     look.total = before + look.width + after;
     look.later = later;
-    look.count = count.max(1);
+    look.count = count;
     look
 }
 
@@ -287,7 +316,7 @@ pub(super) fn margin_share(state: &State) -> f64 {
     let len = state.bars.len();
     let (mut total, mut count) = (0.0, 0usize);
     for drawn in state.shown_indicators() {
-        let Some(width) = stacks(drawn, Align::Right) else { continue };
+        let Some(width) = stacks(state, drawn, Align::Right) else { continue };
         let last = match &drawn.output {
             Output::Profiles(profiles) => profiles.last(),
             Output::MarketProfiles(profiles) => profiles.last().map(|p| &p.profile),
@@ -1256,6 +1285,174 @@ mod tests {
         let p = &profiles[period];
         let area = profile_box(p, &frame.columns, &super::placed_look(state, &state.indicators[0]));
         (p.clone(), area, frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
+    }
+
+    /// A profile study as the legend lists it: its kind, the edge it is set
+    /// to, its width and its period.
+    type Study = (Kind, profile::Align, f64, omacharts_engine::Reset);
+
+    /// [`profiled`]'s bars with each of `studies`, in legend order.
+    fn with_studies(studies: &[Study]) -> State {
+        let mut state = profiled(profile::Align::Left, 0.4);
+        // A whole session on screen whatever the profiles past the last
+        // bar would open at rest, and room enough there for them.
+        state.visible = 150;
+        state.overhang = 12;
+        state.overhang_by_hand = true;
+        state.indicators = studies
+            .iter()
+            .enumerate()
+            .map(|(i, &(kind, align, width, reset))| {
+                let mut indicator = Indicator::new(i as u32 + 1, kind);
+                match &mut indicator.params {
+                    omacharts_engine::Params::VolumeProfile { align: a, width: w, reset: r, .. }
+                    | omacharts_engine::Params::MarketProfile { align: a, width: w, reset: r, .. } => {
+                        *a = align;
+                        *w = width;
+                        *r = reset;
+                    }
+                    _ => unreachable!(),
+                }
+                let output = omacharts_engine::indicators::compute(&indicator, &state.bars, 0, state.timeframe, None);
+                Drawn { indicator, output, color: "#5588ff".to_string() }
+            })
+            .collect();
+        state
+    }
+
+    /// Each study's box in period `period` as drawn, in legend order: the
+    /// span its longest row reaches, and which way its rows grow.
+    fn study_boxes(state: &State, period: usize) -> Vec<((f64, f64), f64)> {
+        let frame = frame(state, W, H).expect("a frame");
+        state
+            .indicators
+            .iter()
+            .map(|drawn| {
+                let profiles = drawn.output.periods().expect("profiles");
+                let area = profile_box(profiles[period], &frame.columns, &super::placed_look(state, drawn));
+                (area.row(1.0), area.towards)
+            })
+            .collect()
+    }
+
+    /// Where period `period` of the first study begins and ends on screen.
+    fn period_span(state: &State, period: usize) -> (f64, f64) {
+        let frame = frame(state, W, H).expect("a frame");
+        let profiles = state.indicators[0].output.periods().expect("profiles");
+        let p = profiles[period];
+        (frame.columns.left_of(p.first_bar.max(frame.columns.first)), frame.columns.left_of(p.last_bar + 1))
+    }
+
+    /// The author's case and every other: a market profile and a volume
+    /// profile of one period are drawn side by side inside each session,
+    /// touching, growing the same way from the market profile's edge, the
+    /// volume profile against it, whichever edge each was set to and
+    /// whichever the legend lists first.
+    /// So no session's volume profile ever has its base against the next
+    /// session's market profile, which is what read as a pair that was not.
+    #[test]
+    fn a_market_and_a_volume_profile_of_one_period_sit_side_by_side_in_it_at_any_edges() {
+        use omacharts_engine::Reset;
+        use profile::Align::{Left, Right};
+        for (tpo_edge, vp_edge) in [(Left, Left), (Left, Right), (Right, Left), (Right, Right)] {
+            for (tpo_width, vp_width) in [(1.0, 0.4), (0.3, 0.4)] {
+                let tpo = (Kind::MarketProfile, tpo_edge, tpo_width, Reset::Session);
+                let vp = (Kind::VolumeProfile, vp_edge, vp_width, Reset::Session);
+                for legend in [[tpo, vp], [vp, tpo]] {
+                    let state = with_studies(&legend);
+                    let case = format!("{legend:?}");
+                    // The whole sessions wholly on screen; the last is still
+                    // forming.
+                    let first = frame(&state, W, H).expect("a frame").columns.first;
+                    let profiles = state.indicators[0].output.periods().expect("profiles");
+                    let whole: Vec<usize> =
+                        (0..profiles.len() - 1).filter(|&at| profiles[at].first_bar >= first).collect();
+                    assert!(!whole.is_empty(), "a whole session on screen: {case}");
+                    for period in whole {
+                        let (start, end) = period_span(&state, period);
+                        let boxes = study_boxes(&state, period);
+                        let towards = match tpo_edge {
+                            Left => 1.0,
+                            Right => -1.0,
+                        };
+                        assert!(boxes.iter().all(|(_, t)| *t == towards), "one way, the market profile's: {case}");
+                        // The volume profile against the edge, the market
+                        // profile beyond it, whatever the legend's order.
+                        let market = legend.iter().position(|study| study.0 == Kind::MarketProfile).expect("one");
+                        let (volume, market) = (boxes[1 - market].0, boxes[market].0);
+                        let ((a_from, a_to), (b_from, b_to)) = match tpo_edge {
+                            Left => (volume, market),
+                            Right => (market, volume),
+                        };
+                        assert!(a_from >= start - 1e-9 && b_to <= end + 1e-9, "inside its session: {case}");
+                        assert!((a_to - b_from).abs() < 1e-6, "side by side, touching: {case} {boxes:?}");
+                        assert!(a_from < a_to && b_from < b_to, "{case}");
+                        match tpo_edge {
+                            Left => assert!((a_from - start).abs() < 1e-6, "from the session's open: {case}"),
+                            Right => assert!((b_to - end).abs() < 1e-6, "to the session's close: {case}"),
+                        }
+                    }
+                    // The session still forming: both on its bars from the
+                    // open, or both past the last bar, never one of each.
+                    let live = state.indicators[0].output.periods().expect("profiles").len() - 1;
+                    let (start, _) = period_span(&state, live);
+                    let last = last_bar_end(&state);
+                    let boxes = study_boxes(&state, live);
+                    match tpo_edge {
+                        Left => assert!(boxes.iter().all(|((from, _), _)| *from >= start - 1e-9 && *from < last), "{case}"),
+                        Right => assert!(boxes.iter().all(|((from, _), _)| *from >= last - 1e-9), "past the last bar: {case}"),
+                    }
+                }
+            }
+        }
+    }
+
+    /// The room past the last bar is opened for what is drawn there: a
+    /// volume profile set right but drawn from the open beside a market
+    /// profile set left takes none, and one set left beside a market
+    /// profile set right takes its slot there.
+    #[test]
+    fn the_margin_follows_the_edge_a_paired_profile_is_drawn_from() {
+        use omacharts_engine::Reset;
+        use profile::Align::{Left, Right};
+        let tpo = |edge| (Kind::MarketProfile, edge, 0.4, Reset::Session);
+        let vp = |edge| (Kind::VolumeProfile, edge, 0.3, Reset::Session);
+        assert_eq!(super::margin_share(&with_studies(&[tpo(Left), vp(Right)])), 0.0);
+        let both = super::margin_share(&with_studies(&[tpo(Right), vp(Left)]));
+        assert!(both > 0.0);
+        assert!((both - super::block_share(0.7, 2)).abs() < 1e-12, "{both}");
+    }
+
+    /// Only the same period pairs them. A volume profile of another
+    /// period, a hidden market profile, or two volume profiles alone keep
+    /// the edges they were set to; changing a period back pairs them again.
+    #[test]
+    fn profiles_of_different_periods_keep_their_own_edges() {
+        use omacharts_engine::Reset;
+        use profile::Align::{Left, Right};
+        let edges = |state: &State| -> Vec<profile::Align> {
+            state.indicators.iter().map(|drawn| super::placed_look(state, drawn).align).collect()
+        };
+        for (tpo_edge, vp_edge) in [(Left, Right), (Right, Left)] {
+            let mut state = with_studies(&[
+                (Kind::MarketProfile, tpo_edge, 0.4, Reset::Session),
+                (Kind::VolumeProfile, vp_edge, 0.4, Reset::Week),
+            ]);
+            assert_eq!(edges(&state), vec![tpo_edge, vp_edge]);
+            // The volume profile's period changed to the session's: paired.
+            if let omacharts_engine::Params::VolumeProfile { reset, .. } = &mut state.indicators[1].indicator.params {
+                *reset = Reset::Session;
+            }
+            assert_eq!(edges(&state), vec![tpo_edge, tpo_edge]);
+            // The market profile hidden: the volume profile's own edge.
+            state.indicators[0].indicator.visible = false;
+            assert_eq!(super::placed_look(&state, &state.indicators[1]).align, vp_edge);
+        }
+        let state = with_studies(&[
+            (Kind::VolumeProfile, Left, 0.4, Reset::Session),
+            (Kind::VolumeProfile, Right, 0.4, Reset::Session),
+        ]);
+        assert_eq!(edges(&state), vec![Left, Right]);
     }
 
     #[test]

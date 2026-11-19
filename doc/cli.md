@@ -135,9 +135,12 @@ to z, and every row a TPO period's bars reach gets its letter once. Rows are
 point of control is the row with the most letters, a tie going to the row
 nearest the middle of the profile, and the value area grows out from it,
 taking the side with more, until it holds `--value-area` of them. With a
-volume profile on the same chart and the same `--align`, the two share each
-period side by side, in the order the indicators are listed, each as wide as
-its `--profile-width`; `right` mirrors both. `chart values` gives each one's
+volume profile on the same chart and the same `--anchor`, the two pair: each
+session's two sit side by side inside it, the volume profile against the
+edge and the letters after it, each as wide as its `--profile-width`, both drawn from the market
+profile's `--align` (`right` mirrors both), and they merge and split
+together. With different anchors each keeps its own `--align` and its own
+merges. `chart values` gives each one's
 latest point of control and value area.
 
 ```
@@ -145,13 +148,15 @@ omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
 omacharts chart indicator set market_profile --tpo-style blocks --align right
 ```
 
-**A volume profile's periods can be read and merged.** `chart profile list`
+**A volume or market profile's periods can be read and merged.** `chart profile list`
 names each profile on the focused chart — its start and end, point of control
 and value area, and whether it is on screen (`--on-screen` keeps only those) —
 and `chart profile merge --at WHEN` folds the profile holding that moment
 into the one before it, a composite with one point of control and one value
 area; `split --at` puts it back. A composite is the chart's, kept for the
-symbol and the period it was made under. All three need the window, which has
+symbol and the period it was made under. Without `--id` these act on the
+chart's volume profile, or its market profile when it has none; a market
+profile and a volume profile of the same period merge and split together. All three need the window, which has
 the bars that say where a period starts. `--rows` adds each profile's rows as
 a price and volume table, `--nodes` its high-volume nodes and the low-volume
 nodes between them, and `--last` keeps only the newest profile.
