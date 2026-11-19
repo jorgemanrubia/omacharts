@@ -121,23 +121,87 @@ Every indicator the app has, with every parameter it exposes:
 | `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` and `--poc-transparency` (0 to 1, or `default` to follow `--transparency`, or for the point of control its own), `--last-only` (`on` or `off`), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--open-close` (`on` or `off`, on by default: an arrow beside the TPO at the opening price and one beside the TPO at the closing price), `--open-color` and `--close-color` (a colour, or `none` for the theme's), `--open-transparency` and `--close-transparency` (0 to 1, or `default`), `--expand-last` (`on` or `off`, off by default: the newest profile drawn expanded, its TPOs laid out over its bars), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--poc-width` (2 by default) and `--poc-style` (its point of control is a line across the profile, as a volume profile's), `--outline` (`on` or `off`, off by default: the stepped edge round its TPOs), `--outline-color`, `--outline-width`, `--outline-style`, `--transparency` (0 to 1, 0.05 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` (solid by default) and `--poc-transparency` (as a volume profile's), `--last-only` (`on` or `off`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
 
 Anything that draws a line also takes `--color`, `--width` and `--line-style`
 (`--style`, its older name, still works), and everything takes `--visible`.
 
-**A volume profile's periods can be read and merged.** `chart profile list`
+**A market profile counts time at each price rather than volume.** Each
+period is cut into TPO periods of `--tpo-minutes`, lettered A to Z and then a
+to z, and every row a TPO period's bars reach gets its letter once. Rows are
+`--row-ticks` ticks of the instrument tall; `auto` takes the smallest of 1, 2,
+4, 5, 10, 20, 40, 50… ticks that keeps a typical period within 60 rows. The
+point of control is the row with the most letters, a tie going to the row
+nearest the middle of the profile, and the value area grows out from it,
+taking the side with more, until it holds `--value-area` of them. `chart
+values` gives each one's latest point of control and value area.
+
+A market profile is a study of its own: it needs no volume profile, and
+alone it merges and splits with `chart profile` as a volume profile does. It
+can also sit beside volume profiles:
+
+- With a volume profile study on the same chart and the same `--anchor`, the
+  two pair: each session's two are drawn inside it, each as wide as its
+  `--profile-width`, and they merge and split together. Each grows from its
+  own `--align`. Set alike, they sit side by side from that edge, the volume
+  profile against it and the letters after it. Set apart (one `left`, one
+  `right`), they are drawn back to back, their bases on a shared spine,
+  the pair starting at the session's open.
+- With different anchors, each keeps to itself: its own `--align` and its
+  own merges.
+
+`chart profile expand --at WHEN` draws one market profile expanded, its TPOs
+laid out over its bars, a column for each TPO period at its first bar, and
+`chart profile collapse --at WHEN` stacks it again; kept with the chart as a
+merge is. `--expand-last on` keeps the newest, still forming, expanded. A
+volume profile beside an expanded session is drawn past the last bar while
+it forms, and left out of an earlier session until it is collapsed.
+
+```
+# A market profile on its own
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+
+# A market profile beside a volume profile, both per session: drawn side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Back to back instead: the letters grow left, the volume profile's rows right
+omacharts chart indicator set market_profile --align right
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+
+# Lay a session's TPOs out over its bars, and stack them again
+omacharts chart profile expand --at 2026-11-18
+omacharts chart profile collapse --at 2026-11-18
+
+# Keep the session still forming expanded
+omacharts chart indicator set market_profile --expand-last on
+```
+
+**A volume or market profile's periods can be read and merged.** `chart profile list`
 names each profile on the focused chart — its start and end, point of control
 and value area, and whether it is on screen (`--on-screen` keeps only those) —
 and `chart profile merge --at WHEN` folds the profile holding that moment
 into the one before it, a composite with one point of control and one value
 area; `split --at` puts it back. A composite is the chart's, kept for the
-symbol and the period it was made under. All three need the window, which has
+symbol and the period it was made under. Without `--id` these act on the
+chart's volume profile, or its market profile when it has none; a market
+profile and a volume profile of the same period merge and split together. All three need the window, which has
 the bars that say where a period starts. `--rows` adds each profile's rows as
 a price and volume table, `--nodes` its high-volume nodes and the low-volume
-nodes between them, and `--last` keeps only the newest profile.
+nodes between them, and `--last` keeps only the newest profile. A market
+profile also gives its open and close with the rows they are in, its row
+height and whether it is expanded, and `--tpos` adds each TPO period (its
+letter, first and last bars' times, high and low) and each row's letters,
+so its structure, and where its open and close arrows sit, can be checked
+against what is drawn. The listing names its study (`indicator`, `kind`)
+and `paired_with`, the studies drawn as one pair with it.
 
 ```
+omacharts chart profile list --id 2 --last --tpos --json
 omacharts chart profile list --on-screen --json
 omacharts chart profile list --last --nodes --json
 omacharts chart profile merge --at 2026-10-28
@@ -804,12 +868,14 @@ omacharts chart drawing reset-configs rect
 
 **A volume profile drawing** (`profile`, or `vp`) reads only the times of its
 anchors: its height is the prices its bars reached. `--color` is its outline
-and `--fill` its background, `--border on|off` whether filled rows have it,
+and `--fill` its rows' colour (**Colour** in its settings), `--border on|off` whether filled rows have it,
 `--width` its thickness and `--line-style` its pattern;
 `--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
-`--transparency` (0 its background solid, 0.7 by default),
+`--transparency` (0 its rows solid, 0.7 by default),
+`--value-area-transparency`, `--outside-transparency`, `--outline-transparency`
+and `--poc-transparency` (0 to 1, or `default` to follow the rows again),
 `--highlight-value-area on|off`, `--value-area-color` (or `none` for its
-background's), `--poc on|off`, `--rows` (a number, or `auto`, as the
+rows' own), `--poc on|off`, `--rows` (a number, or `auto`, as the
 study's), `--profile-method total|delta`, `--colouring` (for a delta:
 `default`, `theme`, `theme-soft` or `theme-quiet`) and `--profile-width`
 (0.1 to 1, the whole span by default) are the rest. The study's

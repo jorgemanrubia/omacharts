@@ -90,6 +90,23 @@ fn every_study_keeps_its_promises() {
     }
     holds(CvdEstimate::new);
     holds(Volume::new);
+    for (row_ticks, minutes) in [(1, 30), (5, 30), (2, 1), (3, 60)] {
+        holds(|| DevelopingMarketProfile::new(0.01, row_ticks, minutes));
+        holds(|| DevelopingMarketProfile::new(0.01, row_ticks, minutes).value_area(0.5));
+    }
+}
+
+#[test]
+fn every_developing_study_in_the_catalog_has_a_study_by_its_key_and_develops_a_whole_period() {
+    let keys = [DevelopingMarketProfile::new(0.25, 1, 30).key()];
+    let mut have = keys.to_vec();
+    have.sort_unstable();
+    let mut want: Vec<&str> = DEVELOPING.iter().map(|(study, _)| *study).collect();
+    want.sort_unstable();
+    assert_eq!(have, want);
+    for (_, indicator) in DEVELOPING {
+        assert_eq!(catalog::form(indicator), Some(Form::WholePeriod), "{indicator}");
+    }
 }
 
 #[test]

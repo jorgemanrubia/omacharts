@@ -1560,8 +1560,13 @@ fn charts_verb(
     said(as_json, json!({"message": text}), text)
 }
 
-/// Merge or split a volume profile on the chart on screen.
-fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+/// Merge or split a volume or market profile on the chart on screen, or
+/// expand or collapse a market profile.
+fn chart_profile(
+    live: Option<&dyn Live>,
+    m: &clap::ArgMatches,
+    as_json: bool,
+) -> Result<String, Fault> {
     let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
     let id = match arg(m, "id") {
         None => None,
@@ -1569,12 +1574,35 @@ fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -
     };
     let merge = match required(m, "ACTION")?.as_str() {
         "list" => {
-            let detail = Detail { rows: flag(m, "rows"), nodes: flag(m, "nodes"), last: flag(m, "last") };
+            let detail = Detail { rows: flag(m, "rows"), nodes: flag(m, "nodes"), last: flag(m, "last"), tpos: flag(m, "tpos") };
             return list_profiles(live, id, flag(m, "on-screen"), detail, as_json);
         }
         "merge" => true,
         "split" => false,
-        other => return Err(Fault::usage(format!("{other:?} is not list, merge or split"))),
+        expand @ ("expand" | "collapse") => {
+            let expand = expand == "expand";
+            let Some(when) = arg(m, "at") else {
+                return Err(Fault::usage(
+                    "say which profile with --at, a moment inside it".into(),
+                ));
+            };
+            let ts = read_when(when, "at", live.measurement_zone())?;
+            let chart = live.expand_profile(id, ts, expand)?;
+            let (done, action) = match expand {
+                true => ("expanded the market profile", "expand"),
+                false => ("collapsed the market profile", "collapse"),
+            };
+            return said(
+                as_json,
+                json!({"chart": chart, "action": action, "at": ts}),
+                format!("{done} on {chart}"),
+            );
+        }
+        other => {
+            return Err(Fault::usage(format!(
+                "{other:?} is not list, merge, split, expand or collapse"
+            )));
+        }
     };
     let Some(when) = arg(m, "at") else {
         return Err(Fault::usage("say which profile with --at, a moment inside it".into()));
@@ -1593,6 +1621,8 @@ struct Detail {
     rows: bool,
     nodes: bool,
     last: bool,
+    /// A market profile's TPO periods, and the letters in each row.
+    tpos: bool,
 }
 
 /// The profiles a chart draws, as numbers a script can compare: where each
@@ -1600,20 +1630,22 @@ struct Detail {
 /// and on request its rows, and the high- and low-volume nodes in them.
 fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail, as_json: bool) -> Result<String, Fault> {
     let zone = live.measurement_zone();
-    let (chart, profiles) = live.profiles(id)?;
+    let listing = live.profile_listing(id)?;
+    let chart = &listing.chart;
     let day = |ts: i64| {
         chrono::DateTime::from_timestamp(ts, 0)
             .map(|at| at.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default()
     };
-    let mut shown: Vec<_> = profiles.iter().filter(|(p, on)| (!visible || *on) && !p.rows.is_empty()).collect();
+    let mut shown: Vec<_> = listing.profiles.iter().filter(|l| (!visible || l.visible) && !l.profile.rows.is_empty()).collect();
     if detail.last {
         shown = shown.split_off(shown.len().saturating_sub(1));
     }
     if as_json {
         let rows: Vec<Value> = shown
             .iter()
-            .map(|(p, on)| {
+            .map(|listed| {
+                let p = &listed.profile;
                 let (low, high) = p.value_area_bounds();
                 let mut row = json!({
                     "start": p.start_ts,
@@ -1626,32 +1658,156 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail
                     "value_area_low": low,
                     "value_area_high": high,
                     "volume": p.total_volume,
-                    "visible": on,
+                    "visible": listed.visible,
                 });
                 if let Some(fields) = row.as_object_mut() {
                     fields.extend(profile_detail_json(p, detail));
+                    if let Some(tpo) = &listed.tpo {
+                        fields.extend(tpo_json(p, tpo, detail));
+                    }
+                    if !listed.paired.is_empty() {
+                        let paired: Vec<Value> =
+                            listed.paired.iter().map(|(indicator, start)| json!({"indicator": indicator, "start": start})).collect();
+                        fields.insert("paired_with".into(), Value::Array(paired));
+                    }
                 }
                 row
             })
             .collect();
-        return Ok(format!("{}\n", json!({"chart": chart, "profiles": rows})));
+        let mut out = json!({"chart": chart, "profiles": rows});
+        if let (Some(fields), Some(indicator)) = (out.as_object_mut(), listing.indicator) {
+            fields.insert("indicator".into(), json!(indicator));
+            let kind = if listing.market.is_some() { "market_profile" } else { "volume_profile" };
+            fields.insert("kind".into(), json!(kind));
+            if let Some(minutes) = listing.market {
+                fields.insert("tpo_minutes".into(), json!(minutes));
+            }
+            fields.insert("paired_with".into(), json!(listing.partners));
+        }
+        return Ok(format!("{out}\n"));
     }
     let mut out = format!("{} profiles on {chart}\n", shown.len());
-    for (p, on) in shown {
-        let (low, high) = p.value_area_bounds();
+    for listed in shown {
+        let p = &listed.profile;
+        let (poc, low, high) = match &listed.tpo {
+            Some(tpo) => market_levels(p, tpo.market.tick_size),
+            None => {
+                let (low, high) = p.value_area_bounds();
+                (p.poc_price(), low, high)
+            }
+        };
+        let places = listed.tpo.as_ref().map_or(profile_places(p), |tpo| {
+            crate::trading::reading::places(Some(tpo.market.tick_size)).min(6).max(profile_places(p))
+        });
+        // To the tick and in full, as the point of control and value
+        // area beside them.
+        let n = |price: f64| format!("{price:.places$}");
         out.push_str(&format!(
-            "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}\n",
-            if *on { "●" } else { "○" },
+            "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}{}\n",
+            if listed.visible { "●" } else { "○" },
             day(p.start_ts),
             day(p.end_ts),
-            p.poc_price(),
+            poc,
             low,
             high,
             if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
+            match &listed.tpo {
+                Some(tpo) => format!(
+                    "  open {} close {}{}",
+                    n(tpo.open),
+                    n(tpo.close),
+                    if tpo.expanded { "  expanded" } else { "" }
+                ),
+                None => String::new(),
+            },
         ));
         out.push_str(&profile_detail_text(p, detail));
+        if let (Some(tpo), true) = (&listed.tpo, detail.tpos) {
+            for period in &tpo.periods {
+                out.push_str(&format!(
+                    "   {} {} → {}  {}–{}\n",
+                    period.letter,
+                    day(period.start),
+                    day(period.end),
+                    n(period.low),
+                    n(period.high)
+                ));
+            }
+            for (at, row) in p.rows.iter().enumerate() {
+                let letters: String = tpo.market.letters_of(at).iter().map(|l| omacharts_engine::indicators::market::letter(*l)).collect();
+                out.push_str(&format!("   {} {}\n", n(row.low + tpo.market.tick_size / 2.0), letters));
+            }
+        }
     }
     Ok(out)
+}
+
+/// A market profile's point of control and value area on ticks, as its
+/// rows are named: its rows' edges are half a tick off them.
+fn market_levels(p: &omacharts_engine::indicators::Profile, tick: f64) -> (f64, f64, f64) {
+    let half = tick / 2.0;
+    let (low, high) = p.value_area_bounds();
+    (p.rows[p.poc].low + half, low + half, high - half)
+}
+
+/// A market profile's TPO structure, as it is drawn: its row height in
+/// ticks and price, whether it is expanded, its open and close with the
+/// rows they are in (a row named by its lowest tick); and on
+/// request each TPO period, with its letter, its first and last bars'
+/// times and its high and low, and each row's letters.
+fn tpo_json(p: &omacharts_engine::indicators::Profile, tpo: &crate::cli::ListedTpo, detail: Detail) -> serde_json::Map<String, Value> {
+    use omacharts_engine::indicators::market::letter;
+    // To the tick, which every row's price and every TPO period's high and
+    // low are a whole number of.
+    let places = crate::trading::reading::places(Some(tpo.market.tick_size)).min(6).max(profile_places(p));
+    let price = |value: f64| crate::trading::reading::price(Some(value), places);
+    let m = &tpo.market;
+    // A market profile's row is named by its lowest tick: its low is the
+    // edge half a tick below it.
+    let half = tpo.market.tick_size / 2.0;
+    let row_price = |row: usize| p.rows.get(row).map(|r| price(r.low + half)).unwrap_or(Value::Null);
+    let mut fields = serde_json::Map::new();
+    // Its levels on ticks, as its rows are named: the point of control's
+    // row and the value area's lowest row by their lowest tick, the value
+    // area's highest row by its highest.
+    let (poc, low, high) = market_levels(p, m.tick_size);
+    fields.insert("poc".into(), price(poc));
+    fields.insert("value_area_low".into(), price(low));
+    fields.insert("value_area_high".into(), price(high));
+    fields.insert("expanded".into(), json!(tpo.expanded));
+    fields.insert("tick_size".into(), json!(m.tick_size));
+    fields.insert("row_ticks".into(), json!(m.row_ticks));
+    fields.insert("row_height".into(), price(m.tick_size * m.row_ticks as f64));
+    fields.insert("tpo_count".into(), json!(m.letters.len()));
+    fields.insert("open".into(), json!({"price": price(tpo.open), "row": row_price(m.open_row)}));
+    fields.insert("close".into(), json!({"price": price(tpo.close), "row": row_price(m.close_row)}));
+    if detail.tpos {
+        let periods: Vec<Value> = tpo
+            .periods
+            .iter()
+            .map(|period| {
+                json!({
+                    "letter": period.letter.to_string(),
+                    "start": period.start,
+                    "end": period.end,
+                    "high": price(period.high),
+                    "low": price(period.low),
+                })
+            })
+            .collect();
+        fields.insert("tpo_periods".into(), Value::Array(periods));
+    }
+    if detail.tpos || detail.rows {
+        let rows: Vec<Value> = (0..p.rows.len())
+            .map(|at| {
+                let letters: String = m.letters_of(at).iter().map(|l| letter(*l)).collect();
+                json!([row_price(at), letters.len(), letters])
+            })
+            .collect();
+        fields.insert("rows".into(), Value::Array(rows));
+        fields.insert("row_height".into(), price(m.tick_size * m.row_ticks as f64));
+    }
+    fields
 }
 
 /// How many places a profile's prices are given to: those of its row
@@ -3333,12 +3489,18 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
     });
     // Only a volume profile has these, so only a volume profile says them.
     if kind == omacharts_engine::DrawingKind::Profile {
+        let strengths = style.profile_strengths();
         out["profile"] = json!({
             "poc_color": style.profile.poc.spell(),
             "style": style.profile.shape.key(),
             "align": style.profile.align.key(),
             "value_area": style.profile.value_area,
             "transparency": 1.0 - style.profile_alpha(),
+            // Each part as drawn, whether set apart or following the rows.
+            "value_area_transparency": 1.0 - strengths.value_area,
+            "outside_transparency": 1.0 - strengths.outside,
+            "outline_transparency": 1.0 - strengths.outline_in(style.profile.shape),
+            "poc_transparency": 1.0 - strengths.poc,
             "highlight_value_area": style.profile.highlight,
             // Null while it is the background's own.
             "value_area_color": style.profile.value_area_paint.as_ref().map(|paint| paint.spell()),
@@ -3566,6 +3728,9 @@ struct StyleEdits {
     align: Option<omacharts_engine::drawings::ProfileAlign>,
     value_area: Option<f64>,
     transparency: Option<f64>,
+    /// How solid each part of a profile is drawn, set apart from its rows';
+    /// `Some(None)` follows them again.
+    parts: Parts,
     /// Whether a profile sets its value area apart.
     highlight: Option<bool>,
     /// The value area's own colour; `Some(None)` gives it back the
@@ -3809,6 +3974,7 @@ impl StyleEdits {
             align,
             value_area: bounded(m, "value-area", 0.1, 1.0)?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            parts: Parts::of(m)?,
             highlight: switch("highlight-value-area")?,
             area_paint,
             poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
@@ -3856,6 +4022,7 @@ impl StyleEdits {
             && self.align.is_none()
             && self.value_area.is_none()
             && self.transparency.is_none()
+            && self.parts.is_empty()
             && self.highlight.is_none()
             && self.area_paint.is_none()
             && self.poc_width.is_none()
@@ -4087,6 +4254,17 @@ impl StyleEdits {
         }
         if let Some(clear) = self.transparency {
             style.set_profile_alpha(1.0 - clear);
+        }
+        let look = &mut style.profile;
+        for (part, field) in [
+            (self.parts.value_area, &mut look.value_area_alpha),
+            (self.parts.outside, &mut look.outside_alpha),
+            (self.parts.outline, &mut look.outline_alpha),
+            (self.parts.poc, &mut look.poc_alpha),
+        ] {
+            if let Some(alpha) = part {
+                *field = alpha;
+            }
         }
         if let Some(on) = self.highlight {
             style.profile.highlight = on;
@@ -4419,6 +4597,21 @@ struct Edits {
     anchor: Option<Option<Reset>>,
     cvd_style: Option<omacharts_engine::indicators::cvd::Style>,
     rows: Option<Option<u64>>,
+    /// A market profile's TPO period, in minutes.
+    tpo_minutes: Option<u32>,
+    /// A market profile's row height in ticks; `Some(None)` is `auto`.
+    row_ticks: Option<Option<u32>>,
+    tpo_style: Option<omacharts_engine::indicators::market::Style>,
+    /// Whether a market profile marks its open and its close.
+    open_close: Option<bool>,
+    /// Whether a market profile always draws its newest profile expanded.
+    expand_last: Option<bool>,
+    /// Their colours; `Some(None)` is `none`, the theme's.
+    open_color: Option<Option<ColorChoice>>,
+    close_color: Option<Option<ColorChoice>>,
+    /// How solid they are drawn, as `Parts` are; `Some(None)` is `default`.
+    open_alpha: Option<Option<f64>>,
+    close_alpha: Option<Option<f64>>,
     value_area: Option<f64>,
     /// Whether a volume profile sets its value area apart.
     highlight: Option<bool>,
@@ -4442,6 +4635,9 @@ struct Edits {
     d_style: Option<LineStyle>,
     /// How far a volume profile fades, 0 as designed.
     transparency: Option<f64>,
+    /// How solid each part of a profile is drawn, set apart from its rows';
+    /// `Some(None)` follows them again.
+    parts: Parts,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     /// `Some(None)` puts volume back on the chart's own colouring, and a
@@ -4546,6 +4742,53 @@ impl Edits {
                     Fault::usage(format!("{text:?} is not a row count; use a number or `auto`"))
                 })?)),
             },
+            tpo_minutes: match arg(m, "tpo-minutes") {
+                None => None,
+                Some(text) => {
+                    use omacharts_engine::indicators::market::{MAX_MINUTES, MIN_MINUTES};
+                    Some(text.parse::<u32>().ok().filter(|n| (MIN_MINUTES..=MAX_MINUTES).contains(n)).ok_or_else(|| {
+                        Fault::usage(format!("--tpo-minutes takes minutes from {MIN_MINUTES} to {MAX_MINUTES}, not {text:?}"))
+                    })?)
+                }
+            },
+            row_ticks: match arg(m, "row-ticks") {
+                None => None,
+                Some(text) if text.eq_ignore_ascii_case("auto") => Some(None),
+                Some(text) => {
+                    use omacharts_engine::indicators::market::MAX_ROW_TICKS;
+                    Some(Some(text.parse::<u32>().ok().filter(|n| (1..=MAX_ROW_TICKS).contains(n)).ok_or_else(|| {
+                        Fault::usage(format!("--row-ticks takes ticks from 1 to {MAX_ROW_TICKS}, or `auto`, not {text:?}"))
+                    })?))
+                }
+            },
+            tpo_style: match arg(m, "tpo-style") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::market::Style::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a market profile style; use letters or blocks"))
+                })?),
+            },
+            open_close: match arg(m, "open-close").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--open-close is on or off, not {other:?}"))),
+            },
+            expand_last: match arg(m, "expand-last").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--expand-last is on or off, not {other:?}"))),
+            },
+            open_color: match arg(m, "open-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "open-color")?.map(Some),
+            },
+            close_color: match arg(m, "close-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "close-color")?.map(Some),
+            },
+            open_alpha: Parts::part(m, "open-transparency")?,
+            close_alpha: Parts::part(m, "close-transparency")?,
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             highlight: match arg(m, "highlight-value-area").map(String::as_str) {
                 None => None,
@@ -4584,6 +4827,7 @@ impl Edits {
             signal_style: line_style(m, "signal-style")?,
             d_style: line_style(m, "d-style")?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            parts: Parts::of(m)?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -4701,6 +4945,15 @@ impl Edits {
             && self.anchor.is_none()
             && self.cvd_style.is_none()
             && self.rows.is_none()
+            && self.tpo_minutes.is_none()
+            && self.row_ticks.is_none()
+            && self.tpo_style.is_none()
+            && self.open_close.is_none()
+            && self.expand_last.is_none()
+            && self.open_color.is_none()
+            && self.close_color.is_none()
+            && self.open_alpha.is_none()
+            && self.close_alpha.is_none()
             && self.value_area.is_none()
             && self.highlight.is_none()
             && self.value_area_color.is_none()
@@ -4719,6 +4972,7 @@ impl Edits {
             && self.signal_style.is_none()
             && self.d_style.is_none()
             && self.transparency.is_none()
+            && self.parts.is_empty()
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
@@ -4850,6 +5104,64 @@ impl Edits {
                 false => return Err(refuse("cumulative delta style")),
             }
         }
+        if let Some(minutes) = self.tpo_minutes {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["minutes"] = json!(minutes),
+                false => return Err(refuse("TPO period")),
+            }
+        }
+        if let Some(ticks) = self.row_ticks {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["row_ticks"] = json!(ticks),
+                false => return Err(refuse("row height in ticks")),
+            }
+        }
+        if let Some(style) = self.tpo_style {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["style"] = json!(style.key()),
+                false => return Err(refuse("market profile style")),
+            }
+        }
+        if let Some(on) = self.open_close {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["open_close"] = json!(on),
+                false => return Err(refuse("open and close marks")),
+            }
+        }
+        if let Some(on) = self.expand_last {
+            match kind == IndicatorKind::MarketProfile {
+                // Off is the default, and not written, as the app leaves it.
+                true if on => params["expand_last"] = json!(true),
+                true => {
+                    if let Some(params) = params.as_object_mut() {
+                        params.remove("expand_last");
+                    }
+                }
+                false => return Err(refuse("expanded last profile")),
+            }
+        }
+        for (alpha, key, what) in [
+            (self.open_alpha, "open_alpha", "open transparency"),
+            (self.close_alpha, "close_alpha", "close transparency"),
+        ] {
+            if let Some(alpha) = alpha {
+                match kind == IndicatorKind::MarketProfile {
+                    true => params[key] = json!(alpha),
+                    false => return Err(refuse(what)),
+                }
+            }
+        }
+        for (choice, key, what) in [
+            (&self.open_color, "open_color", "open colour"),
+            (&self.close_color, "close_color", "close colour"),
+        ] {
+            if let Some(choice) = choice {
+                match kind == IndicatorKind::MarketProfile {
+                    true => params[key] = to_value(choice)?,
+                    false => return Err(refuse(what)),
+                }
+            }
+        }
         if let Some(rows) = self.rows {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["rows"] = json!(rows),
@@ -4857,19 +5169,19 @@ impl Edits {
             }
         }
         if let Some(share) = self.value_area {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["value_area"] = json!(share),
                 false => return Err(refuse("value area")),
             }
         }
         if let Some(colour) = &self.poc_color {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["poc_color"] = to_value(colour)?,
                 false => return Err(refuse("point of control")),
             }
         }
         if let Some(on) = self.last_only {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["last_only"] = json!(on),
                 false => return Err(refuse("last period")),
             }
@@ -4881,13 +5193,13 @@ impl Edits {
             }
         }
         if let Some(align) = self.align {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["align"] = json!(align.key()),
                 false => return Err(refuse("alignment")),
             }
         }
         if let Some(share) = self.profile_width {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["width"] = json!(share),
                 false => return Err(refuse("profile width")),
             }
@@ -4899,25 +5211,25 @@ impl Edits {
             }
         }
         if let Some(on) = self.outline {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["outline"] = json!(on),
                 false => return Err(refuse("outline")),
             }
         }
         if let Some(on) = self.poc {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["poc"] = json!(on),
                 false => return Err(refuse("point of control")),
             }
         }
         if let Some(on) = self.last_only {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["last_only"] = json!(on),
                 false => return Err(refuse("last period")),
             }
         }
         if let Some(colour) = &self.outline_color {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["outline_color"] = to_value(colour)?,
                 false => return Err(refuse("outline")),
             }
@@ -4927,31 +5239,46 @@ impl Edits {
             (self.poc_style, "poc_style", "point of control"),
         ] {
             if let Some(pattern) = pattern {
-                match kind == IndicatorKind::VolumeProfile {
+                match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                     true => params[key] = to_value(&pattern)?,
                     false => return Err(refuse(what)),
                 }
             }
         }
         if let Some(clear) = self.transparency {
-            match kind == IndicatorKind::VolumeProfile {
-                true => {
+            match kind {
+                IndicatorKind::VolumeProfile => {
                     // The strength it is drawn at, from solid at 0 to gone at
                     // 1; a fade saved by an older build is let go of.
                     params["alpha"] = json!(1.0 - clear);
                     params["opacity"] = json!(omacharts_engine::indicators::profile::opaque());
                 }
-                false => return Err(refuse("transparency")),
+                IndicatorKind::MarketProfile => params["alpha"] = json!(1.0 - clear),
+                _ => return Err(refuse("transparency")),
+            }
+        }
+        let profiles = matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile);
+        for (part, key, what, kinds) in [
+            (self.parts.value_area, "value_area_alpha", "value area transparency", profiles),
+            (self.parts.outside, "outside_alpha", "outside transparency", profiles),
+            (self.parts.outline, "outline_alpha", "outline transparency", profiles),
+            (self.parts.poc, "poc_alpha", "point of control transparency", profiles),
+        ] {
+            if let Some(alpha) = part {
+                match kinds {
+                    true => params[key] = json!(alpha),
+                    false => return Err(refuse(what)),
+                }
             }
         }
         if let Some(on) = self.highlight {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["highlight"] = json!(on),
                 false => return Err(refuse("value area highlight")),
             }
         }
         if let Some(choice) = &self.value_area_color {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["value_area_color"] = to_value(choice)?,
                 false => return Err(refuse("value area colour")),
             }
@@ -4961,7 +5288,7 @@ impl Edits {
             (self.poc_width, "poc_width", "point of control thickness"),
         ] {
             if let Some(width) = width {
-                match kind == IndicatorKind::VolumeProfile {
+                match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                     true => params[key] = json!(width),
                     false => return Err(refuse(what)),
                 }
@@ -5307,6 +5634,42 @@ fn read_fib_levels(text: &str) -> Result<Vec<f64>, Fault> {
             })
         })
         .collect()
+}
+
+/// How solid each part of a profile is drawn, from the transparency flags
+/// that set it apart from its rows': 0-1 as `--transparency` is, or
+/// `default` to follow the rows again. Held as strengths.
+#[derive(Default)]
+struct Parts {
+    value_area: Option<Option<f64>>,
+    outside: Option<Option<f64>>,
+    outline: Option<Option<f64>>,
+    poc: Option<Option<f64>>,
+}
+
+impl Parts {
+    /// A part's `--*-transparency`, as the strength it is drawn at;
+    /// `Some(None)` is `default`.
+    fn part(m: &clap::ArgMatches, id: &str) -> Result<Option<Option<f64>>, Fault> {
+        match arg(m, id).map(String::as_str) {
+            Some("default") => Ok(Some(None)),
+            _ => Ok(bounded(m, id, 0.0, 1.0)?.map(|clear| Some(1.0 - clear))),
+        }
+    }
+
+    fn of(m: &clap::ArgMatches) -> Result<Parts, Fault> {
+        let part = |id: &str| Parts::part(m, id);
+        Ok(Parts {
+            value_area: part("value-area-transparency")?,
+            outside: part("outside-transparency")?,
+            outline: part("outline-transparency")?,
+            poc: part("poc-transparency")?,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value_area.is_none() && self.outside.is_none() && self.outline.is_none() && self.poc.is_none()
+    }
 }
 
 fn bounded(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
@@ -9056,6 +9419,134 @@ mod tests {
 
 
     #[test]
+    fn a_market_profile_takes_its_period_rows_and_style_and_shares_the_volume_profiles_flags() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let out = run(
+            "chart indicator add market_profile --book Macro --tpo-minutes 15 --row-ticks 4 --tpo-style blocks \
+             --align right --profile-width 0.3 --value-area 0.6 --poc off --highlight-value-area off \
+             --value-area-color Teal --poc-color Amber --anchor week",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let params = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"].clone()
+        };
+        let stored = params(&store);
+        assert_eq!(stored["minutes"], 15);
+        assert_eq!(stored["row_ticks"], 4);
+        assert_eq!(stored["style"], "blocks");
+        assert_eq!(stored["align"], "right");
+        assert_eq!(stored["width"], 0.3);
+        assert_eq!(stored["value_area"], 0.6);
+        assert_eq!(stored["poc"], false);
+        assert_eq!(stored["highlight"], false);
+        assert_eq!(stored["reset"], "week");
+        assert!(stored["value_area_color"].is_object() || stored["value_area_color"].is_string());
+
+        let out = run("chart indicator set market_profile --book Macro --row-ticks auto --tpo-style letters", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(params(&store)["row_ticks"].is_null());
+        assert_eq!(params(&store)["style"], "letters");
+
+        for refused in [
+            "chart indicator set market_profile --book Macro --tpo-minutes 0",
+            "chart indicator set market_profile --book Macro --tpo-minutes 2000",
+            "chart indicator set market_profile --book Macro --row-ticks 0",
+            "chart indicator set market_profile --book Macro --tpo-style dots",
+            "chart indicator set market_profile --book Macro --rows 40",
+            "chart indicator set market_profile --book Macro --profile-method delta",
+        ] {
+            let out = run(refused, &store);
+            assert_ne!(out.code, 0, "{refused}");
+        }
+        run("chart indicator add volume_profile --book Macro", &store);
+        let out = run("chart indicator set volume_profile --book Macro --tpo-minutes 30", &store);
+        assert_ne!(out.code, 0, "a volume profile has no TPO period");
+    }
+
+    /// The open and close marks are on until turned off, their colours the
+    /// theme's until chosen, and `none` hands a colour back to it; their
+    /// transparency is solid until set, and `default` hands it back.
+    #[test]
+    fn a_market_profile_marks_its_open_and_close_in_colours_of_their_own() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add market_profile --book Macro", &store);
+        let params = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"].clone()
+        };
+        let stored = params(&store);
+        assert_eq!(stored["open_close"], true, "on for a new market profile");
+        assert!(stored["open_color"].is_null() && stored["close_color"].is_null(), "{stored}");
+
+        let out = run(
+            "chart indicator set market_profile --book Macro --open-close on --open-color Teal --close-color #aa5e57 --open-transparency 0.25 --close-transparency 0.5",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store);
+        assert_eq!(stored["open_close"], true);
+        assert_eq!(stored["open_alpha"], 0.75, "{stored}");
+        assert_eq!(stored["close_alpha"], 0.5, "{stored}");
+        let out = run("chart indicator set market_profile --book Macro --open-transparency default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(params(&store)["open_alpha"].is_null());
+        assert_eq!(stored["open_color"]["name"], "Teal", "{stored}");
+        assert_eq!(stored["close_color"]["hex"], "#aa5e57", "{stored}");
+
+        let out = run("chart indicator set market_profile --book Macro --open-color none --open-close off", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store);
+        assert_eq!(stored["open_close"], false);
+        assert!(stored["open_color"].is_null(), "{stored}");
+        assert_eq!(stored["close_color"]["hex"], "#aa5e57", "kept while off");
+
+        // The newest profile expanded, its TPOs over time: off until set.
+        assert!(stored["expand_last"].is_null(), "{stored}");
+        let out = run(
+            "chart indicator set market_profile --book Macro --expand-last on",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(params(&store)["expand_last"], true);
+        let out = run(
+            "chart indicator set market_profile --book Macro --expand-last off",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(
+            params(&store)["expand_last"].is_null(),
+            "off is the default, not written"
+        );
+        run("chart indicator add volume_profile --book Macro", &store);
+        let out = run(
+            "chart indicator set volume_profile --book Macro --expand-last on",
+            &store,
+        );
+        assert_ne!(out.code, 0, "a volume profile has no TPOs to expand");
+
+        for refused in [
+            "chart indicator set market_profile --book Macro --open-close maybe",
+            "chart indicator set market_profile --book Macro --open-color nonsense",
+        ] {
+            assert_ne!(run(refused, &store).code, 0, "{refused}");
+        }
+        run("chart indicator add volume_profile --book Macro", &store);
+        for refused in [
+            "chart indicator set volume_profile --book Macro --open-close on",
+            "chart indicator set volume_profile --book Macro --close-color Rose",
+            "chart indicator set volume_profile --book Macro --open-transparency 0.5",
+        ] {
+            assert_ne!(run(refused, &store).code, 0, "a volume profile has no TPO periods: {refused}");
+        }
+    }
+
+    #[test]
     fn a_volume_profile_takes_a_width_within_its_range_and_nothing_else_does() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
@@ -10407,6 +10898,14 @@ mod tests {
         fn profile(&self, _id: Option<u32>, _ts: i64, _merge: bool) -> Result<String, Fault> {
             Ok("pos:0 SPY 1h in Main".into())
         }
+        fn expand_profile(
+            &self,
+            _id: Option<u32>,
+            _ts: i64,
+            _expand: bool,
+        ) -> Result<String, Fault> {
+            Ok("pos:0 SPY 1h in Main".into())
+        }
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
@@ -10468,6 +10967,48 @@ mod tests {
             assert_eq!(invoke(&bad, Some(&NoWindow)).code, crate::cli::EXIT_USAGE);
         }
         assert_eq!(invoke(&["--clear"], Some(&NoWindow)).code, 0);
+    }
+
+    /// A market profile is expanded and collapsed at a moment inside it,
+    /// on the chart on screen.
+    #[test]
+    fn a_market_profile_is_expanded_and_collapsed_from_a_terminal() {
+        let store = seeded();
+        let invoke = |tail: &str, live: Option<&dyn Live>| {
+            let args: Vec<String> = ["omacharts", "chart", "profile"]
+                .into_iter()
+                .map(str::to_string)
+                .chain(tail.split_whitespace().map(str::to_string))
+                .collect();
+            dispatch(&args, &store, live, &super::super::Here)
+        };
+        for (action, said) in [
+            ("expand", "expanded the market profile"),
+            ("collapse", "collapsed the market profile"),
+        ] {
+            let out = invoke(
+                &format!("{action} --at 2026-09-01T10:00 --json"),
+                Some(&NoWindow),
+            );
+            assert_eq!(out.code, 0, "{}", out.err);
+            let value: Value = serde_json::from_str(&out.out).unwrap();
+            assert_eq!(value["action"], action);
+            let plain = invoke(&format!("{action} --at 2026-09-01T10:00"), Some(&NoWindow));
+            assert!(plain.out.starts_with(said), "{}", plain.out);
+            assert_eq!(
+                invoke(&format!("{action} --at 2026-09-01"), None).code,
+                crate::cli::EXIT_NO_WINDOW
+            );
+            assert_eq!(
+                invoke(action, Some(&NoWindow)).code,
+                crate::cli::EXIT_USAGE,
+                "which one, with --at"
+            );
+        }
+        assert_eq!(
+            invoke("unfold --at 2026-09-01", Some(&NoWindow)).code,
+            crate::cli::EXIT_USAGE
+        );
     }
 
     #[test]
@@ -10606,6 +11147,85 @@ mod tests {
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// Each part of a profile is made more or less transparent on its own by
+    /// a flag named as its row is, on a volume profile study, a market
+    /// profile and a drawing alike, and `default` sets it following the
+    /// rows' again, or a market profile's outline its own.
+    #[test]
+    fn a_profiles_parts_are_made_transparent_one_by_one() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add market_profile --book Macro", &store);
+        let params = |store: &Store, at: usize| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][at]["params"].clone()
+        };
+        let near = |value: &serde_json::Value, want: f64| (value.as_f64().unwrap_or(f64::NAN) - want).abs() < 1e-9;
+        let parts = ["value_area_alpha", "outside_alpha", "outline_alpha", "poc_alpha"];
+        for at in [0, 1] {
+            let stored = params(&store, at);
+            assert!(parts.iter().all(|part| stored.get(part).is_none()), "unset, and not written: {stored}");
+        }
+
+        let all = "--value-area-transparency 0.2 --outside-transparency 0.9 --poc-transparency 0.5";
+        let out = run(&format!("chart indicator set volume_profile --book Macro {all} --outline-transparency 0.4"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store, 0);
+        for (part, want) in parts.iter().zip([0.8, 0.1, 0.6, 0.5]) {
+            assert!(near(&stored[part], want), "{part}: {stored}");
+        }
+        let out = run("chart indicator set volume_profile --book Macro --outside-transparency default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store, 0);
+        assert!(stored["outside_alpha"].is_null(), "following the rows again: {stored}");
+        assert!(near(&stored["value_area_alpha"], 0.8), "the rest kept: {stored}");
+
+        let out = run(&format!("chart indicator set market_profile --book Macro {all} --transparency 0.3 --last-only on"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store, 1);
+        assert!(near(&stored["alpha"], 0.7), "{stored}");
+        assert_eq!(stored["last_only"], true, "{stored}");
+        for (part, want) in parts.iter().zip([0.8, 0.1, f64::NAN, 0.5]) {
+            assert!(want.is_nan() || near(&stored[part], want), "{part}: {stored}");
+        }
+        let out = run(
+            "chart indicator set market_profile --book Macro --outline on --outline-transparency 0.4 --outline-width 2 --outline-style dashed --poc-width 3 --poc-style dotted",
+            &store,
+        );
+        assert_eq!(out.code, 0, "a market profile's outline and point of control, as a volume profile's: {}", out.err);
+        let stored = params(&store, 1);
+        assert!(near(&stored["outline_alpha"], 0.6), "{stored}");
+        assert_eq!(stored["outline"], true, "{stored}");
+        assert!(stored["outline_style"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("dashed")), "{stored}");
+        assert!(stored["poc_style"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("dotted")), "{stored}");
+        assert!(near(&stored["outline_width"], 2.0) && near(&stored["poc_width"], 3.0), "{stored}");
+        let out = run("chart indicator set market_profile --book Macro --poc-transparency 2", &store);
+        assert_eq!(out.code, crate::cli::EXIT_USAGE, "{}", out.err);
+
+        let span = "--book Macro --from 2026-10-14,1 --to 2026-10-21,1";
+        let out = run(&format!("chart drawing add profile {span} {all} --outline-transparency 0.4"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][0]["style"]["profile"];
+        for (key, want) in [
+            ("value_area_transparency", 0.2),
+            ("outside_transparency", 0.9),
+            ("outline_transparency", 0.4),
+            ("poc_transparency", 0.5),
+        ] {
+            assert!(near(&profile[key], want), "{key}: {profile}");
+        }
+        let id = listed["drawings"][0]["id"].as_i64().unwrap();
+        let out = run(&format!("chart drawing set --book Macro --id {id} --poc-transparency default"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][0]["style"]["profile"];
+        let designed = 1.0 - omacharts_engine::drawings::PROFILE_POC_ALPHA;
+        assert!(near(&profile["poc_transparency"], designed), "its own again: {profile}");
     }
 
     /// A volume profile drawing measures, colours and reaches as the study

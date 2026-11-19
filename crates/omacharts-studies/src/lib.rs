@@ -35,6 +35,7 @@ pub mod average;
 pub mod catalog;
 pub mod bollinger;
 pub mod cvd;
+pub mod market_profile;
 pub mod oscillators;
 pub mod series;
 pub mod volume;
@@ -44,7 +45,8 @@ pub use at_price::{AtPrice, AtPriceStudy, DeltaReading, DevelopingProfile, Profi
 pub use average::{Ema, EmaOf, Sma};
 pub use bollinger::Bollinger;
 pub use cvd::CvdEstimate;
-pub use catalog::{Form, AT_PRICE, INDICATORS};
+pub use catalog::{Form, AT_PRICE, DEVELOPING, INDICATORS};
+pub use market_profile::DevelopingMarketProfile;
 pub use oscillators::{Atr, Macd, MacdValue, Rsi, Smoothing, Stochastic, StochasticValue};
 pub use volume::Volume;
 pub use vwap::{Source, Spread, Vwap};

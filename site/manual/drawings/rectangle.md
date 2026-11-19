@@ -22,7 +22,7 @@ Two tabs: **General** for the rectangle itself and **Text** for a label in it. <
 | Property | What it does | Default |
 |---|---|---|
 | **Background** | The fill's colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme | The configuration's |
-| **Transparency %** | How much of the chart shows through the fill, 0 to 100%, on a slider with a box to type it in. At 0% the fill is solid and hides the candles under it; at 100% there is no fill, only the border | 87% |
+| **Opacity %** | How solid the fill is, 0 to 100%, on a slider with a box to type it in. At 100% the fill is solid and hides the candles under it; at 0% there is no fill, only the border | 13% |
 | **Border** | Draws an edge round the rectangle. Off leaves the fill on its own. The three border rows below show only while it is on | On |
 | **Border colour** | The edge's colour. The edge is drawn at about a third of the colour's strength, so it reads as the rim of the fill rather than a separate line | The configuration's |
 | **Border thickness** | How thick the edge is, 0.5 to 12 px in halves, drawn just inside the box so the box keeps its size | 1 px |

@@ -12,6 +12,7 @@
 pub mod bands;
 pub mod bollinger;
 pub mod cvd;
+pub mod market;
 pub mod oscillators;
 mod paint;
 pub mod periods;
@@ -30,6 +31,7 @@ use crate::theme::{BarColouring, ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
+pub use market::MarketProfile;
 pub use profile::{Profile, ProfileRow};
 pub use time::{Hours, Preset, Span, Time, TimeRange};
 
@@ -123,6 +125,7 @@ pub enum Kind {
     Vwap,
     Bollinger,
     VolumeProfile,
+    MarketProfile,
     Volume,
     Cvd,
     Rsi,
@@ -195,7 +198,7 @@ impl Category {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -204,6 +207,9 @@ impl Kind {
         // same picture, and somebody who has used one is looking for the other.
         Kind::Bollinger,
         Kind::VolumeProfile,
+        // Beside the volume profile: the same picture of a period, by time
+        // rather than volume, and the two are drawn side by side.
+        Kind::MarketProfile,
         Kind::Cvd,
         Kind::Rsi,
         Kind::Macd,
@@ -215,7 +221,7 @@ impl Kind {
     pub fn category(self) -> Category {
         match self {
             Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
-            Kind::Volume | Kind::VolumeProfile | Kind::Cvd => Category::Volume,
+            Kind::Volume | Kind::VolumeProfile | Kind::MarketProfile | Kind::Cvd => Category::Volume,
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
@@ -272,6 +278,7 @@ impl Kind {
             Kind::Bollinger => "Bollinger Bands",
             Kind::Macd => "Moving Average Convergence Divergence",
             Kind::VolumeProfile => "Volume Profile",
+            Kind::MarketProfile => "Market Profile",
             Kind::Volume => "Volume",
             Kind::Cvd => "Cumulative Delta",
             Kind::Rsi => "Relative Strength Index",
@@ -292,6 +299,7 @@ impl Kind {
             Kind::Bollinger => "BB",
             Kind::Macd => "MACD",
             Kind::VolumeProfile => "VP",
+            Kind::MarketProfile => "TPO",
             Kind::Volume => "Vol",
             Kind::Cvd => "CVD",
             Kind::Rsi => "RSI",
@@ -314,7 +322,11 @@ impl Kind {
             Kind::Macd => {
                 &["macd", "convergence", "divergence", "histogram", "signal", "momentum"]
             }
-            Kind::VolumeProfile => &["volume profile", "vp", "poc", "value area", "tpo"],
+            Kind::VolumeProfile => &["volume profile", "vp", "poc", "value area"],
+            Kind::MarketProfile => &[
+                "market profile", "tpo", "mp", "time price opportunity", "time at price", "letters", "poc",
+                "value area",
+            ],
             Kind::Volume => &["volume", "vol", "turnover"],
             Kind::Cvd => &[
                 "cumulative delta", "cvd", "delta", "order flow", "cumulative volume delta", "volume delta",
@@ -339,6 +351,7 @@ impl Kind {
             Kind::Bollinger => "bollinger",
             Kind::Macd => "macd",
             Kind::VolumeProfile => "volume_profile",
+            Kind::MarketProfile => "market_profile",
             Kind::Volume => "volume",
             Kind::Cvd => "cvd",
             Kind::Rsi => "rsi",
@@ -385,12 +398,51 @@ impl Kind {
                 opacity: 1.0,
                 highlight: true,
                 value_area_color: None,
+                value_area_alpha: None,
+                outside_alpha: None,
+                outline_alpha: None,
+                poc_alpha: None,
                 last_only: false,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
                 colouring: None,
                 merged: Vec::new(),
+            },
+            // Half-hour TPO periods and a 70% value area: what Steidlmayer
+            // drew and what TradingView and Sierra Chart open with.
+            Kind::MarketProfile => Params::MarketProfile {
+                reset: Reset::Session,
+                minutes: market::DEFAULT_MINUTES,
+                row_ticks: None,
+                value_area: market::DEFAULT_VALUE_AREA,
+                style: market::Style::Letters,
+                align: profile::Align::Left,
+                width: profile::DEFAULT_WIDTH,
+                poc: true,
+                highlight: true,
+                poc_color: None,
+                poc_width: market::POC_WIDTH,
+                poc_style: LineStyle::Solid,
+                value_area_color: None,
+                open_close: true,
+                open_color: None,
+                close_color: None,
+                open_alpha: None,
+                close_alpha: None,
+                outline: false,
+                outline_color: None,
+                outline_style: LineStyle::Solid,
+                outline_width: profile::hairline(),
+                outline_alpha: None,
+                alpha: None,
+                value_area_alpha: None,
+                outside_alpha: None,
+                poc_alpha: None,
+                last_only: false,
+                merged: Vec::new(),
+                expand_last: false,
+                expanded: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
             Kind::Cvd => Params::Cvd {
@@ -534,6 +586,18 @@ pub enum Params {
         /// which is what it always was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_area_color: Option<ColorChoice>,
+        /// How solid the value area's rows, the rows outside it, the outline
+        /// and the point of control are drawn, each set apart from `alpha`.
+        /// Unset, each follows it as it always did. See
+        /// [`profile::Strengths`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outside_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        poc_alpha: Option<f64>,
         /// Whether only the newest period's profile is drawn, the ones
         /// before it left out. Missing, every period is, as before it could
         /// be chosen.
@@ -567,6 +631,127 @@ pub enum Params {
         /// hands them in to be drawn. See [`profile::Merge`].
         #[serde(skip)]
         merged: Vec<i64>,
+    },
+    MarketProfile {
+        reset: Reset,
+        /// How long each TPO period is, in minutes. Missing, half an hour.
+        #[serde(default = "market::default_minutes")]
+        minutes: u32,
+        /// How tall a row is, in ticks of the instrument's tick, or `None`
+        /// for the automatic height: see [`market::TARGET_ROWS`].
+        #[serde(default)]
+        row_ticks: Option<u32>,
+        /// Fraction of the TPOs the value area covers. Missing, 70%.
+        #[serde(default = "market::default_value_area")]
+        value_area: f64,
+        /// Each TPO drawn as its period's letter, or as a block.
+        #[serde(default)]
+        style: market::Style,
+        /// The edge of the period the rows grow from, as a volume
+        /// profile's.
+        #[serde(default)]
+        align: profile::Align,
+        /// How much of its room the longest row reaches, as a volume
+        /// profile's.
+        #[serde(default = "profile::default_width")]
+        width: f64,
+        /// Whether the point of control is drawn: a line across the profile
+        /// through its row. Missing, it is.
+        #[serde(default = "profile::shown")]
+        poc: bool,
+        /// Whether the value area's rows are set apart from the rest.
+        /// Missing, they are.
+        #[serde(default = "profile::shown")]
+        highlight: bool,
+        /// The point of control's colour. Unset is the theme's companion
+        /// to the profile's own, as a volume profile's is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        poc_color: Option<ColorChoice>,
+        /// The point of control's thickness, in pixels: a line across the
+        /// profile through its row, as a volume profile's. Missing,
+        /// [`market::POC_WIDTH`].
+        #[serde(default = "market::poc_width", skip_serializing_if = "market::is_poc_width")]
+        poc_width: f64,
+        /// The point of control's pattern. Missing, solid.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        poc_style: LineStyle,
+        /// The value area's colour, while it is set apart. Unset is the
+        /// profile's own, the rest drawn fainter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_color: Option<ColorChoice>,
+        /// Whether each profile marks its open and its close: an arrow
+        /// beside the TPO at its first bar's opening price, and one beside
+        /// the TPO at its last bar's closing price (the latest, while it
+        /// forms), each in a colour of its own. Missing, they are. Read from `first_last` too,
+        /// its name before it was released.
+        #[serde(default = "profile::shown", alias = "first_last")]
+        open_close: bool,
+        /// The open's colour. Unset is the theme's, worked out from its up
+        /// colour: see [`crate::theme::Theme::tpo_open`].
+        #[serde(default, alias = "first_color", skip_serializing_if = "Option::is_none")]
+        open_color: Option<ColorChoice>,
+        /// The close's colour. Unset is the theme's, worked out from its
+        /// down colour: see [`crate::theme::Theme::tpo_close`].
+        #[serde(default, alias = "last_color", skip_serializing_if = "Option::is_none")]
+        close_color: Option<ColorChoice>,
+        /// How solid the open and close arrows are drawn, nought to one.
+        /// Unset, solid: see [`market::end_strength`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        close_alpha: Option<f64>,
+        /// Whether the TPOs wear an outline: the stepped edge round their
+        /// cells, as a volume profile's round its rows. Missing, they do
+        /// not.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        outline: bool,
+        /// The outline's colour. Unset is the profile's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline_color: Option<ColorChoice>,
+        /// The outline's pattern. Missing, solid.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        outline_style: LineStyle,
+        /// The outline's thickness, in pixels. Missing, a hairline.
+        #[serde(default = "profile::hairline", skip_serializing_if = "profile::is_hairline")]
+        outline_width: f64,
+        /// How solid the outline is drawn. Unset, as a volume profile's
+        /// edge is: see [`market::OUTLINE_ALPHA`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline_alpha: Option<f64>,
+        /// How solid its rows are drawn, as letters: unset, as designed. A
+        /// block is drawn as much fainter as its design is. See
+        /// [`market::Strengths`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alpha: Option<f64>,
+        /// The value area's rows, the rows outside it and the point of
+        /// control's, each set apart from `alpha`; unset, each follows it as
+        /// designed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outside_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        poc_alpha: Option<f64>,
+        /// Whether only the newest period's profile is drawn, as a volume
+        /// profile's can be. Missing, every period is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        last_only: bool,
+        /// Where each period starts that was merged into the one before it,
+        /// as a volume profile's: kept by the chart, never with the
+        /// indicator, and handed in to be drawn. See [`profile::Merge`].
+        #[serde(skip)]
+        merged: Vec<i64>,
+        /// Whether the newest profile, the one forming, is always drawn
+        /// expanded: its TPOs laid out over time, a column for each TPO
+        /// period at that period's bars, rather than stacked against its
+        /// edge. Missing, it is stacked unless expanded by hand.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        expand_last: bool,
+        /// Where each profile starts that was expanded by hand: kept by the
+        /// chart, as its merges are, and handed in to be drawn. See
+        /// [`profile::Merge`].
+        #[serde(skip)]
+        expanded: Vec<i64>,
     },
     Volume {
         /// How much of the chart's height the pane takes.
@@ -700,8 +885,97 @@ impl Params {
             | Params::Vwap { .. }
             | Params::Bollinger { .. }
             | Params::VolumeProfile { .. }
+            | Params::MarketProfile { .. }
             | Params::SessionTimes { .. } => None,
         }
+    }
+
+    /// A volume or market profile's reset and the edge it is set to grow
+    /// from; nothing for any other kind.
+    fn profile_edge(&self) -> Option<(Reset, profile::Align)> {
+        match self {
+            Params::VolumeProfile { reset, align, .. } | Params::MarketProfile { reset, align, .. } => {
+                Some((*reset, *align))
+            }
+            Params::MovingAverage { .. }
+            | Params::Vwap { .. }
+            | Params::Bollinger { .. }
+            | Params::Volume { .. }
+            | Params::Cvd { .. }
+            | Params::Rsi { .. }
+            | Params::Atr { .. }
+            | Params::Macd { .. }
+            | Params::Stochastic { .. }
+            | Params::SessionTimes { .. } => None,
+        }
+    }
+}
+
+/// The market profile a volume or market profile is paired with on a chart
+/// of `shown` indicators, in legend order: the first market profile among
+/// them that resets on the same period, on `timeframe` when it is known.
+/// Nothing when there is none, and for any other kind.
+///
+/// Paired, a session's profiles are drawn inside that session, each
+/// growing from the edge it is set to: side by side when they grow the same
+/// way, back to back when they grow apart. See [`pair`].
+pub fn paired_with<'a>(
+    me: &Params,
+    shown: impl IntoIterator<Item = &'a Indicator>,
+    timeframe: Option<Timeframe>,
+) -> Option<&'a Indicator> {
+    let effective = |reset: Reset| timeframe.map_or(reset, |timeframe| reset.effective_for(timeframe));
+    let (reset, _) = me.profile_edge()?;
+    shown.into_iter().find(|other| {
+        matches!(other.params, Params::MarketProfile { .. })
+            && other.params.profile_edge().is_some_and(|(theirs, _)| effective(theirs) == effective(reset))
+    })
+}
+
+/// The profiles of `shown` drawn as one pair with `me`, itself among them,
+/// in legend order: the market profile it is paired with and every volume
+/// profile paired with that one. Empty when `me` is in no pair: a profile
+/// alone on its period, two volume profiles without a market profile, or a
+/// second market profile of a period, which is drawn on its own.
+pub fn pair<'a>(me: &Indicator, shown: &[&'a Indicator], timeframe: Option<Timeframe>) -> Vec<&'a Indicator> {
+    let leader = |of: &Params| paired_with(of, shown.iter().copied(), timeframe).map(|leader| leader.id);
+    let Some(lead) = leader(&me.params) else { return Vec::new() };
+    let together: Vec<&Indicator> = shown
+        .iter()
+        .copied()
+        .filter(|other| {
+            other.id == lead
+                || (matches!(other.params, Params::VolumeProfile { .. }) && leader(&other.params) == Some(lead))
+        })
+        .collect();
+    match together.len() > 1 && together.iter().any(|other| other.id == me.id) {
+        true => together,
+        false => Vec::new(),
+    }
+}
+
+/// The volume and market profiles of `all` that merge and split together
+/// with `me`, itself among them: every one resetting on the same period as
+/// it, once a market profile is among those, since a session's market
+/// profile and volume profile drawn side by side have to cover the same
+/// span. Without a market profile, or for a profile whose period no other
+/// shares, it alone. Nothing for any other kind.
+///
+/// Hidden ones too: a market profile shown again has to cover what its
+/// volume profile was merged into while it was hidden.
+pub fn merged_together(me: &Indicator, all: &[Indicator], timeframe: Option<Timeframe>) -> Vec<u32> {
+    let effective = |reset: Reset| timeframe.map_or(reset, |timeframe| reset.effective_for(timeframe));
+    let Some((reset, _)) = me.params.profile_edge() else { return Vec::new() };
+    let together: Vec<&Indicator> = all
+        .iter()
+        .filter(|other| {
+            other.id == me.id
+                || other.params.profile_edge().is_some_and(|(theirs, _)| effective(theirs) == effective(reset))
+        })
+        .collect();
+    match together.iter().any(|other| matches!(other.params, Params::MarketProfile { .. })) {
+        true => together.iter().map(|other| other.id).collect(),
+        false => vec![me.id],
     }
 }
 
@@ -773,7 +1047,7 @@ impl Indicator {
     /// shading.
     pub fn step_width(&mut self, thicker: bool) -> bool {
         match &mut self.params {
-            Params::Volume { .. } | Params::SessionTimes { .. } => false,
+            Params::Volume { .. } | Params::MarketProfile { .. } | Params::SessionTimes { .. } => false,
             Params::VolumeProfile { outline_width, .. } => {
                 let by = if thicker { OUTLINE_WIDTH_STEP } else { -OUTLINE_WIDTH_STEP };
                 *outline_width = (*outline_width + by).clamp(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH);
@@ -905,6 +1179,11 @@ impl Indicator {
                 profile::Method::Total => format!("VP · {}", effective(*reset).label()),
                 profile::Method::Delta => format!("VP Δ · {}", effective(*reset).label()),
             },
+            // The TPO period is part of the name: two profiles of one
+            // session in different periods draw different letters.
+            Params::MarketProfile { reset, minutes, .. } => {
+                format!("TPO {minutes}m · {}", effective(*reset).label())
+            }
             Params::Volume { .. } => "Volume".to_string(),
             Params::Cvd { reset, .. } => match reset {
                 Some(reset) => format!("CVD · {}", effective(*reset).label()),
@@ -996,6 +1275,8 @@ pub enum Output {
     Bands(Bands),
     /// One profile per reset period.
     Profiles(Vec<Profile>),
+    /// One market profile per reset period.
+    MarketProfiles(Vec<std::sync::Arc<MarketProfile>>),
     /// Volume per bar, with the share of the chart its pane takes.
     Volume { values: Vec<f64>, height: f64 },
     /// A series drawn in a strip of its own, on its own scale.
@@ -1182,6 +1463,17 @@ fn reslot(indicators: &mut [Indicator], above: &[u32], below: &[u32]) {
 }
 
 impl Output {
+    /// The periods a volume or market profile draws, in order, as profiles:
+    /// what merging and splitting them, and reading them, go by. Nothing
+    /// for any other output.
+    pub fn periods(&self) -> Option<Vec<&Profile>> {
+        match self {
+            Output::Profiles(profiles) => Some(profiles.iter().collect()),
+            Output::MarketProfiles(profiles) => Some(profiles.iter().map(|market| &market.profile).collect()),
+            _ => None,
+        }
+    }
+
     /// Whether any part of it was estimated rather than read: a cumulative
     /// delta's bars taken from their direction.
     pub fn is_estimated(&self) -> bool {
@@ -1238,10 +1530,10 @@ pub struct Context<'a> {
     /// until they come, rather than an estimate from the bars that would be
     /// replaced, rows and shape, a moment later.
     pub awaiting_ladders: bool,
-    /// What a cumulative delta worked out on this chart last time, so a
-    /// tick works out only the newest bars again. `None` works out every
-    /// bar every time.
-    pub memos: Option<&'a cvd::Memos>,
+    /// What a cumulative delta and a market profile worked out on this
+    /// chart last time, so a tick works out only the newest bars, or the
+    /// forming period, again. `None` works out every bar every time.
+    pub memos: Option<&'a Memos>,
     /// Trading hours the embedding program keeps itself, in place of the
     /// instrument's exchange's from the registry, for the sessions Session
     /// Times shades. `None` uses the registry. Nothing else reads it: a
@@ -1285,8 +1577,30 @@ impl<'a> Context<'a> {
 
     /// The same chart, keeping what it worked out from one computation to
     /// the next.
-    pub fn with_memos(self, memos: Option<&'a cvd::Memos>) -> Context<'a> {
+    pub fn with_memos(self, memos: Option<&'a Memos>) -> Context<'a> {
         Context { memos, ..self }
+    }
+}
+
+/// What a chart's indicators worked out last time, kept for the next
+/// computation on it, by the indicator's id: see [`Context::memos`].
+#[derive(Debug, Default)]
+pub struct Memos {
+    pub cvd: cvd::Memos,
+    pub market: market::Memos,
+    pub profile: profile::Memos,
+}
+
+impl Memos {
+    pub fn new() -> Memos {
+        Memos::default()
+    }
+
+    /// Forget every memo but those of `ids`: an indicator taken off.
+    pub fn keep(&self, ids: &[u32]) {
+        self.cvd.keep(ids);
+        self.market.keep(ids);
+        self.profile.keep(ids);
     }
 }
 
@@ -1490,7 +1804,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 cvd::compute(bars, reset, session_origin, timeframe, source.as_ref(), memo)
             };
             let delta = match context.memos {
-                Some(memos) => memos.with(indicator.id, |memo| work(Some(memo))),
+                Some(memos) => memos.cvd.with(indicator.id, |memo| work(Some(memo))),
                 None => work(None),
             };
             Output::Pane(Pane {
@@ -1516,8 +1830,23 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 Some(Withheld::Awaiting) => return Output::Profiles(Vec::new()),
                 None => {}
             }
-            Output::Profiles(with_at_price(context, |at_price| {
-                profile::compute_with(
+            Output::Profiles(with_at_price(context, |at_price| match (at_price, context.memos, method) {
+                // From the bars alone: what the tick before worked out is
+                // kept for every period it did not move.
+                (None, Some(memos), profile::Method::Total) => memos.profile.with(indicator.id, |memo| {
+                    profile::compute_kept(
+                        bars,
+                        reset.effective_for(timeframe),
+                        session_origin,
+                        *rows,
+                        *value_area,
+                        kind,
+                        merged,
+                        *last_only,
+                        memo,
+                    )
+                }),
+                _ => profile::compute_with(
                     bars,
                     reset.effective_for(timeframe),
                     session_origin,
@@ -1530,6 +1859,41 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                     *last_only,
                 )
             }))
+        }
+        (
+            Kind::MarketProfile,
+            Params::MarketProfile {
+                reset,
+                minutes,
+                row_ticks,
+                value_area,
+                merged,
+                last_only,
+                ..
+            },
+        ) => {
+            let known = context
+                .instrument
+                .and_then(Instrument::tick_size)
+                .or(context.ladders.map(|held| held.tick_size));
+            let work = |memo: &mut market::Memo| {
+                market::compute_kept(
+                    bars,
+                    reset.effective_for(timeframe),
+                    session_origin,
+                    *minutes,
+                    *row_ticks,
+                    *value_area,
+                    market::tick_size(bars, known, kind),
+                    merged,
+                    *last_only,
+                    memo,
+                )
+            };
+            Output::MarketProfiles(match context.memos {
+                Some(memos) => memos.market.with(indicator.id, work),
+                None => work(&mut market::Memo::default()),
+            })
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
             Output::Time(time::session_times(bars, timeframe, ranges, context.zone, schedule()))

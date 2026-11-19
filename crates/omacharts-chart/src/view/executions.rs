@@ -75,12 +75,12 @@ impl Executions {
 
 /// How long a triangle is, tip to base, and how far it stands each side of
 /// its middle, in pixels.
-const LENGTH: f64 = 6.0;
-const HALF: f64 = 3.5;
+pub(super) const LENGTH: f64 = 6.0;
+pub(super) const HALF: f64 = 3.5;
 
 /// The gap between a triangle's tip and its bar's body, and how far out
 /// from its middle the body reaches, as a share of the column.
-const STAND_OFF: f64 = 1.0;
+pub(super) const STAND_OFF: f64 = 1.0;
 const BODY_HALF: f64 = 0.35;
 
 /// The trip line's weight and its dots.
@@ -185,32 +185,97 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             if !wanted {
                 continue;
             }
-            let tip = x + side * off;
-            cr.move_to(tip, y);
-            cr.line_to(tip + side * length, y - half);
-            cr.line_to(tip + side * length, y + half);
-            cr.close_path();
-            if emphasised(executions.emphasis, mark.ts) {
-                colors::set_source(cr, colour);
-            } else {
-                colors::set_source_alpha(cr, colour, MUTED_ALPHA);
-            }
-            let _ = cr.fill_preserve();
-            // A hairline of the ground round it, so it reads over a candle
-            // of its own colour.
-            colors::set_source_alpha(cr, &state.theme.ui.background, 0.9);
-            cr.set_line_width(0.75);
-            let _ = cr.stroke();
+            let alpha = if emphasised(executions.emphasis, mark.ts) { 1.0 } else { MUTED_ALPHA };
+            arrow(cr, state, x + side * off, y, -side, (length, half), colour, alpha);
         }
     }
     cr.restore().ok();
 }
+
+/// A fill's triangle, its tip at `tip`, `y`, pointing right for a
+/// `points` of one and left for minus one, `size` long and half tall, in
+/// `colour` at `alpha`; with a hairline of the ground round it, so it reads
+/// over a candle of its own colour. A market profile's open and close
+/// marks are the same arrows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn arrow(
+    cr: &cairo::Context,
+    state: &State,
+    tip: f64,
+    y: f64,
+    points: f64,
+    (length, half): (f64, f64),
+    colour: &str,
+    alpha: f64,
+) {
+    // The hairline is two fills rather than a stroke, which cairo takes
+    // several times as long over: the triangle grown by half the line in
+    // the ground, then shrunk by half in the colour, leaving the band a
+    // stroke of it would have drawn.
+    let triangle = |inset: f64| {
+        let [first, rest @ ..] = corners(tip, y, points, (length, half), inset);
+        cr.move_to(first.0, first.1);
+        for (x, y) in rest {
+            cr.line_to(x, y);
+        }
+        cr.close_path();
+    };
+    triangle(-HAIRLINE / 2.0);
+    colors::set_source_alpha(cr, &state.theme.ui.background, 0.9);
+    let _ = cr.fill();
+    triangle(HAIRLINE / 2.0);
+    colors::set_source_alpha(cr, colour, alpha);
+    let _ = cr.fill();
+}
+
+/// An [`arrow`]'s corners, tip first, with every side moved `inset` in
+/// (out, for less than nothing): the triangle drawn about its incentre,
+/// scaled by how far that is from its sides.
+fn corners(tip: f64, y: f64, points: f64, (length, half): (f64, f64), inset: f64) -> [(f64, f64); 3] {
+    let base = tip - points * length;
+    let side = length.hypot(half);
+    let inradius = length * half / (half + side);
+    // Each corner weighed by the side across from it.
+    let centre = (tip * 2.0 * half + base * 2.0 * side) / (2.0 * side + 2.0 * half);
+    let scale = ((inradius - inset) / inradius).max(0.0);
+    let at = |x: f64, dy: f64| (centre + (x - centre) * scale, y + dy * scale);
+    [at(tip, 0.0), at(base, -half), at(base, half)]
+}
+
+/// How wide the ground's line round an [`arrow`] is.
+const HAIRLINE: f64 = 0.75;
 
 #[cfg(test)]
 mod tests {
     use omacharts_engine::{Bar, Timeframe};
 
     use super::*;
+
+    /// The ground's band round an arrow is as wide as the line it stands
+    /// for, and even: every side of the grown triangle and of the shrunk
+    /// one half the line from the arrow's own.
+    #[test]
+    fn an_arrows_hairline_is_even_all_round() {
+        // The distance from `p` to the line through `a` and `b`.
+        let gap = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+            ((b.0 - a.0) * (a.1 - p.1) - (a.0 - p.0) * (b.1 - a.1)).abs() / (b.0 - a.0).hypot(b.1 - a.1)
+        };
+        for points in [1.0, -1.0] {
+            let size = (LENGTH, HALF);
+            let own = corners(40.0, 20.0, points, size, 0.0);
+            for inset in [HAIRLINE / 2.0, -HAIRLINE / 2.0] {
+                let moved = corners(40.0, 20.0, points, size, inset);
+                for (k, (a, b)) in [(0, 1), (1, 2), (2, 0)].into_iter().enumerate() {
+                    // The moved side's ends, each its own distance off the
+                    // arrow's side: parallel, and half the line away.
+                    for end in [moved[a], moved[b]] {
+                        let off = gap(end, own[a], own[b]);
+                        assert!((off - inset.abs()).abs() < 1e-9, "side {k}, {points}, {inset}: {off}");
+                    }
+                }
+            }
+        }
+    }
 
     /// Hourly bars at 09:00, 10:00 and 11:00 of a day, then 09:00 the next:
     /// the night between is a gap no bar covers.

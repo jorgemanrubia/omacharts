@@ -110,7 +110,7 @@ Each range is a group, titled with its name, with a bin in its header that remov
 | **Name** | The preset's name | Any text. The legend lists it. Not on ETH and RTH |
 | **Starts**, **Ends** | The preset's hours | A time, typed as you like ([Typing a time](#typing-a-time)). Not on ETH and RTH |
 | **Time zone** | The preset's city, or **Chart's time zone** for Custom | **Chart's time zone**, or a named zone. The subtitle says what the hours come to on the chart today, such as **03:00–11:30 New York time today** for London. Not on ETH and RTH |
-| **Colour** | None, which shades the background | A palette name, or a custom colour. **Reset** goes back to none |
+| **Colour** | None, which shades the background | A palette name, or a custom colour. **Default**, first in its palette, goes back to none |
 | **Shading %** | 3% for ETH, 9% for the rest | 2 to 60% |
 
 The last group, **Add a range**, has a **+** that offers **ETH, extended hours**, **RTH, regular hours**, **Asia**, **London**, **New York** and **Custom**. ETH and RTH are greyed out once the list has them.

@@ -3,7 +3,7 @@ title: "Cumulative Delta"
 description: "The running total of buying at the ask less selling at the bid"
 section: charting
 parent: indicators/volume
-nav_order: 3
+nav_order: 4
 ---
 
 The running total of what was bought at the ask less what was sold at the bid, started again from nought at each reset period. Above the zero line buyers have taken more since the period began; below it, sellers have. It is the same measure as a [volume profile](/manual/indicators/volume/volume-profile/)'s **Ask volume - bid volume**, added up bar by bar.

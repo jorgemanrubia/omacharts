@@ -15,6 +15,7 @@
 
 use adw::prelude::*;
 use gtk::glib;
+use std::rc::Rc;
 use omacharts_engine::theme::{ColorChoice, Theme};
 
 use crate::ui::colors;
@@ -31,11 +32,15 @@ pub const BUTTON_SWATCH: (i32, i32) = (30, 20);
 ///
 /// `choice` is what is stored now, so the palette can tick the swatch in use.
 /// `on_pick` is handed the new choice; the button repaints itself.
+/// `default`, where the colour has one to go back to, is offered first as
+/// **Default**: it clears the choice and says what colour that came to, which
+/// the button then shows.
 pub fn picker(
     theme: &Theme,
     choice: Option<ColorChoice>,
     resolved: &str,
     on_pick: impl Fn(ColorChoice) + Clone + 'static,
+    default: Option<Rc<dyn Fn() -> String>>,
 ) -> gtk::MenuButton {
     let button = gtk::MenuButton::new();
     button.set_valign(gtk::Align::Center);
@@ -48,14 +53,20 @@ pub fn picker(
 
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
-    popover.set_child(Some(&palette_box(theme, choice, resolved, &popover, &shown, on_pick)));
+    let content = palette_box(theme, choice, resolved, &popover, &shown, on_pick);
+    if let Some(default) = default {
+        let shown = shown.downgrade();
+        content.prepend(&default_button(&popover, move || {
+            let hex = default();
+            repaint(&shown, &hex);
+        }));
+    }
+    popover.set_child(Some(&content));
     button.set_popover(Some(&popover));
     button
 }
 
-/// Repaint a picker's swatch, for when the colour changed somewhere else —
-/// Reset, which hands the indicator back to the palette and so cannot know
-/// what it will come out as until the set has been asked.
+/// Repaint a picker's swatch, for when the colour changed somewhere else.
 pub fn show(button: &gtk::MenuButton, hex: &str) {
     if let Some(area) = button.child().and_downcast::<gtk::DrawingArea>() {
         paint(&area, hex, false);
@@ -147,6 +158,26 @@ fn palette_box(
     content
 }
 
+/// The way back to a colour's default, first in its palette: where the
+/// colour rows used to carry a Reset beside the swatch. `clear` goes back to
+/// it and shows what it came to; the palette closes.
+pub(crate) fn default_button(popover: &gtk::Popover, clear: impl Fn() + 'static) -> gtk::Button {
+    let button = gtk::Button::with_label(DEFAULT);
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some("Back to the colour it has unless one is picked"));
+    let popover = popover.downgrade();
+    button.connect_clicked(move |_| {
+        clear();
+        if let Some(popover) = popover.upgrade() {
+            popover.popdown();
+        }
+    });
+    button
+}
+
+/// What the palette's first entry says.
+pub const DEFAULT: &str = "Default";
+
 fn repaint(area: &glib::WeakRef<gtk::DrawingArea>, hex: &str) {
     if let Some(area) = area.upgrade() {
         paint(&area, hex, false);
@@ -191,4 +222,38 @@ fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     cr.arc(x + r, y + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
     cr.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
     cr.close_path();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Where a colour has a default to go back to, its palette offers
+    /// Default first: it clears the choice and the swatch shows what that
+    /// came to. Without one there is no such entry.
+    #[test]
+    fn a_palette_offers_the_way_back_to_the_default_first() {
+        crate::ui::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes().remove(0);
+            let cleared = Rc::new(RefCell::new(0));
+            let default: Rc<dyn Fn() -> String> = {
+                let cleared = cleared.clone();
+                Rc::new(move || {
+                    *cleared.borrow_mut() += 1;
+                    "#123456".to_string()
+                })
+            };
+            let button = picker(&theme, Some(ColorChoice::swatch("Amber")), "#d29922", |_| {}, Some(default));
+            let content = button.popover().and_then(|p| p.child()).expect("its palette");
+            let first = content.first_child().and_downcast::<gtk::Button>().expect("a button first");
+            assert_eq!(first.label().as_deref(), Some(DEFAULT));
+            first.emit_clicked();
+            assert_eq!(*cleared.borrow(), 1);
+
+            let plain = picker(&theme, None, "#d29922", |_| {}, None);
+            let content = plain.popover().and_then(|p| p.child()).expect("its palette");
+            assert!(content.first_child().and_downcast::<gtk::Button>().is_none(), "no Default without one");
+        });
+    }
 }

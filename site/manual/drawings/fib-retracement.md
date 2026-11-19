@@ -50,7 +50,7 @@ One row a level, **0%** to **100%**, each with a switch that shows or hides that
 
 | Property | What it does | Default |
 |---|---|---|
-| **Colour** | The level's own colour. **Reset** goes back to the drawing's, which the level then follows | The drawing's |
+| **Colour** | The level's own colour. **Default**, first in its palette, goes back to the drawing's, which the level then follows | The drawing's |
 | **Thickness** | No line, 1, 1.5, 2.5 or 4 px, picked from drawn samples. No line keeps the level's label without its line | 1 px |
 | **Line style** | **Solid**, **Dashed** or **Dotted** | Solid for 0% and 100%; dashed for 50%; dotted for the rest |
 

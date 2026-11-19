@@ -562,22 +562,32 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
 | `--d-style S` | `solid`, `dashed`, `dotted`; %K's when not given | Stochastic |
-| `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, cumulative delta; `never` only for cumulative delta |
+| `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, market profile, cumulative delta; `never` only for cumulative delta |
 | `--cvd-style S` | `candles`, `line` | Cumulative delta |
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
-| `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
-| `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control |
-| `--last-only B` | `on`, `off` | Volume profile: whether it draws only its newest period |
-| `--poc-color C` | A colour | Volume profile |
+| `--tpo-minutes N` | 1 to 1440; 30 when not given | Market profile: how long each TPO period is |
+| `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | Market profile |
+| `--tpo-style S` | `letters`, `blocks` | Market profile |
+| `--open-close B` | `on`, `off`; on when not given | Market profile: whether it marks its open and its close with an arrow each, beside the TPO at its opening price and the one at its closing price |
+| `--open-color C`, `--close-color C` | A colour, or `none` for the theme's | Market profile |
+| `--expand-last B` | `on`, `off`; off when not given | Market profile: whether its newest profile, the one still forming, is drawn expanded, its TPOs laid out over its bars |
+| `--open-transparency F`, `--close-transparency F` | 0 to 1, or `default` for solid | Market profile: how much of the chart shows through its open or close arrow |
+| `--value-area F` | 0 to 1; 0.70 when not given | Volume profile, market profile |
+| `--poc B` | `on`, `off` | Volume profile, market profile: whether it draws its point of control |
+| `--last-only B` | `on`, `off` | Volume profile, market profile: whether it draws only its newest period |
+| `--poc-color C` | A colour | Volume profile, market profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
-| `--align A` | `left`, `right` | Volume profile |
-| `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
-| `--outline-color C` | A colour | Volume profile |
-| `--outline-width F`, `--poc-width F` | 0.5 to 12 | Volume profile |
-| `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile |
-| `--transparency F` | 0 to 1; 0.7 when not given | Volume profile: how much of the chart shows through its rows and outline. 0 is its colour solid, 1 invisible |
-| `--highlight-value-area B` | `on`, `off` | Volume profile: whether its value area is set apart from its other rows; on when not given |
-| `--value-area-color C` | A colour, or `none` | Volume profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
+| `--align A` | `left`, `right` | Volume profile, market profile |
+| `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline. Market profile: whether its TPOs do, off when not given |
+| `--outline-color C` | A colour | Volume profile, market profile |
+| `--outline-width F`, `--poc-width F` | 0.5 to 12 | Volume profile, market profile. A market profile's point of control is 2 when not given |
+| `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile, market profile |
+| `--transparency F` | 0 to 1; 0.7 on a volume profile and 0.05 on a market profile when not given | Volume profile, market profile: how much of the chart shows through its rows. 0 is its colour solid, 1 invisible |
+| `--value-area-transparency F`, `--outside-transparency F` | 0 to 1, or `default` | Volume profile, market profile: the value area's rows and the rows outside it, while it is highlighted. Unset, or `default`, they follow `--transparency` |
+| `--outline-transparency F` | 0 to 1, or `default` | Volume profile: its outline. Unset, or `default`, it follows its rows. Market profile: its outline, solid unless set |
+| `--poc-transparency F` | 0 to 1, or `default` | Volume profile, market profile: its point of control. `default` is its own, 0.1 on a volume profile and 0 on a market profile |
+| `--highlight-value-area B` | `on`, `off` | Volume profile, market profile: whether its value area is set apart from its other rows; on when not given |
+| `--value-area-color C` | A colour, or `none` | Volume profile, market profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
@@ -905,9 +915,10 @@ candles the reply has no bar distance and `bars` is `null`. A zero starting pric
 `null` for `percent_change`. The measurement is not saved or shared. The mouse
 tool is in [Measure](/manual/drawings/measure/).
 
-## Volume profiles
+## Volume and market profiles
 
-`omacharts chart profile list` reads the focused chart's volume profiles: where
+`omacharts chart profile list` reads the focused chart's volume profiles, or
+its market profiles when it has no volume profile: where
 each begins and ends, its point of control and its value area, and whether it
 is on screen (`●`) or not (`○`). `--on-screen` keeps only the ones on screen.
 With `--json`, each profile has `start` and `end` (Unix seconds, with
@@ -961,19 +972,97 @@ $ omacharts chart profile list --on-screen
   [exit 0]
 ```
 
+A market profile also reads as the chart draws it. Each profile names its
+open, its first bar's opening price, and its close, its last bar's closing
+price (the latest one while the session forms), and whether it is drawn
+expanded. With `--json` it has `open` and `close`, each a `price` and the
+`row` it is in; `expanded`; `tick_size`, `row_ticks` and `row_height`, how
+tall a row is; and `tpo_count`, every TPO in it. A row is named by its lowest
+tick, and so are its levels: `poc` is the point of control's row,
+`value_area_low` the lowest tick of the value area and `value_area_high` its
+highest. `--tpos` adds each TPO period, its letter, the times of its first and
+last bars, and its high and low, and each row's letters from its lowest
+price. With `--json` the periods are `tpo_periods`, each with `letter`,
+`start`, `end`, `high` and `low`, and the rows are `rows`, a list of
+`[price, count, letters]`.
+
+The listing as a whole says which study it is: `indicator`, its id, `kind`,
+`volume_profile` or `market_profile`, and a market profile's `tpo_minutes`.
+`paired_with` lists the ids of the profile studies drawn as one pair with it,
+and each profile's `paired_with` names the profile of that study it is drawn
+beside, by `indicator` and `start`.
+
+```
+$ omacharts chart profile list --id 2 --last --tpos
+1 profiles on pos:0 SPY 5m in "Chartbook 1"
+●  2026-11-18 09:30 → 2026-11-18 15:55  POC 676.40  VA 675.10–677.90  open 676.12 close 677.35  expanded
+   A 2026-11-18 09:30 → 2026-11-18 09:55  675.60–677.20
+   B 2026-11-18 10:00 → 2026-11-18 10:25  675.05–676.70
+   …
+   675.00 B
+   675.10 AB
+   …
+  [exit 0]
+```
+
 `omacharts chart profile merge --at WHEN` folds the focused chart's volume
 profile holding that moment into the one before it, and `omacharts chart
 profile split --at WHEN` puts a composite back into its periods
-([Composite profiles](/manual/indicators/volume/volume-profile/#composite-profiles)). `WHEN`
+([Composite profiles](/manual/indicators/volume/volume-profile/#composite-profiles)).
+A market profile is merged and split the same way, on its own or, beside a
+volume profile of the same period, together with it
+([Composite profiles](/manual/indicators/volume/market-profile/#composite-profiles)). `WHEN`
 is a day, a day and a time, read in the chart's time zone, or Unix seconds,
 such as `start` from `list`. `--id N` says which profile when the chart has more
-than one. A window must be open;
+than one, a market profile's id included. A window must be open;
 otherwise it exits 6.
+
+`omacharts chart profile expand --at WHEN` draws the focused chart's market
+profile holding that moment expanded, its TPOs laid out over its bars, and
+`omacharts chart profile collapse --at WHEN` stacks it again
+([Expanded profiles](/manual/indicators/volume/market-profile/#expanded-profiles)).
+Kept with the chart, as a merge is.
+
+```
+$ omacharts chart profile expand --at 2026-10-28
+expanded the market profile on pos:0 SPY 30m in "Chartbook 1"
+  [exit 0]
+```
 
 ```
 $ omacharts chart profile merge --at 2026-10-28
 merged the profile into the one before it on pos:0 SPY 1h in "Chartbook 1"
   [exit 0]
+```
+
+A market profile is a study of its own, usable alone, and merges and splits
+as a volume profile does. With a volume profile study of the same
+`--anchor` on the chart, each session's two are drawn inside it, each from
+its own `--align` (side by side when alike, back to back when not), and merge
+and split together. With different anchors, each keeps to itself
+([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)).
+
+```
+# A market profile on its own
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+
+# A market profile beside a volume profile, both per session: drawn side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Back to back instead: the letters grow left, the volume profile's rows right
+omacharts chart indicator set market_profile --align right
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+
+# Lay a session's TPOs out over its bars, and stack them again
+omacharts chart profile expand --at 2026-11-18
+omacharts chart profile collapse --at 2026-11-18
+
+# Keep the session still forming expanded
+omacharts chart indicator set market_profile --expand-last on
 ```
 
 ## Drawings
@@ -1039,9 +1128,12 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--profile-style S` | `filled`, `outline` | A volume profile's rows, or only their edge |
 | `--align A` | `left`, `right` | The edge of its span a volume profile grows from |
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
-| `--transparency F` | 0 to 1 | How much of the chart shows through a volume profile's background and outline: 0 solid, 1 invisible; 0.7 by default |
+| `--transparency F` | 0 to 1 | How much of the chart shows through a volume profile's rows and outline: 0 solid, 1 invisible; 0.7 by default |
+| `--value-area-transparency F`, `--outside-transparency F` | 0 to 1, or `default` | The same for a volume profile's value area, and the rows outside it, while it is highlighted; `default` follows `--transparency` |
+| `--outline-transparency F` | 0 to 1, or `default` | The same for a volume profile's outline; `default` follows `--transparency` |
+| `--poc-transparency F` | 0 to 1, or `default` | The same for a volume profile's point of control; `default` is its own, 0.1 |
 | `--highlight-value-area B` | `on`, `off` | Whether a volume profile's value area is set apart from its other rows; on by default |
-| `--value-area-color C` | A colour, or `none` | A volume profile's value area while it is set apart; `none` for its background's colour |
+| `--value-area-color C` | A colour, or `none` | A volume profile's value area while it is set apart; `none` for its rows' colour |
 | `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
 | `--poc-style S` | `solid`, `dashed`, `dotted` | How a volume profile's point of control is drawn; `--line-style` is its outline's |
 | `--poc B` | `on`, `off` | Whether a volume profile draws its point of control; on by default |
@@ -1074,7 +1166,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--poc-style`, `--poc`, `--rows`, `--profile-method`, `--colouring`, `--profile-width`, the `--outline*` flags, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency` and the other `--*-transparency` flags, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--poc-style`, `--poc`, `--rows`, `--profile-method`, `--colouring`, `--profile-width`, the `--outline*` flags, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 

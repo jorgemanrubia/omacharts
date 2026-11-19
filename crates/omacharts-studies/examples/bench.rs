@@ -66,6 +66,7 @@ fn main() {
     measure("vwap", || Vwap::new(Source::Hlc3), &bars);
     measure("cvd estimate", CvdEstimate::new, &bars);
     measure("volume", Volume::new, &bars);
+    measure("developing market profile", || DevelopingMarketProfile::new(0.25, 1, 30), &bars);
 
     // The windowed ones over a series in place, as a chart computes them.
     let n = bars.len();

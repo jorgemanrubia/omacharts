@@ -9,7 +9,7 @@ description: >-
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
   for indicators (moving average, VWAP, Bollinger bands, volume profile,
-  RSI, MACD, ATR), for session times — "shade the overnight", "shade
+  market profile or TPO, RSI, MACD, ATR), for session times — "shade the overnight", "shade
   the London session", "show RTH", "a lunch hour background" — and for
   which time zone and 12 or 24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link modes, the instrument search, and the cached
@@ -313,9 +313,55 @@ anchors at opposite corners of the box it is drawn in, the same fill and
 edge, never held round. Reach for it over a box when the empty corners
 matter.
 
+**A market profile, alone or beside a volume profile.** `market_profile` (TPO, or
+"market profile" in the picker) is time at price: each period cut into
+lettered TPO periods of `--tpo-minutes`, rows `--row-ticks` ticks tall or
+`auto`. "TPO" means this, not the volume profile. It is a study of its own:
+add it alone, with no volume profile, and `chart profile merge` / `split`
+work on it as on a volume profile. On one chart with a volume profile study
+of the same `--anchor`, the two pair: each session's two are drawn inside
+it, and `chart profile merge` / `split` on either does both. Each grows from
+its own `--align`: set alike, side by side from that edge, the volume
+profile against it; one `left` and one `right`, back to back on a spine,
+the pair starting at the session's open. With different anchors each keeps to itself, with
+its own merges. `--align right` mirrors a profile; `--tpo-style blocks` swaps
+letters for squares; each profile's open and close are marked (`--open-close off` hides them) with
+an arrow beside the TPO at its opening price and one beside the TPO at its
+closing price (`--open-color`, `--close-color`, `none` for the theme's;
+`--open-transparency`, `--close-transparency`); `--outline on` draws the
+stepped edge round its TPOs. `--outline-color`, `--outline-width`,
+`--outline-style`, `--poc-width`, `--poc-style` (its point of control is a
+line across the profile, 2 px unless set), `--transparency`,
+`--value-area-transparency`, `--outside-transparency`,
+`--outline-transparency`, `--poc-transparency` and `--last-only` work as on
+a volume profile. `chart profile expand --at WHEN` lays one profile's TPOs
+out over its bars ("expanded": a column per TPO period at its bars) and
+`collapse` stacks it again; `--expand-last on` keeps the forming one
+expanded. `chart values --json` reads each one's latest `poc`,
+`vah` and `val`.
+
+```
+# A market profile on its own
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+
+# Beside it, a volume profile of the same period (both per session): drawn side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+
+# Lay a session's TPOs out over its bars, and keep the forming one so
+omacharts chart profile expand --at 2026-11-18
+omacharts chart indicator set market_profile --expand-last on
+
+# Its look
+omacharts chart indicator set market_profile --tpo-style blocks --poc-color Amber --value-area-color Teal
+```
+
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is
-its outline, `--fill` its background, `--width` the outline's thickness,
+its outline, `--fill` its rows' colour, `--width` the outline's thickness,
 `--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
 `--profile-style filled|outline`, `--align
 left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`,
@@ -325,17 +371,24 @@ rest, as the study's; the study's `--outline*` names work too. A delta
 needs a feed with volume at price. The study takes
 `--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
 `--poc-style`, `--transparency` (0 is its colour solid, 1 invisible, 0.7 by
-default), `--highlight-value-area` and `--value-area-color` (`none` for the
-rows' own) the same way; a MACD's signal line
+default), `--value-area-transparency`, `--outside-transparency`,
+`--outline-transparency` and `--poc-transparency` (each 0 to 1, or `default`
+to follow its rows again), `--highlight-value-area` and `--value-area-color`
+(`none` for the rows' own) the same way, and the drawing takes them too; a MACD's signal line
 takes `--signal-style` and a stochastic's %D `--d-style`. It takes no `--text`. The study's own profiles are read and merged with
 `chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds
 the one starting there into the one before it — read again after each merge,
-since the composite's value area is new. `split --at` undoes it.
+since the composite's value area is new. `split --at` undoes it. A market
+profile's listing adds `open` and `close` (each a `price` and its `row`),
+`expanded` and `row_height`; `--tpos` adds `tpo_periods` (each `letter`,
+`start`, `end`, `high`, `low`) and `rows` as `[price, count, letters]`, and
+`paired_with` names the volume profile drawn beside it.
 
 ```
 omacharts chart drawing add profile --from 2026-10-14,0 --to 2026-10-21,0 --config 9
 omacharts chart profile list --on-screen --json
+omacharts chart profile list --id 2 --last --tpos --json
 omacharts chart profile merge --at 1793836800
 ```
 

@@ -1,13 +1,15 @@
-//! The rows of a volume profile's properties, for the study's settings and a
-//! profile drawing's alike.
+//! The rows of a profile's properties: a volume profile study's, a volume
+//! profile drawing's and a market profile's alike.
 //!
-//! One set of names, controls, ranges and one order, laid out here, so the
-//! two dialogs cannot drift apart: a row the study has and the drawing means
-//! the same thing by is built by the same function and put in the same place.
-//! What each side builds on its own is only what its own storage makes
-//! different — a colour, which is a preset on a drawing and a theme colour on
-//! a study — and what only a study has: its period, and whether only the
-//! newest is drawn, neither of which a span between two anchors has.
+//! One set of names, controls, ranges, groups and one order, laid out here,
+//! so the three dialogs cannot drift apart: a row two of them mean the same
+//! thing by is built by the same function and put in the same place. What
+//! each builds on its own is only what its own storage makes different — a
+//! colour, which is a preset on a drawing and a theme colour on a study —
+//! and what only one of them has: a study's period, and whether only the
+//! newest is drawn, which a span between two anchors has not; a volume
+//! profile's method and outline; a market profile's TPO period and its
+//! open and close marks. Those sit where the others' would.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -17,26 +19,48 @@ use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 use omacharts_engine::BarColouring;
 
 pub use crate::ui::property_rows::{
-    BACKGROUND, TRANSPARENCY, percent_row, switch_row, thickness_row, transparency_row,
+    COLOUR, LINE_STYLE, SHOW, THICKNESS, OPACITY, Transparency, colour_row, percent_row, switch_row,
+    thickness_row,
 };
 #[cfg(test)]
 pub use crate::ui::property_rows::titles;
 
+/// The groups, in their order.
+pub const STYLE_GROUP: &str = "Style";
+pub const VALUE_AREA_GROUP: &str = "Value area";
+pub const POC_GROUP: &str = "Point of control";
+
+/// The Style group's own rows. Colour and Transparency are the shared ones.
+/// `DISPLAY_AS`, not `DISPLAY`: a setting key already goes by that name, and
+/// the check that every key written is classified resolves keys by name.
+pub const DISPLAY_AS: &str = "Display";
 pub const OUTLINE: &str = "Outline";
 pub const OUTLINE_COLOUR: &str = "Outline colour";
 pub const OUTLINE_STYLE: &str = "Outline style";
 pub const OUTLINE_THICKNESS: &str = "Outline thickness";
-pub const SHOW_POC: &str = "Show point of control";
-pub const POC_COLOUR: &str = "Point of control colour";
-pub const POC_STYLE: &str = "Point of control style";
-pub const POC_THICKNESS: &str = "Point of control thickness";
-pub const STYLE: &str = "Style";
+pub const OPEN_CLOSE: &str = "Open and close";
+pub const OPEN_COLOUR: &str = "Open";
+pub const CLOSE_COLOUR: &str = "Close";
 pub const ALIGNMENT: &str = "Alignment";
-pub const AUTOMATIC: &str = "Automatic";
+/// A market profile's newest profile, the one forming, laid out over
+/// time: expanded, as the chart's menu says of any one.
+pub const EXPAND_LAST: &str = "Expand last profile";
+pub const EXPAND_LAST_TIP: &str =
+    "Lay the forming profile's TPOs out over time, a column for each TPO period at its bars";
+/// The Value area group's switch; its Colour and Transparency are the
+/// shared ones.
+pub const HIGHLIGHT: &str = "Highlight";
+pub const OUTSIDE_TRANSPARENCY: &str = "Outside rows opacity %";
+/// What the Outside rows slider is, for its tooltip and a screen reader.
+pub const OUTSIDE_TIP: &str = "Opacity of the rows outside the value area";
+/// The Parameters group's.
+pub const LAST_ONLY: &str = "Last period only";
+/// A volume profile's switch for its row count, and a market profile's for
+/// its row height: one name on both, the row under it saying which number
+/// it makes automatic.
+pub const AUTOMATIC: &str = "Automatic rows";
 pub const ROWS: &str = "Rows";
 pub const VALUE_AREA: &str = "Value area %";
-pub const HIGHLIGHT: &str = "Highlight value area";
-pub const VALUE_AREA_COLOUR: &str = "Value area colour";
 pub const METHOD: &str = "Calculation method";
 pub const COLOURING: &str = "Colouring";
 pub const WIDTH: &str = "Width %";
@@ -53,58 +77,128 @@ const MOST_ROWS: f64 = 800.0;
 /// drawn yet to say how many it came to.
 const ROWS_UNKNOWN: usize = 48;
 
+/// An outline's switch and the rows it shows.
+pub struct OutlineRows {
+    pub switch: adw::SwitchRow,
+    /// Its colour and transparency, on the standard colour row.
+    pub colour: gtk::Widget,
+    pub thickness: gtk::Widget,
+    pub style: gtk::Widget,
+}
+
+/// The open and close marks' switch and their colours: a market profile's.
+pub struct EndRows {
+    pub switch: adw::SwitchRow,
+    pub open: gtk::Widget,
+    pub close: gtk::Widget,
+}
+
 /// The rows of the Style group, built by each side, laid out here.
 pub struct StyleRows {
-    pub outline: adw::SwitchRow,
-    pub outline_colour: gtk::Widget,
-    pub outline_style: gtk::Widget,
-    pub outline_thickness: gtk::Widget,
-    pub background: gtk::Widget,
-    pub transparency: gtk::Widget,
-    pub show_poc: adw::SwitchRow,
-    pub poc_colour: gtk::Widget,
-    pub poc_style: gtk::Widget,
-    pub poc_thickness: gtk::Widget,
-    pub style: gtk::Widget,
+    /// Filled or outline; letters or blocks.
+    pub display: gtk::Widget,
+    /// The rows' colour and transparency, on the standard colour row.
+    pub colour: gtk::Widget,
+    pub outline: Option<OutlineRows>,
+    pub ends: Option<EndRows>,
     pub alignment: gtk::Widget,
     /// How much of its room the longest row reaches: of a study's period,
     /// of a drawing's span.
     pub width: gtk::Widget,
+    /// A market profile's: whether its newest profile is always drawn
+    /// expanded, its TPOs over time. Under the rows that place it.
+    pub expand_last: Option<gtk::Widget>,
 }
 
-/// The Style group, in its one order: the outline, the rows, the point of
-/// control, then how the rows are drawn; a stroke's colour, thickness and
-/// style in that order, as on every line in every dialog. The outline's own rows are there
-/// while there is an outline, and the point of control's while it is drawn.
-pub fn style_group(rows: StyleRows) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Style");
-    group.add(&rows.outline);
-    let outline_rows = [
-        rows.outline_colour,
-        rows.outline_thickness,
-        rows.outline_style,
-    ];
-    for row in &outline_rows {
-        group.add(row);
+/// The rows of the Value area group.
+pub struct ValueAreaRows {
+    pub highlight: adw::SwitchRow,
+    /// Its colour and transparency, on the standard colour row.
+    pub colour: gtk::Widget,
+    /// The rows outside the value area.
+    pub outside: gtk::Widget,
+}
+
+/// The rows of the Point of control group: a line across the profile, on
+/// both.
+pub struct PocRows {
+    pub show: adw::SwitchRow,
+    /// Its colour and transparency, on the standard colour row.
+    pub colour: gtk::Widget,
+    pub thickness: Option<gtk::Widget>,
+    pub style: Option<gtk::Widget>,
+}
+
+/// Every look row of a profile.
+pub struct LookRows {
+    pub style: StyleRows,
+    pub value_area: ValueAreaRows,
+    pub poc: PocRows,
+}
+
+/// The Style, Value area and Point of control groups, in that order, each
+/// in its one order: a stroke's colour and transparency, on one row, then
+/// its thickness and style. The rows a switch
+/// governs are there while it is on.
+pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
+    let LookRows { style, value_area, poc } = rows;
+    let group = |title: &str| {
+        let group = adw::PreferencesGroup::new();
+        group.set_title(title);
+        group
+    };
+
+    let styled = group(STYLE_GROUP);
+    // The shape first, its colour next, and a switch with rows under it
+    // last, so nothing nested reads as the group's end.
+    styled.add(&style.display);
+    styled.add(&style.alignment);
+    // Under the alignment: both say where the profile is laid out.
+    if let Some(row) = &style.expand_last {
+        styled.add(row);
     }
-    follow_switch(&rows.outline, outline_rows);
-    group.add(&rows.background);
-    group.add(&rows.transparency);
-    group.add(&rows.show_poc);
-    let poc_rows = [rows.poc_colour, rows.poc_thickness, rows.poc_style];
-    for row in &poc_rows {
-        group.add(row);
+    styled.add(&style.width);
+    styled.add(&style.colour);
+    if let Some(outline) = style.outline {
+        styled.add(&outline.switch);
+        let rows = vec![outline.colour, outline.thickness, outline.style];
+        for row in &rows {
+            styled.add(row);
+        }
+        follow_switch(&outline.switch, rows);
     }
-    follow_switch(&rows.show_poc, poc_rows);
-    group.add(&rows.style);
-    group.add(&rows.alignment);
-    group.add(&rows.width);
-    group
+    if let Some(ends) = style.ends {
+        styled.add(&ends.switch);
+        let rows = vec![ends.open, ends.close];
+        for row in &rows {
+            styled.add(row);
+        }
+        follow_switch(&ends.switch, rows);
+    }
+
+    let area = group(VALUE_AREA_GROUP);
+    area.add(&value_area.highlight);
+    let rows = vec![value_area.colour, value_area.outside];
+    for row in &rows {
+        area.add(row);
+    }
+    follow_switch(&value_area.highlight, rows);
+
+    let point = group(POC_GROUP);
+    point.add(&poc.show);
+    let mut rows = vec![poc.colour];
+    rows.extend(poc.thickness);
+    rows.extend(poc.style);
+    for row in &rows {
+        point.add(row);
+    }
+    follow_switch(&poc.show, rows);
+
+    vec![styled, area, point]
 }
 
 /// `rows` shown while `switch` is on, from now and as it is turned.
-fn follow_switch<const N: usize>(switch: &adw::SwitchRow, rows: [gtk::Widget; N]) {
+fn follow_switch(switch: &adw::SwitchRow, rows: Vec<gtk::Widget>) {
     for row in &rows {
         row.set_visible(switch.is_active());
     }
@@ -115,31 +209,35 @@ fn follow_switch<const N: usize>(switch: &adw::SwitchRow, rows: [gtk::Widget; N]
     });
 }
 
+/// How solid something is drawn, as a transparency says it: one minus
+/// `alpha`, and the way to show another strength. Hands back a strength,
+/// not a transparency. Goes on a colour row, or on one of its own.
+pub fn strength(alpha: f64, changed: impl Fn(f64) + 'static) -> (Transparency, Rc<dyn Fn(f64)>) {
+    let (transparency, show) = Transparency::new(1.0 - alpha, move |share| changed(1.0 - share));
+    (transparency, Rc::new(move |alpha| show(1.0 - alpha)))
+}
+
 /// The rows of the Parameters group, built by each side, laid out here.
 pub struct ParameterRows {
     /// What only a study has, first: its period and whether only the newest
     /// is drawn.
     pub leading: Vec<gtk::Widget>,
-    pub method: adw::ComboRow,
-    pub colouring: adw::ComboRow,
+    /// What each kind has of its own: a volume profile's method and its
+    /// colouring, a market profile's TPO period.
+    pub own: Vec<gtk::Widget>,
     pub granularity: Granularity,
     pub value_area: gtk::Widget,
-    pub highlight: adw::SwitchRow,
-    pub value_area_colour: gtk::Widget,
 }
 
-/// The Parameters rows, in their one order, onto `group`.
+/// The Parameters rows, in their one order, onto `group`. How the value
+/// area looks is the Value area group's: not what it is worked out from.
 pub fn add_parameters(group: &adw::PreferencesGroup, rows: &ParameterRows) {
-    for row in &rows.leading {
+    for row in rows.leading.iter().chain(&rows.own) {
         group.add(row);
     }
-    group.add(&rows.method);
-    group.add(&rows.colouring);
     group.add(&rows.granularity.automatic);
     group.add(&rows.granularity.rows);
     group.add(&rows.value_area);
-    group.add(&rows.highlight);
-    group.add(&rows.value_area_colour);
 }
 
 /// How finely a profile is divided: automatically, or into so many rows.
@@ -310,17 +408,15 @@ pub fn has_colouring(method: Method) -> bool {
 /// The rows the calculation method decides about.
 pub struct ByMethod {
     pub value_area: gtk::Widget,
-    pub highlight: adw::SwitchRow,
-    pub value_area_colour: gtk::Widget,
     pub colouring: adw::ComboRow,
-    /// Rows a delta does not paint with, greyed while it is one.
+    /// Rows, or groups, a delta does not paint with or has no use for,
+    /// greyed while it is one.
     pub total_only: Vec<gtk::Widget>,
 }
 
 /// Grey what a delta has no use for and show its Colouring, for `method`
 /// now and, through what is handed back, for any method shown later; and
-/// as the Calculation method row and the highlight switch are turned. The
-/// value area's colour is there to set while the value area is set apart.
+/// as the Calculation method row is turned.
 pub fn follow_method(method_row: &adw::ComboRow, rows: ByMethod) -> Rc<dyn Fn(Method)> {
     let rows = Rc::new(rows);
     let apply: Rc<dyn Fn(Method)> = {
@@ -328,18 +424,12 @@ pub fn follow_method(method_row: &adw::ComboRow, rows: ByMethod) -> Rc<dyn Fn(Me
         Rc::new(move |method| {
             let total = has_value_area(method);
             rows.value_area.set_sensitive(total);
-            rows.highlight.set_sensitive(total);
-            rows.value_area_colour.set_sensitive(total && rows.highlight.is_active());
             rows.colouring.set_visible(has_colouring(method));
             for row in &rows.total_only {
                 row.set_sensitive(total);
             }
         })
     };
-    {
-        let colour = rows.value_area_colour.clone();
-        rows.highlight.connect_active_notify(move |row| colour.set_sensitive(row.is_sensitive() && row.is_active()));
-    }
     {
         let apply = apply.clone();
         method_row.connect_selected_notify(move |row| {
@@ -350,17 +440,24 @@ pub fn follow_method(method_row: &adw::ComboRow, rows: ByMethod) -> Rc<dyn Fn(Me
     apply
 }
 
-/// Grey `style`'s Background while `parameters`' Calculation method is a
-/// delta, whose rows are painted in its colouring: for a dialog whose two
-/// groups are built apart.
-pub fn background_follows_method(parameters: &adw::PreferencesGroup, style: &adw::PreferencesGroup) {
-    let (Some(method), Some(background)) = (row_titled(parameters.upcast_ref(), METHOD), row_titled(style.upcast_ref(), BACKGROUND))
+/// Grey the Style group's Colour and the whole Value area group while
+/// `parameters`' Calculation method is a delta, whose rows are painted in
+/// its colouring and which has no value area: for a dialog whose groups are
+/// built apart. Without a method, nothing.
+pub fn look_follows_method(parameters: &adw::PreferencesGroup, groups: &[adw::PreferencesGroup]) {
+    let Some(method) = row_titled(parameters.upcast_ref(), METHOD).and_then(|row| row.downcast::<adw::ComboRow>().ok())
     else {
         return;
     };
-    let Ok(method) = method.downcast::<adw::ComboRow>() else { return };
+    let titled = |title: &str| groups.iter().find(|group| group.title() == title).cloned();
+    let mut total_only: Vec<gtk::Widget> = Vec::new();
+    total_only.extend(titled(STYLE_GROUP).and_then(|group| row_titled(group.upcast_ref(), COLOUR)));
+    total_only.extend(titled(VALUE_AREA_GROUP).map(|group| group.upcast()));
     let follow = move |row: &adw::ComboRow| {
-        background.set_sensitive(has_value_area(Method::ALL.get(row.selected() as usize).copied().unwrap_or_default()))
+        let total = has_value_area(Method::ALL.get(row.selected() as usize).copied().unwrap_or_default());
+        for widget in &total_only {
+            widget.set_sensitive(total);
+        }
     };
     follow(&method);
     method.connect_selected_notify(follow);
