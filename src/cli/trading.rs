@@ -33,9 +33,12 @@ use crate::trading::{self, Account, Login, OrderKind, Side, Standing, View};
 pub enum Act {
     /// Buy or sell what chart `chart` trades: at the market, or a limit
     /// or stop at `price`, for `quantity` or the chart's own.
-    /// With `exits`, the order goes as one bracket with its target and its
-    /// stop-loss.
-    Order { chart: u32, side: Side, kind: OrderKind, price: Option<f64>, quantity: Option<u32>, exits: Option<Exits> },
+    /// It goes as one bracket with the exits `bracket` says: the chart's
+    /// order template, another, or a target and a stop-loss typed.
+    Order { chart: u32, side: Side, kind: OrderKind, price: Option<f64>, quantity: Option<u32>, bracket: Bracket },
+    /// The working entry `basket` given the exits `bracket` says, or none:
+    /// cancelled and placed again as one bracket with them.
+    Bracket { basket: String, account: Option<String>, bracket: Bracket },
     /// A target, a stop, or both linked, for the position chart `chart` trades.
     Exit { chart: u32, target: Option<f64>, stop: Option<f64> },
     /// A working order moved to `price`: on `account` when it is given,
@@ -53,6 +56,17 @@ pub enum Act {
 
 /// What the window said doing it: who said it, and what.
 pub type Said = Vec<(String, String)>;
+
+/// What exits an order goes with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Bracket {
+    /// The order template its chart is on, if any.
+    Chart,
+    /// The order template `Some(id)`, or none.
+    Template(Option<u32>),
+    /// A target, a stop-loss or both, as typed.
+    Legs(Exits),
+}
 
 /// A bracket's exits as typed: each a price, or points from the fill.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -350,14 +364,17 @@ pub fn run(
                     brackets::leg(text).map_err(|why| Fault::usage(format!("--stop-loss: {why}")))
                 })
                 .transpose()?;
-            let exits = match (target, stop) {
-                (None, None) => None,
+            let template = template_of(store, m)?;
+            let bracket = match (target, stop, template) {
+                (None, None, None) => Bracket::Chart,
+                (None, None, Some(template)) => Bracket::Template(template),
+                (_, _, Some(_)) => return Err(Fault::usage("a template, or --target and --stop-loss; not both".into())),
                 _ if !crate::features::agent_trading() => return Err(agent_off()),
-                (target, stop) => Some(Exits { target, stop }),
+                (target, stop, None) => Bracket::Legs(Exits { target, stop }),
             };
             let live = live.ok_or_else(no_window)?;
             let chart = chart_of(store, m)?;
-            act(live, Act::Order { chart, side, kind, price, quantity, exits }, as_json)
+            act(live, Act::Order { chart, side, kind, price, quantity, bracket }, as_json)
         }
         "exit" => {
             let (target, stop) = (price(m, "target")?, price(m, "stop")?);
@@ -414,7 +431,18 @@ pub fn run(
                 }
             }
         }
+        "bracket" => {
+            let basket = required(m, "ORDER")?.to_string();
+            let bracket = match template_of(store, m)? {
+                Some(template) => Bracket::Template(template),
+                None => return Err(Fault::usage("say which: --template NAME, or --template none".into())),
+            };
+            let live = live.ok_or_else(no_window)?;
+            let account = account_key(store, live, m)?;
+            act(live, Act::Bracket { basket, account, bracket }, as_json)
+        }
         "quantities" => quantities(store, m, as_json, live),
+        "templates" => order_templates(store, m, as_json, live),
         _ => Err(Fault::usage(format!("no such command: trading {verb}"))),
     }
 }
@@ -877,6 +905,203 @@ fn quantities(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&
             said(as_json, listed(&templates), format!("removed {}", gone.name))
         }
         other => Err(Fault::usage(format!("{other:?} is list, set or remove"))),
+    }
+}
+
+/// `--template NAME`, `id:N` or `none`: `Some(None)` for none, nothing
+/// when it was not given.
+fn template_of(store: &Store, m: &clap::ArgMatches) -> Result<Option<Option<u32>>, Fault> {
+    let Some(text) = arg(m, "template") else { return Ok(None) };
+    if text.trim().eq_ignore_ascii_case("none") {
+        return Ok(Some(None));
+    }
+    let templates = trading::order_templates::load(store);
+    let template = trading::order_templates::find(&templates, text).ok_or_else(|| Fault::not_found(no_template_text(&templates, text)))?;
+    Ok(Some(Some(template.id)))
+}
+
+/// What is said for an order template there is none of.
+pub fn no_template_text(templates: &[trading::order_templates::OrderTemplate], text: &str) -> String {
+    match templates.is_empty() {
+        true => format!("no order template called {text:?}; `omacharts trading templates set` makes one"),
+        false => format!(
+            "no order template called {text:?}; there are {}",
+            templates.iter().map(|template| template.name.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+/// One exit of an order template as typed: how far, `8t`, `$250`, `2r`
+/// (a target's multiple of R) or `$500r` (a stop's money at risk on the
+/// whole order; `1r` on a stop is what 1R is worth now), then how much
+/// after an `@`: `@1/2`, `@2`, `@all`. Without one, a share of the order
+/// splits it evenly with the others.
+pub fn exit_text(text: &str, stop: bool, r: f64) -> Result<trading::order_templates::Exit, String> {
+    use trading::order_templates::{Distance, Exit, Size};
+    let text = text.trim().to_lowercase();
+    let (distance, size) = match text.split_once('@') {
+        Some((distance, size)) => (distance.trim().to_string(), Some(Size::parse(size)?)),
+        None => (text.clone(), None),
+    };
+    let number = |text: &str| -> Result<f64, String> {
+        text.replace(',', "")
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n > 0.0)
+            .ok_or_else(|| format!("{text:?} is not an amount above 0"))
+    };
+    let distance = if let Some(ticks) = distance.strip_suffix('t') {
+        let ticks = number(ticks)?;
+        if ticks.fract() != 0.0 {
+            return Err(format!("{distance:?}: ticks are whole"));
+        }
+        Distance::Ticks(ticks as u32)
+    } else if let Some(risk) = distance.strip_suffix('r') {
+        match (risk.strip_prefix('$'), stop) {
+            (Some(money), true) => Distance::Risk(number(money)?),
+            (None, true) => Distance::Risk(number(risk)? * r),
+            (Some(_), false) => return Err(format!("{distance:?}: a target's risk is a multiple of R, such as 2r")),
+            (None, false) => Distance::Risk(number(risk)?),
+        }
+    } else if let Some(money) = distance.strip_prefix('$') {
+        Distance::Money(number(money)?)
+    } else {
+        return Err(format!("{distance:?} is not 8t, $250, 2r or $500r"));
+    };
+    Ok(Exit { distance, size: size.unwrap_or(Size::ALL) })
+}
+
+/// The exits of a group as typed, or none for `none`. Those that say no
+/// size split the order evenly among them.
+fn exits_typed(given: &[String], stop: bool, r: f64) -> Result<Vec<trading::order_templates::Exit>, Fault> {
+    use trading::order_templates::Size;
+    let flag = if stop { "--stop" } else { "--target" };
+    if given.len() == 1 && given[0].trim().eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    let mut exits = Vec::new();
+    for text in given {
+        let sized = text.contains('@');
+        let mut exit = exit_text(text, stop, r).map_err(|why| Fault::usage(format!("{flag}: {why}")))?;
+        if !sized && given.len() > 1 {
+            exit.size = Size::Share(1, given.len() as u32);
+        }
+        exits.push(exit);
+    }
+    Ok(exits)
+}
+
+/// `trading templates`: the order templates, listed, set, removed and
+/// put in order.
+fn order_templates(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    use trading::order_templates::{self as templates, Distance, OrderTemplate};
+    let mut list = templates::load(store);
+    let exit_json = |exit: &templates::Exit| {
+        let (mode, value) = match exit.distance {
+            Distance::Ticks(ticks) => ("ticks", json!(ticks)),
+            Distance::Money(money) => ("money", json!(money)),
+            Distance::Risk(risk) => ("risk", json!(risk)),
+        };
+        json!({"mode": mode, "value": value, "quantity": exit.size.text().to_lowercase()})
+    };
+    let listed = |list: &[OrderTemplate]| -> Value {
+        json!({"templates": list.iter().enumerate().map(|(at, template)| json!({
+            "id": template.id,
+            "name": template.name,
+            "key": (at < 9).then(|| format!("Ctrl+Shift+{}", at + 1)),
+            "targets": template.targets.iter().map(exit_json).collect::<Vec<_>>(),
+            "stops": template.stops.iter().map(exit_json).collect::<Vec<_>>(),
+            "summary": template.summary(),
+        })).collect::<Vec<_>>()})
+    };
+    let line = |template: &OrderTemplate| format!("{}: {}", template.name, template.summary());
+    let find_at = |list: &[OrderTemplate], text: &str| -> Result<usize, Fault> {
+        let id = templates::find(list, text).map(|template| template.id).ok_or_else(|| Fault::not_found(no_template_text(list, text)))?;
+        Ok(list.iter().position(|template| template.id == id).unwrap_or(0))
+    };
+    let many = |id: &str| -> Option<Vec<String>> { m.try_get_many::<String>(id).ok().flatten().map(|given| given.cloned().collect()) };
+    match arg(m, "ACTION").map(String::as_str).unwrap_or("list") {
+        "list" => {
+            if as_json {
+                return Ok(format!("{}\n", listed(&list)));
+            }
+            if list.is_empty() {
+                return Ok("no order templates\n".to_string());
+            }
+            let lines: Vec<String> =
+                list.iter().enumerate().map(|(at, template)| format!("{}. {}", at + 1, line(template))).collect();
+            Ok(format!("{}\n", lines.join("\n")))
+        }
+        "set" => {
+            let name = required(m, "NAME")?.trim().to_string();
+            if name.is_empty() {
+                return Err(Fault::usage("a template needs a name".into()));
+            }
+            let r = trading::chart_pnl::r_amount(store);
+            let targets = many("target").map(|given| exits_typed(&given, false, r)).transpose()?;
+            let stops = many("stop").map(|given| exits_typed(&given, true, r)).transpose()?;
+            let renamed = arg(m, "rename").map(|text| text.trim().to_string());
+            if renamed.as_ref().is_some_and(String::is_empty) {
+                return Err(Fault::usage("--rename needs a name".into()));
+            }
+            let at = templates::find(&list, &name).map(|template| template.id).and_then(|id| list.iter().position(|t| t.id == id));
+            let at = match at {
+                Some(at) => at,
+                None => {
+                    if targets.is_none() && stops.is_none() {
+                        return Err(Fault::usage(format!(
+                            "{name:?} is a new template: say its exits, such as --target 2r --stop 1r"
+                        )));
+                    }
+                    let id = templates::next_id(&list);
+                    list.push(OrderTemplate { id, name: name.clone(), targets: Vec::new(), stops: Vec::new() });
+                    list.len() - 1
+                }
+            };
+            if let Some(new) = &renamed
+                && list.iter().enumerate().any(|(other, template)| other != at && template.name.eq_ignore_ascii_case(new))
+            {
+                return Err(Fault::refused(format!("there is an order template called {new:?} already")));
+            }
+            let template = &mut list[at];
+            if let Some(targets) = targets {
+                template.targets = targets;
+            }
+            if let Some(stops) = stops {
+                template.stops = stops;
+            }
+            if let Some(new) = renamed {
+                template.name = new;
+            }
+            let text = line(template);
+            templates::save(store, &list);
+            adopt(live);
+            said(as_json, listed(&list), text)
+        }
+        "remove" => {
+            let at = find_at(&list, required(m, "NAME")?)?;
+            let gone = list.remove(at);
+            templates::save(store, &list);
+            adopt(live);
+            said(as_json, listed(&list), format!("removed {}", gone.name))
+        }
+        "move" => {
+            let at = find_at(&list, required(m, "NAME")?)?;
+            let to = required(m, "POSITION")?;
+            let to = to
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|to| (1..=list.len()).contains(to))
+                .ok_or_else(|| Fault::usage(format!("POSITION is 1 to {}, not {to:?}", list.len())))?;
+            templates::move_to(&mut list, at, to - 1);
+            templates::save(store, &list);
+            adopt(live);
+            let text = format!("{} is number {to}", list[to - 1].name);
+            said(as_json, listed(&list), text)
+        }
+        other => Err(Fault::usage(format!("{other:?} is list, set, remove or move"))),
     }
 }
 

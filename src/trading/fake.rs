@@ -415,14 +415,14 @@ impl FakeSession {
             return;
         };
         let tick = *self.tick.lock().unwrap();
-        let (target, stop) = exits.prices(entry.side, at, tick);
+        let (targets, stops) = exits.prices(entry.side, at, tick);
         let side = match entry.side {
             Side::Buy => Side::Sell,
             Side::Sell => Side::Buy,
         };
         let mut placed = Vec::new();
-        for (kind, price) in [(OrderKind::Limit, target), (OrderKind::Stop, stop)] {
-            let Some(price) = price else { continue };
+        let legs = targets.iter().map(|leg| (OrderKind::Limit, leg)).chain(stops.iter().map(|leg| (OrderKind::Stop, leg)));
+        for (kind, (qty, price)) in legs {
             let id = format!("B{}", self.baskets.fetch_add(1, Ordering::AcqRel));
             book.orders.insert(
                 0,
@@ -432,10 +432,10 @@ impl FakeSession {
                     contract: entry.contract.clone(),
                     exchange: entry.exchange.clone(),
                     side,
-                    qty: entry.qty,
+                    qty: *qty,
                     filled: 0,
                     kind,
-                    price: Some(price),
+                    price: Some(*price),
                     status: Stage::Working.into(),
                     fill_price: None,
                     fills: Vec::new(),
@@ -446,7 +446,9 @@ impl FakeSession {
             );
             placed.push(id);
         }
-        if placed.len() == 2 {
+        // One target and one stop are linked, as the trading service's own
+        // bracket links them; more are left to themselves here.
+        if targets.len() == 1 && stops.len() == 1 {
             self.links.lock().unwrap().push(placed);
         }
     }
@@ -600,6 +602,7 @@ impl Session for FakeSession {
             link: self.linking,
             history: true,
             snapshot: true,
+            brackets: true,
         }
     }
     fn is_simulated(&self) -> bool {
@@ -762,7 +765,7 @@ impl Session for FakeSession {
         order: &OrderRequest,
         exits: &super::brackets::Exits,
     ) -> Result<String, Failure> {
-        *self.next_bracket.lock().unwrap() = Some(*exits);
+        *self.next_bracket.lock().unwrap() = Some(exits.clone());
         let placed = self.place(order);
         self.next_bracket.lock().unwrap().take();
         if placed.is_ok()

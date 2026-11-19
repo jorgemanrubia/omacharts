@@ -53,6 +53,7 @@ mod executions;
 mod glow;
 mod log;
 mod marks;
+mod order_templates;
 mod trade;
 mod trade_cli;
 mod updates;
@@ -301,6 +302,9 @@ const TRADING_SHORTCUTS: (&str, &[(&str, &str)]) = (
         ("Ctrl+Shift+A", "Show or hide the accounts"),
         ("Ctrl+Shift+P", "Show or hide the positions"),
         ("Ctrl+Shift+O", "Show or hide the orders"),
+        ("Ctrl+Shift+E", "New order, with every choice"),
+        ("Ctrl+Shift+1 … 9", "Pick the order template, 1st to 9th; on a picked order, attach it"),
+        ("Ctrl+Shift+0", "No order template"),
     ],
 );
 
@@ -742,6 +746,7 @@ mod tests {
                 source: None,
                 account: None,
                 trading_size: None,
+            order_template: None,
                 trading_symbol: None,
                 trading_suffix: None,
                 shows_fills: false,
@@ -881,6 +886,7 @@ mod tests {
             source: None,
             account: None,
             trading_size: None,
+            order_template: None,
             trading_symbol: None,
             trading_suffix: None,
             shows_fills: false,
@@ -4404,6 +4410,11 @@ struct StoredPane {
     /// of its template, which is every chart until somebody picks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trading_size: Option<crate::trading::sizes::Picked>,
+    /// The order template its orders are bracketed with, by the template's
+    /// number. Missing for a chart with none, which is every chart until
+    /// somebody picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    order_template: Option<u32>,
     /// What this chart's orders go to when it is not what it charts, by
     /// symbol and suffix, as `symbol` and `suffix` name what it charts.
     /// Missing for a chart that trades what it charts, which is every chart
@@ -4457,6 +4468,7 @@ impl StoredPane {
             source: None,
             account: None,
             trading_size: None,
+            order_template: None,
             trading_symbol: None,
             trading_suffix: None,
             shows_fills: false,
@@ -5702,6 +5714,12 @@ impl Window {
             popup_menu(&trade::size_part_menu(), &anchor, x, y);
         });
         pane.size_menu.add_controller(size_menu);
+        let builder = Rc::downgrade(self);
+        pane.order_template_menu.set_create_popup_func(move |button| {
+            if let Some(this) = builder.upgrade() {
+                crate::ui::menus::set_model(button, &this.order_template_menu(id));
+            }
+        });
         // Buy and Sell are the keys' orders, for this chart.
         for (button, side) in [(&pane.buy_button, crate::trading::Side::Buy), (&pane.sell_button, crate::trading::Side::Sell)] {
             let this = Rc::downgrade(self);
@@ -6243,6 +6261,7 @@ impl Window {
     fn trade_as(from: &ChartPane, added: &ChartPane) {
         added.account.replace(from.account.borrow().clone());
         added.trading_size.replace(from.trading_size.borrow().clone());
+        added.order_template.set(from.order_template.get());
         added.trading_symbol.replace(from.trading_symbol.borrow().clone());
         added.trading_pending.replace(from.trading_pending.borrow().clone());
         added.shows_fills.set(from.shows_fills.get());
@@ -6802,6 +6821,17 @@ impl Window {
             }
         });
         pane.menu_actions.add_action(&quantity);
+        // The Order template part's: the template's id, 0 for none.
+        let order_template =
+            gio::SimpleAction::new_stateful("order-template", Some(glib::VariantTy::INT32), &0i32.to_variant());
+        let this = Rc::downgrade(self);
+        order_template.connect_activate(move |action, value| {
+            let (Some(this), Some(n)) = (this.upgrade(), value.and_then(|value| value.get::<i32>())) else { return };
+            action.set_state(&n.to_variant());
+            this.focus(id);
+            this.pick_order_template(id, u32::try_from(n).ok().filter(|n| *n > 0));
+        });
+        pane.menu_actions.add_action(&order_template);
     }
 
     /// Mark `value` as the chart's choice in its menu named `name`.
@@ -7044,6 +7074,7 @@ impl Window {
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
+                    order_template: pane.order_template.get(),
                     // One still to be found is written back as it was kept.
                     trading_symbol: pane
                         .trading_symbol
@@ -7414,6 +7445,7 @@ impl Window {
             *pane.feed.borrow_mut() = stored.source.as_deref().map(|id| crate::feeds::current_id(&self.store, id));
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
+            pane.order_template.set(stored.order_template);
             pane.shows_fills.set(stored.shows_fills);
             // The window opens on the curated half, which may not name it:
             // then it waits for the rest, as the chart's own symbol does,
@@ -9016,6 +9048,20 @@ impl Window {
                     this.step_template(step);
                     return glib::Propagation::Stop;
                 }
+            }
+
+            // While trading is in the window, Ctrl+Shift and a digit is the
+            // focused chart's order template instead, 0 none, or the
+            // template of the working order picked out on it: the keys
+            // that cannot wait for a hand to reach the rail.
+            if ctrl
+                && !alt
+                && shift
+                && !this.is_typing()
+                && let Some(n) = shifted_number(key, keycode)
+                && this.on_order_template_key(n)
+            {
+                return glib::Propagation::Stop;
             }
 
             // Ctrl+Shift and a digit shows that watchlist, counting down the

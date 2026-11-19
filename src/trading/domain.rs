@@ -123,6 +123,10 @@ pub struct Capabilities {
     /// What is held and working now can be asked for, with
     /// [`Session::refresh`], rather than only heard of as it moves.
     pub snapshot: bool,
+    /// An entry can be placed with its exits as one bracket the trading
+    /// service holds, [`Session::place_bracket`]: what an order template
+    /// needs.
+    pub brackets: bool,
 }
 
 /// What an order on an instrument is sent as: the contract trading now,

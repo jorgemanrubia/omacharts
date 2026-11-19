@@ -10,6 +10,8 @@ pub mod controls;
 pub mod dialogs;
 pub mod drop_line;
 pub mod notice;
+pub mod order_entry;
+pub mod order_templates;
 pub mod drawing_bar;
 pub mod drawing_settings;
 pub mod feed_settings;
@@ -98,4 +100,28 @@ pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
         panic!("on the GTK thread: {message}");
     }
     true
+}
+
+/// A symbolic icon of the app's own, which no icon theme has: put where the
+/// display's icon theme finds it, once, and named `name`.
+pub fn symbolic_icon(name: &'static str, svg: &str) -> &'static str {
+    let Some(display) = gtk::gdk::Display::default() else { return name };
+    let theme = gtk::IconTheme::for_display(&display);
+    if theme.has_icon(name) {
+        return name;
+    }
+    let folder = crate::store::data_dir().join("icons");
+    let file = folder.join(format!("{name}.svg"));
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(svg) {
+        let _ = std::fs::create_dir_all(&folder);
+        let _ = std::fs::write(&file, svg);
+    }
+    theme.add_search_path(&folder);
+    name
+}
+
+/// The bracket an order template stands for: an entry with a target above
+/// and a stop below.
+pub fn bracket_icon() -> &'static str {
+    symbolic_icon("omacharts-bracket-symbolic", include_str!("../../assets/symbolic/omacharts-bracket-symbolic.svg"))
 }

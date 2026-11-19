@@ -142,6 +142,9 @@ pub enum MarkEvent {
     Move { mark: String, price: f64 },
     /// A mark's tab was dragged out and let go at `price`.
     Tab { mark: String, tab: String, price: f64 },
+    /// A draggable mark was pressed and let go where it was: picked out,
+    /// for what a key does next.
+    Pick(String),
 }
 
 /// A mark, or one of its tabs, in hand: what [`MarkRules`] is asked about.

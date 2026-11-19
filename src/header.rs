@@ -75,6 +75,10 @@ pub enum Part {
     /// How many an order from the chart is for, "Qty 2". Nothing at all
     /// unless the chart has an account to trade on.
     Size,
+    /// The order template the chart's orders are bracketed with: its icon
+    /// alone while it is on none, and its name beside it once one is
+    /// picked. Nothing at all unless the chart has an account to trade on.
+    OrderTemplate,
     /// The position the chart trades, its size signed and its open P&L in
     /// brackets: "+2 (+$125.00)", "-1 (-0.50R)". Nothing at all
     /// unless the chart's account holds a position in what it trades.
@@ -95,7 +99,7 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ALL: [Part; 15] = [
+    pub const ALL: [Part; 16] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
@@ -106,6 +110,7 @@ impl Part {
         Part::DayPnl,
         Part::Trade,
         Part::Size,
+        Part::OrderTemplate,
         Part::Position,
         Part::Stripe,
         Part::Settings,
@@ -136,6 +141,7 @@ impl Part {
             Part::DayPnl => Some(Section::Right),
             Part::Trade => Some(Section::Right),
             Part::Size => Some(Section::Right),
+            Part::OrderTemplate => Some(Section::Right),
             Part::Position => Some(Section::Right),
             Part::Stripe => None,
             Part::Settings => Some(Section::Right),
@@ -156,6 +162,7 @@ impl Part {
             Part::DayPnl => "day_pnl",
             Part::Trade => "trade",
             Part::Size => "size",
+            Part::OrderTemplate => "order_template",
             Part::Position => "position",
             Part::Stripe => "stripe",
             Part::Title => "title",
@@ -181,6 +188,7 @@ impl Part {
             Part::DayPnl => "P&L",
             Part::Trade => "Buy Sell",
             Part::Size => "Quantity",
+            Part::OrderTemplate => "Order template",
             Part::Position => "Current position",
             Part::Stripe => "Resolutions stripe",
             Part::Title => "Chart title",
@@ -353,6 +361,16 @@ const BEFORE_POSITION: [(&str, &str); 3] = [
     (RIGHT_SETTING, "account,day_pnl,trade,size,settings,maximize,link"),
 ];
 
+/// The header that shipped before charts had an order template, as
+/// Preferences wrote it out: read as [`Header::standard`] too, so a header
+/// that was only ever the standard one gets the template after the
+/// quantity. One of anybody's own is kept without it.
+const BEFORE_ORDER_TEMPLATE: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution,change"),
+    (CENTER_SETTING, "title"),
+    (RIGHT_SETTING, "account,day_pnl,trade,size,position,settings,maximize,link"),
+];
+
 /// Whether what is stored is `old`, a standard header of an earlier build:
 /// some section written, and every written one as it shipped.
 fn stored_as(store: &Store, old: &[(&str, &str)]) -> bool {
@@ -375,6 +393,7 @@ pub fn load(store: &Store) -> Header {
     if pnl_moved || stored_as(store, &BEFORE_TITLES) || stored_as(store, &BEFORE_ACCOUNT_MOVED)
         || stored_as(store, &BEFORE_CHANGE)
         || stored_as(store, &BEFORE_POSITION)
+        || stored_as(store, &BEFORE_ORDER_TEMPLATE)
     {
         return Header::standard();
     }
@@ -479,7 +498,7 @@ mod tests {
         assert!(!header.contains(Part::Stripe));
         assert_eq!(
             header.right,
-            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link]
         );
     }
 
@@ -561,7 +580,7 @@ mod tests {
         assert_eq!(load(&store), Header::standard());
         assert_eq!(
             load(&store).right,
-            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link]
         );
         store.remove_setting(CENTER_SETTING);
         assert_eq!(load(&store), Header::standard());
@@ -578,6 +597,26 @@ mod tests {
         // Typed and named like the other parts.
         assert_eq!(parse("position,size"), Ok(vec![Part::Position, Part::Size]));
         assert_eq!(Part::Position.label(), "Current position");
+    }
+
+    /// A header saved as the one that shipped before charts had an order
+    /// template is the standard one now, the template after the quantity;
+    /// one of anybody's own is kept as it was saved, without it.
+    #[test]
+    fn the_old_standard_header_gains_the_order_template() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_ORDER_TEMPLATE {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        assert_eq!(
+            load(&store).right,
+            vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link]
+        );
+        store.set_setting(RIGHT_SETTING, "account,trade,size,position,settings,maximize,link");
+        assert!(!load(&store).contains(Part::OrderTemplate), "a right of its own");
+        assert_eq!(parse("order_template"), Ok(vec![Part::OrderTemplate]));
+        assert_eq!(Part::OrderTemplate.label(), "Order template");
     }
 
     /// A header saved as the one that shipped with the P&L at the end of
@@ -628,7 +667,7 @@ mod tests {
             Header {
                 left: vec![Part::Change, Part::Symbol, Part::Account],
                 center: vec![Part::Title],
-                right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link],
+                right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link],
             }
         );
         store.set_setting(SETTING, "none");
@@ -641,7 +680,7 @@ mod tests {
     /// shown once, in the first of them.
     #[test]
     fn a_part_is_in_the_header_once() {
-        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link];
         let mut header = Header::standard();
         header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
         assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: vec![Part::Title], right: corner.clone() });

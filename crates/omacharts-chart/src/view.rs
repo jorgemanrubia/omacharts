@@ -6656,6 +6656,8 @@ impl ChartView {
                         _ if !allowed => return,
                         (Grab::Tab { .. }, Some(_)) if !travelled => return,
                         (Grab::Tab { mark, tab }, Some(_)) => MarkEvent::Tab { mark, tab, price: at },
+                        // Pressed and let go in place: picked out.
+                        (Grab::Move(mark), Some(_)) if !travelled => MarkEvent::Pick(mark),
                         // Back where it was: nothing to move.
                         (Grab::Move(_), Some(from)) if (from - at).abs() < 1e-9 => return,
                         (Grab::Move(mark), Some(_)) => MarkEvent::Move { mark, price: at },

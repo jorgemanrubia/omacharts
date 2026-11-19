@@ -101,6 +101,19 @@ pub(super) struct Trade {
     pub pnl: Cell<trading::chart_pnl::ChartPnl>,
     /// The accounts' fills, for the charts that mark them.
     pub fills: super::executions::Fills,
+    /// The order templates, read when trading comes in and again whenever
+    /// they are edited.
+    pub order_templates: RefCell<Vec<trading::order_templates::OrderTemplate>>,
+    /// The working entries sent from here as brackets, by basket: the
+    /// template they went with, if one, and their exits, which are drawn
+    /// where they will rest.
+    pub bracketed: RefCell<HashMap<String, super::order_templates::Bracketed>>,
+    /// Entries cancelled to be placed again with other exits, once the
+    /// book has them cancelled.
+    pub replacing: RefCell<Vec<super::order_templates::Replacing>>,
+    /// The working order picked out by a click, on its chart, for a
+    /// template's key to give it that template.
+    pub picked: RefCell<Option<(u32, String)>>,
 }
 
 /// How often at most the positions are marked to a moving market.
@@ -177,7 +190,7 @@ pub(super) fn size_part_menu() -> gio::Menu {
 }
 
 /// `order` in words: "Buy Limit 1 ESZ6 at 7,620.00".
-fn order_in_words(order: &trading::Order) -> String {
+pub(super) fn order_in_words(order: &trading::Order) -> String {
     let decimals = crate::ui::trading_panel::decimals_of(order.tick);
     let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, decimals));
     trading::order_text(order.side, order.kind, order.qty, &order.contract, price.as_deref())
@@ -236,6 +249,7 @@ impl Window {
         self.say_session_trouble();
         self.report_orders();
         self.settle_pending();
+        self.settle_replacing();
         self.apply_marks();
         self.agent_heard_book();
     }
@@ -399,7 +413,7 @@ impl Window {
     }
 
     /// Draw `request` as pending from now.
-    fn ask(self: &Rc<Self>, request: Request, pending: Pending) {
+    pub(super) fn ask(self: &Rc<Self>, request: Request, pending: Pending) {
         self.trade.pending.borrow_mut().insert(request, pending);
         self.apply_marks();
     }
@@ -407,7 +421,7 @@ impl Window {
     /// What the trading service said to `request` when it was sent: a refusal takes
     /// what was drawn for it away and says why; no answer leaves it
     /// pending, since it may well have arrived, and says so.
-    fn heard<T>(
+    pub(super) fn heard<T>(
         self: &Rc<Self>,
         request: &Request,
         outcome: Result<T, Failure>,
@@ -467,6 +481,7 @@ impl Window {
         let this = self.clone();
         edit.connect_activate(move |_, _| this.edit_trading_sizes(&this.window));
         self.window.add_action(&edit);
+        self.install_order_templates();
 
         *self.trade.sizes.borrow_mut() = trading::sizes::load(&self.store);
         self.trade.order_labels.set(crate::ui::trading_settings::order_labels(&self.store));
@@ -536,6 +551,7 @@ impl Window {
             self.window.remove_action(&format!("trading-{tab}"));
         }
         self.window.remove_action(EDIT_SIZES);
+        self.remove_order_templates();
         if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
             actions.remove_action("order");
             actions.remove_action("cancel-order");
@@ -1045,7 +1061,7 @@ impl Window {
 
     /// The step an order's price moves in: the contract's, from its
     /// specification, else the step `pane`'s prices are on.
-    fn tick_of(pane: &ChartPane, target: &trading::Target) -> Option<f64> {
+    pub(super) fn tick_of(pane: &ChartPane, target: &trading::Target) -> Option<f64> {
         target.tick.or_else(|| pane.view.tick())
     }
 
@@ -1141,6 +1157,16 @@ impl Window {
             let item = gio::MenuItem::new(Some(&cancel_words(order)), None);
             item.set_action_and_target_value(Some("chart.cancel-order"), Some(&order.basket_id.to_variant()));
             section.append_item(&item);
+            // And the template it goes with, while it is an entry nothing
+            // of which has filled.
+            let net = view.book.position(&key, &target.contract).map_or(0, |held| held.net);
+            if target.capabilities.brackets
+                && order.kind != OrderKind::Market
+                && order.filled == 0
+                && !trading::is_exit(order.side, order.kind, net)
+            {
+                section.append_submenu(Some("Template"), &self.order_template_submenu(&order.basket_id));
+            }
         }
         Some(section)
     }
@@ -1164,12 +1190,13 @@ impl Window {
         price: Option<f64>,
         size: Option<trading::Quantity>,
     ) {
-        self.order_with_exits(pane, side, kind, account, price, size, None);
+        self.order_with_exits(pane, side, kind, account, price, size, crate::cli::trading::Bracket::Chart);
     }
 
-    /// [`Self::order_on`], sent as one bracket with `exits` when they are
-    /// given: the trading service's own, which works the target and the
-    /// stop once the entry fills.
+    /// [`Self::order_on`], sent as one bracket with the exits `bracket`
+    /// says, when it says any: the chart's order template, another, or a
+    /// target and a stop typed. The trading service holds the bracket, and
+    /// works its exits once the entry fills.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn order_with_exits(
         self: &Rc<Self>,
@@ -1179,7 +1206,7 @@ impl Window {
         account: Option<&str>,
         price: Option<f64>,
         size: Option<trading::Quantity>,
-        exits: Option<crate::cli::trading::Exits>,
+        bracket: crate::cli::trading::Bracket,
     ) {
         // Resolved again: the chart, its account or the login may have
         // changed since the menu opened.
@@ -1212,25 +1239,13 @@ impl Window {
         }
         let size = size.unwrap_or_else(|| self.size_of(&pane));
         // The exits, as distances in ticks from where the entry is expected.
-        let tick = Self::tick_of(pane, &target);
-        let exits = match exits {
-            None => None,
-            Some(legs) => {
-                let reference = price.or_else(|| self.market_price(pane, &target));
-                let counted = match (reference, tick) {
-                    (Some(reference), Some(tick)) => trading::brackets::exits(side, reference, tick, legs.target, legs.stop),
-                    (None, _) => Err("there is no price to count its exits from yet".to_string()),
-                    (_, None) => Err("the contract's tick is not known, so its exits cannot be counted".to_string()),
-                };
-                match counted {
-                    Ok(exits) => Some(exits),
-                    Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
-                }
-            }
+        let bracketed = match self.bracket_of(pane, &target, side, kind, price, size, bracket) {
+            Ok(bracketed) => bracketed,
+            Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
         };
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
-            Ok(order) => match exits {
-                Some(exits) => self.place_bracket(target, order, exits),
+            Ok(order) => match bracketed {
+                Some(bracketed) => self.place_bracket(target, order, bracketed),
                 None => self.place(target, order),
             },
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
@@ -1239,19 +1254,20 @@ impl Window {
 
     /// Send `order` off the main loop, one at a time per account. A failure
     /// is said and never retried.
-    fn place(self: &Rc<Self>, target: trading::Target, order: trading::OrderRequest) {
+    pub(super) fn place(self: &Rc<Self>, target: trading::Target, order: trading::OrderRequest) {
         self.place_then(target, order, |_, _| {});
     }
 
     /// [`Self::place`] as one bracket with `exits`, which the trading
     /// service works once the entry fills. One that has no such order
     /// refuses it, and nothing is put together in its place.
-    fn place_bracket(
+    pub(super) fn place_bracket(
         self: &Rc<Self>,
         target: trading::Target,
         order: trading::OrderRequest,
-        exits: trading::brackets::Exits,
+        bracketed: super::order_templates::Bracketed,
     ) {
+        let exits = bracketed.exits.clone();
         let key = target.account.key();
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
@@ -1259,20 +1275,8 @@ impl Window {
         let name = self.account_label(&key);
         let decimals = crate::ui::trading_panel::decimals_of(target.tick);
         self.say(log_words::order_sent(&name, &order, decimals));
-        let tick = target.tick.unwrap_or(0.0);
-        let mut legs = Vec::new();
-        if let Some(ticks) = exits.target {
-            legs.push(format!("target {} ticks", ticks));
-        }
-        if let Some(ticks) = exits.stop {
-            legs.push(format!("stop {} ticks", ticks));
-        }
-        if tick > 0.0 {
-            self.say(log_words::note(
-                &name,
-                format!("Bracket · {} from the fill", legs.join(", ")),
-            ));
-        }
+        let named = bracketed.name.as_deref().map(|name| format!("{name} · ")).unwrap_or_default();
+        self.say(log_words::note(&name, format!("Bracket · {named}{} from the fill", exits.words())));
         let request = Request::Place(order.tag.clone());
         self.ask(
             request.clone(),
@@ -1290,7 +1294,8 @@ impl Window {
                     this.trade
                         .placed
                         .borrow_mut()
-                        .insert(basket, Stage::Pending);
+                        .insert(basket.clone(), Stage::Pending);
+                    this.trade.bracketed.borrow_mut().insert(basket, bracketed);
                     this.desk.tell();
                 }
             },
@@ -1299,7 +1304,7 @@ impl Window {
 
     /// [`Self::place`], and `then` with its basket once the trading service has
     /// taken it.
-    fn place_then(
+    pub(super) fn place_then(
         self: &Rc<Self>,
         target: trading::Target,
         order: trading::OrderRequest,
@@ -1337,12 +1342,16 @@ impl Window {
             TradeEvent::FlattenHeld(contract) => self.flatten_mark(&pane, Some(contract)),
             TradeEvent::Move { basket, price } => self.move_mark(&pane, &basket, price),
             TradeEvent::ExitAt { kind, price } => self.exit_mark(&pane, kind, price),
+            TradeEvent::BracketAt { basket, kind, price } => self.bracket_at(&pane, &basket, kind, price),
+            TradeEvent::MoveExit { basket, stop, at, price } => self.move_bracket_exit(&pane, &basket, stop, at, Some(price)),
+            TradeEvent::DropExit { basket, stop, at } => self.move_bracket_exit(&pane, &basket, stop, at, None),
+            TradeEvent::Pick(basket) => self.pick_order(&pane, &basket),
         }
     }
 
     /// Run `job` on the session of `target`, off the main loop, and hand
     /// what it says to `then` back on it.
-    fn send<T: Send + 'static>(
+    pub(super) fn send<T: Send + 'static>(
         self: &Rc<Self>,
         target: &trading::Target,
         job: impl FnOnce(&dyn trading::Session, &str) -> Result<T, Failure> + Send + 'static,
@@ -1734,8 +1743,17 @@ impl Window {
             return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let size = self.size_of(pane);
+        // With the chart's order template, when it has one.
+        let bracketed =
+            match self.bracket_of(pane, &target, side, OrderKind::Market, None, size, crate::cli::trading::Bracket::Chart) {
+                Ok(bracketed) => bracketed,
+                Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
+            };
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
-            Ok(order) => self.place(target, order),
+            Ok(order) => match bracketed {
+                Some(bracketed) => self.place_bracket(target, order, bracketed),
+                None => self.place(target, order),
+            },
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
         }
     }
@@ -1886,6 +1904,7 @@ impl Window {
             }
         };
         pane.write_size(text.as_deref());
+        self.write_order_template_of(pane, has_account);
         pane.write_trade(has_account.then(|| self.order_target(pane).map(|_| ())));
         let day = {
             let view = self.trading.borrow();
@@ -2069,6 +2088,9 @@ impl Window {
                     .map(|asked| super::marks::LinkMark { holder: asked.holder, pending: true }),
             }
         };
+        let bracketed = self.trade.bracketed.borrow();
+        let can_bracket = target.capabilities.brackets;
+        let picked = self.trade.picked.borrow().as_ref().filter(|(id, _)| *id == pane.id).map(|(_, basket)| basket.clone());
         let mut orders: Vec<super::marks::OrderMark> = view
             .book
             .working(&key, &target.contract)
@@ -2088,7 +2110,31 @@ impl Window {
                 // What is left of it to fill is what it would still close.
                 let left = order.qty.saturating_sub(order.filled);
                 let (body, colour) = order_look(order.side, order.kind, left, at);
+                let entry = !trading::is_exit(order.side, order.kind, net);
+                let bracketed = bracketed.get(&order.basket_id);
+                // An entry says the template it went with.
+                let body = match bracketed.and_then(|bracketed| bracketed.name.clone()) {
+                    Some(name) if entry => Some(name),
+                    _ => body,
+                };
+                // A tab for each group the entry has no exits in yet, to
+                // drag one off it, while nothing of it has filled.
+                let exits = match entry && can_bracket && order.filled == 0 && order.status.stage != Stage::Pending {
+                    false => Vec::new(),
+                    true => [(OrderKind::Limit, look.limit, &look.profit), (OrderKind::Stop, look.stop, &look.loss)]
+                        .into_iter()
+                        .filter(|(kind, ..)| {
+                            bracketed.is_none_or(|bracketed| match kind {
+                                OrderKind::Stop => bracketed.exits.stops.is_empty(),
+                                _ => bracketed.exits.targets.is_empty(),
+                            })
+                        })
+                        .map(|(kind, style, colour)| super::marks::ExitTab { kind, colour: colour.clone(), style })
+                        .collect(),
+                };
                 Some(super::marks::OrderMark {
+                    exits,
+                    picked: picked.as_deref() == Some(order.basket_id.as_str()),
                     basket: order.basket_id.clone(),
                     side: order.side,
                     kind: order.kind,
@@ -2134,6 +2180,8 @@ impl Window {
                 (_, None) => continue,
             };
             orders.push(super::marks::OrderMark {
+                exits: Vec::new(),
+                picked: false,
                 basket: String::new(),
                 side: order.side,
                 kind: order.kind,
@@ -2208,11 +2256,23 @@ impl Window {
                 loss: look.loss.clone(),
             })
         });
+        let brackets = self.bracket_marks(
+            &view,
+            &bracketed,
+            &key,
+            &target,
+            Self::tick_of(pane, &target),
+            &look,
+            &|at: f64| price(at),
+            &pending,
+        );
         drop(pending);
         drop(asked);
+        drop(bracketed);
         let rules = super::marks::TradeRules::new(position.as_ref(), &orders, self.limits_of(pane, &target))
-            .judged_by(self.judged_by(pane, &target));
-        pane.view.set_marks(super::marks::price_marks(position.as_ref(), &held_elsewhere, &orders), rules);
+            .judged_by(self.judged_by(pane, &target))
+            .with_brackets(&brackets);
+        pane.view.set_marks(super::marks::price_marks(position.as_ref(), &held_elsewhere, &orders, &brackets), rules);
     }
 
     /// Say each step of an order placed or cancelled here, once, when the

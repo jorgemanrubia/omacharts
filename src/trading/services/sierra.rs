@@ -451,6 +451,7 @@ impl Session for SierraSession {
             },
             history: true,
             snapshot: true,
+            brackets: false,
         }
     }
 

@@ -423,6 +423,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--quantity N` | The quantity its Qty is set to, one its quantities offer | [The Account part](/manual/trading-on-a-chart/#the-account-part) |
 | `--trading-symbol SYMBOL` | Trade the other size of what it charts, such as `MES` on an ES chart; `none` to trade what it charts | [Trading another size](/manual/trading-on-a-chart/#trading-another-size) |
 | `--show-fills on` or `off` | Marks the account's executions on the chart | [Executions on the chart](/manual/trading-on-a-chart/#executions-on-the-chart) |
+| `--order-template T` | The order template its orders are bracketed with, by name or `id:N`, or `none` (Beta) | [Order templates](/manual/trading-on-a-chart/#order-templates) |
 | `--book BOOK` | Which chartbook, by name or `id:N`; the open one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
@@ -1759,7 +1760,7 @@ for `provider list` `stored`, `inUse`, `needsSignIn` and `session` per feed.
 Trading is experimental ([Trading](/manual/trading/)). The `trading` group
 does what the Trading panel and a chart's Account part do. The settings a
 chart trades with are [`chart set`](#chart-set) flags: `--account`,
-`--quantity`, `--trading-symbol` and `--show-fills`.
+`--quantity`, `--trading-symbol`, `--order-template` and `--show-fills`.
 
 | Command | Does |
 |---|---|
@@ -1774,12 +1775,29 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 | `trading default ACCOUNT` | The account charts trade on until given one of their own |
 | `trading positions` | What every account holds, at what average, with its open P&L |
 | `trading orders [--all]` | The day's working orders; with `--all`, the filled and cancelled ones too |
-| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N`, any whole number, instead of the chart's Qty |
+| `trading buy`, `trading sell` | An order for what the chart trades, on its account: at the market, or with `--limit PRICE` or `--stop PRICE`. `--quantity N`, any whole number, instead of the chart's Qty. `--template T` brackets it with an order template, or `none`, instead of the chart's |
 | `trading exit --target PRICE --stop PRICE` | A target, a stop, or both linked, for the whole of the position the chart trades |
 | `trading modify ORDER --price PRICE` | Moves a working order |
 | `trading cancel ORDER`, `trading cancel --all [--account ACCOUNT]` | Cancels one order, or every open order on an account (the default one when not given) |
 | `trading flatten`, `trading flatten CONTRACT [--account ACCOUNT]` | Closes the chart's position at the market and cancels its orders, as Ctrl+F does; or, with a contract, closes what an account holds in it and leaves its orders, as the Positions tab does |
 | `trading quantities [list]`, `set NAME QUANTITIES`, `remove NAME` | The quantities a chart's Qty offers; `set` takes `--applies-to stocks` or `futures` and `--symbols` |
+| `trading templates [list]`, `set NAME`, `remove NAME`, `move NAME POSITION` | The order templates (Beta). `set` takes `--target EXIT` and `--stop EXIT`, once per exit or `none`, and `--rename NAME`; `move` puts one at a position, which is its <kbd>Ctrl</kbd> + <kbd>Shift</kbd> digit |
+| `trading bracket ORDER --template T` | Gives a working entry an order template's exits, or `none` takes them off: it is cancelled and placed again as one bracket (Beta) |
+
+An exit is how far, then optionally how much after an `@`. How far is `8t`
+(ticks), `$250` (what the exit's own contracts make or lose), `2r` on a
+target (a multiple of R on the whole order), or on a stop `$500r` (money
+lost on the whole order) or `1r` (Preferences › Trading › **Value of 1R**, as it is now). How much is a share
+such as `@1/2`, a number of contracts such as `@2`, or `@all`; exits that say
+none split the order evenly, and the last takes the rest.
+
+```
+$ omacharts trading templates set Runner --target 1r@1/2 --target 2r --stop 1r
+Runner: +1R 1/2 · +2R rest / −$500 total
+  [exit 0]
+
+$ omacharts chart set --order-template Runner
+```
 
 `buy`, `sell`, `exit` and `flatten` act on the chart `--book` and `--chart`
 name, the focused one by default ([Which chart a command acts

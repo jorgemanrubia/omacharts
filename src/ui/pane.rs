@@ -270,6 +270,10 @@ pub struct ChartPane {
     /// taking no room, unless the chart has an account to trade on.
     pub size_menu: gtk::MenuButton,
     size_label: gtk::Label,
+    /// The order template the chart's orders go with: the bracket alone on
+    /// none, its name beside it once one is picked.
+    pub order_template_menu: gtk::MenuButton,
+    order_template_label: gtk::Label,
     /// "P&L" and the account's P&L for the day after it.
     pub day_part: gtk::Box,
     day_amount: gtk::Label,
@@ -280,6 +284,9 @@ pub struct ChartPane {
     /// The size somebody picked for this chart, and from which template;
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
+    /// The order template its orders are bracketed with, by number; none
+    /// until somebody picks one.
+    pub order_template: Cell<Option<u32>>,
     /// What this chart's orders go to when it is not what it charts, MES
     /// for a chart of ES; `None` trades what it charts. See
     /// [`ChartPane::traded`].
@@ -591,6 +598,22 @@ impl ChartPane {
         size_menu.set_child(Some(&size_line));
         size_menu.set_always_show_arrow(false);
         size_menu.set_visible(false);
+        // The bracket, quiet, and the template's name beside it in full
+        // once there is one: what the next order goes with.
+        let order_template_icon = gtk::Image::from_icon_name(crate::ui::bracket_icon());
+        order_template_icon.add_css_class("dim-label");
+        let order_template_label = gtk::Label::new(None);
+        order_template_label.set_visible(false);
+        let order_template_line = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        order_template_line.append(&order_template_icon);
+        order_template_line.append(&order_template_label);
+        let order_template_menu = gtk::MenuButton::new();
+        order_template_menu.add_css_class("flat");
+        order_template_menu.add_css_class("readout-symbol");
+        order_template_menu.set_valign(gtk::Align::Center);
+        order_template_menu.set_child(Some(&order_template_line));
+        order_template_menu.set_always_show_arrow(false);
+        order_template_menu.set_visible(false);
         // Read like the quantity: the word quiet, the money in the profit
         // or loss colour, or plain at nothing either way.
         let day_word = gtk::Label::new(Some("P&L"));
@@ -613,7 +636,7 @@ impl ChartPane {
         position_part.append(&position_pnl);
         position_part.set_visible(false);
         // A part's tooltip is not drawn over its own open menu.
-        for part in [&account_menu, &feed_menu, &size_menu] {
+        for part in [&account_menu, &feed_menu, &size_menu, &order_template_menu] {
             part.connect_active_notify(|part| {
                 let open = part.is_active();
                 part.set_has_tooltip(!open && part.tooltip_text().is_some());
@@ -853,12 +876,15 @@ impl ChartPane {
             sell_button,
             size_menu,
             size_label,
+            order_template_menu,
+            order_template_label,
             day_part,
             day_amount,
             position_part,
             position_net,
             position_pnl,
             trading_size: RefCell::new(None),
+            order_template: Cell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
             shows_fills: Cell::new(false),
@@ -1113,7 +1139,7 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 15] = [
+        let parts: [(Part, gtk::Widget); 16] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
@@ -1124,6 +1150,7 @@ impl ChartPane {
             (Part::DayPnl, self.day_part.clone().upcast()),
             (Part::Trade, self.trade_part.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
+            (Part::OrderTemplate, self.order_template_menu.clone().upcast()),
             (Part::Position, self.position_part.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
             (Part::Settings, self.gear.clone().upcast()),
@@ -1318,6 +1345,36 @@ impl ChartPane {
         if self.size_menu.is_visible() != size.is_some() {
             self.size_menu.set_visible(size.is_some());
         }
+    }
+
+    /// The order template the next order goes with: `None` hides the part,
+    /// `Some(None)` is the bracket alone, for none, and `Some(Some(..))`
+    /// its name and what it holds, for the tooltip.
+    pub fn write_order_template(&self, template: Option<Option<(&str, &str)>>) {
+        let visible = template.is_some();
+        if self.order_template_menu.is_visible() != visible {
+            self.order_template_menu.set_visible(visible);
+        }
+        let Some(template) = template else { return };
+        let name = template.map_or("", |(name, _)| name);
+        if self.order_template_label.text() != name {
+            self.order_template_label.set_text(name);
+        }
+        self.order_template_label.set_visible(template.is_some());
+        let tip = match template {
+            None => "Order template".to_string(),
+            Some((name, summary)) => format!("{name}: {summary}"),
+        };
+        if self.order_template_menu.tooltip_text().as_deref() != Some(tip.as_str()) {
+            self.order_template_menu.set_tooltip_text(Some(&tip));
+        }
+    }
+
+    /// What the Order template part says, for the tests: `None` hidden,
+    /// an empty name for none.
+    #[cfg(test)]
+    pub fn order_template_text(&self) -> Option<String> {
+        self.order_template_menu.get_visible().then(|| self.order_template_label.text().to_string())
     }
 
     /// The account's P&L for the day, already written as money, and whether
@@ -2337,6 +2394,7 @@ mod tests {
                     pane.day_part.clone().upcast(),
                     pane.trade_part.clone().upcast(),
                     pane.size_menu.clone().upcast(),
+                    pane.order_template_menu.clone().upcast(),
                     pane.position_part.clone().upcast(),
                     pane.gear.clone().upcast(),
                     pane.expand.clone().upcast(),
@@ -2354,9 +2412,9 @@ mod tests {
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
             header(Header::standard().left, Header::standard().right);
-            // The account, the P&L, Buy and Sell and the quantity, then the
-            // three controls.
-            assert_eq!(corner(&pane).len(), 8);
+            // The account, the P&L, Buy and Sell, the quantity and the order
+            // template, then the three controls.
+            assert_eq!(corner(&pane).len(), 9);
         });
     }
 

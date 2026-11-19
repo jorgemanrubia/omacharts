@@ -49,6 +49,8 @@
 //! - `brackets`: an entry's target and stop as typed, turned into the
 //!   distances a bracket order is sent with.
 //! - `events`: what changed between two books, said one line each.
+//! - `order_templates`: named brackets an order is sent with, and how
+//!   their exits become sizes and distances in ticks.
 //! - `reading`: a chart's bars, indicator values and levels, in numbers.
 
 pub mod services;
@@ -61,6 +63,7 @@ mod domain;
 pub mod fake;
 mod linking;
 mod logins;
+pub mod order_templates;
 pub mod reading;
 mod rules;
 mod session;

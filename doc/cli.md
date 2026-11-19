@@ -1507,6 +1507,20 @@ charts, such as MES on ES, or `none`) and `--show-fills`. `chart list --json`
 reads them back. Orders, flatten and exit act on the chart that `--book` and
 `--chart` name, the focused one by default, as every chart command does.
 
+Order templates (Beta) are kept with `trading templates`, and a chart is put
+on one with `chart set --order-template NAME` (or `none`). An order then goes
+as a bracket with the template's exits; `buy --template` and `sell
+--template` override the chart's for one order, and `trading bracket ORDER
+--template NAME` gives a working entry exits, which cancels it and sends it
+again. An exit is typed as how far and how much: `8t`, `$250`, `2r` on a
+target, `$500r` or `1r` on a stop, then `@1/2`, `@2` or `@all`:
+
+```
+$ omacharts trading templates set Scalp --target 8t --stop 4t
+Scalp: +8t / −4t
+  [exit 0]
+```
+
 ## The widget in the Omarchy bar
 
 The bar widget is a plugin folder plus an entry in the shell's layout. The

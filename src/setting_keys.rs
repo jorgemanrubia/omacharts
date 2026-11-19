@@ -85,9 +85,11 @@ const SHARED: &[&str] = &[
     "indicators",
     "providers",
     "default_account",
-    // The lists of trading sizes a chart picks from: a trader's choice, the
+    // The lists of trading sizes a chart picks from, and the order templates
+    // it brackets its orders with: a trader's choice, the
     // same on every machine they trade from.
     "trading_size_templates",
+    "trading_order_templates",
     // Which side of a chart the orders' labels sit at: how somebody reads
     // their charts, wherever they trade from.
     "order_labels",

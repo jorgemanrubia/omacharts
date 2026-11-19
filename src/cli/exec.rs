@@ -2110,6 +2110,18 @@ fn chart_set(
     };
 
     let shows_fills = switch("show-fills")?;
+    // The order template, by name or id:N, or none.
+    let order_template = match arg(m, "order-template") {
+        None => None,
+        Some(text) if text.trim().eq_ignore_ascii_case("none") => Some(None),
+        Some(text) => {
+            let templates = crate::trading::order_templates::load(store);
+            let template = crate::trading::order_templates::find(&templates, text).ok_or_else(|| {
+                Fault::not_found(super::trading::no_template_text(&templates, text))
+            })?;
+            Some(Some((template.id, template.name.clone())))
+        }
+    };
     let trading = chart_trading(store, m, workspace.book(at)?, pane)?;
 
     // Which mode it was in, read before anything is written: only becoming
@@ -2257,6 +2269,19 @@ fn chart_set(
             changed.push("no chart template, and no indicators".to_string());
         }
     }
+    match order_template {
+        None => {}
+        Some(None) => {
+            if let Some(fields) = chart.as_object_mut() {
+                fields.remove("order_template");
+            }
+            changed.push("no order template".to_string());
+        }
+        Some(Some((id, name))) => {
+            chart["order_template"] = json!(id);
+            changed.push(format!("order template {name:?}"));
+        }
+    }
     if let Some(shows) = shows_fills {
         if shows {
             chart["shows_fills"] = json!(true);
@@ -2321,7 +2346,7 @@ fn chart_set(
             "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
              --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings, --template, --account, --quantity, \
-             --trading-symbol or --show-fills"
+             --trading-symbol, --order-template or --show-fills"
                 .into(),
         ));
     }
@@ -5945,6 +5970,9 @@ fn pane_json(pane: &Value) -> String {
         "feed": pane["source"],
         "trading_symbol": pane["trading_symbol"].as_str().map(|symbol| spell(symbol, pane["trading_suffix"].as_str())),
         "quantity": pane["trading_size"]["size"],
+        // The order template its orders are bracketed with, by id; null for
+        // none.
+        "order_template": pane["order_template"],
         "shows_fills": pane["shows_fills"].as_bool().unwrap_or(false),
     })
     .to_string()
@@ -7929,6 +7957,48 @@ mod tests {
         assert_eq!(charts::panes(&charts.books()[0])[0]["template"], json!(default));
     }
 
+    /// Order templates made, listed, put in order and removed from the
+    /// command line, and a chart put on one by name and off it with none.
+    #[test]
+    fn order_templates_are_set_listed_moved_and_removed() {
+        let store = Store::memory().unwrap();
+        assert!(run("trading templates", &store).out.contains("no order templates"));
+        let out = run("trading templates set Scalp --target 8t --stop 4t", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.starts_with("Scalp: +8t"), "{}", out.out);
+        let out = run("trading templates set Runner --target 1r@1/2 --target 2r --stop $250r --json", &store);
+        let listed = json_of(&out);
+        let runner = &listed["templates"][1];
+        assert_eq!((runner["name"].as_str(), runner["key"].as_str()), (Some("Runner"), Some("Ctrl+Shift+2")));
+        assert_eq!(runner["targets"][0], json!({"mode": "risk", "value": 1.0, "quantity": "1/2"}));
+        assert_eq!(runner["targets"][1]["quantity"], "1/2", "split evenly with the first");
+        assert_eq!(runner["stops"][0], json!({"mode": "risk", "value": 250.0, "quantity": "all"}));
+        assert_ne!(run("trading templates set Runner --target $250r", &store).code, 0, "a target's risk in money");
+        assert_ne!(run("trading templates set Swing", &store).code, 0, "a new template with no exits");
+        assert_eq!(run("trading templates set Runner --rename Scalp", &store).code, super::super::EXIT_REFUSED);
+
+        assert_eq!(run("trading templates move Runner 1", &store).code, 0);
+        let names: Vec<String> = json_of(&run("trading templates list --json", &store))["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["Runner", "Scalp"]);
+
+        run("chartbook create Desk --switch", &store);
+        assert_eq!(run("chart set --book Desk --order-template scalp", &store).code, 0);
+        let chart = json_of(&run("chart list --book Desk --json", &store))["charts"][0].clone();
+        let id = json_of(&run("trading templates --json", &store))["templates"][1]["id"].clone();
+        assert_eq!(chart["order_template"], id);
+        assert_eq!(run("chart set --book Desk --order-template Nope", &store).code, super::super::EXIT_NOT_FOUND);
+        assert_eq!(run("chart set --book Desk --order-template none", &store).code, 0);
+        assert_eq!(json_of(&run("chart list --book Desk --json", &store))["charts"][0]["order_template"], Value::Null);
+
+        assert_eq!(run("trading templates remove scalp", &store).code, 0);
+        assert_eq!(run("trading templates remove scalp", &store).code, super::super::EXIT_NOT_FOUND);
+    }
+
     #[test]
     fn templates_are_listed_made_renamed_and_deleted() {
         let store = on_default();
@@ -8167,7 +8237,7 @@ mod tests {
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
         use crate::header::{Header, Part};
-        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);

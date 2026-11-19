@@ -86,6 +86,8 @@ pub struct Panel {
     data_page: RefCell<Option<Rc<dyn Fn()>>>,
     page: adw::PreferencesPage,
     edit_sizes: RefCell<Option<EditSizes>>,
+    /// What "Edit order templates…" opens.
+    edit_order_templates: RefCell<Option<EditSizes>>,
     /// Puts every chart's labels where the setting now says.
     labels_moved: RefCell<Option<Rc<dyn Fn()>>>,
     /// Writes every chart's P&L as the settings now say, money or R.
@@ -120,6 +122,7 @@ impl Panel {
             data_page: RefCell::new(None),
             page,
             edit_sizes: RefCell::new(None),
+            edit_order_templates: RefCell::new(None),
             labels_moved: RefCell::new(None),
             pnl_changed: RefCell::new(None),
             groups: RefCell::new(Vec::new()),
@@ -146,6 +149,12 @@ impl Panel {
     /// What "Edit quantities…" opens.
     pub fn set_edit_sizes(self: &Rc<Self>, edit: EditSizes) {
         *self.edit_sizes.borrow_mut() = Some(edit);
+        rebuild(self);
+    }
+
+    /// What "Edit order templates…" opens.
+    pub fn set_edit_order_templates(self: &Rc<Self>, edit: EditSizes) {
+        *self.edit_order_templates.borrow_mut() = Some(edit);
         rebuild(self);
     }
 
@@ -221,7 +230,7 @@ fn rebuild(panel: &Rc<Panel>) {
     accounts_group.add(&add_button(panel));
     let mut groups = vec![accounts_group];
     if let Some(edit) = panel.edit_sizes.borrow().clone() {
-        groups.push(order_entry_group(edit));
+        groups.push(order_entry_group(edit, panel.edit_order_templates.borrow().clone()));
     }
     groups.push(chart_group(panel));
     for group in &groups {
@@ -345,15 +354,22 @@ fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::Acti
     row
 }
 
-/// The quantity templates every chart picks its quantity from, behind a
-/// button.
-fn order_entry_group(edit: EditSizes) -> adw::PreferencesGroup {
+/// The quantity templates every chart picks its quantity from, and the
+/// order templates it brackets its orders with, each behind a button.
+fn order_entry_group(edit: EditSizes, templates: Option<EditSizes>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Order entry");
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    buttons.set_halign(gtk::Align::Start);
     let button = gtk::Button::with_label("Edit quantities…");
-    button.set_halign(gtk::Align::Start);
     button.connect_clicked(move |button| edit(button.upcast_ref()));
-    group.add(&button);
+    buttons.append(&button);
+    if let Some(templates) = templates {
+        let button = gtk::Button::with_label("Edit order templates…");
+        button.connect_clicked(move |button| templates(button.upcast_ref()));
+        buttons.append(&button);
+    }
+    group.add(&buttons);
     group
 }
 
