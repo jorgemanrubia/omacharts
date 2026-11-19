@@ -426,7 +426,8 @@ pub struct Notice {
 /// - Part of the position left without the group, a fact for targets
 ///   and a warning for stops: "1/2 of position has no target", "Contracts
 ///   past 2 have no stop", "Part of the position has no target".
-/// - On small orders, an exit sized to nothing, a fact: "Needs 2
+/// - On small orders, an exit sized to nothing, a fact for targets and a
+///   warning for stops: "Needs 2
 ///   contracts to send the target", "… to send every target".
 pub fn fit(exits: &[Exit], group: Group) -> Vec<Notice> {
     let (noun, one) = match group {
@@ -471,7 +472,8 @@ pub fn fit(exits: &[Exit], group: Group) -> Vec<Notice> {
             1 => format!("Needs {from} contracts to send the {one}"),
             _ => format!("Needs {from} contracts to send every {one}"),
         };
-        lines.push(Notice { text, warning: false });
+        // A stop not sent leaves that order without one.
+        lines.push(Notice { text, warning: stop });
     }
     lines.sort_by_key(|line| !line.warning);
     lines.truncate(2);
@@ -727,7 +729,7 @@ mod tests {
         assert_eq!(says(&[], Group::Stops), [], "no stops is a choice");
         assert_eq!(says(&[Size::Fixed(1), Size::ALL], Group::Targets), [fact("Needs 2 contracts to send every target")]);
         assert_eq!(says(&[Size::Share(1, 2)], Group::Targets), [fact("1/2 of position has no target"), fact("Needs 2 contracts to send the target")]);
-        assert_eq!(says(&[Size::Share(1, 2)], Group::Stops), [warning("1/2 of position has no stop"), fact("Needs 2 contracts to send the stop")]);
+        assert_eq!(says(&[Size::Share(1, 2)], Group::Stops), [warning("1/2 of position has no stop"), warning("Needs 2 contracts to send the stop")]);
         assert_eq!(says(&[Size::Share(1, 3), Size::Share(1, 3)], Group::Targets)[0], fact("1/3 of position has no target"));
         assert_eq!(says(&[Size::Share(65, 100)], Group::Targets)[0], fact("35% of position has no target"));
         assert_eq!(says(&[Size::Fixed(1), Size::Fixed(1)], Group::Targets)[0], fact("Contracts past 2 have no target"));
