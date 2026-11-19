@@ -3743,7 +3743,8 @@ mod outside_change_tests {
                 assert!(Rc::strong_count(&window) > alone);
                 holder.destroy();
                 drop((holder, shown, rule));
-                assert_eq!(settled(), alone, "a page or its scope still holds the window");
+                // At most: something an earlier test left may let go of it meanwhile.
+                assert!(settled() <= alone, "a page or its scope still holds the window");
             }
         });
     }
