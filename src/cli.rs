@@ -22,6 +22,8 @@
 use std::rc::Rc;
 
 use omacharts_engine::providers;
+use chrono::NaiveDate;
+use omacharts_engine::exchanges::Schedule;
 use omacharts_engine::{Instrument, Provider, SearchIndex, Timeframe};
 
 use crate::loader::{Listing, Loader, Request, BACKFILL};
@@ -703,13 +705,30 @@ pub fn quote_from(
     // is in is the exchange's to say, and with no hours known none stands
     // in: hours this does not know are hours it must not rule on.
     let hours = omacharts_engine::exchanges::registry().for_instrument(instrument);
+    let latest = store.latest_intraday_close(key);
+    // An intraday bar in a session newer than every close kept: the daily
+    // bars and the batch both stop at a session before it. A streamed feed
+    // asks for its daily bars only now and then, and a chart left on
+    // overnight is the one that finds them a session behind. The move is
+    // that bar against the close before it, or no move at all: the latest
+    // daily bar against the one before is yesterday's, and when it was
+    // fetched mid-session it is not even that.
+    if let (Some(hours), Some((ts, _, close)), Some(newest)) = (hours, latest, bars.last())
+        && counted(&hours, instrument, ts)
+        && let Some(day) = hours.trading_date(ts)
+        && [Some(newest.ts), from_closes.map(|(at, ..)| at)]
+            .into_iter()
+            .flatten()
+            .all(|at| hours.trading_date(at).is_some_and(|date| date < day))
+    {
+        let previous = previous_close(store, key, instrument, &hours, bars, day)?;
+        let change = close - previous;
+        let change_pct = if previous == 0.0 { 0.0 } else { change / previous * 100.0 };
+        return Some(Quote { last: close, change, change_pct, as_of: ts });
+    }
     let stand_in = hours.and_then(|hours| {
-        let (ts, fetched_at, close) = store.latest_intraday_close(key)?;
-        // A future's daily bar holds its whole day; a share's only regular
-        // hours, so its pre- and post-market prints stay out.
-        let counted = hours.part_at(ts).is_some_and(|part| {
-            instrument.kind == omacharts_engine::InstrumentKind::FutureRoot || !part.is_extended()
-        });
+        let (ts, fetched_at, close) = latest?;
+        let counted = counted(&hours, instrument, ts);
         // Fetched after the close, the last bar can miss the closing
         // auction (ARA.MX: 5.29 against an official 5.32), and nothing
         // would replace it until the next session.
@@ -732,6 +751,85 @@ pub fn quote_from(
         change_pct: if previous == 0.0 { 0.0 } else { change / previous * 100.0 },
         as_of,
     })
+}
+
+/// Whether a print at `ts` is one a daily bar holds. A future's daily bar
+/// holds its whole day; a share's only regular hours, so its pre- and
+/// post-market prints stay out.
+fn counted(hours: &Schedule, instrument: &Instrument, ts: i64) -> bool {
+    hours.part_at(ts).is_some_and(|part| counts(instrument, part))
+}
+
+fn counts(instrument: &Instrument, part: omacharts_engine::exchanges::Part) -> bool {
+    instrument.kind == omacharts_engine::InstrumentKind::FutureRoot || !part.is_extended()
+}
+
+/// Where the part of the trading day `date` a daily bar holds opens and
+/// closes, when it is a day the market keeps.
+fn counted_span(hours: &Schedule, instrument: &Instrument, date: NaiveDate) -> Option<(i64, i64)> {
+    let day = hours.day(date)?;
+    let spans = || day.segments.iter().filter(|(part, ..)| counts(instrument, *part));
+    Some((spans().map(|s| s.1).min()?, spans().map(|s| s.2).max()?))
+}
+
+/// The close of the session before the trading day `day`, when it can be
+/// trusted: a daily bar fetched once that session, and any the calendar
+/// puts between it and `day`, had closed; or the last bar of that session
+/// in the chart's own intraday series, reaching its close. A daily bar
+/// fetched mid-session holds whatever price it was fetched at, which is
+/// how a chart came to show yesterday's morning against yesterday's
+/// settlement as today's move.
+fn previous_close(
+    store: &Store,
+    key: &str,
+    instrument: &Instrument,
+    hours: &Schedule,
+    bars: &[omacharts_engine::Bar],
+    day: NaiveDate,
+) -> Option<f64> {
+    let newest = bars.last()?;
+    let held = hours.trading_date(newest.ts)?;
+    let fetched_at = store.coverage(key, Timeframe::days(1)).map_or(0, |c| c.fetched_at);
+    let closes: Vec<i64> = held
+        .iter_days()
+        .take_while(|date| *date < day)
+        .filter_map(|date| counted_span(hours, instrument, date).map(|(_, close)| close))
+        .collect();
+    if counted_span(hours, instrument, held).is_some() && closes.iter().all(|close| fetched_at >= *close) {
+        return Some(newest.close);
+    }
+    let (timeframe, ..) = store.latest_intraday_series(key)?;
+    let intraday = store.load_bars(key, timeframe);
+    let last = intraday.iter().rev().find(|bar| {
+        hours.trading_date(bar.ts).is_some_and(|date| date < day) && counted(hours, instrument, bar.ts)
+    })?;
+    let date = hours.trading_date(last.ts)?;
+    let (_, close) = counted_span(hours, instrument, date)?;
+    (date >= held && last.ts + timeframe.seconds() >= close).then_some(last.close)
+}
+
+/// The session the daily bars a chart's move is read from are behind on at
+/// `now`, when they are: their newest bar is of a session before the one
+/// under way, or was fetched before its session closed and that session
+/// has. Asking again once per session it names, and not before, is what
+/// keeps a feed that refuses from being asked on every flush.
+///
+/// `None` with nothing cached as well: whether to ask for a first history
+/// is the caller's to decide.
+pub fn stale_daily(store: &Store, key: &str, instrument: &Instrument, now: i64) -> Option<NaiveDate> {
+    let hours = omacharts_engine::exchanges::registry().for_instrument(instrument)?;
+    let coverage = store.coverage(key, Timeframe::days(1))?;
+    let newest = hours.trading_date(coverage.last_ts)?;
+    let today = hours.trading_date(now)?;
+    // The latest session that has opened, holidays included: the calendar
+    // knows weekends, not those, and a day with nothing to fetch is asked
+    // about once.
+    let current = (0..10)
+        .filter_map(|back| today.checked_sub_days(chrono::Days::new(back)))
+        .find(|date| counted_span(&hours, instrument, *date).is_some_and(|(open, _)| open <= now))?;
+    let partial = counted_span(&hours, instrument, newest)
+        .is_some_and(|(_, close)| coverage.fetched_at < close && close <= now);
+    (newest < current || partial).then_some(current)
 }
 
 pub fn cache_key(provider: &dyn Provider, instrument: &Instrument) -> Option<String> {
@@ -1924,13 +2022,11 @@ mod tests {
         // session past them as (last, previous, fetched), hourly bar,
         // hourly fetched, expected (last, change))
         type Case<'a> = (&'a str, &'a Instrument, &'a str, [(i64, f64); 2], i64, Option<(f64, f64, i64)>, (i64, f64), i64, (f64, f64));
-        let cases: [Case; 9] = [
+        let cases: [Case; 8] = [
             ("chart after the daily bars", &gc, "yahoo:GC=F", [(gc_tue - 86_400, 3969.6), (gc_tue, 3918.4)], gc_tue + 30_000,
              None, (gc_tue + 33_600, 3959.2), gc_tue + 33_700, (3959.2, 3959.2 - 3969.6)),
             ("daily bars after the chart", &gc, "yahoo:GC=F", [(gc_tue - 86_400, 3969.6), (gc_tue, 3918.4)], gc_tue + 34_000,
              None, (gc_tue + 33_600, 3959.2), gc_tue + 33_700, (3918.4, 3918.4 - 3969.6)),
-            ("future's evening is the next day", &gc, "yahoo:GC=F", [(gc_tue - 86_400, 3969.6), (gc_tue, 3959.8)], gc_tue + 50_000,
-             None, (tue + 23 * h, 3990.0), tue + 23 * h + 600, (3959.8, 3959.8 - 3969.6)),
             ("coin late in the UTC day", &btc, "yahoo:BTC-USD", [(tue - 86_400, 100.0), (tue, 101.0)], tue + h,
              None, (tue + 22 * h, 104.0), tue + 22 * h + 60, (104.0, 4.0)),
             ("chart after the batch", &btc, "yahoo:BTC-USD", [(tue - 86_400, 76_000.0), (tue, 77_000.0)], tue + 34_000,
@@ -1962,6 +2058,145 @@ mod tests {
             assert_eq!(q.last, last, "{case}");
             assert!((q.change - change).abs() < 1e-9, "{case}: change {}", q.change);
         }
+    }
+
+    /// An instant on Chicago's wall clock, where ES keeps its day.
+    fn chicago(day: u32, hour: u32, minute: u32) -> i64 {
+        use chrono::TimeZone as _;
+        chrono_tz::America::Chicago.with_ymd_and_hms(2026, 11, day, hour, minute, 0).single().unwrap().timestamp()
+    }
+
+    fn es() -> Instrument {
+        Instrument { kind: omacharts_engine::InstrumentKind::FutureRoot, ..listed("ES") }
+    }
+
+    fn flat(ts: i64, close: f64) -> omacharts_engine::Bar {
+        omacharts_engine::Bar { ts, open: close, high: close, low: close, close, volume: 1.0 }
+    }
+
+    /// ES's daily bars for Monday 16 and Tuesday 17 November, stamped at
+    /// midnight UTC, as a streamed feed left them: fetched at `fetched_at`.
+    fn es_daily(store: &Store, key: &str, tuesday_close: f64, fetched_at: i64) {
+        let midnight = |day: u32| chicago(day - 1, 18, 0);
+        store.write_bars(key, Timeframe::days(1), &[flat(midnight(16), 5000.0), flat(midnight(17), tuesday_close)]);
+        store.backdate(key, Timeframe::days(1), fetched_at);
+    }
+
+    /// Wednesday 18 November, 02:44 in Chicago: ES on a streamed feed in
+    /// the overnight session, its daily bars last fetched on Tuesday
+    /// morning, mid-session, at 4950. Against Monday's 5000 that is -1%,
+    /// Tuesday's move as of Tuesday morning, shown as Wednesday's.
+    /// Wednesday's move is its last trade against Tuesday's close: read off
+    /// the chart's own bars when they hold it, and otherwise nothing at
+    /// all, never the stale figure.
+    #[test]
+    fn a_new_session_on_a_partial_daily_is_measured_from_a_close_it_can_trust() {
+        let key = "stream:ES";
+        let two = Timeframe::parse("2m").unwrap();
+        let now = chicago(18, 2, 44);
+        // (case, Tuesday's 2m bars, expected (last, change))
+        let cases: [(&str, &[(i64, f64)], Option<(f64, f64)>); 3] = [
+            ("the chart holds Tuesday's close", &[(chicago(17, 15, 58), 5005.0)], Some((5010.0, 5.0))),
+            ("the chart holds Wednesday alone", &[], None),
+            ("the chart stops before Tuesday's close", &[(chicago(17, 14, 0), 4990.0)], None),
+        ];
+        for (case, tuesday, expected) in cases {
+            let store = Store::memory().unwrap();
+            es_daily(&store, key, 4950.0, chicago(17, 9, 0));
+            let mut bars: Vec<_> = tuesday.iter().map(|&(ts, close)| flat(ts, close)).collect();
+            bars.push(flat(now, 5010.0));
+            store.write_bars(key, two, &bars);
+            store.backdate(key, two, now + 60);
+            let q = quote_at(&store, key, &es()).map(|q| (q.last, q.change, q.as_of));
+            assert_eq!(q.map(|(last, change, _)| (last, change)), expected, "{case}");
+            if let Some((_, _, as_of)) = q {
+                assert_eq!(as_of, now, "{case}: Wednesday's, so a trade keeps it moving");
+            }
+        }
+    }
+
+    /// Tuesday's daily bar fetched once Tuesday had closed is its close,
+    /// and Wednesday's first trades are measured from it, on Wednesday
+    /// morning or any time before the daily bars catch up.
+    #[test]
+    fn a_new_session_on_a_settled_daily_is_measured_from_its_close() {
+        let (store, key, two) = (Store::memory().unwrap(), "stream:ES", Timeframe::parse("2m").unwrap());
+        es_daily(&store, key, 4990.0, chicago(17, 16, 30));
+        let now = chicago(18, 2, 44);
+        store.write_bars(key, two, &[flat(now, 5010.0)]);
+        store.backdate(key, two, now + 60);
+        let q = quote_at(&store, key, &es()).unwrap();
+        assert_eq!((q.last, q.as_of), (5010.0, now));
+        assert!((q.change - 20.0).abs() < 1e-9, "against Tuesday's settled close: {}", q.change);
+
+        // Fetched before a session it skipped had closed, the newest daily
+        // bar is two sessions back, and its close is not the previous one.
+        let thursday = chicago(19, 2, 44);
+        store.write_bars(key, two, &[flat(thursday, 5020.0)]);
+        store.backdate(key, two, thursday + 60);
+        assert!(quote_at(&store, key, &es()).is_none(), "Wednesday's close is nowhere");
+    }
+
+    /// GC's daily bar for Tuesday fetched at 13:53 in New York, and an hourly
+    /// bar from Tuesday evening, which is Wednesday's session. It stands in
+    /// for nothing of Tuesday's; nor is Wednesday measured from a close
+    /// fetched mid-session.
+    #[test]
+    fn a_futures_evening_on_a_partial_daily_shows_no_move() {
+        let store = Store::memory().unwrap();
+        let (key, tue, h) = ("yahoo:GC=F", 1_793_664_000, 3_600);
+        let gc = Instrument { kind: omacharts_engine::InstrumentKind::FutureRoot, ..listed("GC") };
+        let gc_tue = tue + 5 * h;
+        store.write_bars(key, Timeframe::days(1), &[flat(gc_tue - 86_400, 3969.6), flat(gc_tue, 3959.8)]);
+        store.backdate(key, Timeframe::days(1), gc_tue + 50_000);
+        let hourly = Timeframe::parse("1h").unwrap();
+        store.write_bars(key, hourly, &[flat(tue + 23 * h, 3990.0)]);
+        store.backdate(key, hourly, tue + 23 * h + 600);
+        assert!(quote_at(&store, key, &gc).is_none());
+    }
+
+    /// A share's pre-market is no session of its own: its prints are left
+    /// out of a daily bar, so the move stays the last regular session's.
+    #[test]
+    fn a_shares_pre_market_keeps_the_last_sessions_move() {
+        let store = Store::memory().unwrap();
+        let (key, adbe) = ("yahoo:ADBE", listed("ADBE"));
+        let (tue, h) = (1_793_664_000, 3_600);
+        let us_tue = tue + 52_200;
+        store.write_bars(key, Timeframe::days(1), &[flat(us_tue - 86_400, 100.0), flat(us_tue, 101.0)]);
+        store.backdate(key, Timeframe::days(1), us_tue + 8 * h);
+        let hourly = Timeframe::parse("1h").unwrap();
+        let wednesday_pre = tue + 86_400 + 11 * h;
+        store.write_bars(key, hourly, &[flat(wednesday_pre, 104.0)]);
+        store.backdate(key, hourly, wednesday_pre + 60);
+        let q = quote_at(&store, key, &adbe).unwrap();
+        assert_eq!((q.last, q.change), (101.0, 1.0));
+    }
+
+    /// When ES's daily bars are behind, and for which session: once Tuesday
+    /// has closed on a bar fetched Tuesday morning, and once Wednesday has
+    /// opened on Tuesday's; never while Tuesday's is still trading, or once
+    /// it was fetched after the close, or over a weekend on Friday's.
+    #[test]
+    fn daily_bars_are_stale_once_their_session_is_over() {
+        let (key, es) = ("stream:ES", es());
+        let date = |day| NaiveDate::from_ymd_opt(2026, 11, day).unwrap();
+        let store = Store::memory().unwrap();
+        assert_eq!(stale_daily(&store, key, &es, chicago(17, 12, 0)), None, "nothing cached");
+        es_daily(&store, key, 4950.0, chicago(17, 9, 0));
+        assert_eq!(stale_daily(&store, key, &es, chicago(17, 12, 0)), None, "still trading");
+        assert_eq!(stale_daily(&store, key, &es, chicago(17, 16, 30)), Some(date(17)), "closed since");
+        assert_eq!(stale_daily(&store, key, &es, chicago(18, 2, 44)), Some(date(18)), "a session on");
+
+        es_daily(&store, key, 4990.0, chicago(17, 16, 30));
+        assert_eq!(stale_daily(&store, key, &es, chicago(17, 16, 45)), None, "settled");
+        assert_eq!(stale_daily(&store, key, &es, chicago(17, 17, 5)), Some(date(18)), "Wednesday open");
+
+        let friday = |day: u32| chicago(day - 1, 18, 0);
+        store.write_bars(key, Timeframe::days(1), &[flat(friday(19), 1.0), flat(friday(20), 1.0)]);
+        store.backdate(key, Timeframe::days(1), chicago(20, 16, 30));
+        assert_eq!(stale_daily(&store, key, &es, chicago(21, 12, 0)), None, "Saturday");
+        assert_eq!(stale_daily(&store, key, &es, chicago(22, 17, 30)), Some(date(23)), "Sunday evening is Monday");
     }
 
     #[test]

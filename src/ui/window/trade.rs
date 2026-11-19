@@ -5617,6 +5617,64 @@ pub(super) mod tests {
         });
     }
 
+    /// A chart on a streamed feed whose daily bars are a session behind asks
+    /// its feed for them again: once for the session, however often it is
+    /// put on screen or its header changes, refused or not, and once more
+    /// when the next session opens. Nothing else asks for a streamed feed's
+    /// daily bars, so without this they stayed as first fetched, and the
+    /// move in the header went on reading yesterday's morning.
+    #[test]
+    fn stale_daily_bars_are_asked_for_once_a_session() {
+        use chrono::TimeZone as _;
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let store = Rc::new(Store::memory().expect("a store"));
+            let typed = trading::Typed { name: "A Login".into(), ..typed() };
+            let id = trading::add_login(&store, &Kept::default(), &typed).expect("a login");
+            let login: &'static str = Box::leak(format!("rithmic@{id}").into_boxed_str());
+            let (streamed, asked) = Posing::recording(login, "Rithmic (A Login)", true);
+            let feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false), streamed];
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build_with(&app, store.clone(), feeds);
+            for feed in window.feeds() {
+                feed.usable.set(true);
+            }
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            let pane = window.focused_pane();
+            window.split_focused(true);
+            let daily = omacharts_engine::Timeframe::days(1);
+            let asks = || {
+                asked.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(symbol, tf)| symbol == "ES" && *tf == daily).count()
+            };
+            pane.timeframe.set(omacharts_engine::Timeframe::minutes(2));
+            pane.feed.replace(Some(login.to_string()));
+            window.show_in(&pane, es.clone());
+            assert!(settle_for(&window, 20, || asks() == 1), "nothing cached, so asked: {}", asks());
+
+            // What came back, as the loader would have written it: Monday's
+            // and Tuesday's bars, fetched on Tuesday morning.
+            let chicago = |day, hour| {
+                chrono_tz::America::Chicago.with_ymd_and_hms(2026, 11, day, hour, 0, 0).single().expect("a time").timestamp()
+            };
+            let key = crate::cli::cache_key(window.feeds()[1].provider.as_ref(), &es).expect("a key");
+            let bar = |ts| omacharts_engine::Bar { ts, open: 1.0, high: 1.0, low: 1.0, close: 1.0, volume: 1.0 };
+            store.write_bars(&key, daily, &[bar(chicago(15, 18)), bar(chicago(16, 18))]);
+            store.backdate(&key, daily, chicago(17, 9));
+
+            let (tuesday_noon, wednesday, thursday) = (chicago(17, 12), chicago(18, 2), chicago(19, 2));
+            window.fetch_daily_for_change_at(&pane, tuesday_noon);
+            assert!(!settle_for(&window, 3, || asks() > 1), "Tuesday's bar is still trading: {}", asks());
+            for (session, now) in [("Wednesday", wednesday), ("Thursday", thursday)] {
+                let before = asks();
+                window.fetch_daily_for_change_at(&pane, now);
+                assert!(settle_for(&window, 20, || asks() == before + 1), "{session} asked: {}", asks());
+                window.fetch_daily_for_change_at(&pane, now + 3_600);
+                window.fetch_daily_for_change_at(&pane, now + 7_200);
+                assert!(!settle_for(&window, 3, || asks() > before + 1), "{session} asked once: {}", asks());
+            }
+        });
+    }
+
     /// Two trading services with one account each: the Account part shows,
     /// its menu each service under its own heading, and picking the other
     /// service's account puts the chart on it. One account in all: none.

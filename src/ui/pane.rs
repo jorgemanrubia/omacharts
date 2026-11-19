@@ -206,6 +206,9 @@ pub struct ChartPane {
     /// The move written, in hundredths of a percent: a trade that leaves it
     /// where it is writes nothing.
     pub change_shown: Cell<Option<i64>>,
+    /// The session of the last trade the move followed, so the one that
+    /// crosses into the next session is noticed.
+    pub live_session: Cell<Option<i64>>,
     pub template_label: gtk::Label,
     /// The Title part: the chart title, a flat button like the symbol
     /// that turns into an entry where it stands when clicked, Enter or
@@ -816,6 +819,7 @@ impl ChartPane {
             header_center: top,
             change_label,
             change_basis: Cell::new(None),
+            live_session: Cell::new(None),
             change_shown: Cell::new(None),
             template_label,
             title_part,
