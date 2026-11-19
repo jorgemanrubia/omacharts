@@ -57,6 +57,8 @@ mod trade;
 mod trade_cli;
 mod updates;
 mod about;
+#[cfg(test)]
+mod repaint_tests;
 mod agent;
 use trade::Trade;
 
@@ -4699,6 +4701,19 @@ fn parse_workspace(json: &str) -> Option<Workspace> {
         })
 }
 
+/// Draw again every drawing area under `widget`: a container's own redraw
+/// leaves its children's pictures as they were.
+fn repaint_drawn(widget: &gtk::Widget) {
+    if widget.is::<gtk::DrawingArea>() {
+        widget.queue_draw();
+    }
+    let mut child = widget.first_child();
+    while let Some(next) = child {
+        repaint_drawn(&next);
+        child = next.next_sibling();
+    }
+}
+
 /// Take out of a stored arrangement, in place, what this build cannot read
 /// of it, each part left out named in `left_out`. See [`parse_workspace`].
 fn mend_workspace(value: &mut serde_json::Value, left_out: &mut Vec<String>) {
@@ -7137,6 +7152,48 @@ impl Window {
         // A command can add or remove a whole chartbook, which is the one
         // change that shows outside the charts themselves.
         self.rebuild_book_strip();
+        self.chart_changed_elsewhere();
+    }
+
+    /// Read the arrangement back after a command changed indicators and
+    /// nothing else, and show each chart on screen what it holds now, as
+    /// its settings would have: a colour repainted, a period worked out
+    /// again, nothing built anew.
+    ///
+    /// The command ran on what `save_workspace` had just written, so the
+    /// charts on screen are in it under their own ids. Anything else —
+    /// a chart missing, another chartbook open — is not a change of
+    /// indicators, and is rebuilt as any other command's would be.
+    pub fn adopt_indicators(self: &Rc<Self>) {
+        let stored = self.store.setting(SETTING_WORKSPACE).and_then(|json| parse_workspace(&json));
+        let Some(workspace) = stored.filter(|w| w.active == self.active.get()) else {
+            return self.reload_workspace();
+        };
+        let panes = self.panes.borrow().clone();
+        let found: Option<Vec<(Rc<ChartPane>, StoredPane)>> = workspace.books.get(workspace.active).and_then(|book| {
+            panes
+                .iter()
+                .map(|pane| Some((pane.clone(), book.panes.iter().find(|p| p.id == pane.id)?.clone())))
+                .collect()
+        });
+        let Some(found) = found else { return self.reload_workspace() };
+        // Every book as it was written, the ones not on screen included:
+        // left as the window had them, the next save would put the old
+        // indicators back.
+        *self.books.borrow_mut() = workspace.books;
+        let templates = crate::templates::all(&self.store);
+        for (pane, stored) in found {
+            let template = stored.template.and_then(|id| templates.iter().find(|t| t.id == id));
+            if pane.template.get() != template.map(|t| t.id) {
+                pane.template.set(template.map(|t| t.id));
+                self.write_header_of(&pane);
+            }
+            let indicators = template.map(|t| t.indicators.clone()).unwrap_or(stored.indicators);
+            if *pane.indicators.borrow() != indicators {
+                self.show_indicators(&pane, indicators);
+            }
+        }
+        self.sync_chart_actions(&self.focused_pane());
         self.chart_changed_elsewhere();
     }
 
@@ -10684,6 +10741,7 @@ impl Window {
         context: &omacharts_engine::indicators::Context,
     ) -> Vec<Drawn> {
         let context = *context;
+        pane.computed.set(pane.computed.get() + 1);
         let merges = pane.profile_merges.borrow();
         let compute = |context: &omacharts_engine::indicators::Context| -> Vec<Drawn> {
             all.iter()
@@ -11861,14 +11919,84 @@ impl Window {
     }
 
     /// Draw a chart with these indicators, writing nothing down.
+    ///
+    /// Over the bars it is already drawing, never by charting its symbol
+    /// again: that read the bars back from the cache, asked the feed for
+    /// them and worked every indicator out again, and the chart was seen
+    /// to redraw whole — the price, the profiles — for a colour. A change
+    /// to how the indicators look is repainted into what was computed, and
+    /// only a change to what they compute computes anything; either way
+    /// the chart goes from one finished picture to the next.
     fn show_indicators(self: &Rc<Self>, pane: &Rc<ChartPane>, indicators: Vec<Indicator>) {
-        *pane.indicators.borrow_mut() = indicators;
-        self.rebuild_legend_of(pane);
-        let instrument = pane.instrument.borrow().clone();
-        if let Some(instrument) = instrument {
-            self.series.borrow_mut().clear();
-            self.show_in(pane, instrument);
+        let was = std::mem::replace(&mut *pane.indicators.borrow_mut(), indicators);
+        // The legend's lines are built again only when what they say does;
+        // a colour is repainted into the dots that are there. Built again,
+        // the lines would be laid out anew under the hand.
+        let words = |indicators: &[Indicator]| -> Vec<(u32, String, bool)> {
+            let timeframe = pane.timeframe.get();
+            let estimated = pane.estimated.borrow();
+            indicators
+                .iter()
+                .filter(|i| i.in_legend)
+                .map(|i| (i.id, i.legend_for(timeframe, estimated.contains(&i.id)), i.visible))
+                .collect()
+        };
+        if words(&was) == words(&pane.indicators.borrow()) {
+            repaint_drawn(pane.indicator_legend.upcast_ref());
+        } else {
+            self.rebuild_legend_of(pane);
         }
+        if pane.instrument.borrow().is_none() {
+            return;
+        }
+        if !self.repaint_indicators(pane) {
+            self.recompute_panes(&[pane.id]);
+        }
+    }
+
+    /// The colour indicator `id` is drawn in on chart `pane` now, for its
+    /// dot in the legend.
+    fn legend_colour(&self, pane: &ChartPane, id: u32) -> Option<String> {
+        let indicators = pane.indicators.borrow();
+        let at = indicators.iter().position(|i| i.id == id)?;
+        let theme = self.theming.borrow().theme();
+        omacharts_engine::palette_colors(&indicators, &theme).into_iter().nth(at)
+    }
+
+    /// Hand chart `pane` its indicators again, recoloured, out of what it
+    /// computed for the ones it is drawing, when every change from those is
+    /// one of paint. `false`, having touched nothing, when one is not.
+    fn repaint_indicators(self: &Rc<Self>, pane: &Rc<ChartPane>) -> bool {
+        use omacharts_engine::Params::VolumeProfile;
+        let now = pane.indicators.borrow().clone();
+        let theme = self.theming.borrow().theme();
+        let colors = omacharts_engine::palette_colors(&now, &theme);
+        let repainted: Option<Vec<Drawn>> = pane.view.with_indicators(|drawn| {
+            if drawn.len() != now.len() {
+                return None;
+            }
+            drawn
+                .iter()
+                .zip(now.iter().zip(colors))
+                .map(|(drawn, (now, color))| {
+                    // A profile is drawn carrying the chart's own composites,
+                    // which the indicator never does: see `compute_drawn`.
+                    // Compared without them, and drawn with them still.
+                    let mut computed_for = drawn.indicator.clone();
+                    let mut indicator = now.clone();
+                    if let (VolumeProfile { merged: kept, .. }, VolumeProfile { merged, .. }) =
+                        (&mut computed_for.params, &mut indicator.params)
+                    {
+                        std::mem::swap(kept, merged);
+                    }
+                    let mut output = drawn.output.clone();
+                    output.repaint(&computed_for, now).then_some(Drawn { indicator, output, color })
+                })
+                .collect()
+        });
+        let Some(repainted) = repainted else { return false };
+        pane.view.set_indicators(repainted);
+        true
     }
 
     // -- chart templates ---------------------------------------------------
@@ -12346,11 +12474,18 @@ impl Window {
             let dot = gtk::DrawingArea::new();
             dot.set_size_request(crate::ui::pane::LEGEND_DOT, crate::ui::pane::LEGEND_DOT);
             dot.set_valign(gtk::Align::Center);
-            let dot_colour = colour.clone();
+            // Asked when it is drawn rather than kept from now, so a colour
+            // changed is repainted into the dot that is there: see
+            // `show_indicators`.
+            let dot_window = Rc::downgrade(self);
             let dot_pane = Rc::downgrade(pane);
             dot.set_draw_func(move |_, cr, width, height| {
                 let (x, y) = (width as f64 / 2.0, height as f64 / 2.0);
-                colors::set_source(cr, &dot_colour);
+                let now = match (dot_window.upgrade(), dot_pane.upgrade()) {
+                    (Some(window), Some(pane)) => window.legend_colour(&pane, id),
+                    _ => None,
+                };
+                colors::set_source(cr, now.as_deref().unwrap_or(&colour));
                 cr.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
                 if dot_pane.upgrade().is_some_and(|p| p.view.picked() == Some(id)) {

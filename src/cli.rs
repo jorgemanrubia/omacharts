@@ -284,6 +284,13 @@ pub trait Live {
 
     /// Read the arrangement back and rebuild from it.
     fn reload_workspace(&self);
+    /// Read the arrangement back after a command changed only indicators,
+    /// a chart's or a template's, and draw them on the charts on screen
+    /// as a change in their settings is drawn, rebuilding nothing. Without
+    /// a window of its own to say so, the same as [`Live::reload_workspace`].
+    fn adopt_indicators(&self) {
+        self.reload_workspace();
+    }
     /// Draw the rail again, after a command changed a watchlist.
     fn reload_watchlists(&self);
     /// Re-read the theme and bar scheme, and repaint.
@@ -1255,6 +1262,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn reload_workspace(&self) {
         crate::ui::Window::reload_workspace(self);
+    }
+
+    fn adopt_indicators(&self) {
+        crate::ui::Window::adopt_indicators(self);
     }
 
     fn reload_watchlists(&self) {

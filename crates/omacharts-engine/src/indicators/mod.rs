@@ -13,6 +13,7 @@ pub mod bands;
 pub mod bollinger;
 pub mod cvd;
 pub mod oscillators;
+mod paint;
 pub mod periods;
 pub mod profile;
 pub mod time;
