@@ -134,18 +134,32 @@ to z, and every row a TPO period's bars reach gets its letter once. Rows are
 4, 5, 10, 20, 40, 50… ticks that keeps a typical period within 60 rows. The
 point of control is the row with the most letters, a tie going to the row
 nearest the middle of the profile, and the value area grows out from it,
-taking the side with more, until it holds `--value-area` of them. With a
-volume profile on the same chart and the same `--anchor`, the two pair: each
-session's two sit side by side inside it, the volume profile against the
-edge and the letters after it, each as wide as its `--profile-width`, both drawn from the market
-profile's `--align` (`right` mirrors both), and they merge and split
-together. With different anchors each keeps its own `--align` and its own
-merges. `chart values` gives each one's
-latest point of control and value area.
+taking the side with more, until it holds `--value-area` of them. `chart
+values` gives each one's latest point of control and value area.
+
+A market profile is a study of its own: it needs no volume profile, and
+alone it merges and splits with `chart profile` as a volume profile does. It
+can also sit beside volume profiles:
+
+- With a volume profile study on the same chart and the same `--anchor`, the
+  two pair: each session's two are drawn side by side inside it, the volume
+  profile against the edge and the letters after it, each as wide as its
+  `--profile-width`, both from the market profile's `--align` (`right`
+  mirrors both), and they merge and split together.
+- With different anchors, each keeps to itself: its own `--align` and its
+  own merges.
 
 ```
+# A market profile on its own
 omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
-omacharts chart indicator set market_profile --tpo-style blocks --align right
+
+# A market profile beside a volume profile, both per session: drawn side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
 ```
 
 **A volume or market profile's periods can be read and merged.** `chart profile list`

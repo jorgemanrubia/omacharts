@@ -988,6 +988,25 @@ merged the profile into the one before it on pos:0 SPY 1h in "Chartbook 1"
   [exit 0]
 ```
 
+A market profile is a study of its own, usable alone, and merges and splits
+as a volume profile does. With a volume profile study of the same
+`--anchor` on the chart, each session's two are drawn side by side and merge
+and split together. With different anchors, each keeps to itself
+([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)).
+
+```
+# A market profile on its own
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+
+# A market profile beside a volume profile, both per session: drawn side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+```
+
 ## Drawings
 
 `omacharts chart drawing ACTION [KIND]` changes the drawings on a chart's

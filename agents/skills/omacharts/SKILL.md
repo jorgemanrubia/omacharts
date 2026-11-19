@@ -313,14 +313,17 @@ anchors at opposite corners of the box it is drawn in, the same fill and
 edge, never held round. Reach for it over a box when the empty corners
 matter.
 
-**A market profile beside the volume profile.** `market_profile` (TPO, or
+**A market profile, alone or beside a volume profile.** `market_profile` (TPO, or
 "market profile" in the picker) is time at price: each period cut into
 lettered TPO periods of `--tpo-minutes`, rows `--row-ticks` ticks tall or
-`auto`. "TPO" means this, not the volume profile. On one chart with a volume
-profile of the same `--anchor`, the two pair: each session's sit side by side
+`auto`. "TPO" means this, not the volume profile. It is a study of its own:
+add it alone, with no volume profile, and `chart profile merge` / `split`
+work on it as on a volume profile. On one chart with a volume profile study
+of the same `--anchor`, the two pair: each session's two sit side by side
 inside it, the volume profile against the edge and the letters after it,
-drawn from the market profile's `--align`,
-and `chart profile merge` / `split` on either does both. `--align right` on
+drawn from the market profile's `--align`, and `chart profile merge` /
+`split` on either does both. With different anchors each keeps to itself,
+on its own `--align` with its own merges. `--align right` on
 the market profile mirrors them; `--tpo-style blocks` swaps
 letters for squares; `--first-last-tpo on` draws each profile's opening and
 closing TPO periods in colours of their own (`--first-tpo-color`,
@@ -330,8 +333,17 @@ and `--last-only` work as on a volume profile. `chart values --json` reads each 
 `vah` and `val`.
 
 ```
-omacharts chart indicator add volume_profile --profile-width 0.3
-omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto --profile-width 0.4
+# A market profile on its own
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+
+# Beside it, a volume profile of the same period (both per session): drawn side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+
+# Its look
 omacharts chart indicator set market_profile --tpo-style blocks --poc-color Amber --value-area-color Teal
 ```
 

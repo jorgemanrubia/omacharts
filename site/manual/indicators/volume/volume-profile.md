@@ -76,7 +76,22 @@ The settings are in four groups, in the order below. A switch's rows show while 
 
 Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A market profile among them sits beyond the volume profiles.
 
-A [market profile](/manual/indicators/volume/market-profile/) with the same **Reset every** pairs with the volume profile: each session's two are drawn side by side inside it, from the market profile's **Alignment**, and they merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With a different period, each keeps its own.
+A volume profile can be shown on its own or next to a [market profile](/manual/indicators/volume/market-profile/), which is a study of its own too. With a market profile of the same **Reset every** on the chart, each session's two are drawn side by side inside it, from the market profile's **Alignment**, and they merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With different periods, each one keeps to itself.
+
+```
+# A volume profile on its own
+omacharts chart indicator add volume_profile --anchor session
+
+# Beside a volume profile, both per session: each session's two side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+```
+
+
 
 ## Ask volume - bid volume
 

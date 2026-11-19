@@ -25,6 +25,27 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/indicators/market-profile.jpg" alt="SPY 5m with a market profile of letters at the start of each session" caption="SPY 5m with a session market profile." %}
 
+## Alone or beside a volume profile
+
+A market profile is a study of its own. It needs no volume profile, and on its own it is drawn, merged and split as a volume profile is ([Composite profiles](#composite-profiles)).
+
+It can also be shown next to volume profiles. When a volume profile study with the same **Reset every** is on the chart, each session's two are drawn side by side and merge and split together ([Beside a volume profile](#beside-a-volume-profile)). With different periods, each one keeps to itself.
+
+From the [CLI](/manual/cli/#volume-and-market-profiles):
+
+```
+# On its own
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+
+# Beside a volume profile, both per session: each session's two side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+```
+
 ## Settings
 
 The settings are in a [volume profile's](/manual/indicators/volume/volume-profile/#settings) four groups, with the same names in the same places. A switch's rows show while it is on.
@@ -78,6 +99,22 @@ Rows are a whole number of the instrument's ticks tall, one height for every per
 The point of control is the row with the most letters. Of two with as many, it is the one nearer the middle of the profile. The value area starts there and takes the next row up or down, whichever holds more letters, until it holds the **Value area %** of them.
 
 ## Beside a volume profile
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window, scratchpad kit (seven invented SPY sessions)
+state:
+  omacharts chart set --symbol SPY --resolution 5m --session regular --template none
+  omacharts chart indicator add market_profile --profile-width 1
+  omacharts chart indicator add volume_profile --profile-width 0.4 --align right --value-area-transparency 0.45 --outside-transparency 0.8 --poc-width 3 --poc-transparency 0
+  key ctrl+shift+b
+  scroll 640 360 7
+  drag 700 500 612 500
+  move 1270 700
+capture: bin/headless-window cli chart screenshot --output /tmp/paired.png; magick /tmp/paired.png -quality 88 site/assets/manual/indicators/market-profile-paired.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/indicators/market-profile-paired.jpg" alt="SPY 5m over five sessions, each with a volume profile and a market profile side by side from the session's start" caption="Five sessions, each with its volume profile and market profile side by side." %}
 
 A market profile and a [volume profile](/manual/indicators/volume/volume-profile/) with the same **Reset every** are drawn as a pair: each session's two sit side by side inside that session, touching, the volume profile against the edge they are drawn from and the market profile's letters starting where its longest rows end. Each is as wide as its **Width %**, and the two are squeezed alike when they come to more than the session. They are drawn from the market profile's **Alignment**, whatever the volume profile's says: from the session's start when it is Left, and back from the session's end, mirrored, when it is Right, the session still forming then drawn past the last bar with both in it. A volume profile's own **Alignment** is greyed while it is paired, because this one's is used for both.
 
