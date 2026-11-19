@@ -682,7 +682,7 @@ pub enum Params {
         /// Whether each profile marks its open and its close: an arrow
         /// beside the TPO at its first bar's opening price, and one beside
         /// the TPO at its last bar's closing price (the latest, while it
-        /// forms), each in a colour of its own. Missing, they are not. Read from `first_last` too,
+        /// forms), each in a colour of its own. Missing, they are. Read from `first_last` too,
         /// its name before it was released.
         #[serde(default = "profile::shown", alias = "first_last")]
         open_close: bool,

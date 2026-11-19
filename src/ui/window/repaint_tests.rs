@@ -513,3 +513,119 @@ fn a_market_profiles_structure_reads_from_the_command_line_as_it_is_drawn() {
         window.window.destroy();
     });
 }
+
+/// A chart's merges and the profiles expanded on it are the chart's to
+/// keep, both kept by where each profile starts: through a change of
+/// resolution its sessions outlive, a change to the studies, a template
+/// taken off and put back, a switch of chartbook and back, and a restart.
+/// A composite expands as one, and splitting it leaves the expanded state
+/// with its first part, which collapses as any other.
+#[test]
+fn merged_and_expanded_profiles_outlive_everything_the_chart_goes_through() {
+    crate::ui::on_gtk(|| {
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        let pane = window.focused_pane();
+        window.set_timeframe(omacharts_engine::Timeframe::minutes(5));
+        assert!(settle(|| pane.view.with_bars(|bars| bars.len() > 200)), "bars on the chart");
+        let studies = vec![
+            Indicator::new(1, IndicatorKind::VolumeProfile),
+            Indicator::new(2, IndicatorKind::MarketProfile),
+        ];
+        window.set_indicators(studies.clone());
+        assert!(settle(|| market_profiles(&pane, 2).len() > 3), "market profiles on the chart");
+        let now = market_profiles(&pane, 2);
+        let (first, second) = (now[now.len() - 3].profile.clone(), now[now.len() - 2].profile.clone());
+        let inside = |p: &profile::Profile| (p.start_ts + p.end_ts) / 2;
+        let (a, b) = (first.parts[0], second.parts[0]);
+
+        // Merged and expanded, and drawn so: the pair merged together.
+        window.change_profile_at(Some(2), inside(&second), true).expect("merged");
+        window.expand_profile_at(Some(2), inside(&second), true).expect("the composite expanded");
+        let held = |pane: &ChartPane| {
+            let of = |id: u32| match drawn(pane, id).map(|(_, _, indicator)| indicator.params) {
+                Some(Params::MarketProfile { merged, expanded, .. }) => (merged, expanded),
+                Some(Params::VolumeProfile { merged, .. }) => (merged, Vec::new()),
+                _ => (Vec::new(), Vec::new()),
+            };
+            (of(1), of(2))
+        };
+        let composite = |pane: &ChartPane| {
+            market_profiles(pane, 2).iter().any(|m| m.profile.parts == vec![a, b])
+                && match drawn(pane, 1).map(|(output, ..)| output) {
+                    Some(Output::Profiles(profiles)) => profiles.iter().any(|p| p.parts == vec![a, b]),
+                    _ => false,
+                }
+        };
+        let kept = ((vec![b], vec![]), (vec![b], vec![a]));
+        let both_back = |pane: &ChartPane, after: &str| {
+            assert!(settle(|| market_profiles(pane, 2).len() > 2), "profiles {after}");
+            assert_eq!(held(pane), kept, "merged and expanded {after}");
+            assert!(composite(pane), "the composite drawn {after}, both studies");
+            assert!(
+                market_profiles(pane, 2).iter().any(|m| m.profile.parts == vec![a, b]
+                    && omacharts_engine::indicators::market::by_hand(&[a], &m.profile)),
+                "the composite drawn expanded {after}"
+            );
+        };
+        both_back(&pane, "at first");
+
+        // A resolution its sessions outlive, and back.
+        window.set_timeframe(omacharts_engine::Timeframe::minutes(15));
+        assert!(settle(|| held(&pane) == kept && composite(&pane)), "{:?} on 15m", held(&pane));
+        both_back(&pane, "on 15m");
+        window.set_timeframe(omacharts_engine::Timeframe::minutes(5));
+        assert!(settle(|| held(&pane) == kept && composite(&pane)), "back on 5m");
+
+        // A change to a study, and a template taken off and put back.
+        let mut changed = window.indicators();
+        changed[1].color = red();
+        window.set_indicators(changed.clone());
+        both_back(&pane, "after a change of look");
+        let template = crate::templates::create_from(&store, "Profiles", changed);
+        window.set_template(Some(template.id));
+        both_back(&pane, "on a template");
+        window.set_template(None);
+        assert!(market_profiles(&pane, 2).is_empty(), "no studies off the template");
+        window.set_template(Some(template.id));
+        assert!(settle(|| market_profiles(&pane, 2).len() > 2), "the template's studies back");
+        both_back(&pane, "with the template put back");
+
+        // Another chartbook, and back to this one.
+        window.duplicate_chartbook();
+        assert_eq!(window.active.get(), 1);
+        window.activate_book(0);
+        let pane = window.focused_pane();
+        both_back(&pane, "after a switch of chartbook");
+
+        // A restart.
+        window.window.destroy();
+        let again = super::trade::tests::window(&store);
+        let pane = again.focused_pane();
+        both_back(&pane, "after a restart");
+
+        // Split: the expanded state stays with the first part alone, which
+        // then collapses as any profile does.
+        again.change_profile_at(Some(2), inside(&second), false).expect("split");
+        assert!(
+            settle(|| market_profiles(&pane, 2).iter().any(|m| m.profile.parts == vec![b])),
+            "split"
+        );
+        let expanded_of = |pane: &ChartPane, start: i64| {
+            market_profiles(pane, 2)
+                .iter()
+                .find(|m| m.profile.parts == vec![start])
+                .map(|m| omacharts_engine::indicators::market::by_hand(&[a], &m.profile))
+        };
+        assert_eq!(expanded_of(&pane, a), Some(true), "the first part still expanded");
+        assert_eq!(expanded_of(&pane, b), Some(false), "the second part stacked");
+        assert_eq!(pane.view.profile_of(2, inside(&first)).and_then(|s| s.expanded), Some(true));
+        again.expand_profile_at(Some(2), inside(&first), false).expect("collapsed after the split");
+        assert_eq!(held(&pane), ((vec![], vec![]), (vec![], vec![])), "nothing merged or expanded");
+        again.window.destroy();
+        let third = super::trade::tests::window(&store);
+        let pane = third.focused_pane();
+        assert!(settle(|| market_profiles(&pane, 2).len() > 2), "profiles after another restart");
+        assert_eq!(held(&pane), ((vec![], vec![]), (vec![], vec![])), "still nothing after a restart");
+    });
+}

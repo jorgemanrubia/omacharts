@@ -231,8 +231,8 @@ fn a_market_profile_stored_before_merging_reads_with_no_merge() {
     assert!(!json.contains("merged"), "merges are the chart's, never the indicator's: {json}");
 }
 
-/// The open and close marks are off in a chart saved before them, and
-/// what was chosen for it is kept: the switch, and each colour, a swatch
+/// The open and close marks are on unless turned off, and what was
+/// chosen for a market profile is kept: the switch, and each colour, a swatch
 /// following the theme or a colour of somebody's own. Unchosen, a colour
 /// is not written, so it keeps following the theme.
 #[test]
@@ -243,7 +243,7 @@ fn a_market_profiles_open_and_close_are_kept_with_it() {
     let mut indicator: Indicator = serde_json::from_str(stored).expect("reads");
     match &indicator.params {
         Params::MarketProfile { open_close, open_color, close_color, .. } => {
-            assert!(!open_close && open_color.is_none() && close_color.is_none());
+            assert!(*open_close && open_color.is_none() && close_color.is_none());
         }
         _ => panic!("a market profile"),
     }
@@ -251,7 +251,7 @@ fn a_market_profiles_open_and_close_are_kept_with_it() {
     assert!(!json.contains("open_color") && !json.contains("close_color"), "{json}");
 
     if let Params::MarketProfile { open_close, open_color, close_color, .. } = &mut indicator.params {
-        *open_close = true;
+        *open_close = false;
         *open_color = Some(ColorChoice::swatch("Teal"));
         *close_color = Some(ColorChoice::Fixed { hex: "#aa5e57".into() });
     }

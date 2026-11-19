@@ -229,6 +229,10 @@ struct State {
     /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
     /// theme or the house colouring changes rather than on every frame.
     delta_inks: [(String, String); 1 + DELTA_COLOURINGS.len()],
+    /// A market profile's open and close arrows, as the theme colours them
+    /// unless somebody chose: worked out when the theme changes, as each is
+    /// a search for a colour held to a contrast, rather than on every frame.
+    tpo_ends: (String, String),
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
@@ -1441,6 +1445,7 @@ impl State {
             echo: None,
             last_ink: LastInk::of(&theme),
             delta_inks: delta_inks(&theme, HOUSE_LOOK),
+            tpo_ends: (theme.tpo_open(), theme.tpo_close()),
             house: HOUSE_LOOK,
             theme,
             price_tags: price_tags(&scheme),
@@ -5494,6 +5499,7 @@ impl ChartView {
             let mut state = self.state.borrow_mut();
             state.last_ink = LastInk::of(&theme);
             state.delta_inks = delta_inks(&theme, state.house);
+            state.tpo_ends = (theme.tpo_open(), theme.tpo_close());
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;

@@ -89,10 +89,12 @@ pub(super) fn draw_market_profiles(
         return;
     };
     let ends = open_close.then(|| {
-        (
-            open_color.as_ref().map_or_else(|| state.theme.tpo_open(), |c| c.resolve(&state.theme)),
-            close_color.as_ref().map_or_else(|| state.theme.tpo_close(), |c| c.resolve(&state.theme)),
-        )
+        let (open, close) = &state.tpo_ends;
+        let ink = |chosen: &Option<omacharts_engine::theme::ColorChoice>, theirs| match chosen {
+            Some(choice) => std::borrow::Cow::Owned(choice.resolve(&state.theme)),
+            None => std::borrow::Cow::Borrowed(theirs),
+        };
+        (ink(open_color, open.as_str()), ink(close_color, close.as_str()))
     });
     let poc_ink = poc.then(|| state.theme.companion_or(poc_color.as_ref(), &drawn.color));
     let outline_ink = outline.then(|| outline_color.as_ref().map_or_else(|| drawn.color.clone(), |c| c.resolve(&state.theme)));
@@ -107,9 +109,9 @@ pub(super) fn draw_market_profiles(
         strengths: Strengths::of(*alpha, *value_area_alpha, *outside_alpha, *poc_alpha),
     };
     let look = selection::placed_look(state, drawn);
-    let (top, bottom) = match cr.clip_extents() {
-        Ok((_, y1, _, y2)) => (y1, y2),
-        Err(_) => (f64::NEG_INFINITY, f64::INFINITY),
+    let (left, top, right, bottom) = match cr.clip_extents() {
+        Ok(extents) => extents,
+        Err(_) => (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY),
     };
     for (at, market) in profiles.iter().enumerate() {
         let profile = &market.profile;
@@ -189,7 +191,8 @@ pub(super) fn draw_market_profiles(
                 .zip([(open, *open_alpha), (close, *close_alpha)])
             {
                 let Some(tip) = tip else { continue };
-                if y < top - size.1 || y > bottom + size.1 {
+                let reach = size.0 + size.1;
+                if y < top - reach || y > bottom + reach || tip < left - reach || tip > right + reach {
                     continue;
                 }
                 executions::arrow(cr, state, tip, y, points, size, ink, market::end_strength(alpha));
