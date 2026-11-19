@@ -60,6 +60,11 @@ pub struct Executions {
     pub won: String,
     pub lost: String,
     pub even: String,
+    /// One trip to read the chart for, as the moments it opened and closed,
+    /// exactly as its [`TripLine`] has them: its line, and the fills at
+    /// those two moments, drawn as always, every other one faint — a trip
+    /// open inside it too. `None` draws them all alike.
+    pub emphasis: Option<(i64, i64)>,
 }
 
 impl Executions {
@@ -70,12 +75,12 @@ impl Executions {
 
 /// How long a triangle is, tip to base, and how far it stands each side of
 /// its middle, in pixels.
-const LENGTH: f64 = 6.0;
-const HALF: f64 = 3.5;
+pub(super) const LENGTH: f64 = 6.0;
+pub(super) const HALF: f64 = 3.5;
 
 /// The gap between a triangle's tip and its bar's body, and how far out
 /// from its middle the body reaches, as a share of the column.
-const STAND_OFF: f64 = 1.0;
+pub(super) const STAND_OFF: f64 = 1.0;
 const BODY_HALF: f64 = 0.35;
 
 /// The trip line's weight and its dots.
@@ -85,6 +90,14 @@ const TRIP_DASH: [f64; 2] = [1.5, 2.5];
 /// How strongly the trip line is drawn: under the triangles, quieter than
 /// they are, so a busy day reads as its fills first.
 const TRIP_ALPHA: f64 = 0.85;
+
+/// How strongly everything but the emphasised trip is drawn, when one is.
+const MUTED_ALPHA: f64 = 0.25;
+
+/// Whether a fill at `ts` is one of the emphasised trip's, if there is one.
+fn emphasised(emphasis: Option<(i64, i64)>, ts: i64) -> bool {
+    emphasis.is_none_or(|(from, to)| ts == from || ts == to)
+}
 
 /// Where a fill falls among the bars: the index of the bar it is part of,
 /// or `None` when it falls in a gap between two, out of the hours the
@@ -143,7 +156,11 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             Some(false) => &executions.lost,
             None => &executions.even,
         };
-        colors::set_source_alpha(cr, colour, TRIP_ALPHA);
+        let alpha = match executions.emphasis {
+            Some(ends) if (trip.from.0, trip.to.0) != ends => MUTED_ALPHA,
+            _ => TRIP_ALPHA,
+        };
+        colors::set_source_alpha(cr, colour, alpha);
         cr.move_to(x_of(state, plan, trip.from.0), to_y(trip.from.1));
         cr.line_to(x_of(state, plan, trip.to.0), to_y(trip.to.1));
         let _ = cr.stroke();
@@ -155,6 +172,7 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
     let end = executions.marks.partition_point(|mark| mark.ts < to);
     // Just past the body, which is most of the column.
     let off = bar_w * BODY_HALF + STAND_OFF;
+    let (length, half) = (LENGTH * state.execution_scale, HALF * state.execution_scale);
     cr.set_line_width(1.0);
     for mark in &executions.marks[start..end] {
         let Some(at) = bar_of(state, mark.ts) else { continue };
@@ -167,28 +185,97 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             if !wanted {
                 continue;
             }
-            let tip = x + side * off;
-            cr.move_to(tip, y);
-            cr.line_to(tip + side * LENGTH, y - HALF);
-            cr.line_to(tip + side * LENGTH, y + HALF);
-            cr.close_path();
-            colors::set_source(cr, colour);
-            let _ = cr.fill_preserve();
-            // A hairline of the ground round it, so it reads over a candle
-            // of its own colour.
-            colors::set_source_alpha(cr, &state.theme.ui.background, 0.9);
-            cr.set_line_width(0.75);
-            let _ = cr.stroke();
+            let alpha = if emphasised(executions.emphasis, mark.ts) { 1.0 } else { MUTED_ALPHA };
+            arrow(cr, state, x + side * off, y, -side, (length, half), colour, alpha);
         }
     }
     cr.restore().ok();
 }
+
+/// A fill's triangle, its tip at `tip`, `y`, pointing right for a
+/// `points` of one and left for minus one, `size` long and half tall, in
+/// `colour` at `alpha`; with a hairline of the ground round it, so it reads
+/// over a candle of its own colour. A market profile's open and close
+/// marks are the same arrows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn arrow(
+    cr: &cairo::Context,
+    state: &State,
+    tip: f64,
+    y: f64,
+    points: f64,
+    (length, half): (f64, f64),
+    colour: &str,
+    alpha: f64,
+) {
+    // The hairline is two fills rather than a stroke, which cairo takes
+    // several times as long over: the triangle grown by half the line in
+    // the ground, then shrunk by half in the colour, leaving the band a
+    // stroke of it would have drawn.
+    let triangle = |inset: f64| {
+        let [first, rest @ ..] = corners(tip, y, points, (length, half), inset);
+        cr.move_to(first.0, first.1);
+        for (x, y) in rest {
+            cr.line_to(x, y);
+        }
+        cr.close_path();
+    };
+    triangle(-HAIRLINE / 2.0);
+    colors::set_source_alpha(cr, &state.theme.ui.background, 0.9);
+    let _ = cr.fill();
+    triangle(HAIRLINE / 2.0);
+    colors::set_source_alpha(cr, colour, alpha);
+    let _ = cr.fill();
+}
+
+/// An [`arrow`]'s corners, tip first, with every side moved `inset` in
+/// (out, for less than nothing): the triangle drawn about its incentre,
+/// scaled by how far that is from its sides.
+fn corners(tip: f64, y: f64, points: f64, (length, half): (f64, f64), inset: f64) -> [(f64, f64); 3] {
+    let base = tip - points * length;
+    let side = length.hypot(half);
+    let inradius = length * half / (half + side);
+    // Each corner weighed by the side across from it.
+    let centre = (tip * 2.0 * half + base * 2.0 * side) / (2.0 * side + 2.0 * half);
+    let scale = ((inradius - inset) / inradius).max(0.0);
+    let at = |x: f64, dy: f64| (centre + (x - centre) * scale, y + dy * scale);
+    [at(tip, 0.0), at(base, -half), at(base, half)]
+}
+
+/// How wide the ground's line round an [`arrow`] is.
+const HAIRLINE: f64 = 0.75;
 
 #[cfg(test)]
 mod tests {
     use omacharts_engine::{Bar, Timeframe};
 
     use super::*;
+
+    /// The ground's band round an arrow is as wide as the line it stands
+    /// for, and even: every side of the grown triangle and of the shrunk
+    /// one half the line from the arrow's own.
+    #[test]
+    fn an_arrows_hairline_is_even_all_round() {
+        // The distance from `p` to the line through `a` and `b`.
+        let gap = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+            ((b.0 - a.0) * (a.1 - p.1) - (a.0 - p.0) * (b.1 - a.1)).abs() / (b.0 - a.0).hypot(b.1 - a.1)
+        };
+        for points in [1.0, -1.0] {
+            let size = (LENGTH, HALF);
+            let own = corners(40.0, 20.0, points, size, 0.0);
+            for inset in [HAIRLINE / 2.0, -HAIRLINE / 2.0] {
+                let moved = corners(40.0, 20.0, points, size, inset);
+                for (k, (a, b)) in [(0, 1), (1, 2), (2, 0)].into_iter().enumerate() {
+                    // The moved side's ends, each its own distance off the
+                    // arrow's side: parallel, and half the line away.
+                    for end in [moved[a], moved[b]] {
+                        let off = gap(end, own[a], own[b]);
+                        assert!((off - inset.abs()).abs() < 1e-9, "side {k}, {points}, {inset}: {off}");
+                    }
+                }
+            }
+        }
+    }
 
     /// Hourly bars at 09:00, 10:00 and 11:00 of a day, then 09:00 the next:
     /// the night between is a gap no bar covers.
@@ -250,5 +337,74 @@ mod tests {
             ..colours
         };
         assert!(picture(&state) != bare, "a fill in view was not drawn");
+    }
+
+    /// Emphasis covering every fill draws what no emphasis draws; one that
+    /// leaves a fill out draws that fill fainter.
+    #[test]
+    fn an_emphasised_trip_leaves_itself_alone_and_quiets_the_rest() {
+        let mut state = state();
+        let (width, height) = (400.0, 300.0);
+        let picture = |state: &State| {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32).unwrap();
+            super::super::draw(&cairo::Context::new(&surface).unwrap(), width, height, state);
+            surface.data().unwrap().to_vec()
+        };
+        let (open, close) = (state.bars[1].ts + 60, state.bars[2].ts + 60);
+        state.executions = Executions {
+            marks: vec![
+                ExecutionMark { ts: open, price: 100.0, buy: true, opens: true, closes: false },
+                ExecutionMark { ts: close, price: 100.5, buy: false, opens: false, closes: true },
+            ],
+            trips: vec![TripLine { from: (open, 100.0), to: (close, 100.5), won: Some(true) }],
+            buy: "#00ff00".into(),
+            sell: "#ff0000".into(),
+            won: "#00ff00".into(),
+            lost: "#ff0000".into(),
+            even: "#888888".into(),
+            emphasis: None,
+        };
+        let plain = picture(&state);
+        state.executions.emphasis = Some((open, close));
+        assert!(picture(&state) == plain, "emphasising the only trip changed it");
+        state.executions.emphasis = Some((close + 1, close + 2));
+        assert!(picture(&state) != plain, "a trip outside the emphasis was drawn as before");
+    }
+
+    /// A fill inside the emphasised trip's span that is not one of its two
+    /// is another trip's, and is drawn faint like the rest of that trip.
+    #[test]
+    fn a_fill_inside_the_emphasised_trip_is_not_part_of_it() {
+        let mut state = state();
+        let (width, height) = (400.0, 300.0);
+        let picture = |state: &State| {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32).unwrap();
+            super::super::draw(&cairo::Context::new(&surface).unwrap(), width, height, state);
+            surface.data().unwrap().to_vec()
+        };
+        let (open, close) = (state.bars[1].ts + 60, state.bars[3].ts + 60);
+        let inside = state.bars[2].ts + 60;
+        state.executions = Executions {
+            marks: vec![
+                ExecutionMark { ts: open, price: 100.0, buy: true, opens: true, closes: false },
+                ExecutionMark { ts: inside, price: 100.2, buy: false, opens: true, closes: false },
+                ExecutionMark { ts: close, price: 100.5, buy: false, opens: false, closes: true },
+            ],
+            trips: vec![TripLine { from: (open, 100.0), to: (close, 100.5), won: Some(true) }],
+            buy: "#00ff00".into(),
+            sell: "#ff0000".into(),
+            won: "#00ff00".into(),
+            lost: "#ff0000".into(),
+            even: "#888888".into(),
+            emphasis: None,
+        };
+        let plain = picture(&state);
+        state.executions.emphasis = Some((open, close));
+        assert!(picture(&state) != plain, "the other trip's fill was drawn as strongly as the emphasised trip's");
+        // Without it, the emphasised trip alone is drawn as it always is.
+        state.executions.marks.remove(1);
+        let alone = picture(&state);
+        state.executions.emphasis = None;
+        assert!(picture(&state) == alone, "the emphasised trip's own fills and line changed");
     }
 }

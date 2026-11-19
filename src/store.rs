@@ -383,23 +383,32 @@ impl Store {
     /// The sidebar asks this for every row, every time a quote moves, so the
     /// close column is read for the one series chosen, not for each of them.
     pub fn latest_intraday_close(&self, key: &str) -> Option<(i64, i64, f64)> {
-        let mut series = self
-            .conn
-            .prepare_cached("SELECT interval, last_ts, fetched_at FROM bar_series WHERE key = ?1")
-            .ok()?;
-        let (interval, last_ts, fetched_at) = series
-            .query_map(params![key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
-            .ok()?
-            .filter_map(Result::ok)
-            .filter(|(interval, ..)| Timeframe::parse(interval).is_some_and(Timeframe::is_intraday))
-            .max_by_key(|&(_, last_ts, fetched_at)| (fetched_at, last_ts))?;
+        let (timeframe, last_ts, fetched_at) = self.latest_intraday_series(key)?;
         let close: Vec<u8> = self
             .conn
             .prepare_cached("SELECT substr(close, -8) FROM bar_series WHERE key = ?1 AND interval = ?2")
             .ok()?
-            .query_row(params![key, interval], |r| r.get(0))
+            .query_row(params![key, timeframe.key()], |r| r.get(0))
             .ok()?;
         Some((last_ts, fetched_at, f64::from_le_bytes(close.try_into().ok()?)))
+    }
+
+    /// Which intraday series of `key` was fetched most recently: its
+    /// resolution, the stamp of its last bar, and when it was fetched. The
+    /// series [`Store::latest_intraday_close`] reads its close from.
+    pub fn latest_intraday_series(&self, key: &str) -> Option<(Timeframe, i64, i64)> {
+        let mut series = self
+            .conn
+            .prepare_cached("SELECT interval, last_ts, fetched_at FROM bar_series WHERE key = ?1")
+            .ok()?;
+        series
+            .query_map(params![key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|(interval, last_ts, fetched_at)| {
+                Timeframe::parse(&interval).filter(|tf| tf.is_intraday()).map(|tf| (tf, last_ts, fetched_at))
+            })
+            .max_by_key(|&(_, last_ts, fetched_at)| (fetched_at, last_ts))
     }
 
     /// Note that we asked and the provider had nothing new to add.

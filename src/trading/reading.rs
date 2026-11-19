@@ -248,6 +248,18 @@ pub fn values(drawn: &[Drawn], places: usize, label: impl Fn(&Drawn) -> String) 
                     }
                     None => json!({"poc": null, "vah": null, "val": null}),
                 },
+                Output::MarketProfiles(profiles) => match profiles.last() {
+                    Some(market) => json!({
+                        "from": market.profile.start_ts,
+                        "to": market.profile.end_ts,
+                        "poc": p(Some(market.reading.poc)),
+                        "vah": p(Some(market.reading.vah)),
+                        "val": p(Some(market.reading.val)),
+                        "tpos": market.profile.total_volume,
+                        "row_ticks": market.row_ticks,
+                    }),
+                    None => json!({"poc": null, "vah": null, "val": null}),
+                },
                 Output::Volume { values, .. } => json!({"value": values.last()}),
                 Output::Pane(pane) => json!({
                     "value": last(&pane.values),

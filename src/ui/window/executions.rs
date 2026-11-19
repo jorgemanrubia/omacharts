@@ -134,6 +134,7 @@ impl Window {
             won: look.profit,
             lost: look.loss,
             even: theme.ui.text_muted.clone(),
+            emphasis: None,
         });
     }
 

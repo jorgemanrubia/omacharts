@@ -63,7 +63,7 @@ crop: 0,0,760,1100
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | The configuration the drawing will follow, shown as a number on the tool. With no tool selected, it applies to whatever is drawn next |
 | <kbd>Esc</kbd> | Drops the drawing and deselects the tool |
 
-A finished drawing is left selected.
+A finished drawing is left selected on its own, on the chart it was drawn on, ready to move, resize, restyle or delete.
 
 ## Selecting and moving
 
@@ -135,7 +135,7 @@ The rows work the same way in every drawing's properties:
 | Row | Works like this |
 |---|---|
 | A colour | One of the nine [presets](#colours), or **Custom…** for a hex colour |
-| **Reset** beside a colour | Puts back the colour it follows, such as the line's for a band, and is greyed while there is nothing to put back |
+| **Default** in a colour's palette | First in the palette under the swatch, where a colour follows another: puts back the colour it follows, such as the line's for a band |
 | A thickness | 0.5 to 12 px in halves, in a box. On an anchored VWAP and a Fib retracement's levels it is a row of drawn samples instead: no line, 1, 1.5, 2.5 or 4 px |
 | A line style | **Solid**, **Dashed** or **Dotted**, picked from drawn samples |
 | A percentage | A slider with a box to type the number in |

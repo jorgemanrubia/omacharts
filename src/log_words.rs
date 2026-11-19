@@ -130,6 +130,20 @@ pub fn signed_in_heard(login: &str, outcome: Result<usize, &str>, heard: Option<
     }
 }
 
+/// A login's accounts were asked for again, from the Trading panel's sync
+/// or `trading sync`: how many it listed before and after.
+pub fn synced(login: &str, before: usize, after: usize, outcome: &Result<(), String>) -> Entry {
+    let counted = match after {
+        1 => "1 account".to_string(),
+        accounts => format!("{accounts} accounts"),
+    };
+    match outcome {
+        Err(why) => Entry::error(login, format!("Not synced · {}", gist(why))).detail(why.as_str()),
+        Ok(()) if after > before => Entry::info(login, format!("Synced · {counted} · {} new", after - before)),
+        Ok(()) => Entry::info(login, format!("Synced · {counted}")),
+    }
+}
+
 /// The data half of a login did not sign in, though trading did.
 pub fn data_not_signed_in(login: &str, why: &str) -> Entry {
     Entry::error(login, format!("Data not signed in · {}", gist(why))).detail(why)

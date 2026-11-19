@@ -8,13 +8,14 @@
 //!
 //! What each row says comes from the feeds themselves: what a feed
 //! covers, how fresh it is (asked of the provider), whether it needs
-//! signing in, how, and how that stands. A feed whose login is a trading service
-//! connection signs in through a login in Preferences → Trading, the data
-//! login, so while there is one its row says so and leaves signing in, out
-//! and removing to that page; adding it with no login is adding a trading service
-//! there. A feed with a dialog of its own is signed in to here, in that
-//! dialog, found in `sign_in_dialogs`; one that signs in in a browser opens
-//! one.
+//! signing in, how, and how that stands. A feed whose login is a trading
+//! service connection is one per login in Preferences → Trading, named
+//! after it, "Rithmic (Acme Futures)": each is a row of its own, ordered
+//! and removed here like any other, and signed in and out with its login
+//! on that page, its row saying how its own data session stands. Adding
+//! one with no login is adding a trading service there. A feed with a
+//! dialog of its own is signed in to here, in that dialog, found in
+//! `sign_in_dialogs`; one that signs in in a browser opens one.
 //!
 //! Signing in runs on a thread of its own and reports back over a channel
 //! the main loop awaits, because it waits on somebody: a browser and a
@@ -161,19 +162,31 @@ fn rebuild(panel: &Rc<Panel>) {
     }
 }
 
-/// The feeds set up: those added, and those with a login in Trading. A
-/// feed that has artwork and notices to show has them on the page while
-/// it is set up.
+/// The feeds set up, one of each kind: those added, and those with a login
+/// in Trading. A feed that has artwork and notices to show has them on the
+/// page while it is set up, once however many logins it has.
 fn set_up(panel: &Panel) -> Vec<&'static Listed> {
     let logins = crate::trading::logins(&panel.store);
     let mut feeds = panel.added();
-    for feed in providers::offered() {
+    for feed in providers::kinds() {
         let logged_in = logins.iter().any(|login| login.service.eq_ignore_ascii_case(feed.id));
-        if logged_in && !feeds.iter().any(|known| known.id == feed.id) {
+        if logged_in {
             feeds.push(feed);
         }
     }
-    feeds
+    feeds.into_iter().fold(Vec::new(), |mut kinds, feed| {
+        if !kinds.iter().any(|known: &&Listed| known.kind() == feed.kind()) {
+            kinds.push(feed);
+        }
+        kinds
+    })
+}
+
+/// The feeds "Add a data feed…" offers: every one not on the order, a
+/// login's own among them, and a feed that is one per login by its kind
+/// alone while it has no login, adding which is adding a trading service.
+fn missing(added: &[&'static Listed]) -> Vec<&'static Listed> {
+    providers::offered().filter(|feed| !added.iter().any(|known| known.id == feed.id)).collect()
 }
 
 fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
@@ -188,8 +201,7 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     }
     *panel.rows.borrow_mut() = rows;
 
-    let missing: Vec<&'static Listed> =
-        providers::offered().filter(|feed| !added.iter().any(|known| known.id == feed.id)).collect();
+    let missing = missing(&added);
     if !missing.is_empty() {
         group.add(&add_button(panel, missing));
     }
@@ -223,17 +235,15 @@ fn fresh(id: &str) -> &'static str {
     }
 }
 
+/// What the feed covers and how it stands. A login's own feed is named
+/// after its login already, and stands as its own data session does.
 fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
-    match through_trading(panel, feed) {
-        Some(login) => format!("{} · {} · through {}", feed.covers, standing(panel, feed), login.name),
-        None => format!("{} · {}", feed.covers, standing(panel, feed)),
-    }
+    format!("{} · {}", feed.covers, standing(panel, feed))
 }
 
-/// The login a feed signs in through, when that is Trading's business: a
-/// trading service connection's feed, while there is a login in Trading.
-fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
-    crate::trading::data_login(&panel.store).filter(|login| trades(feed) && login.service.eq_ignore_ascii_case(feed.id))
+/// Is `feed` a login's own, signed in and out with that login in Trading?
+fn through_trading(feed: &'static Listed) -> bool {
+    trades(feed) && feed.login.is_some()
 }
 
 /// Is `feed`'s login a trading service connection, kept in Trading?
@@ -264,13 +274,9 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
         row.add_suffix(&tag);
     }
 
-    // Signed in, out and removed in Trading, with the login it is.
-    if through_trading(panel, feed).is_some() {
-        wire_reorder(panel, &row, feed, at);
-        return row;
-    }
-
-    if feed.needs_sign_in() {
+    // Signed in and out in Trading, with the login it is; ordered and
+    // removed here, the login staying.
+    if feed.needs_sign_in() && !through_trading(feed) {
         if panel.signing_in.get() == Some(feed.id) {
             let spinner = gtk::Spinner::new();
             spinner.set_valign(gtk::Align::Center);
@@ -464,11 +470,11 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
     add
 }
 
-/// A trading service connection's feed is added by adding a trading service login, in
-/// Trading, unless there is one already to sign in through. Any other is
-/// added at once, and signed in to from its row.
+/// A trading service connection's feed with no login is added by adding a
+/// trading service login, in Trading. Any other, a login's own among them,
+/// is added at once, and signed in to from its row.
 fn add_feed(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
-    match trades(feed) && through_trading(panel, feed).is_none() {
+    match feed.per_login() {
         true => ask_service(panel, feed, anchor),
         false => {
             feeds::add_feed(&panel.store, feed.id);
@@ -712,10 +718,11 @@ mod tests {
     }
 
     /// Remove takes the feed off the order; the last one removed leaves
-    /// no setting. While Rithmic signs in through a login in Trading its row
-    /// says so and offers neither Remove nor a sign-in of its own.
+    /// no setting. Each Rithmic login is a row of its own, named after it,
+    /// ordered and removed here and signed in to in Trading: it offers
+    /// Remove and no sign-in. Removing one leaves its login, and the other.
     #[test]
-    fn remove_clears_the_setting_and_trading_owns_rithmics_login() {
+    fn each_login_is_a_row_and_trading_owns_its_sign_in() {
         if session::development() {
             return;
         }
@@ -732,23 +739,36 @@ mod tests {
             assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
 
             let kept = crate::trading::fake::Kept::default();
-            let typed = crate::trading::Typed {
+            let typed = |name: &str| crate::trading::Typed {
                 service: "rithmic".into(),
-                name: "Lucid".into(),
+                name: name.into(),
                 user: "trader".into(),
                 password: "PLANTED-PASSWORD".into(),
                 values: vec![("system".into(), "Rithmic Test".into())],
             };
-            crate::trading::add_login(&store, &kept, &typed).unwrap();
+            let acme = crate::trading::add_login(&store, &kept, &typed("Acme Futures")).unwrap();
+            crate::trading::add_login(&store, &kept, &typed("Demo Prop")).unwrap();
             rebuild(&panel);
-            assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
+            assert_eq!(titles(&panel), vec!["Rithmic (Acme Futures)", "Rithmic (Demo Prop)", "Yahoo Finance"]);
             let group = panel.group.borrow().clone().unwrap();
-            let row = &action_rows(group.upcast_ref())[0];
-            assert!(row.subtitle().unwrap_or_default().ends_with("· through Lucid"), "{:?}", row.subtitle());
-            let words = words_under(row.upcast_ref());
-            for absent in ["Remove", "Sign in…", "Sign out"] {
-                assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
+            let rows = action_rows(group.upcast_ref());
+            for row in &rows[..2] {
+                // Its login has a password kept: streamed once it is asked.
+                assert_eq!(row.subtitle().as_deref(), Some("CME futures, front month · live"));
+                let words = words_under(row.upcast_ref());
+                assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
+                for absent in ["Sign in…", "Sign out"] {
+                    assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
+                }
             }
+
+            remove_feed(&panel, providers::listed(&format!("rithmic@{acme}")).unwrap());
+            assert_eq!(titles(&panel), vec!["Rithmic (Demo Prop)", "Yahoo Finance"]);
+            assert_eq!(crate::trading::logins(&store).len(), 2, "the login stays in Trading");
+            // Taken off, it can be added back.
+            let missing: Vec<&str> = missing(&panel.added()).iter().map(|feed| feed.label).collect();
+            assert!(missing.contains(&"Rithmic (Acme Futures)"), "{missing:?}");
+            assert!(!missing.contains(&"Rithmic"), "{missing:?}");
         });
     }
 

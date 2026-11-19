@@ -45,6 +45,10 @@ pub fn registry() -> Registry {
         if let Some(path) = std::env::var_os(super::fake::PAST_FILLS_ENV) {
             fake.past.lock().unwrap().insert(String::new(), super::fake::past_fills(std::path::Path::new(&path)));
         }
+        #[cfg(not(test))]
+        if let Some(numbers) = std::env::var_os(super::fake::OPENED_LATER_ENV) {
+            fake.opened_later = super::fake::opened_later(&numbers.to_string_lossy());
+        }
         services.push(Arc::new(fake));
     }
     Registry::of(services)

@@ -357,6 +357,11 @@ impl AtPrice {
         ladders.watch(symbol, tick_size, sink).ok()
     }
 
+    /// Whether chart `pane` is one of those whose ladders are held.
+    pub fn watches(&self, pane: u32) -> bool {
+        self.by_pane.borrow().contains_key(&pane)
+    }
+
     /// Chart `pane` no longer wants ladders. The last chart of a contract to
     /// go closes its live feed and lets its ladders go.
     pub fn unwatch(&self, pane: u32) {
@@ -371,16 +376,28 @@ impl AtPrice {
         }
     }
 
-    /// Every chart let go: a chartbook is coming down, or the feed.
+    /// Every chart let go: a chartbook is coming down. What is held stays,
+    /// with its live feed, until [`Self::reap`]: the next chartbook's charts
+    /// of the same contracts, built straight after, find their ladders where
+    /// these left them and draw from them on their first frame, rather than
+    /// loading them all again.
     pub fn unwatch_all(&self) {
         self.by_pane.borrow_mut().clear();
-        self.entries.borrow_mut().clear();
+        for entry in self.entries.borrow_mut().values_mut() {
+            entry.watchers.clear();
+        }
+    }
+
+    /// Let go of every contract no chart watches.
+    pub fn reap(&self) {
+        self.entries.borrow_mut().retain(|_, entry| !entry.watchers.is_empty());
     }
 
     /// The feed is retired: everything let go, and the thread finishes what
     /// it was given and ends.
     pub fn shutdown(&self) {
-        self.unwatch_all();
+        self.by_pane.borrow_mut().clear();
+        self.entries.borrow_mut().clear();
         self.jobs.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
@@ -390,26 +407,36 @@ impl AtPrice {
         read(entries.get(key).filter(|entry| entry.loaded).map(|entry| &entry.held))
     }
 
+    /// Are `key`'s ladders asked for and not loaded yet?
+    pub fn loading(&self, key: &str) -> bool {
+        self.entries.borrow().get(key).is_some_and(|entry| !entry.loaded)
+    }
+
     /// Ask for the pieces the last computation of `key` found it could not
     /// answer without, a job a day, newest first; first making room for
     /// them, if the pieces are over [`PIECE_BYTES`], by letting go of the
     /// oldest that computation did not draw from.
-    pub fn load_wanted(&self, key: &str) {
+    ///
+    /// True when some of them will not come, for want of room: the charts
+    /// held them back as coming, and are to be computed again to draw them
+    /// estimated.
+    pub fn load_wanted(&self, key: &str) -> bool {
         self.load_wanted_flows(key);
         let mut asks: Vec<(i64, Vec<Piece>)> = Vec::new();
         let stored = {
             let mut entries = self.entries.borrow_mut();
-            let Some(entry) = entries.get_mut(key) else { return };
+            let Some(entry) = entries.get_mut(key) else { return false };
             let used = entry.held.take_used();
             let wanted = entry.held.take_wanted();
             if wanted.is_empty() {
-                return;
+                return false;
             }
             entry.make_room(&used);
             if entry.held.piece_bytes() >= PIECE_BYTES {
                 // Everything held was just drawn from: the rest keep the
                 // estimate rather than push it out.
-                return;
+                entry.held.missing.extend(wanted);
+                return true;
             }
             let now = (self.clock.get())();
             for piece in wanted {
@@ -432,6 +459,7 @@ impl AtPrice {
         for (day, pieces) in asks {
             self.send(Job::Pieces { key: key.to_string(), stored: stored.clone(), day, pieces });
         }
+        false
     }
 
     /// Ask for the flows of the days the last computation of `key` reached
@@ -514,6 +542,9 @@ impl AtPrice {
                 if held.tick_size <= 0.0 {
                     held.tick_size = entry.tick_size;
                 }
+                // Pieces the store did not have keep the estimate while they
+                // wait to be asked again, rather than draw nothing.
+                held.missing = entry.retry.keys().copied().collect();
                 entry.held = *held;
                 entry.loaded = true;
                 entry.watchers.iter().copied().collect()
@@ -522,13 +553,15 @@ impl AtPrice {
                 let Some(entry) = entries.get_mut(&key).filter(|entry| entry.stored == stored) else { return Vec::new() };
                 // Asked for again later, each time later still, rather than
                 // left asked for and estimated until the chart is opened again.
+                let mut any = false;
                 for piece in missing {
                     if entry.asked.remove(&piece).is_some() {
                         let tries = entry.retry.get(&piece).map_or(0, |(_, tries)| *tries) + 1;
                         entry.retry.insert(piece, (now + retry_after(tries), tries));
+                        // Held back as coming, it is drawn estimated now.
+                        any |= entry.held.missing.insert(piece);
                     }
                 }
-                let mut any = false;
                 for (piece, mut ladder) in pieces {
                     // Not asked for any more: a load since may have changed it.
                     let Some(since) = entry.asked.remove(&piece) else { continue };
@@ -1481,11 +1514,15 @@ mod tests {
         let (a, b) = (NOW - 86_400, NOW - 86_400 + 3 * HOUR);
         let wanted = || at_price.with_held(KEY, |held| held.unwrap().between(a, b).is_none());
         let in_flight = || !at_price.entries.borrow().get(KEY).unwrap().asked.is_empty();
+        let coming = || at_price.with_held(KEY, |held| held.unwrap().coming(a, b));
         assert!(wanted(), "the day is held by its total");
-        at_price.load_wanted(KEY);
+        assert!(coming(), "its piece is to be read: a profile waits for it");
+        assert!(!at_price.load_wanted(KEY), "room for it");
         assert!(in_flight());
-        settle(&at_price);
+        assert!(coming());
+        assert_eq!(settle(&at_price), vec![1], "drawn again, estimated");
         assert!(!in_flight(), "left asked for while the store has nothing to give");
+        assert!(!coming(), "not on its way: the estimate stands");
 
         assert!(wanted());
         at_price.load_wanted(KEY);
@@ -1495,8 +1532,36 @@ mod tests {
         assert!(wanted());
         at_price.load_wanted(KEY);
         assert!(in_flight(), "never asked again");
+        assert!(!coming(), "the estimate stands while it is asked again");
         settle(&at_price);
         assert_eq!(at_price.entries.borrow().get(KEY).unwrap().retry.values().next().map(|(_, tries)| *tries), Some(2));
+        at_price.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A chartbook coming down lets its charts go but not, until the window
+    /// is idle, their ladders: the next chartbook's chart of the same
+    /// contract draws from them on its first frame, with nothing to load,
+    /// and a contract no chart took up is let go then, live feed and all.
+    #[test]
+    fn ladders_outlive_a_chartbook_switch_until_the_window_is_idle() {
+        let path = scratch("switch");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
+        at_price.want(2, "fake:NQ", "NQ", &es(), NOW - HOUR);
+        settle_all(&at_price, || !at_price.loading(KEY) && !at_price.loading("fake:NQ"));
+
+        at_price.unwatch_all();
+        at_price.want(7, KEY, "ES", &es(), NOW - HOUR);
+        assert!(!at_price.loading(KEY), "nothing to load again");
+        assert!(at_price.with_held(KEY, |held| held.is_some()), "drawn from on the first frame");
+        assert_eq!(asked.lock().unwrap().sinks.len(), 2, "the same live feed");
+
+        at_price.reap();
+        assert!(at_price.entries.borrow().contains_key(KEY));
+        assert!(!at_price.entries.borrow().contains_key("fake:NQ"), "no chart took it up");
         at_price.shutdown();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

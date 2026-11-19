@@ -271,34 +271,51 @@ pub fn run(
         }
         "remove" => {
             let login = find_login(store, required(m, "LOGIN")?)?;
-            let feed_too = flag(m, "with-feed");
             if let Some(live) = live {
                 live.end_session(&login.id);
             }
             let removal = trading::removal(store, &login.id);
             let secrets = crate::ui::trading_settings::keyring_for(&login.service);
-            trading::remove_login(store, secrets.as_ref(), &login.id, feed_too).map_err(|why| Fault::new(super::EXIT_ERROR, why))?;
-            adopt(live);
-            let feed = match (removal, feed_too) {
-                (trading::Removal::HandOver { to }, _) => format!("; charts' data comes through {to} now"),
-                (trading::Removal::Ask, true) => "; its data feed went with it".to_string(),
-                (trading::Removal::Ask, false) => "; its data feed stays, not signed in".to_string(),
-                (trading::Removal::KeepFeed, _) => "; its data feed stays, the last there is".to_string(),
-                (trading::Removal::Login, _) => String::new(),
-            };
-            said(as_json, json!({"login": login.name, "removed": true, "feed_removed": feed_too}), format!("removed {}{feed}", login.name))
-        }
-        "data" => {
-            let login = find_login(store, required(m, "LOGIN")?)?;
-            if trading::data_feed_of(&login).is_none() {
-                return Err(Fault::refused(format!("{} gives no market data to chart from", login.name)));
-            }
-            trading::make_data_login(store, &login.id);
+            trading::remove_login(store, secrets.as_ref(), &login.id).map_err(|why| Fault::new(super::EXIT_ERROR, why))?;
             if let Some(live) = live {
                 live.adopt_feed();
             }
             adopt(live);
-            said(as_json, json!({"login": login.name, "data": true}), format!("charts' market data comes through {}", login.name))
+            let (feed, gone) = match removal {
+                trading::Removal::Feed { feed } => (format!("; its data feed, {feed}, went with it"), true),
+                trading::Removal::Login => (String::new(), false),
+            };
+            said(as_json, json!({"login": login.name, "removed": true, "feed_removed": gone}), format!("removed {}{feed}", login.name))
+        }
+        "data" => {
+            let login = find_login(store, required(m, "LOGIN")?)?;
+            let Some(feed) = trading::data_feed_of(&login) else {
+                return Err(Fault::refused(format!("{} gives no market data to chart from", login.name)));
+            };
+            trading::feed_on_top(store, &login.id);
+            if let Some(live) = live {
+                live.adopt_feed();
+            }
+            adopt(live);
+            said(
+                as_json,
+                json!({"login": login.name, "data": true, "feed": feed.id, "label": feed.label}),
+                format!("{} is the first data feed now", feed.label),
+            )
+        }
+        "sync" => {
+            let live = live.ok_or_else(no_window)?;
+            let started = live.sync_accounts()?;
+            if started.is_empty() {
+                return Err(Fault::refused(
+                    "no login is signed in to sync, or each is syncing already; `omacharts trading logins` says which are live".into(),
+                ));
+            }
+            let text = format!(
+                "syncing {}; `omacharts trading accounts` lists what comes back, and the Log says how each went",
+                started.join(", ")
+            );
+            said(as_json, json!({"syncing": started}), text)
         }
         "accounts" => accounts(store, live, as_json),
         "default" => {
@@ -513,7 +530,8 @@ fn find_login(store: &Store, text: &str) -> Result<Login, Fault> {
 }
 
 /// An account by its key (as `trading accounts --json` gives it), its
-/// login's name and its number, `Lucid/1234`, its number, or its name here.
+/// login's name and its number, `Acme Futures/ACME-0001`, its number, or its
+/// name here.
 pub fn find_account<'a>(view: &'a View, text: &str) -> Result<&'a Account, Fault> {
     let text = text.trim();
     if let Some(account) = view.accounts.iter().find(|account| account.key() == text) {
@@ -607,7 +625,8 @@ fn logins(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Result<Strin
                 "service": login.service,
                 "standing": standing_of(login).words(),
                 "live": standing_of(login) == Standing::Live,
-                "data": view.data_login.as_deref() == Some(login.id.as_str()),
+                "data": view.feeds(&login.id),
+                "feed": trading::data_feed_of(login).map(|feed| json!({"id": feed.id, "label": feed.label})),
                 "accounts": accounts,
             })
         })

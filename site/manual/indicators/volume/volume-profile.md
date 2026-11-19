@@ -27,30 +27,68 @@ crop: none
 
 ## Settings
 
+The settings are in four groups, in the order below. A switch's rows show while it is on. A [market profile](/manual/indicators/volume/market-profile/#settings) has the same groups, with the same names in the same places.
+
+### Parameters
+
 | Setting | Default | Allowed |
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
-| **Only show in last period** | Off | On draws the newest period's profile alone: the same profile, with the same rows, as among the others, and past the last bar when aligned right |
+| **Last period only** | Off | On draws the newest period's profile alone: the same profile, with the same rows, as among the others, and past the last bar when aligned right |
 | **Calculation method** | Total volume | Total volume, or [Ask volume - bid volume](#ask-volume---bid-volume) |
-| **Automatic**, **Rows** | Automatic | A number of [rows](#rows) per period, 4 to 800 |
+| **Automatic rows**, **Rows** | On | A number of [rows](#rows) per period, 4 to 800, with **Automatic rows** off |
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
-| **Highlight value area** | On | Off draws every row alike. Greyed for Ask volume - bid volume |
-| **Value area colour** | The background colour | A palette name, or a custom colour, for the value area while it is highlighted. Greyed while it is not, and for Ask volume - bid volume |
-| **Outline** | Off | On for an edge round filled rows. Always on, and greyed, in the Outline style. Its colour, thickness and style show while it is on |
-| **Outline colour** | The background colour | A palette name, or a custom colour |
+
+### Style
+
+A colour and its opacity share one row: the colour's name, the swatch, then **Opacity**, a slider and a figure for how solid the colour is drawn, 100% solid and 0% invisible. **Default**, first in the swatch's palette, goes back to the colour it has unless one is picked. The command line's `--*-transparency` flags set the same thing the other way up, as how much of the chart shows through.
+
+| Setting | Default | Allowed |
+|---|---|---|
+| **Display** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
+| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period each keeps its own ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)) |
+| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
+| **Colour** | The next free colour, at 30% opacity | A palette name, or a custom colour, greyed for Ask volume - bid volume, whose rows are in the chart's up and down colours. Its **Opacity** is how solid the rows are drawn, 0 to 100%: at 100% they are solid, and at 0% the profile is gone. The value area's two opacities follow it until they are set |
+| **Outline** | Off | On for an edge round filled rows. Always on, and greyed, while **Display** is Outline |
+| **Outline colour** | The profile's **Colour**, at 45% opacity round filled rows; in the Outline display its opacity follows the rows' | A palette name, or a custom colour. Its **Opacity** is how solid the edge is drawn, 0 to 100%; once set, it stays put when the rows' moves |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Background** colour | The next free colour | A palette name, or a custom colour |
-| **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
-| **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, thickness and style show while it is on |
-| **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |
-| **Point of control thickness** | 1 px | 0.5 to 12 px |
-| **Point of control style** | Solid | Solid, Dashed, Dotted |
-| **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
-| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)) |
-| **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
-Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit.
+### Value area
+
+| Setting | Default | Allowed |
+|---|---|---|
+| **Highlight** | On | Off draws every row alike. The group is greyed for Ask volume - bid volume, which has no value area |
+| **Colour** | The profile's **Colour**, its opacity following the Style group's | A palette name, or a custom colour, for the value area. Its **Opacity** is how solid the value area's rows are drawn, 0 to 100% |
+| **Outside rows opacity %** | A little under half as strong as the value area | How solid the rows above and below the value area are drawn, 0 to 100% |
+
+### Point of control
+
+| Setting | Default | Allowed |
+|---|---|---|
+| **Show** | On | Off leaves the profile without its point of control line |
+| **Colour** | A contrasting colour from the theme, at 90% opacity | A palette name, or a custom colour. Its **Opacity** is how solid the line is drawn, 0 to 100% |
+| **Thickness** | 1 px | 0.5 to 12 px |
+| **Line style** | Solid | Solid, Dashed, Dotted |
+
+Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A market profile among them sits beyond the volume profiles.
+
+A volume profile can be shown on its own or next to a [market profile](/manual/indicators/volume/market-profile/), which is a study of its own too. With a market profile of the same **Reset every** on the chart, each session's two are drawn inside it, each from its own **Alignment**: side by side when they are set alike, back to back when one is Left and the other Right. They merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With different periods, each one keeps to itself.
+
+```
+# A volume profile on its own
+omacharts chart indicator add volume_profile --anchor session
+
+# Beside a volume profile, both per session: each session's two side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+```
+
+
 
 ## Ask volume - bid volume
 
@@ -60,11 +98,11 @@ Which side a trade took is not in a bar, so this needs a data feed with volume a
 
 ## Rows
 
-**Automatic**, on a data feed with volume at price, gives each price step a row of its own. A period that would need more than 800 has its rows made 2, 5 or 10 price steps tall, and the periods beside it keep one a step.
+**Automatic rows**, on a data feed with volume at price, gives each price step a row of its own. A period that would need more than 800 has its rows made 2, 5 or 10 price steps tall, and the periods beside it keep one a step.
 
 On any other feed it gives every period rows of the same height, a round multiple of the instrument's price step, about 600 to a typical period. A period too quiet for 60 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too.
 
-With **Automatic** off, **Rows** is the number of rows each period is divided into, on either feed. A [volume profile drawing](/manual/drawings/volume-profile/) has the same two rows and divides its span the same way, worked out from its bars alone.
+With **Automatic rows** off, **Rows** is the number of rows each period is divided into, on either feed. A [volume profile drawing](/manual/drawings/volume-profile/) has the same two rows and divides its span the same way, from the same volume at price, or from its bars on any other feed. It measures Ask volume - bid volume too.
 
 ## Aligned right
 
@@ -74,7 +112,7 @@ That space is widened to fit it, and narrowed again when no profile is aligned r
 
 ## Composite profiles
 
-Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. With **Only show in last period** on there is no profile before it drawn to merge into, so it is not offered. **Split composite profile**, on a composite, puts its periods back as they were.
+Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. With **Last period only** on there is no profile before it drawn to merge into, so it is not offered. **Split composite profile**, on a composite, puts its periods back as they were. Paired with a [market profile](/manual/indicators/volume/market-profile/#composite-profiles) of the same period, merging or splitting either does both.
 
 A composite belongs to the chart it was made on, to the symbol it is showing and to the period it was made under, even when the profile is a template's, and it is kept with the chart. Changing **Reset every**, or a resolution that changes the period in use, draws the new periods without it; going back brings it back. For a profile over any span you choose, use the [volume profile drawing](/manual/drawings/volume-profile/).
 

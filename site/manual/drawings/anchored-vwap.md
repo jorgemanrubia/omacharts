@@ -61,7 +61,7 @@ Each band is a pair of lines, one above the average and one below, at the same d
 | **Standard deviations** | How far from the line the band sits, 0.1 to 6, in tenths | 1, 1.5 and 2 |
 | **Shaded** | Fills the area between the band's two lines, under the candles | On for band 1, off for the others |
 | **Shading %** | How solid that fill is, 0 to 100% | 16% |
-| **Colour** | The band's own colour. **Reset** goes back to the line's, which the band then follows | The line's |
+| **Colour** | The band's own colour. **Default**, first in its palette, goes back to the line's, which the band then follows | The line's |
 | **Thickness** | The band's two lines: no line, 1, 1.5, 2.5 or 4 px. No line leaves a shaded band with no outline | No line for band 1, 1 px for bands 2 and 3 |
 | **Line style** | **Solid**, **Dashed** or **Dotted** | Dashed for band 2, solid for bands 1 and 3 |
 

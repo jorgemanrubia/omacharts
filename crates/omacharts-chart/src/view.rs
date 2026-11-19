@@ -22,6 +22,7 @@
 pub mod bench;
 mod compare;
 mod executions;
+mod market;
 mod pulse;
 mod selection;
 pub use executions::{ExecutionMark, Executions, TripLine};
@@ -152,7 +153,45 @@ struct ProfileKey {
     last: (i64, u64, u64, u64),
     rows: Option<usize>,
     value_area: u64,
+    method: omacharts_engine::indicators::profile::Method,
+    /// What the chart's ladders held when it was worked out; see
+    /// [`ladders_now`].
+    ladders: LaddersNow,
 }
+
+/// What traded at each price on a chart's contract, for its volume profile
+/// drawings to be worked out from as the study's periods are: handed the
+/// first bar the chart holds, it calls back with the ladders held now, if
+/// there are any, and whether they are on their way. The window lends it;
+/// a chart of a feed without ladders has none.
+pub type VolumeAtPrice = Rc<dyn Fn(i64, &mut dyn FnMut(Option<&omacharts_engine::ladders::Held>, bool))>;
+
+/// A chart's ladders, as far as a profile worked out from them can tell
+/// whether it has to be worked out again: none, on their way, or held as of
+/// some change — days and pieces read, a minute forming.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum LaddersNow {
+    None,
+    Awaiting,
+    Held { generation: u64, pieces: usize, missing: usize, forming: Option<(i64, u64)> },
+}
+
+fn ladders_now(held: Option<&omacharts_engine::ladders::Held>, awaiting: bool) -> LaddersNow {
+    match held {
+        Some(held) => LaddersNow::Held {
+            generation: held.generation,
+            pieces: held.pieces.len(),
+            missing: held.missing.len(),
+            forming: held.forming.as_ref().map(|minute| (minute.ts, minute.ladder.total())),
+        },
+        None if awaiting => LaddersNow::Awaiting,
+        None => LaddersNow::None,
+    }
+}
+
+/// A profile drawing's profile as last worked out: drawn, nothing for now,
+/// or why it cannot be drawn on this chart at all.
+type SpanProfile = Result<Option<Profile>, &'static str>;
 
 /// What an anchored VWAP drawing's line depends on, for keeping it: the bar
 /// it starts from, the bars after it, and the price it weights.
@@ -174,6 +213,10 @@ struct State {
     /// it changes rather than on every frame: the ruler's, and the last
     /// price's, which after a rise is [`BarScheme::last_price`]'s.
     price_tags: PriceTags,
+    /// A market profile's open and close arrows, as the theme colours them
+    /// unless somebody chose: worked out when the theme changes, as each is
+    /// a search for a colour held to a contrast, rather than on every frame.
+    tpo_ends: (String, String),
     /// The feed's latest trade when the bars drawn leave it out, a chart
     /// of the regular session out of hours: the price is the price,
     /// whatever candles are shown. `None` when the last bar has it.
@@ -182,7 +225,10 @@ struct State {
     /// The profiles the volume profile drawings show, as last worked out:
     /// a drawing is projected on every motion of the pointer, and its
     /// profile only changes with its span or the bars.
-    profile_cache: RefCell<Vec<(ProfileKey, Option<Profile>)>>,
+    profile_cache: RefCell<Vec<(ProfileKey, SpanProfile)>>,
+    /// Where the volume profile drawings read what traded at each price,
+    /// as the study's periods do. `None` on a chart of a feed without it.
+    volume_at_price: Option<VolumeAtPrice>,
     /// The lines the anchored VWAP drawings show, kept for the same reason:
     /// asked on every motion, changed only by the anchor or the bars.
     vwap_cache: RefCell<Vec<(VwapKey, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)>>,
@@ -281,6 +327,9 @@ struct State {
     /// Past fills and the round trips joining them, laid over the chart
     /// by whoever embeds it; empty unless somebody asks for them.
     executions: Executions,
+    /// How large the execution triangles are drawn, as a multiple of their
+    /// usual size: 1 unless the app embedding the chart asks for more.
+    execution_scale: f64,
     /// The step a mark is dragged on, set by whoever lays the marks: the
     /// contract it trades, which need not step as the series charted does
     /// — a 6E chart trading M6E. The series' own step when unset.
@@ -1381,12 +1430,14 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
+            tpo_ends: (theme.tpo_open(), theme.tpo_close()),
             theme,
             price_tags: price_tags(&scheme),
             scheme,
             latest: None,
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
+            volume_at_price: None,
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
@@ -1418,6 +1469,7 @@ impl State {
             marks: Marks::default(),
             mark_labels: LabelSide::default(),
             executions: Executions::default(),
+            execution_scale: 1.0,
             mark_tick: None,
             hover_mark: None,
             loading: false,
@@ -1492,29 +1544,61 @@ impl State {
     }
 
     /// Keep the selection on the same drawings after the list was rebuilt,
-    /// by id; a drawing with no id yet is the newest row.
-    fn reselect(&mut self, ids: Vec<i64>) {
+    /// by id. `before` is every id the list had before it was rebuilt.
+    fn reselect(&mut self, ids: Vec<i64>, before: &[i64]) {
         // A drawing with no id yet has only just been made and has not come
         // back from wherever drawings are kept, so there is nothing to find
-        // it by: it is one of the newest rows. One of those used to mean
-        // *the* newest row, which was right while only one drawing could be
-        // made at a time — and then pasting three of them selected the same
-        // last row three times over, and the dedup below left one selected.
+        // it by. It is a row that was not there before: one with no id
+        // still, or one with an id the old list never had. That used to be
+        // taken to mean the newest rows, the last in the list — which held
+        // while every drawing sat at the same depth with ids counting up,
+        // and stopped holding once one was brought to the front, or the new
+        // one was kept on this chart only, with a negative id that sorts
+        // under the shared ones. Then the row in hand was somebody else's,
+        // and the drawing just made came out unselected.
         // As many as there are, in the order they went down.
         let fresh = ids.iter().filter(|id| **id == 0).count();
-        let mut next = self.drawings.len().saturating_sub(fresh);
+        let mut new = self.fresh_rows(before);
+        let mut new = new.split_off(new.len().saturating_sub(fresh)).into_iter();
         self.selected = ids
             .into_iter()
             .filter_map(|id| match id {
-                0 => {
-                    let at = (next < self.drawings.len()).then_some(next);
-                    next += 1;
-                    at
-                }
+                0 => new.next(),
                 id => self.drawings.iter().position(|d| d.id == id),
             })
             .collect();
         self.selected.dedup();
+    }
+
+    /// The rows that were not in the list before it was rebuilt — still
+    /// with no id, or with an id `before` does not have — oldest first.
+    fn fresh_rows(&self, before: &[i64]) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..self.drawings.len())
+            .filter(|i| {
+                let id = self.drawings[*i].id;
+                id == 0 || !before.contains(&id)
+            })
+            .collect();
+        rows.sort_by_key(|i| self.drawings[*i].id.abs());
+        rows
+    }
+
+    /// Take the list as it came back from wherever drawings are kept, with
+    /// the selection kept on the same drawings — a new one included, which
+    /// comes back with an id it did not have. Hands back the ids the list
+    /// had before.
+    fn take_list(&mut self, drawings: Vec<Drawing>) -> Vec<i64> {
+        let ids = self.selected_ids();
+        let before = self.ids();
+        self.drawings = drawings;
+        self.reselect(ids, &before);
+        before
+    }
+
+    /// Every id the list has now, for [`State::reselect`] after a change
+    /// that keeps the same drawings.
+    fn ids(&self) -> Vec<i64> {
+        self.drawings.iter().map(|d| d.id).collect()
     }
 
     fn selected_ids(&self) -> Vec<i64> {
@@ -1625,6 +1709,50 @@ impl State {
         true
     }
 
+    /// The drawing in hand is laid down: into the list, on top of what is
+    /// there, and selected on its own, so the next thing the hand does —
+    /// move it, stretch it, restyle it, delete it — is done to it. `None`
+    /// when there was nothing to lay down. The tool is put down unless it
+    /// is held.
+    fn finish_placing(&mut self) -> Option<Drawing> {
+        let mut drawing = self.placing.take()?;
+        if !self.sticky {
+            self.tool = None;
+        }
+        self.next_config = 1;
+        // The last corner of a path was only ever following the hand.
+        // Dropping it can leave too little to be a drawing — one press and
+        // Enter — and then there is nothing to commit.
+        if !drawing.finish_path() {
+            return None;
+        }
+        // On top of what is already there, as a word or a paste is: a line
+        // drawn across a box brought to the front goes over it.
+        drawing.order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+        self.remember();
+        self.drawings.push(drawing.clone());
+        self.selected = vec![self.drawings.len() - 1];
+        Some(drawing)
+    }
+
+    /// A word at `at`, with nothing in it yet: into the list and selected,
+    /// the tool put down unless it is held. Hands back where it went and
+    /// the drawing, to be told about.
+    fn add_text(&mut self, at: Anchor) -> (usize, Drawing) {
+        let mut drawing = Drawing::text_at(at);
+        drawing.follow(self.next_config);
+        drawing.scope = scope_for(self.sends);
+        drawing.order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+        self.remember();
+        self.drawings.push(drawing.clone());
+        self.selected = vec![self.drawings.len() - 1];
+        if !self.sticky {
+            self.tool = None;
+        }
+        self.next_config = 1;
+        (self.drawings.len() - 1, drawing)
+    }
+
     fn ruler_anchor(&self, width: f64, height: f64, x: f64, y: f64) -> Option<Anchor> {
         let plan = layout(self, width, height);
         if !(plan.plot_x..=plan.plot_x + plan.plot_w).contains(&x)
@@ -1663,37 +1791,91 @@ impl State {
     /// The volume profile a profile drawing shows: of the bars between its
     /// two anchors, on this chart's own bars.
     fn span_profile(&self, drawing: &Drawing) -> Option<Profile> {
+        self.with_span_profile(drawing, |profile| profile.as_ref().ok().cloned().flatten())
+    }
+
+    /// Why a profile drawing cannot be drawn on this chart at all, if it
+    /// cannot: read where it is kept, nothing copied.
+    fn span_refused(&self, drawing: &Drawing) -> Option<&'static str> {
+        self.with_span_profile(drawing, |profile| profile.as_ref().err().copied())
+    }
+
+    /// What `read_it` makes of [`Self::span_profile`], or of why a profile drawing cannot be drawn on
+    /// this chart at all: a delta on a chart whose feed does not say which
+    /// side each trade took, which the study says in the same words.
+    ///
+    /// Worked out as the study works out each of its periods, from what
+    /// traded at each price when the chart's feed has it — waiting for it,
+    /// drawing nothing, while it is on its way — and estimated from the
+    /// bars when it has not.
+    fn with_span_profile<T>(&self, drawing: &Drawing, read_it: impl FnOnce(&SpanProfile) -> T) -> T {
         let (from, to) = (drawing.from.ts.min(drawing.to.ts), drawing.from.ts.max(drawing.to.ts));
         let first = self.bars.partition_point(|bar| bar.ts < from);
         let end = self.bars.partition_point(|bar| bar.ts <= to);
         if first >= end {
-            return None;
+            return read_it(&Ok(None));
         }
+        // Where it is kept once worked out; read there, nothing copied.
+        let mut kept = None;
         let look = &drawing.style(&self.configs).profile;
-        // The last bar's volume as well as its time: a live bar grows in
-        // place, and a profile over it has to grow with it.
-        let last = &self.bars[end - 1];
-        let key = ProfileKey {
-            span: (first, end),
-            first: self.bars[first].ts,
-            last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits()),
-            rows: look.rows,
-            value_area: look.value_area.to_bits(),
+        let mut work = |held: Option<&omacharts_engine::ladders::Held>, awaiting: bool| {
+            // The last bar's volume as well as its time: a live bar grows in
+            // place, and a profile over it has to grow with it.
+            let last = &self.bars[end - 1];
+            let key = ProfileKey {
+                span: (first, end),
+                first: self.bars[first].ts,
+                last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits()),
+                rows: look.rows,
+                value_area: look.value_area.to_bits(),
+                method: look.method,
+                ladders: ladders_now(held, awaiting),
+            };
+            kept = Some(key);
+            if self.profile_cache.borrow().iter().any(|(k, _)| *k == key) {
+                return;
+            }
+            let profile = match &self.instrument {
+                Some(instrument) => {
+                    let context = indicators::Context::of(instrument, self.timeframe, self.clock.zone)
+                        .with_ladders(held)
+                        .awaiting_ladders(awaiting);
+                    indicators::span_profile(&self.bars[first..end], first, look.rows, look.value_area, look.method, &context)
+                }
+                // Nothing says what is charted: no ladders, and the bars
+                // alone, as the study draws on such a chart.
+                None => {
+                    let context = indicators::Context {
+                        session_origin: 0,
+                        timeframe: self.timeframe,
+                        kind: None,
+                        instrument: None,
+                        zone: self.clock.zone,
+                        ladders: None,
+                        awaiting_ladders: false,
+                        memos: None,
+                        schedule: None,
+                    };
+                    indicators::span_profile(&self.bars[first..end], first, look.rows, look.value_area, look.method, &context)
+                }
+            };
+            let mut cache = self.profile_cache.borrow_mut();
+            // A handful of drawings, each dragged through a few spans: enough
+            // to keep, small enough never to sweep.
+            if cache.len() >= 32 {
+                let _ = cache.remove(0);
+            }
+            cache.push((key, profile));
         };
-        if let Some((_, profile)) = self.profile_cache.borrow().iter().find(|(k, _)| *k == key) {
-            return profile.clone();
+        match &self.volume_at_price {
+            Some(read) => read(self.bars[0].ts, &mut work),
+            None => work(None, false),
         }
-        let kind = self.instrument.as_ref().map(|i| i.kind);
-        let profile =
-            omacharts_engine::indicators::profile::of_span(&self.bars[first..end], first, look.rows, look.value_area, kind);
-        let mut cache = self.profile_cache.borrow_mut();
-        // A handful of drawings, each dragged through a few spans: enough
-        // to keep, small enough never to sweep.
-        if cache.len() >= 32 {
-            cache.remove(0);
+        let cache = self.profile_cache.borrow();
+        match kept.and_then(|key| cache.iter().find(|(k, _)| *k == key)) {
+            Some((_, profile)) => read_it(profile),
+            None => read_it(&Ok(None)),
         }
-        cache.push((key, profile.clone()));
-        profile
     }
 
     /// The anchored VWAP a VWAP drawing shows, and the bar it starts from:
@@ -2050,25 +2232,64 @@ impl State {
         }
         let plan = layout(self, width, height);
         let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
-        // The selected ones first, since their grips are what the hand is
-        // most likely reaching for; then the most recently drawn.
-        let order = self.selected.iter().rev().copied().chain((0..self.drawings.len()).rev());
-        for index in order {
-            let drawing = self.drawings.get(index)?;
-            let projected = self.project(&plan, &scale, drawing);
-            let hit = projected.hit(x, y);
-            // Grips belong to the selected drawing only: on the others the
-            // whole thing is a body, so a press on an unselected line's end
-            // selects it rather than starting to move the end.
-            let hit = match hit {
-                Some(_) if !self.selected.contains(&index) => Some(Grip::Body),
-                other => other,
-            };
-            if let Some(grip) = hit {
+        // A selected drawing's grips first, since they are what the hand is
+        // most likely reaching for, wherever it sits in the stack.
+        for &index in self.selected.iter().rev() {
+            let Some(drawing) = self.drawings.get(index) else { continue };
+            match self.project(&plan, &scale, drawing).hit(x, y) {
+                Some(grip) if grip != Grip::Body => return Some((index, grip)),
+                _ => {}
+            }
+        }
+        // Then the bodies, topmost first, in the order they are painted —
+        // the list is kept in that order — so a press takes what is seen on
+        // top. Selected or not: a drawing just sent to the back is still
+        // selected, and taking it first would make the one now in front of
+        // it impossible to reach.
+        for index in (0..self.drawings.len()).rev() {
+            let Some(drawing) = self.drawings.get(index) else { continue };
+            if let Some(grip) = self.project(&plan, &scale, drawing).hit(x, y) {
+                // Grips belong to the selected drawing only: on the others
+                // the whole thing is a body, so a press on an unselected
+                // line's end selects it rather than starting to move the end.
+                let grip = match self.selected.contains(&index) {
+                    true => grip,
+                    false => Grip::Body,
+                };
                 return Some((index, grip));
             }
         }
         None
+    }
+
+    /// Put the selected drawings in front of, or behind, every other, in
+    /// the order they already have among themselves, and keep the list in
+    /// painting order. Hands back the drawings it moved, to be written down.
+    fn restack_selected(&mut self, to_front: bool) -> Vec<Drawing> {
+        let mut indices = self.selected.clone();
+        indices.sort_unstable();
+        indices.dedup();
+        indices.retain(|i| *i < self.drawings.len());
+        if indices.is_empty() {
+            return Vec::new();
+        }
+        let (lowest, highest) = self
+            .drawings
+            .iter()
+            .fold((i64::MAX, i64::MIN), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
+        self.remember();
+        let count = indices.len() as i64;
+        let mut moved = Vec::new();
+        for (n, index) in indices.into_iter().enumerate() {
+            let Some(drawing) = self.drawings.get_mut(index) else { continue };
+            drawing.order = if to_front { highest + 1 + n as i64 } else { lowest - count + n as i64 };
+            moved.push(drawing.clone());
+        }
+        let ids = self.selected_ids();
+        drawings::sort_for_painting(&mut self.drawings);
+        let before = self.ids();
+        self.reselect(ids, &before);
+        moved
     }
 
     /// The price range to draw, after the user's scaling, from the fit of
@@ -2647,6 +2868,42 @@ impl State {
         self.fit_range();
     }
 
+    /// Put the bars between two moments in the middle of the view, at the
+    /// zoom it has unless they would not fit in it, and let go of any range
+    /// it was holding to.
+    fn centre_on(&mut self, from: i64, to: i64) {
+        self.place_on(from, to, false);
+    }
+
+    /// `centre_on`, and zoomed in as well as out: the span takes the middle
+    /// two thirds of the view, so a few hours of a day open at a width where
+    /// their bars can be read.
+    fn frame(&mut self, from: i64, to: i64) {
+        self.place_on(from, to, true);
+    }
+
+    fn place_on(&mut self, from: i64, to: i64, zoom_in: bool) {
+        let len = self.bars.len();
+        if len == 0 {
+            return;
+        }
+        let first = self.bars.partition_point(|bar| bar.ts < from).min(len - 1);
+        let last = self.bars.partition_point(|bar| bar.ts <= to).max(first + 1);
+        // Too wide for the view: wide enough for it, with room either side.
+        let wanted = (last - first) + (last - first) / 2 + 2;
+        if wanted > self.columns() || zoom_in {
+            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
+        }
+        let visible = self.columns().max(1);
+        let middle = (first + last) / 2;
+        self.range = None;
+        self.lead = 0;
+        self.anchored = false;
+        self.overhang = 0;
+        self.overhang_by_hand = true;
+        self.first = middle.saturating_sub(visible / 2).min(len.saturating_sub(visible));
+    }
+
     /// Lay the view across the range it holds, if it holds one: from the
     /// first bar on or after the range's first day to the live edge, with
     /// the resting margin past it, or to its last day's bar for one that
@@ -3063,12 +3320,12 @@ impl ChartView {
         s.profile_at(self.area.width() as f64, self.area.height() as f64, id, x)
     }
 
-    /// Every profile indicator `id` draws, and whether each is on screen,
-    /// for a command that reads them.
+    /// Every profile volume or market profile `id` draws, and whether each
+    /// is on screen, for a command that reads them.
     pub fn profiles(&self, id: u32) -> Option<Vec<(Profile, bool)>> {
         let s = self.state.borrow();
         let drawn = s.indicators.iter().find(|d| d.indicator.id == id)?;
-        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let profiles = drawn.output.periods()?;
         let (first, count, _) = s.view();
         let end = first + count;
         // Begun at its first bar rather than at its period's start, which for
@@ -3078,7 +3335,7 @@ impl ChartView {
             profiles
                 .iter()
                 .map(|p| {
-                    let mut p = p.clone();
+                    let mut p = (*p).clone();
                     if let Some(bar) = s.bars.get(p.first_bar) {
                         p.start_ts = bar.ts;
                     }
@@ -3163,16 +3420,14 @@ impl ChartView {
             .and_then(|editing| self.state.borrow().drawings.get(editing.index.get()).map(|d| d.id));
         let still_there = {
             let mut state = self.state.borrow_mut();
-            let ids = state.selected_ids();
-            state.drawings = drawings;
-            state.reselect(ids);
+            let before = state.take_list(drawings);
             match editing_id {
                 // Zero is the drawing that has just been added and not yet
-                // written down, which comes back as the newest row — the
-                // same convention the selection follows, for the same
-                // reason: there is no id to find it by yet.
+                // written down, which comes back as a row the list did not
+                // have before — found the way the selection finds it, for
+                // the same reason: there is no id to find it by yet.
                 Some(0) => {
-                    let now = state.drawings.len().checked_sub(1);
+                    let now = state.fresh_rows(&before).last().copied();
                     state.editing = now;
                     now
                 }
@@ -3564,7 +3819,8 @@ impl ChartView {
             }
             // The selection follows the drawings, those still there.
             let ids: Vec<i64> = state.selected.iter().filter_map(|i| now_id(&now_list(&list, *i))).collect();
-            state.reselect(ids);
+            let before = state.ids();
+            state.reselect(ids, &before);
             state.placing = None;
             list
         };
@@ -3886,32 +4142,10 @@ impl ChartView {
     /// the order they already have among themselves. Over the candles
     /// either way: the order is among drawings only.
     pub fn restack_selected(&self, to_front: bool) {
-        let changed = {
-            let mut state = self.state.borrow_mut();
-            let mut indices = state.selected.clone();
-            indices.sort_unstable();
-            indices.dedup();
-            indices.retain(|i| *i < state.drawings.len());
-            if indices.is_empty() {
-                return;
-            }
-            let (lowest, highest) = state
-                .drawings
-                .iter()
-                .fold((i64::MAX, i64::MIN), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
-            state.remember();
-            let count = indices.len() as i64;
-            let mut moved = Vec::new();
-            for (n, index) in indices.into_iter().enumerate() {
-                let Some(drawing) = state.drawings.get_mut(index) else { continue };
-                drawing.order = if to_front { highest + 1 + n as i64 } else { lowest - count + n as i64 };
-                moved.push(drawing.clone());
-            }
-            let ids = state.selected_ids();
-            drawings::sort_for_painting(&mut state.drawings);
-            state.reselect(ids);
-            moved
-        };
+        let changed = self.state.borrow_mut().restack_selected(to_front);
+        if changed.is_empty() {
+            return;
+        }
         self.redraw();
         for drawing in changed {
             self.tell(DrawingEvent::Changed(drawing));
@@ -3965,40 +4199,19 @@ impl ChartView {
     /// told about. The tool is put down, since one line at a time is what a
     /// hand draws; arming it again is one key.
     fn commit_placing(&self) {
-        let added = {
-            let mut state = self.state.borrow_mut();
-            let Some(mut drawing) = state.placing.take() else { return };
-            // The last corner of a path was only ever following the hand.
-            // Dropping it can leave too little to be a drawing — one press
-            // and Enter — and then there is nothing to commit.
-            if !drawing.finish_path() {
-                if !state.sticky {
-                    state.tool = None;
-                }
-                state.next_config = 1;
-                drop(state);
-                self.area.set_cursor_from_name(Some("default"));
-                self.redraw();
-                self.tool_changed();
-                return;
-            }
-            state.remember();
-            state.drawings.push(drawing.clone());
-            state.selected = vec![state.drawings.len() - 1];
-            if !state.sticky {
-                state.tool = None;
-            }
-            state.next_config = 1;
-            drawing
-        };
+        let added = self.state.borrow_mut().finish_placing();
         self.area.set_cursor_from_name(Some(match self.armed().is_some() {
             true => "crosshair",
             false => "default",
         }));
-        self.pick(None);
+        if added.is_some() {
+            self.pick(None);
+        }
         self.redraw();
         self.tool_changed();
-        self.tell(DrawingEvent::Added(added));
+        if let Some(added) = added {
+            self.tell(DrawingEvent::Added(added));
+        }
     }
 
     // -- typing on the chart -----------------------------------------------
@@ -4012,21 +4225,7 @@ impl ChartView {
     /// drawing. What is special is only that it starts out saying nothing,
     /// and that saying nothing at the end means it goes away again.
     fn start_text_at(self: &Rc<Self>, at: Anchor) {
-        let (index, added) = {
-            let mut state = self.state.borrow_mut();
-            let mut drawing = Drawing::text_at(at);
-            drawing.follow(state.next_config);
-            drawing.scope = scope_for(state.sends);
-            drawing.order = state.drawings.iter().map(|d| d.order).max().unwrap_or(0);
-            state.remember();
-            state.drawings.push(drawing.clone());
-            state.selected = vec![state.drawings.len() - 1];
-            if !state.sticky {
-                state.tool = None;
-            }
-            state.next_config = 1;
-            (state.drawings.len() - 1, drawing)
-        };
+        let (index, added) = self.state.borrow_mut().add_text(at);
         self.area.set_cursor_from_name(Some("default"));
         self.tool_changed();
         // Announced before a character is typed, the way a line is announced
@@ -5305,6 +5504,7 @@ impl ChartView {
             for (drawn, colour) in state.indicators.iter_mut().zip(omacharts_engine::palette_colors(&shown, &theme)) {
                 drawn.color = colour;
             }
+            state.tpo_ends = (theme.tpo_open(), theme.tpo_close());
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
@@ -5312,11 +5512,29 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Where this chart's volume profile drawings read what traded at each
+    /// price: see [`VolumeAtPrice`].
+    pub fn set_volume_at_price(&self, read: Option<VolumeAtPrice>) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.volume_at_price = read;
+            state.profile_cache.borrow_mut().clear();
+        }
+        self.redraw();
+    }
+
+    /// Whether any drawing on this chart is a volume profile, which reads
+    /// what traded at each price as the study does.
+    pub fn has_profile_drawing(&self) -> bool {
+        self.state.borrow().drawings.iter().any(|drawing| drawing.kind == DrawingKind::Profile)
+    }
+
     pub fn timeframe(&self) -> Timeframe {
         self.state.borrow().timeframe
     }
 
-    /// How many rows the volume profile with this id is actually drawing.
+    /// How many rows the volume profile with this id is actually drawing,
+    /// or for a market profile how many ticks tall its rows are.
     ///
     /// The settings panel shows this when the count is automatic, so the
     /// number on screen is the number being drawn rather than a placeholder.
@@ -5325,6 +5543,7 @@ impl ChartView {
         state.indicators.iter().find(|drawn| drawn.indicator.id == id).and_then(|drawn| {
             match &drawn.output {
                 Output::Profiles(profiles) => profiles.first().map(|p| p.rows.len()),
+                Output::MarketProfiles(profiles) => profiles.first().map(|p| p.row_ticks as usize),
                 _ => None,
             }
         })
@@ -5399,6 +5618,39 @@ impl ChartView {
     /// symbol, new bars and a new day — until a hand moves the view.
     pub fn show_range(&self, range: Range) {
         self.state.borrow_mut().show_range(range);
+        self.redraw();
+    }
+
+    /// Bring the bars between `from` and `to`, unix seconds, to the middle
+    /// of the view, zooming out only if they would not fit. Moments outside
+    /// the bars loaded are taken at the nearest bar, and with no bars
+    /// loaded nothing moves.
+    pub fn centre_on(&self, from: i64, to: i64) {
+        self.state.borrow_mut().centre_on(from, to);
+        self.redraw();
+    }
+
+    /// Bring the moments from `from` to `to` (unix seconds) into view at a
+    /// width that suits them, zooming in or out, with room either side.
+    /// Moments outside the bars loaded are taken at the nearest bar, and
+    /// with no bars loaded nothing moves.
+    pub fn frame(&self, from: i64, to: i64) {
+        self.state.borrow_mut().frame(from, to);
+        self.redraw();
+    }
+
+    /// Draw the execution triangles `scale` times their usual size, where
+    /// the fills are what the chart is read for. 1 is the usual size; a
+    /// scale that is not a positive number is taken as 1.
+    pub fn set_execution_scale(&self, scale: f64) {
+        let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        {
+            let mut state = self.state.borrow_mut();
+            if state.execution_scale == scale {
+                return;
+            }
+            state.execution_scale = scale;
+        }
         self.redraw();
     }
 
@@ -10254,9 +10506,20 @@ fn over_trouble_dot(state: &State, width: f64, x: f64, y: f64) -> bool {
 /// box, one above another if there are several. Nothing is drawn per bar.
 fn draw_unmet(cr: &cairo::Context, state: &State, plot_x: f64, bottom: f64) {
     let mut y = bottom - 10.0;
-    for drawn in state.shown_indicators() {
-        let Output::Unmet(why) = &drawn.output else { continue };
-        let text = format!("{} · {why}", drawn.indicator.kind.short_name());
+    let studies = state.shown_indicators().filter_map(|drawn| match &drawn.output {
+        Output::Unmet(why) => Some(format!("{} · {why}", drawn.indicator.kind.short_name())),
+        _ => None,
+    });
+    // A profile drawing that cannot be drawn says so as the study does,
+    // once however many there are: what is missing is the chart's.
+    let drawings = state
+        .show_drawings
+        .then(|| {
+            state.drawings.iter().filter(|d| d.kind == DrawingKind::Profile).find_map(|d| state.span_refused(d))
+        })
+        .flatten()
+        .map(|why| format!("{} · {why}", DrawingKind::Profile.label()));
+    for text in studies.chain(drawings) {
         colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
         cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         cr.set_font_size(12.0);
@@ -10290,6 +10553,9 @@ fn draw_indicator_fills(
             }
             Output::Profiles(profiles) => {
                 draw_profiles(cr, state, drawn, profiles, columns, to_y);
+            }
+            Output::MarketProfiles(profiles) => {
+                market::draw_market_profiles(cr, state, drawn, profiles, columns, to_y);
             }
             // These draw in a strip of their own, where the price scale does
             // not reach, so there is nothing to do over the candles; and time
@@ -10390,7 +10656,12 @@ fn draw_indicator_lines(
                     }
                 }
             }
-            Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {}
+            Output::Profiles(_)
+            | Output::MarketProfiles(_)
+            | Output::Volume { .. }
+            | Output::Pane(_)
+            | Output::Time(_)
+            | Output::Unmet(_) => {}
         }
     }
 }
@@ -10564,17 +10835,41 @@ fn draw_profiles(
         } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
         _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
-    let (outline_style, poc_style, alpha, highlight, area_choice) = match &drawn.indicator.params {
+    let (outline_style, poc_style, strengths, highlight, area_choice) = match &drawn.indicator.params {
         omacharts_engine::Params::VolumeProfile {
-            outline_style, poc_style, alpha, opacity, highlight, value_area_color, ..
+            outline_style,
+            poc_style,
+            alpha,
+            opacity,
+            highlight,
+            value_area_color,
+            value_area_alpha,
+            outside_alpha,
+            outline_alpha,
+            poc_alpha,
+            ..
         } => (
             *outline_style,
             *poc_style,
-            omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+            omacharts_engine::indicators::profile::Strengths::study(
+                omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+                &omacharts_engine::indicators::profile::Alphas {
+                    value_area: *value_area_alpha,
+                    outside: *outside_alpha,
+                    outline: *outline_alpha,
+                    poc: *poc_alpha,
+                },
+            ),
             *highlight,
             value_area_color.as_ref(),
         ),
-        _ => (LineStyle::Solid, LineStyle::Solid, DELTA_ROW_ALPHA, true, None),
+        _ => (
+            LineStyle::Solid,
+            LineStyle::Solid,
+            omacharts_engine::indicators::profile::Strengths::study(DELTA_ROW_ALPHA, &Default::default()),
+            true,
+            None,
+        ),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
@@ -10584,105 +10879,35 @@ fn draw_profiles(
         (Method::Total, true, Some(choice)) => Some(choice.resolve(&state.theme)),
         _ => None,
     };
-    let (inside, outside) = omacharts_engine::indicators::profile::row_alphas(alpha, highlight);
+    // A delta has no value area: every row of it is drawn at the rows'
+    // own strength.
+    let (inside, outside) = strengths.row_pair(highlight && method == Method::Total);
     let look = selection::placed_look(state, drawn);
     let style = look.style;
+    let paint = ProfilePaint {
+        method,
+        shape: style,
+        inks: &inks,
+        area_fill: area_fill.as_deref(),
+        inside,
+        outside,
+        edge_alpha: edged.then_some(strengths.edge),
+        outline_alpha: strengths.outline,
+        outline_width,
+        outline_style,
+        poc: poc_shown.then_some((poc.as_str(), poc_width, poc_style, strengths.poc)),
+    };
 
+    let partner = selection::expanding_partner(state, drawn);
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
-        let area = selection::profile_box(profile, columns, &look);
-        if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
+        let Some(area) = selection::placed_box(state, profile, columns, &look, partner) else {
+            continue;
+        };
+        if profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
-
-        match style {
-            omacharts_engine::indicators::profile::Style::Filled => {
-                let (area_low, area_high) = profile.value_area_bounds();
-                // Which pass a row is painted in: the value area's, or the
-                // rest's. A delta has no value area, and every row of it is
-                // painted as the value area of a total is.
-                let in_area = |row: &omacharts_engine::indicators::ProfileRow| match method {
-                    Method::Total => row.low >= area_low && row.high <= area_high,
-                    Method::Delta => true,
-                };
-                let passes: &[bool] = match method {
-                    Method::Total => &[true, false],
-                    Method::Delta => &[true],
-                };
-                // One path and one fill for every row of an ink at a
-                // strength, rather than a fill a row: a tick a row is
-                // hundreds of rows a period, and a fill is most of what a
-                // row costs. The rows of one pass are side by side, never
-                // over each other, so they composite as they did one by one.
-                for (at, ink) in inks.iter().enumerate() {
-                    for &pass in passes {
-                        let mut any = false;
-                        for row in &profile.rows {
-                            let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
-                            if !mine || in_area(row) != pass {
-                                continue;
-                            }
-                            let (from, to) = area.row(row.volume.abs() / profile.max_volume);
-                            let top = to_y(row.high);
-                            let height = (to_y(row.low) - top).max(1.0);
-                            cr.rectangle(from, top, to - from, height);
-                            any = true;
-                        }
-                        if any {
-                            let (fill, strength) = match pass {
-                                true => (area_fill.as_deref().unwrap_or(ink.fill.as_str()), inside),
-                                false => (ink.fill.as_str(), outside),
-                            };
-                            colors::set_source_alpha(cr, fill, strength);
-                            let _ = cr.fill();
-                        }
-                    }
-                }
-                if edged {
-                    cr.set_line_width(outline_width.max(0.5));
-                    cr.set_line_join(cairo::LineJoin::Miter);
-                    set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
-                    for ink in &inks {
-                        colors::set_source_alpha(cr, &ink.edge, drawings::PROFILE_EDGE_ALPHA);
-                        selection::profile_path(cr, &area, profile, to_y, ink.side);
-                        let _ = cr.stroke();
-                    }
-                    cr.set_dash(&[], 0.0);
-                }
-            }
-            // Only the shape the rows make, so the candles under it stay
-            // as plain as they are without it. With no rows to fade, the
-            // transparency fades the outline, which is all there is.
-            omacharts_engine::indicators::profile::Style::Outline => {
-                cr.set_line_width(outline_width.max(0.5));
-                cr.set_line_join(cairo::LineJoin::Miter);
-                set_edge_pattern(cr, outline_style, outline_width.max(0.5), 0.0);
-                for ink in &inks {
-                    colors::set_source_alpha(cr, &ink.edge, omacharts_engine::indicators::profile::line_alpha(0.75, alpha));
-                    selection::profile_path(cr, &area, profile, to_y, ink.side);
-                    let _ = cr.stroke();
-                }
-                cr.set_dash(&[], 0.0);
-            }
-        }
-
-        // The point of control, across the period it belongs to, in a colour
-        // set against the profile rather than the same one brighter — it is a
-        // different fact about the period, drawn on top of it.
-        // Unless it is turned off, which leaves the rows to say it.
-        if poc_shown {
-            let y = to_y(profile.poc_price()).round() + 0.5;
-            let (from, to) = area.row(1.0);
-            colors::set_source_alpha(cr, &poc, 0.9);
-            cr.set_line_width(poc_width.max(0.5));
-            let (left, right) = (from.min(to), from.max(to));
-            set_edge_pattern(cr, poc_style, poc_width.max(0.5), left);
-            cr.move_to(left, y);
-            cr.line_to(right, y);
-            let _ = cr.stroke();
-            cr.set_dash(&[], 0.0);
-        }
-
+        paint_profile(cr, profile, &area, &paint, to_y);
         if state.picked == Some(drawn.indicator.id) {
             for ink in &inks {
                 selection::outline_profile(cr, &state.theme, ink.shown(style), profile, &area, to_y, ink.side);
@@ -10691,9 +10916,136 @@ fn draw_profiles(
     }
 }
 
-/// A volume profile drawing: the study's rows across the whole span it
-/// covers, set apart from the study by the edge round them, or drawn as only
-/// that edge, with a point of control at the drawing's own stroke.
+/// How a volume profile is painted, the study's and a drawing's alike: what
+/// each sets apart is only where its colours and strengths come from.
+struct ProfilePaint<'a> {
+    method: omacharts_engine::indicators::profile::Method,
+    shape: omacharts_engine::indicators::profile::Style,
+    /// One side for a total, two for a delta.
+    inks: &'a [ProfileInk],
+    /// The value area's own colour, when it is set apart in one.
+    area_fill: Option<&'a str>,
+    /// How strongly the value area's rows are filled, and the rest.
+    inside: f64,
+    outside: f64,
+    /// The edge round filled rows, at this strength; `None` for none.
+    edge_alpha: Option<f64>,
+    /// The outline style's strength: the outline is all of it.
+    outline_alpha: f64,
+    outline_width: f64,
+    outline_style: LineStyle,
+    /// The point of control, in its colour, thickness, pattern and
+    /// strength; `None` when it is turned off, which leaves the rows to say
+    /// it.
+    poc: Option<(&'a str, f64, LineStyle, f64)>,
+}
+
+/// One volume profile, its rows grown from `area`'s edge.
+fn paint_profile(
+    cr: &cairo::Context,
+    profile: &Profile,
+    area: &selection::ProfileBox,
+    paint: &ProfilePaint,
+    to_y: &dyn Fn(f64) -> f64,
+) {
+    use omacharts_engine::indicators::profile::{Method, Style as Shape};
+    let inks = paint.inks;
+    match paint.shape {
+        Shape::Filled => {
+            let (area_low, area_high) = profile.value_area_bounds();
+            // Which pass a row is painted in: the value area's, or the
+            // rest's. A delta has no value area, and every row of it is
+            // painted as the value area of a total is.
+            let in_area = |row: &omacharts_engine::indicators::ProfileRow| match paint.method {
+                Method::Total => row.low >= area_low && row.high <= area_high,
+                Method::Delta => true,
+            };
+            let passes: &[bool] = match paint.method {
+                Method::Total => &[true, false],
+                Method::Delta => &[true],
+            };
+            // One path and one fill for every row of an ink at a
+            // strength, rather than a fill a row: a tick a row is
+            // hundreds of rows a period, and a fill is most of what a
+            // row costs. The rows of one pass are side by side, never
+            // over each other, so they composite as they did one by one.
+            for (at, ink) in inks.iter().enumerate() {
+                for &pass in passes {
+                    let mut any = false;
+                    for row in &profile.rows {
+                        let mine = inks.iter().position(|ink| ink.side.length(row.volume) > 0.0) == Some(at);
+                        if !mine || in_area(row) != pass {
+                            continue;
+                        }
+                        let (from, to) = area.row(row.volume.abs() / profile.max_volume);
+                        let top = to_y(row.high);
+                        let height = (to_y(row.low) - top).max(1.0);
+                        cr.rectangle(from, top, to - from, height);
+                        any = true;
+                    }
+                    if any {
+                        let (fill, strength) = match pass {
+                            true => (paint.area_fill.unwrap_or(ink.fill.as_str()), paint.inside),
+                            false => (ink.fill.as_str(), paint.outside),
+                        };
+                        colors::set_source_alpha(cr, fill, strength);
+                        let _ = cr.fill();
+                    }
+                }
+            }
+            if let Some(strength) = paint.edge_alpha {
+                cr.set_line_width(paint.outline_width.max(0.5));
+                cr.set_line_join(cairo::LineJoin::Miter);
+                set_edge_pattern(cr, paint.outline_style, paint.outline_width.max(0.5), 0.0);
+                for ink in inks {
+                    colors::set_source_alpha(cr, &ink.edge, strength);
+                    selection::profile_path(cr, area, profile, to_y, ink.side);
+                    let _ = cr.stroke();
+                }
+                cr.set_dash(&[], 0.0);
+            }
+        }
+        // Only the shape the rows make, so the candles under it stay
+        // as plain as they are without it. With no rows to fade, the
+        // transparency fades the outline, which is all there is.
+        Shape::Outline => {
+            cr.set_line_width(paint.outline_width.max(0.5));
+            cr.set_line_join(cairo::LineJoin::Miter);
+            set_edge_pattern(cr, paint.outline_style, paint.outline_width.max(0.5), 0.0);
+            for ink in inks {
+                colors::set_source_alpha(cr, &ink.edge, paint.outline_alpha);
+                selection::profile_path(cr, area, profile, to_y, ink.side);
+                let _ = cr.stroke();
+            }
+            cr.set_dash(&[], 0.0);
+        }
+    }
+
+    // The point of control, across the period it belongs to, in a colour
+    // set against the profile rather than the same one brighter — it is a
+    // different fact about the period, drawn on top of it.
+    if let Some((colour, width, pattern, strength)) = paint.poc {
+        let y = to_y(profile.poc_price()).round() + 0.5;
+        let (from, to) = area.row(1.0);
+        colors::set_source_alpha(cr, colour, strength);
+        cr.set_line_width(width.max(0.5));
+        let (left, right) = (from.min(to), from.max(to));
+        set_edge_pattern(cr, pattern, width.max(0.5), left);
+        cr.move_to(left, y);
+        cr.line_to(right, y);
+        let _ = cr.stroke();
+        cr.set_dash(&[], 0.0);
+    }
+}
+
+/// A volume profile drawing: the study's rows across the span it covers,
+/// as far into it as its width says, set apart from the study by the edge
+/// round them, or drawn as only that edge, with a point of control at the
+/// drawing's own stroke.
+///
+/// A delta is painted as the study's is, bought and sold in the colouring's
+/// rise and fall, its outline too: one colour round both sides would leave
+/// an outline-only delta nothing to tell them apart by.
 fn draw_profile_drawing(
     cr: &cairo::Context,
     state: &State,
@@ -10703,82 +11055,51 @@ fn draw_profile_drawing(
     colour: &str,
     to_y: &dyn Fn(f64) -> f64,
 ) {
-    use omacharts_engine::indicators::profile::{Align, Style as Shape};
+    use omacharts_engine::indicators::profile::{Align, Method};
     let Some(profile) = state.span_profile(drawing) else { return };
     if profile.max_volume <= 0.0 || profile.rows.is_empty() {
         return;
     }
     let (x, _, w, _) = projected.bounds();
     let look = &style.profile;
+    let reach = w * look.drawn_width();
     let area = match look.align {
-        Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
-        Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
+        Align::Left => selection::ProfileBox { edge: x, span: reach, towards: 1.0 },
+        Align::Right => selection::ProfileBox { edge: x + w, span: reach, towards: -1.0 },
     };
-    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
-    let alpha = style.profile_alpha();
-    match look.shape {
-        Shape::Filled => {
-            let fill = style.fill.hex(&state.theme);
-            // The value area in a colour of its own, when it is set apart and
-            // has one; otherwise the rows' own.
-            let area_fill = match (look.highlight, &look.value_area_paint) {
-                (true, Some(paint)) => paint.hex(&state.theme),
-                _ => fill.clone(),
-            };
-            let (inside_alpha, outside_alpha) = row_alphas(alpha, look.highlight);
-            let (area_low, area_high) = profile.value_area_bounds();
-            // The value area's rows in one fill and the rest in another, as
-            // the study's are: a fill a row is most of what a row costs.
-            for in_area in [true, false] {
-                let mut any = false;
-                for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
-                    let inside = row.low >= area_low && row.high <= area_high;
-                    if inside != in_area {
-                        continue;
-                    }
-                    let (from, to) = area.row(row.volume / profile.max_volume);
-                    let top = to_y(row.high);
-                    let height = (to_y(row.low) - top).max(1.0);
-                    cr.rectangle(from, top, to - from, height);
-                    any = true;
-                }
-                if any {
-                    let (paint, strength) = if in_area { (&area_fill, inside_alpha) } else { (&fill, outside_alpha) };
-                    colors::set_source_alpha(cr, paint, strength);
-                    let _ = cr.fill();
-                }
-            }
-            // An edge the drawing can go without: off, the rows are all of it.
-            let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, colour, line_alpha(edge, alpha));
-            cr.set_line_width(style.width.max(0.5));
+    let strengths = style.profile_strengths();
+    let fill = style.fill.hex(&state.theme);
+    let inks = match look.method {
+        Method::Total => vec![ProfileInk { side: selection::Side::All, fill, edge: colour.to_string() }],
+        Method::Delta => {
+            let (up, down) = state.delta_ink();
+            let ink = |side, hex: &str| ProfileInk { side, fill: hex.to_string(), edge: hex.to_string() };
+            vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
         }
-        Shape::Outline => {
-            colors::set_source_alpha(cr, colour, line_alpha(1.0, alpha));
-            cr.set_line_width(style.width.max(0.5));
-        }
-    }
-    cr.set_line_join(cairo::LineJoin::Miter);
-    set_edge_pattern(cr, style.line_style, style.width.max(0.5), 0.0);
-    selection::profile_path(cr, &area, &profile, to_y, selection::Side::All);
-    let _ = cr.stroke();
-
-    // Unless it is turned off, which leaves the rows to say it, as the
-    // study's does.
-    if !look.show_poc {
-        cr.set_dash(&[], 0.0);
-        return;
-    }
-    let y = to_y(profile.poc_price()).round() + 0.5;
-    colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
-    cr.set_line_width(look.poc_width.max(0.5));
-    let (from, to) = area.row(1.0);
-    let (left, right) = (from.min(to), from.max(to));
-    set_edge_pattern(cr, look.poc_style, look.poc_width.max(0.5), left);
-    cr.move_to(left, y);
-    cr.line_to(right, y);
-    let _ = cr.stroke();
-    cr.set_dash(&[], 0.0);
+    };
+    // The value area in a colour of its own, when it is set apart and has
+    // one; otherwise the rows' own.
+    let area_fill = match (look.method, look.highlight, &look.value_area_paint) {
+        (Method::Total, true, Some(paint)) => Some(paint.hex(&state.theme)),
+        _ => None,
+    };
+    let (inside, outside) = strengths.row_pair(look.highlight && look.method == Method::Total);
+    let poc = look.poc.hex(&state.theme);
+    let paint = ProfilePaint {
+        method: look.method,
+        shape: look.shape,
+        inks: &inks,
+        area_fill: area_fill.as_deref(),
+        inside,
+        outside,
+        // An edge the drawing can go without: off, the rows are all of it.
+        edge_alpha: style.border.then_some(strengths.edge),
+        outline_alpha: strengths.outline,
+        outline_width: style.width,
+        outline_style: style.line_style,
+        poc: look.show_poc.then_some((poc.as_str(), look.poc_width, look.poc_style, strengths.poc)),
+    };
+    paint_profile(cr, &profile, &area, &paint, to_y);
 }
 
 /// A Fibonacci retracement: a level across its span at each ratio it
@@ -12507,6 +12828,66 @@ mod tests {
         state.replace_series(named("AAPL"), Timeframe::days(1), stock);
         assert_eq!(state.slice().1, weekdays, "the stock's year to date, weekdays only");
         assert_eq!(state.range, Some(Range::ToDate(1, Period::Year)));
+    }
+
+    /// Centring on a moment keeps the zoom and puts that moment in the
+    /// middle, wherever the view was, and lets go of a range.
+    #[test]
+    fn centring_on_a_span_keeps_the_zoom_and_shows_the_span() {
+        use omacharts_engine::range::Period;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let bars = days(ymd(2025, 1, 1), ymd(2026, 10, 19), true);
+        state.replace_series(named("BTC"), Timeframe::days(1), bars.clone());
+        state.show_range(Range::ToDate(1, Period::Month));
+        let columns = state.columns();
+        let (from, to) = (bars[100].ts, bars[104].ts);
+        state.centre_on(from, to);
+        assert_eq!(state.columns(), columns, "the zoom is the one it had");
+        assert_eq!(state.range, None);
+        let (first, visible) = state.slice();
+        assert!(first <= 100 && first + visible > 104, "the span is in view: {first}+{visible}");
+        let middle = first + visible / 2;
+        assert!(middle.abs_diff(102) <= 1, "and in the middle: {middle}");
+        // Near the start there is nothing to the left to centre with.
+        state.centre_on(bars[0].ts, bars[1].ts);
+        assert_eq!(state.slice().0, 0);
+        // Wider than the view: the view widens to hold it.
+        state.centre_on(bars[200].ts, bars[400].ts);
+        let (first, visible) = state.slice();
+        assert!(first <= 200 && first + visible > 400, "the whole span: {first}+{visible}");
+    }
+
+    /// Framing a span zooms in as well as out, so the span fills most of
+    /// the view rather than sitting small in the middle of a wide one.
+    #[test]
+    fn framing_a_span_zooms_to_it() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let bars = days(ymd(2024, 1, 1), ymd(2026, 10, 19), true);
+        state.replace_series(named("BTC"), Timeframe::days(1), bars.clone());
+        state.visible = 600;
+        state.frame(bars[300].ts, bars[340].ts);
+        let (first, visible) = state.slice();
+        assert!(visible < 100, "zoomed in to the span: {visible} columns");
+        assert!(first <= 300 && first + visible > 340, "the whole span: {first}+{visible}");
+        // Wider than the view: wider, as centring does.
+        state.frame(bars[100].ts, bars[700].ts);
+        let (first, visible) = state.slice();
+        assert!(first <= 100 && first + visible > 700, "the whole span: {first}+{visible}");
+        // Never narrower than the fewest bars a chart shows.
+        state.frame(bars[500].ts, bars[500].ts);
+        assert!(state.columns() >= MIN_VISIBLE);
+    }
+
+    /// Executions draw at their usual size unless the embedding app asks.
+    #[test]
+    fn executions_are_their_usual_size_by_default() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        assert_eq!(State::blank(theme, scheme).execution_scale, 1.0);
     }
 
     /// The month to date grows a bar a day.
@@ -15441,13 +15822,14 @@ mod drawing_tests {
         // unnumbered, as it does between the paste and the write.
         let ids = state.selected_ids();
         assert_eq!(ids, vec![0, 0, 0], "a copy has no id until it is written down");
+        let before = state.ids();
         let same = state.drawings.clone();
         state.drawings = same;
-        state.reselect(ids);
+        state.reselect(ids, &before);
         assert_eq!(state.selected, vec![1, 2, 3], "only the last copy stayed in hand");
 
         // And one on its own still means the newest row.
-        state.reselect(vec![0]);
+        state.reselect(vec![0], &before);
         assert_eq!(state.selected, vec![3]);
     }
 
@@ -15619,6 +16001,79 @@ mod drawing_tests {
         state.selected = vec![1];
         assert_eq!(state.drawing_at(w, h, 200.0, 150.0), Some((1, Grip::From)));
         assert_eq!(state.drawing_at(w, h, 50.0, 30.0), None);
+    }
+
+    /// A press takes the drawing painted on top, and "send to back" and
+    /// "bring to front" change which that is at once — for the drawing
+    /// still selected after it was sent back too, which used to keep
+    /// answering ahead of the one now in front of it. Every kind, and the
+    /// same after the list is read back in a new session.
+    #[test]
+    fn a_press_takes_the_drawing_on_top_as_restacked() {
+        let tried: Vec<DrawingKind> =
+            DrawingKind::ALL.into_iter().filter(|kind| !kind.is_text()).filter(|kind| restacked_and_pressed(*kind)).collect();
+        for kind in [DrawingKind::Line, DrawingKind::Rect, DrawingKind::Ellipse, DrawingKind::Profile] {
+            assert!(tried.contains(&kind), "{kind:?} was never found under the hand");
+        }
+    }
+
+    /// Words are measured with the desktop's font, which takes GTK.
+    #[test]
+    fn a_press_takes_the_words_on_top_as_restacked() {
+        crate::on_gtk(|| assert!(restacked_and_pressed(DrawingKind::Text), "the words were never under the hand"));
+    }
+
+    /// Two of `kind` exactly over each other, restacked every way, with a
+    /// press on both after each: false when no spot on its body was found.
+    fn restacked_and_pressed(kind: DrawingKind) -> bool {
+        let (w, h) = (800.0, 400.0);
+        let mut state = charted(400);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        let make = |id: i64| {
+            let mut drawing = Drawing::new(kind, a, b);
+            drawing.id = id;
+            if kind.is_text() {
+                drawing.text = drawings::Text::plain("Range");
+            }
+            drawing
+        };
+        state.drawings = vec![make(1)];
+        // Somewhere on its body, clear of its grips even when selected.
+        state.selected = vec![0];
+        let spot = (0..80)
+            .flat_map(|i| (0..40).map(move |j| (10.0 * i as f64, 10.0 * j as f64)))
+            .find(|&(x, y)| state.drawing_at(w, h, x, y) == Some((0, Grip::Body)));
+        state.selected.clear();
+        let Some((x, y)) = spot else { return false };
+        // The same drawing again, exactly over the first: the newer on top.
+        state.drawings.push(make(2));
+        let on_top = |state: &State| state.drawing_at(w, h, x, y).map(|(i, _)| state.drawings[i].id);
+        assert_eq!(on_top(&state), Some(2), "{kind:?}: the newer is on top");
+
+        state.selected = vec![1];
+        assert_eq!(state.restack_selected(false).len(), 1);
+        assert_eq!(state.selected_ids(), vec![2], "{kind:?}: still selected, behind");
+        assert_eq!(on_top(&state), Some(1), "{kind:?}: sent back, the other is taken");
+
+        // Read back in a new session: the order is the drawings' own.
+        let mut again = charted(400);
+        let mut read = state.drawings.clone();
+        read.sort_by_key(|d| d.id);
+        drawings::sort_for_painting(&mut read);
+        again.drawings = read;
+        assert_eq!(on_top(&again), Some(1), "{kind:?}: and after a restart");
+
+        state.selected = vec![0];
+        assert_eq!(state.selected_ids(), vec![2]);
+        state.restack_selected(true);
+        assert_eq!(on_top(&state), Some(2), "{kind:?}: brought to front, taken again");
+        state.selected = state.drawings.iter().position(|d| d.id == 1).into_iter().collect();
+        state.restack_selected(true);
+        assert_eq!(on_top(&state), Some(1), "{kind:?}: the other brought to front while selected");
+        state.restack_selected(false);
+        assert_eq!(on_top(&state), Some(2), "{kind:?}: sent back while selected, the other answers");
+        true
     }
 
     /// A selection of one kind can be asked for its properties; a mixed
@@ -16262,5 +16717,151 @@ mod drawing_tests {
         let step = Timeframe::years(1).seconds();
         let (ticks, _) = axis_ticks(21, 922.0, step, true, Clock::default(), |c| Some(year(c)));
         assert!(ticks.len() > 2, "{ticks:?}");
+    }
+
+    /// Draw one of `kind` with the hand on `state`, the way the chart's
+    /// presses do: two anchors by a drag for most, a press for the anchored
+    /// VWAP, three corners and an end for a zig-zag, and a press for a word.
+    /// Hands back what was told to whoever keeps the drawings.
+    fn draw_by_hand(state: &mut State, kind: DrawingKind) -> Drawing {
+        let (w, h) = (800.0, 400.0);
+        state.tool = Some(kind);
+        if kind == DrawingKind::Text {
+            let at = state.locate(w, h, 300.0, 150.0).unwrap();
+            let (index, drawing) = state.add_text(at);
+            assert_eq!(state.selected, vec![index]);
+            return drawing;
+        }
+        assert!(state.begin_placing(w, h, 200.0, 150.0, false), "{kind:?}");
+        match kind {
+            DrawingKind::Vwap => {}
+            DrawingKind::Zigzag => {
+                for (x, y) in [(300.0, 100.0), (400.0, 200.0)] {
+                    let corner = state.locate(w, h, x, y).unwrap();
+                    let placing = state.placing.as_mut().unwrap();
+                    placing.move_last_corner(corner);
+                    placing.add_corner(corner);
+                }
+            }
+            _ => {
+                let to = state.locate(w, h, 400.0, 250.0).unwrap();
+                state.placing.as_mut().unwrap().move_grip(Grip::To, to);
+            }
+        }
+        state.finish_placing().unwrap_or_else(|| panic!("a {kind:?} was laid down"))
+    }
+
+    /// What the window does with a new drawing: gives it an id where it is
+    /// kept, and hands the chart its whole list back, in painting order.
+    fn written_down(state: &State, mut added: Drawing) -> (Vec<Drawing>, i64) {
+        let mut list: Vec<Drawing> = state.drawings.iter().filter(|d| d.id != 0).cloned().collect();
+        added.id = match added.is_local() {
+            true => list.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1,
+            false => list.iter().map(|d| d.id).max().unwrap_or(0).max(0) + 1,
+        };
+        let id = added.id;
+        list.push(added);
+        drawings::sort_for_painting(&mut list);
+        (list, id)
+    }
+
+    /// Every kind the hand can draw ends up selected on its own when the
+    /// drawing is done, and stays selected once the list comes back from
+    /// the store with the drawing's id in it — including on a chart where
+    /// something was brought to the front, and on one that keeps what it
+    /// draws to itself, where the new drawing does not come back last.
+    #[test]
+    fn every_drawing_made_by_hand_is_selected_once_it_is_done() {
+        let a = |state: &State, i: usize| Anchor::new(state.bars[i].ts, state.bars[i].close);
+        for kind in DrawingKind::ALL {
+            for sends in [true, false] {
+                let mut state = charted(400);
+                state.sends = sends;
+                // A box brought to the front, a line under it, and one of
+                // this chart's own.
+                let mut boxed = Drawing::new(DrawingKind::Rect, a(&state, 100), a(&state, 120));
+                boxed.id = 7;
+                boxed.order = 3;
+                let mut line = Drawing::new(DrawingKind::Line, a(&state, 130), a(&state, 150));
+                line.id = 9;
+                let mut own = Drawing::new(DrawingKind::Horizontal, a(&state, 160), a(&state, 160));
+                own.id = -1;
+                own.scope = drawings::Scope::Local;
+                state.drawings = vec![boxed, line, own];
+                drawings::sort_for_painting(&mut state.drawings);
+                state.selected = vec![0];
+
+                let added = draw_by_hand(&mut state, kind);
+                assert_eq!(added.kind, kind);
+                let last = state.drawings.len() - 1;
+                assert_eq!(state.selected, vec![last], "{kind:?}: only the new one, the moment it is done");
+                assert_eq!(state.tool, None, "{kind:?}: the tool is put down");
+                assert!(state.placing.is_none());
+                assert_eq!(state.drawings[last].order, 3, "{kind:?}: on top of what is there");
+
+                let (list, id) = written_down(&state, added);
+                state.take_list(list);
+                let selected: Vec<(i64, DrawingKind)> =
+                    state.selected.iter().map(|i| (state.drawings[*i].id, state.drawings[*i].kind)).collect();
+                assert_eq!(selected, vec![(id, kind)], "{kind:?} (sends: {sends}): the new one, once it has an id");
+            }
+        }
+    }
+
+    /// A chart that keeps its tool in hand for another drawing still selects
+    /// each one as it is done, and the tool stays armed for the next.
+    #[test]
+    fn a_held_tool_selects_each_drawing_it_makes() {
+        let mut state = charted(400);
+        state.sticky = true;
+        for kind in [DrawingKind::Rect, DrawingKind::Zigzag] {
+            let first = draw_by_hand(&mut state, kind);
+            let (list, id) = written_down(&state, first);
+            state.take_list(list);
+            assert_eq!(state.tool, Some(kind), "still in hand");
+            let second = draw_by_hand(&mut state, kind);
+            let (list, second_id) = written_down(&state, second);
+            state.take_list(list);
+            let selected: Vec<i64> = state.selected.iter().map(|i| state.drawings[*i].id).collect();
+            assert_eq!(selected, vec![second_id], "the newest alone, not {id} as well");
+        }
+    }
+
+    /// A drawing given up before it is done selects nothing new: a zig-zag
+    /// ended on its first corner is no drawing, and what was selected before
+    /// is still what is selected.
+    #[test]
+    fn a_drawing_given_up_selects_nothing() {
+        let (w, h) = (800.0, 400.0);
+        let mut state = charted(400);
+        let mut there = Drawing::new(DrawingKind::Line, Anchor::new(state.bars[10].ts, 1.0), Anchor::new(state.bars[20].ts, 2.0));
+        there.id = 4;
+        state.drawings = vec![there];
+        state.selected = vec![0];
+        state.tool = Some(DrawingKind::Zigzag);
+        assert!(state.begin_placing(w, h, 200.0, 150.0, false));
+        assert!(state.finish_placing().is_none());
+        assert_eq!(state.drawings.len(), 1);
+        assert_eq!(state.selected, vec![0]);
+        assert!(state.finish_placing().is_none(), "nothing in hand");
+    }
+
+    /// A drawing the list gains from elsewhere — a command, another chart —
+    /// is not selected: only the one this chart has just made is.
+    #[test]
+    fn a_drawing_that_arrives_from_elsewhere_is_not_selected() {
+        let mut state = charted(400);
+        let at = Anchor::new(state.bars[10].ts, 1.0);
+        let mut there = Drawing::new(DrawingKind::Line, at, at);
+        there.id = 4;
+        state.drawings = vec![there.clone()];
+        state.selected = vec![];
+        let mut arrived = Drawing::new(DrawingKind::Rect, at, at);
+        arrived.id = 5;
+        state.take_list(vec![there.clone(), arrived.clone()]);
+        assert!(state.selected.is_empty());
+        state.selected = vec![0];
+        state.take_list(vec![there, arrived]);
+        assert_eq!(state.selected, vec![0], "what was selected stays");
     }
 }

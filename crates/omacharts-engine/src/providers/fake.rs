@@ -27,10 +27,11 @@ pub const LISTED: Listed = Listed {
     label: "Fake Rich Feed",
     serves: "Futures, invented, from a login typed into a dialog",
     covers: "Futures, invented",
-    build: || Box::new(Fake::new()),
+    build: |_| Box::new(Fake::new()),
     setup: Some(&Signing),
     experimental: false,
     gate: None,
+    login: None,
 };
 
 pub struct Fake {

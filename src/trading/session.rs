@@ -101,6 +101,9 @@ pub enum Wake {
     Back(String),
     /// The login's session was refreshed, after it came back.
     Refreshed(String),
+    /// The login's session was synced, [`Desk::sync`]: how many accounts
+    /// it listed before, and how it went.
+    Synced(Login, usize, Result<(), String>),
     /// A sign-in the desk started for the login came back, refreshed when
     /// it signed in; with how its data half went, when it was asked to sign
     /// that in too.
@@ -198,6 +201,16 @@ pub trait Session: Send + Sync {
     /// back after a drop. A trading service that cannot ([`Capabilities::snapshot`]
     /// false) has nothing to do and says it is done.
     fn refresh(&self) -> Result<(), String>;
+    /// Ask the trading service again which accounts the login has, so that
+    /// one opened since sign-in — an account bought meanwhile — is listed
+    /// from now on and what it pushes is heard; then refresh, as
+    /// [`Session::refresh`] does. Blocks as that does. Nothing is signed
+    /// out: the session, what it is subscribed to and the working orders
+    /// stay as they are. A trading service that lists its accounts once
+    /// only refreshes.
+    fn sync(&self) -> Result<(), String> {
+        self.refresh()
+    }
     /// The orders on the account numbered `account` from `from` to `to`,
     /// unix seconds, with their fills, oldest first. Only when
     /// [`Capabilities::history`] says so. Part of the seam so that every
@@ -264,6 +277,8 @@ pub struct Desk {
     /// How many times each login's session has been refreshed this run: a
     /// count, so that a refresh is never missed between two reads.
     refreshes: RefCell<HashMap<String, u32>>,
+    /// The logins being synced, [`Desk::sync`], until each comes back.
+    syncing: RefCell<HashSet<String>>,
     /// Woken from a session's thread when something moved; whoever holds
     /// the receiver hands each to [`Desk::take`] on the main loop.
     wake: async_channel::Sender<Wake>,
@@ -287,6 +302,7 @@ impl Desk {
             refused: RefCell::new(HashMap::new()),
             data_refused: RefCell::new(HashMap::new()),
             refreshes: RefCell::new(HashMap::new()),
+            syncing: RefCell::new(HashSet::new()),
             wake,
             woken,
             listeners: RefCell::new(Vec::new()),
@@ -374,6 +390,12 @@ impl Desk {
             Wake::Priced => {}
             Wake::Back(login) => self.refresh(&login),
             Wake::Refreshed(login) => *self.refreshes.borrow_mut().entry(login).or_default() += 1,
+            Wake::Synced(login, before, outcome) => {
+                self.syncing.borrow_mut().remove(&login.id);
+                let after = self.session(&login.id).map(|session| session.accounts().len()).unwrap_or(before);
+                crate::log_words::say(crate::log_words::synced(&login.name, before, after, &outcome));
+                *self.refreshes.borrow_mut().entry(login.id).or_default() += 1;
+            }
             Wake::Opened(login, outcome, data, heard) => {
                 let accounts = outcome.as_ref().map(|session| session.accounts().len()).map_err(String::as_str);
                 crate::log_words::say(crate::log_words::signed_in_heard(&login.name, accounts, heard.as_ref()));
@@ -398,6 +420,36 @@ impl Desk {
             let _ = session.refresh();
             let _ = wake.try_send(Wake::Refreshed(login));
         });
+    }
+
+    /// Sync every live login in `logins` on a thread of its own each:
+    /// [`Session::sync`], the account list asked for again and everything
+    /// refreshed, with no sign-out. What each comes back with arrives
+    /// through [`Desk::woken`] as [`Wake::Synced`], and goes in the Log.
+    /// The logins it started, by name; one already syncing is not asked
+    /// twice, and is not among them.
+    pub fn sync(&self, logins: &[Login]) -> Vec<String> {
+        let mut started = Vec::new();
+        for login in logins {
+            let Some(session) = self.session(&login.id).filter(|_| self.live(&login.id)) else { continue };
+            if !self.syncing.borrow_mut().insert(login.id.clone()) {
+                continue;
+            }
+            let wake = self.wake.clone();
+            let before = session.accounts().len();
+            let login = login.clone();
+            started.push(login.name.clone());
+            std::thread::spawn(move || {
+                let outcome = session.sync();
+                let _ = wake.try_send(Wake::Synced(login, before, outcome));
+            });
+        }
+        started
+    }
+
+    /// Whether any login is being synced now.
+    pub fn syncing(&self) -> bool {
+        !self.syncing.borrow().is_empty()
     }
 
     /// How many times `login`'s session has been refreshed this run: once
@@ -513,6 +565,7 @@ impl Desk {
     /// End `login`'s session, if it has one, and forget any refusal.
     pub fn end(&self, login: &str) {
         self.links.borrow_mut().retain(|(of, _, _)| of != login);
+        self.syncing.borrow_mut().remove(login);
         self.opening.borrow_mut().remove(login);
         self.refused.borrow_mut().remove(login);
         self.data_refused.borrow_mut().remove(login);
@@ -566,8 +619,8 @@ impl Desk {
         self.sessions.borrow().get(login).cloned()
     }
 
-    /// How `login` stands. The data login's own refusal, which the data
-    /// session keeps, counts too.
+    /// How `login` stands. With `data`, while its own data feed is charted
+    /// from, the refusal its data session keeps counts too.
     pub fn standing(&self, login: &Login, data: bool) -> Standing {
         if let Some(why) = self.refused.borrow().get(&login.id) {
             return Standing::Refused(why.clone());
@@ -645,7 +698,9 @@ pub struct View {
     /// The default account, as stored; [`account_of`] ignores one that is
     /// stale.
     pub default: Option<String>,
-    pub data_login: Option<String>,
+    /// The logins whose own data feed is on the order, charted from: what
+    /// their data session is refused counts against them.
+    pub fed: Vec<String>,
     /// What the live sessions know of orders, positions and money; empty
     /// with none signed in. The window fills it from [`Desk::book`].
     pub book: Book,
@@ -660,10 +715,15 @@ impl View {
         View {
             accounts: accounts(store),
             default: store.setting(DEFAULT_ACCOUNT),
-            data_login: data_login_id(store, &logins),
+            fed: logins.iter().filter(|login| feeds_charts(store, login)).map(|login| login.id.clone()).collect(),
             logins,
             book: Book::default(),
         }
+    }
+
+    /// Is the login `id`'s own data feed charted from?
+    pub fn feeds(&self, id: &str) -> bool {
+        self.fed.iter().any(|fed| fed == id)
     }
 
     /// Is trading anywhere to be seen? Only with a login: without one there
@@ -683,7 +743,7 @@ impl View {
 
     /// What `account` is called here: see [`account_name`].
     pub fn account_name(&self, account: &Account) -> String {
-        account_name(account, &self.logins, &self.accounts)
+        account_name(account, &self.logins)
     }
 
     /// What the header calls `account`: see [`account_label`].
@@ -710,7 +770,7 @@ impl View {
     /// What the header says is wrong with `account`'s login, if anything.
     pub fn trouble(&self, desk: &Desk, account: &Account) -> Option<String> {
         let login = self.login(&account.login)?;
-        desk.standing(login, self.data_login.as_deref() == Some(login.id.as_str())).trouble()
+        desk.standing(login, self.feeds(&login.id)).trouble()
     }
 }
 
@@ -1030,6 +1090,72 @@ mod tests {
         let book = desk.book(std::slice::from_ref(&login));
         assert_eq!(book.order("B3").map(|order| order.status.stage), Some(Stage::Filled));
         assert!(book.position("l/FAKE-1", "ESZ6").is_none());
+        desk.sign_out_all(SIGN_OUT_WAIT);
+    }
+
+    /// An account opened at the trading service after the login signed in,
+    /// as one bought meanwhile is, shows up once the login is synced: in the
+    /// list, in the cache the pickers and the commands read, and in the
+    /// book with its money. Nothing else is disturbed — no second sign-in,
+    /// no sign-out, the working order still working — and a sync already
+    /// under way is not started twice. A refused sync leaves the accounts
+    /// as they were.
+    #[test]
+    fn a_sync_lists_an_account_opened_since_sign_in_and_disturbs_nothing() {
+        let fake = Arc::new(FakeService { takes: std::time::Duration::from_millis(20), ..FakeService::listed() });
+        fake.held.lock().unwrap().insert("Acme Futures".into(), held_before());
+        let store = crate::store::Store::memory().expect("an empty database");
+        let typed = Typed {
+            service: "fake".into(),
+            name: "Acme Futures".into(),
+            user: "acme-user".into(),
+            password: "PLANTED-PASSWORD".into(),
+            values: Vec::new(),
+        };
+        let id = add_login(&store, &Kept::default(), &typed).expect("added");
+        let login = logins(&store).into_iter().find(|login| login.id == id).expect("listed");
+        let desk = Desk::new(Registry::of(vec![fake.clone()]));
+        let logins = std::slice::from_ref(&login);
+        desk.sign_in_saved(logins);
+        wait_for(&desk, |wake| matches!(wake, Wake::Opened(..)));
+        desk.note(&store);
+        let numbers = |desk: &Desk| desk.session(&id).unwrap().accounts().into_iter().map(|a| a.id).collect::<Vec<_>>();
+        assert_eq!(numbers(&desk), ["FAKE-1"]);
+
+        // Bought at the trading service after sign-in.
+        let session = fake.sessions.lock().unwrap()[0].clone();
+        session.opened.lock().unwrap().push(Account { id: "ACME-0002".into(), balance: Some(25_000.0), ..account("", "") });
+        assert_eq!(numbers(&desk), ["FAKE-1"], "not until it is asked");
+
+        assert_eq!(desk.sync(logins), ["Acme Futures"]);
+        assert!(desk.syncing());
+        assert!(desk.sync(logins).is_empty(), "one under way is not asked twice");
+        wait_for(&desk, |wake| matches!(wake, Wake::Synced(..)));
+        assert!(!desk.syncing());
+        assert!(desk.note(&store), "the cache takes the new account");
+        assert_eq!(numbers(&desk), ["FAKE-1", "ACME-0002"]);
+        let cached: Vec<String> = accounts(&store).into_iter().map(|a| a.key()).collect();
+        assert_eq!(cached, [format!("{id}/FAKE-1"), format!("{id}/ACME-0002")]);
+        let book = desk.book(logins);
+        let key = |number: &str| format!("{id}/{number}");
+        assert_eq!(book.money(&key("ACME-0002")).and_then(|money| money.balance), Some(25_000.0));
+        assert_eq!(book.working(&key("FAKE-1"), "ESZ6").map(|o| o.basket_id.as_str()).collect::<Vec<_>>(), ["B3"]);
+        assert_eq!(book.position(&key("FAKE-1"), "ESZ6").map(|held| held.net), Some(1));
+        assert_eq!(fake.signed_in.load(Ordering::Acquire), 1, "no second sign-in");
+        assert_eq!(fake.signed_out.load(Ordering::Acquire), 0, "nothing signed out");
+        assert!(desk.live(&id));
+        assert_eq!(desk.refreshes(&id), 2);
+
+        // Refused: the accounts stay as they are.
+        *session.refuse.lock().unwrap() = Some("the account list was not answered".into());
+        desk.sync(logins);
+        wait_for(&desk, |wake| matches!(wake, Wake::Synced(_, _, Err(_))));
+        assert_eq!(numbers(&desk), ["FAKE-1", "ACME-0002"]);
+        assert!(desk.live(&id));
+
+        // A login not signed in is not asked.
+        let other = Login { id: "o".into(), name: "Other".into(), ..login.clone() };
+        assert!(desk.sync(std::slice::from_ref(&other)).is_empty());
         desk.sign_out_all(SIGN_OUT_WAIT);
     }
 

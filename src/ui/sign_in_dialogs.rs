@@ -81,7 +81,7 @@ fn row_titled<Row: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(widget: &gtk::Wi
 
 /// The dialog of a feed signed in to on the Market data page.
 pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
-    match feed.id {
+    match feed.kind() {
         id if id == omacharts_engine::providers::sierra::LISTED.id => Some(sierra_setup::dialog),
         #[cfg(test)]
         id if id == omacharts_engine::providers::fake::LISTED.id => Some(fake::dialog),
@@ -92,22 +92,34 @@ pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
 /// What a feed has to show while it is set up — its artwork and its
 /// notices, as its terms ask — under the feeds on the Market data page.
 pub fn credits(feed: &Listed) -> Option<adw::PreferencesGroup> {
-    match feed.id {
+    match feed.kind() {
         id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_attribution::group()),
         _ => None,
     }
 }
 
-/// The custom item a feed dot's menu leaves room for a feed's artwork in.
+/// The custom item a feed dot's menu leaves room for a feed's artwork in:
+/// one for every feed of a kind, a login's own feed sharing its kind's.
 fn credits_item(feed: &str) -> String {
-    format!("credits-{feed}")
+    format!("credits-{}", kind_of(feed))
+}
+
+/// The kind of feed `id` is: `rithmic` for a login's `rithmic@<login>`.
+fn kind_of(id: &str) -> &str {
+    id.split(omacharts_engine::providers::LOGIN_MARK).next().unwrap_or(id)
 }
 
 /// Leave room in `menu`, in a section of its own, for the artwork of each
-/// feed in `feeds` that has some to show.
+/// kind of feed in `feeds` that has some to show, once.
 pub fn leave_room_for_credits(menu: &gtk::gio::Menu, feeds: &[&str]) {
     let section = gtk::gio::Menu::new();
-    for feed in feeds.iter().filter(|feed| menu_credits(feed).is_some()) {
+    let mut kinds: Vec<&str> = Vec::new();
+    for feed in feeds.iter().map(|feed| kind_of(feed)) {
+        if !kinds.contains(&feed) {
+            kinds.push(feed);
+        }
+    }
+    for feed in kinds.iter().filter(|feed| menu_credits(feed).is_some()) {
         let item = gtk::gio::MenuItem::new(None, None);
         item.set_attribute_value("custom", Some(&credits_item(feed).to_variant()));
         section.append_item(&item);
@@ -119,7 +131,7 @@ pub fn leave_room_for_credits(menu: &gtk::gio::Menu, feeds: &[&str]) {
 
 /// A feed's artwork, small, for the menu its feed dot opens.
 fn menu_credits(feed: &str) -> Option<gtk::Widget> {
-    match feed {
+    match kind_of(feed) {
         id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_attribution::menu_logos().upcast()),
         _ => None,
     }
@@ -141,7 +153,7 @@ pub fn trading_credits(service: &str) -> Option<gtk::Widget> {
 /// Put each feed's artwork where `popover`'s menu left room for it.
 pub fn fill_credits(popover: &gtk::PopoverMenu) {
     let Some(model) = popover.menu_model() else { return };
-    for feed in omacharts_engine::providers::offered() {
+    for feed in omacharts_engine::providers::kinds() {
         let item = credits_item(feed.id);
         if leaves_room(&model, &item)
             && let Some(widget) = menu_credits(feed.id)

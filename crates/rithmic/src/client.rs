@@ -267,33 +267,43 @@ pub(crate) fn heard_reference(contract: &str, exchange: &str, reference: Referen
     }
 }
 
-/// The exchanges the signed-in login has level 1 market data for, once the
-/// data half has asked: `None` before the first sign-in, and after a
-/// shutdown.
-pub fn entitled_exchanges() -> Option<Vec<String>> {
-    ENTITLED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+/// The exchanges the login `login` has level 1 market data for, once its
+/// data half has asked: `None` before its first sign-in, and after its data
+/// half is closed. Each login is entitled apart: two logins in one process
+/// are two sets.
+pub fn entitled_exchanges(login: &str) -> Option<Vec<String>> {
+    ENTITLED.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(login).cloned()
 }
 
-/// Call `listener` whenever [`entitled_exchanges`] changes, on the
-/// connection's thread. One listener per process; a second replaces the
+/// Call `listener` whenever any login's [`entitled_exchanges`] changes, on
+/// the connection's thread. One listener per process; a second replaces the
 /// first.
 pub fn on_entitlements(listener: impl Fn() + Send + Sync + 'static) {
     *LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(listener));
 }
 
-static ENTITLED: Mutex<Option<Vec<String>>> = Mutex::new(None);
+static ENTITLED: Mutex<Option<HashMap<String, Vec<String>>>> = Mutex::new(None);
 type Listener = Arc<dyn Fn() + Send + Sync>;
 static LISTENER: Mutex<Option<Listener>> = Mutex::new(None);
 
-pub(crate) fn forget_entitlements() {
-    *ENTITLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+/// Forget what `login` was entitled to, or every login's with `None`.
+pub(crate) fn forget_entitlements(login: Option<&str>) {
+    let mut held = ENTITLED.lock().unwrap_or_else(|e| e.into_inner());
+    match (login, held.as_mut()) {
+        (Some(login), Some(all)) => {
+            all.remove(login);
+        }
+        (None, _) => *held = None,
+        (Some(_), None) => {}
+    }
 }
 
-fn entitle(exchanges: Vec<String>) {
+fn entitle(login: &str, exchanges: Vec<String>) {
     let changed = {
         let mut held = ENTITLED.lock().unwrap_or_else(|e| e.into_inner());
-        let changed = held.as_ref() != Some(&exchanges);
-        *held = Some(exchanges);
+        let all = held.get_or_insert_with(HashMap::new);
+        let changed = all.get(login) != Some(&exchanges);
+        all.insert(login.to_string(), exchanges);
         changed
     };
     let listener = LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -845,16 +855,16 @@ impl DataHalf {
     /// Signed in: say so, ask which exchanges the login may see, and
     /// subscribe again everything still watched, each hearing
     /// [`Live::Watching`] once it is, which is its cue to load a snapshot.
-    pub(crate) fn up(&mut self, plants: DataPlants) {
+    pub(crate) fn up(&mut self, plants: DataPlants, login: &str) {
         let mut subscriptions = Subscriptions::new(plants.watcher.clone());
         self.watches.set(State::Up(plants.handles()));
         // A failure to answer leaves what was known, and charts as if all
         // were entitled.
         if let DataLink::Rithmic { handles, user, .. } = &plants.link {
-            let (handles, user) = (handles.clone(), user.clone());
+            let (handles, user, login) = (handles.clone(), user.clone(), login.to_string());
             tokio::spawn(async move {
                 if let Ok(responses) = within(REQUEST, handles.ticker.list_exchange_permissions(&user)).await {
-                    entitle(exchanges_of(&responses));
+                    entitle(&login, exchanges_of(&responses));
                 }
             });
         }

@@ -519,7 +519,7 @@ fn trading_look_group(context: &Rc<Context>, first: Vec<adw::PreferencesRow>) ->
         let ctx = context.clone();
         let picker = crate::ui::palette::picker(&theme, set.colour_mut(slot).clone(), shown.colour(slot), move |choice| {
             save(&ctx, &|look| *look.colour_mut(slot) = Some(choice.clone()));
-        });
+        }, None);
         row.add_suffix(&picker);
         row.set_activatable_widget(Some(&picker));
         group.add(&row);

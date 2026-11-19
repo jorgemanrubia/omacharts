@@ -806,10 +806,51 @@ pub(crate) struct Desks {
     pub(crate) order: RithmicOrderPlantHandle,
     pub(crate) pnl: RithmicPnlPlantHandle,
     /// One order handle per account, by number: an order names its account
-    /// through the handle it is sent on.
-    by_account: HashMap<String, RithmicOrderPlantHandle>,
+    /// through the handle it is sent on. Made at sign-in: an account opened
+    /// since signs the half in again, by [`Trading::relist`].
+    by_account: Mutex<HashMap<String, RithmicOrderPlantHandle>>,
     /// And one PnL handle per account, for its snapshot.
-    pnl_by_account: HashMap<String, RithmicPnlPlantHandle>,
+    pnl_by_account: Mutex<HashMap<String, RithmicPnlPlantHandle>>,
+    /// The plants themselves, which an account's handles are made from,
+    /// until they are closed.
+    plants: Mutex<Option<(RithmicOrderPlant, RithmicPnlPlant)>>,
+}
+
+impl Desks {
+    fn desk(&self, account: &str) -> Option<RithmicOrderPlantHandle> {
+        self.by_account.lock().unwrap_or_else(|e| e.into_inner()).get(account).cloned()
+    }
+
+    fn pnl_desk(&self, account: &str) -> Option<RithmicPnlPlantHandle> {
+        self.pnl_by_account.lock().unwrap_or_else(|e| e.into_inner()).get(account).cloned()
+    }
+
+    /// Make the handles of every one of `accounts` that has none yet, and
+    /// subscribe to what each pushes: its orders, its limits and its P&L.
+    /// The ones that have handles already are left as they are, and so is
+    /// what they are subscribed to. Nothing once the plants are closed.
+    async fn open(&self, accounts: &[Account]) {
+        let fresh: Vec<(Account, RithmicOrderPlantHandle, RithmicPnlPlantHandle)> = {
+            let plants = self.plants.lock().unwrap_or_else(|e| e.into_inner());
+            let Some((order_plant, pnl_plant)) = plants.as_ref() else { return };
+            let known = self.by_account.lock().unwrap_or_else(|e| e.into_inner());
+            accounts
+                .iter()
+                .filter(|account| !known.contains_key(&account.id))
+                .map(|account| {
+                    let rithmic = rithmic_account(account);
+                    (account.clone(), order_plant.get_handle(&rithmic), pnl_plant.get_handle(&rithmic))
+                })
+                .collect()
+        };
+        for (account, desk, pnl) in fresh {
+            let _ = within(REQUEST, desk.subscribe_order_updates()).await;
+            let _ = within(REQUEST, desk.subscribe_account_rms_updates(true, vec![RmsUpdateBits::AutoLiqThresholdCurrentValue])).await;
+            let _ = within(REQUEST, pnl.subscribe_pnl_updates()).await;
+            self.by_account.lock().unwrap_or_else(|e| e.into_inner()).insert(account.id.clone(), desk);
+            self.pnl_by_account.lock().unwrap_or_else(|e| e.into_inner()).insert(account.id, pnl);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -947,8 +988,8 @@ impl Trading {
         request: impl AsyncFnOnce(&RithmicOrderPlantHandle) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let desks = self.desks()?;
-        let desk = desks.by_account.get(account).ok_or_else(|| Error::NotFound("such account on this login".into()))?;
-        self.inner.handle.block_on(request(desk))
+        let desk = desks.desk(account).ok_or_else(|| Error::NotFound("such account on this login".into()))?;
+        self.inner.handle.block_on(request(&desk))
     }
 
     /// Place `order`, blocking until Rithmic has taken it, and return its
@@ -1131,6 +1172,35 @@ impl Trading {
         }
     }
 
+    /// Ask the order plant again for the login's accounts, as signing in
+    /// does, and wait for the list. When one is listed that was not at
+    /// sign-in, such as an account bought meanwhile, the trading half is
+    /// signed out of its plants and straight back in, and this waits until
+    /// it is: the plants serve the accounts the login held when it signed
+    /// in, so the account list names the new one but its P&L, its balance
+    /// and its limits are not given until then. Signed in again, every
+    /// account is subscribed to afresh, as after a drop, and no pulse says
+    /// it is back. With nothing new, nothing signs out. What the accounts
+    /// hold is [`Trading::refresh`]'s.
+    pub fn relist(&self) -> Result<(), Error> {
+        let desks = self.desks()?;
+        let listed = self.inner.handle.block_on(async {
+            let listed = within(REQUEST, desks.order.get_account_list()).await?;
+            accounts_of(&listed)
+        })?;
+        if opened_since(&listed, &self.accounts()) {
+            return self.renew();
+        }
+        *self.inner.accounts.lock().unwrap_or_else(|e| e.into_inner()) = listed;
+        Ok(())
+    }
+
+    /// Sign the trading half out of its plants and back in, and wait until
+    /// it is: see [`Trading::relist`].
+    pub(crate) fn renew(&self) -> Result<(), Error> {
+        Connection::of(self.inner.clone()).renew_trading(self.generation)
+    }
+
     /// Ask for everything the accounts hold now, and wait for it: working
     /// orders, today's orders whatever became of them, today's fills, the
     /// risk system's limits and the PnL plant's positions and balances. What
@@ -1155,7 +1225,7 @@ impl Trading {
             };
             let (from, to) = today_window();
             for account in &accounts {
-                let Some(desk) = desks.by_account.get(&account.id) else { continue };
+                let Some(desk) = desks.desk(&account.id) else { continue };
                 within(REQUEST, desk.show_orders()).await?;
                 for date in &dates {
                     let _ = within(REQUEST, desk.show_order_history_summary(date)).await;
@@ -1169,7 +1239,7 @@ impl Trading {
                         state.history_fill(fill);
                     }
                 }
-                if let Some(pnl) = desks.pnl_by_account.get(&account.id) {
+                if let Some(pnl) = desks.pnl_desk(&account.id) {
                     let _ = within(REQUEST, pnl.get_pnl_position_snapshot()).await;
                 }
             }
@@ -1249,7 +1319,7 @@ pub(crate) struct TradingPlants {
 }
 
 enum TradingLink {
-    Rithmic { order_plant: RithmicOrderPlant, pnl_plant: RithmicPnlPlant, desks: Arc<Desks> },
+    Rithmic { desks: Arc<Desks> },
     /// A test's, holding its channels open. Never made outside one.
     #[cfg_attr(not(test), allow(dead_code))]
     Fake(#[allow(dead_code)] Vec<broadcast::Sender<RithmicResponse>>),
@@ -1280,15 +1350,20 @@ impl TradingPlants {
     /// Sign out, or with `graceful` false only cut the plants, and wait for
     /// them to stop.
     pub(crate) async fn close(self, graceful: bool) {
-        let TradingLink::Rithmic { order_plant, pnl_plant, desks } = self.link else { return };
+        let TradingLink::Rithmic { desks } = self.link else { return };
+        // Taken first, so that no account's handles are made from plants
+        // on their way out.
+        let plants = desks.plants.lock().unwrap_or_else(|e| e.into_inner()).take();
         if graceful {
             let _ = within(Duration::from_secs(2), desks.order.disconnect()).await;
             let _ = within(Duration::from_secs(2), desks.pnl.disconnect()).await;
         }
         desks.order.abort();
         desks.pnl.abort();
-        let _ = tokio::time::timeout(Duration::from_secs(3), order_plant.await_shutdown()).await;
-        let _ = tokio::time::timeout(Duration::from_secs(3), pnl_plant.await_shutdown()).await;
+        if let Some((order_plant, pnl_plant)) = plants {
+            let _ = tokio::time::timeout(Duration::from_secs(3), order_plant.await_shutdown()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(3), pnl_plant.await_shutdown()).await;
+        }
     }
 }
 
@@ -1355,35 +1430,17 @@ async fn sign_in_trading(
     // supervisor; the requests themselves only acknowledge.
     let order_updates = order_plant.subscribe_all();
     let pnl_updates = pnl_plant.subscribe_all();
-    let by_account: HashMap<String, RithmicOrderPlantHandle> = accounts
-        .iter()
-        .map(|account| (account.id.clone(), order_plant.get_handle(&rithmic_account(account))))
-        .collect();
-    let pnl_by_account: HashMap<String, RithmicPnlPlantHandle> = accounts
-        .iter()
-        .map(|account| (account.id.clone(), pnl_plant.get_handle(&rithmic_account(account))))
-        .collect();
+    let desks = Desks {
+        order,
+        pnl,
+        by_account: Mutex::default(),
+        pnl_by_account: Mutex::default(),
+        plants: Mutex::new(Some((order_plant, pnl_plant))),
+    };
     // Subscribed here, again after every drop; what is held and working now
     // is asked for by `Trading::refresh`.
-    for account in &accounts {
-        if let Some(desk) = by_account.get(&account.id) {
-            let _ = within(REQUEST, desk.subscribe_order_updates()).await;
-            let _ = within(REQUEST, desk.subscribe_account_rms_updates(true, vec![RmsUpdateBits::AutoLiqThresholdCurrentValue])).await;
-        }
-        if let Some(handle) = pnl_by_account.get(&account.id) {
-            let _ = within(REQUEST, handle.subscribe_pnl_updates()).await;
-        }
-    }
-    Ok(TradingPlants {
-        order_updates,
-        pnl_updates,
-        accounts,
-        link: TradingLink::Rithmic {
-            order_plant,
-            pnl_plant,
-            desks: Arc::new(Desks { order, pnl, by_account, pnl_by_account }),
-        },
-    })
+    desks.open(&accounts).await;
+    Ok(TradingPlants { order_updates, pnl_updates, accounts, link: TradingLink::Rithmic { desks: Arc::new(desks) } })
 }
 
 /// How long the plants must be quiet after a refresh's last answer before
@@ -1525,6 +1582,8 @@ pub(crate) struct TradingHalf {
     /// Signed in since it was opened, so that a failure is a drop to come
     /// back from rather than a sign-in that did not work.
     pub(crate) been_up: bool,
+    /// Signing in again because [`TradingHalf::renew`] asked.
+    renewing: bool,
 }
 
 impl TradingHalf {
@@ -1533,7 +1592,17 @@ impl TradingHalf {
         book: Arc<Mutex<State>>,
         accounts: Arc<Mutex<Vec<Account>>>,
     ) -> TradingHalf {
-        TradingHalf { phase: Phase::Off, state, pulse: None, waiting: Vec::new(), book, accounts, live: None, been_up: false }
+        TradingHalf {
+            phase: Phase::Off,
+            state,
+            pulse: None,
+            waiting: Vec::new(),
+            book,
+            accounts,
+            live: None,
+            been_up: false,
+            renewing: false,
+        }
     }
 
     fn tell(&self, pulse: Pulse) {
@@ -1545,15 +1614,25 @@ impl TradingHalf {
     /// Opened afresh: nothing is known yet.
     pub(crate) fn reset(&mut self) {
         self.been_up = false;
+        self.renewing = false;
         *self.book.lock().unwrap_or_else(|e| e.into_inner()) = State::default();
         self.accounts.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let _ = self.state.send(Standing::Connecting);
     }
 
+    /// Signing in again, not dropped: an account was opened since the last
+    /// sign-in, and [`Trading::relist`] is waiting.
+    pub(crate) fn renew(&mut self) {
+        self.renewing = true;
+        let _ = self.state.send(Standing::Connecting);
+    }
+
     /// Signed in, for the first time since it was opened or again after a
-    /// drop.
+    /// drop. Again because [`TradingHalf::renew`] asked, it is not told as
+    /// back: whoever asked refreshes.
     pub(crate) fn up(&mut self, plants: TradingPlants) {
         let back = self.been_up;
+        let renewed = std::mem::take(&mut self.renewing);
         if back {
             self.book.lock().unwrap_or_else(|e| e.into_inner()).signed_in_again();
         }
@@ -1564,7 +1643,7 @@ impl TradingHalf {
         for waiting in self.waiting.drain(..) {
             let _ = waiting.send(Ok(()));
         }
-        if back {
+        if back && !renewed {
             self.tell(Pulse::Back);
         }
     }
@@ -1579,6 +1658,7 @@ impl TradingHalf {
     /// and tried again, stopped, or closed (`closed`) because it never was
     /// up. Whoever waits hears why.
     pub(crate) fn fail(&mut self, error: Error, closed: bool) {
+        self.renewing = false;
         let down = matches!(self.phase, Phase::Down);
         let was_down = matches!(&*self.state.borrow(), Standing::Down(_));
         let _ = self.state.send(match down {
@@ -1615,6 +1695,11 @@ impl TradingHalf {
         self.reset();
         let _ = self.state.send(Standing::Stopped(Error::Closed));
     }
+}
+
+/// Does `listed` name an account `known` does not: one opened since?
+fn opened_since(listed: &[Account], known: &[Account]) -> bool {
+    listed.iter().any(|account| !known.iter().any(|known| known.id == account.id))
 }
 
 /// The accounts in an account list reply, in the order listed.
@@ -1917,6 +2002,19 @@ mod tests {
         let filled = &state.book().orders[0];
         assert_eq!((filled.status.clone(), filled.fill_price, filled.at), (Status::Filled, Some(7612.25), 160));
         assert_eq!(filled.contract, "ESZ6");
+    }
+
+    /// Only an account the last sign-in did not list counts as opened
+    /// since: one gone from the list, or the same list in another order,
+    /// signs nothing in again.
+    #[test]
+    fn an_account_is_opened_since_when_the_sign_in_did_not_list_it() {
+        let account = |id: &str| Account { id: id.into(), name: None, currency: None, fcm: "F".into(), ib: "I".into() };
+        let known = [account("FAKE-1"), account("FAKE-2")];
+        assert!(!opened_since(&[account("FAKE-2"), account("FAKE-1")], &known));
+        assert!(!opened_since(&[account("FAKE-1")], &known));
+        assert!(opened_since(&[account("FAKE-1"), account("FAKE-2"), account("FAKE-3")], &known));
+        assert!(opened_since(&[account("FAKE-3")], &[]));
     }
 
     /// A limit heard of first from Rithmic (working at sign-in): its side,

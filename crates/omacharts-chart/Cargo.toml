@@ -6,7 +6,9 @@ description = "The omacharts chart as a GTK4 widget: bars, indicators, drawings 
 license = "MIT"
 
 [dependencies]
-omacharts-engine = { path = "../omacharts-engine" }
+# Without the data feeds: the chart draws the bars it is handed and fetches
+# nothing, so a program embedding it builds without a network stack.
+omacharts-engine = { path = "../omacharts-engine", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10.4"
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_10"] }

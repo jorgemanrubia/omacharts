@@ -58,7 +58,7 @@ fn fill(
             let window = window.clone();
             crate::ui::palette::picker(&theme, comparison.color.clone(), colour, move |picked| {
                 window.set_comparison_color(line, Some(picked));
-            })
+            }, None)
         };
         row.add_suffix(&picker);
         let remove = gtk::Button::from_icon_name("user-trash-symbolic");

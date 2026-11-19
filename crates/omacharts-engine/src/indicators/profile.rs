@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::periods::Reset;
 
-/// Periods of one volume profile on one chart that were merged into the one
+/// Periods of one volume or market profile on one chart that were merged into the one
 /// before them, for one symbol.
 ///
 /// Kept by the chart rather than in the indicator, because the indicator may
@@ -46,9 +46,122 @@ impl Merge {
     }
 }
 
+/// Every period start merged for any of the profiles `together` on this
+/// instrument under this period, in order: what each of them is drawn
+/// with, so a market profile and the volume profiles of its period cover
+/// the same spans however their merges came to be kept.
+pub fn merged_starts(merges: &[Merge], together: &[u32], instrument: &crate::symbols::Instrument, reset: Reset) -> Vec<i64> {
+    let mut starts: Vec<i64> = merges
+        .iter()
+        .filter(|merge| together.iter().any(|id| merge.is(*id, instrument, reset)))
+        .flat_map(|merge| merge.starts.iter().copied())
+        .collect();
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
+/// Merge the profile whose periods start at `parts` into the one before it,
+/// or split it back into them, for each of the profiles `together`: a
+/// market profile and the volume profiles of its period merge and split as
+/// one. A merge none is left holding is dropped.
+pub fn change_merges(
+    merges: &mut Vec<Merge>,
+    together: &[u32],
+    instrument: &crate::symbols::Instrument,
+    reset: Reset,
+    parts: &[i64],
+    merge: bool,
+) {
+    for &id in together {
+        let at = match merges.iter().position(|m| m.is(id, instrument, reset)) {
+            Some(at) => at,
+            None => {
+                merges.push(Merge {
+                    indicator: id,
+                    symbol: instrument.symbol.clone(),
+                    suffix: instrument.suffix.clone(),
+                    reset,
+                    starts: Vec::new(),
+                });
+                merges.len() - 1
+            }
+        };
+        let starts = &mut merges[at].starts;
+        match merge {
+            true => {
+                if let Some(first) = parts.first()
+                    && !starts.contains(first)
+                {
+                    starts.push(*first);
+                    starts.sort_unstable();
+                }
+            }
+            false => starts.retain(|start| !parts.get(1..).unwrap_or_default().contains(start)),
+        }
+    }
+    merges.retain(|m| !m.starts.is_empty());
+}
+
+/// Expand the market profile `id` starting at `start` on this instrument,
+/// under this period, or collapse it again. Kept as merges are, by the
+/// chart and by symbol, in a list of their own: a [`Merge`]'s starts are
+/// the profiles' it expands.
+pub fn change_expanded(
+    expanded: &mut Vec<Merge>,
+    id: u32,
+    instrument: &crate::symbols::Instrument,
+    reset: Reset,
+    start: i64,
+    expand: bool,
+) {
+    let at = match expanded.iter().position(|m| m.is(id, instrument, reset)) {
+        Some(at) => at,
+        None => {
+            expanded.push(Merge {
+                indicator: id,
+                symbol: instrument.symbol.clone(),
+                suffix: instrument.suffix.clone(),
+                reset,
+                starts: Vec::new(),
+            });
+            expanded.len() - 1
+        }
+    };
+    let starts = &mut expanded[at].starts;
+    match expand {
+        true if !starts.contains(&start) => {
+            starts.push(start);
+            starts.sort_unstable();
+        }
+        true => {}
+        false => starts.retain(|kept| *kept != start),
+    }
+    expanded.retain(|m| !m.starts.is_empty());
+}
+
+/// Where each profile of market profile `id` starts that is expanded on
+/// this instrument under this period.
+pub fn expanded_starts(
+    expanded: &[Merge],
+    id: u32,
+    instrument: &crate::symbols::Instrument,
+    reset: Reset,
+) -> Vec<i64> {
+    expanded
+        .iter()
+        .filter(|m| m.is(id, instrument, reset))
+        .flat_map(|m| m.starts.iter().copied())
+        .collect()
+}
+
 /// The study's lines as they have always been drawn: a hairline.
 pub fn hairline() -> f64 {
     1.0
+}
+
+pub fn is_hairline(width: &f64) -> bool {
+    *width == hairline()
 }
 
 /// A point of control is drawn unless somebody turns it off, as it was
@@ -127,6 +240,91 @@ pub fn row_alphas(alpha: f64, highlight: bool) -> (f64, f64) {
     match highlight {
         true => (alpha, alpha * OUTSIDE_SHARE),
         false => (alpha, alpha),
+    }
+}
+
+/// What a volume profile was given of its own for how solid each part of it
+/// is drawn, past its rows' strength: each unset follows that strength as
+/// it always did. Stored as strengths, 0 nothing and 1 solid; each
+/// Transparency row is one minus its strength.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Alphas {
+    /// The value area's rows, while it is highlighted.
+    pub value_area: Option<f64>,
+    /// The rows outside the value area, while it is highlighted.
+    pub outside: Option<f64>,
+    /// The outline: the edge round filled rows, or all of the outline style.
+    pub outline: Option<f64>,
+    /// The point of control's line.
+    pub poc: Option<f64>,
+}
+
+/// How solid each part of a volume profile is drawn: its rows', and what
+/// [`Alphas`] sets apart from them, or follows them when unset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strengths {
+    /// Every row while the value area is not highlighted.
+    pub rows: f64,
+    pub value_area: f64,
+    pub outside: f64,
+    /// The edge round filled rows.
+    pub edge: f64,
+    /// The outline style's line, which is all of that style.
+    pub outline: f64,
+    pub poc: f64,
+}
+
+/// A stored strength as one a profile can be drawn at: inside nothing to
+/// solid, and `otherwise` for anything that is not a number.
+fn held(alpha: Option<f64>, otherwise: f64) -> f64 {
+    match alpha {
+        Some(alpha) if alpha.is_finite() => alpha.clamp(0.0, 1.0),
+        _ => otherwise,
+    }
+}
+
+impl Strengths {
+    /// The study's, its rows at `alpha`: the edge at
+    /// [`crate::drawings::PROFILE_EDGE_ALPHA`] whatever the rows, and the
+    /// outline style's line following them.
+    pub fn study(alpha: f64, set: &Alphas) -> Strengths {
+        Strengths::with_lines(alpha, set, crate::drawings::PROFILE_EDGE_ALPHA, line_alpha(0.75, alpha))
+    }
+
+    /// A drawing's, its rows at `alpha`: the edge and the outline style's
+    /// line both following them.
+    pub fn drawing(alpha: f64, set: &Alphas) -> Strengths {
+        let edge = line_alpha(crate::drawings::PROFILE_EDGE_ALPHA, alpha);
+        Strengths::with_lines(alpha, set, edge, line_alpha(1.0, alpha))
+    }
+
+    fn with_lines(alpha: f64, set: &Alphas, edge: f64, outline: f64) -> Strengths {
+        Strengths {
+            rows: alpha,
+            value_area: held(set.value_area, alpha),
+            outside: held(set.outside, alpha * OUTSIDE_SHARE),
+            edge: held(set.outline, edge),
+            outline: held(set.outline, outline),
+            poc: held(set.poc, crate::drawings::PROFILE_POC_ALPHA),
+        }
+    }
+
+    /// The value area's rows and the rest: apart while it is highlighted,
+    /// every row alike when not.
+    pub fn row_pair(&self, highlight: bool) -> (f64, f64) {
+        match highlight {
+            true => (self.value_area, self.outside),
+            false => (self.rows, self.rows),
+        }
+    }
+
+    /// The outline's strength as drawn in `style`: the edge round filled
+    /// rows, or the outline style's line.
+    pub fn outline_in(&self, style: Style) -> f64 {
+        match style {
+            Style::Filled => self.edge,
+            Style::Outline => self.outline,
+        }
     }
 }
 
@@ -570,6 +768,10 @@ pub struct AtPrice<'a> {
     /// whole — before the source's history begins, say. That period keeps
     /// the estimate.
     pub of: &'a dyn Fn(&[Bar]) -> Option<Ladder>,
+    /// Whether the ladder of these bars, unknown now, is on its way: that
+    /// period draws nothing rather than an estimate it would be redrawn
+    /// over a moment later.
+    pub coming: &'a dyn Fn(&[Bar]) -> bool,
 }
 
 /// [`compute`], drawing each period from the volume that actually traded at
@@ -577,7 +779,9 @@ pub struct AtPrice<'a> {
 /// not know, the volume of each bar is spread over its range as always.
 ///
 /// A [`Method::Delta`] profile has nothing to spread: which side a trade took
-/// is not in a bar. A period `at_price` does not know has no profile.
+/// is not in a bar. A period `at_price` does not know has no profile, and
+/// nor has one whose ladder it says is coming: the estimate would be drawn
+/// for a moment, a different shape on coarser rows, and then replaced.
 ///
 /// `last_only` profiles the newest period alone, exactly as it is profiled
 /// beside the others: its rows are still of the height every period's
@@ -611,16 +815,7 @@ pub fn compute_with(
     for (start, end) in periods.into_iter().skip(skipped) {
         let slice = &bars[start..end];
         let bucket = reset.bucket(bars[start].ts, session_origin);
-        let exact = at_price.and_then(|at| {
-            let ladder = (at.of)(slice)?;
-            ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
-        });
-        let profile = match (exact, method) {
-            (Some((ladder, tick)), _) => one_exact(slice, start, bucket, grid, value_area, &ladder, tick, method),
-            (None, Method::Total) => one(slice, start, bucket, grid, value_area),
-            (None, Method::Delta) => None,
-        };
-        if let Some(mut profile) = profile {
+        if let Some(mut profile) = period(slice, start, bucket, grid, value_area, at_price, method) {
             profile.parts = parts(slice, reset, session_origin);
             out.push(profile);
         }
@@ -628,10 +823,153 @@ pub fn compute_with(
     out
 }
 
+/// What a volume profile's computation leaves for the next one on the same
+/// chart: the bars it was worked out over, their periods, the grid they
+/// were divided by, and the profiles. A chart computes its indicators again
+/// on every tick, and a tick moves the forming period alone: every period
+/// whose bars are as they were is kept while the grid stays the same.
+#[derive(Clone, Debug, Default)]
+pub struct Memo {
+    key: Option<Key>,
+    bars: Vec<Bar>,
+    periods: Vec<(usize, usize)>,
+    grid: Option<Grid>,
+    out: Vec<Profile>,
+    /// How many periods the last computation worked out rather than kept.
+    pub worked: usize,
+}
+
+/// Everything besides the bars that the profiles depend on.
+#[derive(Clone, PartialEq, Debug)]
+struct Key {
+    reset: Reset,
+    session_origin: i64,
+    rows: Option<usize>,
+    value_area: u64,
+    kind: Option<InstrumentKind>,
+    merged: Vec<i64>,
+    last_only: bool,
+}
+
+/// Each chart's volume profile memos, by the indicator's id.
+#[derive(Debug, Default)]
+pub struct Memos(std::cell::RefCell<std::collections::HashMap<u32, Memo>>);
+
+impl Memos {
+    /// Run `work` with the memo kept for indicator `id`.
+    pub fn with<T>(&self, id: u32, work: impl FnOnce(&mut Memo) -> T) -> T {
+        let mut memos = self.0.borrow_mut();
+        work(memos.entry(id).or_default())
+    }
+
+    /// Forget every memo but those of `ids`: an indicator taken off.
+    pub fn keep(&self, ids: &[u32]) {
+        self.0.borrow_mut().retain(|id, _| ids.contains(id));
+    }
+}
+
+/// [`compute`], keeping in `memo` what the next computation need not work
+/// out again: the profile of every period whose bars are all as they were,
+/// on the same grid. The periods and the grid are read from every bar each
+/// time, as [`compute`] reads them, so what comes out is the same to the
+/// bit; only the counting of the periods that did not move is skipped.
+///
+/// From the bars alone, as [`compute`] is: a profile from ladders depends on
+/// what the source has read since, and is worked out whole.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_kept(
+    bars: &[Bar],
+    reset: Reset,
+    session_origin: i64,
+    rows: Option<usize>,
+    value_area: f64,
+    kind: Option<InstrumentKind>,
+    merged: &[i64],
+    last_only: bool,
+    memo: &mut Memo,
+) -> Vec<Profile> {
+    memo.worked = 0;
+    if bars.is_empty() {
+        *memo = Memo::default();
+        return Vec::new();
+    }
+    let key = Key {
+        reset,
+        session_origin,
+        rows,
+        value_area: value_area.to_bits(),
+        kind,
+        merged: merged.to_vec(),
+        last_only,
+    };
+    if memo.key.as_ref() != Some(&key) {
+        *memo = Memo { key: Some(key), ..Memo::default() };
+    }
+    let periods = composites(bars, periods(bars, reset, session_origin), reset, session_origin, merged);
+    let grid = grid(bars, &periods, rows, kind, None);
+    // Bars as they were, from the first: a period ending by then is unmoved.
+    let same = memo.bars.iter().zip(bars).take_while(|(a, b)| a == b).count();
+    let reuse = if memo.grid == Some(grid) { std::mem::take(&mut memo.out) } else { Vec::new() };
+    let mut reuse = reuse.into_iter().peekable();
+    let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
+    let mut out = Vec::with_capacity(periods.len() - skipped);
+    for &(start, end) in &periods[skipped..] {
+        while reuse.next_if(|kept| kept.first_bar < start).is_some() {}
+        let unmoved = end <= same && memo.periods.contains(&(start, end));
+        if let Some(kept) = reuse.next_if(|kept| unmoved && kept.first_bar == start && kept.last_bar + 1 == end) {
+            out.push(kept);
+            continue;
+        }
+        let slice = &bars[start..end];
+        let bucket = reset.bucket(bars[start].ts, session_origin);
+        memo.worked += 1;
+        if let Some(mut profile) = one(slice, start, bucket, grid, value_area) {
+            profile.parts = parts(slice, reset, session_origin);
+            out.push(profile);
+        }
+    }
+    memo.periods = periods;
+    memo.grid = Some(grid);
+    memo.bars.truncate(same);
+    memo.bars.extend_from_slice(&bars[same..]);
+    memo.out = out.clone();
+    out
+}
+
+/// One period's profile, `bars` starting at `offset` on the chart: from what
+/// traded at each price when `at_price` knows it, estimated from the bars
+/// when it does not, and nothing while its ladder is on its way or, for a
+/// delta, when there is no ladder to tell bought from sold.
+///
+/// What the study draws each period with, and a drawing its span.
+#[allow(clippy::too_many_arguments)]
+fn period(
+    bars: &[Bar],
+    offset: usize,
+    bucket: i64,
+    grid: Grid,
+    value_area: f64,
+    at_price: Option<&AtPrice>,
+    method: Method,
+) -> Option<Profile> {
+    let exact = at_price.and_then(|at| {
+        let ladder = (at.of)(bars)?;
+        ladder.levels.iter().any(|level| method.counts(level)).then_some((ladder, at.tick_size))
+    });
+    if exact.is_none() && at_price.is_some_and(|at| (at.coming)(bars)) {
+        return None;
+    }
+    match (exact, method) {
+        (Some((ladder, tick)), _) => one_exact(bars, offset, bucket, grid, value_area, &ladder, tick, method),
+        (None, Method::Total) => one(bars, offset, bucket, grid, value_area),
+        (None, Method::Delta) => None,
+    }
+}
+
 /// The periods with each one that starts at a merged bucket joined onto the
 /// one before it. A merged start with no period before it on the chart is
 /// left alone: there is nothing loaded to join it to.
-fn composites(
+pub(super) fn composites(
     bars: &[Bar],
     periods: Vec<(usize, usize)>,
     reset: Reset,
@@ -670,10 +1008,26 @@ pub fn of_span(
     value_area: f64,
     kind: Option<InstrumentKind>,
 ) -> Option<Profile> {
+    of_span_with(bars, offset, rows, value_area, kind, None, Method::Total)
+}
+
+/// [`of_span`] as the study draws a period: from what traded at each price
+/// when `at_price` knows it, measuring what `method` says, and nothing
+/// while its ladder is on its way or, for a delta, when nothing says which
+/// side each trade took.
+pub fn of_span_with(
+    bars: &[Bar],
+    offset: usize,
+    rows: Option<usize>,
+    value_area: f64,
+    kind: Option<InstrumentKind>,
+    at_price: Option<&AtPrice>,
+    method: Method,
+) -> Option<Profile> {
     let first = bars.first()?;
     // The span is one period, divided by the study's own rule.
-    let grid = grid(bars, &[(0, bars.len())], rows, kind, None);
-    one(bars, offset, first.ts, grid, value_area)
+    let grid = grid(bars, &[(0, bars.len())], rows, kind, at_price);
+    period(bars, offset, first.ts, grid, value_area, at_price, method)
 }
 
 /// How a chart's periods are divided, for the study and a drawing alike:
@@ -717,7 +1071,7 @@ fn grid(
 /// read against each other. A fixed step does the opposite: every row on the
 /// chart is the same slice of price, and a session that moved half as far is
 /// drawn half as tall, which is the comparison the profile is read for.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Grid {
     Rows(usize),
     /// Rows `step` tall, which a quiet period may split down to `tick`.
@@ -725,7 +1079,7 @@ enum Grid {
 }
 
 /// Where each reset period starts and ends, as indices into `bars`.
-fn periods(bars: &[Bar], reset: Reset, session_origin: i64) -> Vec<(usize, usize)> {
+pub(super) fn periods(bars: &[Bar], reset: Reset, session_origin: i64) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut start = 0usize;
     let mut bucket = reset.bucket(bars[0].ts, session_origin);
@@ -1209,6 +1563,37 @@ mod tests {
         assert_eq!(line_alpha(0.45, 0.0), 0.0);
     }
 
+    /// Unset, each part of a volume profile is drawn as it always was,
+    /// the study's and a drawing's; set, each keeps its own whatever the
+    /// rows, and the rest follow them.
+    #[test]
+    fn a_volume_profiles_strengths_are_as_they_were_until_set() {
+        use crate::drawings::{PROFILE_EDGE_ALPHA, PROFILE_POC_ALPHA};
+        let unset = Alphas::default();
+        for alpha in [DESIGNED_ALPHA, 0.6, 1.0, 0.0] {
+            for highlight in [true, false] {
+                let study = Strengths::study(alpha, &unset);
+                assert_eq!(study.row_pair(highlight), row_alphas(alpha, highlight));
+                assert_eq!(study.outline_in(Style::Filled), PROFILE_EDGE_ALPHA);
+                assert_eq!(study.outline_in(Style::Outline), line_alpha(0.75, alpha));
+                assert_eq!(study.poc, PROFILE_POC_ALPHA);
+                let drawing = Strengths::drawing(alpha, &unset);
+                assert_eq!(drawing.row_pair(highlight), row_alphas(alpha, highlight));
+                assert_eq!(drawing.outline_in(Style::Filled), line_alpha(PROFILE_EDGE_ALPHA, alpha));
+                assert_eq!(drawing.outline_in(Style::Outline), line_alpha(1.0, alpha));
+                assert_eq!(drawing.poc, PROFILE_POC_ALPHA);
+            }
+        }
+        let own = Alphas { value_area: Some(0.5), outside: Some(0.05), outline: Some(0.2), poc: Some(0.6) };
+        let study = Strengths::study(DESIGNED_ALPHA, &own);
+        assert_eq!(study.row_pair(true), (0.5, 0.05));
+        assert_eq!(study.row_pair(false), (DESIGNED_ALPHA, DESIGNED_ALPHA), "every row alike, not highlighted");
+        assert_eq!((study.edge, study.outline, study.poc), (0.2, 0.2, 0.6));
+        let wild = Alphas { value_area: Some(f64::NAN), outside: Some(-1.0), outline: Some(2.0), poc: None };
+        let study = Strengths::study(DESIGNED_ALPHA, &wild);
+        assert_eq!((study.value_area, study.outside, study.edge), (DESIGNED_ALPHA, 0.0, 1.0));
+    }
+
     #[test]
     fn a_stored_width_is_drawn_inside_its_range() {
         assert_eq!(drawn_width(0.25), 0.25);
@@ -1349,7 +1734,7 @@ mod tests {
                     asked.borrow_mut().push(run[0].ts / DAY);
                     None
                 };
-                let at = AtPrice { tick_size: 0.01, of: &of };
+                let at = AtPrice { tick_size: 0.01, of: &of, coming: &|_| false };
                 let kind = Some(InstrumentKind::Equity);
                 let all = compute_with(&bars, Reset::Session, 0, rows, 0.7, kind, merged, Some(&at), Method::Total, false);
                 asked.borrow_mut().clear();
@@ -1361,6 +1746,55 @@ mod tests {
             }
         }
         assert!(compute_with(&[], Reset::Session, 0, None, 0.7, None, &[], None, Method::Total, true).is_empty());
+    }
+
+    /// A tick works out the forming session's volume profile alone and
+    /// keeps every session before it, and what comes out is what a
+    /// computation from nothing gives, to the bit: on a tick inside the
+    /// range, a new bar, a tick that moves the grid, a merge, the oldest
+    /// bars trimmed, and the newest alone.
+    #[test]
+    fn a_tick_works_out_the_forming_volume_profile_alone() {
+        let mut bars: Vec<Bar> = (0..5).flat_map(|day| session(day, 100.0 + day as f64, 2.0)).collect();
+        let run = |bars: &[Bar], merged: &[i64], last_only: bool, memo: &mut Memo| {
+            compute_kept(bars, Reset::Session, 0, None, 0.7, None, merged, last_only, memo)
+        };
+        let fresh = |bars: &[Bar], merged: &[i64], last_only: bool| {
+            compute_with(bars, Reset::Session, 0, None, 0.7, None, merged, None, Method::Total, last_only)
+        };
+        let mut memo = Memo::default();
+        let same = |a: &[Profile], b: &[Profile]| fingerprint(a) == fingerprint(b) && a.len() == b.len();
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+        assert_eq!(memo.worked, 5);
+
+        // A tick into the forming bar, inside the range so far.
+        let last = bars.len() - 1;
+        bars[last].close = bars[last].low + 0.01;
+        bars[last].volume += 10.0;
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+        assert_eq!(memo.worked, 1, "the forming session alone");
+
+        // A new bar.
+        let mut next = bars[last];
+        next.ts += 60;
+        bars.push(next);
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+        assert_eq!(memo.worked, 1);
+
+        // A tick far outside every session's range, which may move the grid:
+        // whatever it moves, the output is the fresh one.
+        let last = bars.len() - 1;
+        bars[last].high = 400.0;
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+
+        // A merge, the oldest bars trimmed, and the newest alone.
+        let second = DAY;
+        assert!(same(&run(&bars, &[second], false, &mut memo), &fresh(&bars, &[second], false)));
+        let trimmed = &bars[100..];
+        assert!(same(&run(trimmed, &[], false, &mut memo), &fresh(trimmed, &[], false)));
+        assert!(same(&run(trimmed, &[], true, &mut memo), &fresh(trimmed, &[], true)));
+        assert!(same(&run(trimmed, &[], true, &mut memo), &fresh(trimmed, &[], true)));
+        assert!(memo.worked <= 1);
     }
 
     /// A session of one-minute bars wandering over `span` around `price`.
@@ -1486,7 +1920,7 @@ mod tests {
 
     fn with_ladders(bars: &[Bar], rows: Option<usize>, tick: f64) -> Vec<Profile> {
         let of = |run: &[Bar]| every_tick_of(run, tick);
-        let at = AtPrice { tick_size: tick, of: &of };
+        let at = AtPrice { tick_size: tick, of: &of, coming: &|_| false };
         let kind = Some(InstrumentKind::FutureRoot);
         compute_with(bars, Reset::Session, 0, rows, 0.7, kind, &[], Some(&at), Method::Total, false)
     }

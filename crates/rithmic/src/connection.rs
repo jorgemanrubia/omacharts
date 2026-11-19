@@ -93,6 +93,9 @@ pub(crate) enum Command {
     Unwatch { id: u64 },
     OpenTrading { pulse: PulseSink, reply: oneshot::Sender<Opened> },
     CloseTrading { done: oneshot::Sender<()> },
+    /// Sign the trading half out of its plants and straight back in, and
+    /// answer once it is: see [`Trading::relist`].
+    RenewTrading { reply: oneshot::Sender<Opened> },
     /// Cut every plant as a network failure would, to prove recovery.
     Sever,
     /// What a forced logout on any plant does, for a test's fake plants.
@@ -204,6 +207,7 @@ pub fn connection(
 /// Close both halves of the login `login`'s connection, if it has one,
 /// waiting [`SIGN_OUT_WAIT`] at most for Rithmic to hear it.
 pub fn close(login: &str) {
+    client::forget_entitlements(Some(login));
     let found = registry().as_ref().and_then(|connections| connections.get(login).cloned());
     if let Some(connection) = found {
         connection.close();
@@ -226,6 +230,22 @@ pub fn running() -> bool {
     !feeding().is_empty()
 }
 
+/// Is market data open on the login `login`'s connection?
+pub fn feeding_login(login: &str) -> bool {
+    feeding().iter().any(|connection| connection.inner.login == login)
+}
+
+/// Close the data half of the login `login`'s connection alone, as
+/// [`shutdown`] closes every one: the session the charts of that login's
+/// feed share ends, and the other logins' go on. Its trading half is left
+/// as it is.
+pub fn close_data(login: &str) {
+    client::forget_entitlements(Some(login));
+    for connection in feeding().into_iter().filter(|connection| connection.inner.login == login) {
+        connection.close_data();
+    }
+}
+
 /// The data half of the login `login`'s connection, when it is open now:
 /// the session the charts share, borrowed. Never opens one, nor starts a
 /// connection, so whatever asks here adds no market-data session that was
@@ -240,12 +260,23 @@ pub fn open_data(login: &str) -> Option<Client> {
     Some(Client::of(connection.inner.clone(), generation))
 }
 
+/// The data half of any login's connection that is open now, its own
+/// first: [`open_data`] for `login`, else another login's, borrowed the
+/// same way. Prices are the exchange's whoever hears them.
+pub fn open_data_or_any(login: &str) -> Option<Client> {
+    open_data(login).or_else(|| {
+        let mut logins: Vec<String> = feeding().iter().map(|connection| connection.inner.login.clone()).collect();
+        logins.sort();
+        logins.iter().find_map(|other| open_data(other))
+    })
+}
+
 /// Close the data half of every connection, waiting a few seconds at most
 /// for Rithmic to acknowledge: what charting is done with. Whatever is
 /// watching hears [`Error::Closed`], and the next [`Connection::data`]
 /// opens it afresh. A trading half is left as it is.
 pub fn shutdown() {
-    client::forget_entitlements();
+    client::forget_entitlements(None);
     for connection in feeding() {
         connection.close_data();
     }
@@ -449,6 +480,18 @@ impl Connection {
     /// `generation`.
     pub(crate) fn close_trading_as(&self, generation: u64) {
         self.close_half(false, Some(generation));
+    }
+
+    /// Sign the trading half, as `generation`, out of its plants and back
+    /// in, and wait until it is: whatever the plants serve, they serve from
+    /// what the login held when it signed in. The data half stays as it is.
+    pub(crate) fn renew_trading(&self, generation: u64) -> Result<(), Error> {
+        if !self.inner.trading_open(generation) {
+            return Err(Error::Closed);
+        }
+        let (reply, answer) = oneshot::channel();
+        self.inner.commands.send(Command::RenewTrading { reply }).map_err(|_| Error::Closed)?;
+        self.inner.handle.block_on(answer).unwrap_or(Err((Error::Closed, true))).map_err(|(error, _)| error)
     }
 
     /// Sign both halves out and end the connection, waiting
@@ -732,6 +775,24 @@ impl Supervisor {
                 self.trading.close().await;
                 let _ = done.send(());
             }
+            Command::RenewTrading { reply } => match self.trading.phase {
+                // Signed out first: the same login signing in again while
+                // it is still in is logged out by Rithmic.
+                Phase::Up(_) => {
+                    if let Some(plants) = self.trading.live.take() {
+                        plants.close(true).await;
+                    }
+                    self.trading.phase = Phase::Opening;
+                    self.trading.renew();
+                    self.trading.waiting.push(reply);
+                    self.sign_in(false, true);
+                }
+                // Signing in again already, which is as fresh.
+                Phase::Opening | Phase::Down => self.trading.waiting.push(reply),
+                Phase::Off | Phase::Stopped(_) => {
+                    let _ = reply.send(Err((Error::Closed, false)));
+                }
+            },
             #[cfg(test)]
             Command::ForcedOut => self.evict(),
             #[cfg(test)]
@@ -818,7 +879,7 @@ impl Supervisor {
         match outcome {
             Ok(plants) => {
                 self.data.phase = Phase::Up(Instant::now());
-                self.data.up(plants);
+                self.data.up(plants, &self.login);
             }
             Err(error @ (Error::Refused(_) | Error::NoLogin(_))) => {
                 self.data.phase = Phase::Stopped(error.clone());
@@ -1003,6 +1064,8 @@ mod tests {
         ticker: Mutex<Option<broadcast::Sender<rithmic_rs::RithmicResponse>>>,
         orders: Mutex<Option<broadcast::Sender<rithmic_rs::RithmicResponse>>>,
         plant: client::tests::Fake,
+        /// The accounts a trading sign-in lists.
+        accounts: Mutex<Vec<trading::Account>>,
     }
 
     type Dialled = (Option<Result<DataPlants, Error>>, Option<Result<TradingPlants, Error>>);
@@ -1019,7 +1082,7 @@ mod tests {
                 self.dialled.lock().unwrap().push("trading");
                 let (orders, updates) = broadcast::channel(64);
                 *self.orders.lock().unwrap() = Some(orders);
-                Ok(TradingPlants::fake(updates, Vec::new()))
+                Ok(TradingPlants::fake(updates, self.accounts.lock().unwrap().clone()))
             });
             (data, trading)
         }
@@ -1086,6 +1149,45 @@ mod tests {
         drop(watch);
         connection.close();
         assert_eq!(trading.trouble(), Some(Error::Closed));
+    }
+
+    fn fake_account(id: &str) -> trading::Account {
+        trading::Account { id: id.into(), name: None, currency: Some("USD".into()), fcm: "FAKE-FCM".into(), ib: "FAKE-IB".into() }
+    }
+
+    fn numbers(trading: &Trading) -> Vec<String> {
+        trading.accounts().into_iter().map(|account| account.id).collect()
+    }
+
+    /// An account opened since sign-in is served only to a sign-in made
+    /// since, so renewing signs the trading half out and back in: the new
+    /// sign-in lists it, and the data half stays as it was. It is not told as back, which would have
+    /// it refreshed twice: whoever renewed refreshes.
+    #[test]
+    fn renewing_trading_signs_in_again_and_lists_the_account_opened_since() {
+        let gateway = Arc::new(Gateway::default());
+        *gateway.accounts.lock().unwrap() = vec![fake_account("FAKE-1")];
+        let (connection, _) = faked(&gateway);
+        let (pulse, pulses) = std::sync::mpsc::channel();
+        let trading = connection.trading(move |news| pulse.send(news).unwrap()).expect("signed in");
+        let (heard, hearing) = std::sync::mpsc::channel();
+        let watch = connection.data().watch("ES", "CME", move |live| heard.send(live).unwrap());
+        assert_eq!(next(&hearing), Live::Watching { contract: "ESZ6".into() });
+        assert_eq!(numbers(&trading), ["FAKE-1"]);
+
+        // Bought at the firm after sign-in.
+        gateway.accounts.lock().unwrap().push(fake_account("FAKE-2"));
+        trading.renew().expect("signed in again");
+        assert_eq!(numbers(&trading), ["FAKE-1", "FAKE-2"]);
+        assert_eq!(gateway.dialled(), ["trading", "data", "trading"], "the data half stayed");
+        assert!(trading.trouble().is_none());
+        assert!(hearing.try_recv().is_err(), "the chart heard nothing of it");
+
+        drop(watch);
+        connection.close();
+        // Anything the sign-in told was told before the close was taken.
+        assert_eq!(pulses.try_iter().collect::<Vec<_>>(), [], "not told as back");
+        assert_eq!(trading.renew(), Err(Error::Closed), "nothing to renew once closed");
     }
 
     /// Rithmic signing one half out stops both, and neither signs in again

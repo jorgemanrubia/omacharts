@@ -171,14 +171,15 @@ impl Ladders for Rithmic {
                 "Rithmic ladders are served by the open window, which holds the one session".into(),
             ));
         }
-        let client = session::client().map_err(map_err)?;
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
         let exchange = exchange_of(symbol);
         // A dated contract is its own; a root is its front month.
         let contract = match crate::specs::root_of(symbol) == symbol {
-            true => client.front_month(symbol, exchange).map_err(map_err)?,
+            true => client.front_month(symbol, exchange).map_err(|error| map_err(login, error))?,
             false => super::spelled(symbol),
         };
-        let found = client.ladders(&contract, exchange, from, to).map_err(map_err)?;
+        let found = client.ladders(&contract, exchange, from, to).map_err(|error| map_err(login, error))?;
         // Each plant minute let go as it is turned into a ladder: ninety
         // days is some 74,000 of them, and holding both at once doubles it.
         Ok(found.into_iter().map(|m| minute_of(&m, tick_size)).collect())
@@ -190,6 +191,7 @@ impl Ladders for Rithmic {
         let sender = events.clone();
         let stopping = stop.clone();
         let root = symbol.to_string();
+        let login = self.login();
         std::thread::Builder::new()
             .name("omacharts rithmic ladders".into())
             .spawn(move || {
@@ -198,7 +200,7 @@ impl Ladders for Rithmic {
                         sink(update);
                     }
                 };
-                let Ok(client) = session::client() else { return };
+                let Ok(client) = session::client(login) else { return };
                 let hear = move |live| {
                     let _ = sender.send(Event::Live(live));
                 };

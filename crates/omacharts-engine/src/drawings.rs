@@ -1481,6 +1481,32 @@ pub struct ProfileLook {
     /// `line_style`.
     #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
     pub poc_style: LineStyle,
+    /// What each row measures, as the study's: all the volume at its price,
+    /// or the ask volume less the bid volume there, which only a feed with
+    /// volume at price can say. Missing, the total it always was.
+    #[serde(default, skip_serializing_if = "is_total")]
+    pub method: ProfileMethod,
+    /// How much of the span the longest row reaches, as a share, as the
+    /// study's Width is of its period. Missing, the whole span, edge to
+    /// edge, as every profile drawing was drawn before it could be chosen.
+    #[serde(default = "ProfileLook::whole_span", skip_serializing_if = "ProfileLook::is_whole_span")]
+    pub width: f64,
+    /// How solid the value area's rows, the rows outside it, the outline
+    /// and the point of control are drawn, each set apart from the
+    /// drawing's alpha, as the study's are. Unset, each follows it as it
+    /// always did. See [`crate::indicators::profile::Strengths`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_area_alpha: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outside_alpha: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline_alpha: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poc_alpha: Option<f64>,
+}
+
+fn is_total(method: &ProfileMethod) -> bool {
+    *method == ProfileMethod::Total
 }
 
 impl ProfileLook {
@@ -1496,8 +1522,22 @@ impl ProfileLook {
         true
     }
 
+    fn whole_span() -> f64 {
+        crate::indicators::profile::MAX_WIDTH
+    }
+
+    fn is_whole_span(width: &f64) -> bool {
+        *width == ProfileLook::whole_span()
+    }
+
     fn is_default(&self) -> bool {
         *self == ProfileLook::default()
+    }
+
+    /// How much of its span the longest row reaches, inside the study's
+    /// range.
+    pub fn drawn_width(&self) -> f64 {
+        crate::indicators::profile::drawn_width(self.width)
     }
 }
 
@@ -1515,11 +1555,19 @@ impl Default for ProfileLook {
             show_poc: true,
             poc_width: DEFAULT_WIDTH,
             poc_style: LineStyle::Solid,
+            method: ProfileMethod::Total,
+            width: ProfileLook::whole_span(),
+            value_area_alpha: None,
+            outside_alpha: None,
+            outline_alpha: None,
+            poc_alpha: None,
         }
     }
 }
 
-pub use crate::indicators::profile::{Align as ProfileAlign, Style as ProfileShape};
+pub use crate::indicators::profile::{
+    Align as ProfileAlign, Method as ProfileMethod, Style as ProfileShape,
+};
 
 /// The value area's fill: the study's own. A drawing over a study is already
 /// on top, and being louder would only cost the candles under it — at 0.36
@@ -1688,6 +1736,18 @@ impl Style {
     /// this.
     pub fn profile_alpha(&self) -> f64 {
         crate::indicators::profile::drawn_alpha(self.alpha, self.profile.opacity)
+    }
+
+    /// How solid each part of a volume profile drawing is drawn.
+    pub fn profile_strengths(&self) -> crate::indicators::profile::Strengths {
+        let look = &self.profile;
+        let set = crate::indicators::profile::Alphas {
+            value_area: look.value_area_alpha,
+            outside: look.outside_alpha,
+            outline: look.outline_alpha,
+            poc: look.poc_alpha,
+        };
+        crate::indicators::profile::Strengths::drawing(self.profile_alpha(), &set)
     }
 
     /// Set how solid a volume profile's value area is drawn, the old fade
@@ -3314,6 +3374,44 @@ mod shape_tests {
 mod tests {
     use super::*;
 
+    /// A profile drawing, a volume profile study and a market profile
+    /// stored before each part's transparency could be set read back with
+    /// none set apart, so each is drawn as it was; and one nobody changed is
+    /// still stored without them.
+    #[test]
+    fn a_profile_stored_before_its_parts_had_transparencies_reads_as_it_was() {
+        use crate::indicators::{Indicator, Params};
+        let written = serde_json::to_string(&ProfileLook::default()).unwrap();
+        assert!(!written.contains("_alpha"), "{written}");
+        // What was written before: the same keys, none of them a part's.
+        let look: ProfileLook = serde_json::from_str(&written).expect("an old look");
+        let parts = [look.value_area_alpha, look.outside_alpha, look.outline_alpha, look.poc_alpha];
+        assert_eq!(parts, [None; 4]);
+
+        let study = r#"{"id": 1, "kind": "volume_profile", "color": null, "visible": true,
+            "params": {"kind": "volume_profile", "reset": "session", "rows": null, "value_area": 0.7,
+                       "poc_color": null, "alpha": 0.5}}"#;
+        let indicator: Indicator = serde_json::from_str(study).expect("an old study");
+        let Params::VolumeProfile { value_area_alpha, outside_alpha, outline_alpha, poc_alpha, alpha, .. } = indicator.params
+        else {
+            panic!("a volume profile")
+        };
+        assert_eq!([value_area_alpha, outside_alpha, outline_alpha, poc_alpha], [None; 4]);
+        assert_eq!(alpha, 0.5);
+
+        let market = r#"{"id": 2, "kind": "market_profile", "color": null, "visible": true,
+            "params": {"kind": "market_profile", "reset": "session"}}"#;
+        let indicator: Indicator = serde_json::from_str(market).expect("a market profile");
+        let Params::MarketProfile { alpha, value_area_alpha, outside_alpha, poc_alpha, last_only, .. } = &indicator.params
+        else {
+            panic!("a market profile")
+        };
+        assert_eq!([*alpha, *value_area_alpha, *outside_alpha, *poc_alpha], [None; 4]);
+        assert!(!last_only);
+        let written = serde_json::to_string(&indicator).unwrap();
+        assert!(!written.contains("alpha") && !written.contains("last_only"), "{written}");
+    }
+
     /// A profile drawing stored before its rows and its point of control
     /// could be set reads back automatic, with the point of control drawn,
     /// and a look nobody changed is still stored without either.
@@ -3347,6 +3445,29 @@ mod tests {
         let back: ProfileLook =
             serde_json::from_str(&serde_json::to_string(&hidden).unwrap()).unwrap();
         assert_eq!(back, hidden);
+    }
+
+    /// A profile drawing stored before it could measure a delta or be
+    /// drawn narrower than its span reads back a total over the whole span,
+    /// as it was drawn, and one nobody changed is stored without any of the
+    /// two; a delta and its width come back as they went.
+    #[test]
+    fn a_profile_stored_before_its_method_and_width_reads_as_a_total_over_its_span() {
+        let stored = serde_json::to_string(&ProfileLook::default()).expect("stored");
+        for field in ["method", "width"] {
+            assert!(!stored.contains(&format!("\"{field}\"")), "{stored}");
+        }
+        let look: ProfileLook = serde_json::from_str(&stored).expect("an old profile look");
+        assert_eq!(look.method, ProfileMethod::Total);
+        assert_eq!(look.drawn_width(), 1.0);
+
+        let delta = ProfileLook {
+            method: ProfileMethod::Delta,
+            width: 0.4,
+            ..ProfileLook::default()
+        };
+        let back: ProfileLook = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        assert_eq!(back, delta);
     }
     use crate::omarchy;
     use crate::theme::builtin_themes;

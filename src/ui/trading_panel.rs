@@ -80,7 +80,13 @@ pub struct Hands {
     pub flatten: OnPosition,
     /// Cancel every working order on the account with this key.
     pub cancel_all: Box<dyn Fn(&str)>,
+    /// Ask every signed-in login for its accounts again, and what they
+    /// hold.
+    pub sync: Box<dyn Fn()>,
 }
+
+const SYNC_ICON: &str = "view-refresh-symbolic";
+const SYNC_TOOLTIP: &str = "Sync accounts";
 
 pub struct TradingPanel {
     pub root: gtk::Box,
@@ -90,6 +96,9 @@ pub struct TradingPanel {
     positions: gtk::Box,
     orders: gtk::Box,
     cancel_all: gtk::Button,
+    /// The panel's top right: ask every login for its accounts again. A
+    /// spinner in place of its icon while any is being asked.
+    sync: gtk::Button,
     /// Where the trading services' artwork goes, between the tabs and the
     /// buttons: Rithmic's terms ask for its logos wherever its data shows.
     credits: gtk::Box,
@@ -267,11 +276,17 @@ impl TradingPanel {
 
         let cancel_all = gtk::Button::with_label("Cancel all");
         cancel_all.add_css_class("flat");
+        let sync = gtk::Button::from_icon_name(SYNC_ICON);
+        sync.add_css_class("flat");
+        sync.add_css_class("trading-sync");
+        sync.set_valign(gtk::Align::Center);
+        sync.set_tooltip_text(Some(SYNC_TOOLTIP));
         let trailing = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         trailing.set_halign(gtk::Align::End);
         trailing.set_hexpand(true);
         trailing.append(&toggles);
         trailing.append(&cancel_all);
+        trailing.append(&sync);
         let credits = gtk::Box::new(gtk::Orientation::Horizontal, 24);
         credits.add_css_class("trading-credits");
         credits.set_valign(gtk::Align::Center);
@@ -292,6 +307,8 @@ impl TradingPanel {
                 (pressed.cancel_all)(&key);
             }
         });
+        let pressed = hands.clone();
+        sync.connect_clicked(move |_| (pressed.sync)());
         let panel = Rc::new(TradingPanel {
             root,
             stack,
@@ -299,6 +316,7 @@ impl TradingPanel {
             positions,
             orders,
             cancel_all,
+            sync,
             credits,
             credited: RefCell::default(),
             default,
@@ -393,6 +411,44 @@ impl TradingPanel {
             empty.set_label(filter.empty_words());
             empty.set_visible(shown == 0);
         }
+    }
+
+    /// Show the sync at work while `syncing`, a spinner in place of its icon
+    /// and not to be pressed again; and only pressable at all when there is
+    /// a login signed in to ask, `live`.
+    pub fn show_syncing(&self, syncing: bool, live: bool) {
+        let spinning = self.sync.child().is_some_and(|child| child.is::<gtk::Spinner>());
+        if syncing != spinning {
+            match syncing {
+                true => {
+                    let spinner = gtk::Spinner::new();
+                    spinner.set_size_request(16, 16);
+                    spinner.start();
+                    self.sync.set_child(Some(&spinner));
+                }
+                false => self.sync.set_icon_name(SYNC_ICON),
+            }
+        }
+        self.sync.set_sensitive(live && !syncing);
+        self.sync.set_tooltip_text(Some(match syncing {
+            true => "Syncing accounts…",
+            false => SYNC_TOOLTIP,
+        }));
+    }
+
+    /// Whether the sync is at work, as drawn.
+    pub fn syncing(&self) -> bool {
+        self.sync.child().is_some_and(|child| child.is::<gtk::Spinner>())
+    }
+
+    /// Whether the sync can be pressed now.
+    pub fn can_sync(&self) -> bool {
+        self.sync.is_sensitive()
+    }
+
+    /// Press the sync, as a click does.
+    pub fn press_sync(&self) {
+        self.sync.emit_clicked();
     }
 
     /// Draw everything again from `view`.
@@ -638,6 +694,7 @@ mod tests {
             cancel: Box::new(|_, _| {}),
             flatten: Box::new(|_, _, _| {}),
             cancel_all: Box::new(|_| {}),
+            sync: Box::new(|| {}),
         };
         TradingPanel::new(hands, store.clone())
     }

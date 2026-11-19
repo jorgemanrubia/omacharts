@@ -69,6 +69,8 @@ impl TradingService for Rithmic {
         session::save_password(secrets, &login.id, &login.user, system_of(login), password)
     }
 
+    /// With `data`, its connection ends too, its data half with its
+    /// trading.
     fn forget_password(&self, secrets: &dyn Secrets, login: &Login, data: bool) -> Result<(), String> {
         match data {
             true => session::sign_out_login(secrets, &login.id, &login.user, system_of(login)),
@@ -91,8 +93,8 @@ impl TradingService for Rithmic {
         let (system, gateway, saved) =
             (system_of(login).to_string(), gateway_of(login).to_string(), signing_of(login));
         let source = move || rithmic::Login::from_env(&system, &gateway).unwrap_or_else(|| Ok(saved.clone()));
-        // The login's one connection, which its data session shares when it
-        // is the data login. Any pulse is the window's cue to read the book
+        // The login's one connection, which its own data feed's session shares
+        // once a chart is drawn from it. Any pulse is the window's cue to read the book
         // and how the session stands again; coming back after a drop is the
         // cue to refresh it too.
         session::hear_specs();
@@ -124,7 +126,7 @@ impl TradingService for Rithmic {
             simulated: system_of(login) == rithmic::TEST_SYSTEM,
             trading,
             changed: changed.clone(),
-            prices: Prices::new(Box::new(Shared), changed),
+            prices: Prices::new(Box::new(Shared { login: login.id.clone() }), changed),
             alive,
         }))
     }
@@ -270,17 +272,18 @@ trait Feed: Send + Sync {
     fn watch(&self, contract: &str, exchange: &str, heard: Hearing) -> Option<Box<dyn Send>>;
 }
 
-/// The one Rithmic market-data session the app already has, the data
-/// login's that the charts share, borrowed while it is open. A trading
-/// login never opens one of its own for its prices: a second concurrent
-/// data session on a login is what CME bills a non-professional as a
-/// professional for. With the trading login the only Rithmic login, it is
-/// the data login, and this is its one session.
-struct Shared;
+/// A Rithmic market-data session the app already has, borrowed while it
+/// is open: the login's own feed's, which the charts drawn from it share,
+/// else another login's. A trading login never opens one of its own for
+/// its prices: a second concurrent data session on a login is what CME
+/// bills a non-professional as a professional for.
+struct Shared {
+    login: String,
+}
 
 impl Feed for Shared {
     fn watch(&self, contract: &str, exchange: &str, heard: Hearing) -> Option<Box<dyn Send>> {
-        let client = session::shared_client()?;
+        let client = session::shared_client(&self.login)?;
         let watch = client.watch_contract(contract, exchange, move |live| match live {
             rithmic::Live::Trade(trade) | rithmic::Live::Last(trade) => heard(Heard::Price(trade.price)),
             // Reconnecting by itself.
@@ -527,6 +530,15 @@ impl Session for RithmicSession {
         self.trading.refresh().map_err(said)
     }
 
+    /// The account list asked for again on the order plant the session
+    /// has, and then everything refreshed. A new account signs the trading
+    /// plants in again first, as Rithmic serves its P&L and limits only to
+    /// a sign-in made since it opened; the session stays as it is.
+    fn sync(&self) -> Result<(), String> {
+        self.trading.relist().map_err(said)?;
+        self.refresh()
+    }
+
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
         let orders = self.trading.history(account, from, to).map_err(failed)?;
         Ok(orders.into_iter().map(order_of).collect())
@@ -697,7 +709,7 @@ mod tests {
     /// nothing to watch on.
     #[test]
     fn the_shared_feed_borrows_and_never_opens() {
-        assert!(Shared.watch("MNQZ6", "CME", Box::new(|_| {})).is_none());
+        assert!(Shared { login: "acme-borrows".into() }.watch("MNQZ6", "CME", Box::new(|_| {})).is_none());
     }
 
     /// A contract is known by its root for its tick and what a point of it

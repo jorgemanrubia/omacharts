@@ -1446,7 +1446,7 @@ dependencies = [
 
 [[package]]
 name = "omacharts"
-version = "0.3.7"
+version = "0.3.10"
 dependencies = [
  "async-channel",
  "chrono",
@@ -1487,12 +1487,25 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dtc",
+ "omacharts-studies",
+ "omacharts-ticks",
  "rithmic",
  "serde",
  "serde_json",
  "sierra",
  "tos-market",
  "ureq",
+]
+
+[[package]]
+name = "omacharts-studies"
+version = "0.1.0"
+
+[[package]]
+name = "omacharts-ticks"
+version = "0.1.0"
+dependencies = [
+ "omacharts-studies",
 ]
 
 [[package]]

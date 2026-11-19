@@ -102,7 +102,30 @@ pub fn bounded_row(
     if let Some(subtitle) = subtitle {
         row.set_subtitle(subtitle);
     }
+    let figure = bounded(value, min, max, step, digits, changed);
+    row.add_suffix(&figure.slider);
+    row.add_suffix(&figure.entry);
+    Bounded { row, adjustment: figure.adjustment }
+}
 
+/// A bounded figure's slider and box, not yet on a row: for a row that
+/// carries one beside a control of its own, as the standard colour row
+/// carries its transparency ([`crate::ui::property_rows::colour_row`]).
+pub struct Figure {
+    pub slider: gtk::Scale,
+    pub entry: gtk::SpinButton,
+    pub adjustment: gtk::Adjustment,
+}
+
+/// The slider and box of [`bounded_row`], on their own.
+pub fn bounded(
+    value: f64,
+    min: f64,
+    max: f64,
+    step: f64,
+    digits: u32,
+    changed: impl Fn(f64) + 'static,
+) -> Figure {
     // A page of arrow presses: ten steps, which is a tenth of a percent
     // range and feels like a page on the shorter ranges too.
     let adjustment = gtk::Adjustment::new(value.clamp(min, max), min, max, step, step * 10.0, 0.0);
@@ -117,12 +140,10 @@ pub fn bounded_row(
     let entry = entry(&adjustment, step, digits);
     scroll_the_page(&slider);
     scroll_the_page(&entry);
-    row.add_suffix(&slider);
-    row.add_suffix(&entry);
 
     adjustment.connect_value_changed(move |adjustment| changed(adjustment.value()));
 
-    Bounded { row, adjustment }
+    Figure { slider, entry, adjustment }
 }
 
 /// The box a figure can be typed into.

@@ -76,27 +76,42 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     label: "Rithmic",
     serves: "CME futures, continuous, from your Rithmic login",
     covers: "CME futures, front month",
-    build: || Box::new(Rithmic::new()),
-    setup: Some(&session::Signing),
+    build: |feed| Box::new(Rithmic::of(feed)),
+    setup: Some(&session::SIGNING),
     experimental: false,
     gate: None,
+    login: None,
 };
 
 /// What a chart says when Rithmic has nobody signed in.
 pub const NOT_SIGNED_IN: &str = "Rithmic is not signed in";
 
-pub struct Rithmic;
+/// One login's feed, or the entry's, which has none. Nothing in it: the
+/// session belongs to the first fetch.
+pub struct Rithmic {
+    feed: &'static crate::providers::Listed,
+}
 
 impl Default for Rithmic {
     fn default() -> Rithmic {
-        Rithmic
+        Rithmic::new()
     }
 }
 
 impl Rithmic {
-    /// A value with nothing in it: the session belongs to the first fetch.
+    /// The entry in the list of feeds, with no login of its own.
     pub fn new() -> Rithmic {
-        Rithmic
+        Rithmic { feed: &LISTED }
+    }
+
+    /// The feed `feed`, a login's or the entry's.
+    pub fn of(feed: &'static crate::providers::Listed) -> Rithmic {
+        Rithmic { feed }
+    }
+
+    /// The login this feed signs in with: empty for the entry.
+    fn login(&self) -> &'static str {
+        self.feed.login.unwrap_or_default()
     }
 }
 
@@ -107,8 +122,8 @@ impl Rithmic {
 /// Once a session has said which exchanges the login is entitled to, a root
 /// on any other is not served either, and goes to the next source: Rithmic
 /// Test's login sees CME and CBOT, so GC, CL and NG chart from Yahoo there.
-pub fn rithmic_symbol(instrument: &Instrument) -> Option<String> {
-    symbol_under(instrument, session::entitled)
+pub fn rithmic_symbol(login: &str, instrument: &Instrument) -> Option<String> {
+    symbol_under(instrument, |exchange| session::entitled(login, exchange))
 }
 
 /// [`rithmic_symbol`] with `entitled` saying which exchanges may be charted.
@@ -177,17 +192,22 @@ fn depth(timeframe: Timeframe) -> i64 {
     }
 }
 
-/// Rithmic's words, as a provider error. A refusal of the login is
-/// remembered for the settings to show.
-fn map_err(error: rithmic::Error) -> ProviderError {
+/// Rithmic's words, as a provider error. A refusal of the login `login` is
+/// remembered for its row in the settings to show.
+fn map_err(login: &str, error: rithmic::Error) -> ProviderError {
+    if let rithmic::Error::Refused(why) = &error {
+        session::refused(login, why);
+    }
+    describe(error)
+}
+
+/// Rithmic's words, as a provider error, and nothing remembered.
+fn describe(error: rithmic::Error) -> ProviderError {
     use rithmic::Error;
 
     match error {
         Error::NoLogin(why) => ProviderError::NeedsSetup(format!("{NOT_SIGNED_IN}: {why}")),
-        Error::Refused(why) => {
-            session::refused(&why);
-            ProviderError::NeedsSetup(format!("Rithmic refused the sign-in: {why}"))
-        }
+        Error::Refused(why) => ProviderError::NeedsSetup(format!("Rithmic refused the sign-in: {why}")),
         Error::NotFound(_) => ProviderError::NotFound,
         Error::Rejected(why) if names_a_symbol(&why) => ProviderError::NotFound,
         Error::Rejected(why) => ProviderError::Network(format!("Rithmic refused the request: {why}")),
@@ -211,7 +231,81 @@ fn now() -> i64 {
 }
 
 /// Bars of `root`'s continuous series, or of the dated contract `root`
-/// names, from `from` and starting before `to`, or up to now with no `to`.
+/// names, from `from` and starting before `to`, or up to now with no `to`
+/// and the bar forming now with them ([`with_forming`]).
+fn front_month_bars(
+    login: &str,
+    client: &rithmic::Client,
+    root: &str,
+    timeframe: Timeframe,
+    from: i64,
+    to: Option<i64>,
+) -> Result<Vec<Bar>, ProviderError> {
+    let bars = plant_bars(login, client, root, timeframe, from, to)?;
+    if to.is_some() {
+        return Ok(bars);
+    }
+    let minutes = |from: i64| plant_bars(login, client, root, Timeframe::minutes(1), from, None);
+    Ok(with_forming(bars, timeframe, root, now(), minutes))
+}
+
+/// `bars` up to `now`, and the bar forming at `now` after them, folded from
+/// the one-minute bars `minutes` fetches from a time on.
+///
+/// The history plant gives finished bars only. Without this the bar forming
+/// now would be the trades' alone, and they are only heard from when a
+/// chart subscribes: today's daily bar, opened on a chart in the afternoon,
+/// would be the one price the market last traded at, with none of the
+/// session's range behind it, and an hour's bar the same for its first
+/// minutes. Its finished minutes say what it has done so far, from the
+/// first: a daily bar from the evening its trading day opens, extended
+/// hours and all, as the plant's own daily bars are. The trades then move
+/// it from there, and once it has closed it is asked for whole.
+///
+/// A one-minute chart has no finer bars to fold, and a plant that does give
+/// the bar forming now is taken at its word. When the minutes cannot be had
+/// the bars are as they came, and the trades start the bar as before.
+fn with_forming(
+    mut bars: Vec<Bar>,
+    timeframe: Timeframe,
+    root: &str,
+    now: i64,
+    minutes: impl FnOnce(i64) -> Result<Vec<Bar>, ProviderError>,
+) -> Vec<Bar> {
+    if timeframe == Timeframe::minutes(1) {
+        return bars;
+    }
+    let forming = bucket(now, timeframe, root);
+    if bars.last().is_some_and(|bar| bar.ts >= forming) {
+        return bars;
+    }
+    // A daily bar is stamped with its trading date, and CME's trading day
+    // opens the evening before it.
+    let from = match timeframe.unit {
+        Unit::Day => forming - 86_400,
+        _ => forming,
+    };
+    let Ok(minutes) = minutes(from) else {
+        return bars;
+    };
+    let mut inside = minutes.into_iter().filter(|minute| minute.ts >= from && bucket(minute.ts, timeframe, root) == forming);
+    let Some(first) = inside.next() else {
+        return bars;
+    };
+    let bar = inside.fold(Bar { ts: forming, ..first }, |bar, minute| Bar {
+        high: bar.high.max(minute.high),
+        low: bar.low.min(minute.low),
+        close: minute.close,
+        volume: bar.volume + minute.volume,
+        ..bar
+    });
+    bars.push(bar);
+    bars
+}
+
+/// The plant's bars of `root`'s continuous series, or of the dated
+/// contract `root` names, from `from` and starting before `to`, or up to
+/// now with no `to`: finished bars only.
 ///
 /// A root is asked for as itself, which Rithmic answers with its continuous
 /// series. Where it has none for the root, its front month stands in: asked
@@ -220,7 +314,8 @@ fn now() -> i64 {
 /// reason and the next front month is the cure. A span that ends before
 /// now is older history, where having nothing is the answer rather than a
 /// sign of a roll, so the front month is not asked again for it.
-fn front_month_bars(
+fn plant_bars(
+    login: &str,
     client: &rithmic::Client,
     root: &str,
     timeframe: Timeframe,
@@ -237,7 +332,7 @@ fn front_month_bars(
     };
     if is_dated(root) {
         let contract = spelled(root);
-        let bars = client.bars(&contract, exchange, period, from, ask_to).map_err(map_err)?;
+        let bars = client.bars(&contract, exchange, period, from, ask_to).map_err(|error| map_err(login, error))?;
         return Ok(own(&contract, bars));
     }
     match client.bars(root, exchange, period, from, ask_to) {
@@ -245,17 +340,17 @@ fn front_month_bars(
         Ok(none) if to.is_some() => return Ok(own(root, none)),
         _ => {}
     }
-    let contract = client.front_month(root, exchange).map_err(map_err)?;
+    let contract = client.front_month(root, exchange).map_err(|error| map_err(login, error))?;
     let first = client.bars(&contract, exchange, period, from, ask_to);
     let (contract, bars) = match first {
         Ok(bars) if !bars.is_empty() || to.is_some() => (contract, bars),
         stale => {
             client.forget_front_month(root, exchange);
-            let fresh = client.front_month(root, exchange).map_err(map_err)?;
+            let fresh = client.front_month(root, exchange).map_err(|error| map_err(login, error))?;
             if fresh == contract {
-                (contract, stale.map_err(map_err)?)
+                (contract, stale.map_err(|error| map_err(login, error))?)
             } else {
-                let bars = client.bars(&fresh, exchange, period, from, ask_to).map_err(map_err)?;
+                let bars = client.bars(&fresh, exchange, period, from, ask_to).map_err(|error| map_err(login, error))?;
                 (fresh, bars)
             }
         }
@@ -322,7 +417,18 @@ fn placeholder() -> Instrument {
 ///
 /// A snapshot that ends on a bar already closed leaves the next bar to the
 /// trades, and that first bar may have missed some from before the
-/// subscription began: it is asked for again the same way.
+/// subscription began: it is asked for again the same way. Before it
+/// closes, once the plant has the minute its first trade was in, the
+/// minutes it has so far are asked for too and put under the trades
+/// ([`Fold::mend`]): its open, and the high and low it made before
+/// anybody was listening, are the market's rather than the first trade's.
+///
+/// A snapshot can also end short of the bar before the one forming: the
+/// plant has a bar a few seconds after it closes, and a subscription that
+/// starts in those seconds — a switch of chartbook is one — is answered
+/// without it. Nothing else would ever fill that slot, so the first one
+/// missing is asked for once it is due, with everything after it, and so
+/// is a bar the plant folded as forming that closed before it answered.
 ///
 /// Only a trade for a bar older than the one forming is dropped. That bar is
 /// the snapshot's, or is asked for whole.
@@ -335,11 +441,14 @@ struct Fold {
     /// The snapshot's own forming bar, and when the plant answered, in
     /// nanoseconds: a trade in it matched no later than that may be in it.
     counted: Option<(i64, i64)>,
-    /// Bars that may be missing trades, by start: asked for again once they
-    /// have closed.
+    /// Bars that may be missing trades, or missing altogether, by start:
+    /// asked for again, with every bar after them, once they have closed.
     partial: Vec<i64>,
     /// The next new bar is partial.
     fresh: bool,
+    /// The forming bar the trades started part-way through, waiting for
+    /// its finished minutes.
+    seed: Option<Seed>,
     /// A snapshot has arrived: until one has, there is nothing to fold into.
     ready: bool,
     /// Snapshots asked for and not yet answered.
@@ -348,6 +457,24 @@ struct Fold {
     /// older than the newest of them, so they are folded onto it again.
     heard: Vec<rithmic::Trade>,
 }
+
+/// A forming bar started by the first trade heard, which the minutes
+/// before that trade belong in too.
+#[derive(Clone, Copy, Debug)]
+struct Seed {
+    /// The bar's start.
+    start: i64,
+    /// The end of the minute the first trade was in, in seconds: the
+    /// minutes the plant has by then hold every trade before it.
+    after: i64,
+    /// The size of the trades from `after` on, which those minutes do not.
+    volume: f64,
+    /// Asked for already: it is asked once.
+    asked: bool,
+}
+
+/// The plant has a closed minute a few seconds after it closes.
+const SETTLED: i64 = 30;
 
 impl Fold {
     fn new(timeframe: Timeframe, root: &str) -> Fold {
@@ -359,6 +486,7 @@ impl Fold {
             counted: None,
             partial: Vec::new(),
             fresh: true,
+            seed: None,
             ready: false,
             loading: 0,
             heard: Vec::new(),
@@ -378,28 +506,47 @@ impl Fold {
         }
     }
 
-    /// Start again from a snapshot the plant answered at `answered`, in
-    /// nanoseconds. The forming bar, if the trades heard while it was
-    /// fetched moved it past what the snapshot says.
-    fn snapshot(&mut self, bars: &[Bar], answered: i64) -> Option<Bar> {
+    fn bucket(&self, nanos: i64) -> i64 {
+        bucket(nanos.div_euclid(1_000_000_000), self.timeframe, &self.root)
+    }
+
+    /// Start again from a snapshot asked for at `asked` and answered at
+    /// `answered`, both in nanoseconds. The forming bar, if the trades
+    /// heard while it was fetched moved it past what the snapshot says.
+    fn snapshot(&mut self, bars: &[Bar], asked: i64, answered: i64) -> Option<Bar> {
         self.loading = self.loading.saturating_sub(1);
         self.ready = true;
         self.forming = None;
         self.counted = None;
-        let now = bucket(answered.div_euclid(1_000_000_000), self.timeframe, &self.root);
+        self.seed = None;
+        let now = self.bucket(answered);
         match bars.last() {
             Some(last) if last.ts == now => {
                 self.floor = Some(last.ts);
                 self.forming = Some(*last);
                 self.counted = Some((last.ts, answered));
-                if !self.partial.contains(&last.ts) {
-                    self.partial.push(last.ts);
-                }
+                self.owe(last.ts);
                 self.fresh = false;
             }
             last => {
                 self.floor = last.map(|bar| bar.ts + 1);
                 self.fresh = true;
+                if let Some(last) = last {
+                    // Forming when the plant was asked, and closed by the
+                    // time it answered: what it had of the bar then.
+                    if last.ts == self.bucket(asked) {
+                        self.owe(last.ts);
+                    }
+                    // The plant had not got as far as the bar before the
+                    // one forming: the first slot it left out, and the
+                    // rest with it. Intraday only, where every slot is
+                    // the same length and an empty one asked for costs
+                    // one answer with nothing in it.
+                    let next = last.ts + self.timeframe.seconds();
+                    if self.timeframe.is_intraday() && next < now {
+                        self.owe(next);
+                    }
+                }
             }
         }
         let heard = if self.loading == 0 { std::mem::take(&mut self.heard) } else { self.heard.clone() };
@@ -410,6 +557,13 @@ impl Fold {
             }
         }
         moved
+    }
+
+    /// The bar starting at `start` is to be asked for whole once closed.
+    fn owe(&mut self, start: i64) {
+        if !self.partial.contains(&start) {
+            self.partial.push(start);
+        }
     }
 
     /// One trade, as it arrives. The bar it changed, if it changed one.
@@ -437,13 +591,23 @@ impl Fold {
                 bar.low = bar.low.min(trade.price);
                 bar.close = trade.price;
                 bar.volume += volume;
+                if let Some(seed) = self.seed.as_mut().filter(|seed| seed.start == start && ts >= seed.after) {
+                    seed.volume += volume;
+                }
             }
             // A late trade for a bar already behind us: the bar it belongs to
             // is asked for whole once it has closed, so it is dropped here.
             Some(bar) if start < bar.ts => return None,
             _ => {
+                self.seed = None;
                 if std::mem::take(&mut self.fresh) {
-                    self.partial.push(start);
+                    self.owe(start);
+                    // A minute is the finest the plant has: a one-minute
+                    // bar has nothing to be seeded from.
+                    if self.timeframe.seconds() > 60 {
+                        let after = (ts.div_euclid(60) + 1) * 60;
+                        self.seed = Some(Seed { start, after, volume: 0.0, asked: false });
+                    }
                 }
                 self.forming = Some(Bar {
                     ts: start,
@@ -458,16 +622,58 @@ impl Fold {
         self.forming
     }
 
-    /// Partial bars that closed long enough ago for the history plant to
-    /// have them whole, taken off the list.
+    /// What to ask the plant for at `now`, by start: partial bars that
+    /// closed long enough ago for the plant to have them whole, taken off
+    /// the list, and the forming bar's minutes once it has the first.
     fn due(&mut self, now: i64) -> Vec<i64> {
-        // The plant has a closed minute a few seconds after it closes.
-        const SETTLED: i64 = 30;
         let length = self.timeframe.seconds();
-        let (due, waiting): (Vec<i64>, Vec<i64>) =
+        let (mut due, waiting): (Vec<i64>, Vec<i64>) =
             self.partial.iter().partition(|start| **start + length + SETTLED <= now);
         self.partial = waiting;
+        if let Some(seed) = self.seed.as_mut().filter(|seed| !seed.asked && seed.after + SETTLED <= now) {
+            seed.asked = true;
+            if !due.contains(&seed.start) {
+                due.push(seed.start);
+            }
+        }
         due
+    }
+
+    /// What the plant answered, asked at `asked` in nanoseconds, for bars
+    /// from a start on: the bars it changed, oldest first.
+    ///
+    /// A bar that had closed when the plant was asked is whole, and is
+    /// taken as it is. The one forming then is its finished minutes, and
+    /// only the bar the trades started part-way through is put on them:
+    /// their open, the trades' close — the market's last word — and the
+    /// high and low of both. The size is the minutes' and that of the
+    /// trades after them; the bar is asked for whole once closed, which
+    /// settles it.
+    fn mend(&mut self, bars: &[Bar], asked: i64) -> Vec<Bar> {
+        let open = self.bucket(asked);
+        let mut changed = Vec::new();
+        for bar in bars {
+            if bar.ts < open {
+                if let Some(forming) = self.forming.as_mut().filter(|forming| forming.ts == bar.ts) {
+                    *forming = *bar;
+                }
+                changed.push(*bar);
+                continue;
+            }
+            let Some(seed) = self.seed.filter(|seed| seed.asked && seed.start == bar.ts) else { continue };
+            let Some(forming) = self.forming.as_mut().filter(|forming| forming.ts == bar.ts) else { continue };
+            *forming = Bar {
+                ts: bar.ts,
+                open: bar.open,
+                high: bar.high.max(forming.high),
+                low: bar.low.min(forming.low),
+                close: forming.close,
+                volume: bar.volume + seed.volume,
+            };
+            self.seed = None;
+            changed.push(*forming);
+        }
+        changed
     }
 }
 
@@ -475,10 +681,12 @@ impl Fold {
 /// its history thread fetched.
 enum Event {
     Live(rithmic::Live),
-    /// A snapshot, and when the plant answered, in nanoseconds.
-    Loaded { bars: Result<Vec<Bar>, ProviderError>, at: i64 },
-    /// A partial bar, asked for again once it closed, as the plant has it.
-    Whole(Bar),
+    /// A snapshot, and when the plant was asked and answered, in
+    /// nanoseconds.
+    Loaded { bars: Result<Vec<Bar>, ProviderError>, asked: i64, at: i64 },
+    /// A partial bar asked for again once it closed, and the bars after it,
+    /// as the plant has them, and when it was asked, in nanoseconds.
+    Whole { bars: Vec<Bar>, asked: i64 },
     Stop,
 }
 
@@ -486,7 +694,7 @@ enum Event {
 enum Job {
     /// A snapshot, from this time on.
     Snapshot(i64),
-    /// The bar starting then, whole.
+    /// The bar starting then, whole, and every bar after it.
     Whole(i64),
 }
 
@@ -512,13 +720,15 @@ impl Drop for Live {
     }
 }
 
-fn failure(error: rithmic::Error) -> FetchFailure {
-    FetchFailure::from(&map_err(error))
+fn failure(login: &str, error: rithmic::Error) -> FetchFailure {
+    FetchFailure::from(&map_err(login, error))
 }
 
 /// One subscription's life, on a thread of its own: watch the front month,
 /// and hand what the session hears to [`serve`].
+#[allow(clippy::too_many_arguments)]
 fn stream(
+    login: &'static str,
     root: String,
     timeframe: Timeframe,
     since: Option<i64>,
@@ -532,12 +742,15 @@ fn stream(
             sink(update);
         }
     };
-    let client = match session::client() {
+    let client = match session::client(login) {
         Ok(client) => client,
-        Err(error) => return say(Update::Lost(failure(error))),
+        Err(error) => return say(Update::Lost(failure(login, error))),
     };
     let heard = sender.clone();
     let hear = move |live| {
+        if let rithmic::Live::Lost(rithmic::Error::Refused(why)) = &live {
+            session::refused(login, why);
+        }
         let _ = heard.send(Event::Live(live));
     };
     let _watch = match is_dated(&root) {
@@ -546,7 +759,7 @@ fn stream(
     };
     let load: Load = {
         let root = root.clone();
-        Box::new(move |from: i64| front_month_bars(&client, &root, timeframe, from, None))
+        Box::new(move |from: i64| front_month_bars(login, &client, &root, timeframe, from, None))
     };
     let clock: Clock = Arc::new(|| chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX));
     serve(&events, sender, Fold::new(timeframe, root_of(&root)), since, load, clock, &say, &stop);
@@ -559,14 +772,17 @@ fn fetch(jobs: mpsc::Receiver<Job>, mut load: Load, clock: Clock, back: mpsc::Se
     for job in jobs {
         let event = match job {
             Job::Snapshot(from) => {
+                let asked = clock();
                 let bars = load(from);
-                Event::Loaded { bars, at: clock() }
+                Event::Loaded { bars, asked, at: clock() }
             }
             Job::Whole(start) => {
-                match load(start).ok().and_then(|bars| bars.into_iter().find(|bar| bar.ts == start)) {
-                    Some(whole) => Event::Whole(whole),
-                    None => continue,
+                let asked = clock();
+                let bars: Vec<Bar> = load(start).unwrap_or_default().into_iter().filter(|bar| bar.ts >= start).collect();
+                if bars.is_empty() {
+                    continue;
                 }
+                Event::Whole { bars, asked }
             }
         };
         if back.send(event).is_err() {
@@ -630,9 +846,9 @@ fn serve(
                     return;
                 }
             }
-            Event::Loaded { bars: Ok(bars), at } => {
+            Event::Loaded { bars: Ok(bars), asked, at } => {
                 served = true;
-                let moved = fold.snapshot(&bars, at);
+                let moved = fold.snapshot(&bars, asked, at);
                 if let Some(last) = bars.last() {
                     sent(last, &mut newest);
                 }
@@ -646,7 +862,12 @@ fn serve(
                 fold.failed();
                 say(Update::Lost(FetchFailure::from(&error)));
             }
-            Event::Whole(whole) => say(Update::Bar(whole)),
+            Event::Whole { bars, asked } => {
+                for bar in fold.mend(&bars, asked) {
+                    sent(&bar, &mut newest);
+                    say(Update::Bar(bar));
+                }
+            }
             // The trade a subscription opens with is folded as any other:
             // a finished bar the plant gave already has it and leaves it
             // out, and the bar forming now, which the plant does not give,
@@ -663,7 +884,7 @@ fn serve(
                     }
                 }
             }
-            Event::Live(rithmic::Live::Lost(error)) => say(Update::Lost(failure(error))),
+            Event::Live(rithmic::Live::Lost(error)) => say(Update::Lost(FetchFailure::from(&describe(error)))),
         }
     }
 }
@@ -686,9 +907,10 @@ impl Stream for Rithmic {
         let root = symbol.to_string();
         let sender = events.clone();
         let stopping = stop.clone();
+        let login = self.login();
         std::thread::Builder::new()
             .name("omacharts rithmic stream".into())
-            .spawn(move || stream(root, timeframe, since, sink, stopping, inbox, sender))
+            .spawn(move || stream(login, root, timeframe, since, sink, stopping, inbox, sender))
             .map_err(|error| ProviderError::Network(error.to_string()))?;
         Ok(Box::new(Live { stop, events }))
     }
@@ -696,11 +918,11 @@ impl Stream for Rithmic {
 
 impl Provider for Rithmic {
     fn id(&self) -> &'static str {
-        "rithmic"
+        self.feed.id
     }
 
     fn label(&self) -> &'static str {
-        "Rithmic"
+        self.feed.label
     }
 
     /// The login's own feed, as it prints.
@@ -709,7 +931,7 @@ impl Provider for Rithmic {
     }
 
     fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
-        rithmic_symbol(instrument)
+        rithmic_symbol(self.login(), instrument)
     }
 
     /// A root as its front month, which is what [`front_month_bars`]
@@ -740,9 +962,10 @@ impl Provider for Rithmic {
                 "Rithmic charts are served by the open window, which holds the one session".into(),
             ));
         }
-        let client = session::client().map_err(map_err)?;
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
         let from = since.unwrap_or_else(|| now() - depth(timeframe));
-        front_month_bars(&client, symbol, timeframe, from, None)
+        front_month_bars(login, &client, symbol, timeframe, from, None)
     }
 
     /// Only the span asked for, never what comes after it: the chart holds
@@ -754,8 +977,9 @@ impl Provider for Rithmic {
                 "Rithmic charts are served by the open window, which holds the one session".into(),
             ));
         }
-        let client = session::client().map_err(map_err)?;
-        front_month_bars(&client, symbol, timeframe, since, Some(until))
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
+        front_month_bars(login, &client, symbol, timeframe, since, Some(until))
     }
 
     /// The plant keeps years of every resolution it serves, so a chart
@@ -782,8 +1006,9 @@ impl Provider for Rithmic {
         if !session::here() {
             return Err(ProviderError::NeedsSetup("Rithmic lists contracts for the open window, which holds the one session".into()));
         }
-        let client = session::client().map_err(map_err)?;
-        let listed = client.listed(root, exchange_of(root)).map_err(map_err)?;
+        let login = self.login();
+        let client = session::client(login).map_err(|error| map_err(login, error))?;
+        let listed = client.listed(root, exchange_of(root)).map_err(|error| map_err(login, error))?;
         Ok(listed
             .into_iter()
             .filter_map(|(symbol, (year, month, day))| Some((symbol, chrono::NaiveDate::from_ymd_opt(year, month, day)?)))
@@ -793,12 +1018,14 @@ impl Provider for Rithmic {
     /// The window is done with Rithmic: the session logs out of every
     /// plant. A chart that asks again later signs in again.
     fn retire(&self) {
-        rithmic::shutdown();
+        rithmic::close_data(self.login());
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     fn instrument(kind: InstrumentKind, symbol: &str) -> Instrument {
@@ -906,7 +1133,7 @@ mod tests {
             assert_eq!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), test_login), None, "{root}");
             assert!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), |_| true).is_some(), "{root}");
         }
-        assert!(session::entitled("NYMEX") || rithmic::entitled_exchanges().is_some(), "unknown means entitled");
+        assert!(session::entitled("a login no session has spoken for", "NYMEX"), "unknown means entitled");
     }
 
     #[test]
@@ -961,7 +1188,7 @@ mod tests {
         let minute = Timeframe::minutes(1);
         let mut fold = Fold::new(minute, "ES");
         let snapshot = [ohlc(600, 1.0, 1.0, 1.0, 1.0, 1.0), ohlc(660, 3.0, 4.0, 2.0, 3.0, 10.0)];
-        assert_eq!(fold.snapshot(&snapshot, 690 * NANOS), None);
+        assert_eq!(fold.snapshot(&snapshot, 690 * NANOS, 690 * NANOS), None);
 
         assert_eq!(fold.trade(&trade(630, 50.0, 1)), None, "a trade for a closed bar");
         let counted = fold.trade(&trade(689, 5.0, 2)).unwrap();
@@ -987,7 +1214,7 @@ mod tests {
     fn after_a_snapshot_of_closed_bars_the_next_bar_is_built_and_asked_for_again() {
         let minute = Timeframe::minutes(1);
         let mut fold = Fold::new(minute, "ES");
-        fold.snapshot(&[ohlc(600, 1.0, 1.0, 1.0, 1.0, 1.0)], 665 * NANOS);
+        fold.snapshot(&[ohlc(600, 1.0, 1.0, 1.0, 1.0, 1.0)], 665 * NANOS, 665 * NANOS);
         assert_eq!(fold.trade(&trade(630, 5.0, 2)), None, "the snapshot's own minute");
 
         let first = fold.trade(&trade(666, 10.0, 2)).unwrap();
@@ -1007,7 +1234,7 @@ mod tests {
         fold.asking();
         assert_eq!(fold.trade(&trade(670, 2.0, 1)), None);
         assert_eq!(fold.trade(&trade(680, 9.0, 5)), None);
-        let moved = fold.snapshot(&[ohlc(660, 3.0, 4.0, 2.0, 3.0, 10.0)], 675 * NANOS).unwrap();
+        let moved = fold.snapshot(&[ohlc(660, 3.0, 4.0, 2.0, 3.0, 10.0)], 675 * NANOS, 675 * NANOS).unwrap();
         assert_eq!((moved.high, moved.low, moved.close, moved.volume), (9.0, 2.0, 9.0, 15.0));
     }
 
@@ -1026,6 +1253,15 @@ mod tests {
             now: i64,
             load: impl FnMut(i64) -> Result<Vec<Bar>, ProviderError> + Send + 'static,
         ) -> Served {
+            Served::start_at(Timeframe::minutes(1), since, now, load)
+        }
+
+        fn start_at(
+            timeframe: Timeframe,
+            since: Option<i64>,
+            now: i64,
+            load: impl FnMut(i64) -> Result<Vec<Bar>, ProviderError> + Send + 'static,
+        ) -> Served {
             let (send, events) = mpsc::channel();
             let (tell, heard) = mpsc::channel();
             let clock = Arc::new(std::sync::atomic::AtomicI64::new(now * NANOS));
@@ -1036,7 +1272,7 @@ mod tests {
                     let _ = tell.send(update);
                 };
                 let clock: Clock = Arc::new(move || reading.load(Ordering::SeqCst));
-                let fold = Fold::new(Timeframe::minutes(1), "ES");
+                let fold = Fold::new(timeframe, "ES");
                 serve(&events, back, fold, since, Box::new(load), clock, &say, &AtomicBool::new(false));
             });
             Served { send, heard, clock, thread: Some(thread) }
@@ -1251,18 +1487,329 @@ mod tests {
         assert_eq!(bucket(tuesday + 3_600, Timeframe::days(1), "ES"), tuesday);
     }
 
+    /// Tuesday 2026-11-03, ES's trading date: its session opened at 17:00
+    /// in Chicago on the Monday, 23:00 UTC, and it is now 15:00 UTC, 09:00
+    /// in Chicago, into the regular session.
+    const TUESDAY: i64 = 1_793_664_000;
+    const TUESDAY_OPENS: i64 = TUESDAY - 3_600;
+    const NOW: i64 = TUESDAY + 15 * 3_600;
+
+    /// What the plant has of Tuesday so far at 15:00 UTC: finished minutes
+    /// from the Monday afternoon, which are Monday's, through the overnight
+    /// and into the regular session. The overnight makes the low, the
+    /// regular session the high.
+    fn tuesdays_minutes() -> Vec<Bar> {
+        vec![
+            ohlc(TUESDAY_OPENS - 7_200, 6_900.0, 6_910.0, 6_890.0, 6_905.0, 50.0),
+            ohlc(TUESDAY_OPENS, 6_800.0, 6_802.0, 6_799.0, 6_801.0, 10.0),
+            ohlc(TUESDAY_OPENS + 3 * 3_600, 6_801.0, 6_801.0, 6_750.0, 6_760.0, 20.0),
+            ohlc(TUESDAY + 14 * 3_600 + 1_800, 6_760.0, 6_840.0, 6_760.0, 6_830.0, 30.0),
+            ohlc(NOW - 60, 6_830.0, 6_831.0, 6_820.0, 6_825.0, 40.0),
+        ]
+    }
+
+    /// The days the plant gives: Monday's, finished, and not Tuesday's.
+    fn finished_days() -> Vec<Bar> {
+        vec![
+            ohlc(TUESDAY - 2 * 86_400, 6_850.0, 6_880.0, 6_840.0, 6_870.0, 900.0),
+            ohlc(TUESDAY - 86_400, 6_870.0, 6_920.0, 6_860.0, 6_905.0, 1_000.0),
+        ]
+    }
+
+    /// The bug: the plant gives finished days only, and today's bar was the
+    /// trade a watch opened with, one price with no range. Today's bar is
+    /// folded from its finished minutes, from the evening its trading day
+    /// opened, the overnight with them, and Monday's afternoon left out.
+    #[test]
+    fn todays_daily_bar_is_the_whole_session_so_far() {
+        let day = Timeframe::days(1);
+        let asked = std::cell::Cell::new(None);
+        let bars = with_forming(finished_days(), day, "ES", NOW, |from| {
+            asked.set(Some(from));
+            Ok(tuesdays_minutes())
+        });
+        assert!(asked.get().is_some_and(|from| from <= TUESDAY_OPENS), "asked from {:?}", asked.get());
+        assert_eq!(bars.len(), 3);
+        assert_eq!(&bars[..2], &finished_days()[..]);
+        let today = bars[2];
+        assert_eq!(today.ts, TUESDAY);
+        assert_eq!((today.open, today.high, today.low, today.close), (6_800.0, 6_840.0, 6_750.0, 6_825.0));
+        assert_eq!(today.volume, 100.0);
+    }
+
+    /// On regular hours a daily bar is still the trading day's, as every
+    /// day before it is: the session filter leaves daily bars whole, so
+    /// today's keeps the overnight's open and low, the same as on extended
+    /// hours.
+    #[test]
+    fn todays_daily_bar_is_the_same_on_extended_and_regular_hours() {
+        let bars = with_forming(finished_days(), Timeframe::days(1), "ES", NOW, |_| Ok(tuesdays_minutes()));
+        let es = instrument(InstrumentKind::FutureRoot, "ES");
+        for session in crate::Session::ALL {
+            let drawn = crate::session::filter(&bars, session, &es, false);
+            let today = drawn.last().copied().expect("today's bar");
+            assert_eq!((today.ts, today.open, today.high, today.low), (TUESDAY, 6_800.0, 6_840.0, 6_750.0), "{session:?}");
+        }
+    }
+
+    /// An hour, the bars a four-hour chart folds from, starts the same way:
+    /// its finished minutes, and none from the hour before.
+    #[test]
+    fn the_forming_hour_is_its_finished_minutes() {
+        let hour = Timeframe::hours(1);
+        let now = TUESDAY + 14 * 3_600 + 2_000;
+        let finished = vec![ohlc(TUESDAY + 13 * 3_600, 6_770.0, 6_775.0, 6_765.0, 6_760.0, 5.0)];
+        let minutes = vec![
+            ohlc(TUESDAY + 13 * 3_600 + 3_540, 6_760.0, 6_790.0, 6_700.0, 6_760.0, 9.0),
+            ohlc(TUESDAY + 14 * 3_600, 6_760.0, 6_765.0, 6_755.0, 6_762.0, 3.0),
+            ohlc(TUESDAY + 14 * 3_600 + 1_800, 6_762.0, 6_840.0, 6_760.0, 6_830.0, 30.0),
+        ];
+        let bars = with_forming(finished.clone(), hour, "ES", now, |from| {
+            assert_eq!(from, TUESDAY + 14 * 3_600);
+            Ok(minutes)
+        });
+        let forming = bars[1];
+        assert_eq!((forming.ts, forming.open, forming.high, forming.low, forming.close), (TUESDAY + 14 * 3_600, 6_760.0, 6_840.0, 6_755.0, 6_830.0));
+        assert_eq!(forming.volume, 33.0);
+    }
+
+    /// The plant's own forming bar is taken as it is, a one-minute chart
+    /// has nothing finer, and minutes that cannot be had leave the bars as
+    /// they came: none of them asks for minutes it will not use.
+    #[test]
+    fn nothing_is_folded_where_there_is_nothing_to_fold() {
+        let day = Timeframe::days(1);
+        let unasked = |_| -> Result<Vec<Bar>, ProviderError> { panic!("minutes asked for") };
+        let mut given = finished_days();
+        given.push(ohlc(TUESDAY, 6_800.0, 6_850.0, 6_700.0, 6_820.0, 99.0));
+        assert_eq!(with_forming(given.clone(), day, "ES", NOW, unasked), given);
+        let minute = Timeframe::minutes(1);
+        assert_eq!(with_forming(tuesdays_minutes(), minute, "ES", NOW, unasked), tuesdays_minutes());
+
+        let down = with_forming(finished_days(), day, "ES", NOW, |_| Err(ProviderError::Network("down".into())));
+        assert_eq!(down, finished_days());
+        let quiet = with_forming(finished_days(), day, "ES", NOW, |_| Ok(Vec::new()));
+        assert_eq!(quiet, finished_days());
+    }
+
+    /// End to end on a daily chart, the way it went wrong after a switch of
+    /// chartbook: a fresh watch, a snapshot of finished days, and the trade
+    /// the watch opens with. Today's bar keeps the session's open, high and
+    /// low, and the trade only moves its close.
+    #[test]
+    fn a_daily_chart_watched_mid_session_draws_today_whole() {
+        let day = Timeframe::days(1);
+        let load = |_| Ok(with_forming(finished_days(), Timeframe::days(1), "ES", NOW, |_| Ok(tuesdays_minutes())));
+        let served = Served::start_at(day, Some(TUESDAY - 86_400), NOW + 5, load);
+        served.watching();
+        let snapshot = served.snapshot();
+        assert_eq!(snapshot.last().map(|bar| bar.ts), Some(TUESDAY));
+        served.send.send(Event::Live(rithmic::Live::Last(trade(NOW + 10, 6_822.0, 1)))).unwrap();
+        let today = served.bar();
+        assert_eq!((today.ts, today.open, today.high, today.low, today.close), (TUESDAY, 6_800.0, 6_840.0, 6_750.0, 6_822.0));
+    }
+
     /// The test that matters most about errors: a login refused, or
     /// missing, is something to sign in again about rather than a network
     /// failure to sit out; and none of them can carry a password.
+    /// The history plant as it is at `now`: the bars of `minutes` it has
+    /// finished and settled, `lag` seconds after each closes, at
+    /// `timeframe` from `from` on, and the bar forming at `now` folded from
+    /// the minutes it has of it, as [`front_month_bars`] asks.
+    fn plant(minutes: &[Bar], timeframe: Timeframe, lag: i64, now: i64, from: i64) -> Vec<Bar> {
+        let settled = |length: i64| move |bar: &Bar| bar.ts + length + lag <= now;
+        let finished: Vec<Bar> = minutes.iter().copied().filter(settled(60)).collect();
+        let mut bars: Vec<Bar> = Vec::new();
+        for minute in &finished {
+            let start = bucket(minute.ts, timeframe, "ES");
+            match bars.last_mut() {
+                Some(bar) if bar.ts == start => {
+                    bar.high = bar.high.max(minute.high);
+                    bar.low = bar.low.min(minute.low);
+                    bar.close = minute.close;
+                    bar.volume += minute.volume;
+                }
+                _ => bars.push(Bar { ts: start, ..*minute }),
+            }
+        }
+        bars.retain(|bar| bar.ts >= from && settled(timeframe.seconds())(bar));
+        with_forming(bars, timeframe, "ES", now, |from| Ok(finished.iter().copied().filter(|bar| bar.ts >= from).collect()))
+    }
+
+    /// Every update a served subscription sends, put together as the
+    /// window's series does, until `done` says it has enough.
+    fn drawn(served: &Served, series: &mut Vec<Bar>, done: impl Fn(&[Bar]) -> bool) {
+        while !done(series) {
+            match served.next() {
+                Update::Snapshot(bars) => *series = bars,
+                Update::Bar(bar) => {
+                    crate::stream::upsert(series, bar);
+                }
+                Update::Lost(why) => panic!("lost: {why:?}"),
+            }
+        }
+    }
+
+    /// The bug, as a switch of chartbook met it on two-minute bars: the
+    /// subscription opened a few seconds into a bar, before the plant had
+    /// settled the one that just closed. The snapshot ended a bar short,
+    /// the bar forming was started by the first trade heard, and nothing
+    /// ever asked for the bar in between: the chart's last bar sat far from
+    /// the close before it, with none of what its interval had done before
+    /// the switch. The missing bar is asked for once the plant has it, and
+    /// the forming bar is put on its finished minutes once there is one:
+    /// no slot is missing, and the last bar opens where its interval did.
+    #[test]
+    fn a_chart_switched_to_early_in_a_bar_misses_no_bar_and_none_of_the_forming_one() {
+        let two = Timeframe::minutes(2);
+        // A two-minute boundary, and the chart's cache ten minutes behind it.
+        let bar = AT;
+        let since = bar - 600;
+        // A market climbing a point a minute, and then the forming bar's
+        // first minute: its open, its high and its low all made before the
+        // switch, and the minute after it.
+        let mut minutes: Vec<Bar> = (0..20)
+            .map(|i| {
+                let price = 100.0 + f64::from(i);
+                ohlc(bar - 1_200 + 60 * i64::from(i), price, price + 0.75, price - 0.25, price + 0.5, 10.0)
+            })
+            .collect();
+        minutes.push(ohlc(bar, 120.0, 126.0, 119.0, 125.0, 10.0));
+        minutes.push(ohlc(bar + 60, 125.0, 127.0, 124.5, 127.0, 7.0));
+        let truth = plant(&minutes, two, 0, bar + 120, 0);
+
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let reading = clock.clone();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let asking = asked.clone();
+        let fed = minutes.clone();
+        let served = Served::start_at(two, Some(since), bar + 10, move |from| {
+            asking.lock().unwrap().push(from);
+            // The plant settles a bar twenty seconds after it closes.
+            Ok(plant(&fed, two, 20, reading.load(Ordering::SeqCst), from))
+        });
+        let at = |seconds: i64| {
+            served.at(seconds);
+            clock.store(seconds, Ordering::SeqCst);
+        };
+        at(bar + 10);
+        served.watching();
+        let mut series = Vec::new();
+        drawn(&served, &mut series, |series| !series.is_empty());
+        assert_eq!(series.last().map(|bar| bar.ts), Some(bar - 240), "the plant had not settled the bar before");
+
+        // The first trade heard starts the forming bar, part-way through.
+        served.trade(bar + 15, 124.0, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.ts == bar));
+        assert_eq!(series.last().map(|last| last.open), Some(124.0), "as far as the trades go");
+
+        // Once the plant has it, the bar left out is asked for, and drawn.
+        at(bar + 31);
+        served.trade(bar + 31, 125.0, 1);
+        drawn(&served, &mut series, |series| series.iter().any(|drawn| drawn.ts == bar - 120));
+
+        // Once the plant has the minute the first trade was in, the forming
+        // bar is put on its minutes: its open, high and low are the
+        // interval's, its close the last trade's.
+        at(bar + 91);
+        served.trade(bar + 91, 127.0, 2);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.open == 120.0));
+
+        let slots: Vec<i64> = series.iter().map(|drawn| drawn.ts).filter(|ts| *ts >= since).collect();
+        assert_eq!(slots, (0..=5).map(|i| since + 120 * i).collect::<Vec<_>>(), "no slot missing");
+        for drawn in series.iter().filter(|drawn| drawn.ts < bar) {
+            assert_eq!(Some(drawn), truth.iter().find(|whole| whole.ts == drawn.ts), "{}", drawn.ts);
+        }
+        let last = *series.last().unwrap();
+        assert_eq!((last.ts, last.open, last.high, last.low, last.close), (bar, 120.0, 127.0, 119.0, 127.0));
+        assert_eq!(last.volume, 12.0, "the first minute's, and the trades after it");
+        // Two asks besides the snapshot, each once.
+        assert_eq!(asked.lock().unwrap().len(), 3, "{:?}", asked.lock().unwrap());
+    }
+
+    /// The same switch half a bar later: the plant has the bar before, and
+    /// the forming bar's first minute, and the snapshot draws it from them,
+    /// with nothing more to ask until it closes.
+    #[test]
+    fn a_chart_switched_to_late_in_a_bar_draws_it_from_its_minutes() {
+        let two = Timeframe::minutes(2);
+        let bar = AT;
+        let minutes = vec![
+            ohlc(bar - 120, 100.0, 101.0, 99.0, 100.5, 10.0),
+            ohlc(bar - 60, 100.5, 102.0, 100.0, 101.0, 10.0),
+            ohlc(bar, 110.0, 115.0, 109.0, 114.0, 10.0),
+        ];
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = calls.clone();
+        let served = Served::start_at(two, Some(bar - 120), bar + 85, move |from| {
+            counting.fetch_add(1, Ordering::SeqCst);
+            Ok(plant(&minutes, two, 20, bar + 85, from))
+        });
+        served.watching();
+        let mut series = Vec::new();
+        drawn(&served, &mut series, |series| !series.is_empty());
+        served.trade(bar + 86, 113.0, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.close == 113.0));
+        let last = *series.last().unwrap();
+        assert_eq!((last.ts, last.open, last.high, last.low), (bar, 110.0, 115.0, 109.0));
+        assert_eq!(series.iter().map(|drawn| drawn.ts).collect::<Vec<_>>(), vec![bar - 120, bar]);
+        served.at(bar + 100);
+        served.trade(bar + 100, 112.0, 1);
+        assert_eq!(served.bar().close, 112.0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "nothing asked before the bar closes");
+    }
+
+    /// A bar the plant folded as forming when it was asked, and which had
+    /// closed by the time it answered, is only what it had then: it is
+    /// asked for whole, as the snapshot's forming bar would be.
+    #[test]
+    fn a_forming_bar_closed_before_the_plant_answered_is_asked_for_whole() {
+        let mut fold = Fold::new(Timeframe::minutes(2), "ES");
+        let snapshot = [ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0), ohlc(AT, 1.0, 2.0, 1.0, 2.0, 5.0)];
+        fold.snapshot(&snapshot, (AT + 110) * NANOS, (AT + 125) * NANOS);
+        assert!(fold.trade(&trade(AT + 126, 3.0, 1)).is_some());
+        assert!(fold.due(AT + 120 + 29).is_empty());
+        assert_eq!(fold.due(AT + 120 + 30), vec![AT]);
+    }
+
+    /// A one-minute bar has nothing finer to be seeded from: the trades
+    /// start it, it is asked for whole once closed, and nothing is asked
+    /// before then.
+    #[test]
+    fn a_minute_is_not_seeded() {
+        let mut fold = Fold::new(Timeframe::minutes(1), "ES");
+        fold.snapshot(&[ohlc(AT - 60, 1.0, 1.0, 1.0, 1.0, 1.0)], (AT + 5) * NANOS, (AT + 5) * NANOS);
+        fold.trade(&trade(AT + 10, 2.0, 1)).unwrap();
+        assert!(fold.due(AT + 59).is_empty());
+        assert_eq!(fold.due(AT + 90), vec![AT]);
+    }
+
+    /// A snapshot that ends at the close before a halt, answered as the
+    /// market reopens, asks once for the hour in between, which has
+    /// nothing, rather than a bar at a time.
+    #[test]
+    fn a_halt_is_asked_for_once() {
+        let mut fold = Fold::new(Timeframe::minutes(2), "ES");
+        let reopens = AT + 3_720;
+        fold.snapshot(&[ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0)], reopens * NANOS, (reopens + 2) * NANOS);
+        fold.trade(&trade(reopens + 3, 2.0, 1)).unwrap();
+        assert_eq!(fold.due(reopens + 4), vec![AT]);
+        assert_eq!(fold.mend(&[], reopens * NANOS), vec![]);
+        assert!(fold.due(reopens + 60).is_empty());
+    }
+
     #[test]
     fn a_refusal_is_a_sign_in_in_rithmics_words() {
-        let mapped = map_err(rithmic::Error::Refused("permission denied".into()));
+        let mapped = map_err("acme-mapped", rithmic::Error::Refused("permission denied".into()));
         assert!(matches!(&mapped, ProviderError::NeedsSetup(why) if why.contains("permission denied")), "{mapped}");
         assert_eq!(FetchFailure::from(&mapped), FetchFailure::NeedsSignIn);
-        let missing = map_err(rithmic::Error::NoLogin("no Rithmic user ID is saved".into()));
+        let missing = describe(rithmic::Error::NoLogin("no Rithmic user ID is saved".into()));
         assert_eq!(FetchFailure::from(&missing), FetchFailure::NeedsSignIn);
-        assert!(matches!(map_err(rithmic::Error::Timeout), ProviderError::Network(_)));
-        assert!(matches!(map_err(rithmic::Error::NotFound("x".into())), ProviderError::NotFound));
+        assert!(matches!(describe(rithmic::Error::Timeout), ProviderError::Network(_)));
+        assert!(matches!(describe(rithmic::Error::NotFound("x".into())), ProviderError::NotFound));
+        // Remembered for that login's row alone.
+        assert_eq!(session::refusal("acme-mapped").as_deref(), Some("permission denied"));
+        assert_eq!(session::refusal("demo-unrefused"), None);
     }
 
     /// Nothing a provider says about a login holds its password: not the
@@ -1290,7 +1837,7 @@ mod tests {
         std::fs::write(&file, format!("{PLANTED}\n")).unwrap();
         let error = rithmic::Login::from_file(&file, rithmic::TEST_SYSTEM, rithmic::TEST_URL).unwrap_err();
         texts.push(format!("{error} {error:?}"));
-        let provider = map_err(error);
+        let provider = describe(error);
         texts.push(format!("{provider} {provider:?}"));
 
         for error in [
@@ -1299,7 +1846,7 @@ mod tests {
             rithmic::Error::Rejected("no data".into()),
             rithmic::Error::NoLogin("the keyring holds no Rithmic password for Rithmic Test".into()),
         ] {
-            let mapped = map_err(error.clone());
+            let mapped = describe(error.clone());
             texts.push(format!("{error} {error:?} {mapped} {mapped:?} {:?}", FetchFailure::from(&mapped)));
         }
         let _ = std::fs::remove_dir_all(&dir);
