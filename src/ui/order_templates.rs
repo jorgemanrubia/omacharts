@@ -508,6 +508,8 @@ impl ExitGroup {
         modes.set_list_factory(Some(&mode_factory(false)));
         modes.update_property(&[gtk::accessible::Property::Label(&format!("{name} mode"))]);
         modes.set_valign(gtk::Align::Center);
+        // As wide as "Ticks" whatever it says, so templates line up alike.
+        modes.set_size_request(84, -1);
         modes.set_selected(Mode::ALL.iter().position(|mode| *mode == exit.distance.mode()).unwrap_or(0) as u32);
         self.columns.add(2, &modes);
         line.append(&modes);
@@ -627,6 +629,7 @@ impl ExitGroup {
         let shares = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         shares.add_css_class("linked");
         // The rest first, "Rest of position", then the shares going down.
+        let picked: Rc<RefCell<Option<gtk::ToggleButton>>> = Rc::default();
         for share in std::iter::once(Size::ALL).chain(Size::SHARES) {
             let text = match share.is_all() {
                 true => size_label(share, at),
@@ -641,6 +644,9 @@ impl ExitGroup {
                 sizing.set_size(at, share);
                 closing.popdown();
             });
+            if share == size {
+                picked.replace(Some(toggle.clone()));
+            }
             shares.append(&toggle);
         }
         body.append(&shares);
@@ -686,10 +692,16 @@ impl ExitGroup {
             glib::Propagation::Stop
         });
         count.add_controller(keys);
+        // Focus on what the exit says: the contracts, or the share picked.
         let focused = count.clone();
-        popover.connect_show(move |_| {
-            focused.grab_focus();
-            focused.select_region(0, -1);
+        popover.connect_show(move |_| match picked.borrow().as_ref() {
+            Some(share) => {
+                share.grab_focus();
+            }
+            None => {
+                focused.grab_focus();
+                focused.select_region(0, -1);
+            }
         });
         // Drawn again once closed, so the button and the popover say what
         // was picked.
@@ -868,7 +880,7 @@ mod tests {
             let groups = groups_in(page.upcast_ref());
             let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
             assert_eq!(titles, ["", "Targets", "Stops"]);
-            assert_eq!(notices_of(&groups[1]), ["1/2 of position has no target", "Needs 2 contracts to send the target"]);
+            assert_eq!(notices_of(&groups[1]), ["1/2 of position has no target", "Orders under 2 contracts go without the target"]);
             assert_eq!(notices_of(&groups[2]), Vec::<String>::new(), "a stop for all says nothing");
             let sizes: Vec<String> = menu_buttons_in(groups[1].upcast_ref()).iter().filter_map(|b| b.label().map(|l| l.to_string())).collect();
             assert_eq!(sizes, ["1/2 of position"]);
@@ -877,7 +889,7 @@ mod tests {
             add.emit_clicked();
             let saved = templates::load(&store);
             assert_eq!(saved[0].summary(), "+1.5R 1/2 · +2.25R rest | −1R", "the rest, half as far again");
-            assert_eq!(notices_of(&groups[1]), ["Needs 2 contracts to send every target"]);
+            assert_eq!(notices_of(&groups[1]), ["Orders under 2 contracts skip a target"]);
             let sizes: Vec<String> = menu_buttons_in(groups[1].upcast_ref()).iter().filter_map(|b| b.label().map(|l| l.to_string())).collect();
             assert_eq!(sizes, ["1/2 of position", "Rest"]);
         });

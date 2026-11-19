@@ -427,8 +427,8 @@ pub struct Notice {
 ///   and a warning for stops: "1/2 of position has no target", "Contracts
 ///   past 2 have no stop", "Part of the position has no target".
 /// - On small orders, an exit sized to nothing, a fact for targets and a
-///   warning for stops: "Needs 2
-///   contracts to send the target", "… to send every target".
+///   warning for stops: "Orders
+///   under 2 contracts go without the target", "… skip a target".
 pub fn fit(exits: &[Exit], group: Group) -> Vec<Notice> {
     let (noun, one) = match group {
         Group::Targets => ("Targets", "target"),
@@ -469,8 +469,8 @@ pub fn fit(exits: &[Exit], group: Group) -> Vec<Notice> {
     let from = (1..=10_000u32).find(|qty| split(&sizes, *qty).iter().all(|took| *took > 0));
     if let Some(from) = from.filter(|from| *from > 1) {
         let text = match sizes.len() {
-            1 => format!("Needs {from} contracts to send the {one}"),
-            _ => format!("Needs {from} contracts to send every {one}"),
+            1 => format!("Orders under {from} contracts go without the {one}"),
+            _ => format!("Orders under {from} contracts skip a {one}"),
         };
         // A stop not sent leaves that order without one.
         lines.push(Notice { text, warning: stop });
@@ -727,9 +727,9 @@ mod tests {
         let warning = |text: &str| (text.to_string(), true);
         assert_eq!(says(&[Size::ALL], Group::Stops), []);
         assert_eq!(says(&[], Group::Stops), [], "no stops is a choice");
-        assert_eq!(says(&[Size::Fixed(1), Size::ALL], Group::Targets), [fact("Needs 2 contracts to send every target")]);
-        assert_eq!(says(&[Size::Share(1, 2)], Group::Targets), [fact("1/2 of position has no target"), fact("Needs 2 contracts to send the target")]);
-        assert_eq!(says(&[Size::Share(1, 2)], Group::Stops), [warning("1/2 of position has no stop"), warning("Needs 2 contracts to send the stop")]);
+        assert_eq!(says(&[Size::Fixed(1), Size::ALL], Group::Targets), [fact("Orders under 2 contracts skip a target")]);
+        assert_eq!(says(&[Size::Share(1, 2)], Group::Targets), [fact("1/2 of position has no target"), fact("Orders under 2 contracts go without the target")]);
+        assert_eq!(says(&[Size::Share(1, 2)], Group::Stops), [warning("1/2 of position has no stop"), warning("Orders under 2 contracts go without the stop")]);
         assert_eq!(says(&[Size::Share(1, 3), Size::Share(1, 3)], Group::Targets)[0], fact("1/3 of position has no target"));
         assert_eq!(says(&[Size::Share(65, 100)], Group::Targets)[0], fact("35% of position has no target"));
         assert_eq!(says(&[Size::Fixed(1), Size::Fixed(1)], Group::Targets)[0], fact("Contracts past 2 have no target"));
@@ -777,7 +777,7 @@ mod tests {
         // The editor says the half without a target, and from when the
         // target is sent.
         let notices: Vec<String> = fit(&in_r.targets, Group::Targets).into_iter().map(|notice| notice.text).collect();
-        assert_eq!(notices, ["1/2 of position has no target", "Needs 2 contracts to send the target"]);
+        assert_eq!(notices, ["1/2 of position has no target", "Orders under 2 contracts go without the target"]);
         assert!(fit(&in_r.stops, Group::Stops).is_empty());
         assert_eq!(in_r.summary(), "+1.5R 1/2 | −1R");
     }

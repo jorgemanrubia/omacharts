@@ -104,9 +104,9 @@ Every distance rounds toward the entry, and is never under one tick.
 
 Each exit also says how much it closes: a number of contracts, the default; a share **of position**, such as 1/2, or one typed as 33% or 0.33; or the rest, **All** on a group's first exit and **Rest** after it. The position is the order's own quantity as it fills, the contracts its exits protect: a template on an order that adds to a position brackets that order only, and one that reduces it goes plain. Exits are sized top to bottom, shares rounding down as they add up, so two exits of 1/2 on a 3-lot close 1 and 2, and an exit left with nothing is not sent.
 
-Sizes need not add up. A group may close less than the position, and that part has no exit of its kind: under the group, the editor says so, as a warning for stops. It also says from how many contracts every exit is sent, and when a group asks for more than the position.
+Sizes need not add up. A group may close less than the position, and that part has no exit of its kind: under the group, the editor says so, as a warning for stops. It also says under how many contracts an order goes without one of its exits, and when a group asks for more than the position.
 
-For example, **Half off** stops all of the position at 1R and takes half of it off at 1.5R, leaving the other half to run without a target: with R at $500, a 2-lot of ES filled at 6,000.00 rests its stop at 5,995.00 and a 1-contract target at 6,007.50. On a 1-lot the half is nothing, so only the stop is sent, and the editor says *Needs 2 contracts to send the target*. Add a target sized **Rest** to take the other half off too.
+For example, **Half off** stops all of the position at 1R and takes half of it off at 1.5R, leaving the other half to run without a target: with R at $500, a 2-lot of ES filled at 6,000.00 rests its stop at 5,995.00 and a 1-contract target at 6,007.50. On a 1-lot the half is nothing, so only the stop is sent, and the editor says *Orders under 2 contracts go without the target*. Add a target sized **Rest** to take the other half off too.
 
 A template with no exits, or none left on the order's quantity, sends the order plain, and the Log says so.
 
