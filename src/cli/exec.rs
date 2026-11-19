@@ -287,6 +287,7 @@ pub fn dispatch(
             // that is fine with five symbols and stutters with five hundred.
             if let Some(live) = live.filter(|_| spec.writes && !TELL_THE_WINDOW.contains(&(noun, verb))) {
                 match spec.workspace {
+                    true if ONLY_INDICATORS.contains(&(noun, verb)) => live.adopt_indicators(),
                     true => live.reload_workspace(),
                     false => live.reload_watchlists(),
                 }
@@ -300,6 +301,13 @@ pub fn dispatch(
 /// would, so nothing is rebuilt after them. Putting the sidebar away is one
 /// button; rebuilding every chart for it would flicker the whole window.
 const TELL_THE_WINDOW: &[(&str, &str)] = &[("chartbook", "sidebar"), ("chart", "drawing-tools")];
+
+/// The verbs that change nothing in the arrangement but indicators, which
+/// the window draws again on the charts it already has. Rebuilding every
+/// chart for one indicator's colour redrew the whole window, and a colour
+/// changed from a terminal should be seen to change the way one changed in
+/// the settings is.
+const ONLY_INDICATORS: &[(&str, &str)] = &[("chart", "indicator"), ("template", "indicator")];
 
 /// Did the command say which chartbook or chart it meant?
 ///

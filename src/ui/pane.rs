@@ -340,6 +340,9 @@ pub struct ChartPane {
     /// What each cumulative delta on this chart worked out last, so a tick
     /// works out only its newest bars again.
     pub cvd_memos: omacharts_engine::indicators::cvd::Memos,
+    /// How many times this chart's indicators have been worked out: what a
+    /// change that should only repaint them is held to.
+    pub computed: Cell<u64>,
     /// The cumulative deltas on this chart any part of which is estimated
     /// from bar direction, which the legend marks.
     pub estimated: RefCell<Vec<u32>>,
@@ -875,6 +878,7 @@ impl ChartPane {
             compare: RefCell::new(Default::default()),
             compared: RefCell::new(Vec::new()),
             cvd_memos: omacharts_engine::indicators::cvd::Memos::new(),
+            computed: Cell::new(0),
             estimated: RefCell::new(Vec::new()),
             link_colour,
             glyph,
