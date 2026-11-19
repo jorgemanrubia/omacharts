@@ -205,6 +205,57 @@ pair with no parent stands on its own, and that a fill of one cancels the
 other (and a part fill reduces it) as the protocol says. Everything here is
 tested against `dtc::fake` only.
 
+### Order templates
+
+An order template is an entry with any number of targets and stops. On
+Sierra Chart the app places them (`src/trading/services/sierra/brackets.rs`),
+and the chart says so: "· Omacharts" after the template's name in the
+header and on the working entry, its tooltip that the exits go in only
+while Omacharts runs.
+
+**Why not DTC's own bracket.** The protocol has one: an entry sent with
+`IsParentOrder`, then SUBMIT_NEW_OCO_ORDER naming it in
+`ParentTriggerClientOrderID`, and the author's server says
+`BracketOrdersSupported`. But that is one target and one stop to a parent,
+and a template is any number of each. A market entry has no price for the
+pair to keep its distance from: `UseOffsets` would do it, but how Sierra
+Chart's DTC server treats offsets on a fill is not documented, and nothing
+here may send a test order to find out. And nothing of it has been tried on
+a real server. A native bracket for a priced entry with one target and one
+stop is the obvious next step, once a test order on a simulated account
+has shown how Sierra Chart answers it.
+
+**What the app does.**
+
+- *On a fill.* Each part of the entry heard filled gets its exits at once,
+  at their distance from the average fill: the template's legs that cover
+  those contracts, a target and a stop for the same contracts sent as one
+  OCO pair (no parent, quantity reduced on a part fill). From then on the
+  pair is Sierra Chart's: a target filled cancels its stop on the server,
+  with the app closed or not. A server that takes no OCO gets each exit
+  alone, and the app cancels the one left over (below).
+- *Within the position.* On every change of the book and at sign-in, the
+  exits the app placed (tagged `omx-x:`) are added up per account and
+  contract, the targets and the stops each against the position: more than
+  is held, newest first, or any on the side that would open a position, are
+  cut back or cancelled, and the Log says so. Only once they have stood
+  over it for 1.5 s, so that a fill's order update heard before its
+  position update is not taken for a smaller position.
+- *Across a restart.* The entry carries its exits in its tag
+  (`omx-b:<key>:T8x1.16x1S6x2`, within the 47 characters `FreeFormText`
+  keeps), so an entry left working gets its exits as it fills after the app
+  is opened again. What filled while it was closed is said in the Log, not
+  guessed at; a template too long for the tag is placed while the app runs
+  and is not picked up after a restart.
+
+**Its limits.** No exits go in while the app is closed or signed out: an
+entry that fills then is unprotected until it runs again, and even then
+only what fills afterwards gets its exits. Exits go in a round trip after
+the fill is heard. Whether Sierra Chart echoes the `FreeFormText` tag of an
+order across sessions is not verified; without it, nothing is picked up
+after a restart and exits over the position are not recognised as the
+app's. Tested against `dtc::fake` only.
+
 ### What was verified, and how
 
 Every order path is tested against `dtc::fake`, a DTC server in memory.

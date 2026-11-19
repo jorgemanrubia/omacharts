@@ -127,11 +127,12 @@ impl Window {
     /// it on one; nothing while the chart has no account to trade on.
     pub(super) fn write_order_template_of(&self, pane: &ChartPane, has_account: bool) {
         if !has_account {
-            return pane.write_order_template(None);
+            return pane.write_order_template(None, false);
         }
         let template = self.chart_template(pane);
         let summary = template.as_ref().map(OrderTemplate::summary);
-        pane.write_order_template(Some(template.as_ref().map(|t| t.name.as_str()).zip(summary.as_deref())));
+        let app_held = template.is_some() && self.order_target(pane).is_ok_and(|target| target.capabilities.bracket_holder == trading::Holder::App);
+        pane.write_order_template(Some(template.as_ref().map(|t| t.name.as_str()).zip(summary.as_deref())), app_held);
     }
 
     /// The Order template part's menu for chart `id`: No template, each
@@ -574,7 +575,7 @@ impl Window {
 #[cfg(test)]
 mod tests {
     use super::super::marks::{MarksSeen as _, TradeEvent};
-    use super::super::trade::tests::{long_es, settle};
+    use super::super::trade::tests::{long_es, long_es_on, settle};
     use super::*;
     use crate::trading::order_templates::{Distance, Exit, Size};
     use crate::trading::Session as _;
@@ -750,6 +751,34 @@ mod tests {
             assert!(wait(&window, || session.book().orders.len() > before), "not sent again");
             assert!(session.brackets.lock().unwrap().is_empty(), "sent again with exits");
             assert_eq!(session.book().order(&new).map(|order| order.status.stage), Some(Stage::Cancelled));
+        });
+    }
+
+    /// Where the app, not the trading service, places a template's exits
+    /// as the entry fills (Sierra Chart), the header's template and the
+    /// entry's name say "Omacharts"; nowhere else.
+    #[test]
+    fn a_template_whose_exits_the_app_places_says_so() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, _) = long_es_on(|session| session.bracket_holder = trading::Holder::App);
+            let (scalp, _) = templates_in(&window);
+            assert_eq!(pane.order_template_text(), Some(String::new()), "no template, no mark");
+            window.pick_order_template(pane.id, Some(scalp));
+            assert_eq!(pane.order_template_text(), Some(format!("Scalp · {}", trading::APP_HELD)));
+            assert!(pane.order_template_menu.tooltip_text().is_some_and(|tip| tip.contains(trading::APP_HELD_WORDS)));
+            wait(&window, || pane.view.last_price().is_some());
+            let at = (pane.view.last_price().expect("a last price") / 0.25).round() * 0.25 - 2.0;
+            let basket = limit(&session, at, 1);
+            window.desk.tell();
+            window.template_on_order(&pane, &basket, Some(scalp));
+            assert!(wait(&window, || window.trade.bracketed.borrow().len() == 1), "never bracketed");
+            let words = pane.view.marks().1;
+            assert!(words.iter().any(|w| w.contains(&format!("Scalp · {}", trading::APP_HELD))), "{words:?}");
+
+            let (window, pane, _, _) = long_es(trading::Linking::AfterTheFact);
+            let (scalp, _) = templates_in(&window);
+            window.pick_order_template(pane.id, Some(scalp));
+            assert_eq!(pane.order_template_text(), Some("Scalp".into()), "the trading service holds them");
         });
     }
 

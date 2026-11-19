@@ -90,7 +90,7 @@ crop: 2236x1800+0+0
 
 ## Order templates
 
-Order templates are **Beta**. A template is a set of exits that go in with an order: any number of targets and of stops, or none of either. With one picked, every order the chart sends goes as a bracket, a market order too, and the exits are placed by the trading service as the entry fills. An order that closes some or all of the position goes without them, and the Log says so. A trading service that takes no brackets, such as Sierra Chart, refuses an order with a template.
+Order templates are **Beta**. A template is a set of exits that go in with an order: any number of targets and of stops, or none of either. With one picked, every order the chart sends goes as a bracket, a market order too, and the exits are placed by the trading service as the entry fills. An order that closes some or all of the position goes without them, and the Log says so. On Sierra Chart, Omacharts places the exits itself as the entry fills, each target and stop as a pair Sierra Chart then holds: **· Omacharts** after the template's name says so, in the chart's header and on the working entry, and the exits go in only while Omacharts runs.
 
 **Edit order templates…**, on the header's template menu or in Preferences › Trading › **Order entry**, opens **Order templates**. **Add a template** makes one; click one to change its **Name** and its exits, drag the handle to put the templates in order, and the bin removes one. Each exit says how far it goes, in one of three ways:
 

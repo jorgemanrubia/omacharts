@@ -61,6 +61,9 @@ pub struct FakeService {
     /// The accounts every session finds opened after it signed in, listed
     /// by its first sync: [`FakeSession::opened`].
     pub opened_later: Vec<Account>,
+    /// Its sessions tell the chart the app keeps their brackets' exits, as
+    /// Sierra Chart's does: [`APP_HELD_ENV`].
+    pub app_held: bool,
     pub signed_in: AtomicUsize,
     pub signed_out: Arc<AtomicUsize>,
 }
@@ -222,6 +225,11 @@ pub const PAST_FILLS_ENV: &str = "OMACHARTS_FAKE_FILLS";
 /// login's first sync on with a balance of 50,000.
 pub const OPENED_LATER_ENV: &str = "OMACHARTS_FAKE_OPENED";
 
+/// Set in a build with the `fakes` feature, its trading service tells the
+/// chart that the app places its brackets' exits, as Sierra Chart's does,
+/// for a look at how that is shown. The fake still keeps them itself.
+pub const APP_HELD_ENV: &str = "OMACHARTS_FAKE_APP_HELD";
+
 /// The accounts `numbers` names: see [`OPENED_LATER_ENV`].
 pub fn opened_later(numbers: &str) -> Vec<Account> {
     numbers
@@ -328,6 +336,9 @@ pub struct FakeSession {
     /// How it links a stop and a target: every way a trading service can is one
     /// of these, so each is tested here.
     pub linking: Linking,
+    /// Who keeps a bracket's exits, as the chart is told: the fake itself
+    /// keeps them either way.
+    pub bracket_holder: Holder,
     /// The groups linked, each cancelled whole when one of it ends: after
     /// the fact, by [`Session::link`], or as a pair placed together.
     pub links: Mutex<Vec<Vec<String>>>,
@@ -392,6 +403,7 @@ impl FakeSession {
             flatten_cancels: false,
             tick: Mutex::new(0.25),
             linking: Linking::AfterTheFact,
+            bracket_holder: Holder::TradingService,
             links: Mutex::default(),
             pairs: AtomicUsize::new(0),
             heard: Mutex::default(),
@@ -603,6 +615,7 @@ impl Session for FakeSession {
             history: true,
             snapshot: true,
             brackets: true,
+            bracket_holder: self.bracket_holder,
         }
     }
     fn is_simulated(&self) -> bool {
@@ -928,7 +941,10 @@ impl TradingService for FakeService {
         if let Some(number) = number {
             renumber(&mut book, &mut before, number);
         }
-        let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::told(accounts, changed) };
+        let mut session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::told(accounts, changed) };
+        if self.app_held {
+            session.bracket_holder = Holder::App;
+        }
         *session.contracts.lock().unwrap() = self.contracts.clone();
         *session.held.lock().unwrap() = book;
         *session.past.lock().unwrap() = before;

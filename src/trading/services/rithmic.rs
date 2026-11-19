@@ -432,6 +432,7 @@ impl Session for RithmicSession {
             history: true,
             snapshot: true,
             brackets: true,
+            bracket_holder: Holder::TradingService,
         }
     }
 

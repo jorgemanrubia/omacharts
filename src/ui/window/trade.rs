@@ -2090,6 +2090,7 @@ impl Window {
         };
         let bracketed = self.trade.bracketed.borrow();
         let can_bracket = target.capabilities.brackets;
+        let app_held = target.capabilities.bracket_holder == trading::Holder::App;
         let picked = self.trade.picked.borrow().as_ref().filter(|(id, _)| *id == pane.id).map(|(_, basket)| basket.clone());
         let mut orders: Vec<super::marks::OrderMark> = view
             .book
@@ -2112,8 +2113,10 @@ impl Window {
                 let (body, colour) = order_look(order.side, order.kind, left, at);
                 let entry = !trading::is_exit(order.side, order.kind, net);
                 let bracketed = bracketed.get(&order.basket_id);
-                // An entry says the template it went with.
+                // An entry says the template it went with, and "Omacharts"
+                // after it where its exits are the app's to place as it fills.
                 let body = match bracketed.and_then(|bracketed| bracketed.name.clone()) {
+                    Some(name) if entry && app_held => Some(format!("{name} · {}", trading::APP_HELD)),
                     Some(name) if entry => Some(name),
                     _ => body,
                 };
@@ -2814,6 +2817,16 @@ pub(super) mod tests {
         linking: trading::Linking,
         flatten_cancels: bool,
     ) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
+        long_es_on(|session| {
+            session.linking = linking;
+            session.flatten_cancels = flatten_cancels;
+        })
+    }
+
+    /// [`long_es`] on a trading service `set` makes.
+    pub(in crate::ui::window) fn long_es_on(
+        set: impl FnOnce(&mut trading::fake::FakeSession),
+    ) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
         let store = Rc::new(Store::memory().expect("a store"));
         let window = window(&store);
         let es = window.index.find("ES", None).expect("ES in the curated half");
@@ -2828,8 +2841,7 @@ pub(super) mod tests {
             balance: None,
         };
         let mut session = trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {}));
-        session.linking = linking;
-        session.flatten_cancels = flatten_cancels;
+        set(&mut session);
         session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
         let session = Arc::new(session);
         assert!(window.desk.begin(&id));

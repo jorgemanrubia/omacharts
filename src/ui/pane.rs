@@ -31,6 +31,8 @@ pub struct LadderSource {
 }
 
 /// One chart filling the window, and the way back.
+use crate::trading::{APP_HELD, APP_HELD_WORDS};
+
 pub const MAXIMIZE: &str = "Maximize";
 pub const RESTORE: &str = "Restore";
 
@@ -274,6 +276,10 @@ pub struct ChartPane {
     /// none, its name beside it once one is picked.
     pub order_template_menu: gtk::MenuButton,
     order_template_label: gtk::Label,
+    /// "· Omacharts" after the name, quiet, where the app places the
+    /// template's exits as the entry fills, so only while it runs (Sierra
+    /// Chart).
+    order_template_holder: gtk::Label,
     /// "P&L" and the account's P&L for the day after it.
     pub day_part: gtk::Box,
     day_amount: gtk::Label,
@@ -604,9 +610,13 @@ impl ChartPane {
         order_template_icon.add_css_class("dim-label");
         let order_template_label = gtk::Label::new(None);
         order_template_label.set_visible(false);
+        let order_template_holder = gtk::Label::new(Some(&format!("· {APP_HELD}")));
+        order_template_holder.add_css_class("dim-label");
+        order_template_holder.set_visible(false);
         let order_template_line = gtk::Box::new(gtk::Orientation::Horizontal, 5);
         order_template_line.append(&order_template_icon);
         order_template_line.append(&order_template_label);
+        order_template_line.append(&order_template_holder);
         let order_template_menu = gtk::MenuButton::new();
         order_template_menu.add_css_class("flat");
         order_template_menu.add_css_class("readout-symbol");
@@ -878,6 +888,7 @@ impl ChartPane {
             size_label,
             order_template_menu,
             order_template_label,
+            order_template_holder,
             day_part,
             day_amount,
             position_part,
@@ -1349,8 +1360,9 @@ impl ChartPane {
 
     /// The order template the next order goes with: `None` hides the part,
     /// `Some(None)` is the bracket alone, for none, and `Some(Some(..))`
-    /// its name and what it holds, for the tooltip.
-    pub fn write_order_template(&self, template: Option<Option<(&str, &str)>>) {
+    /// its name and what it holds, for the tooltip. `app_held`: its exits
+    /// are placed by the app as the entry fills, which the part says.
+    pub fn write_order_template(&self, template: Option<Option<(&str, &str)>>, app_held: bool) {
         let visible = template.is_some();
         if self.order_template_menu.is_visible() != visible {
             self.order_template_menu.set_visible(visible);
@@ -1361,8 +1373,13 @@ impl ChartPane {
             self.order_template_label.set_text(name);
         }
         self.order_template_label.set_visible(template.is_some());
+        let app_held = app_held && template.is_some();
+        if self.order_template_holder.get_visible() != app_held {
+            self.order_template_holder.set_visible(app_held);
+        }
         let tip = match template {
             None => "Order template".to_string(),
+            Some((name, summary)) if app_held => format!("{name}: {summary}\n{APP_HELD_WORDS}"),
             Some((name, summary)) => format!("{name}: {summary}"),
         };
         if self.order_template_menu.tooltip_text().as_deref() != Some(tip.as_str()) {
@@ -1374,7 +1391,10 @@ impl ChartPane {
     /// an empty name for none.
     #[cfg(test)]
     pub fn order_template_text(&self) -> Option<String> {
-        self.order_template_menu.get_visible().then(|| self.order_template_label.text().to_string())
+        self.order_template_menu.get_visible().then(|| match self.order_template_holder.get_visible() {
+            true => format!("{} {}", self.order_template_label.text(), self.order_template_holder.text()),
+            false => self.order_template_label.text().to_string(),
+        })
     }
 
     /// The account's P&L for the day, already written as money, and whether
