@@ -36,8 +36,8 @@ pub struct ExitLeg {
 /// An exit placed: what it closes, and at what price.
 pub type Placed = (u32, f64);
 
-/// A bracket's exits: its targets and its stops, each group closing the
-/// whole of the entry between them, or absent. At least one exit.
+/// A bracket's exits: its targets and its stops, each group closing no
+/// more than the entry between them, or absent. At least one exit.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Exits {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

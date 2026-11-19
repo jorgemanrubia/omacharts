@@ -1785,17 +1785,23 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 | `trading bracket ORDER --template T` | Gives a working entry an order template's exits, or `none` takes them off: it is cancelled and placed again as one bracket (Beta) |
 
 An exit is how far, then optionally how much after an `@`. How far is `8t`
-(ticks), `$250` (what the exit's own contracts make or lose), or a
+(ticks), `$250` (what the whole order makes or loses there), or a
 multiple of R on the whole order, such as `1r`, `0.5r` or `2r`, for a
 target or a stop alike: R is Preferences › Trading › **Value of 1R**, 500
 until it is changed, so a stop at `1r` risks it and one at `0.5r` half of
-it. How much is a share
-such as `@1/2`, a number of contracts such as `@2`, or `@all`; exits that say
-none split the order evenly, and the last takes the rest.
+it, and `$500` rests where `1r` does. How much is a number of contracts
+such as `@2`, a share of the position such as `@1/2`, `@33%` or `@0.33`, or
+`@rest` (`@all`); an exit that says none closes 1 contract, the last of
+its group the rest. Sizes need not add up: `--target 1.5r@1/2` alone
+leaves the other half without a target.
 
 ```
-$ omacharts trading templates set Runner --target 1r@1/2 --target 2r --stop 1r
-Runner: +1R 1/2 · +2R rest | −1R
+$ omacharts trading templates set Half --target 1.5r@1/2 --stop 1r
+Half: +1.5R 1/2 | −1R
+  [exit 0]
+
+$ omacharts trading templates set Runner --target 1r --target 2r --target 3r --stop 1r
+Runner: +1R ×1 · +2R ×1 · +3R rest | −1R
   [exit 0]
 
 $ omacharts chart set --order-template Runner

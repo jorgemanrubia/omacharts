@@ -933,8 +933,9 @@ pub fn no_template_text(templates: &[trading::order_templates::OrderTemplate], t
 
 /// One exit of an order template as typed: how far, `8t`, `$250` or a
 /// multiple of R on the whole order, `1r`, `0.5r`, `2r`, then how much
-/// after an `@`: `@1/2`, `@2`, `@all`. Without one, a share of the order
-/// splits it evenly with the others.
+/// after an `@`: `@2` contracts, a share of the position, `@1/3`, `@33%`,
+/// or `@rest`, what the ones above leave. Without one, 1 contract, and the
+/// last the rest.
 pub fn exit_text(text: &str) -> Result<trading::order_templates::Exit, String> {
     use trading::order_templates::{Distance, Exit, Size};
     let text = text.trim().to_lowercase();
@@ -978,11 +979,10 @@ fn exits_typed(given: &[String], stop: bool) -> Result<Vec<trading::order_templa
         return Ok(Vec::new());
     }
     let mut exits = Vec::new();
-    for text in given {
-        let sized = text.contains('@');
+    for (at, text) in given.iter().enumerate() {
         let mut exit = exit_text(text).map_err(|why| Fault::usage(format!("{flag}: {why}")))?;
-        if !sized && given.len() > 1 {
-            exit.size = Size::Share(1, given.len() as u32);
+        if !text.contains('@') {
+            exit.size = if at + 1 == given.len() { Size::ALL } else { Size::Fixed(1) };
         }
         exits.push(exit);
     }
@@ -1002,13 +1002,28 @@ fn order_templates(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Opt
         };
         json!({"mode": mode, "value": value, "quantity": exit.size.text().to_lowercase()})
     };
+    // All, below others, is the rest they leave.
+    let group_json = |exits: &[templates::Exit]| {
+        let count = exits.len();
+        exits
+            .iter()
+            .enumerate()
+            .map(|(at, exit)| {
+                let mut json = exit_json(exit);
+                if count > 1 && at > 0 && exit.size.is_all() {
+                    json["quantity"] = json!("rest");
+                }
+                json
+            })
+            .collect::<Vec<_>>()
+    };
     let listed = |list: &[OrderTemplate]| -> Value {
         json!({"templates": list.iter().enumerate().map(|(at, template)| json!({
             "id": template.id,
             "name": template.name,
             "key": (at < 9).then(|| format!("Ctrl+Shift+{}", at + 1)),
-            "targets": template.targets.iter().map(exit_json).collect::<Vec<_>>(),
-            "stops": template.stops.iter().map(exit_json).collect::<Vec<_>>(),
+            "targets": group_json(&template.targets),
+            "stops": group_json(&template.stops),
             "summary": template.summary(),
         })).collect::<Vec<_>>()})
     };

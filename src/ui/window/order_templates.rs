@@ -711,6 +711,62 @@ mod tests {
         });
     }
 
+    /// Half off on the fake service, R at $500, buying onto the long: a
+    /// 3-lot is stopped whole 13 ticks down ($487.50, rounded toward the
+    /// fill) and has 1 contract taken off 20 ticks up ($750); a 1-lot has
+    /// no half to take off, so goes with its stop alone, 40 ticks down.
+    #[test]
+    fn half_off_brackets_what_each_order_adds() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let half = OrderTemplate {
+                id: 3,
+                name: "Half off".into(),
+                targets: vec![Exit { distance: Distance::R(1.5), size: Size::Share(1, 2) }],
+                stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
+            };
+            templates::save(&window.store, &[half]);
+            window.store.set_setting(crate::trading::chart_pnl::R_AMOUNT, "500");
+            window.adopt_order_templates();
+            window.pick_order_template(pane.id, Some(3));
+            let heard = || session.heard.lock().unwrap().last().copied();
+            let free = || {
+                let free = window.trade.placing.begin(&key).is_ok();
+                if free {
+                    window.trade.placing.done(&key);
+                }
+                free
+            };
+            let exits = || {
+                let mut exits: Vec<(OrderKind, u32, f64)> = session
+                    .book()
+                    .orders
+                    .iter()
+                    .filter(|order| order.status.working())
+                    .map(|order| (order.kind, order.qty, order.price.unwrap_or_default()))
+                    .collect();
+                exits.sort_by(|a, b| a.2.total_cmp(&b.2));
+                exits
+            };
+            // Filled at the fake's last, 7,612.25.
+            window.pick_size(pane.id, 3);
+            window.market_on(&pane, Side::Buy);
+            assert!(wait(&window, || heard() == Some("bracket")), "no bracket sent: {:?}", heard());
+            assert_eq!(exits(), [(OrderKind::Stop, 3, 7_609.00), (OrderKind::Limit, 1, 7_617.25)]);
+            assert!(wait(&window, free), "the bracket never answered");
+
+            window.pick_size(pane.id, 1);
+            window.market_on(&pane, Side::Buy);
+            assert!(wait(&window, || exits().len() == 3), "no second bracket: {:?}", exits());
+            assert_eq!(heard(), Some("bracket"));
+            assert_eq!(
+                exits(),
+                [(OrderKind::Stop, 1, 7_602.25), (OrderKind::Stop, 3, 7_609.00), (OrderKind::Limit, 1, 7_617.25)],
+                "the 1-lot with its stop alone"
+            );
+        });
+    }
+
     /// A template given to a working limit, from its right click or a key
     /// on it picked out, sends it again as a bracket, the template's name
     /// beside it on the chart; No template sends it again plain.

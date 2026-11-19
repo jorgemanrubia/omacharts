@@ -10,25 +10,35 @@
 //! **How far**, three ways:
 //!
 //! - **Ticks**, from the fill.
-//! - **Money**, what this exit's own contracts make (a target) or lose (a
-//!   stop) at its price.
-//! - **R**, a multiple of R — 0.5, 1, 1.5, 2 — on the whole order, R being
-//!   the "Value of 1R" setting: a stop at 1R loses what 1R is worth if it
-//!   is hit, one at 0.5R half of it; a target at 2R makes twice it, and
+//! - **Money**, what the whole order makes (a target) or loses (a stop)
+//!   if the price gets there, whatever the exit itself closes.
+//! - **R**, the same in multiples of R — 0.5, 1, 1.5, 2 — R being the
+//!   "Value of 1R" setting: with R at $500, a stop at 1R and one at $500
+//!   rest at the same price, and one at 0.5R half as far; a target at 2R
 //!   reads +2R on the chart once it is working.
 //!
 //! Money and R become ticks with what a tick of the contract is worth,
 //! rounded **toward the entry**, and never under one tick: an exit never
 //! risks, nor asks for, more than it says.
 //!
-//! **How much**, a number of contracts or a share of the order. The exits
-//! of a group are sized in the order listed: a number is taken as it is, a
-//! share of the order's quantity is rounded down, each is held to what is
-//! left, and whatever is left after the last goes to the last. So the
-//! targets together close exactly what the entry opens, and so do the
-//! stops, and an exit left with nothing is not sent. A share of a position
-//! held beside the order is not offered: the trading service holds the
-//! exits as one bracket with the entry, sized to it.
+//! **How much**, so many contracts, a share of the position, or the rest:
+//! what the exits above leave, all of it for the first. The **position**
+//! is what the entry opens, the position its exits protect: the entry's
+//! quantity once it has filled. The exits are sized on it when the order
+//! is sent, as one bracket the trading service holds, which works them
+//! for what has filled; on Sierra Chart, where Omacharts works them
+//! itself, a partial fill gets the first exits first, never more than has
+//! filled. An entry that adds to a position already held protects only
+//! what it adds, and one that closes some or all of a position goes
+//! plain, without exits.
+//!
+//! The exits of a group are sized in the order listed: a number as it
+//! is, the shares rounded down as they add up, so that 1/2 and 1/2 of a
+//! 3-lot are 1 and 2, the rest what is left, each held to what the ones
+//! above it leave. So a group never closes more than the position; it may
+//! close less, a target of 1/2 alone leaving the other half to be closed
+//! by hand, and an exit sized to nothing is not sent. [`fit`] says, in a
+//! line or two, where a group's sizes do not match the position.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +54,7 @@ pub const ORDER_TEMPLATES: &str = "trading_order_templates";
 #[serde(rename_all = "snake_case", tag = "mode", content = "value")]
 pub enum Distance {
     Ticks(u32),
-    /// What the exit's own contracts make or lose there.
+    /// What the whole order makes or loses there.
     Money(f64),
     /// A multiple of R lost (a stop) or made (a target) by the whole
     /// order: 1 is the "Value of 1R" setting.
@@ -102,7 +112,8 @@ impl Mode {
 pub enum Size {
     /// So many contracts or shares.
     Fixed(u32),
-    /// This share of the order's quantity, `numerator/denominator`.
+    /// This share of the position, `numerator/denominator`; one typed as
+    /// a percentage is so many hundredths.
     Share(u32, u32),
 }
 
@@ -110,44 +121,68 @@ impl Size {
     pub const ALL: Size = Size::Share(1, 1);
 
     /// The shares offered, largest first.
-    pub const SHARES: [Size; 6] =
-        [Size::Share(1, 1), Size::Share(3, 4), Size::Share(2, 3), Size::Share(1, 2), Size::Share(1, 3), Size::Share(1, 4)];
+    pub const SHARES: [Size; 5] = [Size::Share(3, 4), Size::Share(2, 3), Size::Share(1, 2), Size::Share(1, 3), Size::Share(1, 4)];
 
-    /// "All", "1/2", "3".
+    /// "All", "1/2", "33%", "3".
     pub fn text(self) -> String {
         match self {
             Size::Share(n, d) if n == d => "All".to_string(),
+            Size::Share(n, 100) => format!("{n}%"),
             Size::Share(n, d) => format!("{n}/{d}"),
             Size::Fixed(n) => n.to_string(),
         }
     }
 
-    /// What it asks for of an order of `qty`, before what is left holds it.
-    fn wanted(self, qty: u32) -> u32 {
-        match self {
-            Size::Fixed(n) => n,
-            Size::Share(_, 0) => 0,
-            Size::Share(n, d) => (u64::from(qty) * u64::from(n) / u64::from(d)).min(u64::from(u32::MAX)) as u32,
-        }
-    }
-
-    /// "all", "1/2", "3": as typed on the command line, the other way.
-    pub fn parse(text: &str) -> Result<Size, String> {
+    /// A share as typed: "1/3", "33%" or "0.33", under the whole position.
+    pub fn parse_share(text: &str) -> Result<Size, String> {
         let text = text.trim().to_lowercase();
-        if text == "all" {
-            return Ok(Size::ALL);
-        }
+        let refused = || format!("{text:?} is not a share such as 1/3, 33% or 0.33");
         if let Some((n, d)) = text.split_once('/') {
-            let (n, d) = (n.trim().parse::<u32>(), d.trim().parse::<u32>());
-            return match (n, d) {
-                (Ok(n), Ok(d)) if n > 0 && d > 0 && n <= d => Ok(Size::Share(n, d)),
-                _ => Err(format!("{text:?} is not a share such as 1/2")),
+            return match (n.trim().parse::<u32>(), d.trim().parse::<u32>()) {
+                (Ok(n), Ok(d)) if n > 0 && n < d => Ok(Size::Share(n, d)),
+                _ => Err(refused()),
             };
         }
-        match text.parse::<u32>() {
-            Ok(n) if n > 0 => Ok(Size::Fixed(n)),
-            _ => Err(format!("{text:?} is not all, a share such as 1/2, or a number of contracts")),
+        // 33% and 33 are percentages, 0.33 a decimal.
+        let percent = match text.strip_suffix('%') {
+            Some(percent) => percent.trim().parse::<f64>().map_err(|_| refused())?,
+            None => match text.parse::<f64>().map_err(|_| refused())? {
+                decimal if decimal < 1.0 => decimal * 100.0,
+                percent => percent,
+            },
+        };
+        let percent = percent.round();
+        if !(1.0..100.0).contains(&percent) {
+            return Err(refused());
         }
+        // A share the editor offers is said as it says it: 50% is 1/2.
+        Ok(match percent as u32 {
+            25 => Size::Share(1, 4),
+            50 => Size::Share(1, 2),
+            75 => Size::Share(3, 4),
+            percent => Size::Share(percent, 100),
+        })
+    }
+
+    /// The rest: what the exits above leave, all of it for the first.
+    pub fn is_all(self) -> bool {
+        matches!(self, Size::Share(n, d) if n == d)
+    }
+
+    /// "all", "3", or a share, "1/2", "33%": as typed on the command line,
+    /// the other way.
+    pub fn parse(text: &str) -> Result<Size, String> {
+        let text = text.trim().to_lowercase();
+        if text == "all" || text == "rest" {
+            return Ok(Size::ALL);
+        }
+        if let Ok(n) = text.parse::<u32>() {
+            return match n {
+                0 => Err(format!("{text:?}: a number of contracts is at least 1")),
+                n => Ok(Size::Fixed(n)),
+            };
+        }
+        Size::parse_share(&text).map_err(|_| format!("{text:?} is not all, a number of contracts, or a share such as 1/2 or 33%"))
     }
 }
 
@@ -197,7 +232,6 @@ impl OrderTemplate {
     /// "+1R 1/2 · +2R rest | −1R".
     pub fn summary(&self) -> String {
         let group = |exits: &[Exit], stop: bool| -> String {
-            let sizes = exits.len() > 1;
             exits
                 .iter()
                 .enumerate()
@@ -208,13 +242,12 @@ impl OrderTemplate {
                         Distance::Money(money) => format!("{sign}${}", amount(money)),
                         Distance::R(r) => format!("{sign}{}R", amount(r)),
                     };
-                    match (sizes, at + 1 == exits.len()) {
-                        (false, _) => distance,
-                        (true, true) => format!("{distance} rest"),
-                        (true, false) => match exit.size {
-                            Size::Fixed(n) => format!("{distance} ×{n}"),
-                            Size::Share(..) => format!("{distance} {}", exit.size.text()),
-                        },
+                    match exit.size {
+                        Size::Fixed(n) => format!("{distance} ×{n}"),
+                        size if size.is_all() && exits.len() == 1 => distance,
+                        size if size.is_all() && at > 0 => format!("{distance} rest"),
+                        size if size.is_all() => format!("{distance} all"),
+                        size => format!("{distance} {}", size.text()),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -259,10 +292,15 @@ pub fn next_id(templates: &[OrderTemplate]) -> u32 {
 
 /// A name none of `templates` has: "New template", "New template 2"…
 pub fn fresh_name(templates: &[OrderTemplate]) -> String {
+    named(templates, "New template")
+}
+
+/// `name`, or "`name` 2"… when a template has it.
+fn named(templates: &[OrderTemplate], name: &str) -> String {
     (1..)
         .map(|n| match n {
-            1 => "New template".to_string(),
-            n => format!("New template {n}"),
+            1 => name.to_string(),
+            n => format!("{name} {n}"),
         })
         .find(|name| !templates.iter().any(|template| template.name.eq_ignore_ascii_case(name)))
         .unwrap_or_default()
@@ -270,11 +308,46 @@ pub fn fresh_name(templates: &[OrderTemplate]) -> String {
 
 /// A new template: a target at 2R and a stop at 1R.
 pub fn new_template(templates: &[OrderTemplate]) -> OrderTemplate {
-    OrderTemplate {
-        id: next_id(templates),
-        name: fresh_name(templates),
-        targets: vec![Exit { distance: Distance::R(2.0), size: Size::ALL }],
-        stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
+    OrderTemplate { name: fresh_name(templates), ..Preset::TargetAndStop.template(templates) }
+}
+
+/// What a template can start as, named by its shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preset {
+    /// A target at 2R and a stop at 1R, each for all of it.
+    TargetAndStop,
+    /// Half the position off at 1.5R, the other half left without a
+    /// target, and a stop at 1R for all of it.
+    HalfOff,
+    /// 1 contract off at 1R, 1 at 2R, the rest at 3R, and a stop at 1R.
+    Runner,
+    /// A stop at 1R, and no target.
+    StopOnly,
+}
+
+impl Preset {
+    pub const ALL: [Preset; 4] = [Preset::TargetAndStop, Preset::HalfOff, Preset::Runner, Preset::StopOnly];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::TargetAndStop => "Target and stop",
+            Preset::HalfOff => "Half off",
+            Preset::Runner => "Runner",
+            Preset::StopOnly => "Stop only",
+        }
+    }
+
+    /// The template, called after the preset, "Half off 2" when the name
+    /// is taken.
+    pub fn template(self, templates: &[OrderTemplate]) -> OrderTemplate {
+        let r = |multiple: f64, size: Size| Exit { distance: Distance::R(multiple), size };
+        let targets = match self {
+            Preset::TargetAndStop => vec![r(2.0, Size::ALL)],
+            Preset::HalfOff => vec![r(1.5, Size::Share(1, 2))],
+            Preset::Runner => vec![r(1.0, Size::Fixed(1)), r(2.0, Size::Fixed(1)), r(3.0, Size::ALL)],
+            Preset::StopOnly => vec![],
+        };
+        OrderTemplate { id: next_id(templates), name: named(templates, self.label()), targets, stops: vec![r(1.0, Size::ALL)] }
     }
 }
 
@@ -303,23 +376,118 @@ pub fn move_to(templates: &mut Vec<OrderTemplate>, from: usize, to: usize) {
 }
 
 /// The quantities each exit of a group closes, for an order of `qty`:
-/// sized in the order listed, a share rounded down, each held to what is
-/// left, and whatever is left after the last given to the last. An exit
-/// left with nothing closes nothing and is not sent.
+/// sized in the order listed, each held to what the ones above it leave.
+/// An exit left with nothing closes nothing and is not sent.
 pub fn split(sizes: &[Size], qty: u32) -> Vec<u32> {
+    sizing(sizes, qty).into_iter().map(|(_, took)| took).collect()
+}
+
+/// What each exit asks for of an order of `qty`, and what it takes: a
+/// number as it is; the shares rounded down as they add up, so that 1/2
+/// and 1/2 of 3 are 1 and 2; the rest what the ones above leave.
+fn sizing(sizes: &[Size], qty: u32) -> Vec<(u64, u32)> {
     let mut left = qty;
-    let mut split: Vec<u32> = sizes
+    let mut shared = 0.0_f64;
+    let upto = |share: f64| (f64::from(qty) * share + 1e-9).floor() as u64;
+    sizes
         .iter()
         .map(|size| {
-            let took = size.wanted(qty).min(left);
+            let wanted = match *size {
+                size if size.is_all() => u64::from(left),
+                Size::Fixed(n) => u64::from(n),
+                Size::Share(_, 0) => 0,
+                Size::Share(n, d) => {
+                    let before = upto(shared);
+                    shared += f64::from(n) / f64::from(d);
+                    upto(shared) - before
+                }
+            };
+            let took = wanted.min(u64::from(left)) as u32;
             left -= took;
-            took
+            (wanted, took)
         })
-        .collect();
-    if let Some(last) = split.last_mut() {
-        *last += left;
+        .collect()
+}
+
+/// What the editor says under a group whose sizes do not fit every
+/// order: a fact, or a warning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    pub warning: bool,
+}
+
+/// Where a group's sizes do not match the position, one short line for
+/// each, warnings first, at most two:
+///
+/// - More asked for than the position, shares only, a warning: "Targets
+///   close more than the position"; or exits after a Rest, which get
+///   nothing: "Stops after Rest are never sent".
+/// - Part of the position left without the group, a fact for targets
+///   and a warning for stops: "1/2 of position has no target", "Contracts
+///   past 2 have no stop", "Part of the position has no target".
+/// - On small orders, an exit sized to nothing, a fact: "Needs 2
+///   contracts to send the target", "… to send every target".
+pub fn fit(exits: &[Exit], group: Group) -> Vec<Notice> {
+    let (noun, one) = match group {
+        Group::Targets => ("Targets", "target"),
+        Group::Stops => ("Stops", "stop"),
+    };
+    let stop = group == Group::Stops;
+    let sizes: Vec<Size> = exits.iter().map(|exit| exit.size).collect();
+    if sizes.is_empty() {
+        return Vec::new();
     }
-    split
+    let mut lines = Vec::new();
+    let rest = sizes.iter().position(|size| size.is_all());
+    let fixed: u64 = sizes.iter().map(|size| if let Size::Fixed(n) = size { u64::from(*n) } else { 0 }).sum();
+    let shared: f64 = sizes
+        .iter()
+        .map(|size| match *size {
+            Size::Share(n, d) if n < d => f64::from(n) / f64::from(d),
+            _ => 0.0,
+        })
+        .sum();
+    if rest.is_some_and(|at| at + 1 < sizes.len()) {
+        lines.push(Notice { text: format!("{noun} after Rest are never sent"), warning: true });
+    }
+    if fixed == 0 && shared > 1.0 + 1e-9 {
+        lines.push(Notice { text: format!("{noun} close more than the position"), warning: true });
+    }
+    let uncovered = match () {
+        _ if rest.is_some() => None,
+        _ if fixed == 0 && shared < 1.0 - 1e-9 => Some(format!("{} of position has no {one}", share_text(1.0 - shared))),
+        _ if shared == 0.0 => Some(format!("Contracts past {fixed} have no {one}")),
+        _ if shared < 1.0 - 1e-9 => Some(format!("Part of the position has no {one}")),
+        _ => None,
+    };
+    if let Some(text) = uncovered {
+        lines.push(Notice { text, warning: stop });
+    }
+    // The smallest order that sends every exit, found by sizing them.
+    let from = (1..=10_000u32).find(|qty| split(&sizes, *qty).iter().all(|took| *took > 0));
+    if let Some(from) = from.filter(|from| *from > 1) {
+        let text = match sizes.len() {
+            1 => format!("Needs {from} contracts to send the {one}"),
+            _ => format!("Needs {from} contracts to send every {one}"),
+        };
+        lines.push(Notice { text, warning: false });
+    }
+    lines.sort_by_key(|line| !line.warning);
+    lines.truncate(2);
+    lines
+}
+
+/// A share as a person says it: "1/2", "2/3", "1/4", else "35%".
+fn share_text(share: f64) -> String {
+    for d in [2u32, 3, 4] {
+        for n in 1..d {
+            if (f64::from(n) / f64::from(d) - share).abs() < 1e-6 {
+                return format!("{n}/{d}");
+            }
+        }
+    }
+    format!("{}%", (share * 100.0).round())
 }
 
 /// What an order on a contract is worth a tick, and what R is, to turn
@@ -350,7 +518,7 @@ pub fn bracket(template: &OrderTemplate, qty: u32, worth: Worth) -> Result<Exits
             }
             let ticks = match exit.distance {
                 Distance::Ticks(ticks) => ticks.max(1),
-                Distance::Money(money) => ticks_for(money, leg_qty, worth)?,
+                Distance::Money(money) => ticks_for(money, qty, worth)?,
                 Distance::R(r) => ticks_for(r * worth.r, qty, worth)?,
             };
             legs.push(ExitLeg { qty: leg_qty, ticks });
@@ -428,9 +596,14 @@ mod tests {
     fn an_order_is_split_across_its_exits() {
         let half = Size::Share(1, 2);
         assert_eq!(split(&[half, half], 4), [2, 2]);
-        assert_eq!(split(&[half, half], 3), [1, 2], "the rest goes to the last");
+        assert_eq!(split(&[half, half], 3), [1, 2], "shares rounded as they add up");
+        assert_eq!(split(&[half], 3), [1], "the other half without one");
         assert_eq!(split(&[half, half], 1), [0, 1], "an exit with nothing is not sent");
-        assert_eq!(split(&[Size::Share(1, 3), Size::Share(1, 3), Size::Share(1, 3)], 5), [1, 1, 3]);
+        assert_eq!(split(&[Size::Share(1, 3), Size::Share(1, 3), Size::Share(1, 3)], 5), [1, 2, 2], "shares rounded as they add up");
+        assert_eq!(split(&[Size::Fixed(1), Size::Fixed(1), Size::Fixed(9)], 3), [1, 1, 1], "held to what is left");
+        assert_eq!(split(&[Size::Fixed(1), Size::Fixed(1), Size::ALL], 5), [1, 1, 3]);
+        assert_eq!(split(&[Size::Share(33, 100), Size::ALL], 3), [0, 3], "33% of 3 is under one");
+        assert_eq!(split(&[Size::Share(33, 100), Size::ALL], 10), [3, 7]);
         assert_eq!(split(&[Size::Fixed(1), Size::Fixed(5)], 3), [1, 2], "held to what is left");
         assert_eq!(split(&[Size::Fixed(2), Size::Fixed(2)], 1), [1, 0]);
         assert_eq!(split(&[Size::ALL], 7), [7]);
@@ -438,9 +611,9 @@ mod tests {
         assert_eq!(split(&[], 3), Vec::<u32>::new());
     }
 
-    /// Ticks are ticks; money is what the exit's own contracts make or
-    /// lose; R is a multiple of the Value of 1R on the whole order, a stop's
-    /// and a target's alike.
+    /// Ticks are ticks; money and R are what the whole order makes or
+    /// loses there, whatever the exit closes, a stop's and a target's
+    /// alike.
     #[test]
     fn each_mode_becomes_ticks_with_what_a_tick_is_worth() {
         // ES: $12.50 a tick a contract.
@@ -468,11 +641,16 @@ mod tests {
             assert_eq!(bracket(&stop, 4, ES).unwrap().stops, [ExitLeg { qty: 4, ticks }], "{r}R");
         }
 
-        // Money on each target's own contracts.
-        let money = template(vec![exit(Distance::Money(100.0), Size::Fixed(1)), exit(Distance::Money(100.0), Size::ALL)], vec![]);
+        // Money on the whole order too: 3 contracts at $37.50 a tick, so
+        // $150 is 4 ticks for the 1 contract and for the 2 alike.
+        let money = template(vec![exit(Distance::Money(150.0), Size::Fixed(1)), exit(Distance::Money(150.0), Size::ALL)], vec![]);
         let exits = bracket(&money, 3, ES).unwrap();
-        assert_eq!(exits.targets, [ExitLeg { qty: 1, ticks: 8 }, ExitLeg { qty: 2, ticks: 4 }]);
+        assert_eq!(exits.targets, [ExitLeg { qty: 1, ticks: 4 }, ExitLeg { qty: 2, ticks: 4 }]);
         assert!(exits.stops.is_empty());
+        // $500 and 1R, R at $500, rest at the same price.
+        let same = template(vec![exit(Distance::Money(500.0), Size::Fixed(1)), exit(Distance::R(1.0), Size::ALL)], vec![]);
+        let exits = bracket(&same, 3, ES).unwrap();
+        assert_eq!(exits.targets[0].ticks, exits.targets[1].ticks);
     }
 
     /// Rounded toward the fill so that nothing risks or asks for more than
@@ -514,7 +692,7 @@ mod tests {
             vec![exit(Distance::R(1.0), Size::Share(1, 2)), exit(Distance::R(2.0), Size::Share(1, 2))],
             vec![exit(Distance::R(1.0), Size::ALL)],
         );
-        assert_eq!(risk.summary(), "+1R 1/2 · +2R rest | −1R");
+        assert_eq!(risk.summary(), "+1R 1/2 · +2R 1/2 | −1R");
         assert_eq!(template(vec![], vec![exit(Distance::R(0.5), Size::ALL)]).summary(), "−0.5R");
         assert_eq!(
             serde_json::to_value(exit(Distance::R(0.5), Size::ALL)).unwrap()["distance"],
@@ -527,6 +705,101 @@ mod tests {
         assert_eq!(stop.summary(), "−$1,250");
         assert_eq!(template(vec![], vec![]).summary(), "No exits · orders go plain");
         assert_eq!(template(vec![exit(Distance::R(1.5), Size::ALL)], vec![]).summary(), "+1.5R");
+        let contracts = template(
+            vec![exit(Distance::Ticks(8), Size::Fixed(1)), exit(Distance::Ticks(16), Size::Fixed(1)), exit(Distance::Ticks(40), Size::ALL)],
+            vec![],
+        );
+        assert_eq!(contracts.summary(), "+8t ×1 · +16t ×1 · +40t rest");
+    }
+
+    /// What a group says where its sizes do not match the position: the
+    /// part left without it, more than the position, and from what order
+    /// every exit is sent; a stop's gap is a warning, a target's a fact.
+    #[test]
+    fn a_group_says_where_its_sizes_do_not_match_the_position() {
+        let group = |sizes: &[Size]| sizes.iter().map(|size| exit(Distance::Ticks(8), *size)).collect::<Vec<_>>();
+        let says = |sizes: &[Size], which| {
+            fit(&group(sizes), which).into_iter().map(|notice| (notice.text, notice.warning)).collect::<Vec<_>>()
+        };
+        let fact = |text: &str| (text.to_string(), false);
+        let warning = |text: &str| (text.to_string(), true);
+        assert_eq!(says(&[Size::ALL], Group::Stops), []);
+        assert_eq!(says(&[], Group::Stops), [], "no stops is a choice");
+        assert_eq!(says(&[Size::Fixed(1), Size::ALL], Group::Targets), [fact("Needs 2 contracts to send every target")]);
+        assert_eq!(says(&[Size::Share(1, 2)], Group::Targets), [fact("1/2 of position has no target"), fact("Needs 2 contracts to send the target")]);
+        assert_eq!(says(&[Size::Share(1, 2)], Group::Stops), [warning("1/2 of position has no stop"), fact("Needs 2 contracts to send the stop")]);
+        assert_eq!(says(&[Size::Share(1, 3), Size::Share(1, 3)], Group::Targets)[0], fact("1/3 of position has no target"));
+        assert_eq!(says(&[Size::Share(65, 100)], Group::Targets)[0], fact("35% of position has no target"));
+        assert_eq!(says(&[Size::Fixed(1), Size::Fixed(1)], Group::Targets)[0], fact("Contracts past 2 have no target"));
+        assert_eq!(says(&[Size::Fixed(1)], Group::Stops), [warning("Contracts past 1 have no stop")]);
+        assert_eq!(says(&[Size::Fixed(1), Size::Share(1, 2)], Group::Targets)[0], fact("Part of the position has no target"));
+        assert_eq!(says(&[Size::Share(3, 4), Size::Share(1, 2)], Group::Stops)[0], warning("Stops close more than the position"));
+        assert_eq!(says(&[Size::ALL, Size::Fixed(1)], Group::Targets)[0], warning("Targets after Rest are never sent"));
+    }
+
+    /// The template the author trades: a stop at 1R for the whole
+    /// position and a target at 1.5R for half of it, the other half left
+    /// without one; and the same said in money. R at $500, a buy filled at
+    /// 6,000.00, on ES ($12.50 a tick) and MES ($1.25), 1 to 4 contracts:
+    /// where each exit rests and what the target closes. Distances round
+    /// toward the fill; half of 1 is no target, half of 3 is 1.
+    #[test]
+    fn half_off_at_one_and_a_half_r_lands_where_it_should() {
+        use crate::trading::Side;
+        let in_r = template(vec![exit(Distance::R(1.5), Size::Share(1, 2))], vec![exit(Distance::R(1.0), Size::ALL)]);
+        let in_money = template(vec![exit(Distance::Money(750.0), Size::Share(1, 2))], vec![exit(Distance::Money(500.0), Size::ALL)]);
+        let mes = Worth { tick: 0.25, point: Some(5.0), r: 500.0 };
+        // (worth, qty, stop, target as (qty, price), if any)
+        type Case = (Worth, u32, f64, Option<(u32, f64)>);
+        let cases: [Case; 8] = [
+            (ES, 1, 5990.00, None),
+            (ES, 2, 5995.00, Some((1, 6007.50))),
+            (ES, 3, 5996.75, Some((1, 6005.00))),
+            (ES, 4, 5997.50, Some((2, 6003.75))),
+            (mes, 1, 5900.00, None),
+            (mes, 2, 5950.00, Some((1, 6075.00))),
+            (mes, 3, 5966.75, Some((1, 6050.00))),
+            (mes, 4, 5975.00, Some((2, 6037.50))),
+        ];
+        for (worth, qty, stop, target) in cases {
+            let exits = bracket(&in_r, qty, worth).unwrap();
+            assert_eq!(bracket(&in_money, qty, worth).unwrap(), exits, "$500 and $750 are 1R and 1.5R: {qty} at {worth:?}");
+            let (targets, stops) = exits.prices(Side::Buy, 6000.0, worth.tick);
+            assert_eq!(stops, [(qty, stop)], "the stop on {qty} at {worth:?}");
+            assert_eq!(targets.first().copied(), target, "the target on {qty} at {worth:?}");
+            assert!(targets.len() <= 1);
+        }
+        // A sell the other way about: 3 ES, 13 ticks up and 20 down.
+        let (targets, stops) = bracket(&in_r, 3, ES).unwrap().prices(Side::Sell, 6000.0, 0.25);
+        assert_eq!((targets, stops), (vec![(1, 5995.0)], vec![(3, 6003.25)]));
+        // The editor says the half without a target, and from when the
+        // target is sent.
+        let notices: Vec<String> = fit(&in_r.targets, Group::Targets).into_iter().map(|notice| notice.text).collect();
+        assert_eq!(notices, ["1/2 of position has no target", "Needs 2 contracts to send the target"]);
+        assert!(fit(&in_r.stops, Group::Stops).is_empty());
+        assert_eq!(in_r.summary(), "+1.5R 1/2 | −1R");
+    }
+
+    /// A template starts as one of four shapes, named after it.
+    #[test]
+    fn a_template_starts_from_a_preset() {
+        let mut made = Vec::new();
+        for preset in Preset::ALL {
+            let template = preset.template(&made);
+            made.push(template);
+        }
+        let summaries: Vec<String> = made.iter().map(|t| format!("{}: {}", t.name, t.summary())).collect();
+        assert_eq!(
+            summaries,
+            [
+                "Target and stop: +2R | −1R",
+                "Half off: +1.5R 1/2 | −1R",
+                "Runner: +1R ×1 · +2R ×1 · +3R rest | −1R",
+                "Stop only: −1R"
+            ]
+        );
+        assert_eq!(made.iter().map(|t| t.id).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        assert_eq!(Preset::HalfOff.template(&made).name, "Half off 2");
     }
 
     #[test]
@@ -539,5 +812,19 @@ mod tests {
         }
         assert_eq!(Size::Share(2, 3).text(), "2/3");
         assert_eq!(Size::ALL.text(), "All");
+        assert_eq!(Size::parse("33%"), Ok(Size::Share(33, 100)));
+    }
+
+    #[test]
+    fn a_share_is_typed_as_a_fraction_a_percentage_or_a_decimal() {
+        assert_eq!(Size::parse_share("1/3"), Ok(Size::Share(1, 3)));
+        assert_eq!(Size::parse_share(" 33 % "), Ok(Size::Share(33, 100)));
+        assert_eq!(Size::parse_share("0.33"), Ok(Size::Share(33, 100)));
+        assert_eq!(Size::parse_share(".5"), Ok(Size::Share(1, 2)), "a share offered, said as offered");
+        assert_eq!(Size::parse_share("40"), Ok(Size::Share(40, 100)), "a bare number is a percentage");
+        assert_eq!(Size::Share(33, 100).text(), "33%");
+        for bad in ["0", "100%", "100", "1/1", "0.001", "x", "-0.5", "2/3/4", ""] {
+            assert!(Size::parse_share(bad).is_err(), "{bad:?}");
+        }
     }
 }

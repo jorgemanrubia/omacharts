@@ -92,17 +92,23 @@ crop: 2236x1800+0+0
 
 Order templates are **Beta**. A template is a set of exits that go in with an order: any number of targets and of stops, or none of either. With one picked, every order the chart sends goes as a bracket, a market order too, and the exits are placed by the trading service as the entry fills. An order that closes some or all of the position goes without them, and the Log says so. On Sierra Chart, Omacharts places the exits itself as the entry fills, each target and stop as a pair Sierra Chart then holds: **· Omacharts** after the template's name says so, in the chart's header and on the working entry, and the exits go in only while Omacharts runs.
 
-**Edit order templates…**, on the header's template menu or in Preferences › Trading › **Order entry**, opens **Order templates**. **Add a template** makes one; click one to change its **Name** and its exits, drag the handle to put the templates in order, and the bin removes one. Each exit says how far it goes, in one of three ways:
+**Edit order templates…**, on the header's template menu or in Preferences › Trading › **Order entry**, opens **Order templates**. **Add a template** starts one as **Target and stop**, **Half off**, **Runner** or **Stop only**, named after it; click one to change its **Name** and its exits, drag the handle to put the templates in order, and the bin removes one. Each exit says how far it goes, in one of three ways:
 
 | Mode | How far |
 |---|---|
 | **Ticks** | That many ticks from the fill |
-| **Money** | Where the exit's own contracts make, or lose, that much |
-| **R** | A multiple of R on the whole order, 1 to begin with and fractions such as 0.5 or 1.5 allowed, R being Preferences › Trading › **Value of 1R**. A stop at 1R loses what 1R is worth on the whole order if it is hit, one at 0.5R half of it; a target at 2R makes twice it |
+| **Money** | Where the whole order makes, or loses, that much, whatever the exit itself closes. It starts at the **Value of 1R** |
+| **R** | The same, in multiples of R: 1 to begin with, fractions such as 0.5 or 1.5 allowed, R being Preferences › Trading › **Value of 1R**. A stop at 1R loses 1R on the whole order if it is hit, one at 0.5R half of it; a target at 2R makes twice it. With R at $500, an exit at 1R and one at $500 rest at the same price |
 
 Every distance rounds toward the entry, and is never under one tick.
 
-With more than one exit in a group, each but the last takes a share of the order, such as 1/2, or a number of contracts; the last takes the rest. A share rounds down, and an exit left with nothing is not sent. A 3-lot on two targets of 1/2 sends 1 and 2. The editor says how its exits split an order of 1, 2 and 3, and which would not be sent. A template with no exits, or none left on the order's quantity, sends the order plain, and the Log says so.
+Each exit also says how much it closes: a number of contracts, the default; a share **of position**, such as 1/2, or one typed as 33% or 0.33; or the rest, **All** on a group's first exit and **Rest** after it. The position is the order's own quantity as it fills, the contracts its exits protect: a template on an order that adds to a position brackets that order only, and one that reduces it goes plain. Exits are sized top to bottom, shares rounding down as they add up, so two exits of 1/2 on a 3-lot close 1 and 2, and an exit left with nothing is not sent.
+
+Sizes need not add up. A group may close less than the position, and that part has no exit of its kind: under the group, the editor says so, as a warning for stops. It also says from how many contracts every exit is sent, and when a group asks for more than the position.
+
+For example, **Half off** stops all of the position at 1R and takes half of it off at 1.5R, leaving the other half to run without a target: with R at $500, a 2-lot of ES filled at 6,000.00 rests its stop at 5,995.00 and a 1-contract target at 6,007.50. On a 1-lot the half is nothing, so only the stop is sent, and the editor says *Needs 2 contracts to send the target*. Add a target sized **Rest** to take the other half off too.
+
+A template with no exits, or none left on the order's quantity, sends the order plain, and the Log says so.
 
 ### On a chart
 

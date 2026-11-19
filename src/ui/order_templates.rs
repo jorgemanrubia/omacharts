@@ -14,13 +14,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 
 use crate::store::Store;
 use crate::trading::order_templates::{self as templates, Distance, Exit, Group, Mode, OrderTemplate, Size};
 use crate::ui::drop_line;
 
 pub const TITLE: &str = "Order templates";
+
+/// The width the size of an exit is given: its widest preset's.
+const SIZE_SLOT: i32 = 150;
 
 struct Editor {
     store: Rc<Store>,
@@ -56,21 +59,36 @@ fn build(store: Rc<Store>, changed: Rc<dyn Fn()>) -> adw::Dialog {
 
     let page = adw::PreferencesPage::new();
     page.add(&list);
+    // A template starts as one of the shapes traders use, named after it.
     let add_group = adw::PreferencesGroup::new();
-    let add = gtk::Button::with_label("Add a template");
+    let menu = gio::Menu::new();
+    for (at, preset) in templates::Preset::ALL.into_iter().enumerate() {
+        menu.append(Some(preset.label()), Some(&format!("templates.add({at})")));
+    }
+    let add = gtk::MenuButton::new();
+    add.set_label("Add a template");
+    add.set_always_show_arrow(true);
+    add.set_menu_model(Some(&menu));
     add.set_halign(gtk::Align::Start);
+    let actions = gio::SimpleActionGroup::new();
+    let adding_action = gio::SimpleAction::new("add", Some(glib::VariantTy::INT32));
     let adding = editor.clone();
-    add.connect_clicked(move |_| {
+    adding_action.connect_activate(move |_, at| {
+        let Some(preset) = at.and_then(|at| at.get::<i32>()).and_then(|at| templates::Preset::ALL.get(at as usize).copied()) else {
+            return;
+        };
         let fresh = {
             let mut list = adding.templates.borrow_mut();
-            let fresh = templates::new_template(&list);
+            let fresh = preset.template(&list);
             list.push(fresh.clone());
             fresh
         };
         adding.save();
         rebuild(&adding);
-        open(&adding, fresh.id);
+        open(&adding, fresh.id, true);
     });
+    actions.add_action(&adding_action);
+    page.insert_action_group("templates", Some(&actions));
     add_group.add(&add);
     page.add(&add_group);
     rebuild(&editor);
@@ -83,7 +101,7 @@ fn build(store: Rc<Store>, changed: Rc<dyn Fn()>) -> adw::Dialog {
 
     let dialog = adw::Dialog::new();
     dialog.set_title(TITLE);
-    dialog.set_content_width(480);
+    dialog.set_content_width(640);
     dialog.set_content_height(620);
     dialog.set_child(Some(&nav));
     // The editor lives as long as the dialog does.
@@ -174,7 +192,7 @@ fn template_row(editor: &Rc<Editor>, at: usize, template: &OrderTemplate) -> adw
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
 
     let opening = editor.clone();
-    row.connect_activated(move |_| open(&opening, id));
+    row.connect_activated(move |_| open(&opening, id, false));
 
     // Dragged by id rather than by position: the list is rebuilt under
     // the drag.
@@ -234,7 +252,7 @@ fn confirm_remove(editor: &Rc<Editor>, over: &impl IsA<gtk::Widget>, id: u32, na
 }
 
 /// The template `id` on a page of its own.
-fn open(editor: &Rc<Editor>, id: u32) {
+fn open(editor: &Rc<Editor>, id: u32, fresh: bool) {
     let Some(template) = editor.template(id) else { return };
     let page = adw::PreferencesPage::new();
     let toolbar = adw::ToolbarView::new();
@@ -270,11 +288,44 @@ fn open(editor: &Rc<Editor>, id: u32) {
     naming.add(&name);
     page.add(&naming);
 
-    let targets = ExitGroup::new(editor, id, Group::Targets);
-    let stops = ExitGroup::new(editor, id, Group::Stops);
+    let columns = Rc::new(Columns::new());
+    let targets = ExitGroup::new(editor, id, Group::Targets, &columns);
+    let stops = ExitGroup::new(editor, id, Group::Stops, &columns);
     page.add(&targets.group);
     page.add(&stops.group);
     editor.nav.push(&nav_page);
+    // A new template is named first; an old one is not taken over by its
+    // name.
+    let focused = name.clone();
+    glib::idle_add_local_once(move || match fresh {
+        true => {
+            focused.grab_focus();
+            focused.select_region(0, -1);
+        }
+        false => {
+            if let Some(root) = focused.root() {
+                root.set_focus(None::<&gtk::Widget>);
+            }
+            focused.select_region(0, 0);
+        }
+    });
+}
+
+/// The columns the exit rows of a template line up in, across both
+/// groups: the handle, the name, the mode, the amount, "close" and the
+/// size.
+struct Columns {
+    sizes: [gtk::SizeGroup; 6],
+}
+
+impl Columns {
+    fn new() -> Columns {
+        Columns { sizes: std::array::from_fn(|_| gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal)) }
+    }
+
+    fn add(&self, column: usize, widget: &impl IsA<gtk::Widget>) {
+        self.sizes[column].add_widget(widget);
+    }
 }
 
 /// The targets, or the stops, of the template open.
@@ -283,15 +334,17 @@ struct ExitGroup {
     id: u32,
     which: Group,
     group: adw::PreferencesGroup,
+    columns: Rc<Columns>,
     rows: RefCell<Vec<gtk::Widget>>,
+    notices: RefCell<Vec<gtk::Widget>>,
 }
 
 impl ExitGroup {
-    fn new(editor: &Rc<Editor>, id: u32, which: Group) -> Rc<ExitGroup> {
+    fn new(editor: &Rc<Editor>, id: u32, which: Group, columns: &Rc<Columns>) -> Rc<ExitGroup> {
         let group = adw::PreferencesGroup::new();
         let (title, tip) = match which {
-            Group::Targets => ("Targets", "Add a target"),
-            Group::Stops => ("Stops", "Add a stop"),
+            Group::Targets => ("Targets", "Add target"),
+            Group::Stops => ("Stops", "Add stop"),
         };
         group.set_title(title);
         let add = gtk::Button::from_icon_name("list-add-symbolic");
@@ -299,7 +352,15 @@ impl ExitGroup {
         add.set_valign(gtk::Align::Center);
         add.set_tooltip_text(Some(tip));
         group.set_header_suffix(Some(&add));
-        let this = Rc::new(ExitGroup { editor: editor.clone(), id, which, group, rows: RefCell::new(Vec::new()) });
+        let this = Rc::new(ExitGroup {
+            editor: editor.clone(),
+            id,
+            which,
+            group,
+            columns: columns.clone(),
+            rows: RefCell::new(Vec::new()),
+            notices: RefCell::new(Vec::new()),
+        });
         let adding = this.clone();
         add.connect_clicked(move |_| adding.add());
         this.rebuild();
@@ -314,30 +375,33 @@ impl ExitGroup {
         let which = self.which;
         self.editor.edit(self.id, |template| change(template.exits_mut(which)));
         rebuild(&self.editor);
-        if again {
-            self.rebuild();
+        match again {
+            true => self.rebuild(),
+            false => self.notice(),
         }
     }
 
-    /// A new exit at the end, like the last one and further: the order
-    /// split evenly, each but the last taking 1/n of it and the last the
-    /// rest.
+    /// A new exit at the end, the rest, further than the last: a target
+    /// by the step between the last two, or half as far again; a stop as
+    /// far as the one above. The one that was the rest closes 1 contract.
     fn add(self: &Rc<Self>) {
         let stop = self.which == Group::Stops;
         self.change(
             |exits| {
-                let distance = match exits.last().map(|exit| exit.distance) {
-                    None if stop => Distance::R(1.0),
-                    None => Distance::R(2.0),
-                    Some(Distance::Ticks(ticks)) => Distance::Ticks(ticks.saturating_mul(2).max(1)),
-                    Some(Distance::Money(money)) => Distance::Money(money * 2.0),
-                    Some(Distance::R(multiple)) => Distance::R(multiple + 1.0),
+                let last = exits.last().map(|exit| exit.distance);
+                let before = exits.len().checked_sub(2).and_then(|at| exits.get(at)).map(|exit| exit.distance);
+                let distance = match (last, before) {
+                    (None, _) => Distance::R(if stop { 1.0 } else { 2.0 }),
+                    (Some(last), _) if stop => last,
+                    (Some(last), Some(before)) if before.mode() == last.mode() && last.value() > before.value() => {
+                        with_value(last, last.value() * 2.0 - before.value())
+                    }
+                    (Some(last), _) => with_value(last, last.value() * 1.5),
                 };
-                let n = exits.len() as u32 + 1;
-                for exit in exits.iter_mut() {
-                    exit.size = Size::Share(1, n);
+                if let Some(last) = exits.last_mut().filter(|exit| exit.size.is_all()) {
+                    last.size = Size::Fixed(1);
                 }
-                exits.push(Exit { distance, size: Size::Share(1, n) });
+                exits.push(Exit { distance, size: Size::ALL });
             },
             true,
         );
@@ -348,7 +412,6 @@ impl ExitGroup {
             self.group.remove(&row);
         }
         let exits = self.exits();
-        self.group.set_description(split_note(&exits).as_deref());
         if exits.is_empty() {
             let row = adw::ActionRow::new();
             row.set_title(match self.which {
@@ -358,80 +421,123 @@ impl ExitGroup {
             row.add_css_class("dim-label");
             self.group.add(&row);
             self.rows.borrow_mut().push(row.upcast());
-            return;
         }
         for (at, exit) in exits.iter().enumerate() {
             let row = self.exit_row(at, *exit, exits.len());
             self.group.add(&row);
             self.rows.borrow_mut().push(row.upcast());
         }
+        self.notice();
     }
 
-    /// One exit: its handle with another to order it against, how far it
-    /// is said, the amount, how much it closes, and its bin.
+    /// Under the exits, where their sizes do not match the position:
+    /// said, never refused.
+    fn notice(self: &Rc<Self>) {
+        for row in self.notices.borrow_mut().drain(..) {
+            self.group.remove(&row);
+        }
+        let notices = templates::fit(&self.exits(), self.which);
+        if notices.is_empty() {
+            return;
+        }
+        // One light footer, a line for each, warnings first.
+        let row = adw::PreferencesRow::new();
+        row.set_activatable(false);
+        row.set_focusable(false);
+        row.add_css_class("notices");
+        let lines = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        lines.set_margin_top(8);
+        lines.set_margin_bottom(8);
+        lines.set_margin_start(12);
+        lines.set_margin_end(12);
+        for notice in notices {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let label = gtk::Label::new(Some(&notice.text));
+            label.set_xalign(0.0);
+            label.set_wrap(true);
+            label.add_css_class("caption");
+            match notice.warning {
+                true => {
+                    line.add_css_class("warning");
+                    let icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+                    icon.set_pixel_size(12);
+                    line.append(&icon);
+                }
+                false => label.add_css_class("dim-label"),
+            }
+            line.append(&label);
+            lines.append(&line);
+        }
+        row.set_child(Some(&lines));
+        self.group.add(&row);
+        self.notices.borrow_mut().push(row.upcast());
+    }
+
+    /// One exit: its handle, its name, the mode, the amount, what it
+    /// closes and its bin, in the columns of the page.
     fn exit_row(self: &Rc<Self>, at: usize, exit: Exit, count: usize) -> adw::PreferencesRow {
         let stop = self.which == Group::Stops;
         let row = adw::PreferencesRow::new();
         row.set_activatable(false);
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         line.set_margin_top(8);
         line.set_margin_bottom(8);
-        line.set_margin_start(12);
+        line.set_margin_start(8);
         line.set_margin_end(8);
 
+        // Its room kept when there is nothing to drag, so the rows line up.
+        let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+        handle.add_css_class("dim-label");
         if count > 1 {
-            let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
-            handle.add_css_class("dim-label");
             handle.set_tooltip_text(Some("Drag to reorder"));
-            line.append(&handle);
+        } else {
+            handle.set_opacity(0.0);
+            handle.set_sensitive(false);
         }
+        self.columns.add(0, &handle);
+        line.append(&handle);
 
         let name = format!("{} {}", if stop { "Stop" } else { "Target" }, at + 1);
-        let tag = gtk::Label::new(Some(&format!("{}{}", if stop { "S" } else { "T" }, at + 1)));
-        tag.add_css_class("dim-label");
-        tag.add_css_class("numeric");
-        tag.set_tooltip_text(Some(&name));
-        line.append(&tag);
+        let title = gtk::Label::new(Some(&name));
+        title.set_xalign(0.0);
+        self.columns.add(1, &title);
+        line.append(&title);
 
         let modes = gtk::DropDown::from_strings(&Mode::ALL.map(Mode::label));
+        modes.set_factory(Some(&mode_factory(true)));
+        modes.set_list_factory(Some(&mode_factory(false)));
         modes.update_property(&[gtk::accessible::Property::Label(&format!("{name} mode"))]);
         modes.set_valign(gtk::Align::Center);
         modes.set_selected(Mode::ALL.iter().position(|mode| *mode == exit.distance.mode()).unwrap_or(0) as u32);
+        self.columns.add(2, &modes);
         line.append(&modes);
 
-        let (prefix, suffix) = units(exit.distance.mode());
-        if let Some(prefix) = prefix {
-            let label = gtk::Label::new(Some(prefix));
-            label.add_css_class("dim-label");
-            line.append(&label);
-        }
         let spin = amount_spin(exit.distance);
         spin.update_property(&[gtk::accessible::Property::Label(&format!("{name} amount"))]);
+        self.columns.add(3, &spin);
         line.append(&spin);
-        if let Some(suffix) = suffix {
-            let label = gtk::Label::new(Some(suffix));
-            label.add_css_class("dim-label");
-            line.append(&label);
-        }
 
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         line.append(&spacer);
 
-        // The last takes what is left: there is nothing to say for it.
-        if at + 1 == count {
-            let rest = gtk::Label::new(Some(if count == 1 { "All" } else { "Rest" }));
-            rest.add_css_class("dim-label");
-            rest.set_tooltip_text(Some(if count == 1 { "Closes the whole order" } else { "Closes what the others leave" }));
-            line.append(&rest);
-        } else {
-            line.append(&self.size_button(at, exit.size));
-        }
+        let close = gtk::Label::new(Some("close"));
+        close.add_css_class("dim-label");
+        self.columns.add(4, &close);
+        line.append(&close);
+        // As wide as "1/2 of position", whatever it says, so that picking
+        // a size never moves the page.
+        let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        slot.set_size_request(SIZE_SLOT, -1);
+        slot.append(&self.size_button(at, exit.size));
+        self.columns.add(5, &slot);
+        line.append(&slot);
 
         let remove = gtk::Button::from_icon_name("user-trash-symbolic");
         remove.add_css_class("flat");
         remove.set_valign(gtk::Align::Center);
-        remove.set_tooltip_text(Some(&format!("Remove {}", name.to_lowercase())));
+        remove.set_tooltip_text(Some("Remove"));
+        remove.update_property(&[gtk::accessible::Property::Label(&format!("Remove {}", name.to_lowercase()))]);
         let removing = self.clone();
         remove.connect_clicked(move |_| {
             let again = removing.clone();
@@ -472,7 +578,7 @@ impl ExitGroup {
                         if let Some(exit) = exits.get_mut(at)
                             && exit.distance.mode() != mode
                         {
-                            exit.distance = starting(mode, stop, r);
+                            exit.distance = said_as(exit.distance, mode, stop, r);
                         }
                     },
                     true,
@@ -486,87 +592,113 @@ impl ExitGroup {
         row
     }
 
-    /// How much an exit closes: a share of the order, or a number.
+    /// What an exit closes: so many contracts, first; a share of the
+    /// position, picked or typed; or the rest, all of it for the first.
     fn size_button(self: &Rc<Self>, at: usize, size: Size) -> gtk::MenuButton {
         let button = gtk::MenuButton::new();
-        button.set_label(&size.text());
+        button.set_label(&size_label(size, at));
         button.set_valign(gtk::Align::Center);
-        button.set_tooltip_text(Some("Quantity"));
+        button.update_property(&[gtk::accessible::Property::Label("Closes")]);
         let popover = gtk::Popover::new();
-        let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
         body.set_margin_top(6);
         body.set_margin_bottom(6);
         body.set_margin_start(6);
         body.set_margin_end(6);
+        let heading = |text: &str| {
+            let label = gtk::Label::new(Some(text));
+            label.add_css_class("heading");
+            label.set_xalign(0.0);
+            label
+        };
+        let changed = Rc::new(std::cell::Cell::new(false));
 
-        let shares = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        shares.add_css_class("linked");
-        let mut first: Option<gtk::ToggleButton> = None;
-        // Not all of it: an exit with more after it leaves them something.
-        for share in Size::SHARES.into_iter().filter(|share| *share != Size::ALL) {
-            let toggle = gtk::ToggleButton::with_label(&share.text());
-            toggle.set_active(share == size);
-            if let Some(first) = &first {
-                toggle.set_group(Some(first));
-            } else {
-                first = Some(toggle.clone());
-            }
-            let sizing = self.clone();
-            let (shown, closing) = (button.clone(), popover.clone());
-            toggle.connect_toggled(move |toggle| {
-                if !toggle.is_active() {
-                    return;
-                }
-                shown.set_label(&share.text());
-                closing.popdown();
-                sizing.set_size(at, share);
-            });
-            shares.append(&toggle);
-        }
-        body.append(&shares);
-
-        let fixed = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let word = gtk::Label::new(Some("Fixed"));
-        word.set_hexpand(true);
-        word.set_xalign(0.0);
-        fixed.append(&word);
-        let count = gtk::SpinButton::with_range(1.0, 10_000.0, 1.0);
+        body.append(&heading("Contracts"));
+        let count = gtk::SpinButton::with_range(1.0, 999.0, 1.0);
         count.set_digits(0);
         count.set_value(match size {
             Size::Fixed(n) => f64::from(n),
             Size::Share(..) => 1.0,
         });
-        fixed.append(&count);
-        let unit = gtk::Label::new(Some("contracts"));
-        unit.add_css_class("dim-label");
-        fixed.append(&unit);
-        let set = gtk::Button::with_label("Set");
-        fixed.append(&set);
-        body.append(&fixed);
-        let (counted, closing) = (count.clone(), popover.clone());
-        set.connect_clicked(move |_| {
-            // Through value-changed below, also for the 1 already showing.
-            let value = counted.value();
-            counted.set_value(value + 1.0);
-            counted.set_value(value);
-            closing.popdown();
-        });
-        let sizing = self.clone();
-        let (shown, untoggled) = (button.clone(), first);
-        count.connect_value_changed(move |count| {
-            let n = count.value() as u32;
-            shown.set_label(&n.to_string());
-            if let Some(first) = &untoggled {
-                // The shares let go: a number is none of them.
-                let mut toggle = Some(first.clone().upcast::<gtk::Widget>());
-                while let Some(widget) = toggle {
-                    if let Some(button) = widget.downcast_ref::<gtk::ToggleButton>() {
-                        button.set_active(false);
-                    }
-                    toggle = widget.next_sibling();
-                }
+        count.update_property(&[gtk::accessible::Property::Label("Contracts")]);
+        body.append(&count);
+
+        body.append(&heading("Of position"));
+        let shares = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        shares.add_css_class("linked");
+        // The rest first, "Rest of position", then the shares going down.
+        for share in std::iter::once(Size::ALL).chain(Size::SHARES) {
+            let text = match share.is_all() {
+                true => size_label(share, at),
+                false => share.text(),
+            };
+            let toggle = gtk::ToggleButton::with_label(&text);
+            toggle.set_active(share == size);
+            toggle.set_focus_on_click(false);
+            let (sizing, closing, marked) = (self.clone(), popover.clone(), changed.clone());
+            toggle.connect_clicked(move |_| {
+                marked.set(true);
+                sizing.set_size(at, share);
+                closing.popdown();
+            });
+            shares.append(&toggle);
+        }
+        body.append(&shares);
+        let typed = gtk::Entry::new();
+        typed.set_placeholder_text(Some("33% or 0.33"));
+        typed.update_property(&[gtk::accessible::Property::Label("Share of position")]);
+        if let Size::Share(_, 100) = size {
+            typed.set_text(&size.text());
+        }
+        body.append(&typed);
+
+        let (sizing, closing, marked) = (self.clone(), popover.clone(), changed.clone());
+        typed.connect_activate(move |entry| match Size::parse_share(&entry.text()) {
+            Ok(share) => {
+                entry.remove_css_class("error");
+                marked.set(true);
+                sizing.set_size(at, share);
+                closing.popdown();
             }
-            sizing.set_size(at, Size::Fixed(n.max(1)));
+            Err(why) => {
+                entry.add_css_class("error");
+                entry.set_tooltip_text(Some(&why));
+            }
+        });
+        // Contracts take as they are typed or stepped; Enter closes.
+        let (sizing, shown, marked) = (self.clone(), button.clone(), changed.clone());
+        count.connect_value_changed(move |count| {
+            let size = Size::Fixed((count.value() as u32).max(1));
+            shown.set_label(&size_label(size, at));
+            marked.set(true);
+            sizing.set_size(at, size);
+        });
+        let keys = gtk::EventControllerKey::new();
+        let (sizing, closing, counted, marked) = (self.clone(), popover.clone(), count.clone(), changed.clone());
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if !matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter) {
+                return glib::Propagation::Proceed;
+            }
+            counted.update();
+            marked.set(true);
+            sizing.set_size(at, Size::Fixed((counted.value() as u32).max(1)));
+            closing.popdown();
+            glib::Propagation::Stop
+        });
+        count.add_controller(keys);
+        let focused = count.clone();
+        popover.connect_show(move |_| {
+            focused.grab_focus();
+            focused.select_region(0, -1);
+        });
+        // Drawn again once closed, so the button and the popover say what
+        // was picked.
+        let redraw = self.clone();
+        popover.connect_closed(move |_| {
+            if changed.replace(false) {
+                let again = redraw.clone();
+                glib::idle_add_local_once(move || again.rebuild());
+            }
         });
         popover.set_child(Some(&body));
         button.set_popover(Some(&popover));
@@ -622,37 +754,44 @@ impl ExitGroup {
     }
 }
 
-/// How the group splits an order of 1, 2 and 3, and a warning when an
-/// exit gets nothing on one of them: "Sized top to bottom, the last takes
-/// the rest. On 1: 1 · 0 (Target 2 not sent) …".
-fn split_note(exits: &[Exit]) -> Option<String> {
-    if exits.len() < 2 {
-        return None;
+/// What an exit's size reads on its button: "1", "2", "1/3 of position",
+/// "Rest", or "All" for the first.
+fn size_label(size: Size, at: usize) -> String {
+    match size {
+        Size::Fixed(n) => n.to_string(),
+        size if size.is_all() && at == 0 => "All".to_string(),
+        size if size.is_all() => "Rest".to_string(),
+        share => format!("{} of position", share.text()),
     }
-    let sizes: Vec<Size> = exits.iter().map(|exit| exit.size).collect();
-    let mut lines = Vec::new();
-    for qty in 1..=3u32 {
-        let split = templates::split(&sizes, qty);
-        let words: Vec<String> = split.iter().map(u32::to_string).collect();
-        let empty = split.iter().filter(|n| **n == 0).count();
-        let note = match empty {
-            0 => String::new(),
-            1 => " (one not sent)".to_string(),
-            n => format!(" ({n} not sent)"),
-        };
-        lines.push(format!("On {qty}: {}{note}", words.join(" · ")));
-    }
-    Some(format!("Sized top to bottom, the last takes the rest. {}", lines.join(", ")))
 }
 
-/// What is written before and after the amount: "$", "ticks", "R on
-/// the whole order".
-fn units(mode: Mode) -> (Option<&'static str>, Option<&'static str>) {
-    match mode {
-        Mode::Ticks => (None, Some("ticks")),
-        Mode::Money => (Some("$"), Some("on this exit")),
-        Mode::R => (None, Some("R on the whole order")),
-    }
+/// The mode picker's words: shut, the unit before the amount, "Ticks",
+/// "$", "R"; open, the modes by name.
+fn mode_factory(shut: bool) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        line.append(&label);
+        // Open, the mode picked is checked, as a drop-down's own are.
+        if !shut {
+            let check = gtk::Image::from_icon_name("object-select-symbolic");
+            item.property_expression("selected").bind(&check, "visible", gtk::Widget::NONE);
+            line.append(&check);
+        }
+        item.set_child(Some(&line));
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let text = item.item().and_downcast::<gtk::StringObject>().map(|text| text.string());
+        let label = item.child().and_then(|line| line.first_child()).and_downcast::<gtk::Label>();
+        let (Some(text), Some(label)) = (text, label) else { return };
+        label.set_label(if shut && text == Mode::Money.label() { "$" } else { &text });
+    });
+    factory
 }
 
 /// The amount, stepping as its mode does.
@@ -668,6 +807,13 @@ fn amount_spin(distance: Distance) -> gtk::SpinButton {
     spin.set_valign(gtk::Align::Center);
     spin.set_width_chars(6);
     spin.set_value(distance.value());
+    // R as a person writes it: 1, 1.5, 0.25.
+    if distance.mode() == Mode::R {
+        spin.connect_output(|spin| {
+            spin.set_text(&templates::amount(spin.value()));
+            glib::Propagation::Stop
+        });
+    }
     spin
 }
 
@@ -679,14 +825,18 @@ fn with_value(distance: Distance, value: f64) -> Distance {
     }
 }
 
-/// Where an exit said another way starts: 8 ticks, what 1R is worth, or
-/// 1R for a stop and 2R for a target.
-fn starting(mode: Mode, stop: bool, r: f64) -> Distance {
-    match (mode, stop) {
-        (Mode::Ticks, _) => Distance::Ticks(8),
-        (Mode::Money, _) => Distance::Money(r),
-        (Mode::R, true) => Distance::R(1.0),
-        (Mode::R, false) => Distance::R(2.0),
+/// An exit said another way: money and R one into the other with what
+/// 1R is worth, as both are the whole trade's P&L there; else where the
+/// mode starts, for a stop 20 ticks, what 1R is worth, or 1R, and a
+/// target twice as far.
+fn said_as(distance: Distance, mode: Mode, stop: bool, r: f64) -> Distance {
+    let far = if stop { 1.0 } else { 2.0 };
+    match (distance, mode) {
+        (Distance::R(multiple), Mode::Money) => Distance::Money((multiple * r).round()),
+        (Distance::Money(money), Mode::R) if r > 0.0 => Distance::R(((money / r) * 100.0).round().max(5.0) / 100.0),
+        (_, Mode::Ticks) => Distance::Ticks((20.0 * far) as u32),
+        (_, Mode::Money) => Distance::Money(r * far),
+        (_, Mode::R) => Distance::R(far),
     }
 }
 
@@ -695,17 +845,99 @@ fn starting(mode: Mode, stop: bool, r: f64) -> Distance {
 mod tests {
     use super::*;
 
-    /// A group of more than one says how it splits small orders, and which
-    /// exit an order that small would not send.
+    /// Half off at 1.5R, opened: the half left without a target is said
+    /// under the targets, and goes once a target for the rest is added.
     #[test]
-    fn a_group_says_how_it_splits_and_what_is_not_sent() {
-        let exit = |size| Exit { distance: Distance::Ticks(8), size };
-        assert_eq!(split_note(&[exit(Size::ALL)]), None, "one exit takes it all");
-        let halves = [exit(Size::Share(1, 2)), exit(Size::Share(1, 2))];
-        assert_eq!(
-            split_note(&halves).as_deref(),
-            Some("Sized top to bottom, the last takes the rest. On 1: 0 · 1 (one not sent), On 2: 1 · 1, On 3: 1 · 2")
-        );
+    fn half_off_says_its_open_half_until_a_rest_is_added() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().unwrap());
+            let half = OrderTemplate {
+                id: 1,
+                name: "Half off".into(),
+                targets: vec![Exit { distance: Distance::R(1.5), size: Size::Share(1, 2) }],
+                stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
+            };
+            templates::save(&store, &[half]);
+            let dialog = build(store.clone(), Rc::new(|| {}));
+            let nav = dialog.child().and_downcast::<adw::NavigationView>().unwrap();
+            let root = nav.visible_page().unwrap();
+            let row = action_rows_in(root.upcast_ref()).into_iter().find(|row| row.title() == "Half off").unwrap();
+            row.emit_by_name::<()>("activated", &[]);
+            let page = nav.visible_page().unwrap();
+            assert_eq!(page.title(), "Half off");
+            let groups = groups_in(page.upcast_ref());
+            let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
+            assert_eq!(titles, ["", "Targets", "Stops"]);
+            assert_eq!(notices_of(&groups[1]), ["1/2 of position has no target", "Needs 2 contracts to send the target"]);
+            assert_eq!(notices_of(&groups[2]), Vec::<String>::new(), "a stop for all says nothing");
+            let sizes: Vec<String> = menu_buttons_in(groups[1].upcast_ref()).iter().filter_map(|b| b.label().map(|l| l.to_string())).collect();
+            assert_eq!(sizes, ["1/2 of position"]);
+
+            let add = buttons_in(groups[1].upcast_ref()).into_iter().find(|b| b.tooltip_text().as_deref() == Some("Add target")).unwrap();
+            add.emit_clicked();
+            let saved = templates::load(&store);
+            assert_eq!(saved[0].summary(), "+1.5R 1/2 · +2.25R rest | −1R", "the rest, half as far again");
+            assert_eq!(notices_of(&groups[1]), ["Needs 2 contracts to send every target"]);
+            let sizes: Vec<String> = menu_buttons_in(groups[1].upcast_ref()).iter().filter_map(|b| b.label().map(|l| l.to_string())).collect();
+            assert_eq!(sizes, ["1/2 of position", "Rest"]);
+        });
+    }
+
+    /// The lines of a group's footer.
+    fn notices_of(group: &adw::PreferencesGroup) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut stack = vec![group.clone().upcast::<gtk::Widget>()];
+        let mut inside = false;
+        while let Some(widget) = stack.pop() {
+            if widget.has_css_class("notices") {
+                inside = true;
+                stack.clear();
+                stack.push(widget.first_child().unwrap());
+                continue;
+            }
+            if let Some(label) = widget.downcast_ref::<gtk::Label>().filter(|_| inside) {
+                found.push(label.label().to_string());
+            }
+            let mut child = widget.last_child();
+            while let Some(c) = child {
+                stack.push(c.clone());
+                child = c.prev_sibling();
+            }
+        }
+        found
+    }
+
+    fn action_rows_in(widget: &gtk::Widget) -> Vec<adw::ActionRow> {
+        let mut found = Vec::new();
+        let mut stack = vec![widget.clone()];
+        while let Some(widget) = stack.pop() {
+            if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+                found.push(row.clone());
+            }
+            let mut child = widget.last_child();
+            while let Some(c) = child {
+                stack.push(c.clone());
+                child = c.prev_sibling();
+            }
+        }
+        found
+    }
+
+    fn menu_buttons_in(widget: &gtk::Widget) -> Vec<gtk::MenuButton> {
+        let mut found = Vec::new();
+        let mut stack = vec![widget.clone()];
+        while let Some(widget) = stack.pop() {
+            if let Some(button) = widget.downcast_ref::<gtk::MenuButton>() {
+                found.push(button.clone());
+                continue;
+            }
+            let mut child = widget.last_child();
+            while let Some(c) = child {
+                stack.push(c.clone());
+                child = c.prev_sibling();
+            }
+        }
+        found
     }
 
     fn rows_of(group: &adw::PreferencesGroup) -> Vec<String> {
@@ -737,16 +969,25 @@ mod tests {
             let groups = groups_in(root.upcast_ref());
             assert_eq!(rows_of(&groups[0]), ["No order templates | A template's exits go in with every order from a chart on it"]);
 
-            let add = buttons_in(root.upcast_ref()).into_iter().find(|b| b.label().as_deref() == Some("Add a template")).unwrap();
-            add.emit_clicked();
-            add.emit_clicked();
+            let menu = menu_buttons_in(root.upcast_ref()).into_iter().find(|b| b.label().as_deref() == Some("Add a template")).unwrap();
+            let add = |preset: i32| {
+                let picked = menu.activate_action("templates.add", Some(&preset.to_variant()));
+                assert!(picked.is_ok(), "{picked:?}");
+            };
+            add(0);
+            add(0);
+            add(1);
             let saved = templates::load(&store);
-            assert_eq!(saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["New template", "New template 2"]);
+            let names: Vec<&str> = saved.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, ["Target and stop", "Target and stop 2", "Half off"]);
             assert_eq!(saved[0].summary(), "+2R | −1R", "a target at 2R and a stop at 1R");
-            assert!(told.get() >= 2, "every change is handed on");
-            assert_eq!(nav.visible_page().unwrap().title(), "New template 2", "a new template opens");
+            assert!(told.get() >= 3, "every change is handed on");
+            assert_eq!(nav.visible_page().unwrap().title(), "Half off", "a new template opens");
             let groups = groups_in(root.upcast_ref());
-            assert_eq!(rows_of(&groups[0]), ["New template | +2R | −1R", "New template 2 | +2R | −1R"]);
+            assert_eq!(
+                rows_of(&groups[0]),
+                ["Target and stop | +2R | −1R", "Target and stop 2 | +2R | −1R", "Half off | +1.5R 1/2 | −1R"]
+            );
         });
     }
 

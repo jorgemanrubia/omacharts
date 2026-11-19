@@ -7971,9 +7971,19 @@ mod tests {
         let runner = &listed["templates"][1];
         assert_eq!((runner["name"].as_str(), runner["key"].as_str()), (Some("Runner"), Some("Ctrl+Shift+2")));
         assert_eq!(runner["targets"][0], json!({"mode": "r", "value": 1.0, "quantity": "1/2"}));
-        assert_eq!(runner["targets"][1]["quantity"], "1/2", "split evenly with the first");
+        assert_eq!(runner["targets"][1]["quantity"], "rest", "the last takes the rest");
         assert_eq!(runner["stops"][0], json!({"mode": "r", "value": 0.5, "quantity": "all"}), "a multiple of R, never money");
         assert_eq!(runner["summary"], "+1R 1/2 · +2R rest | −0.5R");
+        let out = run("trading templates set Ladder --target 8t --target 16t@2 --target 40t", &store);
+        assert!(out.out.starts_with("Ladder: +8t ×1 · +16t ×2 · +40t rest"), "1 contract without an @: {}", out.out);
+        assert_eq!(run("trading templates remove Ladder", &store).code, 0);
+        // Half off at 1.5R, the other half left without a target.
+        let out = run("trading templates set Half --target 1.5r@1/2 --stop 1r --json", &store);
+        let half = &json_of(&out)["templates"][2];
+        assert_eq!(half["summary"], "+1.5R 1/2 | −1R");
+        assert_eq!(half["targets"][0], json!({"mode": "r", "value": 1.5, "quantity": "1/2"}));
+        assert_eq!(half["stops"][0]["quantity"], "all");
+        assert_eq!(run("trading templates remove Half", &store).code, 0);
         for money in ["--target $250r", "--stop $500r"] {
             assert_ne!(run(&format!("trading templates set Runner {money}"), &store).code, 0, "{money}: R in money");
         }

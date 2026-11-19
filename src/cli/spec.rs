@@ -1792,13 +1792,13 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued(
                         "target",
                         "EXIT",
-                        "for set, a target: 8t, $250 or 2r (a multiple of the Value of 1R on the whole order), then @1/2, @2 or @all; once per target, or `none`",
+                        "for set, a target: 8t, $250 (the whole trade's P&L there) or 2r (in multiples of the Value of 1R), then @2 contracts, a share of the position, @1/2 or @33%, or @rest; without, 1 contract, the last the rest. Once per target, or `none`",
                     )
                     .repeating(),
                     Flag::valued(
                         "stop",
                         "EXIT",
-                        "for set, a stop: 8t, $250 or 1r (a multiple of the Value of 1R on the whole order: 0.5r risks half of it), then @1/2, @2 or @all; once per stop, or `none`",
+                        "for set, a stop: 8t, $250 (the whole trade's loss there) or 1r (in multiples of the Value of 1R: 0.5r risks half of it), then @2, @1/2 or @rest as for a target. Once per stop, or `none`",
                     )
                     .repeating(),
                     Flag::valued("rename", "NAME", "for set, a new name"),
