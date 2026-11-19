@@ -601,6 +601,9 @@ struct Forming {
     buckets: Buckets,
     multiplier: f64,
     bar: Option<Bar>,
+    /// The time the latest record was taken at, in Sierra Chart's
+    /// microseconds, as the fold of the file keeps it.
+    latest: i64,
 }
 
 impl Forming {
@@ -610,23 +613,19 @@ impl Forming {
     fn fold(&mut self, records: &[sierra::Record]) -> Vec<Bar> {
         let mut changed: Vec<Bar> = Vec::new();
         for record in records {
-            let close = f64::from(record.close) * self.multiplier;
             // A negative or zero price is a price; only a close that is not
             // a number is left out, as the fold of the file leaves it out.
-            if !close.is_finite() {
+            if !record.close.is_finite() {
                 continue;
             }
-            // A trade's open, high and low are not trade prices: its high
-            // and low are the ask and the bid. A bar written with its high
-            // below its low has the two the wrong way round.
-            let (open, high, low) = match record.is_tick() {
-                true => (close, close, close),
-                false => {
-                    let (high, low) = (f64::from(record.high) * self.multiplier, f64::from(record.low) * self.multiplier);
-                    (f64::from(record.open) * self.multiplier, high.max(low), high.min(low))
-                }
-            };
-            let start = self.buckets.start(record.unix_seconds());
+            // Its time and its prices as the fold of the file takes them:
+            // a record written a little before the one ahead of it is part
+            // of the bar already open.
+            self.latest = sierra::fold::in_order(record.datetime, self.latest);
+            let (open, high, low) = sierra::fold::prices(record);
+            let price = |stored: f32| f64::from(stored) * self.multiplier;
+            let (open, high, low, close) = (price(open), price(high), price(low), price(record.close));
+            let start = self.buckets.start(sierra::unix_micros_from_sc(self.latest).div_euclid(1_000_000));
             let volume = f64::from(record.volume);
             let bar = match self.bar {
                 Some(forming) if forming.ts == start => Bar {
@@ -636,8 +635,9 @@ impl Forming {
                     volume: forming.volume + volume,
                     ..forming
                 },
-                // Sierra Chart writes in time order: a record behind the
-                // bar forming is one already counted.
+                // Further behind the bar forming than a record can be out
+                // of order: a bar drawn already, which one record cannot
+                // reopen.
                 Some(forming) if start < forming.ts => continue,
                 _ => Bar { ts: start, open, high, low, close, volume },
             };
@@ -683,7 +683,10 @@ fn follow(symbol: String, timeframe: Timeframe, since: Option<i64>, sink: Sink, 
             Ok(snapshot) => snapshot,
             Err(error) => return say(lost(&error)),
         };
-        let mut forming = Forming { buckets: buckets.clone(), multiplier: multiplier(&opened, &stem), bar: bars.last().copied() };
+        // The snapshot's latest record is in its last bar, at or after the
+        // bar's start, so the tail goes on from there.
+        let latest = bars.last().map_or(i64::MIN, |last| sierra::sc_from_unix_micros(last.ts * 1_000_000));
+        let mut forming = Forming { buckets: buckets.clone(), multiplier: multiplier(&opened, &stem), bar: bars.last().copied(), latest };
         if let Some(last) = bars.last() {
             held = Some(held.map_or(last.ts, |held| held.max(last.ts)));
         }
@@ -760,6 +763,57 @@ impl Stream for Sierra {
 mod tests {
     use super::*;
     use std::time::SystemTime;
+
+    /// A record at `secs`, priced `close`; a bar of its own with `bar`'s
+    /// open, high and low, or a trade without.
+    fn record(secs: i64, close: f32, volume: u32, bar: Option<(f32, f32, f32)>) -> sierra::Record {
+        let (open, high, low) = bar.unwrap_or((0.0, close + 1.0, close - 1.0));
+        sierra::Record {
+            datetime: sierra::sc_from_unix_micros(secs * 1_000_000),
+            open,
+            high,
+            low,
+            close,
+            trades: 1,
+            volume,
+            bid_volume: 0,
+            ask_volume: volume,
+        }
+    }
+
+    /// The bars a stream draws, from a snapshot of the file and then its
+    /// tail, are the bars of the whole file folded at once: a record out
+    /// of order, a bar written upside down or without a high, and a price
+    /// below zero, taken alike.
+    #[test]
+    fn a_followed_file_draws_what_the_whole_file_folds_to() {
+        let records = [
+            record(100, 10.0, 1, None),
+            record(130, 11.0, 1, None),
+            // The tail from here.
+            record(115, 12.0, 4, None),
+            record(185, 12.0, 2, Some((11.0, 9.0, 14.0))),
+            record(200, 13.0, 1, Some((12.0, f32::NAN, 11.0))),
+            record(250, -1.0, 3, None),
+            record(255, f32::NAN, 9, None),
+        ];
+        let whole = folded(&records, 60, 1.0);
+        let snapshot = folded(&records[..2], 60, 1.0);
+        let latest = sierra::sc_from_unix_micros(snapshot.last().unwrap().ts * 1_000_000);
+        let mut forming = Forming { buckets: Buckets::Every(60), multiplier: 1.0, bar: snapshot.last().copied(), latest };
+        let mut drawn = snapshot.clone();
+        for bar in forming.fold(&records[2..]) {
+            match drawn.last_mut() {
+                Some(last) if last.ts == bar.ts => *last = bar,
+                _ => drawn.push(bar),
+            }
+        }
+        assert_eq!(drawn, whole);
+        assert_eq!(whole.iter().map(|bar| bar.volume).sum::<f64>(), 12.0, "every priced record counted");
+        assert_eq!((whole[1].high, whole[1].volume), (12.0, 5.0), "the late record is in the bar open");
+        assert_eq!((whole[2].high, whole[2].low), (14.0, 9.0), "set right, and a missing high is the close");
+        assert_eq!(whole[3].low, -1.0);
+    }
 
     /// A Sierra Chart folder of `.scid` files, each written at a time the
     /// test says. Removed when dropped.

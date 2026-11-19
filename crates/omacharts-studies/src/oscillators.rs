@@ -401,7 +401,9 @@ impl Study for Macd {
     }
 
     fn warmup(&self) -> usize {
-        self.fast.warmup().max(self.slow.warmup()) + self.signal_period.saturating_sub(1)
+        // The line is the first value; the signal follows it by its own
+        // period less one.
+        self.fast.warmup().max(self.slow.warmup())
     }
 
     fn key(&self) -> &'static str {

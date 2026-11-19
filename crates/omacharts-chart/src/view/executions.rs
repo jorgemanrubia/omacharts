@@ -60,9 +60,10 @@ pub struct Executions {
     pub won: String,
     pub lost: String,
     pub even: String,
-    /// One trip to read the chart for, as the moments it opened and closed:
-    /// its fills and its line drawn as always, every other one faint. `None`
-    /// draws them all alike.
+    /// One trip to read the chart for, as the moments it opened and closed,
+    /// exactly as its [`TripLine`] has them: its line, and the fills at
+    /// those two moments, drawn as always, every other one faint — a trip
+    /// open inside it too. `None` draws them all alike.
     pub emphasis: Option<(i64, i64)>,
 }
 
@@ -93,9 +94,9 @@ const TRIP_ALPHA: f64 = 0.85;
 /// How strongly everything but the emphasised trip is drawn, when one is.
 const MUTED_ALPHA: f64 = 0.25;
 
-/// Whether a moment is inside the emphasised trip, if there is one.
+/// Whether a fill at `ts` is one of the emphasised trip's, if there is one.
 fn emphasised(emphasis: Option<(i64, i64)>, ts: i64) -> bool {
-    emphasis.is_none_or(|(from, to)| ts >= from && ts <= to)
+    emphasis.is_none_or(|(from, to)| ts == from || ts == to)
 }
 
 /// Where a fill falls among the bars: the index of the bar it is part of,
@@ -156,7 +157,7 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             None => &executions.even,
         };
         let alpha = match executions.emphasis {
-            Some((from, _)) if trip.from.0 != from => MUTED_ALPHA,
+            Some(ends) if (trip.from.0, trip.to.0) != ends => MUTED_ALPHA,
             _ => TRIP_ALPHA,
         };
         colors::set_source_alpha(cr, colour, alpha);
@@ -303,5 +304,42 @@ mod tests {
         assert!(picture(&state) == plain, "emphasising the only trip changed it");
         state.executions.emphasis = Some((close + 1, close + 2));
         assert!(picture(&state) != plain, "a trip outside the emphasis was drawn as before");
+    }
+
+    /// A fill inside the emphasised trip's span that is not one of its two
+    /// is another trip's, and is drawn faint like the rest of that trip.
+    #[test]
+    fn a_fill_inside_the_emphasised_trip_is_not_part_of_it() {
+        let mut state = state();
+        let (width, height) = (400.0, 300.0);
+        let picture = |state: &State| {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32).unwrap();
+            super::super::draw(&cairo::Context::new(&surface).unwrap(), width, height, state);
+            surface.data().unwrap().to_vec()
+        };
+        let (open, close) = (state.bars[1].ts + 60, state.bars[3].ts + 60);
+        let inside = state.bars[2].ts + 60;
+        state.executions = Executions {
+            marks: vec![
+                ExecutionMark { ts: open, price: 100.0, buy: true, opens: true, closes: false },
+                ExecutionMark { ts: inside, price: 100.2, buy: false, opens: true, closes: false },
+                ExecutionMark { ts: close, price: 100.5, buy: false, opens: false, closes: true },
+            ],
+            trips: vec![TripLine { from: (open, 100.0), to: (close, 100.5), won: Some(true) }],
+            buy: "#00ff00".into(),
+            sell: "#ff0000".into(),
+            won: "#00ff00".into(),
+            lost: "#ff0000".into(),
+            even: "#888888".into(),
+            emphasis: None,
+        };
+        let plain = picture(&state);
+        state.executions.emphasis = Some((open, close));
+        assert!(picture(&state) != plain, "the other trip's fill was drawn as strongly as the emphasised trip's");
+        // Without it, the emphasised trip alone is drawn as it always is.
+        state.executions.marks.remove(1);
+        let alone = picture(&state);
+        state.executions.emphasis = None;
+        assert!(picture(&state) == alone, "the emphasised trip's own fills and line changed");
     }
 }

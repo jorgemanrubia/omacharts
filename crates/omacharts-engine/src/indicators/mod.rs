@@ -1242,7 +1242,10 @@ pub struct Context<'a> {
     /// bar every time.
     pub memos: Option<&'a cvd::Memos>,
     /// Trading hours the embedding program keeps itself, in place of the
-    /// instrument's exchange's from the registry. `None` uses the registry.
+    /// instrument's exchange's from the registry, for the sessions Session
+    /// Times shades. `None` uses the registry. Nothing else reads it: a
+    /// session VWAP, a cumulative delta and a volume profile reset on
+    /// [`Context::session_origin`], and trading days are the registry's.
     pub schedule: Option<crate::exchanges::Schedule<'a>>,
 }
 
@@ -1262,8 +1265,8 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// The same chart, its trading hours the embedding program's own rather
-    /// than the registry's.
+    /// The same chart, the sessions Session Times shades the embedding
+    /// program's own rather than the registry's: see [`Context::schedule`].
     pub fn with_schedule(self, schedule: Option<crate::exchanges::Schedule<'a>>) -> Context<'a> {
         Context { schedule, ..self }
     }

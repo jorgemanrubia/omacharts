@@ -5622,24 +5622,26 @@ impl ChartView {
     }
 
     /// Bring the bars between `from` and `to`, unix seconds, to the middle
-    /// of the view, zooming out only if they would not fit: a trade picked
-    /// from a list, found on the chart where it happened.
+    /// of the view, zooming out only if they would not fit. Moments outside
+    /// the bars loaded are taken at the nearest bar, and with no bars
+    /// loaded nothing moves.
     pub fn centre_on(&self, from: i64, to: i64) {
         self.state.borrow_mut().centre_on(from, to);
         self.redraw();
     }
 
     /// Bring the moments from `from` to `to` (unix seconds) into view at a
-    /// width that suits them, zooming in or out, with room either side:
-    /// a page about a stretch of a day opens on that stretch.
+    /// width that suits them, zooming in or out, with room either side.
+    /// Moments outside the bars loaded are taken at the nearest bar, and
+    /// with no bars loaded nothing moves.
     pub fn frame(&self, from: i64, to: i64) {
         self.state.borrow_mut().frame(from, to);
         self.redraw();
     }
 
-    /// Draw the execution triangles `scale` times their usual size, for an
-    /// app whose fills are the subject of the chart rather than a note on
-    /// it. 1 is the usual size.
+    /// Draw the execution triangles `scale` times their usual size, where
+    /// the fills are what the chart is read for. 1 is the usual size; a
+    /// scale that is not a positive number is taken as 1.
     pub fn set_execution_scale(&self, scale: f64) {
         let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
         {

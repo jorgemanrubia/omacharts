@@ -129,7 +129,7 @@ pub struct ProfileReading {
 /// traded most, and the value area around it, as known at each bar.
 ///
 /// A whole period's profile is only whole once the period is over; this is
-/// what could be known at every bar along the way, so it can be acted on.
+/// what could be known at every bar along the way.
 /// The point of control and the value area are found the way a chart's
 /// profile finds them: the busiest row, the higher on a tie, and then
 /// outward from it taking the busier neighbour — the upper on a tie —
@@ -180,12 +180,13 @@ impl DevelopingProfile {
             if volumes.is_empty() {
                 *low = tick;
             }
+            // In i64: two ticks far apart are further apart than an i32.
             if tick < *low {
-                let more = (*low - tick) as usize;
+                let more = (i64::from(*low) - i64::from(tick)) as usize;
                 volumes.splice(0..0, std::iter::repeat_n(0, more));
                 *low = tick;
             }
-            let at = (tick - *low) as usize;
+            let at = (i64::from(tick) - i64::from(*low)) as usize;
             if at >= volumes.len() {
                 volumes.resize(at + 1, 0);
             }
@@ -230,7 +231,7 @@ impl DevelopingProfile {
                 (None, None) => break,
             }
         }
-        let price = |row: usize| f64::from(low + row as i32) * self.tick_size;
+        let price = |row: usize| (i64::from(low) + row as i64) as f64 * self.tick_size;
         Some(ProfileReading { poc: price(poc), vah: price(upper), val: price(lower) })
     }
 }

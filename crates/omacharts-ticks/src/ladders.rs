@@ -185,6 +185,7 @@ pub struct Ladder {
 }
 
 impl Ladder {
+    #[inline]
     pub fn new() -> Ladder {
         Ladder::default()
     }
@@ -239,11 +240,13 @@ impl Ladder {
     }
 
     /// Every level as `(tick, level)`, lowest first.
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (i32, &Level)> + '_ {
         self.levels.iter().enumerate().map(|(i, level)| (self.low_tick + i as i32, level))
     }
 
     /// Every level as `(price, at_bid, at_ask)`, lowest first.
+    #[inline]
     pub fn prices(&self, tick_size: f64) -> impl Iterator<Item = (f64, u64, u64)> + '_ {
         self.iter().map(move |(tick, l)| (to_price(tick, tick_size), l.at_bid, l.at_ask))
     }
@@ -1493,6 +1496,9 @@ pub struct DayMinutes<'a> {
     day: i64,
     left: usize,
     prev: (i64, i32),
+    /// Whether a minute has been read: the first has no minute before it
+    /// to be later than.
+    started: bool,
 }
 
 impl<'a> DayMinutes<'a> {
@@ -1505,7 +1511,7 @@ impl<'a> DayMinutes<'a> {
         if left > bytes.len() {
             return Err(DecodeError::Corrupt);
         }
-        Ok(DayMinutes { reader, tick_size, flags, day, left, prev: (0, 0) })
+        Ok(DayMinutes { reader, tick_size, flags, day, left, prev: (0, 0), started: false })
     }
 
     /// The trading day, numbered as [`Day::day`].
@@ -1519,19 +1525,25 @@ impl<'a> DayMinutes<'a> {
     }
 
     /// The next minute, into `minute`, replacing what it held. `None` once
-    /// the day is read; an error if the bytes are damaged.
+    /// the day is read; an error if the bytes are damaged, as [`decode_day`]
+    /// finds them, after which `minute` holds nothing to read and every
+    /// later call is `None`.
     pub fn read_into(&mut self, minute: &mut Minute) -> Option<Result<(), DecodeError>> {
         if self.left == 0 {
             return None;
         }
         self.left -= 1;
-        Some(self.read(minute))
+        let read = self.read(minute);
+        if read.is_err() {
+            self.left = 0;
+        }
+        Some(read)
     }
 
     fn read(&mut self, minute: &mut Minute) -> Result<(), DecodeError> {
         let r = &mut self.reader;
         let ts = self.prev.0.checked_add(r.zigzag()?).ok_or(DecodeError::Corrupt)?;
-        if ts <= self.prev.0 && self.prev != (0, 0) {
+        if self.started && ts <= self.prev.0 {
             return Err(DecodeError::Corrupt);
         }
         let low_tick = r.tick(i64::from(self.prev.1))?;
@@ -1544,6 +1556,7 @@ impl<'a> DayMinutes<'a> {
         (minute.ts, minute.open, minute.high, minute.low, minute.close) = (ts, open, high, low, close);
         minute.volume = minute.ladder.sides.volume();
         self.prev = (ts, low_tick);
+        self.started = true;
         Ok(())
     }
 }
@@ -1671,6 +1684,27 @@ mod day_minutes_tests {
                 assert_eq!(&minute, expected);
             }
             assert!(reader.read_into(&mut minute).is_none());
+        }
+    }
+
+    /// Minutes out of order are damage, read whole or a minute at a time,
+    /// even where the first is at nought, and nothing is read after it.
+    #[test]
+    fn minutes_out_of_order_are_damage_either_way() {
+        let minute = |ts: i64| {
+            let mut minute = Minute::opening(ts, 0.0);
+            minute.add_trade(0, 0.0, 1, Side::Buy, 1);
+            minute
+        };
+        for first in [0, 60] {
+            let day = Day { day: 0, minutes: vec![minute(first), minute(first), minute(first + 60)], total: Ladder::new() };
+            let bytes = encode_day(&day, 0.25);
+            assert!(decode_day(&bytes, 0.25).is_err(), "first at {first}");
+            let mut reader = DayMinutes::new(&bytes, 0.25).unwrap();
+            let mut read = Minute::default();
+            assert!(reader.read_into(&mut read).unwrap().is_ok());
+            assert_eq!(reader.read_into(&mut read).unwrap(), Err(DecodeError::Corrupt), "first at {first}");
+            assert!(reader.read_into(&mut read).is_none());
         }
     }
 }

@@ -110,7 +110,14 @@ impl Hours {
     /// one from the registry: `days` indexed from Monday, the day beginning
     /// `day_starts` minutes past midnight (the evening before its date when
     /// `evening_before`), and its segments in order.
+    ///
+    /// # Panics
+    ///
+    /// If a segment ends before it starts, or starts before the one ahead
+    /// of it ends: the hours would be no shape of day.
     pub fn new(id: &str, days: [bool; 7], day_starts: u32, evening_before: bool, segments: Vec<Segment>) -> Hours {
+        assert!(segments.iter().all(|s| s.start <= s.end), "a segment of {id} ends before it starts: {segments:?}");
+        assert!(segments.windows(2).all(|pair| pair[0].end <= pair[1].start), "the segments of {id} are out of order: {segments:?}");
         Hours { id: id.to_string(), days, day_starts, evening_before, segments }
     }
 

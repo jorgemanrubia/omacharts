@@ -25,13 +25,13 @@ const PARALLEL_ABOVE: usize = 1 << 20;
 
 /// One record's prints, as ladder trades: what traded at the bid as
 /// sellers', at the ask as buyers', and the rest, if a record has any, on
-/// no side. `None` for a record with no price.
-/// A record as a tick, a price and its volume on each side.
+/// no side. `None` for a record whose price is not a number; a negative or
+/// zero price is a price, as the bars of the file take it.
 type Prints = (i32, f64, [(u64, Side); 3]);
 
 fn prints(record: &sierra::Record, multiplier: f64, tick_size: f64) -> Option<Prints> {
     let price = f64::from(record.close) * multiplier;
-    if !price.is_finite() || price <= 0.0 {
+    if !price.is_finite() {
         return None;
     }
     let tick = to_tick(price, tick_size);
@@ -40,12 +40,17 @@ fn prints(record: &sierra::Record, multiplier: f64, tick_size: f64) -> Option<Pr
     Some((tick, price, [(bid, Side::Sell), (ask, Side::Buy), (unknown, Side::Unknown)]))
 }
 
-/// The minutes of `records`, oldest first, in whole ticks of `tick_size`.
-fn minutes_of(records: &[sierra::Record], multiplier: f64, tick_size: f64) -> Vec<Minute> {
+/// The minutes of `records` after records up to `latest`, oldest first, in
+/// whole ticks of `tick_size`, and the latest time once they are in. Each
+/// record is in the minute of the time the bars of the file take it at: a
+/// record written a little before the one ahead of it is in the minute
+/// already open.
+fn minutes_of(records: &[sierra::Record], multiplier: f64, tick_size: f64, mut latest: i64) -> (Vec<Minute>, i64) {
     let mut minutes: Vec<Minute> = Vec::new();
     for record in records {
         let Some((tick, price, sides)) = prints(record, multiplier, tick_size) else { continue };
-        let ts = record.unix_seconds().div_euclid(60) * 60;
+        latest = sierra::fold::in_order(record.datetime, latest);
+        let ts = sierra::unix_micros_from_sc(latest).div_euclid(60_000_000) * 60;
         let minute = match minutes.last_mut() {
             Some(minute) if minute.ts == ts => minute,
             _ => {
@@ -62,7 +67,7 @@ fn minutes_of(records: &[sierra::Record], multiplier: f64, tick_size: f64) -> Ve
             }
         }
     }
-    minutes
+    (minutes, latest)
 }
 
 /// [`minutes_of`], split across threads at minute boundaries for a span
@@ -70,7 +75,7 @@ fn minutes_of(records: &[sierra::Record], multiplier: f64, tick_size: f64) -> Ve
 fn minutes_in(records: &[sierra::Record], multiplier: f64, tick_size: f64) -> Vec<Minute> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
     if records.len() < PARALLEL_ABOVE || threads < 2 {
-        return minutes_of(records, multiplier, tick_size);
+        return minutes_of(records, multiplier, tick_size, i64::MIN).0;
     }
     // Cut where a minute starts, so no minute is in two pieces.
     let mut cuts = vec![0];
@@ -85,11 +90,33 @@ fn minutes_in(records: &[sierra::Record], multiplier: f64, tick_size: f64) -> Ve
     }
     cuts.push(records.len());
     let pieces: Vec<&[sierra::Record]> = cuts.windows(2).map(|w| &records[w[0]..w[1]]).collect();
-    std::thread::scope(|scope| {
+    let folded: Vec<(Vec<Minute>, i64)> = std::thread::scope(|scope| {
         let folding: Vec<_> =
-            pieces.iter().map(|piece| scope.spawn(move || minutes_of(piece, multiplier, tick_size))).collect();
-        folding.into_iter().flat_map(|folded| folded.join().unwrap_or_default()).collect()
-    })
+            pieces.iter().map(|piece| scope.spawn(move || minutes_of(piece, multiplier, tick_size, i64::MIN))).collect();
+        folding.into_iter().map(|folded| folded.join().unwrap_or_default()).collect()
+    });
+    // Joined as one fold would have made them: a piece that opens on a
+    // record written before the latest of the pieces ahead is folded again
+    // from that latest, and its first minute, if it is the minute already
+    // open, goes on in it.
+    let mut minutes: Vec<Minute> = Vec::with_capacity(folded.iter().map(|(minutes, _)| minutes.len()).sum());
+    let mut latest = i64::MIN;
+    for (piece, (mut piece_minutes, mut last)) in pieces.iter().zip(folded) {
+        let Some(first) = piece.iter().find(|record| f64::from(record.close).is_finite()) else { continue };
+        if first.datetime < latest {
+            (piece_minutes, last) = minutes_of(piece, multiplier, tick_size, latest);
+        }
+        latest = last;
+        let mut rest = piece_minutes.into_iter();
+        if let (Some(open), Some(next)) = (minutes.last_mut(), rest.as_slice().first())
+            && next.ts == open.ts
+        {
+            open.merge(next);
+            rest.next();
+        }
+        minutes.extend(rest);
+    }
+    minutes
 }
 
 struct Watching {
@@ -230,7 +257,7 @@ mod tests {
     #[test]
     fn a_minute_is_the_trades_in_it_on_the_side_that_took_them() {
         let records = [trade(600, 764700.0, 2, true), trade(630, 764725.0, 3, false), trade(661, 764700.0, 1, true)];
-        let minutes = minutes_of(&records, 0.01, 0.25);
+        let minutes = minutes_of(&records, 0.01, 0.25, i64::MIN).0;
         assert_eq!(minutes.len(), 2);
         let first = &minutes[0];
         assert_eq!((first.ts, first.open, first.high, first.close, first.volume), (600, 7647.0, 7647.25, 7647.25, 5));
@@ -281,18 +308,45 @@ mod tests {
         assert_eq!(read.len(), 6 * 120, "the six hours' trades and no others");
         let expected: Vec<sierra::Record> =
             records.iter().filter(|r| (from..to).contains(&r.unix_seconds())).copied().collect();
-        assert_eq!(minutes_in(read, 0.01, 0.25), minutes_of(&expected, 0.01, 0.25));
+        assert_eq!(minutes_in(read, 0.01, 0.25), minutes_of(&expected, 0.01, 0.25, i64::MIN).0);
         assert_eq!(minutes_in(read, 0.01, 0.25).len(), 6 * 60);
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Split across threads, the minutes are the same minutes.
+    /// Split across threads, the minutes are the same minutes: records
+    /// written out of order, and one stamped far ahead, included.
     #[test]
     fn minutes_folded_in_pieces_are_the_minutes_folded_whole() {
-        let records: Vec<sierra::Record> = (0..(PARALLEL_ABOVE as i64 + 5_000))
+        let mut records: Vec<sierra::Record> = (0..(PARALLEL_ABOVE as i64 + 5_000))
             .map(|i| trade(1_700_000_000 + i / 7, 764700.0 + (i % 13) as f32 * 25.0, 1 + (i % 3) as u32, i % 2 == 0))
             .collect();
-        assert_eq!(minutes_in(&records, 0.01, 0.25), minutes_of(&records, 0.01, 0.25));
+        for (i, record) in records.iter_mut().enumerate() {
+            match i % 997 {
+                0 => record.datetime -= 30_000_000,
+                1 if i % 3 == 0 => record.datetime += 86_400_000_000,
+                _ => {}
+            }
+        }
+        assert_eq!(minutes_in(&records, 0.01, 0.25), minutes_of(&records, 0.01, 0.25, i64::MIN).0);
+    }
+
+    /// A record written before the one ahead of it is in the minute already
+    /// open, as the bars of the file take it, and a price below zero is a
+    /// price.
+    #[test]
+    fn a_minute_takes_its_trades_as_the_bars_do() {
+        let records = [
+            trade(600, 100.0, 1, true),
+            trade(665, 200.0, 1, true),
+            trade(655, -350.0, 4, false),
+            trade(720, 0.0, 2, true),
+        ];
+        let minutes = minutes_of(&records, 0.01, 0.25, i64::MIN).0;
+        assert_eq!(minutes.iter().map(|m| (m.ts, m.volume)).collect::<Vec<_>>(), [(600, 1), (660, 5), (720, 2)]);
+        assert_eq!(minutes[1].low, -3.5);
+        assert_eq!(minutes[1].ladder.at(to_tick(-3.5, 0.25)).at_bid, 4);
+        let bars = sierra::fold::bars(&records, 60, 0.01);
+        assert_eq!(bars.iter().map(|b| (b.start, b.volume)).collect::<Vec<_>>(), [(600, 1), (660, 5), (720, 2)]);
     }
 }
 

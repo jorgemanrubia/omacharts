@@ -133,14 +133,19 @@ fn a_mean_true_range_forgets_a_bar_once_it_has_left_the_window() {
 #[test]
 fn the_first_value_comes_after_the_warmup() {
     let bars = series(5, 200);
-    let check = |values: Vec<Option<f64>>, warmup: usize| {
-        assert!(values[..warmup].iter().all(Option::is_none));
+    fn check<S: Study>(study: S, bars: &[Bar]) {
+        let warmup = study.warmup();
+        let values = over(study, bars, |_| false);
+        assert!(values[..warmup].iter().all(Option::is_none), "a value before the end of the warm-up, {warmup}");
         assert!(values[warmup].is_some(), "nothing at the end of the warm-up, bar {warmup}");
-    };
-    check(over(Sma::new(20), &bars, |_| false), Sma::new(20).warmup());
-    check(over(Ema::new(20), &bars, |_| false), Ema::new(20).warmup());
-    check(over(Rsi::new(14), &bars, |_| false), Rsi::new(14).warmup());
-    check(over(Atr::new(14), &bars, |_| false), Atr::new(14).warmup());
+    }
+    check(Sma::new(20), &bars);
+    check(Ema::new(20), &bars);
+    check(Rsi::new(14), &bars);
+    check(Atr::new(14), &bars);
+    check(Bollinger::new(20), &bars);
+    check(Stochastic::new(14, 3, 3), &bars);
+    check(Macd::new(12, 26, 9), &bars);
 }
 
 #[test]

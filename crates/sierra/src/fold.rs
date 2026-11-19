@@ -15,9 +15,12 @@
 //! price is a price, and kept — crude oil settled below zero in April 2020.
 //!
 //! A file is almost in time order, but a record can come a few seconds
-//! before the one written ahead of it. Such a record is taken as part of
-//! the bar already open, so the bars stay in time order and none of the
-//! volume is lost.
+//! before the one written ahead of it. Such a record is taken at the time
+//! of the latest before it, as part of the bar already open, so the bars
+//! stay in time order and none of the volume is lost. Only up to
+//! [`OUT_OF_ORDER`] behind, though: a record further back than that is
+//! taken at its own time, so one record stamped far ahead does not draw
+//! every record after it into its bar. See [`in_order`].
 //!
 //! Above [`PARALLEL_THRESHOLD`] records the slice is cut into one piece per
 //! core and each piece folded on its own thread. Where a bucket straddles
@@ -31,6 +34,24 @@ use crate::settings::Scaler;
 
 /// Above this many records a fold runs on every core.
 pub const PARALLEL_THRESHOLD: usize = 2_000_000;
+
+/// How far behind the latest record, in Sierra Chart's microseconds, a
+/// record may be stamped and still be taken at the latest's time.
+pub const OUT_OF_ORDER: i64 = 60_000_000;
+
+/// The time a record stamped `datetime` is taken at, after records up to
+/// `latest` (`i64::MIN` before the first): the latest's time when it is
+/// stamped no more than [`OUT_OF_ORDER`] behind it, and its own otherwise.
+/// What it returns is the next record's `latest`.
+#[inline(always)]
+pub fn in_order(datetime: i64, latest: i64) -> i64 {
+    // Behind by 1 to OUT_OF_ORDER, as one unsigned comparison. A record
+    // at or after the latest makes `behind` 0 or wraps it to the top of
+    // the range, as a lag too big for an i64 does (only `latest` at
+    // `i64::MIN`, or a damaged stamp, makes one): either way it fails.
+    let behind = latest.wrapping_sub(datetime) as u64;
+    if behind.wrapping_sub(1) < OUT_OF_ORDER as u64 { latest } else { datetime }
+}
 
 /// A bar, in real prices.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,7 +90,7 @@ impl Bar {
 /// prices into real ones.
 pub fn bars(records: &[Record], step_seconds: i64, multiplier: f64) -> Vec<Bar> {
     assert!(step_seconds > 0, "a bar is at least a second wide");
-    run(records, multiplier, &Step(step_seconds), PARALLEL_THRESHOLD)
+    run(records, Scaler::new(multiplier), &Step(step_seconds), PARALLEL_THRESHOLD, i64::MIN).0
 }
 
 /// Bars over buckets of any shape: `bucket` takes a record's unix second
@@ -78,7 +99,7 @@ pub fn bars(records: &[Record], step_seconds: i64, multiplier: f64) -> Vec<Bar> 
 /// per record. Records must be in time order, and `bucket` must not go
 /// backwards as time goes forwards.
 pub fn bars_with(records: &[Record], multiplier: f64, bucket: impl Fn(i64) -> i64 + Sync) -> Vec<Bar> {
-    run(records, multiplier, &ByFunction(bucket), PARALLEL_THRESHOLD)
+    run(records, Scaler::new(multiplier), &ByFunction(bucket), PARALLEL_THRESHOLD, i64::MIN).0
 }
 
 /// How many records [`bars_reporting`] folds between one report and the next.
@@ -92,12 +113,16 @@ pub fn bars_reporting(records: &[Record], step_seconds: i64, multiplier: f64, mu
         report(1.0);
         return bars;
     }
+    assert!(step_seconds > 0, "a bar is at least a second wide");
+    let scaler = Scaler::new(multiplier);
     let mut out: Vec<Bar> = Vec::new();
     let mut done = 0;
+    // Each piece goes on from the latest time before it, as one fold would.
+    let mut latest = i64::MIN;
     for piece in records.chunks(REPORT_EVERY) {
-        let folded = bars(piece, step_seconds, multiplier);
-        let rest = join(&mut out, &folded);
-        out.extend_from_slice(rest);
+        let folded;
+        (folded, latest) = run(piece, scaler, &Step(step_seconds), PARALLEL_THRESHOLD, latest);
+        join(&mut out, &folded);
         done += piece.len();
         report(done as f64 / records.len() as f64);
     }
@@ -107,13 +132,13 @@ pub fn bars_reporting(records: &[Record], step_seconds: i64, multiplier: f64, mu
 /// [`bars`] on one thread, whatever the size.
 pub fn bars_serial(records: &[Record], step_seconds: i64, multiplier: f64) -> Vec<Bar> {
     assert!(step_seconds > 0, "a bar is at least a second wide");
-    fold(records, Scaler::new(multiplier), &Step(step_seconds))
+    fold(records, Scaler::new(multiplier), &Step(step_seconds), i64::MIN).0
 }
 
 /// [`bars`] cut into this many pieces, whatever the size. For tests and
 /// benchmarks.
 pub fn bars_in_pieces(records: &[Record], step_seconds: i64, multiplier: f64, pieces: usize) -> Vec<Bar> {
-    parallel(records, Scaler::new(multiplier), &Step(step_seconds), pieces)
+    parallel(records, Scaler::new(multiplier), &Step(step_seconds), pieces, i64::MIN).0
 }
 
 /// Which bucket a record's time is in, and over what range of Sierra
@@ -147,42 +172,51 @@ impl<F: Fn(i64) -> i64 + Sync> Bucketing for ByFunction<F> {
     }
 }
 
-fn run(records: &[Record], multiplier: f64, bucketing: &impl Bucketing, threshold: usize) -> Vec<Bar> {
-    let scaler = Scaler::new(multiplier);
+/// The bars of `records` after records up to `latest`, and the latest
+/// time once they are in.
+fn run(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing, threshold: usize, latest: i64) -> (Vec<Bar>, i64) {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     if records.len() <= threshold || threads == 1 {
-        fold(records, scaler, bucketing)
+        fold(records, scaler, bucketing, latest)
     } else {
-        parallel(records, scaler, bucketing, threads)
+        parallel(records, scaler, bucketing, threads, latest)
     }
 }
 
-fn parallel(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing, pieces: usize) -> Vec<Bar> {
+/// Every piece folded at once as if it came first, then joined in order.
+/// A piece whose first record is stamped before the latest of the pieces
+/// ahead of it is folded again, from that latest, as the serial fold would
+/// have taken it: rare, since it takes a record out of order at the seam.
+fn parallel(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing, pieces: usize, mut latest: i64) -> (Vec<Bar>, i64) {
     let pieces = pieces.clamp(1, records.len().max(1));
-    let size = records.len().div_ceil(pieces);
-    let folded: Vec<Vec<Bar>> = std::thread::scope(|s| {
-        let handles: Vec<_> = records.chunks(size.max(1)).map(|piece| s.spawn(move || fold(piece, scaler, bucketing))).collect();
+    let size = records.len().div_ceil(pieces).max(1);
+    let folded: Vec<(Vec<Bar>, i64)> = std::thread::scope(|s| {
+        let handles: Vec<_> =
+            records.chunks(size).map(|piece| s.spawn(move || fold(piece, scaler, bucketing, i64::MIN))).collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    let mut out: Vec<Bar> = Vec::with_capacity(folded.iter().map(Vec::len).sum());
-    for piece in folded {
-        let rest = join(&mut out, &piece);
-        out.extend_from_slice(rest);
+    let mut out: Vec<Bar> = Vec::with_capacity(folded.iter().map(|(bars, _)| bars.len()).sum());
+    for (piece, (bars, last)) in records.chunks(size).zip(folded) {
+        let Some(first) = piece.iter().find(|r| finite(r.close)) else { continue };
+        let (bars, last) = if first.datetime < latest { fold(piece, scaler, bucketing, latest) } else { (bars, last) };
+        join(&mut out, &bars);
+        latest = last;
     }
-    out
+    (out, latest)
 }
 
-/// Fold the start of a later piece into the bars so far: a bucket that
-/// straddles the two, and any the later piece opened before the last bar
-/// began — records written out of order, which the serial fold would have
-/// taken into that bar. What is left goes on the end.
-fn join<'a>(out: &mut [Bar], later: &'a [Bar]) -> &'a [Bar] {
-    let Some(last) = out.last_mut() else { return later };
-    let joined = later.iter().take_while(|bar| bar.start <= last.start).count();
-    for bar in &later[..joined] {
-        last.merge(bar);
-    }
-    &later[joined..]
+/// Put a later piece's bars after the bars so far, its first joined to the
+/// last when the bucket straddles the two, as the serial fold would have
+/// gone on building it.
+fn join(out: &mut Vec<Bar>, later: &[Bar]) {
+    let rest = match (out.last_mut(), later.first()) {
+        (Some(last), Some(first)) if first.start == last.start => {
+            last.merge(first);
+            &later[1..]
+        }
+        _ => later,
+    };
+    out.extend_from_slice(rest);
 }
 
 /// A bar being built, still in stored prices: scaling by a positive
@@ -222,34 +256,44 @@ fn finite(p: f32) -> bool {
     p.is_finite()
 }
 
-fn fold(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing) -> Vec<Bar> {
+/// A record's open, high and low as a bar takes them, in stored prices,
+/// for a record whose close is a number. A trade's are its close: its
+/// high and low are the ask and the bid, never trade prices. A bar's are
+/// its own, its close where one is not a number, its high and low the
+/// right way round where they were written the wrong way, and wide enough
+/// to hold its close.
+#[inline(always)]
+pub fn prices(r: &Record) -> (f32, f32, f32) {
+    let close = r.close;
+    // Worked out without branches: in a tick file a third of the records
+    // carry an unbundled-trade marker, in no pattern a branch predictor
+    // could learn.
+    let tick = (r.open == 0.0) | (r.open == FIRST_SUB_TRADE_OF_UNBUNDLED_TRADE) | (r.open == LAST_SUB_TRADE_OF_UNBUNDLED_TRADE);
+    if tick {
+        (close, close, close)
+    } else {
+        let or_close = |v: f32| if finite(v) { v } else { close };
+        // A bar written with its high below its low has the two the wrong
+        // way round, not a range of less than nothing.
+        let (high, low) = (or_close(r.high), or_close(r.low));
+        let (high, low) = if high < low { (low, high) } else { (high, low) };
+        (or_close(r.open), high.max(close), low.min(close))
+    }
+}
+
+fn fold(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing, mut latest: i64) -> (Vec<Bar>, i64) {
     let mut out: Vec<Bar> = Vec::new();
     let (mut lo, mut hi) = (i64::MAX, i64::MIN);
     let mut b = Building { start: 0, open: 0.0, high: 0.0, low: 0.0, close: 0.0, volume: 0, bid_volume: 0, ask_volume: 0, trades: 0 };
     let mut have = false;
-    // The latest time seen, which a record written before it is taken at.
-    let mut latest = i64::MIN;
     for r in records {
         let close = r.close;
         if !finite(close) {
             continue;
         }
-        let datetime = r.datetime.max(latest);
+        let datetime = in_order(r.datetime, latest);
         latest = datetime;
-        // Worked out without branches: in a tick file a third of the
-        // records carry an unbundled-trade marker, in no pattern a branch
-        // predictor could learn.
-        let tick = (r.open == 0.0) | (r.open == FIRST_SUB_TRADE_OF_UNBUNDLED_TRADE) | (r.open == LAST_SUB_TRADE_OF_UNBUNDLED_TRADE);
-        let (open, high, low) = if tick {
-            (close, close, close)
-        } else {
-            let or_close = |v: f32| if finite(v) { v } else { close };
-            // A bar written with its high below its low has the two the
-            // wrong way round, not a range of less than nothing.
-            let (high, low) = (or_close(r.high), or_close(r.low));
-            let (high, low) = if high < low { (low, high) } else { (high, low) };
-            (or_close(r.open), high.max(close), low.min(close))
-        };
+        let (open, high, low) = prices(r);
         if datetime < lo || datetime >= hi {
             let (start, l, h) = bucketing.locate(datetime);
             (lo, hi) = (l, h);
@@ -283,7 +327,7 @@ fn fold(records: &[Record], scaler: Scaler, bucketing: &impl Bucketing) -> Vec<B
     if have {
         out.push(b.finish(scaler));
     }
-    out
+    (out, latest)
 }
 
 #[cfg(test)]
@@ -323,6 +367,8 @@ mod tests {
                     // A record written a few seconds before the one ahead
                     // of it, as files carry now and then.
                     4 => rec.datetime -= 3_000_000,
+                    // And, more rarely, one stamped a day ahead.
+                    5 if i % 3 == 0 => rec.datetime += 86_400_000_000,
                     _ => {}
                 }
                 rec
@@ -342,7 +388,7 @@ mod tests {
         }
         let day = |s: i64| (s - 22 * 3600).div_euclid(86_400) * 86_400 + 22 * 3600;
         let by_fn = bars_with(&records, 0.01, day);
-        let by_fn_serial = fold(&records, Scaler::new(0.01), &ByFunction(day));
+        let by_fn_serial = fold(&records, Scaler::new(0.01), &ByFunction(day), i64::MIN).0;
         assert_eq!(by_fn, by_fn_serial);
     }
 
@@ -445,6 +491,55 @@ mod tests {
         assert_eq!((b[1].high, b[1].close, b[1].volume), (9.0, 9.0, 5));
         for pieces in 2..=4 {
             assert_eq!(bars_in_pieces(&records, 60, 1.0, pieces), b, "{pieces} pieces");
+        }
+    }
+
+    /// One record stamped far ahead is a bar of its own, and the records
+    /// after it go on in bars at their own times, in one piece or many.
+    #[test]
+    fn a_record_stamped_far_ahead_does_not_take_the_rest() {
+        let records = [
+            trade(60, 1.0, 1, true),
+            trade(120, 2.0, 1, true),
+            trade(120 + 86_400, 3.0, 1, true),
+            trade(180, 4.0, 1, true),
+            trade(240, 5.0, 1, true),
+            trade(300, 6.0, 1, true),
+        ];
+        let b = bars_serial(&records, 60, 1.0);
+        assert_eq!(b.iter().map(|b| (b.start, b.volume)).collect::<Vec<_>>(), [(60, 1), (120, 1), (86_520, 1), (180, 1), (240, 1), (300, 1)]);
+        for pieces in 2..=6 {
+            assert_eq!(bars_in_pieces(&records, 60, 1.0, pieces), b, "{pieces} pieces");
+        }
+    }
+
+    /// Up to a minute behind is out of order and taken at the latest's
+    /// time; further back is a record at its own time.
+    #[test]
+    fn out_of_order_is_a_minute_at_most() {
+        let latest = crate::sc_from_unix_micros(1_000_000_000);
+        assert_eq!(in_order(latest - OUT_OF_ORDER, latest), latest);
+        assert_eq!(in_order(latest - OUT_OF_ORDER - 1, latest), latest - OUT_OF_ORDER - 1);
+        assert_eq!(in_order(latest + 1, latest), latest + 1);
+        assert_eq!(in_order(i64::MIN + 1, i64::MAX), i64::MIN + 1);
+        assert_eq!(in_order(5, i64::MIN), 5);
+    }
+
+    /// Wherever the pieces are cut, a record out of order at a seam is
+    /// taken as one fold takes it.
+    #[test]
+    fn seams_anywhere_fold_as_one() {
+        let mut records: Vec<Record> = (0..40).map(|i| trade(1_000 + i * 7, 100.0 + i as f32, 1, i % 2 == 0)).collect();
+        for (at, back) in [(5, 3), (11, 20), (12, 200), (25, 61), (26, 59), (33, 9_000)] {
+            records[at].datetime -= back * 1_000_000;
+        }
+        records[30].datetime += 86_400 * 1_000_000;
+        for step in [1, 5, 60] {
+            let serial = bars_serial(&records, step, 1.0);
+            assert_eq!(serial.iter().map(|b| b.volume).sum::<u64>(), 40, "step {step}");
+            for pieces in 2..=40 {
+                assert_eq!(bars_in_pieces(&records, step, 1.0, pieces), serial, "step {step}, {pieces} pieces");
+            }
         }
     }
 

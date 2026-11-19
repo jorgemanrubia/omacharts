@@ -368,7 +368,7 @@ the chart computes it links this crate. So:
   where a session or a week starts — are the caller's to say, through
   `new_period`, because they are a question of exchanges and time zones.
 - **A change to any value any study produces bumps `NUMBERS_VERSION`.**
-  Whoever keeps an indicator's output uses it to tell old numbers from new.
+  Numbers kept from an earlier version can be told from new ones by it.
 - **The numbers are held to the bit.** `tests/indicator_golden.rs` in the
   engine fingerprints every indicator at every parameter that changes its
   arithmetic, over series built to be awkward (gaps, flat bars, zero and
