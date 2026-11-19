@@ -2078,14 +2078,14 @@ mod tests {
     /// midnight UTC, as a streamed feed left them: fetched at `fetched_at`.
     fn es_daily(store: &Store, key: &str, tuesday_close: f64, fetched_at: i64) {
         let midnight = |day: u32| chicago(day - 1, 18, 0);
-        store.write_bars(key, Timeframe::days(1), &[flat(midnight(16), 7438.5), flat(midnight(17), tuesday_close)]);
+        store.write_bars(key, Timeframe::days(1), &[flat(midnight(16), 5000.0), flat(midnight(17), tuesday_close)]);
         store.backdate(key, Timeframe::days(1), fetched_at);
     }
 
     /// Wednesday 18 November, 02:44 in Chicago: ES on a streamed feed in
     /// the overnight session, its daily bars last fetched on Tuesday
-    /// morning, mid-session, at 7359. Against Monday's 7438.5 that is
-    /// -1.07%, Tuesday's move as of Tuesday morning, shown as Wednesday's.
+    /// morning, mid-session, at 4950. Against Monday's 5000 that is -1%,
+    /// Tuesday's move as of Tuesday morning, shown as Wednesday's.
     /// Wednesday's move is its last trade against Tuesday's close: read off
     /// the chart's own bars when they hold it, and otherwise nothing at
     /// all, never the stale figure.
@@ -2096,15 +2096,15 @@ mod tests {
         let now = chicago(18, 2, 44);
         // (case, Tuesday's 2m bars, expected (last, change))
         let cases: [(&str, &[(i64, f64)], Option<(f64, f64)>); 3] = [
-            ("the chart holds Tuesday's close", &[(chicago(17, 15, 58), 7390.0)], Some((7403.5, 13.5))),
+            ("the chart holds Tuesday's close", &[(chicago(17, 15, 58), 5005.0)], Some((5010.0, 5.0))),
             ("the chart holds Wednesday alone", &[], None),
-            ("the chart stops before Tuesday's close", &[(chicago(17, 14, 0), 7380.0)], None),
+            ("the chart stops before Tuesday's close", &[(chicago(17, 14, 0), 4990.0)], None),
         ];
         for (case, tuesday, expected) in cases {
             let store = Store::memory().unwrap();
-            es_daily(&store, key, 7359.0, chicago(17, 10, 16));
+            es_daily(&store, key, 4950.0, chicago(17, 9, 0));
             let mut bars: Vec<_> = tuesday.iter().map(|&(ts, close)| flat(ts, close)).collect();
-            bars.push(flat(now, 7403.5));
+            bars.push(flat(now, 5010.0));
             store.write_bars(key, two, &bars);
             store.backdate(key, two, now + 60);
             let q = quote_at(&store, key, &es()).map(|q| (q.last, q.change, q.as_of));
@@ -2121,18 +2121,18 @@ mod tests {
     #[test]
     fn a_new_session_on_a_settled_daily_is_measured_from_its_close() {
         let (store, key, two) = (Store::memory().unwrap(), "stream:ES", Timeframe::parse("2m").unwrap());
-        es_daily(&store, key, 7383.0, chicago(17, 16, 30));
+        es_daily(&store, key, 4990.0, chicago(17, 16, 30));
         let now = chicago(18, 2, 44);
-        store.write_bars(key, two, &[flat(now, 7403.5)]);
+        store.write_bars(key, two, &[flat(now, 5010.0)]);
         store.backdate(key, two, now + 60);
         let q = quote_at(&store, key, &es()).unwrap();
-        assert_eq!((q.last, q.as_of), (7403.5, now));
-        assert!((q.change - 20.5).abs() < 1e-9, "against Tuesday's settled close: {}", q.change);
+        assert_eq!((q.last, q.as_of), (5010.0, now));
+        assert!((q.change - 20.0).abs() < 1e-9, "against Tuesday's settled close: {}", q.change);
 
         // Fetched before a session it skipped had closed, the newest daily
         // bar is two sessions back, and its close is not the previous one.
         let thursday = chicago(19, 2, 44);
-        store.write_bars(key, two, &[flat(thursday, 7410.0)]);
+        store.write_bars(key, two, &[flat(thursday, 5020.0)]);
         store.backdate(key, two, thursday + 60);
         assert!(quote_at(&store, key, &es()).is_none(), "Wednesday's close is nowhere");
     }
@@ -2183,12 +2183,12 @@ mod tests {
         let date = |day| NaiveDate::from_ymd_opt(2026, 11, day).unwrap();
         let store = Store::memory().unwrap();
         assert_eq!(stale_daily(&store, key, &es, chicago(17, 12, 0)), None, "nothing cached");
-        es_daily(&store, key, 7359.0, chicago(17, 10, 16));
+        es_daily(&store, key, 4950.0, chicago(17, 9, 0));
         assert_eq!(stale_daily(&store, key, &es, chicago(17, 12, 0)), None, "still trading");
         assert_eq!(stale_daily(&store, key, &es, chicago(17, 16, 30)), Some(date(17)), "closed since");
         assert_eq!(stale_daily(&store, key, &es, chicago(18, 2, 44)), Some(date(18)), "a session on");
 
-        es_daily(&store, key, 7383.0, chicago(17, 16, 30));
+        es_daily(&store, key, 4990.0, chicago(17, 16, 30));
         assert_eq!(stale_daily(&store, key, &es, chicago(17, 16, 45)), None, "settled");
         assert_eq!(stale_daily(&store, key, &es, chicago(17, 17, 5)), Some(date(18)), "Wednesday open");
 

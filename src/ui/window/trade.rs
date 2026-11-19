@@ -5659,7 +5659,7 @@ pub(super) mod tests {
             let key = crate::cli::cache_key(window.feeds()[1].provider.as_ref(), &es).expect("a key");
             let bar = |ts| omacharts_engine::Bar { ts, open: 1.0, high: 1.0, low: 1.0, close: 1.0, volume: 1.0 };
             store.write_bars(&key, daily, &[bar(chicago(15, 18)), bar(chicago(16, 18))]);
-            store.backdate(&key, daily, chicago(17, 10));
+            store.backdate(&key, daily, chicago(17, 9));
 
             let (tuesday_noon, wednesday, thursday) = (chicago(17, 12), chicago(18, 2), chicago(19, 2));
             window.fetch_daily_for_change_at(&pane, tuesday_noon);
