@@ -922,7 +922,7 @@ fn style_editor(
             shows.push(Rc::new(move |s: &Style| show(s.profile.value_area)));
 
             // The value area set apart from the other rows, or not; and in
-            // a colour of its own, or in the background's, only stronger.
+            // a colour of its own, or in the rows' colour, only stronger.
             let area_paint = |s: &Style| {
                 s.profile
                     .value_area_paint
@@ -995,8 +995,6 @@ fn style_editor(
                     colouring: colouring_row.clone(),
                     granularity,
                     value_area: area.clone().upcast(),
-                    highlight: highlight.clone(),
-                    value_area_colour: area_row.clone().upcast(),
                 },
             );
 
@@ -1098,7 +1096,7 @@ fn style_editor(
             shows.push(Rc::new(move |s: &Style| show(s.width)));
 
             let (background, show) =
-                paint_row(&theme, profile_rows::BACKGROUND, &style.borrow().fill, {
+                paint_row(&theme, profile_rows::COLOUR, &style.borrow().fill, {
                     let style = style.clone();
                     let emit = emit.clone();
                     move |paint| {
@@ -1240,13 +1238,13 @@ fn style_editor(
             shows.push(Rc::new(move |s: &Style| show(s.profile.width)));
 
             // A delta is painted in its colouring, outline and all: the
-            // background and the outline's colour are a total's.
+            // rows' colour and the outline's colour are a total's.
             let follow = profile_rows::follow_method(
                 &method_row,
                 profile_rows::ByMethod {
                     value_area: area.upcast(),
-                    highlight,
-                    value_area_colour: area_row.upcast(),
+                    highlight: Some(highlight.clone()),
+                    value_area_colour: Some(area_row.clone().upcast()),
                     colouring: colouring_row,
                     total_only: vec![outline_row.clone().upcast(), background.clone().upcast()],
                 },
@@ -1261,8 +1259,10 @@ fn style_editor(
                 outline_colour: outline_row.upcast(),
                 outline_style: outline_pattern.upcast(),
                 outline_thickness: outline_thickness.upcast(),
-                background: background.upcast(),
+                colour: background.upcast(),
                 transparency: transparency.upcast(),
+                highlight,
+                value_area_colour: area_row.upcast(),
                 show_poc,
                 poc_colour: poc_colour.upcast(),
                 poc_style: poc_style.upcast(),
@@ -3251,7 +3251,8 @@ mod tests {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = crate::ui::window::test_window(&store);
             let only_the_study = ["Reset every", chart_settings::PROFILE_LAST_ONLY_LABEL];
-            let study: Vec<(String, Vec<String>)> = chart_settings::profile_titles(&window)
+            let study: Vec<(String, Vec<String>)> =
+                chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile)
                 .into_iter()
                 .map(|(title, rows)| {
                     (
@@ -3282,6 +3283,20 @@ mod tests {
             );
 
             assert_eq!(drawing, study);
+            // The value area set apart, and its colour, are how it looks:
+            // Style's, after the rows' colour and before the point of
+            // control, for a market profile study too.
+            let market = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::MarketProfile);
+            for groups in [&drawing, &market] {
+                let rows = |title: &str| groups.iter().find(|(t, _)| t == title).map(|(_, rows)| rows.clone()).unwrap_or_default();
+                let (parameters, style) = (rows("Parameters"), rows("Style"));
+                assert!(!parameters.iter().any(|row| row == profile_rows::HIGHLIGHT || row == profile_rows::VALUE_AREA_COLOUR), "{groups:?}");
+                let at = |title: &str| style.iter().position(|row| row == title).unwrap_or_else(|| panic!("{title} in {style:?}"));
+                assert_eq!(at(profile_rows::VALUE_AREA_COLOUR), at(profile_rows::HIGHLIGHT) + 1, "{style:?}");
+                assert_eq!(at(profile_rows::SHOW_POC), at(profile_rows::VALUE_AREA_COLOUR) + 1, "{style:?}");
+                let colour = style.iter().position(|row| row == profile_rows::COLOUR);
+                assert!(colour.is_some_and(|colour| colour < at(profile_rows::HIGHLIGHT)), "{style:?}");
+            }
             assert!(
                 drawing
                     .iter()

@@ -90,6 +90,11 @@ pub struct MarketProfile {
     pub letters: Vec<u8>,
     /// Where each row's letters begin in `letters`, and one past the last.
     pub starts: Vec<u32>,
+    /// Which rows the profile's first TPO period reached ([`FIRST`]) and
+    /// which its last did ([`LAST`]), a row each. The first's letter is
+    /// the first of its row, the last's the last, as letters are kept in
+    /// the order their periods came.
+    pub ends: Vec<u8>,
     /// The point of control and the value area, as prices: what the
     /// developing profile reads at the period's last bar.
     pub reading: ProfileReading,
@@ -98,7 +103,20 @@ pub struct MarketProfile {
     pub tick_size: f64,
 }
 
+/// In [`MarketProfile::ends`], a row the first TPO period reached, and one
+/// the last did.
+pub const FIRST: u8 = 1;
+pub const LAST: u8 = 2;
+
 impl MarketProfile {
+    /// Whether the `k`th letter of row `row` is the profile's first TPO
+    /// period's, and whether it is its last's: both, for a profile of one.
+    pub fn end_of(&self, row: usize, k: usize) -> (bool, bool) {
+        let ends = self.ends.get(row).copied().unwrap_or(0);
+        let len = (self.starts[row + 1] - self.starts[row]) as usize;
+        (ends & FIRST != 0 && k == 0, ends & LAST != 0 && k + 1 == len)
+    }
+
     /// The letters of row `row`, in the order their periods came.
     pub fn letters_of(&self, row: usize) -> &[u8] {
         let (from, to) = (self.starts[row] as usize, self.starts[row + 1] as usize);
@@ -301,6 +319,10 @@ fn period(
         starts.push(total);
     }
     let mut letters = vec![0u8; total as usize];
+    // The first TPO period's mark and the last's: the first bar's and the
+    // last bar's, as bars come in order.
+    let (first, last) = (tpos.first().map(|t| t.1), tpos.last().map(|t| t.1));
+    let mut ends = vec![0u8; len];
     next.clear();
     next.extend_from_slice(&starts[..len]);
     marks.clear();
@@ -313,6 +335,12 @@ fn period(
                 marks[row] = at;
                 letters[next[row] as usize] = letter;
                 next[row] += 1;
+                if Some(at) == first {
+                    ends[row] |= FIRST;
+                }
+                if Some(at) == last {
+                    ends[row] |= LAST;
+                }
             }
         }
     }
@@ -346,6 +374,7 @@ fn period(
         },
         letters,
         starts,
+        ends,
         reading,
         row_ticks,
         tick_size,
@@ -452,6 +481,33 @@ mod tests {
         assert_eq!(all[0].profile.parts, vec![0, DAY, 2 * DAY]);
         // A merge with nothing before it on the chart is left alone.
         assert_eq!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[0]), apart);
+    }
+
+    /// The first TPO period is the first letter of each row it reached and
+    /// the last the last of each: in a composite, the first part's first
+    /// and the last part's last, so Tuesday's A is not taken for an opening.
+    #[test]
+    fn the_first_and_last_tpo_periods_are_found_in_their_rows() {
+        let bars = vec![bar(0, 10.0, 12.0), bar(1_800, 12.0, 13.0), bar(3_600, 11.0, 11.0)];
+        let profile = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[])[0];
+        // Rows 10 to 13: A, AC, AB, B.
+        let ends = |row: usize| (0..profile.letters_of(row).len()).map(|k| profile.end_of(row, k)).collect::<Vec<_>>();
+        assert_eq!(ends(0), vec![(true, false)]);
+        assert_eq!(ends(1), vec![(true, false), (false, true)]);
+        assert_eq!(ends(2), vec![(true, false), (false, false)]);
+        assert_eq!(ends(3), vec![(false, false)]);
+        // A period of one TPO is its own first and last.
+        let one = &compute(&bars[..1], Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[])[0];
+        assert_eq!(one.end_of(0, 0), (true, true));
+
+        const DAY: i64 = 86_400;
+        let bars = vec![bar(0, 10.0, 11.0), bar(1_800, 11.0, 11.0), bar(DAY, 10.0, 10.0), bar(DAY + 1_800, 12.0, 12.0)];
+        let composite = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY])[0];
+        // Rows 10 to 12: Monday's A and Tuesday's, Monday's A and B, Tuesday's B.
+        let ends = |row: usize| (0..composite.letters_of(row).len()).map(|k| composite.end_of(row, k)).collect::<Vec<_>>();
+        assert_eq!(ends(0), vec![(true, false), (false, false)]);
+        assert_eq!(ends(1), vec![(true, false), (false, false)]);
+        assert_eq!(ends(2), vec![(false, true)]);
     }
 
     #[test]

@@ -35,14 +35,14 @@ crop: none
 | **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**. Only for Ask volume - bid volume |
 | **Automatic**, **Rows** | Automatic | A number of [rows](#rows) per period, 4 to 800 |
 | **Value area %** | 70% | 10 to 100%. Greyed for Ask volume - bid volume |
-| **Highlight value area** | On | Off draws every row alike. Greyed for Ask volume - bid volume |
-| **Value area colour** | The background colour | A palette name, or a custom colour, for the value area while it is highlighted. Greyed while it is not, and for Ask volume - bid volume |
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, in the Outline style. Its colour, thickness and style show while it is on |
-| **Outline colour** | The background colour | A palette name, or a custom colour |
+| **Outline colour** | The profile's **Colour** | A palette name, or a custom colour |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Background** colour | The next free colour | A palette name, or a custom colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** |
-| **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the background colour, solid, and at 100% the profile is gone |
+| **Colour** | The next free colour | A palette name, or a custom colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** |
+| **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows and the outline. At 0% the value area is the profile's colour, solid, and at 100% the profile is gone |
+| **Highlight value area** | On | Off draws every row alike. Greyed for Ask volume - bid volume |
+| **Value area colour** | The profile's **Colour** | A palette name, or a custom colour, for the value area while it is highlighted. Greyed while it is not, and for Ask volume - bid volume |
 | **Show point of control** | On | Off leaves the profile without its point of control line. Its colour, thickness and style show while it is on |
 | **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |
 | **Point of control thickness** | 1 px | 0.5 to 12 px |

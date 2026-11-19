@@ -17,7 +17,7 @@ use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 use omacharts_engine::BarColouring;
 
 pub use crate::ui::property_rows::{
-    BACKGROUND, TRANSPARENCY, percent_row, switch_row, thickness_row, transparency_row,
+    COLOUR, TRANSPARENCY, percent_row, switch_row, thickness_row, transparency_row,
 };
 #[cfg(test)]
 pub use crate::ui::property_rows::titles;
@@ -59,8 +59,12 @@ pub struct StyleRows {
     pub outline_colour: gtk::Widget,
     pub outline_style: gtk::Widget,
     pub outline_thickness: gtk::Widget,
-    pub background: gtk::Widget,
+    /// The rows' colour.
+    pub colour: gtk::Widget,
     pub transparency: gtk::Widget,
+    /// Whether the value area is set apart, and its colour while it is.
+    pub highlight: adw::SwitchRow,
+    pub value_area_colour: gtk::Widget,
     pub show_poc: adw::SwitchRow,
     pub poc_colour: gtk::Widget,
     pub poc_style: gtk::Widget,
@@ -72,8 +76,8 @@ pub struct StyleRows {
     pub width: gtk::Widget,
 }
 
-/// The Style group, in its one order: the outline, the rows, the point of
-/// control, then how the rows are drawn; a stroke's colour, thickness and
+/// The Style group, in its one order: the outline, the rows, the value
+/// area, the point of control, then how the rows are drawn; a stroke's colour, thickness and
 /// style in that order, as on every line in every dialog. The outline's own rows are there
 /// while there is an outline, and the point of control's while it is drawn.
 pub fn style_group(rows: StyleRows) -> adw::PreferencesGroup {
@@ -89,8 +93,10 @@ pub fn style_group(rows: StyleRows) -> adw::PreferencesGroup {
         group.add(row);
     }
     follow_switch(&rows.outline, outline_rows);
-    group.add(&rows.background);
+    group.add(&rows.colour);
     group.add(&rows.transparency);
+    group.add(&rows.highlight);
+    group.add(&rows.value_area_colour);
     group.add(&rows.show_poc);
     let poc_rows = [rows.poc_colour, rows.poc_thickness, rows.poc_style];
     for row in &poc_rows {
@@ -124,11 +130,11 @@ pub struct ParameterRows {
     pub colouring: adw::ComboRow,
     pub granularity: Granularity,
     pub value_area: gtk::Widget,
-    pub highlight: adw::SwitchRow,
-    pub value_area_colour: gtk::Widget,
 }
 
-/// The Parameters rows, in their one order, onto `group`.
+/// The Parameters rows, in their one order, onto `group`. Whether the value
+/// area is set apart, and its colour, are the Style group's: how it looks,
+/// not what it is worked out from.
 pub fn add_parameters(group: &adw::PreferencesGroup, rows: &ParameterRows) {
     for row in &rows.leading {
         group.add(row);
@@ -138,8 +144,6 @@ pub fn add_parameters(group: &adw::PreferencesGroup, rows: &ParameterRows) {
     group.add(&rows.granularity.automatic);
     group.add(&rows.granularity.rows);
     group.add(&rows.value_area);
-    group.add(&rows.highlight);
-    group.add(&rows.value_area_colour);
 }
 
 /// How finely a profile is divided: automatically, or into so many rows.
@@ -310,8 +314,10 @@ pub fn has_colouring(method: Method) -> bool {
 /// The rows the calculation method decides about.
 pub struct ByMethod {
     pub value_area: gtk::Widget,
-    pub highlight: adw::SwitchRow,
-    pub value_area_colour: gtk::Widget,
+    /// The value area's switch and colour, when they are built beside the
+    /// method; else see [`style_follows_method`].
+    pub highlight: Option<adw::SwitchRow>,
+    pub value_area_colour: Option<gtk::Widget>,
     pub colouring: adw::ComboRow,
     /// Rows a delta does not paint with, greyed while it is one.
     pub total_only: Vec<gtk::Widget>,
@@ -328,17 +334,18 @@ pub fn follow_method(method_row: &adw::ComboRow, rows: ByMethod) -> Rc<dyn Fn(Me
         Rc::new(move |method| {
             let total = has_value_area(method);
             rows.value_area.set_sensitive(total);
-            rows.highlight.set_sensitive(total);
-            rows.value_area_colour.set_sensitive(total && rows.highlight.is_active());
+            if let (Some(highlight), Some(colour)) = (&rows.highlight, &rows.value_area_colour) {
+                highlight.set_sensitive(total);
+                colour.set_sensitive(total && highlight.is_active());
+            }
             rows.colouring.set_visible(has_colouring(method));
             for row in &rows.total_only {
                 row.set_sensitive(total);
             }
         })
     };
-    {
-        let colour = rows.value_area_colour.clone();
-        rows.highlight.connect_active_notify(move |row| colour.set_sensitive(row.is_sensitive() && row.is_active()));
+    if let (Some(highlight), Some(colour)) = (&rows.highlight, rows.value_area_colour.clone()) {
+        highlight.connect_active_notify(move |row| colour.set_sensitive(row.is_sensitive() && row.is_active()));
     }
     {
         let apply = apply.clone();
@@ -350,17 +357,32 @@ pub fn follow_method(method_row: &adw::ComboRow, rows: ByMethod) -> Rc<dyn Fn(Me
     apply
 }
 
-/// Grey `style`'s Background while `parameters`' Calculation method is a
-/// delta, whose rows are painted in its colouring: for a dialog whose two
-/// groups are built apart.
-pub fn background_follows_method(parameters: &adw::PreferencesGroup, style: &adw::PreferencesGroup) {
-    let (Some(method), Some(background)) = (row_titled(parameters.upcast_ref(), METHOD), row_titled(style.upcast_ref(), BACKGROUND))
+/// Grey `style`'s Colour and value area rows while `parameters`'
+/// Calculation method is a delta, whose rows are painted in its colouring
+/// and which has no value area: for a dialog whose two groups are built
+/// apart. Without a method, the value area's colour follows its switch.
+pub fn style_follows_method(parameters: &adw::PreferencesGroup, style: &adw::PreferencesGroup) {
+    let style = style.upcast_ref();
+    let highlight = row_titled(style, HIGHLIGHT).and_then(|row| row.downcast::<adw::SwitchRow>().ok());
+    let colour = row_titled(style, VALUE_AREA_COLOUR);
+    if let (Some(highlight), Some(colour)) = (&highlight, colour.clone()) {
+        colour.set_sensitive(highlight.is_sensitive() && highlight.is_active());
+        highlight.connect_active_notify(move |row| colour.set_sensitive(row.is_sensitive() && row.is_active()));
+    }
+    let Some(method) = row_titled(parameters.upcast_ref(), METHOD).and_then(|row| row.downcast::<adw::ComboRow>().ok())
     else {
         return;
     };
-    let Ok(method) = method.downcast::<adw::ComboRow>() else { return };
+    let background = row_titled(style, COLOUR);
     let follow = move |row: &adw::ComboRow| {
-        background.set_sensitive(has_value_area(Method::ALL.get(row.selected() as usize).copied().unwrap_or_default()))
+        let total = has_value_area(Method::ALL.get(row.selected() as usize).copied().unwrap_or_default());
+        if let Some(background) = &background {
+            background.set_sensitive(total);
+        }
+        if let (Some(highlight), Some(colour)) = (&highlight, &colour) {
+            highlight.set_sensitive(total);
+            colour.set_sensitive(total && highlight.is_active());
+        }
     };
     follow(&method);
     method.connect_selected_notify(follow);

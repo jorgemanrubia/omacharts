@@ -419,6 +419,9 @@ impl Kind {
                 highlight: true,
                 poc_color: None,
                 value_area_color: None,
+                first_last: false,
+                first_color: None,
+                last_color: None,
                 merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
@@ -635,6 +638,18 @@ pub enum Params {
         /// profile's own, the rest drawn fainter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_area_color: Option<ColorChoice>,
+        /// Whether each profile's first and last TPO periods are set apart
+        /// in colours of their own. Missing, they are not.
+        #[serde(default)]
+        first_last: bool,
+        /// The first TPO period's colour. Unset is the theme's, worked out
+        /// from its up colour: see [`crate::theme::Theme::first_tpo`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_color: Option<ColorChoice>,
+        /// The last TPO period's colour. Unset is the theme's, worked out
+        /// from its down colour: see [`crate::theme::Theme::last_tpo`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_color: Option<ColorChoice>,
         /// Where each period starts that was merged into the one before it,
         /// as a volume profile's: kept by the chart, never with the
         /// indicator, and handed in to be drawn. See [`profile::Merge`].

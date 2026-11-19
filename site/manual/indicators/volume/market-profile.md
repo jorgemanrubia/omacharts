@@ -33,12 +33,15 @@ crop: none
 | **TPO period (minutes)** | 30 | 1 to 1440. Each TPO period's letters are counted from the period's first bar |
 | **Automatic**, **Row height (ticks)** | Automatic | A row [so many ticks](#rows) tall, 1 to 10000 |
 | **Value area %** | 70% | 10 to 100% |
-| **Highlight value area** | On | Off draws every row alike |
-| **Value area colour** | The profile's colour | A palette name, or a custom colour, for the value area while it is highlighted. The rows outside it are the profile's colour, fainter |
 | **Style** | Letters | Letters, or Blocks: a square for each letter. Letters too small to read are drawn as blocks |
 | **Colour** | The next free colour | A palette name, or a custom colour |
+| **Highlight value area** | On | Off draws every row alike |
+| **Value area colour** | The profile's colour | A palette name, or a custom colour, for the value area while it is highlighted. The rows outside it are the profile's colour, fainter. Greyed while the value area is not highlighted |
 | **Show point of control** | On | Off draws the point of control's row as the value area's |
 | **Point of control colour** | A contrasting colour from the theme | A palette name, or a custom colour |
+| **Highlight first and last TPO** | Off | On draws each profile's first TPO period's letters, and its last's, in colours of their own. In a composite profile, the first part's first and the last part's last |
+| **First TPO colour** | The theme's up colour, greyed | A palette name, or a custom colour. Shown while the highlight is on |
+| **Last TPO colour** | The theme's down colour, greyed, and quieter than the first, so the two tell apart by lightness as well as hue | A palette name, or a custom colour. Shown while the highlight is on |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). A volume profile with the same period is drawn from this edge too ([Beside a volume profile](#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: the furthest the row with the most letters may reach, of the period's width. Each letter or block is about as wide as its row is tall, so a profile with room to spare stays that compact |
 

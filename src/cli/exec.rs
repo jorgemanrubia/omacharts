@@ -4424,6 +4424,11 @@ struct Edits {
     /// A market profile's row height in ticks; `Some(None)` is `auto`.
     row_ticks: Option<Option<u32>>,
     tpo_style: Option<omacharts_engine::indicators::market::Style>,
+    /// Whether a market profile sets its first and last TPO periods apart.
+    first_last_tpo: Option<bool>,
+    /// Their colours; `Some(None)` is `none`, the theme's.
+    first_tpo_color: Option<Option<ColorChoice>>,
+    last_tpo_color: Option<Option<ColorChoice>>,
     value_area: Option<f64>,
     /// Whether a volume profile sets its value area apart.
     highlight: Option<bool>,
@@ -4575,6 +4580,20 @@ impl Edits {
                 Some(text) => Some(omacharts_engine::indicators::market::Style::from_key(text).ok_or_else(|| {
                     Fault::usage(format!("{text:?} is not a market profile style; use letters or blocks"))
                 })?),
+            },
+            first_last_tpo: match arg(m, "first-last-tpo").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--first-last-tpo is on or off, not {other:?}"))),
+            },
+            first_tpo_color: match arg(m, "first-tpo-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "first-tpo-color")?.map(Some),
+            },
+            last_tpo_color: match arg(m, "last-tpo-color").map(String::as_str) {
+                Some("none") => Some(None),
+                _ => colour(m, "last-tpo-color")?.map(Some),
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             highlight: match arg(m, "highlight-value-area").map(String::as_str) {
@@ -4734,6 +4753,9 @@ impl Edits {
             && self.tpo_minutes.is_none()
             && self.row_ticks.is_none()
             && self.tpo_style.is_none()
+            && self.first_last_tpo.is_none()
+            && self.first_tpo_color.is_none()
+            && self.last_tpo_color.is_none()
             && self.value_area.is_none()
             && self.highlight.is_none()
             && self.value_area_color.is_none()
@@ -4899,6 +4921,23 @@ impl Edits {
             match kind == IndicatorKind::MarketProfile {
                 true => params["style"] = json!(style.key()),
                 false => return Err(refuse("market profile style")),
+            }
+        }
+        if let Some(on) = self.first_last_tpo {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["first_last"] = json!(on),
+                false => return Err(refuse("first and last TPO highlight")),
+            }
+        }
+        for (choice, key, what) in [
+            (&self.first_tpo_color, "first_color", "first TPO colour"),
+            (&self.last_tpo_color, "last_color", "last TPO colour"),
+        ] {
+            if let Some(choice) = choice {
+                match kind == IndicatorKind::MarketProfile {
+                    true => params[key] = to_value(choice)?,
+                    false => return Err(refuse(what)),
+                }
             }
         }
         if let Some(rows) = self.rows {
@@ -9153,6 +9192,54 @@ mod tests {
         run("chart indicator add volume_profile --book Macro", &store);
         let out = run("chart indicator set volume_profile --book Macro --tpo-minutes 30", &store);
         assert_ne!(out.code, 0, "a volume profile has no TPO period");
+    }
+
+    /// The first and last TPO periods are off until asked for, their colours
+    /// the theme's until chosen, and `none` hands a colour back to it.
+    #[test]
+    fn a_market_profile_sets_its_first_and_last_tpo_apart_in_colours_of_their_own() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add market_profile --book Macro", &store);
+        let params = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"].clone()
+        };
+        let stored = params(&store);
+        assert_eq!(stored["first_last"], false);
+        assert!(stored["first_color"].is_null() && stored["last_color"].is_null(), "{stored}");
+
+        let out = run(
+            "chart indicator set market_profile --book Macro --first-last-tpo on --first-tpo-color Teal --last-tpo-color #aa5e57",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store);
+        assert_eq!(stored["first_last"], true);
+        assert_eq!(stored["first_color"]["name"], "Teal", "{stored}");
+        assert_eq!(stored["last_color"]["hex"], "#aa5e57", "{stored}");
+
+        let out = run("chart indicator set market_profile --book Macro --first-tpo-color none --first-last-tpo off", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store);
+        assert_eq!(stored["first_last"], false);
+        assert!(stored["first_color"].is_null(), "{stored}");
+        assert_eq!(stored["last_color"]["hex"], "#aa5e57", "kept while off");
+
+        for refused in [
+            "chart indicator set market_profile --book Macro --first-last-tpo maybe",
+            "chart indicator set market_profile --book Macro --first-tpo-color nonsense",
+        ] {
+            assert_ne!(run(refused, &store).code, 0, "{refused}");
+        }
+        run("chart indicator add volume_profile --book Macro", &store);
+        for refused in [
+            "chart indicator set volume_profile --book Macro --first-last-tpo on",
+            "chart indicator set volume_profile --book Macro --last-tpo-color Rose",
+        ] {
+            assert_ne!(run(refused, &store).code, 0, "a volume profile has no TPO periods: {refused}");
+        }
     }
 
     #[test]

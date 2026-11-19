@@ -322,7 +322,9 @@ inside it, the volume profile against the edge and the letters after it,
 drawn from the market profile's `--align`,
 and `chart profile merge` / `split` on either does both. `--align right` on
 the market profile mirrors them; `--tpo-style blocks` swaps
-letters for squares. `chart values --json` reads each one's latest `poc`,
+letters for squares; `--first-last-tpo on` draws each profile's opening and
+closing TPO periods in colours of their own (`--first-tpo-color`,
+`--last-tpo-color`, `none` for the theme's). `chart values --json` reads each one's latest `poc`,
 `vah` and `val`.
 
 ```
@@ -333,7 +335,7 @@ omacharts chart indicator set market_profile --tpo-style blocks --poc-color Ambe
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is
-its outline, `--fill` its background, `--width` the outline's thickness,
+its outline, `--fill` its rows' colour, `--width` the outline's thickness,
 `--line-style` its pattern, and `--poc-color`, `--poc-width`, `--poc-style`,
 `--profile-style filled|outline`, `--align
 left|right`, `--value-area`, `--transparency`, `--highlight-value-area on|off`,

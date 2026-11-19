@@ -68,11 +68,26 @@ pub(super) fn draw_market_profiles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let omacharts_engine::Params::MarketProfile { style, poc, highlight, poc_color, value_area_color, .. } =
-        &drawn.indicator.params
+    let omacharts_engine::Params::MarketProfile {
+        style,
+        poc,
+        highlight,
+        poc_color,
+        value_area_color,
+        first_last,
+        first_color,
+        last_color,
+        ..
+    } = &drawn.indicator.params
     else {
         return;
     };
+    let ends = first_last.then(|| {
+        (
+            first_color.as_ref().map_or_else(|| state.theme.first_tpo(), |c| c.resolve(&state.theme)),
+            last_color.as_ref().map_or_else(|| state.theme.last_tpo(), |c| c.resolve(&state.theme)),
+        )
+    });
     let poc_ink = poc.then(|| state.theme.companion_or(poc_color.as_ref(), &drawn.color));
     let area_ink = match (highlight, value_area_color) {
         (true, Some(choice)) => Some(choice.resolve(&state.theme)),
@@ -83,6 +98,7 @@ pub(super) fn draw_market_profiles(
         inside: area_ink.as_deref().unwrap_or(&drawn.color),
         poc: poc_ink.as_deref(),
         highlight: *highlight,
+        ends: ends.as_ref().map(|(first, last)| [first.as_str(), last.as_str()]),
     };
     let look = selection::placed_look(state, drawn);
     let (top, bottom) = match cr.clip_extents() {
@@ -131,7 +147,14 @@ struct Inks<'a> {
     /// `None` when the point of control is not set apart.
     poc: Option<&'a str>,
     highlight: bool,
+    /// The first TPO period's colour and the last's, while they are set
+    /// apart.
+    ends: Option<[&'a str; 2]>,
 }
+
+/// How strongly the first and last TPO periods are drawn, as letters and as
+/// blocks: as the point of control is, wherever their rows are.
+const END_ALPHAS: [f64; 2] = [LETTER_ALPHAS[2], BLOCK_ALPHAS[2]];
 
 impl Inks<'_> {
     /// What a row of `sort` is drawn in, at which of `alphas`.
@@ -141,6 +164,18 @@ impl Inks<'_> {
             (_, false) => (self.outside, alphas[Sort::Inside as usize]),
             (Sort::Inside, true) => (self.inside, alphas[Sort::Inside as usize]),
             (Sort::Outside, true) => (self.outside, alphas[Sort::Outside as usize]),
+        }
+    }
+
+    /// Which of the first and last TPO periods the `k`th TPO of row `at` is
+    /// drawn as, while they are set apart: 0 the first, 1 the last. A
+    /// period of one TPO is drawn as its first.
+    fn end(&self, market: &MarketProfile, at: usize, k: usize) -> Option<usize> {
+        self.ends?;
+        match market.end_of(at, k) {
+            (true, _) => Some(0),
+            (false, true) => Some(1),
+            (false, false) => None,
         }
     }
 
@@ -205,7 +240,7 @@ fn blocks(
             let count = row.volume as usize;
             match apart {
                 true => {
-                    for k in 0..count {
+                    for k in (0..count).filter(|&k| inks.end(market, at, k).is_none()) {
                         let (left, right) = place.cell(k);
                         cr.rectangle(left, y + gap * 0.5, (right - left - gap).max(0.5), (h - gap).max(0.5));
                     }
@@ -222,6 +257,29 @@ fn blocks(
         if any {
             let (ink, alpha) = inks.of(sort, &BLOCK_ALPHAS);
             colors::set_source_alpha(cr, ink, alpha);
+            let _ = cr.fill();
+        }
+    }
+    // The first and last TPO periods over the rest, a cell each.
+    let Some(ends) = inks.ends else { return };
+    for (end, ink) in ends.iter().enumerate() {
+        let mut any = false;
+        for (at, row) in profile.rows.iter().enumerate() {
+            let y = to_y(row.high);
+            let h = (to_y(row.low) - y).max(1.0);
+            if !place.shows(y, y + h) {
+                continue;
+            }
+            for k in 0..row.volume as usize {
+                if inks.end(market, at, k) == Some(end) {
+                    let (left, right) = place.cell(k);
+                    cr.rectangle(left, y + gap * 0.5, (right - left - gap).max(0.5), (h - gap).max(0.5));
+                    any = true;
+                }
+            }
+        }
+        if any {
+            colors::set_source_alpha(cr, ink, END_ALPHAS[1]);
             let _ = cr.fill();
         }
     }
@@ -268,6 +326,9 @@ fn letters(
             }
             let baseline = (y_top + y_bottom) / 2.0 + rise;
             for (k, letter) in market.letters_of(at).iter().enumerate() {
+                if inks.end(market, at, k).is_some() {
+                    continue;
+                }
                 let (left, right) = place.cell(k);
                 let x = (left + right - advance) / 2.0;
                 batch[n] = cairo::Glyph::new(glyphs[*letter as usize % glyphs.len()], x, baseline);
@@ -280,6 +341,36 @@ fn letters(
         }
         if n > 0 {
             let _ = cr.show_glyphs(&batch[..n]);
+        }
+    }
+    // The first and last TPO periods, in colours of their own.
+    if let Some(ends) = inks.ends {
+        for (end, ink) in ends.iter().enumerate() {
+            colors::set_source_alpha(cr, ink, END_ALPHAS[0]);
+            let mut n = 0;
+            for (at, row) in profile.rows.iter().enumerate() {
+                let (y_top, y_bottom) = (to_y(row.high), to_y(row.low));
+                if !place.shows(y_top, y_bottom) {
+                    continue;
+                }
+                let baseline = (y_top + y_bottom) / 2.0 + rise;
+                for (k, letter) in market.letters_of(at).iter().enumerate() {
+                    if inks.end(market, at, k) != Some(end) {
+                        continue;
+                    }
+                    let (left, right) = place.cell(k);
+                    let x = (left + right - advance) / 2.0;
+                    batch[n] = cairo::Glyph::new(glyphs[*letter as usize % glyphs.len()], x, baseline);
+                    n += 1;
+                    if n == BATCH {
+                        let _ = cr.show_glyphs(&batch);
+                        n = 0;
+                    }
+                }
+            }
+            if n > 0 {
+                let _ = cr.show_glyphs(&batch[..n]);
+            }
         }
     }
     cr.restore().ok();

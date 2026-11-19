@@ -51,19 +51,19 @@ Defaults are those of configuration 1 as shipped, with the other configurations'
 | **Automatic** | Picks how many rows the profile has: each row a round multiple of the instrument's price step, about 600 rows over the span, or one price step a row on a short one. While it is on, **Rows** is greyed and shows how many rows are drawn | On |
 | **Rows** | With **Automatic** off, how many rows the span's price range is cut into, 4 to 800. Fewer rows give a coarser profile, more a finer one. Turning **Automatic** off starts from the count being drawn, so the profile only changes when you change the number | Automatic |
 | **Value area %** | The share of the span's volume the value area holds, 10 to 100%. Greyed for Ask volume - bid volume, which has none | 70% |
-| **Highlight value area** | Draws the value area's rows stronger than the others, which are a little under half as strong. Off draws every row alike. Greyed for Ask volume - bid volume | On |
-| **Value area colour** | Gives the value area a colour of its own while it is highlighted. **Reset** goes back to the background's colour. Greyed while **Highlight value area** is off, and for Ask volume - bid volume | The background's |
 
 ### Style
 
 | Property | What it does | Default |
 |---|---|---|
 | **Outline** | Draws an edge round the filled rows. Always on, and greyed, while **Style** is Outline, since the edge is then all there is. The three outline rows below show while it is on | Off |
-| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the background. Greyed for Ask volume - bid volume, whose edge is in its **Colouring** | The configuration's |
+| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the rows. Greyed for Ask volume - bid volume, whose edge is in its **Colouring** | The configuration's |
 | **Outline thickness** | How thick the edge is, 0.5 to 12 px in halves | 1 px on a filled profile, 1.5 px on an outline |
 | **Outline style** | **Solid**, **Dashed** or **Dotted** | Solid |
-| **Background** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** | The configuration's |
+| **Colour** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** | The configuration's |
 | **Transparency %** | How much of the chart shows through the rows, 0 to 100%. At 0% the value area is solid; at 100% the profile is gone. The outline fades with the rows | 70% |
+| **Highlight value area** | Draws the value area's rows stronger than the others, which are a little under half as strong. Off draws every row alike. Greyed for Ask volume - bid volume | On |
+| **Value area colour** | Gives the value area a colour of its own while it is highlighted. **Reset** goes back to the rows' **Colour**. Greyed while **Highlight value area** is off, and for Ask volume - bid volume | The rows' |
 | **Show point of control** | Draws a line across the price with the most volume. Off leaves the profile without it. The three rows below show while it is on | On |
 | **Point of control colour** | The colour of the line at the busiest price. Every configuration ships it in Ink, so it stands apart from the rows | Ink |
 | **Point of control thickness** | How thick the line is, 0.5 to 12 px in halves | 1.5 px |
@@ -80,7 +80,7 @@ Defaults are those of configuration 1 as shipped, with the other configurations'
 | 5, 6, 7, 8 | Violet, Amber, Cyan, Blue | Outline | Left |
 | 9 | Ink | Outline | Right |
 
-Every configuration's point of control is Ink, and its outline and background are the same colour. They leave out the candles' Up and Down, and Teal and Orange, which look close to green and red on some themes, because a profile shows where volume traded, not which way the price went ([Configurations](/manual/drawings/#configurations)).
+Every configuration's point of control is Ink, and its outline and rows are the same colour. They leave out the candles' Up and Down, and Teal and Orange, which look close to green and red on some themes, because a profile shows where volume traded, not which way the price went ([Configurations](/manual/drawings/#configurations)).
 
 ## See also
 

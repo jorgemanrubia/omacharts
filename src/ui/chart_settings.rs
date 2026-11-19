@@ -1291,9 +1291,11 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         let parameters = parameters_group(owner, refresh, &indicator);
         page.add(&parameters);
         if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
-            // A delta is painted in its colouring, as a drawing's is.
-            if indicator.kind == Kind::VolumeProfile {
-                profile_rows::background_follows_method(&parameters, &group);
+            // A delta is painted in its colouring, as a drawing's is, and
+            // has no value area; the value area's colour is there to set
+            // while the value area is set apart.
+            if matches!(indicator.kind, Kind::VolumeProfile | Kind::MarketProfile) {
+                profile_rows::style_follows_method(&parameters, &group);
             }
             page.add(&group);
         }
@@ -1952,7 +1954,7 @@ fn parameters_group(
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::VolumeProfile {
-            reset, rows, value_area, method, colouring, last_only, highlight, value_area_color, ..
+            reset, rows, value_area, method, colouring, last_only, ..
         } => {
             let reset_row = reset_row(owner, refresh, id, *reset);
             // The newest period alone, on either method and either edge.
@@ -2024,14 +2026,12 @@ fn parameters_group(
                     refresh.run();
                 })
             };
-            let (highlight_row, area_colour_row) =
-                value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
             profile_rows::follow_method(
                 &method_row,
                 profile_rows::ByMethod {
                     value_area: area_row.clone().upcast(),
-                    highlight: highlight_row.clone(),
-                    value_area_colour: area_colour_row.clone().upcast(),
+                    highlight: None,
+                    value_area_colour: None,
                     colouring: colouring_row.clone(),
                     total_only: Vec::new(),
                 },
@@ -2044,12 +2044,10 @@ fn parameters_group(
                     colouring: colouring_row,
                     granularity,
                     value_area: area_row.upcast(),
-                    highlight: highlight_row,
-                    value_area_colour: area_colour_row.upcast(),
                 },
             );
         }
-        Params::MarketProfile { reset, minutes, row_ticks, value_area, highlight, value_area_color, .. } => {
+        Params::MarketProfile { reset, minutes, row_ticks, value_area, .. } => {
             group.add(&reset_row(owner, refresh, id, *reset));
             group.add(&spin_row(
                 owner,
@@ -2099,13 +2097,9 @@ fn parameters_group(
                     refresh.run();
                 })
             };
-            let (highlight_row, area_colour_row) =
-                value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
             group.add(&granularity.automatic);
             group.add(&granularity.rows);
             group.add(&area_row);
-            group.add(&highlight_row);
-            group.add(&area_colour_row);
         }
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
@@ -2115,6 +2109,12 @@ fn parameters_group(
 
 /// The market profile row that says how long a TPO period is.
 pub const MARKET_MINUTES_LABEL: &str = "TPO period (minutes)";
+
+/// The market profile switch that sets its first and last TPO periods
+/// apart, and the colours they are drawn in while it is on.
+pub const MARKET_FIRST_LAST_LABEL: &str = "Highlight first and last TPO";
+pub const MARKET_FIRST_COLOUR_LABEL: &str = "First TPO colour";
+pub const MARKET_LAST_COLOUR_LABEL: &str = "Last TPO colour";
 
 /// The market profile box that sets how many ticks tall a row is.
 pub const MARKET_ROW_TICKS_LABEL: &str = "Row height (ticks)";
@@ -2153,7 +2153,20 @@ fn note_pairing(owner: &Owner, indicator: &Indicator, row: &adw::ComboRow) {
 /// with a volume profile by.
 fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &Indicator) -> adw::PreferencesGroup {
     let id = indicator.id;
-    let Params::MarketProfile { style, align, width, poc, poc_color, .. } = &indicator.params else {
+    let Params::MarketProfile {
+        style,
+        align,
+        width,
+        poc,
+        poc_color,
+        highlight,
+        value_area_color,
+        first_last,
+        first_color,
+        last_color,
+        ..
+    } = &indicator.params
+    else {
         return adw::PreferencesGroup::new();
     };
     let group = adw::PreferencesGroup::new();
@@ -2208,6 +2221,54 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         },
         id,
     );
+    // The first and last TPO periods' colours, offered while they are set
+    // apart.
+    let theme = owner.theme();
+    let end_row = |title: &str, shown: String, choice: &Option<ColorChoice>, first: bool| {
+        colour_row(
+            owner,
+            refresh,
+            &Ink::new(String::new),
+            title,
+            &shown,
+            choice.clone(),
+            move |indicator, choice| {
+                if let Params::MarketProfile { first_color, last_color, .. } = &mut indicator.params {
+                    *(if first { first_color } else { last_color }) = choice;
+                }
+            },
+            id,
+        )
+    };
+    let first_row = end_row(
+        MARKET_FIRST_COLOUR_LABEL,
+        first_color.as_ref().map_or_else(|| theme.first_tpo(), |c| c.resolve(&theme)),
+        first_color,
+        true,
+    );
+    let last_row = end_row(
+        MARKET_LAST_COLOUR_LABEL,
+        last_color.as_ref().map_or_else(|| theme.last_tpo(), |c| c.resolve(&theme)),
+        last_color,
+        false,
+    );
+    first_row.set_visible(*first_last);
+    last_row.set_visible(*first_last);
+    let (ends_switch, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        let (first_row, last_row) = (first_row.clone(), last_row.clone());
+        profile_rows::switch_row(MARKET_FIRST_LAST_LABEL, *first_last, move |on| {
+            first_row.set_visible(on);
+            last_row.set_visible(on);
+            update(&owner, id, |indicator| {
+                if let Params::MarketProfile { first_last, .. } = &mut indicator.params {
+                    *first_last = on;
+                }
+            });
+            refresh.run();
+        })
+    };
     let alignment = choice_row(
         owner,
         refresh,
@@ -2234,10 +2295,18 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             refresh.run();
         })
     };
+    // The value area set apart, and its colour: the same rows, in the same
+    // place, as a volume profile's.
+    let (highlight_row, area_colour_row) = value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
     group.add(&shape);
     group.add(&background);
+    group.add(&highlight_row);
+    group.add(&area_colour_row);
     group.add(&poc_switch);
     group.add(&poc_colour_row);
+    group.add(&ends_switch);
+    group.add(&first_row);
+    group.add(&last_row);
     group.add(&alignment);
     group.add(&width_row);
     group
@@ -2480,6 +2549,8 @@ fn profile_style(
         align,
         width,
         poc_color,
+        highlight,
+        value_area_color,
         outline,
         outline_color,
         outline_width,
@@ -2496,7 +2567,7 @@ fn profile_style(
     };
 
     // Laid out by `profile_rows`, in the order a profile drawing's are. The
-    // background has no samples to repaint; the outline's and the point of
+    // colour has no samples to repaint; the outline's and the point of
     // control's patterns are drawn in their colours.
     let unused = Ink::new(String::new);
     let params_of = {
@@ -2602,7 +2673,7 @@ fn profile_style(
         owner,
         refresh,
         &unused,
-        profile_rows::BACKGROUND,
+        profile_rows::COLOUR,
         colour,
         indicator.color.clone(),
         move |indicator, choice| indicator.color = choice,
@@ -2739,13 +2810,16 @@ fn profile_style(
         })
     };
 
+    let (highlight_row, area_colour_row) = value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
     profile_rows::style_group(profile_rows::StyleRows {
         outline: switch,
         outline_colour: outline_row.upcast(),
         outline_style: outline_pattern.upcast(),
         outline_thickness: width_row.upcast(),
-        background: background.upcast(),
+        colour: background.upcast(),
         transparency: transparency.upcast(),
+        highlight: highlight_row,
+        value_area_colour: area_colour_row.upcast(),
         show_poc: poc_switch,
         poc_colour: poc_colour_row.upcast(),
         poc_style: poc_pattern.upcast(),
@@ -3578,12 +3652,12 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
 
 use gtk::glib;
 
-/// A volume profile study's settings, as the rows of each group by title in
-/// the order they are laid out: what the drawing's are held to.
+/// A volume or market profile study's settings, as the rows of each group
+/// by title in the order they are laid out: what the drawing's are held to.
 #[cfg(test)]
-pub(crate) fn profile_titles(window: &Rc<Window>) -> Vec<(String, Vec<String>)> {
+pub(crate) fn profile_titles(window: &Rc<Window>, kind: Kind) -> Vec<(String, Vec<String>)> {
     let owner = Owner::chart(window);
-    let indicator = Indicator::new(1, Kind::VolumeProfile);
+    let indicator = Indicator::new(1, kind);
     let colour = owner.theme().ui.accent.clone();
     let mut groups = vec![parameters_group(&owner, &Refresh::none(), &indicator)];
     groups.extend(appearance_group(&owner, &Refresh::none(), &colour, &indicator));

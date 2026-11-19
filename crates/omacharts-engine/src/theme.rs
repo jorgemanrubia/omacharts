@@ -175,6 +175,17 @@ const NEUTRAL_FLOOR: f64 = 0.12;
 /// it does not.
 pub const COMPANION_GAP: f64 = 0.12;
 
+/// How strongly a market profile's first TPO period and its last stand
+/// against the chart, as contrast ratios: both read as letters, the first
+/// the stronger. See [`Theme::first_tpo`].
+const FIRST_TPO_CONTRAST: ContrastBand = ContrastBand::new(7.0, 8.0);
+const LAST_TPO_CONTRAST: ContrastBand = ContrastBand::new(3.5, 4.0);
+
+/// The most OKLCh chroma they carry, and the most of their candle's: so a
+/// pastel palette's up and down colours are greyed too, not drawn as is.
+const TPO_END_CHROMA: f64 = 0.10;
+const TPO_END_CHROMA_SHARE: f64 = 0.6;
+
 /// How a colour was chosen for an indicator or overlay.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -553,6 +564,32 @@ impl Theme {
     /// its indicator, the slow half of a cross.
     pub fn muted_for(&self, hex: &str) -> String {
         mix(hex, &self.ui.background, 0.38)
+    }
+
+    /// A market profile's first TPO period, unless somebody chose: the
+    /// palette's up colour, greyed and held strongly against the chart.
+    ///
+    /// Not mixed into the background, which fades it past reading as
+    /// letters. Held to a contrast band instead, as [`held_to`] does, its
+    /// chroma cut so it reads as a quiet relative of the up candle rather
+    /// than as price. The first is held higher than the last, so the two
+    /// differ in lightness and not only in hue, and tell apart to a viewer
+    /// who cannot tell green from red.
+    pub fn first_tpo(&self) -> String {
+        self.tpo_end("Green", FIRST_TPO_CONTRAST)
+    }
+
+    /// A market profile's last TPO period, unless somebody chose: the
+    /// palette's down colour, greyed and held less strongly than the
+    /// first. See [`Theme::first_tpo`].
+    pub fn last_tpo(&self) -> String {
+        self.tpo_end("Rose", LAST_TPO_CONTRAST)
+    }
+
+    fn tpo_end(&self, swatch: &str, band: ContrastBand) -> String {
+        let hex = ColorChoice::swatch(swatch).resolve(self);
+        let chroma = Oklch::of(&hex).map_or(TPO_END_CHROMA, |c| (c.c * TPO_END_CHROMA_SHARE).min(TPO_END_CHROMA));
+        held_to(&hex, &self.ui.background, band, Some(chroma))
     }
 
     /// A colour to set against `hex`, from this theme's own palette.
@@ -2607,6 +2644,30 @@ mod tests {
         // apart; a blue and an amber are far.
         assert!(delta_e("#7aa2f7", "#7da6ff") < 0.03);
         assert!(delta_e("#7aa2f7", "#e0af68") > 0.2);
+    }
+
+    /// The first and last TPO periods' own colours read as letters on every
+    /// theme, apart from each other in lightness as well as hue, greyer
+    /// than the candles they come from, and clear of the profile and its
+    /// point of control.
+    #[test]
+    fn the_first_and_last_tpo_colours_read_apart_on_every_theme() {
+        for theme in builtin_themes() {
+            let (first, last) = (theme.first_tpo(), theme.last_tpo());
+            let ground = &theme.ui.background;
+            let name = &theme.name;
+            assert!(contrast_ratio(&first, ground) >= 6.5, "{name} {first}");
+            assert!(contrast_ratio(&last, ground) >= 3.4, "{name} {last}");
+            assert!(contrast_ratio(&first, ground) > contrast_ratio(&last, ground) + 2.0, "{name}");
+            for (end, candle) in [(&first, "Green"), (&last, "Rose")] {
+                let candle = ColorChoice::swatch(candle).resolve(&theme);
+                assert_ne!(end, &candle, "{name}");
+                assert!(Oklch::of(end).unwrap().c <= TPO_END_CHROMA + 0.01, "{name} {end}");
+            }
+            for other in [theme.series(0), theme.companion(&theme.series(0))] {
+                assert!(delta_e(&first, &other) >= 0.1 && delta_e(&last, &other) >= 0.1, "{name} {other}");
+            }
+        }
     }
 
     #[test]

@@ -122,7 +122,7 @@ Every indicator the app has, with every parameter it exposes:
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
-| `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
+| `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--first-last-tpo` (`on` or `off`, off by default), `--first-tpo-color` and `--last-tpo-color` (a colour, or `none` for the theme's), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
 
 Anything that draws a line also takes `--color`, `--width` and `--line-style`
 (`--style`, its older name, still works), and everything takes `--visible`.
@@ -828,12 +828,12 @@ omacharts chart drawing reset-configs rect
 
 **A volume profile drawing** (`profile`, or `vp`) reads only the times of its
 anchors: its height is the prices its bars reached. `--color` is its outline
-and `--fill` its background, `--border on|off` whether filled rows have it,
+and `--fill` its rows' colour (**Colour** in its settings), `--border on|off` whether filled rows have it,
 `--width` its thickness and `--line-style` its pattern;
 `--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
-`--transparency` (0 its background solid, 0.7 by default),
+`--transparency` (0 its rows solid, 0.7 by default),
 `--highlight-value-area on|off`, `--value-area-color` (or `none` for its
-background's), `--poc on|off`, `--rows` (a number, or `auto`, as the
+rows' own), `--poc on|off`, `--rows` (a number, or `auto`, as the
 study's), `--profile-method total|delta`, `--colouring` (for a delta:
 `default`, `theme`, `theme-soft` or `theme-quiet`) and `--profile-width`
 (0.1 to 1, the whole span by default) are the rest. The study's
