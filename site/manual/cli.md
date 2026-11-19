@@ -571,18 +571,18 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 | `--first-last-tpo B` | `on`, `off`; off when not given | Market profile: whether its first and last TPO periods are drawn in colours of their own |
 | `--first-tpo-color C`, `--last-tpo-color C` | A colour, or `none` for the theme's | Market profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile, market profile |
-| `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control. Market profile: whether its row is set apart |
+| `--poc B` | `on`, `off` | Volume profile, market profile: whether it draws its point of control |
 | `--last-only B` | `on`, `off` | Volume profile, market profile: whether it draws only its newest period |
 | `--poc-color C` | A colour | Volume profile, market profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
 | `--align A` | `left`, `right` | Volume profile, market profile |
-| `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
-| `--outline-color C` | A colour | Volume profile |
-| `--outline-width F`, `--poc-width F` | 0.5 to 12 | Volume profile |
-| `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile |
+| `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline. Market profile: whether its TPOs do, off when not given |
+| `--outline-color C` | A colour | Volume profile, market profile |
+| `--outline-width F`, `--poc-width F` | 0.5 to 12 | Volume profile, market profile. A market profile's point of control is 2 when not given |
+| `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile, market profile |
 | `--transparency F` | 0 to 1; 0.7 on a volume profile and 0.05 on a market profile when not given | Volume profile, market profile: how much of the chart shows through its rows. 0 is its colour solid, 1 invisible |
 | `--value-area-transparency F`, `--outside-transparency F` | 0 to 1, or `default` | Volume profile, market profile: the value area's rows and the rows outside it, while it is highlighted. Unset, or `default`, they follow `--transparency` |
-| `--outline-transparency F` | 0 to 1, or `default` | Volume profile: its outline. Unset, or `default`, it follows its rows |
+| `--outline-transparency F` | 0 to 1, or `default` | Volume profile: its outline. Unset, or `default`, it follows its rows. Market profile: its outline, solid unless set |
 | `--poc-transparency F` | 0 to 1, or `default` | Volume profile, market profile: its point of control. `default` is its own, 0.1 on a volume profile and 0 on a market profile |
 | `--highlight-value-area B` | `on`, `off` | Volume profile, market profile: whether its value area is set apart from its other rows; on when not given |
 | `--value-area-color C` | A colour, or `none` | Volume profile, market profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |

@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::ffi::c_ulong;
 
 use gtk::cairo;
-use omacharts_engine::indicators::market::{MarketProfile, Strengths, Style, BLOCK_ALPHAS, LETTER_ALPHAS};
+use omacharts_engine::indicators::market::{self, MarketProfile, Strengths, Style, BLOCK_ALPHAS, LETTER_ALPHAS};
 use omacharts_engine::indicators::Profile;
 
 use super::{selection, Columns, Drawn, State};
@@ -50,7 +50,6 @@ thread_local! {
 enum Sort {
     Outside = 0,
     Inside = 1,
-    Poc = 2,
 }
 
 /// One market profile indicator's profiles.
@@ -75,6 +74,13 @@ pub(super) fn draw_market_profiles(
         value_area_alpha,
         outside_alpha,
         poc_alpha,
+        poc_width,
+        poc_style,
+        outline,
+        outline_color,
+        outline_style,
+        outline_width,
+        outline_alpha,
         ..
     } = &drawn.indicator.params
     else {
@@ -87,6 +93,7 @@ pub(super) fn draw_market_profiles(
         )
     });
     let poc_ink = poc.then(|| state.theme.companion_or(poc_color.as_ref(), &drawn.color));
+    let outline_ink = outline.then(|| outline_color.as_ref().map_or_else(|| drawn.color.clone(), |c| c.resolve(&state.theme)));
     let area_ink = match (highlight, value_area_color) {
         (true, Some(choice)) => Some(choice.resolve(&state.theme)),
         _ => None,
@@ -94,7 +101,6 @@ pub(super) fn draw_market_profiles(
     let inks = Inks {
         outside: &drawn.color,
         inside: area_ink.as_deref().unwrap_or(&drawn.color),
-        poc: poc_ink.as_deref(),
         highlight: *highlight,
         ends: ends.as_ref().map(|(first, last)| [first.as_str(), last.as_str()]),
         strengths: Strengths::of(*alpha, *value_area_alpha, *outside_alpha, *poc_alpha),
@@ -117,6 +123,36 @@ pub(super) fn draw_market_profiles(
         match *style == Style::Letters && cell >= LETTER_MIN_W && row_h >= LETTER_MIN_H {
             true => letters(cr, market, &place, &inks, row_h, to_y),
             false => blocks(cr, market, &place, &inks, row_h, to_y),
+        }
+        // The edge round the cells, whichever they are drawn as, so turning
+        // letters to blocks never moves it; a run of rows each, a gap in the
+        // profile left open.
+        if let Some(ink) = &outline_ink {
+            let width = outline_width.max(0.5);
+            cr.set_line_width(width);
+            cr.set_line_join(cairo::LineJoin::Miter);
+            super::set_edge_pattern(cr, *outline_style, width, 0.0);
+            colors::set_source_alpha(cr, ink, market::outline_strength(*outline_alpha));
+            selection::profile_path(cr, &area, profile, to_y, selection::Side::Up);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
+        // The point of control as a volume profile's is, a line across the
+        // profile over its rows, through the middle of its own row: the
+        // longest, so the line is as long as it.
+        if let (Some(ink), Some(row)) = (&poc_ink, profile.rows.get(profile.poc)) {
+            let width = poc_width.max(0.5);
+            let y = ((to_y(row.high) + to_y(row.low)) / 2.0).round() + 0.5;
+            let (from, to) = place.cell(0);
+            let (_, end) = place.cell((profile.max_volume as usize).saturating_sub(1));
+            let (left, right) = (from.min(end), to.max(end));
+            colors::set_source_alpha(cr, ink, inks.strengths.poc);
+            cr.set_line_width(width);
+            super::set_edge_pattern(cr, *poc_style, width, left);
+            cr.move_to(left, y);
+            cr.line_to(right, y);
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
         }
         if state.picked == Some(drawn.indicator.id) {
             selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y, selection::Side::All);
@@ -143,8 +179,6 @@ const CELL_MIN: f64 = 6.0;
 struct Inks<'a> {
     outside: &'a str,
     inside: &'a str,
-    /// `None` when the point of control is not set apart.
-    poc: Option<&'a str>,
     highlight: bool,
     /// The first TPO period's colour and the last's, while they are set
     /// apart.
@@ -166,7 +200,6 @@ impl Inks<'_> {
             false => self.strengths.as_blocks(),
         };
         match (sort, self.highlight) {
-            (Sort::Poc, _) => (self.poc.unwrap_or(self.inside), strengths.poc),
             (_, false) => (self.outside, strengths.rows),
             (Sort::Inside, true) => (self.inside, strengths.value_area),
             (Sort::Outside, true) => (self.outside, strengths.outside),
@@ -189,10 +222,9 @@ impl Inks<'_> {
     fn sort(&self, market: &MarketProfile, at: usize) -> Sort {
         let profile = &market.profile;
         let (low, high) = profile.value_area;
-        match (at == profile.poc && self.poc.is_some(), (low..=high).contains(&at)) {
-            (true, _) => Sort::Poc,
-            (false, true) => Sort::Inside,
-            (false, false) => Sort::Outside,
+        match (low..=high).contains(&at) {
+            true => Sort::Inside,
+            false => Sort::Outside,
         }
     }
 }
@@ -232,7 +264,7 @@ fn blocks(
     let profile = &market.profile;
     let apart = place.cell >= BLOCK_MIN && row_h >= BLOCK_MIN;
     let gap = if apart { 1.0 } else { 0.0 };
-    for sort in [Sort::Outside, Sort::Inside, Sort::Poc] {
+    for sort in [Sort::Outside, Sort::Inside] {
         let mut any = false;
         for (at, row) in profile.rows.iter().enumerate() {
             if inks.sort(market, at) != sort || row.volume <= 0.0 {
@@ -314,7 +346,7 @@ fn letters(
         Err(_) => (size * 0.6, size * 0.35),
     };
     let mut batch = [cairo::Glyph::new(0, 0.0, 0.0); BATCH];
-    for sort in [Sort::Outside, Sort::Inside, Sort::Poc] {
+    for sort in [Sort::Outside, Sort::Inside] {
         let (ink, alpha) = inks.of(sort, true);
         let mut set = false;
         let mut n = 0;

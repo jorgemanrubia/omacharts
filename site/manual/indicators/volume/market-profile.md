@@ -16,12 +16,12 @@ For each reset period, how long the price spent at each price. The period is cut
 
 <!-- regenerate:
 theme: tokyo-night
-window: 1600x1200 @2, scratchpad kit
+window: 2000x1440, bin/headless-window, scratchpad kit (seven invented SPY sessions)
 state:
   key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 5m --session regular --template none
   omacharts chart indicator add market_profile --profile-width 0.6
-  move 795 595
+  move 995 715
 capture: bin/headless-window cli chart screenshot --output /tmp/tpo.png; magick /tmp/tpo.png -quality 88 site/assets/manual/indicators/market-profile.jpg
 crop: none
 -->
@@ -62,19 +62,23 @@ The settings are in a [volume profile's](/manual/indicators/volume/volume-profil
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
 | **Last period only** | Off | On draws the newest period's profile alone, as it is drawn among the others |
 | **TPO period (minutes)** | 30 | 1 to 1440. Each TPO period's letters are counted from the period's first bar |
-| **Automatic row height**, **Row height (ticks)** | On | A row [so many ticks](#rows) tall, 1 to 10000, with **Automatic row height** off |
+| **Automatic rows**, **Row height (ticks)** | On | A row [so many ticks](#rows) tall, 1 to 10000, with **Automatic rows** off |
 | **Value area %** | 70% | 10 to 100% |
 
 ### Style
 
-A colour and its transparency share one row: the colour's name, a slider and a figure for how much of the chart shows through it, then the swatch.
+A colour and its opacity share one row: the colour's name, the swatch, then **Opacity**, a slider and a figure for how solid the colour is drawn, 100% solid and 0% invisible. **Default**, first in the swatch's palette, goes back to the colour it has unless one is picked. The command line's `--*-transparency` flags set the same thing the other way up, as how much of the chart shows through.
 
 | Setting | Default | Allowed |
 |---|---|---|
 | **Display** | Letters | Letters, or Blocks: a square for each letter. Letters too small to read are drawn as blocks |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). Beside a volume profile with the same period, each keeps its own ([Beside a volume profile](#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: the furthest the row with the most letters may reach, of the period's width. Each letter or block is about as wide as its row is tall, so a profile with room to spare stays that compact |
-| **Colour** | The next free colour, 5% transparent | A palette name, or a custom colour. Its slider is how much of the chart shows through the letters, 0 to 100%. Blocks are drawn fainter than letters at the same setting, so they do not cover the candles. The value area's two transparencies follow it until they are set |
+| **Colour** | The next free colour, at 95% opacity | A palette name, or a custom colour. Its **Opacity** is how solid the letters are drawn, 0 to 100%. Blocks are drawn fainter than letters at the same setting, so they do not cover the candles. The value area's two opacities follow it until they are set |
+| **Outline** | Off | On draws the stepped edge round the letters' cells, as a volume profile's round its rows: the same for letters and blocks, a gap in the profile left open |
+| **Outline colour** | The profile's **Colour**, solid | A palette name, or a custom colour. Its **Opacity** is how solid the outline is drawn, 0 to 100% |
+| **Outline thickness** | 1 px | 0.5 to 12 px |
+| **Outline style** | Solid | Solid, Dashed, Dotted |
 | **First and last TPO** | Off | On draws each profile's first TPO period's letters, and its last's, in colours of their own. In a composite profile, the first part's first and the last part's last |
 | **First TPO colour** | The theme's up colour, greyed | A palette name, or a custom colour |
 | **Last TPO colour** | The theme's down colour, greyed, and quieter than the first, so the two tell apart by lightness as well as hue | A palette name, or a custom colour |
@@ -84,21 +88,23 @@ A colour and its transparency share one row: the colour's name, a slider and a f
 | Setting | Default | Allowed |
 |---|---|---|
 | **Highlight** | On | Off draws every row alike |
-| **Colour** | The profile's **Colour**, its transparency following the Style group's | A palette name, or a custom colour, for the value area. Its slider is how much of the chart shows through the value area's letters, 0 to 100% |
-| **Outside rows transparency %** | 45% | 0 to 100%, for the letters above and below the value area |
+| **Colour** | The profile's **Colour**, its opacity following the Style group's | A palette name, or a custom colour, for the value area. Its **Opacity** is how solid the value area's letters are drawn, 0 to 100% |
+| **Outside rows opacity %** | 55% | How solid the letters above and below the value area are drawn, 0 to 100% |
 
 ### Point of control
 
 | Setting | Default | Allowed |
 |---|---|---|
-| **Show** | On | Off draws the point of control's row as the value area's |
-| **Colour** | A contrasting colour from the theme, solid | A palette name, or a custom colour. Its slider is how much of the chart shows through the row, 0 to 100% |
+| **Show** | On | Off draws no point of control |
+| **Colour** | A contrasting colour from the theme, solid | A palette name, or a custom colour. Its **Opacity** is how solid the line is drawn, 0 to 100% |
+| **Thickness** | 2 px | 0.5 to 12 px |
+| **Line style** | Solid | Solid, Dashed, Dotted |
 
-The point of control is its row drawn in its own colour, not a line across it, so it has no **Thickness** or **Line style**. Letters have no edge to draw, so there is no **Outline**.
+The point of control is a line across the profile through the middle of its row, over the letters, as a volume profile's is. It is thicker than a volume profile's unless set, so through a row of letters it reads as a mark rather than a strikethrough.
 
 ## Rows
 
-Rows are a whole number of the instrument's ticks tall, one height for every period on the chart, so a quiet session is drawn short beside a busy one. **Automatic row height** takes the smallest of 1, 2, 4, 5, 10, 20, 40, 50 ticks and on that keeps a typical period within 60 rows: an ES session of 60 points is a point a row. With **Automatic row height** off, **Row height (ticks)** is the height.
+Rows are a whole number of the instrument's ticks tall, one height for every period on the chart, so a quiet session is drawn short beside a busy one. **Automatic rows** takes the smallest of 1, 2, 4, 5, 10, 20, 40, 50 ticks and on that keeps a typical period within 60 rows: an ES session of 60 points is a point a row. With **Automatic rows** off, **Row height (ticks)** is the height.
 
 The point of control is the row with the most letters. Of two with as many, it is the one nearer the middle of the profile. The value area starts there and takes the next row up or down, whichever holds more letters, until it holds the **Value area %** of them.
 

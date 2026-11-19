@@ -960,7 +960,7 @@ fn style_editor(
                 |s| s.profile_strengths().outside,
                 |look, alpha| look.outside_alpha = Some(alpha),
             )
-            .alone(profile_rows::OUTSIDE_TRANSPARENCY);
+            .alone(profile_rows::OUTSIDE_TRANSPARENCY, profile_rows::OUTSIDE_TIP);
             let poc_strength = strength(
                 |s| s.profile_strengths().poc,
                 |look, alpha| look.poc_alpha = Some(alpha),
@@ -974,47 +974,39 @@ fn style_editor(
                     .clone()
                     .unwrap_or_else(|| s.fill.clone())
             };
-            // Reset sits before the swatch and greys out while there is
-            // nothing to reset, as on every other colour with a Reset.
-            let area_row = property_rows::colour_row(profile_rows::COLOUR, Some(area_strength));
-            let reset = gtk::Button::with_label("Reset");
-            reset.add_css_class("flat");
-            reset.add_css_class("subtle-link");
-            reset.set_valign(gtk::Align::Center);
-            reset.set_tooltip_text(Some("Back to the rows' colour"));
-            area_row.add_suffix(&reset);
-            let (button, show) = paint_button(&theme, &area_paint(&style.borrow()), {
+            // Default, first in its palette, gives the value area back the
+            // rows' colour.
+            let show_area: Rc<RefCell<Option<Shower<Paint>>>> = Rc::default();
+            let default: Rc<dyn Fn()> = {
                 let style = style.clone();
                 let emit = emit.clone();
-                let reset = reset.downgrade();
-                move |paint| {
-                    style.borrow_mut().profile.value_area_paint = Some(paint);
-                    if let Some(reset) = reset.upgrade() {
-                        reset.set_sensitive(true);
+                let show_area = show_area.clone();
+                Rc::new(move || {
+                    style.borrow_mut().profile.value_area_paint = None;
+                    let now = area_paint(&style.borrow());
+                    if let Some(show) = show_area.borrow().as_ref() {
+                        show(&now);
                     }
                     emit();
-                }
-            });
-            area_row.add_suffix(&button);
-            let show_area: Rc<dyn Fn(&Style)> = {
-                let reset = reset.clone();
-                Rc::new(move |s: &Style| {
-                    show(&area_paint(s));
-                    reset.set_sensitive(s.profile.value_area_paint.is_some());
                 })
             };
+            let (button, show) = paint_button(
+                &theme,
+                &area_paint(&style.borrow()),
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |paint| {
+                        style.borrow_mut().profile.value_area_paint = Some(paint);
+                        emit();
+                    }
+                },
+                Some(default),
+            );
+            *show_area.borrow_mut() = Some(show.clone());
+            let area_row = property_rows::colour_row(profile_rows::COLOUR, &button, Some(area_strength));
+            let show_area: Rc<dyn Fn(&Style)> = Rc::new(move |s: &Style| show(&area_paint(s)));
             show_area(&style.borrow());
-            {
-                let style = style.clone();
-                let emit = emit.clone();
-                let show = show_area.clone();
-                reset.connect_clicked(move |_| {
-                    style.borrow_mut().profile.value_area_paint = None;
-                    let now = style.borrow().clone();
-                    show(&now);
-                    emit();
-                });
-            }
             let (highlight, show) = profile_rows::switch_row(
                 profile_rows::HIGHLIGHT,
                 style.borrow().profile.highlight,
@@ -2308,48 +2300,41 @@ fn vwap_band_group(
             style.vwap.bands[index].paint(&style.colour).hex(&theme)
         })
     };
-    let reset = gtk::Button::with_label("Reset");
-    reset.add_css_class("flat");
-    reset.add_css_class("subtle-link");
-    reset.set_valign(gtk::Align::Center);
-    reset.set_tooltip_text(Some("Back to the line's colour"));
-    reset.set_sensitive(band.colour.is_some());
-    let (button, show_paint) = paint_button(theme, band.paint(&style.borrow().colour), {
-        let edit = edit.clone();
-        let ink = ink.clone();
-        let reset = reset.downgrade();
-        move |paint| {
-            edit(&|band| band.colour = Some(paint.clone()));
-            if let Some(reset) = reset.upgrade() {
-                reset.set_sensitive(true);
-            }
-            ink.repaint();
-        }
-    });
-    {
+    // Default, first in its palette, gives it back the line's colour.
+    let shower: Rc<RefCell<Option<Shower<Paint>>>> = Rc::default();
+    let default: Rc<dyn Fn()> = {
         let edit = edit.clone();
         let ink = ink.clone();
         let style = style.clone();
-        let show_paint = show_paint.clone();
-        reset.connect_clicked(move |reset| {
+        let shower = shower.clone();
+        Rc::new(move || {
             edit(&|band| band.colour = None);
-            reset.set_sensitive(false);
             let line = style.borrow().colour.clone();
-            show_paint(&line);
+            if let Some(show) = shower.borrow().as_ref() {
+                show(&line);
+            }
             ink.repaint();
-        });
-    }
-    let colour = adw::ActionRow::new();
-    colour.set_title(property_rows::COLOUR);
-    colour.add_suffix(&reset);
-    colour.add_suffix(&button);
-    group.add(&colour);
+        })
+    };
+    let (button, show_paint) = paint_button(
+        theme,
+        band.paint(&style.borrow().colour),
+        {
+            let edit = edit.clone();
+            let ink = ink.clone();
+            move |paint| {
+                edit(&|band| band.colour = Some(paint.clone()));
+                ink.repaint();
+            }
+        },
+        Some(default),
+    );
+    *shower.borrow_mut() = Some(show_paint.clone());
+    group.add(&property_rows::colour_row(property_rows::COLOUR, &button, None));
     {
         let ink = ink.clone();
         shows.push(Rc::new(move |s: &Style| {
-            let band = &s.vwap.bands[index];
-            show_paint(band.paint(&s.colour));
-            reset.set_sensitive(band.colour.is_some());
+            show_paint(s.vwap.bands[index].paint(&s.colour));
             ink.repaint();
         }));
     }
@@ -2455,48 +2440,41 @@ fn fib_level_row(
 
     // Its own colour, or the drawing's while it has none: the same answer
     // the chart draws.
-    let reset = gtk::Button::with_label("Reset");
-    reset.add_css_class("flat");
-    reset.add_css_class("subtle-link");
-    reset.set_valign(gtk::Align::Center);
-    reset.set_tooltip_text(Some("Back to the drawing's colour"));
-    reset.set_sensitive(level.colour.is_some());
-    let (button, show_paint) = paint_button(theme, level.paint(&style.borrow().colour), {
-        let edit = edit.clone();
-        let ink = ink.clone();
-        let reset = reset.downgrade();
-        move |paint| {
-            edit(&|level| level.colour = Some(paint.clone()));
-            if let Some(reset) = reset.upgrade() {
-                reset.set_sensitive(true);
-            }
-            ink.repaint();
-        }
-    });
-    {
+    // Default, first in its palette, gives it back the drawing's colour.
+    let shower: Rc<RefCell<Option<Shower<Paint>>>> = Rc::default();
+    let default: Rc<dyn Fn()> = {
         let edit = edit.clone();
         let ink = ink.clone();
         let style = style.clone();
-        let show_paint = show_paint.clone();
-        reset.connect_clicked(move |reset| {
+        let shower = shower.clone();
+        Rc::new(move || {
             edit(&|level| level.colour = None);
-            reset.set_sensitive(false);
             let colour = style.borrow().colour.clone();
-            show_paint(&colour);
+            if let Some(show) = shower.borrow().as_ref() {
+                show(&colour);
+            }
             ink.repaint();
-        });
-    }
-    let colour = adw::ActionRow::new();
-    colour.set_title(property_rows::COLOUR);
-    colour.add_suffix(&reset);
-    colour.add_suffix(&button);
-    row.add_row(&colour);
+        })
+    };
+    let (button, show_paint) = paint_button(
+        theme,
+        level.paint(&style.borrow().colour),
+        {
+            let edit = edit.clone();
+            let ink = ink.clone();
+            move |paint| {
+                edit(&|level| level.colour = Some(paint.clone()));
+                ink.repaint();
+            }
+        },
+        Some(default),
+    );
+    *shower.borrow_mut() = Some(show_paint.clone());
+    row.add_row(&property_rows::colour_row(property_rows::COLOUR, &button, None));
     {
         let ink = ink.clone();
         shows.push(Rc::new(move |s: &Style| {
-            let level = &s.fib.levels[index];
-            show_paint(level.paint(&s.colour));
-            reset.set_sensitive(level.colour.is_some());
+            show_paint(s.fib.levels[index].paint(&s.colour));
             ink.repaint();
         }));
     }
@@ -2700,17 +2678,20 @@ fn paint_row_with(
     current: &Paint,
     on_pick: impl Fn(Paint) + Clone + 'static,
 ) -> (adw::ActionRow, Shower<Paint>) {
-    let row = property_rows::colour_row(title, transparency);
-    let (button, show) = paint_button(theme, current, on_pick);
-    row.add_suffix(&button);
-    (row, show)
+    let (button, show) = paint_button(theme, current, on_pick, None);
+    (property_rows::colour_row(title, &button, transparency), show)
 }
 
 /// The swatch that opens the presets and the wheel, for a row of its own.
+///
+/// `default`, for a colour that falls back on another while it has none of
+/// its own, is offered first in the palette as **Default**: it clears the
+/// colour, and shows what it falls back on.
 fn paint_button(
     theme: &Theme,
     current: &Paint,
     on_pick: impl Fn(Paint) + Clone + 'static,
+    default: Option<Rc<dyn Fn()>>,
 ) -> (gtk::MenuButton, Shower<Paint>) {
     // The study's colour button: the same frame round the same swatch.
     let shown = palette::swatch_area(&current.hex(theme), false);
@@ -2727,6 +2708,9 @@ fn paint_button(
     content.set_margin_bottom(8);
     content.set_margin_start(8);
     content.set_margin_end(8);
+    if let Some(default) = default {
+        content.append(&palette::default_button(&popover, move || default()));
+    }
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);
@@ -3370,17 +3354,18 @@ mod tests {
                 market,
                 vec![
                     ("Parameters".to_string(), names(&[
-                        "Reset every", r::LAST_ONLY, chart_settings::MARKET_MINUTES_LABEL, r::AUTOMATIC_HEIGHT,
+                        "Reset every", r::LAST_ONLY, chart_settings::MARKET_MINUTES_LABEL, r::AUTOMATIC,
                         chart_settings::MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
                     ])),
                     (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::FIRST_LAST,
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::OUTLINE,
+                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::FIRST_LAST,
                         r::FIRST_COLOUR, r::LAST_COLOUR,
                     ])),
                     (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
-                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
                 ],
-                "the volume profile's, less its method and outline, a line's thickness and style"
+                "the volume profile's, less its method, with its first and last TPO after the outline"
             );
             assert!(
                 drawing
@@ -3443,7 +3428,7 @@ mod tests {
                 assert_eq!(at("Border colour") + 1, at("Border thickness"), "{kind:?}: {titles:?}");
                 assert_eq!(at("Border thickness") + 1, at("Border style"), "{kind:?}: {titles:?}");
                 assert!(rows[at("Border thickness")].is::<adw::SpinRow>(), "{kind:?}");
-                let transparency = &rows[at(property_rows::TRANSPARENCY)];
+                let transparency = &rows[at(property_rows::OPACITY)];
                 let row = transparency.downcast_ref::<adw::ActionRow>().expect("an action row");
                 assert!(row.subtitle().is_none_or(|s| s.is_empty()), "{kind:?}: no hint under it");
                 let mut entry = false;

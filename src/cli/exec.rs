@@ -5016,7 +5016,7 @@ impl Edits {
             }
         }
         if let Some(on) = self.outline {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["outline"] = json!(on),
                 false => return Err(refuse("outline")),
             }
@@ -5034,7 +5034,7 @@ impl Edits {
             }
         }
         if let Some(colour) = &self.outline_color {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["outline_color"] = to_value(colour)?,
                 false => return Err(refuse("outline")),
             }
@@ -5044,7 +5044,7 @@ impl Edits {
             (self.poc_style, "poc_style", "point of control"),
         ] {
             if let Some(pattern) = pattern {
-                match kind == IndicatorKind::VolumeProfile {
+                match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                     true => params[key] = to_value(&pattern)?,
                     false => return Err(refuse(what)),
                 }
@@ -5066,7 +5066,7 @@ impl Edits {
         for (part, key, what, kinds) in [
             (self.parts.value_area, "value_area_alpha", "value area transparency", profiles),
             (self.parts.outside, "outside_alpha", "outside transparency", profiles),
-            (self.parts.outline, "outline_alpha", "outline transparency", kind == IndicatorKind::VolumeProfile),
+            (self.parts.outline, "outline_alpha", "outline transparency", profiles),
             (self.parts.poc, "poc_alpha", "point of control transparency", profiles),
         ] {
             if let Some(alpha) = part {
@@ -5093,7 +5093,7 @@ impl Edits {
             (self.poc_width, "poc_width", "point of control thickness"),
         ] {
             if let Some(width) = width {
-                match kind == IndicatorKind::VolumeProfile {
+                match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                     true => params[key] = json!(width),
                     false => return Err(refuse(what)),
                 }
@@ -10870,7 +10870,7 @@ mod tests {
     /// Each part of a profile is made more or less transparent on its own by
     /// a flag named as its row is, on a volume profile study, a market
     /// profile and a drawing alike, and `default` sets it following the
-    /// rows' again; a market profile has no outline.
+    /// rows' again, or a market profile's outline its own.
     #[test]
     fn a_profiles_parts_are_made_transparent_one_by_one() {
         let store = bare();
@@ -10910,8 +10910,17 @@ mod tests {
         for (part, want) in parts.iter().zip([0.8, 0.1, f64::NAN, 0.5]) {
             assert!(want.is_nan() || near(&stored[part], want), "{part}: {stored}");
         }
-        let out = run("chart indicator set market_profile --book Macro --outline-transparency 0.4", &store);
-        assert_ne!(out.code, 0, "a market profile has no outline");
+        let out = run(
+            "chart indicator set market_profile --book Macro --outline on --outline-transparency 0.4 --outline-width 2 --outline-style dashed --poc-width 3 --poc-style dotted",
+            &store,
+        );
+        assert_eq!(out.code, 0, "a market profile's outline and point of control, as a volume profile's: {}", out.err);
+        let stored = params(&store, 1);
+        assert!(near(&stored["outline_alpha"], 0.6), "{stored}");
+        assert_eq!(stored["outline"], true, "{stored}");
+        assert!(stored["outline_style"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("dashed")), "{stored}");
+        assert!(stored["poc_style"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("dotted")), "{stored}");
+        assert!(near(&stored["outline_width"], 2.0) && near(&stored["poc_width"], 3.0), "{stored}");
         let out = run("chart indicator set market_profile --book Macro --poc-transparency 2", &store);
         assert_eq!(out.code, crate::cli::EXIT_USAGE, "{}", out.err);
 

@@ -42,16 +42,16 @@ The settings are in four groups, in the order below. A switch's rows show while 
 
 ### Style
 
-A colour and its transparency share one row: the colour's name, a slider and a figure for how much of the chart shows through it, then the swatch.
+A colour and its opacity share one row: the colour's name, the swatch, then **Opacity**, a slider and a figure for how solid the colour is drawn, 100% solid and 0% invisible. **Default**, first in the swatch's palette, goes back to the colour it has unless one is picked. The command line's `--*-transparency` flags set the same thing the other way up, as how much of the chart shows through.
 
 | Setting | Default | Allowed |
 |---|---|---|
 | **Display** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period each keeps its own ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
-| **Colour** | The next free colour, 70% transparent | A palette name, or a custom colour, greyed for Ask volume - bid volume, whose rows are in its **Colouring**. Its slider is how much of the chart shows through the rows, 0 to 100%: at 0% they are solid, and at 100% the profile is gone. The value area's two transparencies follow it until they are set |
+| **Colour** | The next free colour, at 30% opacity | A palette name, or a custom colour, greyed for Ask volume - bid volume, whose rows are in its **Colouring**. Its **Opacity** is how solid the rows are drawn, 0 to 100%: at 100% they are solid, and at 0% the profile is gone. The value area's two opacities follow it until they are set |
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, while **Display** is Outline |
-| **Outline colour** | The profile's **Colour**, 55% transparent round filled rows; in the Outline display its transparency follows the rows' | A palette name, or a custom colour. Its slider is how much of the chart shows through the edge, 0 to 100%; once set, it stays put when the rows' moves |
+| **Outline colour** | The profile's **Colour**, at 45% opacity round filled rows; in the Outline display its opacity follows the rows' | A palette name, or a custom colour. Its **Opacity** is how solid the edge is drawn, 0 to 100%; once set, it stays put when the rows' moves |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
 
@@ -60,15 +60,15 @@ A colour and its transparency share one row: the colour's name, a slider and a f
 | Setting | Default | Allowed |
 |---|---|---|
 | **Highlight** | On | Off draws every row alike. The group is greyed for Ask volume - bid volume, which has no value area |
-| **Colour** | The profile's **Colour**, its transparency following the Style group's | A palette name, or a custom colour, for the value area. Its slider is how much of the chart shows through the value area's rows, 0 to 100% |
-| **Outside rows transparency %** | A little under half as strong as the value area | 0 to 100%, for the rows above and below the value area |
+| **Colour** | The profile's **Colour**, its opacity following the Style group's | A palette name, or a custom colour, for the value area. Its **Opacity** is how solid the value area's rows are drawn, 0 to 100% |
+| **Outside rows opacity %** | A little under half as strong as the value area | How solid the rows above and below the value area are drawn, 0 to 100% |
 
 ### Point of control
 
 | Setting | Default | Allowed |
 |---|---|---|
 | **Show** | On | Off leaves the profile without its point of control line |
-| **Colour** | A contrasting colour from the theme, 10% transparent | A palette name, or a custom colour. Its slider is how much of the chart shows through the line, 0 to 100% |
+| **Colour** | A contrasting colour from the theme, at 90% opacity | A palette name, or a custom colour. Its **Opacity** is how solid the line is drawn, 0 to 100% |
 | **Thickness** | 1 px | 0.5 to 12 px |
 | **Line style** | Solid | Solid, Dashed, Dotted |
 

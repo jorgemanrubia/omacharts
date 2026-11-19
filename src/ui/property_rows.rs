@@ -3,7 +3,13 @@
 //! A concept two dialogs both have — a colour, how much of a fill shows, how
 //! thick a line is, a switch — is titled, ranged and built here, once, so a
 //! drawing's Thickness and a study's are the same control with the same
-//! range, and both say Transparency for the same thing.
+//! range, and both say Opacity for the same thing.
+//!
+//! What is stored, and what the command line takes, is a transparency: how
+//! much of the chart shows through, 0 solid. A dialog shows it the other way
+//! up, as opacity, 100% solid and 0% invisible, which is how a slider that
+//! makes a colour stronger as it moves right reads. The rows here turn one
+//! into the other, so a caller hands them and hears back a transparency.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -16,7 +22,10 @@ pub const COLOUR: &str = "Colour";
 pub const THICKNESS: &str = "Thickness";
 pub const LINE_STYLE: &str = "Line style";
 pub const BACKGROUND: &str = "Background";
-pub const TRANSPARENCY: &str = "Transparency %";
+/// A row of its own for how solid a fill is.
+pub const OPACITY: &str = "Opacity %";
+/// The word before the slider on a colour row, and its tooltip.
+pub const OPACITY_LABEL: &str = "Opacity";
 pub const SHOW: &str = "Show";
 pub const SHADED: &str = "Shaded";
 
@@ -56,16 +65,18 @@ pub fn percent_row(
     (bounded.row, show)
 }
 
-/// How much of the chart shows through a fill: none at 0%, where it is its
-/// colour, solid, and all of it at 100%.
+/// How solid a fill is, shown as its opacity: 100% its colour, solid, 0%
+/// invisible. Handed and heard as a transparency, `share` of the chart
+/// showing through.
 pub fn transparency_row(
     share: f64,
     changed: impl Fn(f64) + 'static,
 ) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    percent_row(TRANSPARENCY, share, 0.0, 1.0, changed)
+    let (row, show) = percent_row(OPACITY, 1.0 - share, 0.0, 1.0, move |opacity| changed(1.0 - opacity));
+    (row, Rc::new(move |share| show(1.0 - share)))
 }
 
-/// How much of the chart shows through a colour, as a slider and a box
+/// How solid a colour is drawn, shown as its opacity, as a slider and a box
 /// not yet on a row: what the standard colour row carries beside its swatch
 /// ([`colour_row`]). [`Transparency::alone`] puts it on a row of its own
 /// for a transparency with no colour to sit beside.
@@ -75,22 +86,23 @@ pub struct Transparency {
 }
 
 impl Transparency {
-    /// A transparency of `share`, 0 solid to 1 invisible, hearing each one
-    /// settled on, and the way to show it another without calling back.
+    /// A transparency of `share`, 0 solid to 1 invisible, shown as its
+    /// opacity, 100% to 0%; hearing each one settled on, as a transparency,
+    /// and the way to show it another without calling back.
     pub fn new(share: f64, changed: impl Fn(f64) + 'static) -> (Transparency, Rc<dyn Fn(f64)>) {
         let quiet = Rc::new(Cell::new(false));
         let figure = {
             let quiet = quiet.clone();
-            controls::bounded(share * 100.0, 0.0, 100.0, 1.0, 0, move |percent| {
+            controls::bounded((1.0 - share) * 100.0, 0.0, 100.0, 1.0, 0, move |percent| {
                 if !quiet.get() {
-                    changed(percent / 100.0);
+                    changed(1.0 - percent / 100.0);
                 }
             })
         };
         let adjustment = figure.adjustment;
         let show: Rc<dyn Fn(f64)> = Rc::new(move |share| {
             quiet.set(true);
-            adjustment.set_value(share * 100.0);
+            adjustment.set_value((1.0 - share) * 100.0);
             quiet.set(false);
         });
         (Transparency { slider: figure.slider, entry: figure.entry }, show)
@@ -98,10 +110,14 @@ impl Transparency {
 
     /// On a row of its own, titled `title`: a transparency of something
     /// with no colour of its own, as a profile's rows outside its value area.
-    pub fn alone(self, title: &str) -> adw::ActionRow {
+    /// `tip` says what the slider is where `title` is too short to: its
+    /// tooltip, and what a screen reader calls it.
+    pub fn alone(self, title: &str, tip: &str) -> adw::ActionRow {
         let row = adw::ActionRow::new();
         row.set_title(title);
-        self.name(title);
+        self.name(tip);
+        self.slider.set_tooltip_text(Some(tip));
+        self.entry.set_tooltip_text(Some(tip));
         row.add_suffix(&self.slider);
         row.add_suffix(&self.entry);
         row
@@ -119,42 +135,41 @@ impl Transparency {
 /// The app's standard colour row: what a colour is picked on, in every
 /// properties dialog, a study's and a drawing's alike.
 ///
-/// The colour's name, then how much of the chart shows through it, as a
-/// slider and a box, then the colour itself. The caller adds the picker,
-/// and the Reset before it where the colour has a default to go back to,
-/// with `add_suffix`, so they land after the transparency. A colour the
+/// The colour's name, then the colour itself (`picker`, the swatch that
+/// opens the palette), then a small **Opacity** and how solid it is drawn,
+/// as a slider and a box: 100% solid, 0% invisible. There is no Reset beside it: a colour with a default to
+/// go back to offers **Default** at the top of its palette. A colour the
 /// model gives no transparency of its own is passed `None`, and its row is
-/// the name and the picker alone, at the same place.
+/// the name and the picker alone.
+///
+/// The slider and the box are the ones every other slider row has, at the
+/// same width and last on the row, so they line up in one column with the
+/// sliders above and below them, and the swatch sits just before them.
 ///
 /// A colour and how solid it is drawn are one question asked of one part —
 /// a profile's value area, a line, a fill — so they are answered on one
 /// row rather than two, and the transparency is not titled apart.
-pub fn colour_row(title: &str, transparency: Option<Transparency>) -> adw::ActionRow {
+pub fn colour_row(title: &str, picker: &impl IsA<gtk::Widget>, transparency: Option<Transparency>) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(title);
+    row.add_suffix(picker);
     if let Some(transparency) = transparency {
-        transparency.name(&format!("{title} transparency"));
-        // The figure is typed or dragged, never stepped: the box drops its
-        // − and + so the slider keeps its width beside the swatch and Reset
-        // at the dialog's width.
-        transparency.slider.set_size_request(COLOUR_ROW_SLIDER, -1);
-        let mut part = transparency.entry.first_child();
-        while let Some(widget) = part {
-            part = widget.next_sibling();
-            if widget.is::<gtk::Button>() {
-                widget.set_visible(false);
-            }
-        }
-        transparency.slider.set_tooltip_text(Some(TRANSPARENCY));
-        transparency.entry.set_tooltip_text(Some(TRANSPARENCY));
+        transparency.name(&format!("{title} opacity"));
+        transparency.slider.set_tooltip_text(Some(OPACITY_LABEL));
+        transparency.entry.set_tooltip_text(Some(OPACITY_LABEL));
+        // Says what the slider is, small, so the row's name stays the
+        // colour's.
+        let word = gtk::Label::new(Some(OPACITY_LABEL));
+        word.add_css_class("dim-label");
+        word.add_css_class("caption");
+        word.set_valign(gtk::Align::Center);
+        word.set_margin_start(6);
+        row.add_suffix(&word);
         row.add_suffix(&transparency.slider);
         row.add_suffix(&transparency.entry);
     }
     row
 }
-
-/// The width of the transparency slider on a colour row.
-pub const COLOUR_ROW_SLIDER: i32 = 180;
 
 /// A line's thickness in pixels, 0.5 to 12 by halves, and the way to show
 /// it another.
@@ -243,20 +258,20 @@ fn collect_titles(widget: &gtk::Widget, out: &mut Vec<String>) {
 mod tests {
     use super::*;
 
-    /// The standard colour row: its name, then its transparency, named for
-    /// a screen reader by the colour, then what the caller adds; and with no
-    /// transparency, the name alone before it.
+    /// The standard colour row: its name, then the swatch, then its
+    /// transparency, named for a screen reader by the colour, as wide as
+    /// every other slider; and with no transparency, the name and the swatch
+    /// alone.
     #[test]
-    fn a_colour_row_carries_its_transparency_before_the_swatch() {
+    fn a_colour_row_carries_its_swatch_then_its_transparency() {
         crate::ui::on_gtk(|| {
             let heard = Rc::new(Cell::new(None));
             let (transparency, show) = {
                 let heard = heard.clone();
                 Transparency::new(0.3, move |share| heard.set(Some(share)))
             };
-            let row = colour_row("Point of control", Some(transparency));
             let swatch = gtk::MenuButton::new();
-            row.add_suffix(&swatch);
+            let row = colour_row("Point of control", &swatch, Some(transparency));
             assert_eq!(row.title(), "Point of control");
 
             let mut order: Vec<gtk::Widget> = Vec::new();
@@ -273,26 +288,32 @@ mod tests {
                 }
                 stack.extend(children.into_iter().rev());
             }
-            assert!(order[0].is::<gtk::Scale>() && order[1].is::<gtk::SpinButton>(), "{order:?}");
-            assert_eq!(order[2], swatch.clone().upcast::<gtk::Widget>());
-            let slider = order[0].clone().downcast::<gtk::Scale>().unwrap();
-            assert_eq!(slider.width_request(), COLOUR_ROW_SLIDER);
-            assert!((slider.value() - 30.0).abs() < 1e-9);
-            let entry = order[1].clone();
-            let mut part = entry.first_child();
-            while let Some(widget) = part {
-                assert!(!(widget.is::<gtk::Button>() && widget.is_visible()), "no − and + on its figure");
-                part = widget.next_sibling();
+            assert_eq!(order[0], swatch.clone().upcast::<gtk::Widget>(), "{order:?}");
+            assert!(order[1].is::<gtk::Scale>() && order[2].is::<gtk::SpinButton>(), "{order:?}");
+            let slider = order[1].clone().downcast::<gtk::Scale>().unwrap();
+            let other = crate::ui::controls::bounded_row("Width %", None, 40.0, 10.0, 100.0, 1.0, 0, |_| {});
+            let mut widths = Vec::new();
+            let mut stack = vec![other.row.upcast::<gtk::Widget>()];
+            while let Some(widget) = stack.pop() {
+                if let Some(scale) = widget.downcast_ref::<gtk::Scale>() {
+                    widths.push(scale.width_request());
+                }
+                let mut child = widget.first_child();
+                while let Some(next) = child {
+                    child = next.next_sibling();
+                    stack.push(next);
+                }
             }
+            assert_eq!(widths, [slider.width_request()], "as wide as every other slider");
+            assert!((slider.value() - 70.0).abs() < 1e-9, "a transparency of 0.3 shown as 70% opaque");
 
             show(0.5);
             assert_eq!(heard.get(), None, "shown, not heard");
             slider.set_value(80.0);
-            assert_eq!(heard.get(), Some(0.8));
+            assert!((heard.get().unwrap() - 0.2).abs() < 1e-9, "heard back as a transparency");
 
-            let plain = colour_row("Last TPO colour", None);
             let swatch = gtk::MenuButton::new();
-            plain.add_suffix(&swatch);
+            let plain = colour_row("Last TPO colour", &swatch, None);
             let mut stack = vec![plain.upcast::<gtk::Widget>()];
             let mut sliders = 0;
             while let Some(widget) = stack.pop() {

@@ -108,6 +108,10 @@ pub fn hairline() -> f64 {
     1.0
 }
 
+pub fn is_hairline(width: &f64) -> bool {
+    *width == hairline()
+}
+
 /// A point of control is drawn unless somebody turns it off, as it was
 /// before it could be.
 pub fn shown() -> bool {

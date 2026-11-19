@@ -96,6 +96,7 @@ fn main() {
     interactivity(&home, &mut rows);
     #[cfg(feature = "fakes")]
     trading(&home, &mut rows);
+    market_profile(&mut rows);
     let _ = std::fs::remove_dir_all(&home);
 
     match tsv {
@@ -321,37 +322,6 @@ fn drawing(rows: &mut Vec<Row>) {
         }
     }
 
-    // A market profile over the price, on its own and beside a volume
-    // profile sharing its periods, at the width the volume profile rows
-    // above use; and close enough in, its rows tall enough, that its
-    // letters are drawn rather than blocks.
-    for (kinds, label, visible, row_ticks) in [
-        (&["market_profile"][..], "market profile", 1_500usize, None),
-        (&["volume_profile", "market_profile"][..], "volume and market profiles", 1_500, None),
-        (&["market_profile"][..], "market profile letters", 60, Some(100)),
-    ] {
-        if let Some(mut scene) = Scene::of(3_000, visible, kinds) {
-            scene.restyle(|indicator| {
-                let Ok(mut params) = serde_json::to_value(&indicator.params) else { return };
-                params["width"] = serde_json::json!(0.6);
-                if let Some(ticks) = row_ticks
-                    && params.get("row_ticks").is_some()
-                {
-                    params["row_ticks"] = serde_json::json!(ticks);
-                }
-                if let Ok(params) = serde_json::from_value(params) {
-                    indicator.params = params;
-                }
-            });
-            scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
-            let (surface, cr) = canvas();
-            rows.push(row("draw", &format!("pan/zoom frame, {label}, {visible} bars"), || {
-                scene.view_frame(&cr, WIDTH, HEIGHT);
-                surface.flush();
-            }));
-        }
-    }
-
     // A volume profile drawn over the whole screen, at the automatic count
     // and at the finest a hand can ask for: the rows are what its frame
     // paints, and a span this wide is where they are most. Then what
@@ -389,7 +359,7 @@ fn drawing(rows: &mut Vec<Row>) {
     // arithmetic is measured where each of them pays for it.
     for bars in [10_000usize, 100_000] {
         let series = bench::series(bars);
-        for key in ["rsi", "bollinger", "macd", "sma", "ema", "vwap", "atr", "stochastic", "cvd", "volume", "market_profile"] {
+        for key in ["rsi", "bollinger", "macd", "sma", "ema", "vwap", "atr", "stochastic", "cvd", "volume"] {
             let Some(indicator) = named(key) else { continue };
             rows.push(row("draw", &format!("compute {key} over {bars} bars"), || {
                 black_box(indicators::compute(&indicator, &series, 0, Timeframe::days(1), None));
@@ -419,6 +389,56 @@ fn tiles(charts: usize) -> Vec<(f64, f64, f64, f64)> {
     (0..charts)
         .map(|at| ((at % across) as f64 * w, (at / across) as f64 * h, w, h))
         .collect()
+}
+
+/// The market profile's rows, run after every other row.
+///
+/// Each row runs where it is pushed, and the thousands of small allocations a
+/// market profile makes leave the heap in another state for whatever runs
+/// next: run among the others, they once made a row the merge base also has
+/// (computing CVD over 100,000 bars, one 20 MB buffer) four times slower on
+/// CI, with the same allocations and code. Last, they cannot move any row the
+/// comparison reads against the base, and the base, which has no market
+/// profile, simply skips them.
+fn market_profile(rows: &mut Vec<Row>) {
+    // A market profile over the price, on its own and beside a volume
+    // profile sharing its periods, at the width the volume profile rows
+    // use; and close enough in, its rows tall enough, that its
+    // letters are drawn rather than blocks.
+    for (kinds, label, visible, row_ticks) in [
+        (&["market_profile"][..], "market profile", 1_500usize, None),
+        (&["volume_profile", "market_profile"][..], "volume and market profiles", 1_500, None),
+        (&["market_profile"][..], "market profile letters", 60, Some(100)),
+    ] {
+        if let Some(mut scene) = Scene::of(3_000, visible, kinds) {
+            scene.restyle(|indicator| {
+                let Ok(mut params) = serde_json::to_value(&indicator.params) else { return };
+                params["width"] = serde_json::json!(0.6);
+                if let Some(ticks) = row_ticks
+                    && params.get("row_ticks").is_some()
+                {
+                    params["row_ticks"] = serde_json::json!(ticks);
+                }
+                if let Ok(params) = serde_json::from_value(params) {
+                    indicator.params = params;
+                }
+            });
+            scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+            let (surface, cr) = canvas();
+            rows.push(row("draw", &format!("pan/zoom frame, {label}, {visible} bars"), || {
+                scene.view_frame(&cr, WIDTH, HEIGHT);
+                surface.flush();
+            }));
+        }
+    }
+
+    for bars in [10_000usize, 100_000] {
+        let series = bench::series(bars);
+        let Some(indicator) = named("market_profile") else { continue };
+        rows.push(row("draw", &format!("compute market_profile over {bars} bars"), || {
+            black_box(indicators::compute(&indicator, &series, 0, Timeframe::days(1), None));
+        }));
+    }
 }
 
 // ---------------------------------------------------------------------------

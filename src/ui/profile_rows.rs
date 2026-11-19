@@ -19,7 +19,7 @@ use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 use omacharts_engine::BarColouring;
 
 pub use crate::ui::property_rows::{
-    COLOUR, LINE_STYLE, SHOW, THICKNESS, TRANSPARENCY, Transparency, colour_row, percent_row, switch_row,
+    COLOUR, LINE_STYLE, SHOW, THICKNESS, OPACITY, Transparency, colour_row, percent_row, switch_row,
     thickness_row,
 };
 #[cfg(test)]
@@ -45,13 +45,15 @@ pub const ALIGNMENT: &str = "Alignment";
 /// The Value area group's switch; its Colour and Transparency are the
 /// shared ones.
 pub const HIGHLIGHT: &str = "Highlight";
-pub const OUTSIDE_TRANSPARENCY: &str = "Outside rows transparency %";
+pub const OUTSIDE_TRANSPARENCY: &str = "Outside rows opacity %";
+/// What the Outside rows slider is, for its tooltip and a screen reader.
+pub const OUTSIDE_TIP: &str = "Opacity of the rows outside the value area";
 /// The Parameters group's.
 pub const LAST_ONLY: &str = "Last period only";
 /// A volume profile's switch for its row count, and a market profile's for
-/// its row height: named for what it makes automatic, under a method.
+/// its row height: one name on both, the row under it saying which number
+/// it makes automatic.
 pub const AUTOMATIC: &str = "Automatic rows";
-pub const AUTOMATIC_HEIGHT: &str = "Automatic row height";
 pub const ROWS: &str = "Rows";
 pub const VALUE_AREA: &str = "Value area %";
 pub const METHOD: &str = "Calculation method";
@@ -70,7 +72,7 @@ const MOST_ROWS: f64 = 800.0;
 /// drawn yet to say how many it came to.
 const ROWS_UNKNOWN: usize = 48;
 
-/// An outline's switch and the rows it shows: a volume profile's.
+/// An outline's switch and the rows it shows.
 pub struct OutlineRows {
     pub switch: adw::SwitchRow,
     /// Its colour and transparency, on the standard colour row.
@@ -109,8 +111,8 @@ pub struct ValueAreaRows {
     pub outside: gtk::Widget,
 }
 
-/// The rows of the Point of control group. A market profile's is a row
-/// drawn apart, not a line, and has no thickness or line style.
+/// The rows of the Point of control group: a line across the profile, on
+/// both.
 pub struct PocRows {
     pub show: adw::SwitchRow,
     /// Its colour and transparency, on the standard colour row.

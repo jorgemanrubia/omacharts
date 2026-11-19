@@ -238,7 +238,7 @@ An indicator with no chosen colour takes the first of the theme's sequence (Blue
 
 A **palette name** (Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutral) is the theme's colour of that name and follows the theme when it changes. A **custom** colour, picked exactly or typed as a hex such as `#e0af68`, stays the same in every theme.
 
-Each **Colour** row opens the theme's palette ([Themes and colours](/manual/themes/)). **Custom…** under it picks an exact colour. **Reset** beside the swatch goes back to the automatic colour.
+Each **Colour** row opens the theme's palette ([Themes and colours](/manual/themes/)). **Custom…** under it picks an exact colour. **Default**, first in the palette, goes back to the automatic colour.
 
 | Row | Choices | Default |
 |---|---|---|

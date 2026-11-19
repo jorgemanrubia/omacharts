@@ -422,10 +422,17 @@ impl Kind {
                 poc: true,
                 highlight: true,
                 poc_color: None,
+                poc_width: market::POC_WIDTH,
+                poc_style: LineStyle::Solid,
                 value_area_color: None,
                 first_last: false,
                 first_color: None,
                 last_color: None,
+                outline: false,
+                outline_color: None,
+                outline_style: LineStyle::Solid,
+                outline_width: profile::hairline(),
+                outline_alpha: None,
                 alpha: None,
                 value_area_alpha: None,
                 outside_alpha: None,
@@ -644,7 +651,8 @@ pub enum Params {
         /// profile's.
         #[serde(default = "profile::default_width")]
         width: f64,
-        /// Whether the point of control's row is set apart. Missing, it is.
+        /// Whether the point of control is drawn: a line across the profile
+        /// through its row. Missing, it is.
         #[serde(default = "profile::shown")]
         poc: bool,
         /// Whether the value area's rows are set apart from the rest.
@@ -655,6 +663,14 @@ pub enum Params {
         /// to the profile's own, as a volume profile's is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         poc_color: Option<ColorChoice>,
+        /// The point of control's thickness, in pixels: a line across the
+        /// profile through its row, as a volume profile's. Missing,
+        /// [`market::POC_WIDTH`].
+        #[serde(default = "market::poc_width", skip_serializing_if = "market::is_poc_width")]
+        poc_width: f64,
+        /// The point of control's pattern. Missing, solid.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        poc_style: LineStyle,
         /// The value area's colour, while it is set apart. Unset is the
         /// profile's own, the rest drawn fainter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -671,6 +687,24 @@ pub enum Params {
         /// from its down colour: see [`crate::theme::Theme::last_tpo`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_color: Option<ColorChoice>,
+        /// Whether the TPOs wear an outline: the stepped edge round their
+        /// cells, as a volume profile's round its rows. Missing, they do
+        /// not.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        outline: bool,
+        /// The outline's colour. Unset is the profile's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline_color: Option<ColorChoice>,
+        /// The outline's pattern. Missing, solid.
+        #[serde(default, skip_serializing_if = "LineStyle::is_solid")]
+        outline_style: LineStyle,
+        /// The outline's thickness, in pixels. Missing, a hairline.
+        #[serde(default = "profile::hairline", skip_serializing_if = "profile::is_hairline")]
+        outline_width: f64,
+        /// How solid the outline is drawn. Unset, as a volume profile's
+        /// edge is: see [`market::OUTLINE_ALPHA`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline_alpha: Option<f64>,
         /// How solid its rows are drawn, as letters: unset, as designed. A
         /// block is drawn as much fainter as its design is. See
         /// [`market::Strengths`].

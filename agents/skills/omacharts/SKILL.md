@@ -327,9 +327,13 @@ centred in the session. With different anchors each keeps to itself, with
 its own merges. `--align right` mirrors a profile; `--tpo-style blocks` swaps
 letters for squares; `--first-last-tpo on` draws each profile's opening and
 closing TPO periods in colours of their own (`--first-tpo-color`,
-`--last-tpo-color`, `none` for the theme's); `--transparency`,
-`--value-area-transparency`, `--outside-transparency`, `--poc-transparency`
-and `--last-only` work as on a volume profile. `chart values --json` reads each one's latest `poc`,
+`--last-tpo-color`, `none` for the theme's); `--outline on` draws the
+stepped edge round its TPOs. `--outline-color`, `--outline-width`,
+`--outline-style`, `--poc-width`, `--poc-style` (its point of control is a
+line across the profile, 2 px unless set), `--transparency`,
+`--value-area-transparency`, `--outside-transparency`,
+`--outline-transparency`, `--poc-transparency` and `--last-only` work as on
+a volume profile. `chart values --json` reads each one's latest `poc`,
 `vah` and `val`.
 
 ```

@@ -43,6 +43,28 @@ pub const MAX_ROW_TICKS: u32 = 10_000;
 pub const LETTER_ALPHAS: [f64; 3] = [0.55, 0.95, 1.0];
 pub const BLOCK_ALPHAS: [f64; 3] = [0.28, 0.55, 0.8];
 
+/// How thick a market profile's point of control is drawn until set:
+/// thicker than a volume profile's hairline, which through a row of
+/// letters reads as struck through rather than marked.
+pub const POC_WIDTH: f64 = 2.0;
+
+pub fn poc_width() -> f64 {
+    POC_WIDTH
+}
+
+pub fn is_poc_width(width: &f64) -> bool {
+    *width == POC_WIDTH
+}
+
+/// How solid a market profile's outline is drawn until set: solid, the
+/// profile's own colour, so it reads as the edge of the TPOs it holds.
+pub const OUTLINE_ALPHA: f64 = 1.0;
+
+/// The outline's strength: as set, or [`OUTLINE_ALPHA`].
+pub fn outline_strength(alpha: Option<f64>) -> f64 {
+    held(alpha, OUTLINE_ALPHA)
+}
+
 /// How solid each sort of row is drawn, as letters: every row while the
 /// value area is not highlighted, the value area's and the rest's while it
 /// is, and the point of control's. What a market profile was given of its
