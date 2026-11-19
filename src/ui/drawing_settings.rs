@@ -3359,7 +3359,7 @@ mod tests {
                         chart_settings::MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
                     ])),
                     (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::EXPAND_LAST, r::COLOUR, r::OUTLINE,
+                        r::DISPLAY_AS, r::ALIGNMENT, r::EXPAND_LAST, r::WIDTH, r::COLOUR, r::OUTLINE,
                         r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OPEN_CLOSE,
                         r::OPEN_COLOUR, r::CLOSE_COLOUR,
                     ])),

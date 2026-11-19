@@ -832,6 +832,119 @@ pub fn compute_with(
     out
 }
 
+/// What a volume profile's computation leaves for the next one on the same
+/// chart: the bars it was worked out over, their periods, the grid they
+/// were divided by, and the profiles. A chart computes its indicators again
+/// on every tick, and a tick moves the forming period alone: every period
+/// whose bars are as they were is kept while the grid stays the same.
+#[derive(Clone, Debug, Default)]
+pub struct Memo {
+    key: Option<Key>,
+    bars: Vec<Bar>,
+    periods: Vec<(usize, usize)>,
+    grid: Option<Grid>,
+    out: Vec<Profile>,
+    /// How many periods the last computation worked out rather than kept.
+    pub worked: usize,
+}
+
+/// Everything besides the bars that the profiles depend on.
+#[derive(Clone, PartialEq, Debug)]
+struct Key {
+    reset: Reset,
+    session_origin: i64,
+    rows: Option<usize>,
+    value_area: u64,
+    kind: Option<InstrumentKind>,
+    merged: Vec<i64>,
+    last_only: bool,
+}
+
+/// Each chart's volume profile memos, by the indicator's id.
+#[derive(Debug, Default)]
+pub struct Memos(std::cell::RefCell<std::collections::HashMap<u32, Memo>>);
+
+impl Memos {
+    /// Run `work` with the memo kept for indicator `id`.
+    pub fn with<T>(&self, id: u32, work: impl FnOnce(&mut Memo) -> T) -> T {
+        let mut memos = self.0.borrow_mut();
+        work(memos.entry(id).or_default())
+    }
+
+    /// Forget every memo but those of `ids`: an indicator taken off.
+    pub fn keep(&self, ids: &[u32]) {
+        self.0.borrow_mut().retain(|id, _| ids.contains(id));
+    }
+}
+
+/// [`compute`], keeping in `memo` what the next computation need not work
+/// out again: the profile of every period whose bars are all as they were,
+/// on the same grid. The periods and the grid are read from every bar each
+/// time, as [`compute`] reads them, so what comes out is the same to the
+/// bit; only the counting of the periods that did not move is skipped.
+///
+/// From the bars alone, as [`compute`] is: a profile from ladders depends on
+/// what the source has read since, and is worked out whole.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_kept(
+    bars: &[Bar],
+    reset: Reset,
+    session_origin: i64,
+    rows: Option<usize>,
+    value_area: f64,
+    kind: Option<InstrumentKind>,
+    merged: &[i64],
+    last_only: bool,
+    memo: &mut Memo,
+) -> Vec<Profile> {
+    memo.worked = 0;
+    if bars.is_empty() {
+        *memo = Memo::default();
+        return Vec::new();
+    }
+    let key = Key {
+        reset,
+        session_origin,
+        rows,
+        value_area: value_area.to_bits(),
+        kind,
+        merged: merged.to_vec(),
+        last_only,
+    };
+    if memo.key.as_ref() != Some(&key) {
+        *memo = Memo { key: Some(key), ..Memo::default() };
+    }
+    let periods = composites(bars, periods(bars, reset, session_origin), reset, session_origin, merged);
+    let grid = grid(bars, &periods, rows, kind, None);
+    // Bars as they were, from the first: a period ending by then is unmoved.
+    let same = memo.bars.iter().zip(bars).take_while(|(a, b)| a == b).count();
+    let reuse = if memo.grid == Some(grid) { std::mem::take(&mut memo.out) } else { Vec::new() };
+    let mut reuse = reuse.into_iter().peekable();
+    let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
+    let mut out = Vec::with_capacity(periods.len() - skipped);
+    for &(start, end) in &periods[skipped..] {
+        while reuse.next_if(|kept| kept.first_bar < start).is_some() {}
+        let unmoved = end <= same && memo.periods.contains(&(start, end));
+        if let Some(kept) = reuse.next_if(|kept| unmoved && kept.first_bar == start && kept.last_bar + 1 == end) {
+            out.push(kept);
+            continue;
+        }
+        let slice = &bars[start..end];
+        let bucket = reset.bucket(bars[start].ts, session_origin);
+        memo.worked += 1;
+        if let Some(mut profile) = one(slice, start, bucket, grid, value_area) {
+            profile.parts = parts(slice, reset, session_origin);
+            out.push(profile);
+        }
+    }
+    memo.periods = periods;
+    memo.grid = Some(grid);
+    memo.bars.truncate(same);
+    memo.bars.extend_from_slice(&bars[same..]);
+    memo.out = out.clone();
+    out
+}
+
 /// One period's profile, `bars` starting at `offset` on the chart: from what
 /// traded at each price when `at_price` knows it, estimated from the bars
 /// when it does not, and nothing while its ladder is on its way or, for a
@@ -967,7 +1080,7 @@ fn grid(
 /// read against each other. A fixed step does the opposite: every row on the
 /// chart is the same slice of price, and a session that moved half as far is
 /// drawn half as tall, which is the comparison the profile is read for.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Grid {
     Rows(usize),
     /// Rows `step` tall, which a quiet period may split down to `tick`.
@@ -1642,6 +1755,55 @@ mod tests {
             }
         }
         assert!(compute_with(&[], Reset::Session, 0, None, 0.7, None, &[], None, Method::Total, true).is_empty());
+    }
+
+    /// A tick works out the forming session's volume profile alone and
+    /// keeps every session before it, and what comes out is what a
+    /// computation from nothing gives, to the bit: on a tick inside the
+    /// range, a new bar, a tick that moves the grid, a merge, the oldest
+    /// bars trimmed, and the newest alone.
+    #[test]
+    fn a_tick_works_out_the_forming_volume_profile_alone() {
+        let mut bars: Vec<Bar> = (0..5).flat_map(|day| session(day, 100.0 + day as f64, 2.0)).collect();
+        let run = |bars: &[Bar], merged: &[i64], last_only: bool, memo: &mut Memo| {
+            compute_kept(bars, Reset::Session, 0, None, 0.7, None, merged, last_only, memo)
+        };
+        let fresh = |bars: &[Bar], merged: &[i64], last_only: bool| {
+            compute_with(bars, Reset::Session, 0, None, 0.7, None, merged, None, Method::Total, last_only)
+        };
+        let mut memo = Memo::default();
+        let same = |a: &[Profile], b: &[Profile]| fingerprint(a) == fingerprint(b) && a.len() == b.len();
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+        assert_eq!(memo.worked, 5);
+
+        // A tick into the forming bar, inside the range so far.
+        let last = bars.len() - 1;
+        bars[last].close = bars[last].low + 0.01;
+        bars[last].volume += 10.0;
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+        assert_eq!(memo.worked, 1, "the forming session alone");
+
+        // A new bar.
+        let mut next = bars[last];
+        next.ts += 60;
+        bars.push(next);
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+        assert_eq!(memo.worked, 1);
+
+        // A tick far outside every session's range, which may move the grid:
+        // whatever it moves, the output is the fresh one.
+        let last = bars.len() - 1;
+        bars[last].high = 400.0;
+        assert!(same(&run(&bars, &[], false, &mut memo), &fresh(&bars, &[], false)));
+
+        // A merge, the oldest bars trimmed, and the newest alone.
+        let second = DAY;
+        assert!(same(&run(&bars, &[second], false, &mut memo), &fresh(&bars, &[second], false)));
+        let trimmed = &bars[100..];
+        assert!(same(&run(trimmed, &[], false, &mut memo), &fresh(trimmed, &[], false)));
+        assert!(same(&run(trimmed, &[], true, &mut memo), &fresh(trimmed, &[], true)));
+        assert!(same(&run(trimmed, &[], true, &mut memo), &fresh(trimmed, &[], true)));
+        assert!(memo.worked <= 1);
     }
 
     /// A session of one-minute bars wandering over `span` around `price`.

@@ -476,9 +476,14 @@ fn a_market_profiles_structure_reads_from_the_command_line_as_it_is_drawn() {
                 assert_eq!(row[1], letters.len(), "its TPOs counted");
                 assert_eq!(row[2], letters, "its letters");
             }
-            assert!(near(&json["poc"], profile.poc_price()));
+            // On ticks, as the rows are named: the point of control by its
+            // row's lowest tick, the value area from its lowest row's lowest
+            // tick to its highest row's highest.
+            let half = market.tick_size / 2.0;
+            assert!(near(&json["poc"], profile.rows[profile.poc].low + half), "the point of control's row");
+            assert!(rows.iter().any(|row| row[0] == json["poc"]), "a row of its own");
             let (low, high) = profile.value_area_bounds();
-            assert!(near(&json["value_area_low"], low) && near(&json["value_area_high"], high));
+            assert!(near(&json["value_area_low"], low + half) && near(&json["value_area_high"], high - half));
             let centre = |row: usize| profile.rows[row].low + market.tick_size / 2.0;
             assert!(near(&json["open"]["row"], centre(market.open_row)), "the open's row");
             assert!(near(&json["close"]["row"], centre(market.close_row)), "the close's row");

@@ -80,14 +80,14 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 |---|---|---|
 | **Display** | Letters | Letters, or Blocks: a square for each letter. Letters too small to read are drawn as blocks |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). Beside a volume profile with the same period, each keeps its own ([Beside a volume profile](#beside-a-volume-profile)) |
+| **Expand last profile** | Off | On draws the newest profile, the one still forming, [expanded](#expanded-profiles): its TPOs laid out over its bars. Its earlier profiles stay as they are |
 | **Width %** | 40% | 10 to 100%: the furthest the row with the most letters may reach, of the period's width. Each letter or block is about as wide as its row is tall, so a profile with room to spare stays that compact |
-| **Expand the last profile** | Off | On draws the newest profile, the one still forming, [expanded](#expanded-profiles): its TPOs laid out over its bars. Its earlier profiles stay as they are |
 | **Colour** | The next free colour, at 95% opacity | A palette name, or a custom colour. Its **Opacity** is how solid the letters are drawn, 0 to 100%. Blocks are drawn fainter than letters at the same setting, so they do not cover the candles. The value area's two opacities follow it until they are set |
 | **Outline** | Off | On draws the stepped edge round the letters' cells, as a volume profile's round its rows: the same for letters and blocks, a gap in the profile left open |
 | **Outline colour** | The profile's **Colour**, solid | A palette name, or a custom colour. Its **Opacity** is how solid the outline is drawn, 0 to 100% |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Open and close** | Off | On marks where each profile starts and ends with a small arrow each (see below) |
+| **Open and close** | On | Marks where each profile starts and ends with a small arrow each (see below); off hides them |
 | **Open** | A muted, greyed relative of the theme's up colour, solid | A palette name, or a custom colour. Its **Opacity** is how solid the open's arrow is drawn, 0 to 100% |
 | **Close** | A muted, greyed relative of the theme's down colour, darker than the open's on a dark theme and lighter on a light one, so the two tell apart by lightness as well as hue; solid | A palette name, or a custom colour. Its **Opacity** is how solid the close's arrow is drawn, 0 to 100% |
 
@@ -159,8 +159,19 @@ Paired with a volume profile, merging or splitting either merges or splits both,
 
 A profile is drawn stacked: each row's letters packed side by side from the profile's edge, so the rows' lengths make its shape. Expanded, the same letters are laid out over time instead: each TPO period's letters stand in a column of their own, centred on that period's first bar, so A sits over the session's first bars, B over the next, and so on. The shape is gone, and what shows is when each price was traded.
 
-Right-click a profile and choose **Expand profile** to expand it, and **Collapse profile** to stack it again. It is one profile at a time, kept with the chart as a merge is, for the symbol and the period it was made under. **Expand the last profile**, in the Style settings, keeps the newest profile, the one still forming, expanded as it grows: each new TPO period's letters appear in a new column at its bars. The menu offers nothing on that one while the setting is on.
+Right-click a profile and choose **Expand profile** to expand it, and **Collapse profile** to stack it again. It is one profile at a time, kept with the chart as a merge is, for the symbol and the period it was made under. **Expand last profile**, in the Style settings, keeps the newest profile, the one still forming, expanded as it grows: each new TPO period's letters appear in a new column at its bars. The menu offers nothing on that one while the setting is on.
 
-Expanded, a profile keeps everything else: the value area's colours, the point of control across its whole width, the outline round its letters and **Display** as letters or blocks. The open's arrow stands beside the first TPO period's letter on the session's first bar, pointing at it, and the close's beside the last TPO period's letter, pointing back. A composite is spread over every bar of its periods.
+Expanded, a profile's TPOs are drawn lighter than stacked, so the bars they lie over read first. It keeps everything else: the value area's colours, the point of control across its whole width, the outline round its letters and **Display** as letters or blocks. The open's arrow stands beside the first TPO period's letter on the session's first bar, pointing at it, and the close's beside the last TPO period's letter, pointing back. A composite is spread over every bar of its periods.
 
 Beside a volume profile of the same period, the pair cannot share the session while the letters cover it. The session still forming keeps its volume profile, drawn past the last bar in the room the chart keeps there, as a volume profile [aligned right](/manual/indicators/volume/volume-profile/#aligned-right) is. An earlier session's volume profile is left out while its market profile is expanded, and comes back when it is collapsed.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window, scratchpad kit (seven invented SPY sessions)
+state: as for the figure beside a volume profile, then
+  omacharts chart profile expand --at <the second-last session's start + 60>
+  omacharts chart indicator set market_profile --expand-last on
+capture: bin/headless-window cli chart screenshot --output /tmp/expanded.png; magick /tmp/expanded.png -quality 88 site/assets/manual/indicators/market-profile-expanded.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/indicators/market-profile-expanded.jpg" alt="SPY 5m with an earlier session and the forming session expanded, their TPOs laid out over their bars, the forming session's volume profile past the last bar" caption="An earlier session expanded, and the forming one kept expanded with Expand last profile." %}

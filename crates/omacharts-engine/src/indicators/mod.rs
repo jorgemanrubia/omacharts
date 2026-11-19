@@ -425,7 +425,7 @@ impl Kind {
                 poc_width: market::POC_WIDTH,
                 poc_style: LineStyle::Solid,
                 value_area_color: None,
-                open_close: false,
+                open_close: true,
                 open_color: None,
                 close_color: None,
                 open_alpha: None,
@@ -684,7 +684,7 @@ pub enum Params {
         /// the TPO at its last bar's closing price (the latest, while it
         /// forms), each in a colour of its own. Missing, they are not. Read from `first_last` too,
         /// its name before it was released.
-        #[serde(default, alias = "first_last")]
+        #[serde(default = "profile::shown", alias = "first_last")]
         open_close: bool,
         /// The open's colour. Unset is the theme's, worked out from its up
         /// colour: see [`crate::theme::Theme::tpo_open`].
@@ -1588,6 +1588,7 @@ impl<'a> Context<'a> {
 pub struct Memos {
     pub cvd: cvd::Memos,
     pub market: market::Memos,
+    pub profile: profile::Memos,
 }
 
 impl Memos {
@@ -1599,6 +1600,7 @@ impl Memos {
     pub fn keep(&self, ids: &[u32]) {
         self.cvd.keep(ids);
         self.market.keep(ids);
+        self.profile.keep(ids);
     }
 }
 
@@ -1828,8 +1830,23 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 Some(Withheld::Awaiting) => return Output::Profiles(Vec::new()),
                 None => {}
             }
-            Output::Profiles(with_at_price(context, |at_price| {
-                profile::compute_with(
+            Output::Profiles(with_at_price(context, |at_price| match (at_price, context.memos, method) {
+                // From the bars alone: what the tick before worked out is
+                // kept for every period it did not move.
+                (None, Some(memos), profile::Method::Total) => memos.profile.with(indicator.id, |memo| {
+                    profile::compute_kept(
+                        bars,
+                        reset.effective_for(timeframe),
+                        session_origin,
+                        *rows,
+                        *value_area,
+                        kind,
+                        merged,
+                        *last_only,
+                        memo,
+                    )
+                }),
+                _ => profile::compute_with(
                     bars,
                     reset.effective_for(timeframe),
                     session_origin,

@@ -73,11 +73,43 @@ const SCREENFULS: [usize; 4] = [160, 500, 1500, 3000];
 const WARMUP: Duration = Duration::from_millis(80);
 const MEASURE: Duration = Duration::from_millis(400);
 
+/// Hold glibc's allocator to one policy for the whole run, so what a row
+/// costs does not depend on the rows before it.
+///
+/// Left alone, glibc decides afresh as the process goes whether a large
+/// block comes from the heap or from a mapping of its own, raising that line
+/// each time a mapped block is freed, and hands the top of the heap back to
+/// the system once enough of it is free. Both follow from everything freed
+/// before, on every thread. A row whose run allocates and frees big buffers
+/// is then either reusing warm memory or faulting every page in afresh each
+/// run, and which one varies from process to process. "Compute cvd over
+/// 100000 bars" (twenty buffers, 20 MB a run) took 1.3 ms in some runs on
+/// CI and 5 to 7 ms in others, on the merge base as on a branch, with the
+/// same code and the same allocations: it failed whichever side drew the
+/// slow process. Fixed lines, the largest glibc takes for the mapping one,
+/// make the choice the same on every run, on both sides of the comparison.
+fn steady_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn mallopt(param: i32, value: i32) -> i32;
+        }
+        const M_TRIM_THRESHOLD: i32 = -1;
+        const M_MMAP_THRESHOLD: i32 = -3;
+        // SAFETY: plain setters, before any other thread exists.
+        unsafe {
+            mallopt(M_MMAP_THRESHOLD, 32 << 20);
+            mallopt(M_TRIM_THRESHOLD, 256 << 20);
+        }
+    }
+}
+
 /// The series a chart opens from the cache, and the one the startup rows read.
 const CACHED: &str = "bench:SPY";
 
 fn main() {
     let tsv = std::env::args().any(|arg| arg == "--tsv");
+    steady_allocator();
 
     let home = scratch();
     // Both of them. The store reads `XDG_DATA_HOME` and the theme reads
@@ -391,15 +423,9 @@ fn tiles(charts: usize) -> Vec<(f64, f64, f64, f64)> {
         .collect()
 }
 
-/// The market profile's rows, run after every other row.
-///
-/// Each row runs where it is pushed, and the thousands of small allocations a
-/// market profile makes leave the heap in another state for whatever runs
-/// next: run among the others, they once made a row the merge base also has
-/// (computing CVD over 100,000 bars, one 20 MB buffer) four times slower on
-/// CI, with the same allocations and code. Last, they cannot move any row the
-/// comparison reads against the base, and the base, which has no market
-/// profile, simply skips them.
+/// The market profile's rows, and the profile ticks they are read against.
+/// Together, after the other rows: a revision that has no market profile
+/// skips them.
 fn market_profile(rows: &mut Vec<Row>) {
     // A market profile over the price, on its own and beside a volume
     // profile sharing its periods, at the width the volume profile rows
@@ -435,7 +461,10 @@ fn market_profile(rows: &mut Vec<Row>) {
     // A tick into a chart with a market profile, as the one into a chart
     // of the usual furniture: the profile of the forming period is what
     // moves, so its cost is what a tick pays, however long the series.
+    // And with a volume profile alone, the line the pair is read against: a
+    // tick with both should cost what each costs alone, no more.
     for (kinds, label) in [
+        (&["volume_profile"][..], "a volume profile"),
         (&["market_profile"][..], "a market profile"),
         (
             &["volume_profile", "market_profile"][..],

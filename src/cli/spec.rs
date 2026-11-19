@@ -589,7 +589,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("tpo-minutes", "N", "how long a market profile's TPO periods are, 1-1440 minutes (default 30)"),
     Flag::valued("row-ticks", "N", "how many ticks tall a market profile's rows are, or `auto` for the smallest round height that keeps a typical period within 60 rows"),
     Flag::valued("tpo-style", "HOW", "a market profile's TPOs drawn as their periods' letters, or as blocks").of(TPO_STYLES),
-    Flag::valued("open-close", "BOOL", "whether a market profile marks its open and its close: an arrow beside the TPO at its first bar's opening price and one beside the TPO at its last bar's closing price (off unless set)").of(SWITCHES),
+    Flag::valued("open-close", "BOOL", "whether a market profile marks its open and its close: an arrow beside the TPO at its first bar's opening price and one beside the TPO at its last bar's closing price (on unless set off)").of(SWITCHES),
     Flag::valued("expand-last", "BOOL", "whether a market profile always draws its newest profile, the one forming, expanded: its TPOs laid out over time, a column for each TPO period at its bars (off unless set); `chart profile expand` expands any one").of(SWITCHES),
     Flag::valued("open-color", "COLOUR", "a market profile's open arrow, while marked; none gives back the theme's, a muted up colour"),
     Flag::valued("close-color", "COLOUR", "a market profile's close arrow, while marked; none gives back the theme's, a muted down colour"),

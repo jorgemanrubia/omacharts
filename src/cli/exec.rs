@@ -1689,17 +1689,25 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail
     let mut out = format!("{} profiles on {chart}\n", shown.len());
     for listed in shown {
         let p = &listed.profile;
-        let (low, high) = p.value_area_bounds();
+        let (poc, low, high) = match &listed.tpo {
+            Some(tpo) => market_levels(p, tpo.market.tick_size),
+            None => {
+                let (low, high) = p.value_area_bounds();
+                (p.poc_price(), low, high)
+            }
+        };
         let places = listed.tpo.as_ref().map_or(profile_places(p), |tpo| {
             crate::trading::reading::places(Some(tpo.market.tick_size)).min(6).max(profile_places(p))
         });
-        let n = |price: f64| crate::trading::reading::num(price, places);
+        // To the tick and in full, as the point of control and value
+        // area beside them.
+        let n = |price: f64| format!("{price:.places$}");
         out.push_str(&format!(
             "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}{}\n",
             if listed.visible { "●" } else { "○" },
             day(p.start_ts),
             day(p.end_ts),
-            p.poc_price(),
+            poc,
             low,
             high,
             if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
@@ -1734,6 +1742,14 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, detail: Detail
     Ok(out)
 }
 
+/// A market profile's point of control and value area on ticks, as its
+/// rows are named: its rows' edges are half a tick off them.
+fn market_levels(p: &omacharts_engine::indicators::Profile, tick: f64) -> (f64, f64, f64) {
+    let half = tick / 2.0;
+    let (low, high) = p.value_area_bounds();
+    (p.rows[p.poc].low + half, low + half, high - half)
+}
+
 /// A market profile's TPO structure, as it is drawn: its row height in
 /// ticks and price, whether it is expanded, its open and close with the
 /// rows they are in (a row named by its lowest tick); and on
@@ -1751,6 +1767,13 @@ fn tpo_json(p: &omacharts_engine::indicators::Profile, tpo: &crate::cli::ListedT
     let half = tpo.market.tick_size / 2.0;
     let row_price = |row: usize| p.rows.get(row).map(|r| price(r.low + half)).unwrap_or(Value::Null);
     let mut fields = serde_json::Map::new();
+    // Its levels on ticks, as its rows are named: the point of control's
+    // row and the value area's lowest row by their lowest tick, the value
+    // area's highest row by its highest.
+    let (poc, low, high) = market_levels(p, m.tick_size);
+    fields.insert("poc".into(), price(poc));
+    fields.insert("value_area_low".into(), price(low));
+    fields.insert("value_area_high".into(), price(high));
     fields.insert("expanded".into(), json!(tpo.expanded));
     fields.insert("tick_size".into(), json!(m.tick_size));
     fields.insert("row_ticks".into(), json!(m.row_ticks));
@@ -9444,7 +9467,7 @@ mod tests {
         assert_ne!(out.code, 0, "a volume profile has no TPO period");
     }
 
-    /// The open and close marks are off until asked for, their colours the
+    /// The open and close marks are on until turned off, their colours the
     /// theme's until chosen, and `none` hands a colour back to it; their
     /// transparency is solid until set, and `default` hands it back.
     #[test]
@@ -9458,7 +9481,7 @@ mod tests {
             parsed["indicators"][0]["params"].clone()
         };
         let stored = params(&store);
-        assert_eq!(stored["open_close"], false);
+        assert_eq!(stored["open_close"], true, "on for a new market profile");
         assert!(stored["open_color"].is_null() && stored["close_color"].is_null(), "{stored}");
 
         let out = run(

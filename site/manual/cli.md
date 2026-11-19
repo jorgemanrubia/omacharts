@@ -568,7 +568,7 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 | `--tpo-minutes N` | 1 to 1440; 30 when not given | Market profile: how long each TPO period is |
 | `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | Market profile |
 | `--tpo-style S` | `letters`, `blocks` | Market profile |
-| `--open-close B` | `on`, `off`; off when not given | Market profile: whether it marks its open and its close with an arrow each, beside the TPO at its opening price and the one at its closing price |
+| `--open-close B` | `on`, `off`; on when not given | Market profile: whether it marks its open and its close with an arrow each, beside the TPO at its opening price and the one at its closing price |
 | `--open-color C`, `--close-color C` | A colour, or `none` for the theme's | Market profile |
 | `--expand-last B` | `on`, `off`; off when not given | Market profile: whether its newest profile, the one still forming, is drawn expanded, its TPOs laid out over its bars |
 | `--open-transparency F`, `--close-transparency F` | 0 to 1, or `default` for solid | Market profile: how much of the chart shows through its open or close arrow |
@@ -978,7 +978,9 @@ price (the latest one while the session forms), and whether it is drawn
 expanded. With `--json` it has `open` and `close`, each a `price` and the
 `row` it is in; `expanded`; `tick_size`, `row_ticks` and `row_height`, how
 tall a row is; and `tpo_count`, every TPO in it. A row is named by its lowest
-tick. `--tpos` adds each TPO period, its letter, the times of its first and
+tick, and so are its levels: `poc` is the point of control's row,
+`value_area_low` the lowest tick of the value area and `value_area_high` its
+highest. `--tpos` adds each TPO period, its letter, the times of its first and
 last bars, and its high and low, and each row's letters from its lowest
 price. With `--json` the periods are `tpo_periods`, each with `letter`,
 `start`, `end`, `high` and `low`, and the rows are `rows`, a list of

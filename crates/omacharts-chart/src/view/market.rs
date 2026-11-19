@@ -126,9 +126,28 @@ pub(super) fn draw_market_profiles(
             bottom,
             spread,
         };
+        // Expanded, its TPOs lie over the bars: drawn lighter, so the bars
+        // read first and the TPOs as the ground under them.
+        let dimmed;
+        let inks = match spread {
+            Some(_) => {
+                let set = inks.strengths;
+                dimmed = Inks {
+                    strengths: Strengths {
+                        rows: set.rows * EXPANDED_STRENGTH,
+                        value_area: set.value_area * EXPANDED_STRENGTH,
+                        outside: set.outside * EXPANDED_STRENGTH,
+                        poc: set.poc,
+                    },
+                    ..inks
+                };
+                &dimmed
+            }
+            None => &inks,
+        };
         match *style == Style::Letters && cell >= LETTER_MIN_W && row_h >= LETTER_MIN_H {
-            true => letters(cr, market, &place, &inks, row_h, to_y),
-            false => blocks(cr, market, &place, &inks, row_h, to_y),
+            true => letters(cr, market, &place, inks, row_h, to_y),
+            false => blocks(cr, market, &place, inks, row_h, to_y),
         }
         // The edge round the cells, whichever they are drawn as, so turning
         // letters to blocks never moves it; a run of rows each, a gap in the
@@ -500,7 +519,12 @@ pub(super) fn cell(profile: &Profile, area: &selection::ProfileBox, to_y: &impl 
 const CELL_PER_ROW: f64 = 1.1;
 const CELL_MIN: f64 = 6.0;
 
+/// How much of its set strength an expanded profile's TPOs are drawn at,
+/// over the bars they were traded in.
+const EXPANDED_STRENGTH: f64 = 0.45;
+
 /// The colours a profile's rows are drawn in.
+#[derive(Clone, Copy)]
 struct Inks<'a> {
     outside: &'a str,
     inside: &'a str,

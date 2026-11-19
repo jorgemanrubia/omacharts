@@ -478,29 +478,27 @@ pub(super) fn margin_share(state: &State) -> f64 {
     let len = state.bars.len();
     let (mut total, mut count) = (0.0, 0usize);
     for drawn in state.shown_indicators() {
-        // A volume profile beside its market profile's expanded forming
-        // session is in that space whichever edge it is set to; the
-        // market profile is on its bars.
-        let beside = expanding_partner(state, drawn).filter(|partner| match &drawn.output {
-            Output::Profiles(profiles) => profiles
-                .last()
-                .is_some_and(|last| expands_session(partner, last)),
-            _ => false,
-        });
-        let width = match (beside, stacks(state, drawn, Align::Right)) {
-            (Some(_), _) => profile_look(drawn).width,
-            (None, Some(width)) if !live_expanded(drawn) => width,
-            _ => continue,
-        };
+        // Read on every anchor a pointer motion projects, so whatever is not
+        // a profile, or whose newest one ended before the last bar, is
+        // passed over before anything is asked of the pairing.
         let last = match &drawn.output {
             Output::Profiles(profiles) => profiles.last(),
             Output::MarketProfiles(profiles) => profiles.last().map(|p| &p.profile),
             _ => continue,
         };
-        if last.is_some_and(|p| p.last_bar + 1 == len) {
-            total += width;
-            count += 1;
-        }
+        let Some(last) = last.filter(|p| p.last_bar + 1 == len) else { continue };
+        // A volume profile beside its market profile's expanded forming
+        // session is in that space whichever edge it is set to; the
+        // market profile is on its bars.
+        let beside = matches!(drawn.output, Output::Profiles(_))
+            && expanding_partner(state, drawn).is_some_and(|partner| expands_session(partner, last));
+        let width = match (beside, stacks(state, drawn, Align::Right)) {
+            (true, _) => profile_look(drawn).width,
+            (false, Some(width)) if !live_expanded(drawn) => width,
+            _ => continue,
+        };
+        total += width;
+        count += 1;
     }
     block_share(total, count)
 }
