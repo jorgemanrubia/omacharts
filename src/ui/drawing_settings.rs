@@ -3359,13 +3359,13 @@ mod tests {
                     ])),
                     (r::STYLE_GROUP.to_string(), names(&[
                         r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::OUTLINE,
-                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::FIRST_LAST,
-                        r::FIRST_COLOUR, r::LAST_COLOUR,
+                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OPEN_CLOSE,
+                        r::OPEN_COLOUR, r::CLOSE_COLOUR,
                     ])),
                     (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
                     (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
                 ],
-                "the volume profile's, less its method, with its first and last TPO after the outline"
+                "the volume profile's, less its method, with its open and close after the outline"
             );
             assert!(
                 drawing

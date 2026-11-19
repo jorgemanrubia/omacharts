@@ -79,9 +79,11 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 | **Outline colour** | The profile's **Colour**, solid | A palette name, or a custom colour. Its **Opacity** is how solid the outline is drawn, 0 to 100% |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **First and last TPO** | Off | On draws each profile's first TPO period's letters, and its last's, in colours of their own. In a composite profile, the first part's first and the last part's last |
-| **First TPO colour** | The theme's up colour, greyed | A palette name, or a custom colour |
-| **Last TPO colour** | The theme's down colour, greyed, and quieter than the first, so the two tell apart by lightness as well as hue | A palette name, or a custom colour |
+| **Open and close** | Off | On marks where each profile starts and ends, one TPO each in a colour of its own (see below) |
+| **Open** | The theme's up colour, greyed, solid | A palette name, or a custom colour. Its **Opacity** is how solid the open's TPO is drawn, 0 to 100% |
+| **Close** | The theme's down colour, greyed and quieter than the open's, so the two tell apart by lightness as well as hue; solid | A palette name, or a custom colour. Its **Opacity** is how solid the close's TPO is drawn, 0 to 100% |
+
+The **open** is the period's opening price, its first bar's open, and the **close** its closing price, its last bar's close; while a session is still forming, the close is its latest price. Each is marked on a single TPO: the open on the first TPO period's letter or block in the row of the opening price, which is the first in that row, and the close on the last TPO period's in the row of the closing price, the last in that row. The open need not be on the first letter's lowest or highest row: it is wherever the session opened in that first half hour. A composite profile marks the first part's open and the last part's close.
 
 ### Value area
 

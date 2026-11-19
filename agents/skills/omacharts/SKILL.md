@@ -325,9 +325,10 @@ its own `--align`: set alike, side by side from that edge, the volume
 profile against it; one `left` and one `right`, back to back on a spine
 centred in the session. With different anchors each keeps to itself, with
 its own merges. `--align right` mirrors a profile; `--tpo-style blocks` swaps
-letters for squares; `--first-last-tpo on` draws each profile's opening and
-closing TPO periods in colours of their own (`--first-tpo-color`,
-`--last-tpo-color`, `none` for the theme's); `--outline on` draws the
+letters for squares; `--open-close on` marks each profile's open and close, the
+one TPO at its opening price and the one at its closing price, in colours of
+their own (`--open-color`, `--close-color`, `none` for the theme's;
+`--open-transparency`, `--close-transparency`); `--outline on` draws the
 stepped edge round its TPOs. `--outline-color`, `--outline-width`,
 `--outline-style`, `--poc-width`, `--poc-style` (its point of control is a
 line across the profile, 2 px unless set), `--transparency`,

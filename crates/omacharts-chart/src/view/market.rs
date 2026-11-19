@@ -16,10 +16,10 @@ use std::cell::Cell;
 use std::ffi::c_ulong;
 
 use gtk::cairo;
-use omacharts_engine::indicators::market::{self, MarketProfile, Strengths, Style, BLOCK_ALPHAS, LETTER_ALPHAS};
+use omacharts_engine::indicators::market::{self, MarketProfile, Strengths, Style};
 use omacharts_engine::indicators::Profile;
 
-use super::{selection, Columns, Drawn, State};
+use super::{executions, selection, Columns, Drawn, State};
 use crate::colors;
 
 /// The least a cell must be, across and down, for its letter to be read:
@@ -67,9 +67,11 @@ pub(super) fn draw_market_profiles(
         highlight,
         poc_color,
         value_area_color,
-        first_last,
-        first_color,
-        last_color,
+        open_close,
+        open_color,
+        close_color,
+        open_alpha,
+        close_alpha,
         alpha,
         value_area_alpha,
         outside_alpha,
@@ -86,10 +88,10 @@ pub(super) fn draw_market_profiles(
     else {
         return;
     };
-    let ends = first_last.then(|| {
+    let ends = open_close.then(|| {
         (
-            first_color.as_ref().map_or_else(|| state.theme.first_tpo(), |c| c.resolve(&state.theme)),
-            last_color.as_ref().map_or_else(|| state.theme.last_tpo(), |c| c.resolve(&state.theme)),
+            open_color.as_ref().map_or_else(|| state.theme.tpo_open(), |c| c.resolve(&state.theme)),
+            close_color.as_ref().map_or_else(|| state.theme.tpo_close(), |c| c.resolve(&state.theme)),
         )
     });
     let poc_ink = poc.then(|| state.theme.companion_or(poc_color.as_ref(), &drawn.color));
@@ -102,7 +104,6 @@ pub(super) fn draw_market_profiles(
         outside: &drawn.color,
         inside: area_ink.as_deref().unwrap_or(&drawn.color),
         highlight: *highlight,
-        ends: ends.as_ref().map(|(first, last)| [first.as_str(), last.as_str()]),
         strengths: Strengths::of(*alpha, *value_area_alpha, *outside_alpha, *poc_alpha),
     };
     let look = selection::placed_look(state, drawn);
@@ -113,12 +114,11 @@ pub(super) fn draw_market_profiles(
     for market in profiles {
         let profile = &market.profile;
         // Where a click finds it, too, so the two cannot drift apart.
-        let mut area = selection::profile_box(profile, columns, &look);
+        let area = selection::profile_box(profile, columns, &look);
         if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
-        let (cell, row_h) = cell(profile, &area, to_y);
-        area.span = cell * profile.max_volume;
+        let (area, cell, row_h) = cells(state, &drawn.indicator.params, profile, area, to_y);
         let place = Place { area: &area, cell, top, bottom };
         match *style == Style::Letters && cell >= LETTER_MIN_W && row_h >= LETTER_MIN_H {
             true => letters(cr, market, &place, &inks, row_h, to_y),
@@ -154,10 +154,78 @@ pub(super) fn draw_market_profiles(
             let _ = cr.stroke();
             cr.set_dash(&[], 0.0);
         }
+        // The open and the close, an arrow each beside its TPO.
+        if let Some((open, close)) = &ends {
+            let size = arrow_size(state);
+            let marks = arrows(market, &area, cell, to_y);
+            for ((tip, y, points), (ink, alpha)) in marks.into_iter().zip([(open, *open_alpha), (close, *close_alpha)]) {
+                let Some(tip) = tip else { continue };
+                if y < top - size.1 || y > bottom + size.1 {
+                    continue;
+                }
+                executions::arrow(cr, state, tip, y, points, size, ink, market::end_strength(alpha));
+            }
+        }
         if state.picked == Some(drawn.indicator.id) {
             selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y, selection::Side::All);
         }
     }
+}
+
+/// Where a profile's open and close arrows go: each tip, the middle of its
+/// row, and which way it points, one rightward and minus one leftward. The
+/// open's stands outside the profile's own edge pointing in at its TPO,
+/// the close's past its row's last TPO pointing back. Outside the cells, so
+/// neither covers a TPO, the outline or the point of control's line; inside
+/// the room [`cells`] keeps for them, so neither reaches a profile beside
+/// it. `None` for a row the profile does not have.
+pub(super) fn arrows(
+    market: &MarketProfile,
+    area: &selection::ProfileBox,
+    cell: f64,
+    to_y: &impl Fn(f64) -> f64,
+) -> [(Option<f64>, f64, f64); 2] {
+    let place = Place { area, cell, top: f64::NEG_INFINITY, bottom: f64::INFINITY };
+    let profile = &market.profile;
+    let mark = |row: usize, last: bool, points: f64| {
+        let Some(r) = profile.rows.get(row) else { return (None, 0.0, points) };
+        let k = if last { (r.volume as usize).saturating_sub(1) } else { 0 };
+        let (left, right) = place.cell(k);
+        let tip = match points > 0.0 {
+            true => left - executions::STAND_OFF,
+            false => right + executions::STAND_OFF,
+        };
+        (Some(tip), (to_y(r.high) + to_y(r.low)) / 2.0, points)
+    };
+    [mark(market.open_row, false, area.towards), mark(market.close_row, true, -area.towards)]
+}
+
+/// A fill's arrow size, as the chart is drawing fills.
+pub(super) fn arrow_size(state: &State) -> (f64, f64) {
+    (executions::LENGTH * state.execution_scale, executions::HALF * state.execution_scale)
+}
+
+/// Where a profile's TPOs are drawn in `area`, its room, and how wide and
+/// tall each is: while it marks its open and close, the room an arrow
+/// needs is kept at each end, so the arrows stay in the profile's room.
+/// What a click is measured against too, so the two cannot drift apart.
+pub(super) fn cells(
+    state: &State,
+    params: &omacharts_engine::Params,
+    profile: &Profile,
+    mut area: selection::ProfileBox,
+    to_y: &impl Fn(f64) -> f64,
+) -> (selection::ProfileBox, f64, f64) {
+    if let omacharts_engine::Params::MarketProfile { open_close: true, .. } = params {
+        let gutter = arrow_size(state).0 + 2.0 * executions::STAND_OFF;
+        if area.span > 4.0 * gutter {
+            area.edge += area.towards * gutter;
+            area.span -= 2.0 * gutter;
+        }
+    }
+    let (cell, row_h) = cell(profile, &area, to_y);
+    area.span = cell * profile.max_volume;
+    (area, cell, row_h)
 }
 
 /// How wide a TPO is drawn, and how tall a row: about square, a letter's
@@ -180,16 +248,9 @@ struct Inks<'a> {
     outside: &'a str,
     inside: &'a str,
     highlight: bool,
-    /// The first TPO period's colour and the last's, while they are set
-    /// apart.
-    ends: Option<[&'a str; 2]>,
     /// How solid each sort of row is drawn, as letters.
     strengths: Strengths,
 }
-
-/// How strongly the first and last TPO periods are drawn, as letters and as
-/// blocks: as the point of control is, wherever their rows are.
-const END_ALPHAS: [f64; 2] = [LETTER_ALPHAS[2], BLOCK_ALPHAS[2]];
 
 impl Inks<'_> {
     /// What a row of `sort` is drawn in, and how solid, as letters or as
@@ -203,18 +264,6 @@ impl Inks<'_> {
             (_, false) => (self.outside, strengths.rows),
             (Sort::Inside, true) => (self.inside, strengths.value_area),
             (Sort::Outside, true) => (self.outside, strengths.outside),
-        }
-    }
-
-    /// Which of the first and last TPO periods the `k`th TPO of row `at` is
-    /// drawn as, while they are set apart: 0 the first, 1 the last. A
-    /// period of one TPO is drawn as its first.
-    fn end(&self, market: &MarketProfile, at: usize, k: usize) -> Option<usize> {
-        self.ends?;
-        match market.end_of(at, k) {
-            (true, _) => Some(0),
-            (false, true) => Some(1),
-            (false, false) => None,
         }
     }
 
@@ -278,7 +327,7 @@ fn blocks(
             let count = row.volume as usize;
             match apart {
                 true => {
-                    for k in (0..count).filter(|&k| inks.end(market, at, k).is_none()) {
+                    for k in 0..count {
                         let (left, right) = place.cell(k);
                         cr.rectangle(left, y + gap * 0.5, (right - left - gap).max(0.5), (h - gap).max(0.5));
                     }
@@ -295,29 +344,6 @@ fn blocks(
         if any {
             let (ink, alpha) = inks.of(sort, false);
             colors::set_source_alpha(cr, ink, alpha);
-            let _ = cr.fill();
-        }
-    }
-    // The first and last TPO periods over the rest, a cell each.
-    let Some(ends) = inks.ends else { return };
-    for (end, ink) in ends.iter().enumerate() {
-        let mut any = false;
-        for (at, row) in profile.rows.iter().enumerate() {
-            let y = to_y(row.high);
-            let h = (to_y(row.low) - y).max(1.0);
-            if !place.shows(y, y + h) {
-                continue;
-            }
-            for k in 0..row.volume as usize {
-                if inks.end(market, at, k) == Some(end) {
-                    let (left, right) = place.cell(k);
-                    cr.rectangle(left, y + gap * 0.5, (right - left - gap).max(0.5), (h - gap).max(0.5));
-                    any = true;
-                }
-            }
-        }
-        if any {
-            colors::set_source_alpha(cr, ink, END_ALPHAS[1]);
             let _ = cr.fill();
         }
     }
@@ -364,9 +390,6 @@ fn letters(
             }
             let baseline = (y_top + y_bottom) / 2.0 + rise;
             for (k, letter) in market.letters_of(at).iter().enumerate() {
-                if inks.end(market, at, k).is_some() {
-                    continue;
-                }
                 let (left, right) = place.cell(k);
                 let x = (left + right - advance) / 2.0;
                 batch[n] = cairo::Glyph::new(glyphs[*letter as usize % glyphs.len()], x, baseline);
@@ -379,36 +402,6 @@ fn letters(
         }
         if n > 0 {
             let _ = cr.show_glyphs(&batch[..n]);
-        }
-    }
-    // The first and last TPO periods, in colours of their own.
-    if let Some(ends) = inks.ends {
-        for (end, ink) in ends.iter().enumerate() {
-            colors::set_source_alpha(cr, ink, END_ALPHAS[0]);
-            let mut n = 0;
-            for (at, row) in profile.rows.iter().enumerate() {
-                let (y_top, y_bottom) = (to_y(row.high), to_y(row.low));
-                if !place.shows(y_top, y_bottom) {
-                    continue;
-                }
-                let baseline = (y_top + y_bottom) / 2.0 + rise;
-                for (k, letter) in market.letters_of(at).iter().enumerate() {
-                    if inks.end(market, at, k) != Some(end) {
-                        continue;
-                    }
-                    let (left, right) = place.cell(k);
-                    let x = (left + right - advance) / 2.0;
-                    batch[n] = cairo::Glyph::new(glyphs[*letter as usize % glyphs.len()], x, baseline);
-                    n += 1;
-                    if n == BATCH {
-                        let _ = cr.show_glyphs(&batch);
-                        n = 0;
-                    }
-                }
-            }
-            if n > 0 {
-                let _ = cr.show_glyphs(&batch[..n]);
-            }
         }
     }
     cr.restore().ok();

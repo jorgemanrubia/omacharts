@@ -425,9 +425,11 @@ impl Kind {
                 poc_width: market::POC_WIDTH,
                 poc_style: LineStyle::Solid,
                 value_area_color: None,
-                first_last: false,
-                first_color: None,
-                last_color: None,
+                open_close: false,
+                open_color: None,
+                close_color: None,
+                open_alpha: None,
+                close_alpha: None,
                 outline: false,
                 outline_color: None,
                 outline_style: LineStyle::Solid,
@@ -675,18 +677,28 @@ pub enum Params {
         /// profile's own, the rest drawn fainter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_area_color: Option<ColorChoice>,
-        /// Whether each profile's first and last TPO periods are set apart
-        /// in colours of their own. Missing, they are not.
-        #[serde(default)]
-        first_last: bool,
-        /// The first TPO period's colour. Unset is the theme's, worked out
-        /// from its up colour: see [`crate::theme::Theme::first_tpo`].
+        /// Whether each profile marks its open and its close: the TPO at
+        /// its first bar's opening price, and the one at its last bar's
+        /// closing price (the latest, while it forms), a TPO each in colours
+        /// of their own. Missing, they are not. Read from `first_last` too,
+        /// its name before it was released.
+        #[serde(default, alias = "first_last")]
+        open_close: bool,
+        /// The open's colour. Unset is the theme's, worked out from its up
+        /// colour: see [`crate::theme::Theme::tpo_open`].
+        #[serde(default, alias = "first_color", skip_serializing_if = "Option::is_none")]
+        open_color: Option<ColorChoice>,
+        /// The close's colour. Unset is the theme's, worked out from its
+        /// down colour: see [`crate::theme::Theme::tpo_close`].
+        #[serde(default, alias = "last_color", skip_serializing_if = "Option::is_none")]
+        close_color: Option<ColorChoice>,
+        /// How solid the open and the close are drawn as letters, nought to
+        /// one. Unset, solid, blocks a little fainter: see
+        /// [`market::end_strength`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        first_color: Option<ColorChoice>,
-        /// The last TPO period's colour. Unset is the theme's, worked out
-        /// from its down colour: see [`crate::theme::Theme::last_tpo`].
+        open_alpha: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        last_color: Option<ColorChoice>,
+        close_alpha: Option<f64>,
         /// Whether the TPOs wear an outline: the stepped edge round their
         /// cells, as a volume profile's round its rows. Missing, they do
         /// not.

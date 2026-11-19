@@ -231,31 +231,37 @@ fn a_market_profile_stored_before_merging_reads_with_no_merge() {
     assert!(!json.contains("merged"), "merges are the chart's, never the indicator's: {json}");
 }
 
-/// The first and last TPO highlight is off in a chart saved before it, and
+/// The open and close marks are off in a chart saved before them, and
 /// what was chosen for it is kept: the switch, and each colour, a swatch
 /// following the theme or a colour of somebody's own. Unchosen, a colour
 /// is not written, so it keeps following the theme.
 #[test]
-fn a_market_profiles_first_and_last_tpo_are_kept_with_it() {
+fn a_market_profiles_open_and_close_are_kept_with_it() {
     use omacharts_engine::theme::ColorChoice;
     let stored = r#"{"id": 2, "kind": "market_profile", "color": null, "visible": true,
         "params": {"kind": "market_profile", "reset": "session"}}"#;
     let mut indicator: Indicator = serde_json::from_str(stored).expect("reads");
     match &indicator.params {
-        Params::MarketProfile { first_last, first_color, last_color, .. } => {
-            assert!(!first_last && first_color.is_none() && last_color.is_none());
+        Params::MarketProfile { open_close, open_color, close_color, .. } => {
+            assert!(!open_close && open_color.is_none() && close_color.is_none());
         }
         _ => panic!("a market profile"),
     }
     let json = serde_json::to_string(&indicator).expect("writes");
-    assert!(!json.contains("first_color") && !json.contains("last_color"), "{json}");
+    assert!(!json.contains("open_color") && !json.contains("close_color"), "{json}");
 
-    if let Params::MarketProfile { first_last, first_color, last_color, .. } = &mut indicator.params {
-        *first_last = true;
-        *first_color = Some(ColorChoice::swatch("Teal"));
-        *last_color = Some(ColorChoice::Fixed { hex: "#aa5e57".into() });
+    if let Params::MarketProfile { open_close, open_color, close_color, .. } = &mut indicator.params {
+        *open_close = true;
+        *open_color = Some(ColorChoice::swatch("Teal"));
+        *close_color = Some(ColorChoice::Fixed { hex: "#aa5e57".into() });
     }
     let json = serde_json::to_string(&indicator).expect("writes");
     let read: Indicator = serde_json::from_str(&json).expect("reads back");
+    assert_eq!(read, indicator);
+
+    // Saved under the names they had before release, they read the same.
+    let renamed = json.replace("open_close", "first_last").replace("open_color", "first_color").replace("close_color", "last_color");
+    assert!(renamed.contains("first_last"), "{renamed}");
+    let read: Indicator = serde_json::from_str(&renamed).expect("reads the old names");
     assert_eq!(read, indicator);
 }

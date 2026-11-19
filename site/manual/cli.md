@@ -568,8 +568,9 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 | `--tpo-minutes N` | 1 to 1440; 30 when not given | Market profile: how long each TPO period is |
 | `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | Market profile |
 | `--tpo-style S` | `letters`, `blocks` | Market profile |
-| `--first-last-tpo B` | `on`, `off`; off when not given | Market profile: whether its first and last TPO periods are drawn in colours of their own |
-| `--first-tpo-color C`, `--last-tpo-color C` | A colour, or `none` for the theme's | Market profile |
+| `--open-close B` | `on`, `off`; off when not given | Market profile: whether it marks its open and its close, the TPO at its opening price and the one at its closing price, in colours of their own |
+| `--open-color C`, `--close-color C` | A colour, or `none` for the theme's | Market profile |
+| `--open-transparency F`, `--close-transparency F` | 0 to 1, or `default` for solid | Market profile: how much of the chart shows through its open or close TPO |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile, market profile |
 | `--poc B` | `on`, `off` | Volume profile, market profile: whether it draws its point of control |
 | `--last-only B` | `on`, `off` | Volume profile, market profile: whether it draws only its newest period |

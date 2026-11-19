@@ -9,7 +9,7 @@
 //! and what only one of them has: a study's period, and whether only the
 //! newest is drawn, which a span between two anchors has not; a volume
 //! profile's method and outline; a market profile's TPO period and its
-//! first and last TPO. Those sit where the others' would.
+//! open and close marks. Those sit where the others' would.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -38,9 +38,9 @@ pub const OUTLINE: &str = "Outline";
 pub const OUTLINE_COLOUR: &str = "Outline colour";
 pub const OUTLINE_STYLE: &str = "Outline style";
 pub const OUTLINE_THICKNESS: &str = "Outline thickness";
-pub const FIRST_LAST: &str = "First and last TPO";
-pub const FIRST_COLOUR: &str = "First TPO colour";
-pub const LAST_COLOUR: &str = "Last TPO colour";
+pub const OPEN_CLOSE: &str = "Open and close";
+pub const OPEN_COLOUR: &str = "Open";
+pub const CLOSE_COLOUR: &str = "Close";
 pub const ALIGNMENT: &str = "Alignment";
 /// The Value area group's switch; its Colour and Transparency are the
 /// shared ones.
@@ -81,11 +81,11 @@ pub struct OutlineRows {
     pub style: gtk::Widget,
 }
 
-/// The first and last TPO's switch and their colours: a market profile's.
+/// The open and close marks' switch and their colours: a market profile's.
 pub struct EndRows {
     pub switch: adw::SwitchRow,
-    pub first: gtk::Widget,
-    pub last: gtk::Widget,
+    pub open: gtk::Widget,
+    pub close: gtk::Widget,
 }
 
 /// The rows of the Style group, built by each side, laid out here.
@@ -157,7 +157,7 @@ pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
     }
     if let Some(ends) = style.ends {
         styled.add(&ends.switch);
-        let rows = vec![ends.first, ends.last];
+        let rows = vec![ends.open, ends.close];
         for row in &rows {
             styled.add(row);
         }

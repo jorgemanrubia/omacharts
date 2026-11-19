@@ -4446,11 +4446,14 @@ struct Edits {
     /// A market profile's row height in ticks; `Some(None)` is `auto`.
     row_ticks: Option<Option<u32>>,
     tpo_style: Option<omacharts_engine::indicators::market::Style>,
-    /// Whether a market profile sets its first and last TPO periods apart.
-    first_last_tpo: Option<bool>,
+    /// Whether a market profile marks its open and its close.
+    open_close: Option<bool>,
     /// Their colours; `Some(None)` is `none`, the theme's.
-    first_tpo_color: Option<Option<ColorChoice>>,
-    last_tpo_color: Option<Option<ColorChoice>>,
+    open_color: Option<Option<ColorChoice>>,
+    close_color: Option<Option<ColorChoice>>,
+    /// How solid they are drawn, as `Parts` are; `Some(None)` is `default`.
+    open_alpha: Option<Option<f64>>,
+    close_alpha: Option<Option<f64>>,
     value_area: Option<f64>,
     /// Whether a volume profile sets its value area apart.
     highlight: Option<bool>,
@@ -4606,20 +4609,22 @@ impl Edits {
                     Fault::usage(format!("{text:?} is not a market profile style; use letters or blocks"))
                 })?),
             },
-            first_last_tpo: match arg(m, "first-last-tpo").map(String::as_str) {
+            open_close: match arg(m, "open-close").map(String::as_str) {
                 None => None,
                 Some("on") => Some(true),
                 Some("off") => Some(false),
-                Some(other) => return Err(Fault::usage(format!("--first-last-tpo is on or off, not {other:?}"))),
+                Some(other) => return Err(Fault::usage(format!("--open-close is on or off, not {other:?}"))),
             },
-            first_tpo_color: match arg(m, "first-tpo-color").map(String::as_str) {
+            open_color: match arg(m, "open-color").map(String::as_str) {
                 Some("none") => Some(None),
-                _ => colour(m, "first-tpo-color")?.map(Some),
+                _ => colour(m, "open-color")?.map(Some),
             },
-            last_tpo_color: match arg(m, "last-tpo-color").map(String::as_str) {
+            close_color: match arg(m, "close-color").map(String::as_str) {
                 Some("none") => Some(None),
-                _ => colour(m, "last-tpo-color")?.map(Some),
+                _ => colour(m, "close-color")?.map(Some),
             },
+            open_alpha: Parts::part(m, "open-transparency")?,
+            close_alpha: Parts::part(m, "close-transparency")?,
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             highlight: match arg(m, "highlight-value-area").map(String::as_str) {
                 None => None,
@@ -4779,9 +4784,11 @@ impl Edits {
             && self.tpo_minutes.is_none()
             && self.row_ticks.is_none()
             && self.tpo_style.is_none()
-            && self.first_last_tpo.is_none()
-            && self.first_tpo_color.is_none()
-            && self.last_tpo_color.is_none()
+            && self.open_close.is_none()
+            && self.open_color.is_none()
+            && self.close_color.is_none()
+            && self.open_alpha.is_none()
+            && self.close_alpha.is_none()
             && self.value_area.is_none()
             && self.highlight.is_none()
             && self.value_area_color.is_none()
@@ -4950,15 +4957,26 @@ impl Edits {
                 false => return Err(refuse("market profile style")),
             }
         }
-        if let Some(on) = self.first_last_tpo {
+        if let Some(on) = self.open_close {
             match kind == IndicatorKind::MarketProfile {
-                true => params["first_last"] = json!(on),
-                false => return Err(refuse("first and last TPO highlight")),
+                true => params["open_close"] = json!(on),
+                false => return Err(refuse("open and close marks")),
+            }
+        }
+        for (alpha, key, what) in [
+            (self.open_alpha, "open_alpha", "open transparency"),
+            (self.close_alpha, "close_alpha", "close transparency"),
+        ] {
+            if let Some(alpha) = alpha {
+                match kind == IndicatorKind::MarketProfile {
+                    true => params[key] = json!(alpha),
+                    false => return Err(refuse(what)),
+                }
             }
         }
         for (choice, key, what) in [
-            (&self.first_tpo_color, "first_color", "first TPO colour"),
-            (&self.last_tpo_color, "last_color", "last TPO colour"),
+            (&self.open_color, "open_color", "open colour"),
+            (&self.close_color, "close_color", "close colour"),
         ] {
             if let Some(choice) = choice {
                 match kind == IndicatorKind::MarketProfile {
@@ -5453,11 +5471,17 @@ struct Parts {
 }
 
 impl Parts {
-    fn of(m: &clap::ArgMatches) -> Result<Parts, Fault> {
-        let part = |id: &str| match arg(m, id).map(String::as_str) {
+    /// A part's `--*-transparency`, as the strength it is drawn at;
+    /// `Some(None)` is `default`.
+    fn part(m: &clap::ArgMatches, id: &str) -> Result<Option<Option<f64>>, Fault> {
+        match arg(m, id).map(String::as_str) {
             Some("default") => Ok(Some(None)),
             _ => Ok(bounded(m, id, 0.0, 1.0)?.map(|clear| Some(1.0 - clear))),
-        };
+        }
+    }
+
+    fn of(m: &clap::ArgMatches) -> Result<Parts, Fault> {
+        let part = |id: &str| Parts::part(m, id);
         Ok(Parts {
             value_area: part("value-area-transparency")?,
             outside: part("outside-transparency")?,
@@ -9266,10 +9290,11 @@ mod tests {
         assert_ne!(out.code, 0, "a volume profile has no TPO period");
     }
 
-    /// The first and last TPO periods are off until asked for, their colours
-    /// the theme's until chosen, and `none` hands a colour back to it.
+    /// The open and close marks are off until asked for, their colours the
+    /// theme's until chosen, and `none` hands a colour back to it; their
+    /// transparency is solid until set, and `default` hands it back.
     #[test]
-    fn a_market_profile_sets_its_first_and_last_tpo_apart_in_colours_of_their_own() {
+    fn a_market_profile_marks_its_open_and_close_in_colours_of_their_own() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add market_profile --book Macro", &store);
@@ -9279,36 +9304,42 @@ mod tests {
             parsed["indicators"][0]["params"].clone()
         };
         let stored = params(&store);
-        assert_eq!(stored["first_last"], false);
-        assert!(stored["first_color"].is_null() && stored["last_color"].is_null(), "{stored}");
+        assert_eq!(stored["open_close"], false);
+        assert!(stored["open_color"].is_null() && stored["close_color"].is_null(), "{stored}");
 
         let out = run(
-            "chart indicator set market_profile --book Macro --first-last-tpo on --first-tpo-color Teal --last-tpo-color #aa5e57",
+            "chart indicator set market_profile --book Macro --open-close on --open-color Teal --close-color #aa5e57 --open-transparency 0.25 --close-transparency 0.5",
             &store,
         );
         assert_eq!(out.code, 0, "{}", out.err);
         let stored = params(&store);
-        assert_eq!(stored["first_last"], true);
-        assert_eq!(stored["first_color"]["name"], "Teal", "{stored}");
-        assert_eq!(stored["last_color"]["hex"], "#aa5e57", "{stored}");
+        assert_eq!(stored["open_close"], true);
+        assert_eq!(stored["open_alpha"], 0.75, "{stored}");
+        assert_eq!(stored["close_alpha"], 0.5, "{stored}");
+        let out = run("chart indicator set market_profile --book Macro --open-transparency default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(params(&store)["open_alpha"].is_null());
+        assert_eq!(stored["open_color"]["name"], "Teal", "{stored}");
+        assert_eq!(stored["close_color"]["hex"], "#aa5e57", "{stored}");
 
-        let out = run("chart indicator set market_profile --book Macro --first-tpo-color none --first-last-tpo off", &store);
+        let out = run("chart indicator set market_profile --book Macro --open-color none --open-close off", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         let stored = params(&store);
-        assert_eq!(stored["first_last"], false);
-        assert!(stored["first_color"].is_null(), "{stored}");
-        assert_eq!(stored["last_color"]["hex"], "#aa5e57", "kept while off");
+        assert_eq!(stored["open_close"], false);
+        assert!(stored["open_color"].is_null(), "{stored}");
+        assert_eq!(stored["close_color"]["hex"], "#aa5e57", "kept while off");
 
         for refused in [
-            "chart indicator set market_profile --book Macro --first-last-tpo maybe",
-            "chart indicator set market_profile --book Macro --first-tpo-color nonsense",
+            "chart indicator set market_profile --book Macro --open-close maybe",
+            "chart indicator set market_profile --book Macro --open-color nonsense",
         ] {
             assert_ne!(run(refused, &store).code, 0, "{refused}");
         }
         run("chart indicator add volume_profile --book Macro", &store);
         for refused in [
-            "chart indicator set volume_profile --book Macro --first-last-tpo on",
-            "chart indicator set volume_profile --book Macro --last-tpo-color Rose",
+            "chart indicator set volume_profile --book Macro --open-close on",
+            "chart indicator set volume_profile --book Macro --close-color Rose",
+            "chart indicator set volume_profile --book Macro --open-transparency 0.5",
         ] {
             assert_ne!(run(refused, &store).code, 0, "a volume profile has no TPO periods: {refused}");
         }

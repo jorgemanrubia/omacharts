@@ -2136,9 +2136,9 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         poc_color,
         highlight,
         value_area_color,
-        first_last,
-        first_color,
-        last_color,
+        open_close,
+        open_color,
+        close_color,
         poc_width,
         poc_style,
         outline,
@@ -2245,6 +2245,30 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         |params, a| {
             if let Params::MarketProfile { outline_alpha, .. } = params {
                 *outline_alpha = Some(a);
+            }
+        },
+        None,
+    );
+    let (open_strength, _) = strength(
+        |params| match params {
+            Params::MarketProfile { open_alpha, .. } => Some(market::end_strength(*open_alpha)),
+            _ => None,
+        },
+        |params, a| {
+            if let Params::MarketProfile { open_alpha, .. } = params {
+                *open_alpha = Some(a);
+            }
+        },
+        None,
+    );
+    let (close_strength, _) = strength(
+        |params| match params {
+            Params::MarketProfile { close_alpha, .. } => Some(market::end_strength(*close_alpha)),
+            _ => None,
+        },
+        |params, a| {
+            if let Params::MarketProfile { close_alpha, .. } = params {
+                *close_alpha = Some(a);
             }
         },
         None,
@@ -2365,11 +2389,10 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         id,
         Some(poc_strength),
     );
-    // The first and last TPO periods' colours, offered while they are set
-    // apart.
+    // The open's colour and the close's, offered while they are marked.
     let theme = owner.theme();
-    let end_row = |title: &str, shown: String, choice: &Option<ColorChoice>, first: bool| {
-        colour_row(
+    let end_row = |title: &str, shown: String, choice: &Option<ColorChoice>, first: bool, strength| {
+        colour_row_with(
             owner,
             refresh,
             &Ink::new(String::new),
@@ -2377,32 +2400,35 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             &shown,
             choice.clone(),
             move |indicator, choice| {
-                if let Params::MarketProfile { first_color, last_color, .. } = &mut indicator.params {
-                    *(if first { first_color } else { last_color }) = choice;
+                if let Params::MarketProfile { open_color, close_color, .. } = &mut indicator.params {
+                    *(if first { open_color } else { close_color }) = choice;
                 }
             },
             id,
+            Some(strength),
         )
     };
     let first_row = end_row(
-        profile_rows::FIRST_COLOUR,
-        first_color.as_ref().map_or_else(|| theme.first_tpo(), |c| c.resolve(&theme)),
-        first_color,
+        profile_rows::OPEN_COLOUR,
+        open_color.as_ref().map_or_else(|| theme.tpo_open(), |c| c.resolve(&theme)),
+        open_color,
         true,
+        open_strength,
     );
     let last_row = end_row(
-        profile_rows::LAST_COLOUR,
-        last_color.as_ref().map_or_else(|| theme.last_tpo(), |c| c.resolve(&theme)),
-        last_color,
+        profile_rows::CLOSE_COLOUR,
+        close_color.as_ref().map_or_else(|| theme.tpo_close(), |c| c.resolve(&theme)),
+        close_color,
         false,
+        close_strength,
     );
     let (ends_switch, _) = {
         let owner = owner.clone();
         let refresh = refresh.clone();
-        profile_rows::switch_row(profile_rows::FIRST_LAST, *first_last, move |on| {
+        profile_rows::switch_row(profile_rows::OPEN_CLOSE, *open_close, move |on| {
             update(&owner, id, |indicator| {
-                if let Params::MarketProfile { first_last, .. } = &mut indicator.params {
-                    *first_last = on;
+                if let Params::MarketProfile { open_close, .. } = &mut indicator.params {
+                    *open_close = on;
                 }
             });
             refresh.run();
@@ -2447,8 +2473,8 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             }),
             ends: Some(profile_rows::EndRows {
                 switch: ends_switch,
-                first: first_row.upcast(),
-                last: last_row.upcast(),
+                open: first_row.upcast(),
+                close: last_row.upcast(),
             }),
             alignment: alignment.upcast(),
             width: width_row.upcast(),

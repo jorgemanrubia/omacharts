@@ -75,12 +75,12 @@ impl Executions {
 
 /// How long a triangle is, tip to base, and how far it stands each side of
 /// its middle, in pixels.
-const LENGTH: f64 = 6.0;
-const HALF: f64 = 3.5;
+pub(super) const LENGTH: f64 = 6.0;
+pub(super) const HALF: f64 = 3.5;
 
 /// The gap between a triangle's tip and its bar's body, and how far out
 /// from its middle the body reaches, as a share of the column.
-const STAND_OFF: f64 = 1.0;
+pub(super) const STAND_OFF: f64 = 1.0;
 const BODY_HALF: f64 = 0.35;
 
 /// The trip line's weight and its dots.
@@ -185,25 +185,38 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pr
             if !wanted {
                 continue;
             }
-            let tip = x + side * off;
-            cr.move_to(tip, y);
-            cr.line_to(tip + side * length, y - half);
-            cr.line_to(tip + side * length, y + half);
-            cr.close_path();
-            if emphasised(executions.emphasis, mark.ts) {
-                colors::set_source(cr, colour);
-            } else {
-                colors::set_source_alpha(cr, colour, MUTED_ALPHA);
-            }
-            let _ = cr.fill_preserve();
-            // A hairline of the ground round it, so it reads over a candle
-            // of its own colour.
-            colors::set_source_alpha(cr, &state.theme.ui.background, 0.9);
-            cr.set_line_width(0.75);
-            let _ = cr.stroke();
+            let alpha = if emphasised(executions.emphasis, mark.ts) { 1.0 } else { MUTED_ALPHA };
+            arrow(cr, state, x + side * off, y, -side, (length, half), colour, alpha);
         }
     }
     cr.restore().ok();
+}
+
+/// A fill's triangle, its tip at `tip`, `y`, pointing right for a
+/// `points` of one and left for minus one, `size` long and half tall, in
+/// `colour` at `alpha`; with a hairline of the ground round it, so it reads
+/// over a candle of its own colour. A market profile's open and close
+/// marks are the same arrows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn arrow(
+    cr: &cairo::Context,
+    state: &State,
+    tip: f64,
+    y: f64,
+    points: f64,
+    (length, half): (f64, f64),
+    colour: &str,
+    alpha: f64,
+) {
+    cr.move_to(tip, y);
+    cr.line_to(tip - points * length, y - half);
+    cr.line_to(tip - points * length, y + half);
+    cr.close_path();
+    colors::set_source_alpha(cr, colour, alpha);
+    let _ = cr.fill_preserve();
+    colors::set_source_alpha(cr, &state.theme.ui.background, 0.9);
+    cr.set_line_width(0.75);
+    let _ = cr.stroke();
 }
 
 #[cfg(test)]

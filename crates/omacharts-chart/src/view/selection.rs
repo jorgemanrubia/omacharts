@@ -162,11 +162,11 @@ fn on_overlay_shape(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl
         // A row's TPOs, a cell each, as they are drawn.
         Output::MarketProfiles(profiles) => profiles.iter().any(|market| {
             let profile = &market.profile;
-            let mut area = profile_box(profile, columns, &look);
+            let area = profile_box(profile, columns, &look);
             if area.span <= 0.0 || profile.max_volume <= 0.0 {
                 return false;
             }
-            area.span = super::market::cell(profile, &area, to_y).0 * profile.max_volume;
+            let (area, _, _) = super::market::cells(state, &drawn.indicator.params, profile, area, to_y);
             profile.rows.iter().any(|row| {
                 let top = to_y(row.high);
                 let bottom = top + (to_y(row.low) - top).max(1.0);
@@ -1461,6 +1461,70 @@ mod tests {
                             boxes.iter().all(|((from, to), _)| *from >= start - 1e-9 && *to <= last + 1e-6),
                             "on its bars: {case} {boxes:?}"
                         ),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A market profile's open and close arrows, in every way it can be set
+    /// beside a volume profile and alone: each in the profile's own room and
+    /// clear of the volume profile's, beside its TPO without covering it,
+    /// the open pointing in from the profile's own edge and the close back
+    /// from its row's last TPO. Off, the TPOs keep the whole room.
+    #[test]
+    fn a_market_profiles_open_and_close_arrows_stay_in_its_own_room() {
+        use omacharts_engine::Reset;
+        use profile::Align::{Left, Right};
+        let mut cases: Vec<Vec<Study>> = Vec::new();
+        for (tpo_edge, vp_edge) in [(Left, Left), (Left, Right), (Right, Left), (Right, Right)] {
+            for (tpo_width, vp_width) in [(1.0, 0.4), (0.3, 0.4)] {
+                cases.push(vec![
+                    (Kind::MarketProfile, tpo_edge, tpo_width, Reset::Session),
+                    (Kind::VolumeProfile, vp_edge, vp_width, Reset::Session),
+                ]);
+            }
+        }
+        cases.push(vec![(Kind::MarketProfile, Left, 0.4, Reset::Session)]);
+        cases.push(vec![(Kind::MarketProfile, Right, 0.4, Reset::Session)]);
+        for studies in cases {
+            let case = format!("{studies:?}");
+            let mut state = with_studies(&studies);
+            for drawn in state.indicators.iter_mut() {
+                if let omacharts_engine::Params::MarketProfile { open_close, .. } = &mut drawn.indicator.params {
+                    *open_close = true;
+                }
+            }
+            let frame = frame(&state, W, H).expect("a frame");
+            let to_y = |price: f64| frame.scale.to_y(price, frame.plan.price_y, frame.plan.price_h);
+            let length = super::super::market::arrow_size(&state).0;
+            let Output::MarketProfiles(markets) = &state.indicators[0].output else { panic!("market profiles") };
+            let look = super::placed_look(&state, &state.indicators[0]);
+            let volumes = state.indicators.get(1).map(|drawn| {
+                let profiles = drawn.output.periods().expect("profiles");
+                (profiles, super::placed_look(&state, drawn))
+            });
+            for (period, market) in markets.iter().enumerate() {
+                let profile = &market.profile;
+                let room = profile_box(profile, &frame.columns, &look);
+                if room.span <= 0.0 {
+                    continue;
+                }
+                let (area, cell, _) =
+                    super::super::market::cells(&state, &state.indicators[0].indicator.params, profile, room, &to_y);
+                let (room_from, room_to) = room.row(1.0);
+                for (n, (tip, _, points)) in super::super::market::arrows(market, &area, cell, &to_y).into_iter().enumerate() {
+                    let tip = tip.expect("its row");
+                    let (from, to) = (tip.min(tip - points * length), tip.max(tip - points * length));
+                    assert!(from >= room_from - 1e-6 && to <= room_to + 1e-6, "in its room: {case} {n} {from}..{to} {room:?}");
+                    let row = if n == 0 { market.open_row } else { market.close_row };
+                    let (cells_from, cells_to) = area.row(profile.rows[row].volume / profile.max_volume);
+                    assert!(to <= cells_from + 1e-6 || from >= cells_to - 1e-6, "beside its TPOs: {case} {n}");
+                    let expected = if n == 0 { area.towards } else { -area.towards };
+                    assert_eq!(points, expected, "{case} {n}");
+                    if let Some((profiles, vp_look)) = &volumes {
+                        let (v_from, v_to) = profile_box(profiles[period], &frame.columns, vp_look).row(1.0);
+                        assert!(to <= v_from + 1e-6 || from >= v_to - 1e-6, "clear of the volume profile: {case} {n}");
                     }
                 }
             }

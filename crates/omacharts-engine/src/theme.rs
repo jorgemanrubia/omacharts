@@ -175,16 +175,18 @@ const NEUTRAL_FLOOR: f64 = 0.12;
 /// it does not.
 pub const COMPANION_GAP: f64 = 0.12;
 
-/// How strongly a market profile's first TPO period and its last stand
-/// against the chart, as contrast ratios: both read as letters, the first
-/// the stronger. See [`Theme::first_tpo`].
-const FIRST_TPO_CONTRAST: ContrastBand = ContrastBand::new(7.0, 8.0);
-const LAST_TPO_CONTRAST: ContrastBand = ContrastBand::new(3.5, 4.0);
+/// How strongly the arrows marking a market profile's open and its close
+/// stand against the chart, as contrast ratios: enough for a small filled
+/// glyph to be seen, no more, and the open the stronger of the two. See
+/// [`Theme::tpo_open`].
+const OPEN_TPO_CONTRAST: ContrastBand = ContrastBand::new(5.0, 5.5);
+const CLOSE_TPO_CONTRAST: ContrastBand = ContrastBand::new(3.0, 3.3);
 
-/// The most OKLCh chroma they carry, and the most of their candle's: so a
-/// pastel palette's up and down colours are greyed too, not drawn as is.
-const TPO_END_CHROMA: f64 = 0.10;
-const TPO_END_CHROMA_SHARE: f64 = 0.6;
+/// The most OKLCh chroma they carry, and the most of their candle's: a
+/// tint of the up and down colours, well under half as vivid as either,
+/// and a pastel palette's are greyed along with the rest.
+const TPO_END_CHROMA: f64 = 0.045;
+const TPO_END_CHROMA_SHARE: f64 = 0.4;
 
 /// How a colour was chosen for an indicator or overlay.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -566,26 +568,32 @@ impl Theme {
         mix(hex, &self.ui.background, 0.38)
     }
 
-    /// A market profile's first TPO period, unless somebody chose: the
-    /// palette's up colour, greyed and held strongly against the chart.
+    /// The arrow marking a market profile's open, unless somebody chose:
+    /// the palette's up colour, muted.
     ///
-    /// Not mixed into the background, which fades it past reading as
-    /// letters. Held to a contrast band instead, as [`held_to`] does, its
-    /// chroma cut so it reads as a quiet relative of the up candle rather
-    /// than as price. The first is held higher than the last, so the two
-    /// differ in lightness and not only in hue, and tell apart to a viewer
-    /// who cannot tell green from red.
-    pub fn first_tpo(&self) -> String {
-        self.tpo_end("Green", FIRST_TPO_CONTRAST)
+    /// The palette has no muted swatches, so one is worked out from the
+    /// Green swatch here and follows the theme. Most of its chroma is
+    /// taken away, which leaves a grey with the up candle's hue in it: a
+    /// relative of the candle, not to be taken for price. Not mixed into
+    /// the background, as [`Theme::muted_for`] does, which on a tinted
+    /// chart bends the hue and says nothing of how visible the result is.
+    /// Held to a modest contrast band instead, as [`held_to`] does: a
+    /// small filled arrow needs to be seen, not read. The open is held
+    /// higher than the close, so the two differ in lightness and not only
+    /// in hue, and tell apart to a viewer who cannot tell green from red.
+    pub fn tpo_open(&self) -> String {
+        self.tpo_end("Green", OPEN_TPO_CONTRAST)
     }
 
-    /// A market profile's last TPO period, unless somebody chose: the
-    /// palette's down colour, greyed and held less strongly than the
-    /// first. See [`Theme::first_tpo`].
-    pub fn last_tpo(&self) -> String {
-        self.tpo_end("Rose", LAST_TPO_CONTRAST)
+    /// The arrow marking a market profile's close, unless somebody chose:
+    /// the palette's down colour, muted and held less strongly than the
+    /// open. See [`Theme::tpo_open`].
+    pub fn tpo_close(&self) -> String {
+        self.tpo_end("Rose", CLOSE_TPO_CONTRAST)
     }
 
+    /// A swatch muted for one end of a market profile: its hue kept, its
+    /// chroma cut to a tint, its lightness moved into `band`.
     fn tpo_end(&self, swatch: &str, band: ContrastBand) -> String {
         let hex = ColorChoice::swatch(swatch).resolve(self);
         let chroma = Oklch::of(&hex).map_or(TPO_END_CHROMA, |c| (c.c * TPO_END_CHROMA_SHARE).min(TPO_END_CHROMA));
@@ -2646,24 +2654,31 @@ mod tests {
         assert!(delta_e("#7aa2f7", "#e0af68") > 0.2);
     }
 
-    /// The first and last TPO periods' own colours read as letters on every
-    /// theme, apart from each other in lightness as well as hue, greyer
-    /// than the candles they come from, and clear of the profile and its
-    /// point of control.
+    /// The open and close arrows' own colours are muted on every theme:
+    /// a tint of the candles they come from and never the candles
+    /// themselves, of the same hue, visible as a small filled glyph and
+    /// no louder, apart from each other in lightness as well as hue, and
+    /// clear of the profile and its point of control.
     #[test]
-    fn the_first_and_last_tpo_colours_read_apart_on_every_theme() {
+    fn the_open_and_close_tpo_colours_read_apart_on_every_theme() {
         for theme in builtin_themes() {
-            let (first, last) = (theme.first_tpo(), theme.last_tpo());
+            let (first, last) = (theme.tpo_open(), theme.tpo_close());
             let ground = &theme.ui.background;
             let name = &theme.name;
-            assert!(contrast_ratio(&first, ground) >= 6.5, "{name} {first}");
-            assert!(contrast_ratio(&last, ground) >= 3.4, "{name} {last}");
-            assert!(contrast_ratio(&first, ground) > contrast_ratio(&last, ground) + 2.0, "{name}");
             for (end, candle) in [(&first, "Green"), (&last, "Rose")] {
                 let candle = ColorChoice::swatch(candle).resolve(&theme);
-                assert_ne!(end, &candle, "{name}");
-                assert!(Oklch::of(end).unwrap().c <= TPO_END_CHROMA + 0.01, "{name} {end}");
+                let (muted, vivid) = (Oklch::of(end).unwrap(), Oklch::of(&candle).unwrap());
+                assert!(muted.c <= TPO_END_CHROMA + 0.01, "{name} {end}");
+                assert!(muted.c <= vivid.c * 0.45, "{name} {end}");
+                assert!(muted.c >= 0.02, "{name} {end} is a plain grey");
+                assert!(hue_gap(muted.h, vivid.h) <= 8.0, "{name} {end}");
+                assert!(delta_e(end, &candle) >= 0.05, "{name} {end}");
+                assert!(contrast_ratio(end, ground) >= 3.0, "{name} {end}");
+                assert!(contrast_ratio(end, ground) <= 6.0, "{name} {end}");
             }
+            assert!(contrast_ratio(&first, ground) > contrast_ratio(&last, ground) + 1.5, "{name}");
+            let lightness = |hex: &str| Oklch::of(hex).unwrap().l;
+            assert!((lightness(&first) - lightness(&last)).abs() >= 0.08, "{name}");
             for other in [theme.series(0), theme.companion(&theme.series(0))] {
                 assert!(delta_e(&first, &other) >= 0.1 && delta_e(&last, &other) >= 0.1, "{name} {other}");
             }

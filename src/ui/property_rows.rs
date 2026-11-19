@@ -313,7 +313,7 @@ mod tests {
             assert!((heard.get().unwrap() - 0.2).abs() < 1e-9, "heard back as a transparency");
 
             let swatch = gtk::MenuButton::new();
-            let plain = colour_row("Last TPO colour", &swatch, None);
+            let plain = colour_row("Close", &swatch, None);
             let mut stack = vec![plain.upcast::<gtk::Widget>()];
             let mut sliders = 0;
             while let Some(widget) = stack.pop() {

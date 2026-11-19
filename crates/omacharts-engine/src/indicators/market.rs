@@ -65,6 +65,15 @@ pub fn outline_strength(alpha: Option<f64>) -> f64 {
     held(alpha, OUTLINE_ALPHA)
 }
 
+/// How solid a profile's open and close marks are drawn until set: solid,
+/// as a fill's arrow is.
+pub const END_ALPHA: f64 = 1.0;
+
+/// An open or close mark's strength: as set, or [`END_ALPHA`].
+pub fn end_strength(alpha: Option<f64>) -> f64 {
+    held(alpha, END_ALPHA)
+}
+
 /// How solid each sort of row is drawn, as letters: every row while the
 /// value area is not highlighted, the value area's and the rest's while it
 /// is, and the point of control's. What a market profile was given of its
@@ -174,11 +183,14 @@ pub struct MarketProfile {
     pub letters: Vec<u8>,
     /// Where each row's letters begin in `letters`, and one past the last.
     pub starts: Vec<u32>,
-    /// Which rows the profile's first TPO period reached ([`FIRST`]) and
-    /// which its last did ([`LAST`]), a row each. The first's letter is
-    /// the first of its row, the last's the last, as letters are kept in
-    /// the order their periods came.
-    pub ends: Vec<u8>,
+    /// The row of the profile's open, its first bar's opening price, and
+    /// the row of its close, its last bar's closing price (the latest, while
+    /// the period forms). The open's TPO is the first letter of its row and
+    /// the close's the last of its, as letters are kept in the order their
+    /// periods came: in a composite, the first part's open and the last
+    /// part's close.
+    pub open_row: usize,
+    pub close_row: usize,
     /// The point of control and the value area, as prices: what the
     /// developing profile reads at the period's last bar.
     pub reading: ProfileReading,
@@ -187,18 +199,13 @@ pub struct MarketProfile {
     pub tick_size: f64,
 }
 
-/// In [`MarketProfile::ends`], a row the first TPO period reached, and one
-/// the last did.
-pub const FIRST: u8 = 1;
-pub const LAST: u8 = 2;
-
 impl MarketProfile {
-    /// Whether the `k`th letter of row `row` is the profile's first TPO
-    /// period's, and whether it is its last's: both, for a profile of one.
+    /// Whether the `k`th letter of row `row` is the profile's open TPO,
+    /// and whether it is its close: both, for a profile of one TPO that
+    /// opened and closed in one row.
     pub fn end_of(&self, row: usize, k: usize) -> (bool, bool) {
-        let ends = self.ends.get(row).copied().unwrap_or(0);
         let len = (self.starts[row + 1] - self.starts[row]) as usize;
-        (ends & FIRST != 0 && k == 0, ends & LAST != 0 && k + 1 == len)
+        (row == self.open_row && k == 0, row == self.close_row && k + 1 == len)
     }
 
     /// The letters of row `row`, in the order their periods came.
@@ -411,10 +418,6 @@ fn period(
         starts.push(total);
     }
     let mut letters = vec![0u8; total as usize];
-    // The first TPO period's mark and the last's: the first bar's and the
-    // last bar's, as bars come in order.
-    let (first, last) = (tpos.first().map(|t| t.1), tpos.last().map(|t| t.1));
-    let mut ends = vec![0u8; len];
     next.clear();
     next.extend_from_slice(&starts[..len]);
     marks.clear();
@@ -427,15 +430,18 @@ fn period(
                 marks[row] = at;
                 letters[next[row] as usize] = letter;
                 next[row] += 1;
-                if Some(at) == first {
-                    ends[row] |= FIRST;
-                }
-                if Some(at) == last {
-                    ends[row] |= LAST;
-                }
             }
         }
     }
+
+    // The open's row and the close's, kept within the bar that made each,
+    // so each is a row that bar's TPO period reached.
+    let row_at = |bar: &Bar, price: f64| {
+        let (from, to) = rows_of(bar)?;
+        let row = tpo::row_of(price, tick_size, row_ticks).unwrap_or(from).clamp(from, to);
+        Some((row - low) as usize)
+    };
+    let (open_row, close_row) = (row_at(&bars[0], bars[0].open)?, row_at(bars.last()?, bars.last()?.close)?);
 
     let count = |row: usize| counts[row];
     let total = u64::from(total);
@@ -466,7 +472,8 @@ fn period(
         },
         letters,
         starts,
-        ends,
+        open_row,
+        close_row,
         reading,
         row_ticks,
         tick_size,
@@ -575,30 +582,42 @@ mod tests {
         assert_eq!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[0], false), apart);
     }
 
-    /// The first TPO period is the first letter of each row it reached and
-    /// the last the last of each: in a composite, the first part's first
-    /// and the last part's last, so Tuesday's A is not taken for an opening.
+    /// The open is the first letter of the row the first bar opened in and
+    /// the close the last letter of the row the last bar closed in: one TPO
+    /// each, wherever in its bar's range the price was. In a composite, the
+    /// first part's open and the last part's close, so Tuesday's A is not
+    /// taken for an opening.
     #[test]
-    fn the_first_and_last_tpo_periods_are_found_in_their_rows() {
-        let bars = vec![bar(0, 10.0, 12.0), bar(1_800, 12.0, 13.0), bar(3_600, 11.0, 11.0)];
+    fn the_open_and_close_are_one_tpo_each_at_their_prices() {
+        let ohlc = |ts: i64, open: f64, high: f64, low: f64, close: f64| Bar { ts, open, high, low, close, volume: 1.0 };
+        let bars = vec![ohlc(0, 11.0, 12.0, 10.0, 12.0), ohlc(1_800, 12.0, 13.0, 12.0, 13.0), ohlc(3_600, 11.0, 11.0, 11.0, 11.0)];
         let profile = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false)[0];
-        // Rows 10 to 13: A, AC, AB, B.
+        // Rows 10 to 13: A, AC, AB, B. Opened at 11, closed at 11.
         let ends = |row: usize| (0..profile.letters_of(row).len()).map(|k| profile.end_of(row, k)).collect::<Vec<_>>();
-        assert_eq!(ends(0), vec![(true, false)]);
+        assert_eq!(ends(0), vec![(false, false)]);
         assert_eq!(ends(1), vec![(true, false), (false, true)]);
-        assert_eq!(ends(2), vec![(true, false), (false, false)]);
+        assert_eq!(ends(2), vec![(false, false), (false, false)]);
         assert_eq!(ends(3), vec![(false, false)]);
-        // A period of one TPO is its own first and last.
-        let one = &compute(&bars[..1], Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false)[0];
+        // A profile of one TPO that opened and closed in one row is both.
+        let one = &compute(&bars[2..], Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false)[0];
         assert_eq!(one.end_of(0, 0), (true, true));
+        // A price outside its bar's range is kept to the bar's rows.
+        let odd = vec![ohlc(0, 9.0, 12.0, 10.0, 14.0)];
+        let odd = &compute(&odd, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false)[0];
+        assert_eq!((odd.open_row, odd.close_row), (0, 2));
 
         const DAY: i64 = 86_400;
-        let bars = vec![bar(0, 10.0, 11.0), bar(1_800, 11.0, 11.0), bar(DAY, 10.0, 10.0), bar(DAY + 1_800, 12.0, 12.0)];
+        let bars = vec![
+            ohlc(0, 10.0, 11.0, 10.0, 11.0),
+            ohlc(1_800, 11.0, 11.0, 11.0, 11.0),
+            ohlc(DAY, 10.0, 10.0, 10.0, 10.0),
+            ohlc(DAY + 1_800, 12.0, 12.0, 12.0, 12.0),
+        ];
         let composite = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY], false)[0];
         // Rows 10 to 12: Monday's A and Tuesday's, Monday's A and B, Tuesday's B.
         let ends = |row: usize| (0..composite.letters_of(row).len()).map(|k| composite.end_of(row, k)).collect::<Vec<_>>();
         assert_eq!(ends(0), vec![(true, false), (false, false)]);
-        assert_eq!(ends(1), vec![(true, false), (false, false)]);
+        assert_eq!(ends(1), vec![(false, false), (false, false)]);
         assert_eq!(ends(2), vec![(false, true)]);
     }
 
