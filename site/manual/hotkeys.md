@@ -79,7 +79,7 @@ From anywhere:
 |---|---|---|
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> | Shows the sidebar with the keyboard in it, or hides it and gives the keyboard back to the chart | [The window](/manual/window/) |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Over a chart, the previous or next symbol in the watchlist, without going to it | [Watchlists](/manual/watchlists/) |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists. The number row, whatever your layout prints on it with Shift held. With a trading login, these pick the order template instead ([Trading](#trading)) | [Watchlists](/manual/watchlists/) |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists, on the number row whatever your layout prints there | [Watchlists](/manual/watchlists/) |
 
 ## Arranging charts
 
@@ -192,7 +192,7 @@ Only once there is a trading login ([Trading from a chart](/manual/trading-on-a-
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Show or hide the positions | [The Trading panel](/manual/trading-panel/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | Show or hide the orders | [The Trading panel](/manual/trading-panel/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>E</kbd> | New order, with every choice in front of you (Beta) | [The New order dialog](/manual/trading-on-a-chart/#the-new-order-dialog) |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the chart's order template, first to ninth; with a working order picked out, give it that template (Beta). These take the place of the watchlist keys while there is a trading login | [Order templates](/manual/trading-on-a-chart/#order-templates) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the chart's order template, first to ninth; with a working order picked out, give it that template (Beta) | [Order templates](/manual/trading-on-a-chart/#order-templates) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No order template (Beta) | [Order templates](/manual/trading-on-a-chart/#order-templates) |
 
 ## Typing on the chart

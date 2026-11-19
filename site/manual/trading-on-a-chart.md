@@ -106,7 +106,7 @@ With more than one exit in a group, each but the last takes a share of the order
 
 ### On a chart
 
-The template part of the header, at its right, shows the chart's template, or only its icon with none. Its menu lists **No template** and the templates in order, and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> to <kbd>9</kbd> picks the first to the ninth; <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> is no template. The template is kept with the chart. While there is a trading login these keys are the templates', not the watchlists'.
+The template part of the header, at its right, shows the chart's template, or only its icon with none. Its menu lists **No template** and the templates in order, and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> to <kbd>9</kbd> picks the first to the ninth; <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> is no template. The template is kept with the chart.
 
 ### On a working order
 

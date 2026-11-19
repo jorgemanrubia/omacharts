@@ -206,7 +206,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             // row says where it works: pressed over a chart it does
             // nothing, and nothing is hard to ask a question about.
             ("Ctrl+Alt+Shift+↑ ↓", "Previous or next watchlist, in the sidebar"),
-            ("Ctrl+Shift+1 … 9", "Watchlist N, in the switcher's order"),
+            ("Ctrl+Alt+1 … 9", "Watchlist N, in the switcher's order"),
             ("Ctrl+N", "Add a symbol, in the sidebar"),
             ("Ctrl+Shift+N", "Add a section, in the sidebar"),
             ("Delete", "Remove the symbol"),
@@ -943,6 +943,24 @@ mod tests {
         // Neither: a letter off the row is no number at all.
         assert_eq!(shifted_number(Key::B, 56), None);
         assert_eq!(shifted_number(Key::exclam, 9), None);
+    }
+
+    /// Ctrl+Shift and a digit is always the order template's, 0 included;
+    /// Ctrl+Alt and one the watchlist's, from 1; the rest none of theirs.
+    #[test]
+    fn the_digit_chords_are_order_templates_on_shift_and_watchlists_on_alt() {
+        use gtk::gdk::Key;
+        assert_eq!(digit_chord(true, false, true, Key::exclam, 10), Some(DigitChord::OrderTemplate(1)));
+        assert_eq!(digit_chord(true, false, true, Key::parenright, 19), Some(DigitChord::OrderTemplate(0)));
+        assert_eq!(digit_chord(true, true, false, Key::_3, 12), Some(DigitChord::Watchlist(3)));
+        // AZERTY types "é" on 2 without Shift: where it is says 2.
+        assert_eq!(digit_chord(true, true, false, Key::eacute, 11), Some(DigitChord::Watchlist(2)));
+        assert_eq!(digit_chord(true, true, false, Key::_0, 19), None, "no watchlist 0");
+        // The chart template's, the trading size's and a drawing
+        // configuration's are not these.
+        assert_eq!(digit_chord(true, true, true, Key::exclam, 10), None);
+        assert_eq!(digit_chord(true, false, false, Key::_1, 10), None);
+        assert_eq!(digit_chord(false, true, false, Key::_1, 10), None);
     }
 
     /// None and two templates: stepping goes round both ways.
@@ -3876,14 +3894,42 @@ fn shifted_number(key: gtk::gdk::Key, keycode: u32) -> Option<usize> {
     number_row(keycode).or_else(|| key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize))
 }
 
+/// What Ctrl and a digit with other keys held is for, besides the chart
+/// template's Ctrl+Alt+Shift and the trading size's Ctrl alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DigitChord {
+    /// Ctrl+Shift: the order template, 1 to 9 as listed, 0 none.
+    OrderTemplate(usize),
+    /// Ctrl+Alt: the watchlist, counting down the switcher from 1, beside
+    /// Ctrl+Alt+Shift and an arrow, which steps through them. From
+    /// anywhere, rail open or not: nothing is typed with Ctrl held.
+    Watchlist(usize),
+}
+
+/// The digit chord a key is, by where the key is as well as what it types
+/// (see `shifted_number` and `plain_number`). Bare digits are the
+/// resolution's, Alt with one a drawing configuration's.
+fn digit_chord(ctrl: bool, alt: bool, shift: bool, key: gtk::gdk::Key, keycode: u32) -> Option<DigitChord> {
+    match (ctrl, alt, shift) {
+        (true, false, true) => shifted_number(key, keycode).map(DigitChord::OrderTemplate),
+        (true, true, false) => plain_number(key, keycode).filter(|n| *n > 0).map(DigitChord::Watchlist),
+        _ => None,
+    }
+}
+
+/// Which digit a key without Shift means: the digit it typed, or where it
+/// is when the layout types something else there, as AZERTY's row does.
+fn plain_number(key: gtk::gdk::Key, keycode: u32) -> Option<usize> {
+    key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize).or_else(|| number_row(keycode))
+}
+
 /// The chart action a trading key reaches, and its target: Ctrl+B, Ctrl+S
 /// and Ctrl+F by letter, Ctrl and a digit by the digit or the number row.
 fn trading_key(key: gtk::gdk::Key, keycode: u32) -> Option<(&'static str, Option<glib::Variant>)> {
     use gtk::gdk::Key;
     // The digit typed, or where the key is when the layout types something
     // else there without Shift, as AZERTY's row does.
-    let digit = key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize);
-    if let Some(n) = digit.or_else(|| number_row(keycode)).filter(|n| *n > 0) {
+    if let Some(n) = plain_number(key, keycode).filter(|n| *n > 0) {
         return Some((trade::TRADING_SIZE, Some((n as i32).to_variant())));
     }
     match key {
@@ -9050,34 +9096,19 @@ impl Window {
                 }
             }
 
-            // While trading is in the window, Ctrl+Shift and a digit is the
-            // focused chart's order template instead, 0 none, or the
-            // template of the working order picked out on it: the keys
-            // that cannot wait for a hand to reach the rail.
-            if ctrl
-                && !alt
-                && shift
-                && !this.is_typing()
-                && let Some(n) = shifted_number(key, keycode)
-                && this.on_order_template_key(n)
-            {
-                return glib::Propagation::Stop;
-            }
-
-            // Ctrl+Shift and a digit shows that watchlist, counting down the
-            // switcher from 1. From anywhere, rail open or not: nothing is
-            // typed with Ctrl held. Bare digits are the resolution's, Alt
-            // with one a drawing configuration's and Ctrl with one the
-            // trading size's. By where the key is, as the templates' are,
-            // since Shift changes what the row types.
-            if ctrl
-                && !alt
-                && shift
-                && let Some(n) = shifted_number(key, keycode).filter(|n| *n > 0)
-                && let Some(rail) = this.watchlist.borrow().clone()
-                && rail.show_numbered(n)
-            {
-                return glib::Propagation::Stop;
+            // Ctrl+Shift and a digit is the focused chart's order template,
+            // or that of the working order picked out on it; Ctrl+Alt and
+            // one a watchlist. See `digit_chord`.
+            match digit_chord(ctrl, alt, shift, key, keycode) {
+                Some(DigitChord::OrderTemplate(n)) if !this.is_typing() && this.on_order_template_key(n) => {
+                    return glib::Propagation::Stop;
+                }
+                Some(DigitChord::Watchlist(n))
+                    if this.watchlist.borrow().clone().is_some_and(|rail| rail.show_numbered(n)) =>
+                {
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
             }
 
             // The trading keys, only with a trading account and never while

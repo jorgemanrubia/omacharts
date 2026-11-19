@@ -166,7 +166,7 @@ From anywhere:
 | Key | Does |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Over a chart, the previous or next symbol in the list, without going to the sidebar. It puts the symbol on the focused chart, as typing it would ([Link modes](#link-modes)). On a pinned chart it steps the sidebar instead, as a click there would. A selected drawing takes <kbd>↑</kbd> <kbd>↓</kbd> first, to nudge it. |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists, on the number row whatever your layout prints on it with Shift held. |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists, on the number row whatever your layout prints there. |
 
 ## Linking charts to the watchlist
 

@@ -4071,8 +4071,11 @@ impl ChartView {
                 glib::Propagation::Stop
             }
             // Alt+N: configuration N for the selected drawing, or for
-            // the one about to be drawn while a tool is in hand.
-            _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) => {
+            // the one about to be drawn while a tool is in hand. Not with
+            // Ctrl: Ctrl+Alt and a digit is the window's, a watchlist.
+            _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK)
+                && !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
+            {
                 let Some(number) = preset_number(key) else {
                     return glib::Propagation::Proceed;
                 };

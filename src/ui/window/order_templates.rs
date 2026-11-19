@@ -193,13 +193,10 @@ impl Window {
         self.save_workspace();
     }
 
-    /// Ctrl+Shift and a digit while trading is in the window: template `n`
-    /// in the order they are listed, 0 none. On the working order picked
-    /// out on the focused chart, if one is; else the chart's own.
+    /// Ctrl+Shift and a digit, trading shown or not: template `n` in the
+    /// order they are listed, 0 none. On the working order picked out on
+    /// the focused chart, if one is; else the chart's own.
     pub(super) fn on_order_template_key(self: &Rc<Self>, n: usize) -> bool {
-        if !self.trade.shown.get() {
-            return false;
-        }
         let template = match n {
             0 => None,
             n => match self.trade.order_templates.borrow().get(n - 1) {
@@ -646,10 +643,15 @@ mod tests {
             assert_eq!(pane.order_template_text(), Some("Runner".into()));
             assert!(window.on_order_template_key(1));
             assert_eq!(pane.order_template.get(), Some(scalp));
-            assert!(window.on_order_template_key(7), "the key is the templates' while trading is in");
+            assert!(window.on_order_template_key(7), "the key is the templates' whatever is shown");
             assert_eq!(pane.order_template.get(), Some(scalp), "no seventh template: nothing changes");
             assert!(window.on_order_template_key(0));
             assert_eq!(pane.order_template.get(), None, "0 is none");
+            // Trading hidden, the keys are still the templates'.
+            window.trade.shown.set(false);
+            assert!(window.on_order_template_key(1));
+            assert_eq!(pane.order_template.get(), Some(scalp), "picked with trading hidden");
+            window.trade.shown.set(true);
             window.pick_order_template(pane.id, Some(runner));
             let menu = window.order_template_menu(pane.id);
             let first = menu.item_link(0, "section").unwrap();
