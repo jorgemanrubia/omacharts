@@ -6,6 +6,8 @@ parent: indicators/volume
 nav_order: 3
 ---
 
+A market profile, devised by J. Peter Steidlmayer at the Chicago Board of Trade in the 1980s, shows where the market spent its time rather than how it moved. Prices it kept returning to are where buyers and sellers agreed on value; prices it passed through quickly are where one side was in control. The shape of a session's profile tells a balanced day, trading around one price, from one that moved away to find another.
+
 For each reset period, how long the price spent at each price. The period is cut into **TPO periods**, half an hour each unless you choose otherwise, lettered A to Z and then a to z. Every row the bars of a TPO period reach gets that period's letter once, however many of its bars touch the row, so a row's letters read left to right in the order the price visited it. The row with the most letters is the **point of control**, and the **value area** is the rows around it that hold the given share of every letter in the period.
 
 | Drawn | Legend | Type to add | CLI |
