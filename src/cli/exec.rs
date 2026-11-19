@@ -3333,12 +3333,18 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
     });
     // Only a volume profile has these, so only a volume profile says them.
     if kind == omacharts_engine::DrawingKind::Profile {
+        let strengths = style.profile_strengths();
         out["profile"] = json!({
             "poc_color": style.profile.poc.spell(),
             "style": style.profile.shape.key(),
             "align": style.profile.align.key(),
             "value_area": style.profile.value_area,
             "transparency": 1.0 - style.profile_alpha(),
+            // Each part as drawn, whether set apart or following the rows.
+            "value_area_transparency": 1.0 - strengths.value_area,
+            "outside_transparency": 1.0 - strengths.outside,
+            "outline_transparency": 1.0 - strengths.outline_in(style.profile.shape),
+            "poc_transparency": 1.0 - strengths.poc,
             "highlight_value_area": style.profile.highlight,
             // Null while it is the background's own.
             "value_area_color": style.profile.value_area_paint.as_ref().map(|paint| paint.spell()),
@@ -3566,6 +3572,9 @@ struct StyleEdits {
     align: Option<omacharts_engine::drawings::ProfileAlign>,
     value_area: Option<f64>,
     transparency: Option<f64>,
+    /// How solid each part of a profile is drawn, set apart from its rows';
+    /// `Some(None)` follows them again.
+    parts: Parts,
     /// Whether a profile sets its value area apart.
     highlight: Option<bool>,
     /// The value area's own colour; `Some(None)` gives it back the
@@ -3809,6 +3818,7 @@ impl StyleEdits {
             align,
             value_area: bounded(m, "value-area", 0.1, 1.0)?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            parts: Parts::of(m)?,
             highlight: switch("highlight-value-area")?,
             area_paint,
             poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
@@ -3856,6 +3866,7 @@ impl StyleEdits {
             && self.align.is_none()
             && self.value_area.is_none()
             && self.transparency.is_none()
+            && self.parts.is_empty()
             && self.highlight.is_none()
             && self.area_paint.is_none()
             && self.poc_width.is_none()
@@ -4087,6 +4098,17 @@ impl StyleEdits {
         }
         if let Some(clear) = self.transparency {
             style.set_profile_alpha(1.0 - clear);
+        }
+        let look = &mut style.profile;
+        for (part, field) in [
+            (self.parts.value_area, &mut look.value_area_alpha),
+            (self.parts.outside, &mut look.outside_alpha),
+            (self.parts.outline, &mut look.outline_alpha),
+            (self.parts.poc, &mut look.poc_alpha),
+        ] {
+            if let Some(alpha) = part {
+                *field = alpha;
+            }
         }
         if let Some(on) = self.highlight {
             style.profile.highlight = on;
@@ -4452,6 +4474,9 @@ struct Edits {
     d_style: Option<LineStyle>,
     /// How far a volume profile fades, 0 as designed.
     transparency: Option<f64>,
+    /// How solid each part of a profile is drawn, set apart from its rows';
+    /// `Some(None)` follows them again.
+    parts: Parts,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     /// `Some(None)` puts volume back on the chart's own colouring, and a
@@ -4633,6 +4658,7 @@ impl Edits {
             signal_style: line_style(m, "signal-style")?,
             d_style: line_style(m, "d-style")?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            parts: Parts::of(m)?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -4774,6 +4800,7 @@ impl Edits {
             && self.signal_style.is_none()
             && self.d_style.is_none()
             && self.transparency.is_none()
+            && self.parts.is_empty()
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
@@ -4959,7 +4986,7 @@ impl Edits {
             }
         }
         if let Some(on) = self.last_only {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["last_only"] = json!(on),
                 false => return Err(refuse("last period")),
             }
@@ -5001,7 +5028,7 @@ impl Edits {
             }
         }
         if let Some(on) = self.last_only {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["last_only"] = json!(on),
                 false => return Err(refuse("last period")),
             }
@@ -5024,14 +5051,29 @@ impl Edits {
             }
         }
         if let Some(clear) = self.transparency {
-            match kind == IndicatorKind::VolumeProfile {
-                true => {
+            match kind {
+                IndicatorKind::VolumeProfile => {
                     // The strength it is drawn at, from solid at 0 to gone at
                     // 1; a fade saved by an older build is let go of.
                     params["alpha"] = json!(1.0 - clear);
                     params["opacity"] = json!(omacharts_engine::indicators::profile::opaque());
                 }
-                false => return Err(refuse("transparency")),
+                IndicatorKind::MarketProfile => params["alpha"] = json!(1.0 - clear),
+                _ => return Err(refuse("transparency")),
+            }
+        }
+        let profiles = matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile);
+        for (part, key, what, kinds) in [
+            (self.parts.value_area, "value_area_alpha", "value area transparency", profiles),
+            (self.parts.outside, "outside_alpha", "outside transparency", profiles),
+            (self.parts.outline, "outline_alpha", "outline transparency", kind == IndicatorKind::VolumeProfile),
+            (self.parts.poc, "poc_alpha", "point of control transparency", profiles),
+        ] {
+            if let Some(alpha) = part {
+                match kinds {
+                    true => params[key] = json!(alpha),
+                    false => return Err(refuse(what)),
+                }
             }
         }
         if let Some(on) = self.highlight {
@@ -5397,6 +5439,36 @@ fn read_fib_levels(text: &str) -> Result<Vec<f64>, Fault> {
             })
         })
         .collect()
+}
+
+/// How solid each part of a profile is drawn, from the transparency flags
+/// that set it apart from its rows': 0-1 as `--transparency` is, or
+/// `default` to follow the rows again. Held as strengths.
+#[derive(Default)]
+struct Parts {
+    value_area: Option<Option<f64>>,
+    outside: Option<Option<f64>>,
+    outline: Option<Option<f64>>,
+    poc: Option<Option<f64>>,
+}
+
+impl Parts {
+    fn of(m: &clap::ArgMatches) -> Result<Parts, Fault> {
+        let part = |id: &str| match arg(m, id).map(String::as_str) {
+            Some("default") => Ok(Some(None)),
+            _ => Ok(bounded(m, id, 0.0, 1.0)?.map(|clear| Some(1.0 - clear))),
+        };
+        Ok(Parts {
+            value_area: part("value-area-transparency")?,
+            outside: part("outside-transparency")?,
+            outline: part("outline-transparency")?,
+            poc: part("poc-transparency")?,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.value_area.is_none() && self.outside.is_none() && self.outline.is_none() && self.poc.is_none()
+    }
 }
 
 fn bounded(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
@@ -10793,6 +10865,76 @@ mod tests {
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// Each part of a profile is made more or less transparent on its own by
+    /// a flag named as its row is, on a volume profile study, a market
+    /// profile and a drawing alike, and `default` sets it following the
+    /// rows' again; a market profile has no outline.
+    #[test]
+    fn a_profiles_parts_are_made_transparent_one_by_one() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        run("chart indicator add volume_profile --book Macro", &store);
+        run("chart indicator add market_profile --book Macro", &store);
+        let params = |store: &Store, at: usize| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][at]["params"].clone()
+        };
+        let near = |value: &serde_json::Value, want: f64| (value.as_f64().unwrap_or(f64::NAN) - want).abs() < 1e-9;
+        let parts = ["value_area_alpha", "outside_alpha", "outline_alpha", "poc_alpha"];
+        for at in [0, 1] {
+            let stored = params(&store, at);
+            assert!(parts.iter().all(|part| stored.get(part).is_none()), "unset, and not written: {stored}");
+        }
+
+        let all = "--value-area-transparency 0.2 --outside-transparency 0.9 --poc-transparency 0.5";
+        let out = run(&format!("chart indicator set volume_profile --book Macro {all} --outline-transparency 0.4"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store, 0);
+        for (part, want) in parts.iter().zip([0.8, 0.1, 0.6, 0.5]) {
+            assert!(near(&stored[part], want), "{part}: {stored}");
+        }
+        let out = run("chart indicator set volume_profile --book Macro --outside-transparency default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store, 0);
+        assert!(stored["outside_alpha"].is_null(), "following the rows again: {stored}");
+        assert!(near(&stored["value_area_alpha"], 0.8), "the rest kept: {stored}");
+
+        let out = run(&format!("chart indicator set market_profile --book Macro {all} --transparency 0.3 --last-only on"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let stored = params(&store, 1);
+        assert!(near(&stored["alpha"], 0.7), "{stored}");
+        assert_eq!(stored["last_only"], true, "{stored}");
+        for (part, want) in parts.iter().zip([0.8, 0.1, f64::NAN, 0.5]) {
+            assert!(want.is_nan() || near(&stored[part], want), "{part}: {stored}");
+        }
+        let out = run("chart indicator set market_profile --book Macro --outline-transparency 0.4", &store);
+        assert_ne!(out.code, 0, "a market profile has no outline");
+        let out = run("chart indicator set market_profile --book Macro --poc-transparency 2", &store);
+        assert_eq!(out.code, crate::cli::EXIT_USAGE, "{}", out.err);
+
+        let span = "--book Macro --from 2026-10-14,1 --to 2026-10-21,1";
+        let out = run(&format!("chart drawing add profile {span} {all} --outline-transparency 0.4"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][0]["style"]["profile"];
+        for (key, want) in [
+            ("value_area_transparency", 0.2),
+            ("outside_transparency", 0.9),
+            ("outline_transparency", 0.4),
+            ("poc_transparency", 0.5),
+        ] {
+            assert!(near(&profile[key], want), "{key}: {profile}");
+        }
+        let id = listed["drawings"][0]["id"].as_i64().unwrap();
+        let out = run(&format!("chart drawing set --book Macro --id {id} --poc-transparency default"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][0]["style"]["profile"];
+        let designed = 1.0 - omacharts_engine::drawings::PROFILE_POC_ALPHA;
+        assert!(near(&profile["poc_transparency"], designed), "its own again: {profile}");
     }
 
     /// A volume profile drawing measures, colours and reaches as the study

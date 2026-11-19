@@ -932,12 +932,12 @@ fn style_editor(
             // Reset sits before the swatch and greys out while there is
             // nothing to reset, as on every other colour with a Reset.
             let area_row = adw::ActionRow::new();
-            area_row.set_title(profile_rows::VALUE_AREA_COLOUR);
+            area_row.set_title(profile_rows::COLOUR);
             let reset = gtk::Button::with_label("Reset");
             reset.add_css_class("flat");
             reset.add_css_class("subtle-link");
             reset.set_valign(gtk::Align::Center);
-            reset.set_tooltip_text(Some("Back to the background's colour"));
+            reset.set_tooltip_text(Some("Back to the rows' colour"));
             area_row.add_suffix(&reset);
             let (button, show) = paint_button(&theme, &area_paint(&style.borrow()), {
                 let style = style.clone();
@@ -991,8 +991,7 @@ fn style_editor(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: Vec::new(),
-                    method: method_row.clone(),
-                    colouring: colouring_row.clone(),
+                    own: vec![method_row.clone().upcast(), colouring_row.clone().upcast()],
                     granularity,
                     value_area: area.clone().upcast(),
                 },
@@ -1118,8 +1117,45 @@ fn style_editor(
                 });
             shows.push(Rc::new(move |s: &Style| show(transparency_share(s))));
 
+            // Each part's own strength, following the rows' until set apart:
+            // shown again whenever the style is, which is after every change.
+            let mut strength = |title: &str,
+                                read: fn(&Style) -> f64,
+                                write: fn(&mut drawings::ProfileLook, f64)| {
+                let (row, show) = profile_rows::strength_row(title, read(&style.borrow()), {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |alpha| {
+                        write(&mut style.borrow_mut().profile, alpha);
+                        emit();
+                    }
+                });
+                shows.push(Rc::new(move |s: &Style| show(read(s))));
+                row
+            };
+            let outline_strength = strength(
+                profile_rows::OUTLINE_TRANSPARENCY,
+                |s| s.profile_strengths().outline_in(s.profile.shape),
+                |look, alpha| look.outline_alpha = Some(alpha),
+            );
+            let area_strength = strength(
+                profile_rows::TRANSPARENCY,
+                |s| s.profile_strengths().value_area,
+                |look, alpha| look.value_area_alpha = Some(alpha),
+            );
+            let outside_strength = strength(
+                profile_rows::OUTSIDE_TRANSPARENCY,
+                |s| s.profile_strengths().outside,
+                |look, alpha| look.outside_alpha = Some(alpha),
+            );
+            let poc_strength = strength(
+                profile_rows::TRANSPARENCY,
+                |s| s.profile_strengths().poc,
+                |look, alpha| look.poc_alpha = Some(alpha),
+            );
+
             let (show_poc, show) = profile_rows::switch_row(
-                profile_rows::SHOW_POC,
+                profile_rows::SHOW,
                 style.borrow().profile.show_poc,
                 {
                     let style = style.clone();
@@ -1139,7 +1175,7 @@ fn style_editor(
             };
             let (poc_colour, show) = paint_row(
                 &theme,
-                profile_rows::POC_COLOUR,
+                profile_rows::COLOUR,
                 &style.borrow().profile.poc,
                 {
                     let style = style.clone();
@@ -1156,7 +1192,7 @@ fn style_editor(
 
             let (poc_style, show) = pattern_row(
                 &poc_ink,
-                profile_rows::POC_STYLE,
+                profile_rows::LINE_STYLE,
                 style.borrow().profile.poc_style,
                 &showing,
                 {
@@ -1174,7 +1210,7 @@ fn style_editor(
             }));
 
             let (poc_thickness, show) = profile_rows::thickness_row(
-                profile_rows::POC_THICKNESS,
+                profile_rows::THICKNESS,
                 style.borrow().profile.poc_width,
                 {
                     let style = style.clone();
@@ -1189,7 +1225,7 @@ fn style_editor(
 
             let shapes = ProfileShape::ALL;
             let (shape, show) = named_row(
-                profile_rows::STYLE,
+                profile_rows::DISPLAY_AS,
                 &shapes.map(ProfileShape::label),
                 shapes.iter().position(|s| *s == style.borrow().profile.shape),
                 {
@@ -1237,40 +1273,52 @@ fn style_editor(
             });
             shows.push(Rc::new(move |s: &Style| show(s.profile.width)));
 
+            let groups = profile_rows::look_groups(profile_rows::LookRows {
+                style: profile_rows::StyleRows {
+                    display: shape.upcast(),
+                    colour: background.clone().upcast(),
+                    transparency: transparency.upcast(),
+                    outline: Some(profile_rows::OutlineRows {
+                        switch: edge,
+                        colour: outline_row.clone().upcast(),
+                        thickness: outline_thickness.upcast(),
+                        style: outline_pattern.upcast(),
+                        transparency: outline_strength.upcast(),
+                    }),
+                    ends: None,
+                    alignment: alignment.upcast(),
+                    width: width.upcast(),
+                },
+                value_area: profile_rows::ValueAreaRows {
+                    highlight,
+                    colour: area_row.upcast(),
+                    transparency: area_strength.upcast(),
+                    outside: outside_strength.upcast(),
+                },
+                poc: profile_rows::PocRows {
+                    show: show_poc,
+                    colour: poc_colour.upcast(),
+                    thickness: Some(poc_thickness.upcast()),
+                    style: Some(poc_style.upcast()),
+                    transparency: poc_strength.upcast(),
+                },
+            });
             // A delta is painted in its colouring, outline and all: the
-            // rows' colour and the outline's colour are a total's.
+            // rows' colour and the outline's colour are a total's, and it
+            // has no value area.
+            let mut total_only: Vec<gtk::Widget> = vec![outline_row.upcast(), background.upcast()];
+            total_only.extend(
+                groups.iter().filter(|g| g.title() == profile_rows::VALUE_AREA_GROUP).map(|g| g.clone().upcast()),
+            );
             let follow = profile_rows::follow_method(
                 &method_row,
-                profile_rows::ByMethod {
-                    value_area: area.upcast(),
-                    highlight: Some(highlight.clone()),
-                    value_area_colour: Some(area_row.clone().upcast()),
-                    colouring: colouring_row,
-                    total_only: vec![outline_row.clone().upcast(), background.clone().upcast()],
-                },
+                profile_rows::ByMethod { value_area: area.upcast(), colouring: colouring_row, total_only },
             );
             shows.push(Rc::new(move |s: &Style| {
                 show_method(s.profile.method);
                 follow(s.profile.method);
             }));
-
-            more.push(profile_rows::style_group(profile_rows::StyleRows {
-                outline: edge,
-                outline_colour: outline_row.upcast(),
-                outline_style: outline_pattern.upcast(),
-                outline_thickness: outline_thickness.upcast(),
-                colour: background.upcast(),
-                transparency: transparency.upcast(),
-                highlight,
-                value_area_colour: area_row.upcast(),
-                show_poc,
-                poc_colour: poc_colour.upcast(),
-                poc_style: poc_style.upcast(),
-                poc_thickness: poc_thickness.upcast(),
-                style: shape.upcast(),
-                alignment: alignment.upcast(),
-                width: width.upcast(),
-            }));
+            more.extend(groups);
         }
         // The study's rows, in the study's order and groups: what it is
         // worked out from, the line, then a group for each band.
@@ -2002,9 +2050,10 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
         (true, Some(paint)) => paint.hex(theme),
         _ => fill.clone(),
     };
-    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    use omacharts_engine::indicators::profile::line_alpha;
     let alpha = style.profile_alpha();
-    let (inside_alpha, outside_alpha) = row_alphas(alpha, style.profile.highlight);
+    let strengths = style.profile_strengths();
+    let (inside_alpha, outside_alpha) = strengths.row_pair(style.profile.highlight);
     // A swatch is small: its faintest rows are kept in sight while the
     // profile is in sight at all.
     let least = 0.12 * line_alpha(1.0, alpha);
@@ -2034,12 +2083,12 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
                 cr.rectangle(left, y + n as f64 * row_h, width, row_h);
                 let _ = cr.fill();
             }
-            let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-            colors::set_source_alpha(cr, &colour, line_alpha(edge, alpha));
+            let edge = if style.border { strengths.edge } else { 0.0 };
+            colors::set_source_alpha(cr, &colour, edge);
             cr.set_line_width(1.0);
         }
         ProfileShape::Outline => {
-            colors::set_source_alpha(cr, &colour, line_alpha(1.0, alpha));
+            colors::set_source_alpha(cr, &colour, strengths.outline);
             cr.set_line_width(style.width.clamp(1.0, 2.0));
         }
     }
@@ -2052,7 +2101,7 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
         return;
     }
     let poc = (y + 3.5 * row_h).round() + 0.5;
-    colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
+    colors::set_source_alpha(cr, &style.profile.poc.hex(theme), strengths.poc);
     let poc_w = style.profile.poc_width.clamp(1.0, 2.0);
     cr.set_line_width(poc_w);
     cr.set_dash(&style.profile.poc_style.dashes(poc_w), 0.0);
@@ -2067,13 +2116,14 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
 /// its side's colour of the profile's colouring, fill and edge alike, as
 /// the chart paints them, and the point of control at the greatest.
 fn delta_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w, h): (f64, f64, f64, f64)) {
-    use omacharts_engine::indicators::profile::{line_alpha, row_alphas};
+    use omacharts_engine::indicators::profile::line_alpha;
     let rows: [f64; 7] = [0.25, -0.4, 0.6, 1.0, -0.7, -0.35, 0.2];
     let row_h = h / rows.len() as f64;
     let (house, swapped) = HOUSE_LOOK.get();
     let (up, down) = crate::ui::chart::delta_colours(style.profile.colouring, theme, house, swapped);
     let alpha = style.profile_alpha();
-    let (strength, _) = row_alphas(alpha, true);
+    let strengths = style.profile_strengths();
+    let strength = strengths.rows;
     let least = 0.12 * line_alpha(1.0, alpha);
     let right = style.profile.align == ProfileAlign::Right;
     for (n, share) in rows.iter().enumerate() {
@@ -2085,12 +2135,12 @@ fn delta_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w
             ProfileShape::Filled => {
                 colors::set_source_alpha(cr, side, strength.max(least));
                 let _ = cr.fill_preserve();
-                let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
-                colors::set_source_alpha(cr, side, line_alpha(edge, alpha));
+                let edge = if style.border { strengths.edge } else { 0.0 };
+                colors::set_source_alpha(cr, side, edge);
                 cr.set_line_width(1.0);
             }
             ProfileShape::Outline => {
-                colors::set_source_alpha(cr, side, line_alpha(1.0, alpha));
+                colors::set_source_alpha(cr, side, strengths.outline);
                 cr.set_line_width(style.width.clamp(1.0, 2.0));
             }
         }
@@ -2102,7 +2152,7 @@ fn delta_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w
         return;
     }
     let poc = (y + 3.5 * row_h).round() + 0.5;
-    colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
+    colors::set_source_alpha(cr, &style.profile.poc.hex(theme), strengths.poc);
     let poc_w = style.profile.poc_width.clamp(1.0, 2.0);
     cr.set_line_width(poc_w);
     cr.set_dash(&style.profile.poc_style.dashes(poc_w), 0.0);
@@ -3283,20 +3333,49 @@ mod tests {
             );
 
             assert_eq!(drawing, study);
-            // The value area set apart, and its colour, are how it looks:
-            // Style's, after the rows' colour and before the point of
-            // control, for a market profile study too.
+            // Every profile dialog is laid out alike: the same groups in the
+            // same order, the same rows in each, what only one kind has where
+            // the other's would be.
+            use profile_rows as r;
+            let names = |rows: &[&str]| rows.iter().map(|row| row.to_string()).collect::<Vec<_>>();
+            let volume = |parameters: &[&str]| {
+                vec![
+                    ("Parameters".to_string(), names(parameters)),
+                    (r::STYLE_GROUP.to_string(), names(&[
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::TRANSPARENCY, r::OUTLINE,
+                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OUTLINE_TRANSPARENCY,
+                    ])),
+                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::TRANSPARENCY, r::OUTSIDE_TRANSPARENCY])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE, r::TRANSPARENCY])),
+                ]
+            };
+            assert_eq!(
+                drawing,
+                volume(&[r::METHOD, r::COLOURING, r::AUTOMATIC, r::ROWS, r::VALUE_AREA]),
+                "a drawing has no period"
+            );
+            let study = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::VolumeProfile);
+            assert_eq!(
+                study,
+                volume(&["Reset every", r::LAST_ONLY, r::METHOD, r::COLOURING, r::AUTOMATIC, r::ROWS, r::VALUE_AREA])
+            );
             let market = chart_settings::profile_titles(&window, omacharts_engine::indicators::Kind::MarketProfile);
-            for groups in [&drawing, &market] {
-                let rows = |title: &str| groups.iter().find(|(t, _)| t == title).map(|(_, rows)| rows.clone()).unwrap_or_default();
-                let (parameters, style) = (rows("Parameters"), rows("Style"));
-                assert!(!parameters.iter().any(|row| row == profile_rows::HIGHLIGHT || row == profile_rows::VALUE_AREA_COLOUR), "{groups:?}");
-                let at = |title: &str| style.iter().position(|row| row == title).unwrap_or_else(|| panic!("{title} in {style:?}"));
-                assert_eq!(at(profile_rows::VALUE_AREA_COLOUR), at(profile_rows::HIGHLIGHT) + 1, "{style:?}");
-                assert_eq!(at(profile_rows::SHOW_POC), at(profile_rows::VALUE_AREA_COLOUR) + 1, "{style:?}");
-                let colour = style.iter().position(|row| row == profile_rows::COLOUR);
-                assert!(colour.is_some_and(|colour| colour < at(profile_rows::HIGHLIGHT)), "{style:?}");
-            }
+            assert_eq!(
+                market,
+                vec![
+                    ("Parameters".to_string(), names(&[
+                        "Reset every", r::LAST_ONLY, chart_settings::MARKET_MINUTES_LABEL, r::AUTOMATIC_HEIGHT,
+                        chart_settings::MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
+                    ])),
+                    (r::STYLE_GROUP.to_string(), names(&[
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::TRANSPARENCY, r::FIRST_LAST,
+                        r::FIRST_COLOUR, r::LAST_COLOUR,
+                    ])),
+                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::TRANSPARENCY, r::OUTSIDE_TRANSPARENCY])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::TRANSPARENCY])),
+                ],
+                "the volume profile's, less its method and outline, a line's thickness and style"
+            );
             assert!(
                 drawing
                     .iter()

@@ -187,6 +187,91 @@ pub fn row_alphas(alpha: f64, highlight: bool) -> (f64, f64) {
     }
 }
 
+/// What a volume profile was given of its own for how solid each part of it
+/// is drawn, past its rows' strength: each unset follows that strength as
+/// it always did. Stored as strengths, 0 nothing and 1 solid; each
+/// Transparency row is one minus its strength.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Alphas {
+    /// The value area's rows, while it is highlighted.
+    pub value_area: Option<f64>,
+    /// The rows outside the value area, while it is highlighted.
+    pub outside: Option<f64>,
+    /// The outline: the edge round filled rows, or all of the outline style.
+    pub outline: Option<f64>,
+    /// The point of control's line.
+    pub poc: Option<f64>,
+}
+
+/// How solid each part of a volume profile is drawn: its rows', and what
+/// [`Alphas`] sets apart from them, or follows them when unset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strengths {
+    /// Every row while the value area is not highlighted.
+    pub rows: f64,
+    pub value_area: f64,
+    pub outside: f64,
+    /// The edge round filled rows.
+    pub edge: f64,
+    /// The outline style's line, which is all of that style.
+    pub outline: f64,
+    pub poc: f64,
+}
+
+/// A stored strength as one a profile can be drawn at: inside nothing to
+/// solid, and `otherwise` for anything that is not a number.
+fn held(alpha: Option<f64>, otherwise: f64) -> f64 {
+    match alpha {
+        Some(alpha) if alpha.is_finite() => alpha.clamp(0.0, 1.0),
+        _ => otherwise,
+    }
+}
+
+impl Strengths {
+    /// The study's, its rows at `alpha`: the edge at
+    /// [`crate::drawings::PROFILE_EDGE_ALPHA`] whatever the rows, and the
+    /// outline style's line following them.
+    pub fn study(alpha: f64, set: &Alphas) -> Strengths {
+        Strengths::with_lines(alpha, set, crate::drawings::PROFILE_EDGE_ALPHA, line_alpha(0.75, alpha))
+    }
+
+    /// A drawing's, its rows at `alpha`: the edge and the outline style's
+    /// line both following them.
+    pub fn drawing(alpha: f64, set: &Alphas) -> Strengths {
+        let edge = line_alpha(crate::drawings::PROFILE_EDGE_ALPHA, alpha);
+        Strengths::with_lines(alpha, set, edge, line_alpha(1.0, alpha))
+    }
+
+    fn with_lines(alpha: f64, set: &Alphas, edge: f64, outline: f64) -> Strengths {
+        Strengths {
+            rows: alpha,
+            value_area: held(set.value_area, alpha),
+            outside: held(set.outside, alpha * OUTSIDE_SHARE),
+            edge: held(set.outline, edge),
+            outline: held(set.outline, outline),
+            poc: held(set.poc, crate::drawings::PROFILE_POC_ALPHA),
+        }
+    }
+
+    /// The value area's rows and the rest: apart while it is highlighted,
+    /// every row alike when not.
+    pub fn row_pair(&self, highlight: bool) -> (f64, f64) {
+        match highlight {
+            true => (self.value_area, self.outside),
+            false => (self.rows, self.rows),
+        }
+    }
+
+    /// The outline's strength as drawn in `style`: the edge round filled
+    /// rows, or the outline style's line.
+    pub fn outline_in(&self, style: Style) -> f64 {
+        match style {
+            Style::Filled => self.edge,
+            Style::Outline => self.outline,
+        }
+    }
+}
+
 /// A line drawn with the rows, an outline or an edge, at the strength it
 /// was designed at beside rows at [`DESIGNED_ALPHA`], following them as they
 /// are made fainter or stronger: gone with them at 100% transparency, and
@@ -1316,6 +1401,37 @@ mod tests {
         assert!((line_alpha(0.45, DESIGNED_ALPHA * 0.5) - 0.225).abs() < 1e-12);
         assert_eq!(line_alpha(1.0, 1.0), 1.0);
         assert_eq!(line_alpha(0.45, 0.0), 0.0);
+    }
+
+    /// Unset, each part of a volume profile is drawn as it always was,
+    /// the study's and a drawing's; set, each keeps its own whatever the
+    /// rows, and the rest follow them.
+    #[test]
+    fn a_volume_profiles_strengths_are_as_they_were_until_set() {
+        use crate::drawings::{PROFILE_EDGE_ALPHA, PROFILE_POC_ALPHA};
+        let unset = Alphas::default();
+        for alpha in [DESIGNED_ALPHA, 0.6, 1.0, 0.0] {
+            for highlight in [true, false] {
+                let study = Strengths::study(alpha, &unset);
+                assert_eq!(study.row_pair(highlight), row_alphas(alpha, highlight));
+                assert_eq!(study.outline_in(Style::Filled), PROFILE_EDGE_ALPHA);
+                assert_eq!(study.outline_in(Style::Outline), line_alpha(0.75, alpha));
+                assert_eq!(study.poc, PROFILE_POC_ALPHA);
+                let drawing = Strengths::drawing(alpha, &unset);
+                assert_eq!(drawing.row_pair(highlight), row_alphas(alpha, highlight));
+                assert_eq!(drawing.outline_in(Style::Filled), line_alpha(PROFILE_EDGE_ALPHA, alpha));
+                assert_eq!(drawing.outline_in(Style::Outline), line_alpha(1.0, alpha));
+                assert_eq!(drawing.poc, PROFILE_POC_ALPHA);
+            }
+        }
+        let own = Alphas { value_area: Some(0.5), outside: Some(0.05), outline: Some(0.2), poc: Some(0.6) };
+        let study = Strengths::study(DESIGNED_ALPHA, &own);
+        assert_eq!(study.row_pair(true), (0.5, 0.05));
+        assert_eq!(study.row_pair(false), (DESIGNED_ALPHA, DESIGNED_ALPHA), "every row alike, not highlighted");
+        assert_eq!((study.edge, study.outline, study.poc), (0.2, 0.2, 0.6));
+        let wild = Alphas { value_area: Some(f64::NAN), outside: Some(-1.0), outline: Some(2.0), poc: None };
+        let study = Strengths::study(DESIGNED_ALPHA, &wild);
+        assert_eq!((study.value_area, study.outside, study.edge), (DESIGNED_ALPHA, 0.0, 1.0));
     }
 
     #[test]

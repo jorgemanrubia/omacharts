@@ -398,6 +398,10 @@ impl Kind {
                 opacity: 1.0,
                 highlight: true,
                 value_area_color: None,
+                value_area_alpha: None,
+                outside_alpha: None,
+                outline_alpha: None,
+                poc_alpha: None,
                 last_only: false,
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
@@ -422,6 +426,11 @@ impl Kind {
                 first_last: false,
                 first_color: None,
                 last_color: None,
+                alpha: None,
+                value_area_alpha: None,
+                outside_alpha: None,
+                poc_alpha: None,
+                last_only: false,
                 merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
@@ -566,6 +575,18 @@ pub enum Params {
         /// which is what it always was.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_area_color: Option<ColorChoice>,
+        /// How solid the value area's rows, the rows outside it, the outline
+        /// and the point of control are drawn, each set apart from `alpha`.
+        /// Unset, each follows it as it always did. See
+        /// [`profile::Strengths`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outside_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outline_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        poc_alpha: Option<f64>,
         /// Whether only the newest period's profile is drawn, the ones
         /// before it left out. Missing, every period is, as before it could
         /// be chosen.
@@ -650,6 +671,24 @@ pub enum Params {
         /// from its down colour: see [`crate::theme::Theme::last_tpo`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_color: Option<ColorChoice>,
+        /// How solid its rows are drawn, as letters: unset, as designed. A
+        /// block is drawn as much fainter as its design is. See
+        /// [`market::Strengths`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alpha: Option<f64>,
+        /// The value area's rows, the rows outside it and the point of
+        /// control's, each set apart from `alpha`; unset, each follows it as
+        /// designed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outside_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        poc_alpha: Option<f64>,
+        /// Whether only the newest period's profile is drawn, as a volume
+        /// profile's can be. Missing, every period is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        last_only: bool,
         /// Where each period starts that was merged into the one before it,
         /// as a volume profile's: kept by the chart, never with the
         /// indicator, and handed in to be drawn. See [`profile::Merge`].
@@ -1717,7 +1756,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 )
             }))
         }
-        (Kind::MarketProfile, Params::MarketProfile { reset, minutes, row_ticks, value_area, merged, .. }) => {
+        (Kind::MarketProfile, Params::MarketProfile { reset, minutes, row_ticks, value_area, merged, last_only, .. }) => {
             let known = context.instrument.and_then(Instrument::tick_size).or(context.ladders.map(|held| held.tick_size));
             Output::MarketProfiles(market::compute(
                 bars,
@@ -1728,6 +1767,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 *value_area,
                 market::tick_size(bars, known, kind),
                 merged,
+                *last_only,
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {

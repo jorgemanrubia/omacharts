@@ -37,6 +37,68 @@ pub const MAX_MINUTES: u32 = 1_440;
 /// The tallest a row may be set to, in ticks.
 pub const MAX_ROW_TICKS: u32 = 10_000;
 
+/// How solid each sort of row is drawn as designed, as letters and as
+/// blocks: the rows outside the value area, those in it, and the point of
+/// control's. Blocks are fainter, a filled cell weighing more than a letter.
+pub const LETTER_ALPHAS: [f64; 3] = [0.55, 0.95, 1.0];
+pub const BLOCK_ALPHAS: [f64; 3] = [0.28, 0.55, 0.8];
+
+/// How solid each sort of row is drawn, as letters: every row while the
+/// value area is not highlighted, the value area's and the rest's while it
+/// is, and the point of control's. What a market profile was given of its
+/// own, each unset following [`LETTER_ALPHAS`] as designed. Blocks are drawn
+/// as much fainter than these as [`BLOCK_ALPHAS`] are than letters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strengths {
+    pub rows: f64,
+    pub value_area: f64,
+    pub outside: f64,
+    pub poc: f64,
+}
+
+/// A stored strength inside nothing to solid, or `otherwise` for anything
+/// that is not a number.
+fn held(alpha: Option<f64>, otherwise: f64) -> f64 {
+    match alpha {
+        Some(alpha) if alpha.is_finite() => alpha.clamp(0.0, 1.0),
+        _ => otherwise,
+    }
+}
+
+impl Strengths {
+    /// From a market profile's own `alpha` for its rows and those it set
+    /// apart from them: the value area as the rows, the rest the designed
+    /// share of them, the point of control solid.
+    pub fn of(alpha: Option<f64>, value_area: Option<f64>, outside: Option<f64>, poc: Option<f64>) -> Strengths {
+        let [out, inside, at_poc] = LETTER_ALPHAS;
+        let rows = held(alpha, inside);
+        Strengths {
+            rows,
+            value_area: held(value_area, rows),
+            // Exactly as designed while the rows are.
+            outside: held(outside, if alpha.is_none() { out } else { rows * out / inside }),
+            poc: held(poc, at_poc),
+        }
+    }
+
+    /// The same as blocks are drawn: each of the designed ones exactly as
+    /// designed, the rest as much fainter as their design.
+    pub fn as_blocks(&self) -> Strengths {
+        let [out, inside, poc] = LETTER_ALPHAS;
+        let [b_out, b_inside, b_poc] = BLOCK_ALPHAS;
+        let scale = |v: f64, designed: f64, block: f64| match v == designed {
+            true => block,
+            false => (v * block / designed).clamp(0.0, 1.0),
+        };
+        Strengths {
+            rows: scale(self.rows, inside, b_inside),
+            value_area: scale(self.value_area, inside, b_inside),
+            outside: scale(self.outside, out, b_out),
+            poc: scale(self.poc, poc, b_poc),
+        }
+    }
+}
+
 /// How each TPO is drawn: its period's letter, or a block.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -188,6 +250,9 @@ pub fn auto_row_ticks(bars: &[Bar], periods: &[(usize, usize)], tick_size: f64) 
 /// A period whose start is in `merged` is folded into the one before it,
 /// as a volume profile's is: one composite of them all, its TPO periods
 /// lettered afresh from each part's first bar, as they were apart.
+///
+/// `last_only` profiles the newest period alone, in rows of the height
+/// every period's would be, as a volume profile's is.
 #[allow(clippy::too_many_arguments)]
 pub fn compute(
     bars: &[Bar],
@@ -198,6 +263,7 @@ pub fn compute(
     value_area: f64,
     tick_size: f64,
     merged: &[i64],
+    last_only: bool,
 ) -> Vec<MarketProfile> {
     if bars.is_empty() || !(tick_size > 0.0 && tick_size.is_finite()) {
         return Vec::new();
@@ -219,7 +285,8 @@ pub fn compute(
     // Where each period apart starts: a composite's parts.
     let mut alone = alone.iter().map(|&(from, _)| from).peekable();
     let mut cuts = Vec::new();
-    for &(from, to) in periods {
+    let skipped = if last_only { periods.len().saturating_sub(1) } else { 0 };
+    for (at, &(from, to)) in periods.iter().enumerate() {
         cuts.clear();
         while let Some(&start) = alone.peek() {
             if start >= to {
@@ -229,6 +296,9 @@ pub fn compute(
                 cuts.push(start - from);
             }
             alone.next();
+        }
+        if at < skipped {
+            continue;
         }
         let bucket = reset.bucket(bars[from].ts, session_origin);
         let slice = &bars[from..to];
@@ -399,7 +469,7 @@ mod tests {
             bar(1_800, 12.0, 13.0),
             bar(4 * 1_800, 11.0, 11.0),
         ];
-        let profiles = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[]);
+        let profiles = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false);
         assert_eq!(profiles.len(), 1);
         let profile = &profiles[0];
         let text = |row: usize| profile.letters_of(row).iter().map(|l| letter(*l)).collect::<String>();
@@ -418,7 +488,7 @@ mod tests {
     fn one_profile_per_period_at_one_row_height() {
         const DAY: i64 = 86_400;
         let bars = vec![bar(0, 100.0, 101.0), bar(60, 100.5, 102.0), bar(DAY, 200.0, 230.0), bar(DAY + 60, 199.0, 200.0)];
-        let profiles = compute(&bars, Reset::Session, 0, 30, None, 0.7, 0.25, &[]);
+        let profiles = compute(&bars, Reset::Session, 0, 30, None, 0.7, 0.25, &[], false);
         assert_eq!(profiles.len(), 2);
         assert_eq!((profiles[0].profile.first_bar, profiles[0].profile.last_bar), (0, 1));
         assert_eq!((profiles[1].profile.first_bar, profiles[1].profile.last_bar), (2, 3));
@@ -462,9 +532,9 @@ mod tests {
             bar(DAY + 1_800, 12.0, 12.0),
             bar(2 * DAY, 20.0, 20.0),
         ];
-        let apart = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[]);
+        let apart = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false);
         assert_eq!(apart.len(), 3);
-        let merged = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY]);
+        let merged = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY], false);
         assert_eq!(merged.len(), 2);
         let composite = &merged[0];
         assert_eq!(composite.profile.parts, vec![0, DAY]);
@@ -476,11 +546,11 @@ mod tests {
         // The session after it is as it was apart.
         assert_eq!(merged[1], apart[2]);
         // Every period merged: one profile of them all.
-        let all = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY, 2 * DAY]);
+        let all = compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY, 2 * DAY], false);
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].profile.parts, vec![0, DAY, 2 * DAY]);
         // A merge with nothing before it on the chart is left alone.
-        assert_eq!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[0]), apart);
+        assert_eq!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[0], false), apart);
     }
 
     /// The first TPO period is the first letter of each row it reached and
@@ -489,7 +559,7 @@ mod tests {
     #[test]
     fn the_first_and_last_tpo_periods_are_found_in_their_rows() {
         let bars = vec![bar(0, 10.0, 12.0), bar(1_800, 12.0, 13.0), bar(3_600, 11.0, 11.0)];
-        let profile = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[])[0];
+        let profile = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false)[0];
         // Rows 10 to 13: A, AC, AB, B.
         let ends = |row: usize| (0..profile.letters_of(row).len()).map(|k| profile.end_of(row, k)).collect::<Vec<_>>();
         assert_eq!(ends(0), vec![(true, false)]);
@@ -497,12 +567,12 @@ mod tests {
         assert_eq!(ends(2), vec![(true, false), (false, false)]);
         assert_eq!(ends(3), vec![(false, false)]);
         // A period of one TPO is its own first and last.
-        let one = &compute(&bars[..1], Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[])[0];
+        let one = &compute(&bars[..1], Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[], false)[0];
         assert_eq!(one.end_of(0, 0), (true, true));
 
         const DAY: i64 = 86_400;
         let bars = vec![bar(0, 10.0, 11.0), bar(1_800, 11.0, 11.0), bar(DAY, 10.0, 10.0), bar(DAY + 1_800, 12.0, 12.0)];
-        let composite = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY])[0];
+        let composite = &compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 1.0, &[DAY], false)[0];
         // Rows 10 to 12: Monday's A and Tuesday's, Monday's A and B, Tuesday's B.
         let ends = |row: usize| (0..composite.letters_of(row).len()).map(|k| composite.end_of(row, k)).collect::<Vec<_>>();
         assert_eq!(ends(0), vec![(true, false), (false, false)]);
@@ -510,9 +580,53 @@ mod tests {
         assert_eq!(ends(2), vec![(false, true)]);
     }
 
+    /// In the last period only, the newest period is profiled alone,
+    /// exactly as it is beside the others.
+    #[test]
+    fn the_last_period_only_is_the_newest_profile_as_it_was() {
+        const DAY: i64 = 86_400;
+        let bars = vec![bar(0, 10.0, 11.0), bar(DAY, 10.0, 12.0), bar(2 * DAY, 11.0, 14.0)];
+        let every = compute(&bars, Reset::Session, 0, 30, None, 0.7, 1.0, &[], false);
+        let last = compute(&bars, Reset::Session, 0, 30, None, 0.7, 1.0, &[], true);
+        assert_eq!(every.len(), 3);
+        assert_eq!(last, vec![every[2].clone()]);
+        // A composite of the newest two is the newest period.
+        let merged = compute(&bars, Reset::Session, 0, 30, None, 0.7, 1.0, &[2 * DAY], true);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].profile.parts, vec![DAY, 2 * DAY]);
+    }
+
+    /// Unset, every strength is the one designed, as letters and as blocks
+    /// to the bit; set, a block is as much fainter as designed, and what was
+    /// not set apart follows the rows.
+    #[test]
+    fn a_market_profiles_strengths_are_as_designed_until_set() {
+        let designed = Strengths::of(None, None, None, None);
+        assert_eq!(
+            [designed.outside, designed.value_area, designed.poc, designed.rows],
+            [LETTER_ALPHAS[0], LETTER_ALPHAS[1], LETTER_ALPHAS[2], LETTER_ALPHAS[1]]
+        );
+        let blocks = designed.as_blocks();
+        assert_eq!(
+            [blocks.outside, blocks.value_area, blocks.poc, blocks.rows],
+            [BLOCK_ALPHAS[0], BLOCK_ALPHAS[1], BLOCK_ALPHAS[2], BLOCK_ALPHAS[1]]
+        );
+
+        let half = Strengths::of(Some(0.475), None, None, None);
+        assert_eq!(half.value_area, 0.475, "the value area follows the rows");
+        assert!((half.outside - 0.275).abs() < 1e-12, "the rest at the designed share: {}", half.outside);
+        assert_eq!(half.poc, 1.0, "the point of control keeps its own");
+        assert!((half.as_blocks().rows - 0.275).abs() < 1e-12);
+
+        let own = Strengths::of(None, Some(0.5), Some(0.1), Some(0.4));
+        assert_eq!((own.value_area, own.outside, own.poc), (0.5, 0.1, 0.4));
+        assert_eq!(own.rows, LETTER_ALPHAS[1]);
+        assert_eq!(Strengths::of(Some(f64::NAN), Some(3.0), None, None).value_area, 1.0);
+    }
+
     #[test]
     fn a_wild_bar_leaves_its_period_without_a_profile_rather_than_millions_of_rows() {
         let bars = vec![bar(0, 1.0, 1e9)];
-        assert!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 0.01, &[]).is_empty());
+        assert!(compute(&bars, Reset::Session, 0, 30, Some(1), 0.7, 0.01, &[], false).is_empty());
     }
 }

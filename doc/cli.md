@@ -121,8 +121,8 @@ Every indicator the app has, with every parameter it exposes:
 | `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
-| `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--first-last-tpo` (`on` or `off`, off by default), `--first-tpo-color` and `--last-tpo-color` (a colour, or `none` for the theme's), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` and `--poc-transparency` (0 to 1, or `default` to follow `--transparency`, or for the point of control its own), `--last-only` (`on` or `off`), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--first-last-tpo` (`on` or `off`, off by default), `--first-tpo-color` and `--last-tpo-color` (a colour, or `none` for the theme's), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--transparency` (0 to 1, 0.05 by default), `--value-area-transparency`, `--outside-transparency` and `--poc-transparency` (as a volume profile's), `--last-only` (`on` or `off`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
 
 Anything that draws a line also takes `--color`, `--width` and `--line-style`
 (`--style`, its older name, still works), and everything takes `--visible`.
@@ -832,6 +832,8 @@ and `--fill` its rows' colour (**Colour** in its settings), `--border on|off` wh
 `--width` its thickness and `--line-style` its pattern;
 `--poc-color`, `--poc-width`, `--poc-style`, `--profile-style`, `--align`, `--value-area`,
 `--transparency` (0 its rows solid, 0.7 by default),
+`--value-area-transparency`, `--outside-transparency`, `--outline-transparency`
+and `--poc-transparency` (0 to 1, or `default` to follow the rows again),
 `--highlight-value-area on|off`, `--value-area-color` (or `none` for its
 rows' own), `--poc on|off`, `--rows` (a number, or `auto`, as the
 study's), `--profile-method total|delta`, `--colouring` (for a delta:

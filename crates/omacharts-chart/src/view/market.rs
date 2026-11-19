@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::ffi::c_ulong;
 
 use gtk::cairo;
-use omacharts_engine::indicators::market::{MarketProfile, Style};
+use omacharts_engine::indicators::market::{MarketProfile, Strengths, Style, BLOCK_ALPHAS, LETTER_ALPHAS};
 use omacharts_engine::indicators::Profile;
 
 use super::{selection, Columns, Drawn, State};
@@ -31,12 +31,6 @@ const LETTER_MAX_SIZE: f64 = 15.0;
 /// The least a cell must be for blocks to be drawn one by one with a gap
 /// between: narrower, a row is one bar as long as its TPOs.
 const BLOCK_MIN: f64 = 3.0;
-
-/// How strongly each sort of row is drawn: the rows outside the value area,
-/// those in it, and the point of control's, as letters and as blocks. With
-/// the value area not set apart, every row is drawn as one in it.
-const LETTER_ALPHAS: [f64; 3] = [0.55, 0.95, 1.0];
-const BLOCK_ALPHAS: [f64; 3] = [0.28, 0.55, 0.8];
 
 /// The face letters are drawn in: fixed width, so they line up in columns
 /// down the profile as its periods do.
@@ -77,6 +71,10 @@ pub(super) fn draw_market_profiles(
         first_last,
         first_color,
         last_color,
+        alpha,
+        value_area_alpha,
+        outside_alpha,
+        poc_alpha,
         ..
     } = &drawn.indicator.params
     else {
@@ -99,6 +97,7 @@ pub(super) fn draw_market_profiles(
         poc: poc_ink.as_deref(),
         highlight: *highlight,
         ends: ends.as_ref().map(|(first, last)| [first.as_str(), last.as_str()]),
+        strengths: Strengths::of(*alpha, *value_area_alpha, *outside_alpha, *poc_alpha),
     };
     let look = selection::placed_look(state, drawn);
     let (top, bottom) = match cr.clip_extents() {
@@ -150,6 +149,8 @@ struct Inks<'a> {
     /// The first TPO period's colour and the last's, while they are set
     /// apart.
     ends: Option<[&'a str; 2]>,
+    /// How solid each sort of row is drawn, as letters.
+    strengths: Strengths,
 }
 
 /// How strongly the first and last TPO periods are drawn, as letters and as
@@ -157,13 +158,18 @@ struct Inks<'a> {
 const END_ALPHAS: [f64; 2] = [LETTER_ALPHAS[2], BLOCK_ALPHAS[2]];
 
 impl Inks<'_> {
-    /// What a row of `sort` is drawn in, at which of `alphas`.
-    fn of(&self, sort: Sort, alphas: &[f64; 3]) -> (&str, f64) {
+    /// What a row of `sort` is drawn in, and how solid, as letters or as
+    /// blocks.
+    fn of(&self, sort: Sort, letters: bool) -> (&str, f64) {
+        let strengths = match letters {
+            true => self.strengths,
+            false => self.strengths.as_blocks(),
+        };
         match (sort, self.highlight) {
-            (Sort::Poc, _) => (self.poc.unwrap_or(self.inside), alphas[Sort::Poc as usize]),
-            (_, false) => (self.outside, alphas[Sort::Inside as usize]),
-            (Sort::Inside, true) => (self.inside, alphas[Sort::Inside as usize]),
-            (Sort::Outside, true) => (self.outside, alphas[Sort::Outside as usize]),
+            (Sort::Poc, _) => (self.poc.unwrap_or(self.inside), strengths.poc),
+            (_, false) => (self.outside, strengths.rows),
+            (Sort::Inside, true) => (self.inside, strengths.value_area),
+            (Sort::Outside, true) => (self.outside, strengths.outside),
         }
     }
 
@@ -255,7 +261,7 @@ fn blocks(
             any = true;
         }
         if any {
-            let (ink, alpha) = inks.of(sort, &BLOCK_ALPHAS);
+            let (ink, alpha) = inks.of(sort, false);
             colors::set_source_alpha(cr, ink, alpha);
             let _ = cr.fill();
         }
@@ -309,7 +315,7 @@ fn letters(
     };
     let mut batch = [cairo::Glyph::new(0, 0.0, 0.0); BATCH];
     for sort in [Sort::Outside, Sort::Inside, Sort::Poc] {
-        let (ink, alpha) = inks.of(sort, &LETTER_ALPHAS);
+        let (ink, alpha) = inks.of(sort, true);
         let mut set = false;
         let mut n = 0;
         for (at, row) in profile.rows.iter().enumerate() {

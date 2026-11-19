@@ -2720,6 +2720,17 @@ mod outside_change_tests {
         rows::<T>(window.window.upcast_ref()).into_iter().filter(|row| row.title() == title).collect()
     }
 
+    /// The rows titled `title` in the groups titled `group`: a title such
+    /// as Colour that several groups have.
+    fn titled_in<T: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(window: &Window, group: &str, title: &str) -> Vec<T> {
+        rows::<adw::PreferencesGroup>(window.window.upcast_ref())
+            .into_iter()
+            .filter(|g| g.title() == group)
+            .flat_map(|g| rows::<T>(g.upcast_ref()))
+            .filter(|row| row.title() == title)
+            .collect()
+    }
+
     /// The prices of the levels a chart shows, lowest first.
     fn levels(pane: &ChartPane) -> Vec<f64> {
         let mut prices: Vec<f64> = pane.view.drawings().iter().map(|d| d.from.price).collect();
@@ -3343,34 +3354,36 @@ mod outside_change_tests {
                 .map(|i| i.id)
                 .expect("a volume profile added");
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
-            let label = crate::ui::chart_settings::PROFILE_POC_LABEL;
-            let switch = || titled::<adw::SwitchRow>(&window, label).pop().expect("the switch");
-            let colour = || titled::<adw::ActionRow>(&window, crate::ui::profile_rows::POC_COLOUR).pop().expect("its colour");
-            let pattern = || titled::<adw::ActionRow>(&window, "Point of control style").pop().expect("its style");
-            let width = || titled::<adw::SpinRow>(&window, "Point of control thickness").pop().expect("its thickness");
+            use crate::ui::profile_rows as r;
+            let switch = || titled_in::<adw::SwitchRow>(&window, r::POC_GROUP, r::SHOW).pop().expect("the switch");
+            let colour = || titled_in::<adw::ActionRow>(&window, r::POC_GROUP, r::COLOUR).pop().expect("its colour");
+            let pattern = || titled_in::<adw::ActionRow>(&window, r::POC_GROUP, r::LINE_STYLE).pop().expect("its style");
+            let width = || titled_in::<adw::SpinRow>(&window, r::POC_GROUP, r::THICKNESS).pop().expect("its thickness");
+            let strength = || titled_in::<adw::ActionRow>(&window, r::POC_GROUP, r::TRANSPARENCY).pop().expect("its strength");
             let drawn = || {
                 let stored = window.indicators();
                 let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
                 matches!(params, omacharts_engine::indicators::Params::VolumeProfile { poc: true, .. })
             };
             let shown = || {
-                [colour().upcast::<gtk::Widget>(), pattern().upcast(), width().upcast()]
+                [colour().upcast::<gtk::Widget>(), pattern().upcast(), width().upcast(), strength().upcast()]
                     .map(|row| row.property::<bool>("visible"))
             };
             assert!(switch().is_active() && drawn(), "on to begin with");
-            assert_eq!(shown(), [true; 3]);
+            assert_eq!(shown(), [true; 4]);
             assert_eq!(switch().next_sibling().as_ref(), Some(colour().upcast_ref()), "above its colour");
             assert_eq!(colour().next_sibling().as_ref(), Some(width().upcast_ref()), "its thickness under its colour");
             assert_eq!(width().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its thickness");
+            assert_eq!(pattern().next_sibling().as_ref(), Some(strength().upcast_ref()), "its strength under its style");
 
             for method in ["total", "delta"] {
                 command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
                 switch().set_active(false);
                 assert!(!drawn(), "off on {method}");
-                assert_eq!(shown(), [false; 3], "hidden on {method}");
+                assert_eq!(shown(), [false; 4], "hidden on {method}");
                 switch().set_active(true);
                 assert!(drawn(), "on again on {method}");
-                assert_eq!(shown(), [true; 3]);
+                assert_eq!(shown(), [true; 4]);
             }
         });
     }
@@ -3496,13 +3509,14 @@ mod outside_change_tests {
                 }
             };
             crate::ui::chart_settings::ChartSettings::present_indicator(&window, profile);
+            use crate::ui::profile_rows as r;
             let row = || {
-                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::PROFILE_TRANSPARENCY_LABEL)
+                titled_in::<adw::ActionRow>(&window, r::STYLE_GROUP, crate::ui::chart_settings::PROFILE_TRANSPARENCY_LABEL)
                     .pop()
                     .expect("a Transparency row")
             };
             let above = row().prev_sibling().and_then(|w| w.downcast::<adw::ActionRow>().ok());
-            assert_eq!(above.map(|r| r.title()).as_deref(), Some("Background"), "Transparency is not under Background");
+            assert_eq!(above.map(|r| r.title()).as_deref(), Some(r::COLOUR), "Transparency is not under Colour");
             let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
             assert!((slider(row()).value() - 70.0).abs() < 1e-9, "{}", slider(row()).value());
             assert!((opacity() - 0.30).abs() < 1e-9);
@@ -3522,19 +3536,39 @@ mod outside_change_tests {
                 other => panic!("{other:?}"),
             };
             let switch = || {
-                titled::<adw::SwitchRow>(&window, crate::ui::chart_settings::PROFILE_HIGHLIGHT_LABEL)
+                titled_in::<adw::SwitchRow>(&window, r::VALUE_AREA_GROUP, crate::ui::chart_settings::PROFILE_HIGHLIGHT_LABEL)
                     .pop()
-                    .expect("a Highlight value area switch")
+                    .expect("a Highlight switch")
             };
-            let colour = || {
-                titled::<adw::ActionRow>(&window, crate::ui::chart_settings::PROFILE_AREA_COLOUR_LABEL)
-                    .pop()
-                    .expect("a Value area colour row")
+            let in_area = |title: &str| {
+                titled_in::<adw::ActionRow>(&window, r::VALUE_AREA_GROUP, title).pop().expect("a Value area row")
             };
-            assert!(switch().is_active() && highlighted() && colour().is_sensitive());
+            let rows = || [r::COLOUR, r::TRANSPARENCY, r::OUTSIDE_TRANSPARENCY].map(|title| in_area(title).property::<bool>("visible"));
+            assert!(switch().is_active() && highlighted());
+            assert_eq!(rows(), [true; 3]);
+
+            // Each part's strength follows the rows' until set apart: the
+            // value area at the rows', the rest at the designed share.
+            let percent = |title: &str| slider(in_area(title)).value();
+            slider(row()).set_value(75.0);
+            assert!((percent(r::TRANSPARENCY) - 75.0).abs() < 1e-9, "{}", percent(r::TRANSPARENCY));
+            let outside = 100.0 * (1.0 - 0.25 * omacharts_engine::indicators::profile::OUTSIDE_SHARE);
+            assert!((percent(r::OUTSIDE_TRANSPARENCY) - outside).abs() < 1.0, "{}", percent(r::OUTSIDE_TRANSPARENCY));
+            slider(in_area(r::TRANSPARENCY)).set_value(20.0);
+            let own = || match &window.indicators().iter().find(|i| i.id == profile).expect("the profile").params {
+                omacharts_engine::indicators::Params::VolumeProfile { value_area_alpha, alpha, .. } => (*value_area_alpha, *alpha),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(own(), (Some(0.8), 0.25), "set apart, the rows' as they were");
+            slider(row()).set_value(50.0);
+            assert_eq!(own(), (Some(0.8), 0.5));
+            assert!((percent(r::TRANSPARENCY) - 20.0).abs() < 1e-9, "kept apart: {}", percent(r::TRANSPARENCY));
+            let outside = 100.0 * (1.0 - 0.5 * omacharts_engine::indicators::profile::OUTSIDE_SHARE);
+            assert!((percent(r::OUTSIDE_TRANSPARENCY) - outside).abs() < 1.0, "following: {}", percent(r::OUTSIDE_TRANSPARENCY));
+
             switch().set_active(false);
             assert!(!highlighted(), "the switch did not reach the profile");
-            assert!(!colour().is_sensitive(), "a colour for a value area not set apart");
+            assert_eq!(rows(), [false; 3], "a value area not set apart has nothing to set");
         });
     }
 

@@ -324,7 +324,9 @@ and `chart profile merge` / `split` on either does both. `--align right` on
 the market profile mirrors them; `--tpo-style blocks` swaps
 letters for squares; `--first-last-tpo on` draws each profile's opening and
 closing TPO periods in colours of their own (`--first-tpo-color`,
-`--last-tpo-color`, `none` for the theme's). `chart values --json` reads each one's latest `poc`,
+`--last-tpo-color`, `none` for the theme's); `--transparency`,
+`--value-area-transparency`, `--outside-transparency`, `--poc-transparency`
+and `--last-only` work as on a volume profile. `chart values --json` reads each one's latest `poc`,
 `vah` and `val`.
 
 ```
@@ -345,8 +347,10 @@ rest, as the study's; the study's `--outline*` names work too. A delta
 needs a feed with volume at price. The study takes
 `--outline-color`, `--outline-width`, `--outline-style`, `--poc-width`,
 `--poc-style`, `--transparency` (0 is its colour solid, 1 invisible, 0.7 by
-default), `--highlight-value-area` and `--value-area-color` (`none` for the
-rows' own) the same way; a MACD's signal line
+default), `--value-area-transparency`, `--outside-transparency`,
+`--outline-transparency` and `--poc-transparency` (each 0 to 1, or `default`
+to follow its rows again), `--highlight-value-area` and `--value-area-color`
+(`none` for the rows' own) the same way, and the drawing takes them too; a MACD's signal line
 takes `--signal-style` and a stochastic's %D `--d-style`. It takes no `--text`. The study's own profiles are read and merged with
 `chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds

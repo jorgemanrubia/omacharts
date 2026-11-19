@@ -1290,14 +1290,14 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
     } else {
         let parameters = parameters_group(owner, refresh, &indicator);
         page.add(&parameters);
-        if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
-            // A delta is painted in its colouring, as a drawing's is, and
-            // has no value area; the value area's colour is there to set
-            // while the value area is set apart.
-            if matches!(indicator.kind, Kind::VolumeProfile | Kind::MarketProfile) {
-                profile_rows::style_follows_method(&parameters, &group);
-            }
-            page.add(&group);
+        let look = appearance_groups(owner, refresh, &colour, &indicator);
+        // A delta is painted in its colouring, as a drawing's is, and has
+        // no value area.
+        if indicator.kind == Kind::VolumeProfile {
+            profile_rows::look_follows_method(&parameters, &look);
+        }
+        for group in &look {
+            page.add(group);
         }
         for group in band_groups(owner, refresh, &colour, &indicator) {
             page.add(&group);
@@ -1425,6 +1425,22 @@ fn focus_first_parameter(page: &adw::PreferencesPage) {
 }
 
 /// The indicator's own line: colour, weight, pattern.
+/// How an indicator is drawn: a profile's Style, Value area and Point of
+/// control groups, laid out by `profile_rows` alike for both kinds, or the
+/// one group anything else has, if any.
+fn appearance_groups(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    colour: &str,
+    indicator: &Indicator,
+) -> Vec<adw::PreferencesGroup> {
+    match indicator.kind {
+        Kind::VolumeProfile => profile_style(owner, refresh, colour, indicator),
+        Kind::MarketProfile => market_style(owner, refresh, colour, indicator),
+        _ => appearance_group(owner, refresh, colour, indicator).into_iter().collect(),
+    }
+}
+
 fn appearance_group(
     owner: &Rc<Owner>,
     refresh: &Refresh,
@@ -1439,16 +1455,6 @@ fn appearance_group(
         return Some(volume_colours(owner, refresh, indicator));
     }
 
-    // A volume profile is rows and a mark, not a line: its own outline,
-    // rows and point of control, and no pattern.
-    if indicator.kind == Kind::VolumeProfile {
-        return Some(profile_style(owner, refresh, colour, indicator));
-    }
-    // A market profile is letters or blocks, its value area and point of
-    // control set apart in colours of their own.
-    if indicator.kind == Kind::MarketProfile {
-        return Some(market_style(owner, refresh, colour, indicator));
-    }
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Line");
@@ -1958,22 +1964,7 @@ fn parameters_group(
         } => {
             let reset_row = reset_row(owner, refresh, id, *reset);
             // The newest period alone, on either method and either edge.
-            let last_row = adw::SwitchRow::new();
-            last_row.set_title(PROFILE_LAST_ONLY_LABEL);
-            last_row.set_active(*last_only);
-            {
-                let owner = owner.clone();
-                let refresh = refresh.clone();
-                last_row.connect_active_notify(move |row| {
-                    let on = row.is_active();
-                    update(&owner, id, |indicator| {
-                        if let Params::VolumeProfile { last_only, .. } = &mut indicator.params {
-                            *last_only = on;
-                        }
-                    });
-                    refresh.run();
-                });
-            }
+            let last_row = last_only_row(owner, refresh, id, *last_only);
             let (method_row, _) = {
                 let owner = owner.clone();
                 let refresh = refresh.clone();
@@ -2030,8 +2021,6 @@ fn parameters_group(
                 &method_row,
                 profile_rows::ByMethod {
                     value_area: area_row.clone().upcast(),
-                    highlight: None,
-                    value_area_colour: None,
                     colouring: colouring_row.clone(),
                     total_only: Vec::new(),
                 },
@@ -2040,16 +2029,16 @@ fn parameters_group(
                 &group,
                 &profile_rows::ParameterRows {
                     leading: vec![reset_row.upcast(), last_row.upcast()],
-                    method: method_row,
-                    colouring: colouring_row,
+                    own: vec![method_row.upcast(), colouring_row.upcast()],
                     granularity,
                     value_area: area_row.upcast(),
                 },
             );
         }
-        Params::MarketProfile { reset, minutes, row_ticks, value_area, .. } => {
-            group.add(&reset_row(owner, refresh, id, *reset));
-            group.add(&spin_row(
+        Params::MarketProfile { reset, minutes, row_ticks, value_area, last_only, .. } => {
+            let reset_row = reset_row(owner, refresh, id, *reset);
+            let last_row = last_only_row(owner, refresh, id, *last_only);
+            let minutes_row = spin_row(
                 owner,
                 refresh,
                 id,
@@ -2063,7 +2052,7 @@ fn parameters_group(
                         *minutes = value as u32;
                     }
                 },
-            ));
+            );
             // Automatic, or so many ticks a row: greyed while automatic,
             // showing the height being drawn.
             let granularity = {
@@ -2083,6 +2072,7 @@ fn parameters_group(
                 })
             };
             granularity.rows.set_title(MARKET_ROW_TICKS_LABEL);
+            granularity.automatic.set_title(profile_rows::AUTOMATIC_HEIGHT);
             granularity.rows.set_range(1.0, f64::from(market::MAX_ROW_TICKS));
             (granularity.show)(row_ticks.map(|t| t as usize));
             let (area_row, _) = {
@@ -2097,9 +2087,17 @@ fn parameters_group(
                     refresh.run();
                 })
             };
-            group.add(&granularity.automatic);
-            group.add(&granularity.rows);
-            group.add(&area_row);
+            // The volume profile's rows in its order, the TPO period where
+            // its method is.
+            profile_rows::add_parameters(
+                &group,
+                &profile_rows::ParameterRows {
+                    leading: vec![reset_row.upcast(), last_row.upcast()],
+                    own: vec![minutes_row.upcast()],
+                    granularity,
+                    value_area: area_row.upcast(),
+                },
+            );
         }
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
@@ -2110,48 +2108,46 @@ fn parameters_group(
 /// The market profile row that says how long a TPO period is.
 pub const MARKET_MINUTES_LABEL: &str = "TPO period (minutes)";
 
-/// The market profile switch that sets its first and last TPO periods
-/// apart, and the colours they are drawn in while it is on.
-pub const MARKET_FIRST_LAST_LABEL: &str = "Highlight first and last TPO";
-pub const MARKET_FIRST_COLOUR_LABEL: &str = "First TPO colour";
-pub const MARKET_LAST_COLOUR_LABEL: &str = "Last TPO colour";
+/// Whether a profile study draws only its newest period, on either kind,
+/// either method and either edge.
+fn last_only_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, on: bool) -> adw::SwitchRow {
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    profile_rows::switch_row(PROFILE_LAST_ONLY_LABEL, on, move |on| {
+        update(&owner, id, |indicator| {
+            if let Params::VolumeProfile { last_only, .. } | Params::MarketProfile { last_only, .. } = &mut indicator.params {
+                *last_only = on;
+            }
+        });
+        refresh.run();
+    })
+    .0
+}
 
 /// The market profile box that sets how many ticks tall a row is.
 pub const MARKET_ROW_TICKS_LABEL: &str = "Row height (ticks)";
 
-/// What a market profile's Alignment row says while a volume profile of
-/// the same period is drawn beside it, from its edge.
-pub const ALIGNMENT_LEADS: &str = "Sets the volume profile beside it too";
-/// What a volume profile's Alignment row says while it is drawn beside a
-/// market profile of the same period, from the market profile's edge.
-pub const ALIGNMENT_FOLLOWS: &str = "Set by the market profile beside it";
-
-/// Says on a profile's Alignment row when it is paired with a market
+/// Greys a volume profile's Alignment row while it is paired with a market
 /// profile of the same period, which draws the two side by side from its
-/// own edge. The follower's row is greyed: choosing an edge there changes
-/// nothing while they are paired.
+/// own edge: choosing an edge there changes nothing while they are paired.
+/// No words on the row: the manual says why.
 fn note_pairing(owner: &Owner, indicator: &Indicator, row: &adw::ComboRow) {
     let all = owner.indicators();
     let shown: Vec<&Indicator> = all.iter().filter(|other| other.visible).collect();
     let leader = |of: &Indicator| {
         omacharts_engine::indicators::paired_with(&of.params, shown.iter().copied(), None).map(|leader| leader.id)
     };
-    match leader(indicator) {
-        Some(id) if id != indicator.id => {
-            row.set_subtitle(ALIGNMENT_FOLLOWS);
-            row.set_sensitive(false);
-        }
-        Some(_) if shown.iter().any(|other| other.id != indicator.id && leader(other) == Some(indicator.id)) => {
-            row.set_subtitle(ALIGNMENT_LEADS);
-        }
-        _ => {}
+    if leader(indicator).is_some_and(|id| id != indicator.id) {
+        row.set_sensitive(false);
     }
 }
 
-/// How a market profile is drawn: letters or blocks, its colour, its point
-/// of control, and its side and width, which it shares a period's room
-/// with a volume profile by.
-fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &Indicator) -> adw::PreferencesGroup {
+/// How a market profile is drawn: letters or blocks, its colour, its first
+/// and last TPO, its side and width, which it shares a period's room with a
+/// volume profile by; its value area and its point of control. The volume
+/// profile's groups, rows and order, less its outline, with its first and
+/// last TPO where the outline would be.
+fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &Indicator) -> Vec<adw::PreferencesGroup> {
     let id = indicator.id;
     let Params::MarketProfile {
         style,
@@ -2167,15 +2163,13 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         ..
     } = &indicator.params
     else {
-        return adw::PreferencesGroup::new();
+        return Vec::new();
     };
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Style");
     let shape = choice_row(
         owner,
         refresh,
         id,
-        profile_rows::STYLE,
+        profile_rows::DISPLAY_AS,
         &market::Style::ALL.map(market::Style::label),
         market::Style::ALL.iter().position(|s| s == style),
         |indicator, at| {
@@ -2194,10 +2188,59 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         move |indicator, choice| indicator.color = choice,
         id,
     );
+    // The value area's and the rest's strengths follow the rows' until set
+    // apart, and are shown again as the rows' is moved.
+    let followers: Followers = Rc::default();
+    let strength = |title: &str, read: fn(&Params) -> Option<f64>, write: fn(&mut Params, f64), moves: Option<&Followers>| {
+        strength_row(owner, refresh, indicator, title, read, write, moves)
+    };
+    let (transparency, _) = strength(
+        profile_rows::TRANSPARENCY,
+        |params| market_strengths(params).map(|s| s.rows),
+        |params, a| {
+            if let Params::MarketProfile { alpha, .. } = params {
+                *alpha = Some(a);
+            }
+        },
+        Some(&followers),
+    );
+    let follower = |title: &str, read: fn(&Params) -> Option<f64>, write: fn(&mut Params, f64)| {
+        let (row, show) = strength(title, read, write, None);
+        followers.borrow_mut().push(show);
+        row
+    };
+    let area_strength = follower(
+        profile_rows::TRANSPARENCY,
+        |params| market_strengths(params).map(|s| s.value_area),
+        |params, a| {
+            if let Params::MarketProfile { value_area_alpha, .. } = params {
+                *value_area_alpha = Some(a);
+            }
+        },
+    );
+    let outside_strength = follower(
+        profile_rows::OUTSIDE_TRANSPARENCY,
+        |params| market_strengths(params).map(|s| s.outside),
+        |params, a| {
+            if let Params::MarketProfile { outside_alpha, .. } = params {
+                *outside_alpha = Some(a);
+            }
+        },
+    );
+    let (poc_strength, _) = strength(
+        profile_rows::TRANSPARENCY,
+        |params| market_strengths(params).map(|s| s.poc),
+        |params, a| {
+            if let Params::MarketProfile { poc_alpha, .. } = params {
+                *poc_alpha = Some(a);
+            }
+        },
+        None,
+    );
     let (poc_switch, _) = {
         let owner = owner.clone();
         let refresh = refresh.clone();
-        profile_rows::switch_row(profile_rows::SHOW_POC, *poc, move |on| {
+        profile_rows::switch_row(profile_rows::SHOW, *poc, move |on| {
             update(&owner, id, |indicator| {
                 if let Params::MarketProfile { poc, .. } = &mut indicator.params {
                     *poc = on;
@@ -2211,7 +2254,7 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         owner,
         refresh,
         &Ink::new(String::new),
-        profile_rows::POC_COLOUR,
+        profile_rows::COLOUR,
         &shown,
         poc_color.clone(),
         move |indicator, choice| {
@@ -2241,26 +2284,21 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
         )
     };
     let first_row = end_row(
-        MARKET_FIRST_COLOUR_LABEL,
+        profile_rows::FIRST_COLOUR,
         first_color.as_ref().map_or_else(|| theme.first_tpo(), |c| c.resolve(&theme)),
         first_color,
         true,
     );
     let last_row = end_row(
-        MARKET_LAST_COLOUR_LABEL,
+        profile_rows::LAST_COLOUR,
         last_color.as_ref().map_or_else(|| theme.last_tpo(), |c| c.resolve(&theme)),
         last_color,
         false,
     );
-    first_row.set_visible(*first_last);
-    last_row.set_visible(*first_last);
     let (ends_switch, _) = {
         let owner = owner.clone();
         let refresh = refresh.clone();
-        let (first_row, last_row) = (first_row.clone(), last_row.clone());
-        profile_rows::switch_row(MARKET_FIRST_LAST_LABEL, *first_last, move |on| {
-            first_row.set_visible(on);
-            last_row.set_visible(on);
+        profile_rows::switch_row(profile_rows::FIRST_LAST, *first_last, move |on| {
             update(&owner, id, |indicator| {
                 if let Params::MarketProfile { first_last, .. } = &mut indicator.params {
                     *first_last = on;
@@ -2295,21 +2333,35 @@ fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &
             refresh.run();
         })
     };
-    // The value area set apart, and its colour: the same rows, in the same
-    // place, as a volume profile's.
     let (highlight_row, area_colour_row) = value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
-    group.add(&shape);
-    group.add(&background);
-    group.add(&highlight_row);
-    group.add(&area_colour_row);
-    group.add(&poc_switch);
-    group.add(&poc_colour_row);
-    group.add(&ends_switch);
-    group.add(&first_row);
-    group.add(&last_row);
-    group.add(&alignment);
-    group.add(&width_row);
-    group
+    profile_rows::look_groups(profile_rows::LookRows {
+        style: profile_rows::StyleRows {
+            display: shape.upcast(),
+            colour: background.upcast(),
+            transparency: transparency.upcast(),
+            outline: None,
+            ends: Some(profile_rows::EndRows {
+                switch: ends_switch,
+                first: first_row.upcast(),
+                last: last_row.upcast(),
+            }),
+            alignment: alignment.upcast(),
+            width: width_row.upcast(),
+        },
+        value_area: profile_rows::ValueAreaRows {
+            highlight: highlight_row,
+            colour: area_colour_row.upcast(),
+            transparency: area_strength.upcast(),
+            outside: outside_strength.upcast(),
+        },
+        poc: profile_rows::PocRows {
+            show: poc_switch,
+            colour: poc_colour_row.upcast(),
+            thickness: None,
+            style: None,
+            transparency: poc_strength.upcast(),
+        },
+    })
 }
 
 /// Last on every indicator's page: whether the chart's legend names it.
@@ -2471,7 +2523,7 @@ pub const CVD_ESTIMATED: &str = "Estimated from bar direction: this feed has no 
 pub const PROFILE_HIGHLIGHT_LABEL: &str = profile_rows::HIGHLIGHT;
 
 /// The volume profile row that paints its value area a colour of its own.
-pub const PROFILE_AREA_COLOUR_LABEL: &str = profile_rows::VALUE_AREA_COLOUR;
+pub const PROFILE_AREA_COLOUR_LABEL: &str = profile_rows::COLOUR;
 
 /// Whether a volume profile sets its value area apart, and in what colour:
 /// unset, the rows' own, only stronger, as it always was.
@@ -2522,18 +2574,18 @@ fn value_area_rows(
 }
 
 /// The volume profile switch that draws the newest period's profile alone.
-pub const PROFILE_LAST_ONLY_LABEL: &str = "Only show in last period";
+pub const PROFILE_LAST_ONLY_LABEL: &str = profile_rows::LAST_ONLY;
 
 /// The volume profile switch that draws its point of control or leaves it
 /// out.
-pub const PROFILE_POC_LABEL: &str = profile_rows::SHOW_POC;
+pub const PROFILE_POC_LABEL: &str = profile_rows::SHOW;
 
 /// The volume profile row that fades its rows, or its outline's fill.
 pub const PROFILE_TRANSPARENCY_LABEL: &str = profile_rows::TRANSPARENCY;
 
 /// The volume profile row that says whether its rows are filled or drawn
 /// round.
-pub const PROFILE_STYLE_LABEL: &str = profile_rows::STYLE;
+pub const PROFILE_STYLE_LABEL: &str = profile_rows::DISPLAY_AS;
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape, side and width.
@@ -2542,7 +2594,7 @@ fn profile_style(
     refresh: &Refresh,
     colour: &str,
     indicator: &Indicator,
-) -> adw::PreferencesGroup {
+) -> Vec<adw::PreferencesGroup> {
     let id = indicator.id;
     let Params::VolumeProfile {
         style,
@@ -2563,7 +2615,7 @@ fn profile_style(
         ..
     } = &indicator.params
     else {
-        return adw::PreferencesGroup::new();
+        return Vec::new();
     };
 
     // Laid out by `profile_rows`, in the order a profile drawing's are. The
@@ -2679,10 +2731,22 @@ fn profile_style(
         move |indicator, choice| indicator.color = choice,
         id,
     );
+    // What follows the rows' strength until set apart, shown again as it
+    // is moved.
+    let followers: Followers = Rc::default();
+    let follow = {
+        let followers = followers.clone();
+        move || {
+            for show in followers.borrow().iter() {
+                show();
+            }
+        }
+    };
     // A profile saved with an older fade reads here as what it draws.
     let (transparency, _) = {
         let owner = owner.clone();
         let refresh = refresh.clone();
+        let follow = follow.clone();
         profile_rows::transparency_row(
             1.0 - omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
             move |share| {
@@ -2692,16 +2756,58 @@ fn profile_style(
                         *opacity = omacharts_engine::indicators::profile::opaque();
                     }
                 });
+                follow();
                 refresh.run();
             },
         )
     };
+    let strength = |title: &str, read: fn(&Params) -> Option<f64>, write: fn(&mut Params, f64)| {
+        let (row, show) = strength_row(owner, refresh, indicator, title, read, write, None);
+        followers.borrow_mut().push(show);
+        row
+    };
+    let outline_strength = strength(
+        profile_rows::OUTLINE_TRANSPARENCY,
+        |params| volume_strengths(params).map(|(s, style)| s.outline_in(style)),
+        |params, a| {
+            if let Params::VolumeProfile { outline_alpha, .. } = params {
+                *outline_alpha = Some(a);
+            }
+        },
+    );
+    let area_strength = strength(
+        profile_rows::TRANSPARENCY,
+        |params| volume_strengths(params).map(|(s, _)| s.value_area),
+        |params, a| {
+            if let Params::VolumeProfile { value_area_alpha, .. } = params {
+                *value_area_alpha = Some(a);
+            }
+        },
+    );
+    let outside_strength = strength(
+        profile_rows::OUTSIDE_TRANSPARENCY,
+        |params| volume_strengths(params).map(|(s, _)| s.outside),
+        |params, a| {
+            if let Params::VolumeProfile { outside_alpha, .. } = params {
+                *outside_alpha = Some(a);
+            }
+        },
+    );
+    let poc_strength = strength(
+        profile_rows::TRANSPARENCY,
+        |params| volume_strengths(params).map(|(s, _)| s.poc),
+        |params, a| {
+            if let Params::VolumeProfile { poc_alpha, .. } = params {
+                *poc_alpha = Some(a);
+            }
+        },
+    );
 
     // Drawn unless turned off, on either method.
     let (poc_switch, _) = {
         let owner = owner.clone();
         let refresh = refresh.clone();
-        profile_rows::switch_row(profile_rows::SHOW_POC, *poc, move |on| {
+        profile_rows::switch_row(profile_rows::SHOW, *poc, move |on| {
             update(&owner, id, |indicator| {
                 if let Params::VolumeProfile { poc, .. } = &mut indicator.params {
                     *poc = on;
@@ -2717,7 +2823,7 @@ fn profile_style(
         owner,
         refresh,
         &poc_ink,
-        profile_rows::POC_COLOUR,
+        profile_rows::COLOUR,
         &shown,
         poc_color.clone(),
         move |indicator, choice| {
@@ -2732,7 +2838,7 @@ fn profile_style(
         refresh,
         &poc_ink,
         id,
-        profile_rows::POC_STYLE,
+        profile_rows::LINE_STYLE,
         *poc_style,
         |indicator, picked| {
             if let Params::VolumeProfile { poc_style, .. } = &mut indicator.params {
@@ -2744,7 +2850,7 @@ fn profile_style(
         owner,
         refresh,
         id,
-        profile_rows::POC_THICKNESS,
+        profile_rows::THICKNESS,
         *poc_width,
         |indicator, width| {
             if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
@@ -2757,7 +2863,7 @@ fn profile_style(
         owner,
         refresh,
         id,
-        profile_rows::STYLE,
+        profile_rows::DISPLAY_AS,
         &ProfileStyle::ALL.map(ProfileStyle::label),
         ProfileStyle::ALL.iter().position(|s| s == style),
         |indicator, at| {
@@ -2779,6 +2885,8 @@ fn profile_style(
             switch.set_active(chosen || !filled);
             following.set(false);
             switch.set_sensitive(filled);
+            // The outline's strength is the edge's or the outline style's.
+            follow();
         });
     }
     let alignment = choice_row(
@@ -2811,23 +2919,97 @@ fn profile_style(
     };
 
     let (highlight_row, area_colour_row) = value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
-    profile_rows::style_group(profile_rows::StyleRows {
-        outline: switch,
-        outline_colour: outline_row.upcast(),
-        outline_style: outline_pattern.upcast(),
-        outline_thickness: width_row.upcast(),
-        colour: background.upcast(),
-        transparency: transparency.upcast(),
-        highlight: highlight_row,
-        value_area_colour: area_colour_row.upcast(),
-        show_poc: poc_switch,
-        poc_colour: poc_colour_row.upcast(),
-        poc_style: poc_pattern.upcast(),
-        poc_thickness: poc_width_row.upcast(),
-        style: shape.upcast(),
-        alignment: alignment.upcast(),
-        width: width.upcast(),
+    profile_rows::look_groups(profile_rows::LookRows {
+        style: profile_rows::StyleRows {
+            display: shape.upcast(),
+            colour: background.upcast(),
+            transparency: transparency.upcast(),
+            outline: Some(profile_rows::OutlineRows {
+                switch,
+                colour: outline_row.upcast(),
+                thickness: width_row.upcast(),
+                style: outline_pattern.upcast(),
+                transparency: outline_strength.upcast(),
+            }),
+            ends: None,
+            alignment: alignment.upcast(),
+            width: width.upcast(),
+        },
+        value_area: profile_rows::ValueAreaRows {
+            highlight: highlight_row,
+            colour: area_colour_row.upcast(),
+            transparency: area_strength.upcast(),
+            outside: outside_strength.upcast(),
+        },
+        poc: profile_rows::PocRows {
+            show: poc_switch,
+            colour: poc_colour_row.upcast(),
+            thickness: Some(poc_width_row.upcast()),
+            style: Some(poc_pattern.upcast()),
+            transparency: poc_strength.upcast(),
+        },
     })
+}
+
+/// How solid each part of a volume profile study is drawn, and its
+/// display, which says which of its outlines is drawn.
+fn volume_strengths(params: &Params) -> Option<(omacharts_engine::indicators::profile::Strengths, ProfileStyle)> {
+    use omacharts_engine::indicators::profile::{drawn_alpha, Alphas, Strengths};
+    let Params::VolumeProfile {
+        alpha, opacity, value_area_alpha, outside_alpha, outline_alpha, poc_alpha, style, ..
+    } = params
+    else {
+        return None;
+    };
+    let set = Alphas { value_area: *value_area_alpha, outside: *outside_alpha, outline: *outline_alpha, poc: *poc_alpha };
+    Some((Strengths::study(drawn_alpha(*alpha, *opacity), &set), *style))
+}
+
+/// How solid each sort of a market profile's rows is drawn, as letters.
+fn market_strengths(params: &Params) -> Option<market::Strengths> {
+    let Params::MarketProfile { alpha, value_area_alpha, outside_alpha, poc_alpha, .. } = params else {
+        return None;
+    };
+    Some(market::Strengths::of(*alpha, *value_area_alpha, *outside_alpha, *poc_alpha))
+}
+
+/// Rows shown again once what they follow has moved.
+type Followers = Rc<RefCell<Vec<Rc<dyn Fn()>>>>;
+
+/// A Transparency row of a profile study for one of its parts, as `read`
+/// says how solid it is drawn now, set apart by `write`, showing `moves`
+/// again as it is moved; and the way to show it again once something it
+/// follows has moved.
+fn strength_row(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    indicator: &Indicator,
+    title: &str,
+    read: fn(&Params) -> Option<f64>,
+    write: fn(&mut Params, f64),
+    moves: Option<&Followers>,
+) -> (adw::ActionRow, Rc<dyn Fn()>) {
+    let id = indicator.id;
+    let (row, show) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        let moves = moves.cloned();
+        profile_rows::strength_row(title, read(&indicator.params).unwrap_or(1.0), move |alpha| {
+            update(&owner, id, |indicator| write(&mut indicator.params, alpha));
+            for show in moves.iter().flat_map(|moves| moves.borrow().clone()) {
+                show();
+            }
+            refresh.run();
+        })
+    };
+    let owner = owner.clone();
+    let again: Rc<dyn Fn()> = Rc::new(move || {
+        let now = owner.indicators().into_iter().find(|i| i.id == id).and_then(|i| read(&i.params));
+        if let Some(alpha) = now {
+            show(alpha);
+        }
+    });
+    (row, again)
 }
 
 /// A line's thickness in pixels, applied as it is spun.
@@ -3660,7 +3842,7 @@ pub(crate) fn profile_titles(window: &Rc<Window>, kind: Kind) -> Vec<(String, Ve
     let indicator = Indicator::new(1, kind);
     let colour = owner.theme().ui.accent.clone();
     let mut groups = vec![parameters_group(&owner, &Refresh::none(), &indicator)];
-    groups.extend(appearance_group(&owner, &Refresh::none(), &colour, &indicator));
+    groups.extend(appearance_groups(&owner, &Refresh::none(), &colour, &indicator));
     groups
         .iter()
         .map(|group| (group.title().to_string(), profile_rows::titles(group)))

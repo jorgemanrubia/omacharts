@@ -10814,17 +10814,41 @@ fn draw_profiles(
         } => (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width, *method, *poc),
         _ => (None, false, None, 1.0, 1.0, Method::Total, true),
     };
-    let (outline_style, poc_style, alpha, highlight, area_choice) = match &drawn.indicator.params {
+    let (outline_style, poc_style, strengths, highlight, area_choice) = match &drawn.indicator.params {
         omacharts_engine::Params::VolumeProfile {
-            outline_style, poc_style, alpha, opacity, highlight, value_area_color, ..
+            outline_style,
+            poc_style,
+            alpha,
+            opacity,
+            highlight,
+            value_area_color,
+            value_area_alpha,
+            outside_alpha,
+            outline_alpha,
+            poc_alpha,
+            ..
         } => (
             *outline_style,
             *poc_style,
-            omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+            omacharts_engine::indicators::profile::Strengths::study(
+                omacharts_engine::indicators::profile::drawn_alpha(*alpha, *opacity),
+                &omacharts_engine::indicators::profile::Alphas {
+                    value_area: *value_area_alpha,
+                    outside: *outside_alpha,
+                    outline: *outline_alpha,
+                    poc: *poc_alpha,
+                },
+            ),
             *highlight,
             value_area_color.as_ref(),
         ),
-        _ => (LineStyle::Solid, LineStyle::Solid, DELTA_ROW_ALPHA, true, None),
+        _ => (
+            LineStyle::Solid,
+            LineStyle::Solid,
+            omacharts_engine::indicators::profile::Strengths::study(DELTA_ROW_ALPHA, &Default::default()),
+            true,
+            None,
+        ),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let inks = profile_inks(method, outline, drawn, state);
@@ -10834,7 +10858,9 @@ fn draw_profiles(
         (Method::Total, true, Some(choice)) => Some(choice.resolve(&state.theme)),
         _ => None,
     };
-    let (inside, outside) = omacharts_engine::indicators::profile::row_alphas(alpha, highlight);
+    // A delta has no value area: every row of it is drawn at the rows'
+    // own strength.
+    let (inside, outside) = strengths.row_pair(highlight && method == Method::Total);
     let look = selection::placed_look(state, drawn);
     let style = look.style;
     let paint = ProfilePaint {
@@ -10844,11 +10870,11 @@ fn draw_profiles(
         area_fill: area_fill.as_deref(),
         inside,
         outside,
-        edge_alpha: edged.then_some(drawings::PROFILE_EDGE_ALPHA),
-        outline_alpha: omacharts_engine::indicators::profile::line_alpha(0.75, alpha),
+        edge_alpha: edged.then_some(strengths.edge),
+        outline_alpha: strengths.outline,
         outline_width,
         outline_style,
-        poc: poc_shown.then_some((poc.as_str(), poc_width, poc_style)),
+        poc: poc_shown.then_some((poc.as_str(), poc_width, poc_style, strengths.poc)),
     };
 
     for profile in profiles {
@@ -10884,9 +10910,10 @@ struct ProfilePaint<'a> {
     outline_alpha: f64,
     outline_width: f64,
     outline_style: LineStyle,
-    /// The point of control, in its colour, thickness and pattern; `None`
-    /// when it is turned off, which leaves the rows to say it.
-    poc: Option<(&'a str, f64, LineStyle)>,
+    /// The point of control, in its colour, thickness, pattern and
+    /// strength; `None` when it is turned off, which leaves the rows to say
+    /// it.
+    poc: Option<(&'a str, f64, LineStyle, f64)>,
 }
 
 /// One volume profile, its rows grown from `area`'s edge.
@@ -10973,10 +11000,10 @@ fn paint_profile(
     // The point of control, across the period it belongs to, in a colour
     // set against the profile rather than the same one brighter — it is a
     // different fact about the period, drawn on top of it.
-    if let Some((colour, width, pattern)) = paint.poc {
+    if let Some((colour, width, pattern, strength)) = paint.poc {
         let y = to_y(profile.poc_price()).round() + 0.5;
         let (from, to) = area.row(1.0);
-        colors::set_source_alpha(cr, colour, drawings::PROFILE_POC_ALPHA);
+        colors::set_source_alpha(cr, colour, strength);
         cr.set_line_width(width.max(0.5));
         let (left, right) = (from.min(to), from.max(to));
         set_edge_pattern(cr, pattern, width.max(0.5), left);
@@ -11004,7 +11031,7 @@ fn draw_profile_drawing(
     colour: &str,
     to_y: &dyn Fn(f64) -> f64,
 ) {
-    use omacharts_engine::indicators::profile::{line_alpha, row_alphas, Align, Method};
+    use omacharts_engine::indicators::profile::{Align, Method};
     let Some(profile) = state.span_profile(drawing) else { return };
     if profile.max_volume <= 0.0 || profile.rows.is_empty() {
         return;
@@ -11016,7 +11043,7 @@ fn draw_profile_drawing(
         Align::Left => selection::ProfileBox { edge: x, span: reach, towards: 1.0 },
         Align::Right => selection::ProfileBox { edge: x + w, span: reach, towards: -1.0 },
     };
-    let alpha = style.profile_alpha();
+    let strengths = style.profile_strengths();
     let fill = style.fill.hex(&state.theme);
     let inks = match look.method {
         Method::Total => vec![ProfileInk { side: selection::Side::All, fill, edge: colour.to_string() }],
@@ -11032,7 +11059,7 @@ fn draw_profile_drawing(
         (Method::Total, true, Some(paint)) => Some(paint.hex(&state.theme)),
         _ => None,
     };
-    let (inside, outside) = row_alphas(alpha, look.highlight);
+    let (inside, outside) = strengths.row_pair(look.highlight && look.method == Method::Total);
     let poc = look.poc.hex(&state.theme);
     let paint = ProfilePaint {
         method: look.method,
@@ -11042,11 +11069,11 @@ fn draw_profile_drawing(
         inside,
         outside,
         // An edge the drawing can go without: off, the rows are all of it.
-        edge_alpha: style.border.then(|| line_alpha(drawings::PROFILE_EDGE_ALPHA, alpha)),
-        outline_alpha: line_alpha(1.0, alpha),
+        edge_alpha: style.border.then_some(strengths.edge),
+        outline_alpha: strengths.outline,
         outline_width: style.width,
         outline_style: style.line_style,
-        poc: look.show_poc.then_some((poc.as_str(), look.poc_width, look.poc_style)),
+        poc: look.show_poc.then_some((poc.as_str(), look.poc_width, look.poc_style, strengths.poc)),
     };
     paint_profile(cr, &profile, &area, &paint, to_y);
 }
