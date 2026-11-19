@@ -1165,7 +1165,7 @@ impl Window {
                 && order.filled == 0
                 && !trading::is_exit(order.side, order.kind, net)
             {
-                section.append_submenu(Some("Template"), &self.order_template_submenu(&order.basket_id));
+                section.append_submenu(Some("Order template"), &self.order_template_submenu(&order.basket_id));
             }
         }
         Some(section)

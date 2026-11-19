@@ -110,7 +110,7 @@ The template part of the header, at its right, shows the chart's template, or on
 
 ### On a working order
 
-A limit or stop entry that has not begun to fill can be given a template three ways: the **Template** submenu in the right-click menu on its line, the **Template** in the New order dialog, or by clicking the order to pick it out (it is drawn raised) and pressing <kbd>Ctrl</kbd> + <kbd>Shift</kbd> and the template's digit. Its exits are drawn faint where they will rest, and the template's name beside it. **No template**, or <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd>, takes them off.
+A limit or stop entry that has not begun to fill can be given a template three ways: the **Order template** submenu in the right-click menu on its line, the **Template** in the New order dialog, or by clicking the order to pick it out (it is drawn raised) and pressing <kbd>Ctrl</kbd> + <kbd>Shift</kbd> and the template's digit. Its exits are drawn faint where they will rest, and the template's name beside it. **No template**, or <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd>, takes them off.
 
 An entry with no target or no stop wears the missing tabs, as a position does: drag **L** or **STP** off it to a price, and that exit goes in with it for the whole order. Dragging an exit already drawn moves it.
 

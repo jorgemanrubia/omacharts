@@ -722,7 +722,7 @@ mod tests {
             window.desk.tell();
             let section = window.order_section(pane.view.y_of(at).expect("on screen")).unwrap();
             let submenu = (0..section.n_items()).find_map(|at| section.item_link(at, "submenu"));
-            assert!(submenu.is_some(), "no Template on the order's right click");
+            assert!(submenu.is_some(), "no Order template on the order's right click");
 
             window.template_on_order(&pane, &basket, Some(scalp));
             assert!(wait(&window, || bracket_at(&session, at).is_some()), "not sent again as a bracket");
