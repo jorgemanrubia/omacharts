@@ -472,7 +472,7 @@ const SESSIONS: &[&str] = &["regular", "extended"];
 const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
-    "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "rsi", "macd", "atr",
+    "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "market_profile", "rsi", "macd", "atr",
     "stochastic", "session_times", "cvd",
 ];
 /// The ranges Session Times offers ready made, and `custom`.
@@ -484,6 +484,7 @@ const CVD_STYLES: &[&str] = &["candles", "line"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const PROFILE_STYLES: &[&str] = &["filled", "outline"];
 const PROFILE_ALIGNS: &[&str] = &["left", "right"];
+const TPO_STYLES: &[&str] = &["letters", "blocks"];
 const PROFILE_METHODS: &[&str] = &["total", "delta"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
@@ -581,18 +582,21 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("signal-style", "STYLE", "how the MACD's signal line is drawn (default: as the MACD line)").of(LINE_STYLES),
     Flag::valued("k-smooth", "N", "bars the stochastic's %K is smoothed over"),
     Flag::valued("d-period", "N", "bars the stochastic's %D averages %K over"),
-    Flag::valued("anchor", "WHEN", "what VWAP, the volume profile and a cumulative delta reset on; never, a cumulative delta's alone, sums the whole history")
+    Flag::valued("anchor", "WHEN", "what VWAP, the volume and market profiles and a cumulative delta reset on; never, a cumulative delta's alone, sums the whole history")
         .of(ANCHORS),
     Flag::valued("cvd-style", "HOW", "a cumulative delta drawn as candles of its running sum, or as a line").of(CVD_STYLES),
     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
-    Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
-    Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
+    Flag::valued("tpo-minutes", "N", "how long a market profile's TPO periods are, 1-1440 minutes (default 30)"),
+    Flag::valued("row-ticks", "N", "how many ticks tall a market profile's rows are, or `auto` for the smallest round height that keeps a typical period within 60 rows"),
+    Flag::valued("tpo-style", "HOW", "a market profile's TPOs drawn as their periods' letters, or as blocks").of(TPO_STYLES),
+    Flag::valued("value-area", "F", "the share of volume, or of a market profile's TPOs, the value area covers, 0-1"),
+    Flag::valued("poc-color", "COLOUR", "the volume or market profile's point of control"),
     Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
-    Flag::valued("align", "EDGE", "the edge of its period a volume profile grows from").of(PROFILE_ALIGNS),
-    Flag::valued("profile-width", "F", "how much of its period a volume profile's longest row reaches, 0.1-1; of the space past the last bar for the live session aligned right"),
+    Flag::valued("align", "EDGE", "the edge of its period a volume or market profile grows from; right mirrors it").of(PROFILE_ALIGNS),
+    Flag::valued("profile-width", "F", "how much of its period a volume or market profile's longest row reaches, 0.1-1; of the space past the last bar for the live session aligned right. Profiles on one edge share their period side by side"),
     Flag::valued("profile-method", "WHAT", "what a volume profile's rows measure: all the volume at each price, or the ask volume less the bid volume, which needs a feed with volume at price").of(PROFILE_METHODS),
     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),
-    Flag::valued("poc", "BOOL", "whether a volume profile draws its point of control").of(SWITCHES),
+    Flag::valued("poc", "BOOL", "whether a volume profile draws its point of control, or a market profile sets its row apart").of(SWITCHES),
     Flag::valued("last-only", "BOOL", "whether a volume profile draws only its newest period").of(SWITCHES),
     Flag::valued("outline-color", "COLOUR", "a volume profile's outline"),
     Flag::valued("outline-width", "F", "a volume profile's outline thickness in pixels"),
@@ -600,15 +604,15 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("poc-style", "STYLE", "how a volume profile's point of control is drawn").of(LINE_STYLES),
     Flag::valued("transparency", "F", "how much of the chart shows through a volume profile's rows and outline, 0-1: 0 is its colour solid, 1 invisible (default 0.7)"),
-    Flag::valued("highlight-value-area", "BOOL", "whether a volume profile sets its value area apart from its other rows (on unless set); off draws every row alike").of(SWITCHES),
-    Flag::valued("value-area-color", "COLOUR", "a volume profile's value area, while it is set apart; none gives it back the rows' own colour"),
+    Flag::valued("highlight-value-area", "BOOL", "whether a volume or market profile sets its value area apart from its other rows (on unless set); off draws every row alike").of(SWITCHES),
+    Flag::valued("value-area-color", "COLOUR", "a volume or market profile's value area, while it is set apart; none gives it back the rows' own colour"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("d-style", "STYLE", "how the stochastic's %D line is drawn (default: as %K)").of(LINE_STYLES),
-    Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
+    Flag::valued("color", "COLOUR", "the line, the volume profile's background, the market profile's letters and blocks, or a Session Times range's shading"),
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
     Flag::valued("line-style", "STYLE", "how the line is drawn").of(LINE_STYLES),
     Flag::valued("style", "STYLE", "the older name of --line-style").of(LINE_STYLES),

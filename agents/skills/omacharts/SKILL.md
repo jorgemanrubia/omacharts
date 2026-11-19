@@ -9,7 +9,7 @@ description: >-
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
   for indicators (moving average, VWAP, Bollinger bands, volume profile,
-  RSI, MACD, ATR), for session times — "shade the overnight", "shade
+  market profile or TPO, RSI, MACD, ATR), for session times — "shade the overnight", "shade
   the London session", "show RTH", "a lunch hour background" — and for
   which time zone and 12 or 24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link modes, the instrument search, and the cached
@@ -312,6 +312,22 @@ same word — is a box with its outline swapped for a curve: the same two
 anchors at opposite corners of the box it is drawn in, the same fill and
 edge, never held round. Reach for it over a box when the empty corners
 matter.
+
+**A market profile beside the volume profile.** `market_profile` (TPO, or
+"market profile" in the picker) is time at price: each period cut into
+lettered TPO periods of `--tpo-minutes`, rows `--row-ticks` ticks tall or
+`auto`. "TPO" means this, not the volume profile. On one chart with a volume
+profile, both aligned to the same edge share each period side by side in the
+order they are listed — add the volume profile first for it to sit nearest
+the period's start. `--align right` mirrors them; `--tpo-style blocks` swaps
+letters for squares. `chart values --json` reads each one's latest `poc`,
+`vah` and `val`.
+
+```
+omacharts chart indicator add volume_profile --profile-width 0.3
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto --profile-width 0.4
+omacharts chart indicator set market_profile --tpo-style blocks --poc-color Amber --value-area-color Teal
+```
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is

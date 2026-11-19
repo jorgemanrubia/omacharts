@@ -1,6 +1,6 @@
 ---
 title: "Volume"
-description: "Volume, the volume profile and the cumulative delta, with every setting."
+description: "Volume, the volume profile, the market profile and the cumulative delta, with every setting."
 section: charting
 parent: indicators
 nav_order: 2
@@ -11,7 +11,7 @@ moved:
   cumulative-delta: /manual/indicators/volume/cumulative-delta/
 ---
 
-The volume indicators show how much traded: bar by bar, at each price, and by who was buying and who was selling. Volume and the volume profile are drawn as bars and have no thickness or line style.
+The volume indicators show how much traded: bar by bar, at each price, and by who was buying and who was selling. The market profile sits with them, showing how long the price spent at each price. Volume and the volume profile are drawn as bars and have no thickness or line style.
 
 {% include children.html head="Indicator" what="What it shows" %}
 

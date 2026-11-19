@@ -28,6 +28,9 @@ pub const INDICATORS: &[(&str, Form)] = &[
     ("bollinger", Form::Stepped),
     ("macd", Form::Stepped),
     ("volume_profile", Form::WholePeriod),
+    // What it is so far, a bar at a time, is `developing_market_profile`,
+    // in [`DEVELOPING`].
+    ("market_profile", Form::WholePeriod),
     ("volume", Form::Stepped),
     // Estimated from each bar's direction. Read from volume at price where
     // there is some: that reading is `volume_delta`, in [`AT_PRICE`].
@@ -43,6 +46,12 @@ pub const INDICATORS: &[(&str, Form)] = &[
 /// one of the indicators above draws from ladders — the cumulative delta,
 /// the volume profile so far — and none of them estimates.
 pub const AT_PRICE: &[&str] = &["volume_delta", "developing_profile"];
+
+/// Studies of what a whole-period indicator above could be known to be at
+/// each bar, a bar at a time, from bars alone: `(study, indicator)`, each a
+/// [`crate::Study`] under its own key. At the last bar of a period each
+/// reads what the indicator draws for the whole of it.
+pub const DEVELOPING: &[(&str, &str)] = &[("developing_market_profile", "market_profile")];
 
 /// The form of the indicator `key`, if there is one by that name.
 pub fn form(key: &str) -> Option<Form> {

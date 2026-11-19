@@ -202,6 +202,21 @@ fn indicators() -> Vec<(String, Indicator)> {
             ),
         ));
     }
+    for (minutes, row_ticks, value_area, reset) in [
+        (30, None, 0.7, Reset::Week),
+        (30, Some(1), 0.7, Reset::Session),
+        (15, Some(4), 0.5, Reset::Session),
+        (60, Some(2), 0.9, Reset::Month),
+        (1, Some(1), 0.7, Reset::Session),
+        (0, Some(0), 1.5, Reset::Session),
+    ] {
+        let mut indicator = Indicator::new(1, Kind::MarketProfile);
+        if let Params::MarketProfile { minutes: m, row_ticks: r, value_area: v, reset: e, .. } = &mut indicator.params {
+            (*m, *r, *v, *e) = (minutes, row_ticks, value_area, reset);
+        }
+        let ticks = row_ticks.map_or("auto".to_string(), |t| t.to_string());
+        out.push((format!("market_profile:{minutes}-{ticks}-{value_area}-{}", reset.key()), indicator));
+    }
     for reset in [None, Some(Reset::Session), Some(Reset::Week), Some(Reset::Month), Some(Reset::Year)] {
         let key = reset.map_or("never", Reset::key);
         out.push((
@@ -222,7 +237,7 @@ fn cases() -> BTreeMap<String, String> {
             // indicators that cut periods or size rows.
             let anchored = matches!(
                 indicator.kind,
-                Kind::Vwap | Kind::Cvd | Kind::VolumeProfile | Kind::SessionTimes
+                Kind::Vwap | Kind::Cvd | Kind::VolumeProfile | Kind::MarketProfile | Kind::SessionTimes
             );
             let origins: &[i64] = if anchored { &origins } else { &origins[..1] };
             let kinds: &[Option<InstrumentKind>] = if anchored {

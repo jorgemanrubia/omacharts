@@ -122,9 +122,28 @@ Every indicator the app has, with every parameter it exposes:
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
+| `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
 
 Anything that draws a line also takes `--color`, `--width` and `--line-style`
 (`--style`, its older name, still works), and everything takes `--visible`.
+
+**A market profile counts time at each price rather than volume.** Each
+period is cut into TPO periods of `--tpo-minutes`, lettered A to Z and then a
+to z, and every row a TPO period's bars reach gets its letter once. Rows are
+`--row-ticks` ticks of the instrument tall; `auto` takes the smallest of 1, 2,
+4, 5, 10, 20, 40, 50… ticks that keeps a typical period within 60 rows. The
+point of control is the row with the most letters, a tie going to the row
+nearest the middle of the profile, and the value area grows out from it,
+taking the side with more, until it holds `--value-area` of them. With a
+volume profile on the same chart and the same `--align`, the two share each
+period side by side, in the order the indicators are listed, each as wide as
+its `--profile-width`; `right` mirrors both. `chart values` gives each one's
+latest point of control and value area.
+
+```
+omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
+omacharts chart indicator set market_profile --tpo-style blocks --align right
+```
 
 **A volume profile's periods can be read and merged.** `chart profile list`
 names each profile on the focused chart — its start and end, point of control

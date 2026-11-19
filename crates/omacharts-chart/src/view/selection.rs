@@ -129,7 +129,10 @@ fn on_overlay_line(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl 
             let poc = to_y(profile.poc_price());
             area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
         }),
-        Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => false,
+        // A market profile has no line: its point of control is a row.
+        Output::MarketProfiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {
+            false
+        }
     }
 }
 
@@ -142,9 +145,8 @@ fn poc_shown(drawn: &Drawn) -> bool {
 /// profile's rows. Not a band's fill, which covers so much of the chart that
 /// a press anywhere in it would pick the band rather than pan.
 fn on_overlay_shape(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
-    let Output::Profiles(profiles) = &drawn.output else { return false };
     let look = placed_look(state, drawn);
-    profiles.iter().any(|profile| {
+    let on = |profile: &Profile| {
         let area = profile_box(profile, columns, &look);
         if area.span <= 0.0 || profile.max_volume <= 0.0 {
             return false;
@@ -154,7 +156,25 @@ fn on_overlay_shape(state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl
             let bottom = top + (to_y(row.low) - top).max(1.0);
             row.volume != 0.0 && area.covers(x, row.volume.abs() / profile.max_volume) && (top..=bottom).contains(&y)
         })
-    })
+    };
+    match &drawn.output {
+        Output::Profiles(profiles) => profiles.iter().any(on),
+        // A row's TPOs, a cell each, as they are drawn.
+        Output::MarketProfiles(profiles) => profiles.iter().any(|market| {
+            let profile = &market.profile;
+            let mut area = profile_box(profile, columns, &look);
+            if area.span <= 0.0 || profile.max_volume <= 0.0 {
+                return false;
+            }
+            area.span = super::market::cell(profile, &area, to_y).0 * profile.max_volume;
+            profile.rows.iter().any(|row| {
+                let top = to_y(row.high);
+                let bottom = top + (to_y(row.low) - top).max(1.0);
+                row.volume > 0.0 && area.covers(x, row.volume / profile.max_volume) && (top..=bottom).contains(&y)
+            })
+        }),
+        _ => false,
+    }
 }
 
 /// One profile of a volume profile indicator, as a menu about it needs it.
@@ -191,15 +211,24 @@ pub(super) fn profile_look(drawn: &Drawn) -> ProfileLook {
         omacharts_engine::Params::VolumeProfile { style, align, width, .. } => {
             (*style, *align, profile::drawn_width(*width))
         }
+        omacharts_engine::Params::MarketProfile { align, width, .. } => {
+            (Style::Filled, *align, profile::drawn_width(*width))
+        }
         _ => (Style::Filled, Align::Left, profile::DEFAULT_WIDTH),
     };
     ProfileLook { style, align, width, before: 0.0, after: 0.0, total: width, later: 0, count: 1 }
 }
 
-/// A volume profile on screen with profiles to draw, aligned to `align`.
+/// A volume or market profile on screen with profiles to draw, aligned to
+/// `align`: the two share their periods' room alike, side by side.
 fn stacks(drawn: &Drawn, align: Align) -> Option<f64> {
     match (&drawn.indicator.params, &drawn.output) {
         (omacharts_engine::Params::VolumeProfile { align: a, width, .. }, Output::Profiles(profiles))
+            if *a == align && !profiles.is_empty() =>
+        {
+            Some(profile::drawn_width(*width))
+        }
+        (omacharts_engine::Params::MarketProfile { align: a, width, .. }, Output::MarketProfiles(profiles))
             if *a == align && !profiles.is_empty() =>
         {
             Some(profile::drawn_width(*width))
@@ -259,8 +288,12 @@ pub(super) fn margin_share(state: &State) -> f64 {
     let (mut total, mut count) = (0.0, 0usize);
     for drawn in state.shown_indicators() {
         let Some(width) = stacks(drawn, Align::Right) else { continue };
-        let Output::Profiles(profiles) = &drawn.output else { continue };
-        if profiles.last().is_some_and(|p| p.last_bar + 1 == len) {
+        let last = match &drawn.output {
+            Output::Profiles(profiles) => profiles.last(),
+            Output::MarketProfiles(profiles) => profiles.last().map(|p| &p.profile),
+            _ => continue,
+        };
+        if last.is_some_and(|p| p.last_bar + 1 == len) {
             total += width;
             count += 1;
         }

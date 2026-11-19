@@ -51,7 +51,7 @@ crop: none
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)) |
 | **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
 
-Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit.
+Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A [market profile](/manual/indicators/volume/market-profile/) takes its place among them the same way.
 
 ## Ask volume - bid volume
 

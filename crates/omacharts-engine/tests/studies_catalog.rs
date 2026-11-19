@@ -28,3 +28,14 @@ fn a_stepped_indicator_is_computed_from_bars_alone() {
         }
     }
 }
+
+#[test]
+fn a_developing_study_develops_an_indicator_the_chart_draws_whole() {
+    for (study, indicator) in omacharts_studies::DEVELOPING {
+        assert!(
+            Kind::ALL.iter().any(|kind| kind.key() == *indicator),
+            "{study} develops {indicator}, which is no indicator"
+        );
+        assert_eq!(omacharts_studies::catalog::form(indicator), Some(Form::WholePeriod), "{study}");
+    }
+}

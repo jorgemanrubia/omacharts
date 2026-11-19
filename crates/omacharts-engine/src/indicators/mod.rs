@@ -12,6 +12,7 @@
 pub mod bands;
 pub mod bollinger;
 pub mod cvd;
+pub mod market;
 pub mod oscillators;
 mod paint;
 pub mod periods;
@@ -30,6 +31,7 @@ use crate::theme::{BarColouring, ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
+pub use market::MarketProfile;
 pub use profile::{Profile, ProfileRow};
 pub use time::{Hours, Preset, Span, Time, TimeRange};
 
@@ -123,6 +125,7 @@ pub enum Kind {
     Vwap,
     Bollinger,
     VolumeProfile,
+    MarketProfile,
     Volume,
     Cvd,
     Rsi,
@@ -195,7 +198,7 @@ impl Category {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -204,6 +207,9 @@ impl Kind {
         // same picture, and somebody who has used one is looking for the other.
         Kind::Bollinger,
         Kind::VolumeProfile,
+        // Beside the volume profile: the same picture of a period, by time
+        // rather than volume, and the two are drawn side by side.
+        Kind::MarketProfile,
         Kind::Cvd,
         Kind::Rsi,
         Kind::Macd,
@@ -215,7 +221,7 @@ impl Kind {
     pub fn category(self) -> Category {
         match self {
             Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
-            Kind::Volume | Kind::VolumeProfile | Kind::Cvd => Category::Volume,
+            Kind::Volume | Kind::VolumeProfile | Kind::MarketProfile | Kind::Cvd => Category::Volume,
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
@@ -272,6 +278,7 @@ impl Kind {
             Kind::Bollinger => "Bollinger Bands",
             Kind::Macd => "Moving Average Convergence Divergence",
             Kind::VolumeProfile => "Volume Profile",
+            Kind::MarketProfile => "Market Profile",
             Kind::Volume => "Volume",
             Kind::Cvd => "Cumulative Delta",
             Kind::Rsi => "Relative Strength Index",
@@ -292,6 +299,7 @@ impl Kind {
             Kind::Bollinger => "BB",
             Kind::Macd => "MACD",
             Kind::VolumeProfile => "VP",
+            Kind::MarketProfile => "TPO",
             Kind::Volume => "Vol",
             Kind::Cvd => "CVD",
             Kind::Rsi => "RSI",
@@ -314,7 +322,11 @@ impl Kind {
             Kind::Macd => {
                 &["macd", "convergence", "divergence", "histogram", "signal", "momentum"]
             }
-            Kind::VolumeProfile => &["volume profile", "vp", "poc", "value area", "tpo"],
+            Kind::VolumeProfile => &["volume profile", "vp", "poc", "value area"],
+            Kind::MarketProfile => &[
+                "market profile", "tpo", "mp", "time price opportunity", "time at price", "letters", "poc",
+                "value area",
+            ],
             Kind::Volume => &["volume", "vol", "turnover"],
             Kind::Cvd => &[
                 "cumulative delta", "cvd", "delta", "order flow", "cumulative volume delta", "volume delta",
@@ -339,6 +351,7 @@ impl Kind {
             Kind::Bollinger => "bollinger",
             Kind::Macd => "macd",
             Kind::VolumeProfile => "volume_profile",
+            Kind::MarketProfile => "market_profile",
             Kind::Volume => "volume",
             Kind::Cvd => "cvd",
             Kind::Rsi => "rsi",
@@ -391,6 +404,21 @@ impl Kind {
                 method: profile::Method::Total,
                 colouring: None,
                 merged: Vec::new(),
+            },
+            // Half-hour TPO periods and a 70% value area: what Steidlmayer
+            // drew and what TradingView and Sierra Chart open with.
+            Kind::MarketProfile => Params::MarketProfile {
+                reset: Reset::Session,
+                minutes: market::DEFAULT_MINUTES,
+                row_ticks: None,
+                value_area: market::DEFAULT_VALUE_AREA,
+                style: market::Style::Letters,
+                align: profile::Align::Left,
+                width: profile::DEFAULT_WIDTH,
+                poc: true,
+                highlight: true,
+                poc_color: None,
+                value_area_color: None,
             },
             Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
             Kind::Cvd => Params::Cvd {
@@ -568,6 +596,45 @@ pub enum Params {
         #[serde(skip)]
         merged: Vec<i64>,
     },
+    MarketProfile {
+        reset: Reset,
+        /// How long each TPO period is, in minutes. Missing, half an hour.
+        #[serde(default = "market::default_minutes")]
+        minutes: u32,
+        /// How tall a row is, in ticks of the instrument's tick, or `None`
+        /// for the automatic height: see [`market::TARGET_ROWS`].
+        #[serde(default)]
+        row_ticks: Option<u32>,
+        /// Fraction of the TPOs the value area covers. Missing, 70%.
+        #[serde(default = "market::default_value_area")]
+        value_area: f64,
+        /// Each TPO drawn as its period's letter, or as a block.
+        #[serde(default)]
+        style: market::Style,
+        /// The edge of the period the rows grow from, as a volume
+        /// profile's.
+        #[serde(default)]
+        align: profile::Align,
+        /// How much of its room the longest row reaches, as a volume
+        /// profile's.
+        #[serde(default = "profile::default_width")]
+        width: f64,
+        /// Whether the point of control's row is set apart. Missing, it is.
+        #[serde(default = "profile::shown")]
+        poc: bool,
+        /// Whether the value area's rows are set apart from the rest.
+        /// Missing, they are.
+        #[serde(default = "profile::shown")]
+        highlight: bool,
+        /// The point of control's colour. Unset is the theme's companion
+        /// to the profile's own, as a volume profile's is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        poc_color: Option<ColorChoice>,
+        /// The value area's colour, while it is set apart. Unset is the
+        /// profile's own, the rest drawn fainter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_area_color: Option<ColorChoice>,
+    },
     Volume {
         /// How much of the chart's height the pane takes.
         height: f64,
@@ -700,6 +767,7 @@ impl Params {
             | Params::Vwap { .. }
             | Params::Bollinger { .. }
             | Params::VolumeProfile { .. }
+            | Params::MarketProfile { .. }
             | Params::SessionTimes { .. } => None,
         }
     }
@@ -773,7 +841,7 @@ impl Indicator {
     /// shading.
     pub fn step_width(&mut self, thicker: bool) -> bool {
         match &mut self.params {
-            Params::Volume { .. } | Params::SessionTimes { .. } => false,
+            Params::Volume { .. } | Params::MarketProfile { .. } | Params::SessionTimes { .. } => false,
             Params::VolumeProfile { outline_width, .. } => {
                 let by = if thicker { OUTLINE_WIDTH_STEP } else { -OUTLINE_WIDTH_STEP };
                 *outline_width = (*outline_width + by).clamp(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH);
@@ -905,6 +973,11 @@ impl Indicator {
                 profile::Method::Total => format!("VP · {}", effective(*reset).label()),
                 profile::Method::Delta => format!("VP Δ · {}", effective(*reset).label()),
             },
+            // The TPO period is part of the name: two profiles of one
+            // session in different periods draw different letters.
+            Params::MarketProfile { reset, minutes, .. } => {
+                format!("TPO {minutes}m · {}", effective(*reset).label())
+            }
             Params::Volume { .. } => "Volume".to_string(),
             Params::Cvd { reset, .. } => match reset {
                 Some(reset) => format!("CVD · {}", effective(*reset).label()),
@@ -996,6 +1069,8 @@ pub enum Output {
     Bands(Bands),
     /// One profile per reset period.
     Profiles(Vec<Profile>),
+    /// One market profile per reset period.
+    MarketProfiles(Vec<MarketProfile>),
     /// Volume per bar, with the share of the chart its pane takes.
     Volume { values: Vec<f64>, height: f64 },
     /// A series drawn in a strip of its own, on its own scale.
@@ -1530,6 +1605,18 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                     *last_only,
                 )
             }))
+        }
+        (Kind::MarketProfile, Params::MarketProfile { reset, minutes, row_ticks, value_area, .. }) => {
+            let known = context.instrument.and_then(Instrument::tick_size).or(context.ladders.map(|held| held.tick_size));
+            Output::MarketProfiles(market::compute(
+                bars,
+                reset.effective_for(timeframe),
+                session_origin,
+                *minutes,
+                *row_ticks,
+                *value_area,
+                market::tick_size(bars, known, kind),
+            ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
             Output::Time(time::session_times(bars, timeframe, ranges, context.zone, schedule()))

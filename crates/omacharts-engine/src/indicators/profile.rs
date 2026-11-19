@@ -777,7 +777,7 @@ enum Grid {
 }
 
 /// Where each reset period starts and ends, as indices into `bars`.
-fn periods(bars: &[Bar], reset: Reset, session_origin: i64) -> Vec<(usize, usize)> {
+pub(super) fn periods(bars: &[Bar], reset: Reset, session_origin: i64) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut start = 0usize;
     let mut bucket = reset.bucket(bars[0].ts, session_origin);

@@ -22,6 +22,7 @@
 pub mod bench;
 mod compare;
 mod executions;
+mod market;
 mod pulse;
 mod selection;
 pub use executions::{ExecutionMark, Executions, TripLine};
@@ -5535,7 +5536,8 @@ impl ChartView {
         self.state.borrow().timeframe
     }
 
-    /// How many rows the volume profile with this id is actually drawing.
+    /// How many rows the volume profile with this id is actually drawing,
+    /// or for a market profile how many ticks tall its rows are.
     ///
     /// The settings panel shows this when the count is automatic, so the
     /// number on screen is the number being drawn rather than a placeholder.
@@ -5544,6 +5546,7 @@ impl ChartView {
         state.indicators.iter().find(|drawn| drawn.indicator.id == id).and_then(|drawn| {
             match &drawn.output {
                 Output::Profiles(profiles) => profiles.first().map(|p| p.rows.len()),
+                Output::MarketProfiles(profiles) => profiles.first().map(|p| p.row_ticks as usize),
                 _ => None,
             }
         })
@@ -10484,6 +10487,9 @@ fn draw_indicator_fills(
             Output::Profiles(profiles) => {
                 draw_profiles(cr, state, drawn, profiles, columns, to_y);
             }
+            Output::MarketProfiles(profiles) => {
+                market::draw_market_profiles(cr, state, drawn, profiles, columns, to_y);
+            }
             // These draw in a strip of their own, where the price scale does
             // not reach, so there is nothing to do over the candles; and time
             // has its own ground beneath everything.
@@ -10583,7 +10589,12 @@ fn draw_indicator_lines(
                     }
                 }
             }
-            Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {}
+            Output::Profiles(_)
+            | Output::MarketProfiles(_)
+            | Output::Volume { .. }
+            | Output::Pane(_)
+            | Output::Time(_)
+            | Output::Unmet(_) => {}
         }
     }
 }

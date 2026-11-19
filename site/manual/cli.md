@@ -562,22 +562,25 @@ are in [Indicators](/manual/indicators/) and the indicator's own page.
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
 | `--d-style S` | `solid`, `dashed`, `dotted`; %K's when not given | Stochastic |
-| `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, cumulative delta; `never` only for cumulative delta |
+| `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, market profile, cumulative delta; `never` only for cumulative delta |
 | `--cvd-style S` | `candles`, `line` | Cumulative delta |
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
-| `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
-| `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control |
+| `--tpo-minutes N` | 1 to 1440; 30 when not given | Market profile: how long each TPO period is |
+| `--row-ticks N` | `auto`, or ticks to a row, 1 to 10000 | Market profile |
+| `--tpo-style S` | `letters`, `blocks` | Market profile |
+| `--value-area F` | 0 to 1; 0.70 when not given | Volume profile, market profile |
+| `--poc B` | `on`, `off` | Volume profile: whether it draws its point of control. Market profile: whether its row is set apart |
 | `--last-only B` | `on`, `off` | Volume profile: whether it draws only its newest period |
-| `--poc-color C` | A colour | Volume profile |
+| `--poc-color C` | A colour | Volume profile, market profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
-| `--align A` | `left`, `right` | Volume profile |
+| `--align A` | `left`, `right` | Volume profile, market profile |
 | `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 12 | Volume profile |
 | `--outline-style S`, `--poc-style S` | `solid`, `dashed`, `dotted` | Volume profile |
 | `--transparency F` | 0 to 1; 0.7 when not given | Volume profile: how much of the chart shows through its rows and outline. 0 is its colour solid, 1 invisible |
-| `--highlight-value-area B` | `on`, `off` | Volume profile: whether its value area is set apart from its other rows; on when not given |
-| `--value-area-color C` | A colour, or `none` | Volume profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
+| `--highlight-value-area B` | `on`, `off` | Volume profile, market profile: whether its value area is set apart from its other rows; on when not given |
+| `--value-area-color C` | A colour, or `none` | Volume profile, market profile: its value area's own colour while it is set apart; `none` gives it back the rows' colour |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |

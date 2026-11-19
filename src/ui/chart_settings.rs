@@ -16,6 +16,7 @@ use omacharts_engine::indicators::{
     MIN_PANE_SHARE,
 };
 use omacharts_engine::indicators::cvd::Style;
+use omacharts_engine::indicators::market;
 use omacharts_engine::indicators::profile::{Align, Style as ProfileStyle};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
@@ -1441,6 +1442,11 @@ fn appearance_group(
     if indicator.kind == Kind::VolumeProfile {
         return Some(profile_style(owner, refresh, colour, indicator));
     }
+    // A market profile is letters or blocks, its value area and point of
+    // control set apart in colours of their own.
+    if indicator.kind == Kind::MarketProfile {
+        return Some(market_style(owner, refresh, colour, indicator));
+    }
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Line");
@@ -2043,9 +2049,167 @@ fn parameters_group(
                 },
             );
         }
+        Params::MarketProfile { reset, minutes, row_ticks, value_area, highlight, value_area_color, .. } => {
+            group.add(&reset_row(owner, refresh, id, *reset));
+            group.add(&spin_row(
+                owner,
+                refresh,
+                id,
+                MARKET_MINUTES_LABEL,
+                f64::from(*minutes),
+                f64::from(market::MIN_MINUTES),
+                f64::from(market::MAX_MINUTES),
+                1.0,
+                move |indicator, value| {
+                    if let Params::MarketProfile { minutes, .. } = &mut indicator.params {
+                        *minutes = value as u32;
+                    }
+                },
+            ));
+            // Automatic, or so many ticks a row: greyed while automatic,
+            // showing the height being drawn.
+            let granularity = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                let drawn: Rc<dyn Fn() -> Option<usize>> = {
+                    let owner = owner.clone();
+                    Rc::new(move || owner.profile_rows(id))
+                };
+                profile_rows::granularity(row_ticks.map(|t| t as usize), drawn, move |ticks| {
+                    update(&owner, id, move |indicator| {
+                        if let Params::MarketProfile { row_ticks, .. } = &mut indicator.params {
+                            *row_ticks = ticks.map(|t| t as u32);
+                        }
+                    });
+                    refresh.run();
+                })
+            };
+            granularity.rows.set_title(MARKET_ROW_TICKS_LABEL);
+            granularity.rows.set_range(1.0, f64::from(market::MAX_ROW_TICKS));
+            (granularity.show)(row_ticks.map(|t| t as usize));
+            let (area_row, _) = {
+                let owner = owner.clone();
+                let refresh = refresh.clone();
+                profile_rows::value_area_row(*value_area, move |share| {
+                    update(&owner, id, |indicator| {
+                        if let Params::MarketProfile { value_area, .. } = &mut indicator.params {
+                            *value_area = share;
+                        }
+                    });
+                    refresh.run();
+                })
+            };
+            let (highlight_row, area_colour_row) =
+                value_area_rows(owner, refresh, id, *highlight, value_area_color.clone());
+            group.add(&granularity.automatic);
+            group.add(&granularity.rows);
+            group.add(&area_row);
+            group.add(&highlight_row);
+            group.add(&area_colour_row);
+        }
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
     }
+    group
+}
+
+/// The market profile row that says how long a TPO period is.
+pub const MARKET_MINUTES_LABEL: &str = "TPO period (minutes)";
+
+/// The market profile box that sets how many ticks tall a row is.
+pub const MARKET_ROW_TICKS_LABEL: &str = "Row height (ticks)";
+
+/// How a market profile is drawn: letters or blocks, its colour, its point
+/// of control, and its side and width, which it shares a period's room
+/// with a volume profile by.
+fn market_style(owner: &Rc<Owner>, refresh: &Refresh, colour: &str, indicator: &Indicator) -> adw::PreferencesGroup {
+    let id = indicator.id;
+    let Params::MarketProfile { style, align, width, poc, poc_color, .. } = &indicator.params else {
+        return adw::PreferencesGroup::new();
+    };
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Style");
+    let shape = choice_row(
+        owner,
+        refresh,
+        id,
+        profile_rows::STYLE,
+        &market::Style::ALL.map(market::Style::label),
+        market::Style::ALL.iter().position(|s| s == style),
+        |indicator, at| {
+            if let Params::MarketProfile { style, .. } = &mut indicator.params {
+                *style = market::Style::ALL[at];
+            }
+        },
+    );
+    let background = colour_row(
+        owner,
+        refresh,
+        &Ink::new(String::new),
+        property_rows::COLOUR,
+        colour,
+        indicator.color.clone(),
+        move |indicator, choice| indicator.color = choice,
+        id,
+    );
+    let (poc_switch, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        profile_rows::switch_row(profile_rows::SHOW_POC, *poc, move |on| {
+            update(&owner, id, |indicator| {
+                if let Params::MarketProfile { poc, .. } = &mut indicator.params {
+                    *poc = on;
+                }
+            });
+            refresh.run();
+        })
+    };
+    let shown = owner.theme().companion_or(poc_color.as_ref(), colour);
+    let poc_colour_row = colour_row(
+        owner,
+        refresh,
+        &Ink::new(String::new),
+        profile_rows::POC_COLOUR,
+        &shown,
+        poc_color.clone(),
+        move |indicator, choice| {
+            if let Params::MarketProfile { poc_color, .. } = &mut indicator.params {
+                *poc_color = choice;
+            }
+        },
+        id,
+    );
+    let alignment = choice_row(
+        owner,
+        refresh,
+        id,
+        profile_rows::ALIGNMENT,
+        &Align::ALL.map(Align::label),
+        Align::ALL.iter().position(|a| a == align),
+        |indicator, at| {
+            if let Params::MarketProfile { align, .. } = &mut indicator.params {
+                *align = Align::ALL[at];
+            }
+        },
+    );
+    let (width_row, _) = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        profile_rows::width_row(*width, move |share| {
+            update(&owner, id, |indicator| {
+                if let Params::MarketProfile { width, .. } = &mut indicator.params {
+                    *width = share;
+                }
+            });
+            refresh.run();
+        })
+    };
+    group.add(&shape);
+    group.add(&background);
+    group.add(&poc_switch);
+    group.add(&poc_colour_row);
+    group.add(&alignment);
+    group.add(&width_row);
     group
 }
 
@@ -2228,7 +2392,9 @@ fn value_area_rows(
         switch.connect_active_notify(move |row| {
             let on = row.is_active();
             update(&owner, id, |indicator| {
-                if let Params::VolumeProfile { highlight, .. } = &mut indicator.params {
+                if let Params::VolumeProfile { highlight, .. } | Params::MarketProfile { highlight, .. } =
+                    &mut indicator.params
+                {
                     *highlight = on;
                 }
             });
@@ -2245,7 +2411,9 @@ fn value_area_rows(
         &shown,
         choice,
         |indicator, choice| {
-            if let Params::VolumeProfile { value_area_color, .. } = &mut indicator.params {
+            if let Params::VolumeProfile { value_area_color, .. } | Params::MarketProfile { value_area_color, .. } =
+                &mut indicator.params
+            {
                 *value_area_color = choice;
             }
         },
@@ -2836,7 +3004,9 @@ fn reset_row_of(
         }
         update(&owner, id, |indicator| match &mut indicator.params {
             Params::Vwap { reset, .. } => *reset = chosen.unwrap_or_default(),
-            Params::VolumeProfile { reset, .. } => *reset = chosen.unwrap_or_default(),
+            Params::VolumeProfile { reset, .. } | Params::MarketProfile { reset, .. } => {
+                *reset = chosen.unwrap_or_default()
+            }
             Params::Cvd { reset, .. } => *reset = chosen,
             Params::MovingAverage { .. }
             | Params::Bollinger { .. }

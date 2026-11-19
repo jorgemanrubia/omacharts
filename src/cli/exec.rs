@@ -4419,6 +4419,11 @@ struct Edits {
     anchor: Option<Option<Reset>>,
     cvd_style: Option<omacharts_engine::indicators::cvd::Style>,
     rows: Option<Option<u64>>,
+    /// A market profile's TPO period, in minutes.
+    tpo_minutes: Option<u32>,
+    /// A market profile's row height in ticks; `Some(None)` is `auto`.
+    row_ticks: Option<Option<u32>>,
+    tpo_style: Option<omacharts_engine::indicators::market::Style>,
     value_area: Option<f64>,
     /// Whether a volume profile sets its value area apart.
     highlight: Option<bool>,
@@ -4545,6 +4550,31 @@ impl Edits {
                 Some(text) => Some(Some(text.parse::<u64>().map_err(|_| {
                     Fault::usage(format!("{text:?} is not a row count; use a number or `auto`"))
                 })?)),
+            },
+            tpo_minutes: match arg(m, "tpo-minutes") {
+                None => None,
+                Some(text) => {
+                    use omacharts_engine::indicators::market::{MAX_MINUTES, MIN_MINUTES};
+                    Some(text.parse::<u32>().ok().filter(|n| (MIN_MINUTES..=MAX_MINUTES).contains(n)).ok_or_else(|| {
+                        Fault::usage(format!("--tpo-minutes takes minutes from {MIN_MINUTES} to {MAX_MINUTES}, not {text:?}"))
+                    })?)
+                }
+            },
+            row_ticks: match arg(m, "row-ticks") {
+                None => None,
+                Some(text) if text.eq_ignore_ascii_case("auto") => Some(None),
+                Some(text) => {
+                    use omacharts_engine::indicators::market::MAX_ROW_TICKS;
+                    Some(Some(text.parse::<u32>().ok().filter(|n| (1..=MAX_ROW_TICKS).contains(n)).ok_or_else(|| {
+                        Fault::usage(format!("--row-ticks takes ticks from 1 to {MAX_ROW_TICKS}, or `auto`, not {text:?}"))
+                    })?))
+                }
+            },
+            tpo_style: match arg(m, "tpo-style") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::market::Style::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a market profile style; use letters or blocks"))
+                })?),
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             highlight: match arg(m, "highlight-value-area").map(String::as_str) {
@@ -4701,6 +4731,9 @@ impl Edits {
             && self.anchor.is_none()
             && self.cvd_style.is_none()
             && self.rows.is_none()
+            && self.tpo_minutes.is_none()
+            && self.row_ticks.is_none()
+            && self.tpo_style.is_none()
             && self.value_area.is_none()
             && self.highlight.is_none()
             && self.value_area_color.is_none()
@@ -4850,6 +4883,24 @@ impl Edits {
                 false => return Err(refuse("cumulative delta style")),
             }
         }
+        if let Some(minutes) = self.tpo_minutes {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["minutes"] = json!(minutes),
+                false => return Err(refuse("TPO period")),
+            }
+        }
+        if let Some(ticks) = self.row_ticks {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["row_ticks"] = json!(ticks),
+                false => return Err(refuse("row height in ticks")),
+            }
+        }
+        if let Some(style) = self.tpo_style {
+            match kind == IndicatorKind::MarketProfile {
+                true => params["style"] = json!(style.key()),
+                false => return Err(refuse("market profile style")),
+            }
+        }
         if let Some(rows) = self.rows {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["rows"] = json!(rows),
@@ -4857,13 +4908,13 @@ impl Edits {
             }
         }
         if let Some(share) = self.value_area {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["value_area"] = json!(share),
                 false => return Err(refuse("value area")),
             }
         }
         if let Some(colour) = &self.poc_color {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["poc_color"] = to_value(colour)?,
                 false => return Err(refuse("point of control")),
             }
@@ -4881,13 +4932,13 @@ impl Edits {
             }
         }
         if let Some(align) = self.align {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["align"] = json!(align.key()),
                 false => return Err(refuse("alignment")),
             }
         }
         if let Some(share) = self.profile_width {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["width"] = json!(share),
                 false => return Err(refuse("profile width")),
             }
@@ -4905,7 +4956,7 @@ impl Edits {
             }
         }
         if let Some(on) = self.poc {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["poc"] = json!(on),
                 false => return Err(refuse("point of control")),
             }
@@ -4945,13 +4996,13 @@ impl Edits {
             }
         }
         if let Some(on) = self.highlight {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["highlight"] = json!(on),
                 false => return Err(refuse("value area highlight")),
             }
         }
         if let Some(choice) = &self.value_area_color {
-            match kind == IndicatorKind::VolumeProfile {
+            match matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile) {
                 true => params["value_area_color"] = to_value(choice)?,
                 false => return Err(refuse("value area colour")),
             }
@@ -9054,6 +9105,55 @@ mod tests {
         assert_ne!(out.code, 0, "an RSI has no bars to make solid");
     }
 
+
+    #[test]
+    fn a_market_profile_takes_its_period_rows_and_style_and_shares_the_volume_profiles_flags() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let out = run(
+            "chart indicator add market_profile --book Macro --tpo-minutes 15 --row-ticks 4 --tpo-style blocks \
+             --align right --profile-width 0.3 --value-area 0.6 --poc off --highlight-value-area off \
+             --value-area-color Teal --poc-color Amber --anchor week",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let params = |store: &Store| {
+            let listed = run("chart indicator list --book Macro --json", store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            parsed["indicators"][0]["params"].clone()
+        };
+        let stored = params(&store);
+        assert_eq!(stored["minutes"], 15);
+        assert_eq!(stored["row_ticks"], 4);
+        assert_eq!(stored["style"], "blocks");
+        assert_eq!(stored["align"], "right");
+        assert_eq!(stored["width"], 0.3);
+        assert_eq!(stored["value_area"], 0.6);
+        assert_eq!(stored["poc"], false);
+        assert_eq!(stored["highlight"], false);
+        assert_eq!(stored["reset"], "week");
+        assert!(stored["value_area_color"].is_object() || stored["value_area_color"].is_string());
+
+        let out = run("chart indicator set market_profile --book Macro --row-ticks auto --tpo-style letters", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(params(&store)["row_ticks"].is_null());
+        assert_eq!(params(&store)["style"], "letters");
+
+        for refused in [
+            "chart indicator set market_profile --book Macro --tpo-minutes 0",
+            "chart indicator set market_profile --book Macro --tpo-minutes 2000",
+            "chart indicator set market_profile --book Macro --row-ticks 0",
+            "chart indicator set market_profile --book Macro --tpo-style dots",
+            "chart indicator set market_profile --book Macro --rows 40",
+            "chart indicator set market_profile --book Macro --profile-method delta",
+        ] {
+            let out = run(refused, &store);
+            assert_ne!(out.code, 0, "{refused}");
+        }
+        run("chart indicator add volume_profile --book Macro", &store);
+        let out = run("chart indicator set volume_profile --book Macro --tpo-minutes 30", &store);
+        assert_ne!(out.code, 0, "a volume profile has no TPO period");
+    }
 
     #[test]
     fn a_volume_profile_takes_a_width_within_its_range_and_nothing_else_does() {

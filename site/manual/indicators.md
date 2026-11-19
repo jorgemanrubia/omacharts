@@ -222,7 +222,7 @@ A paste is a new indicator with the same settings, on the chart that has the key
 | Item | Does |
 |---|---|
 | **Period** buttons | A moving average only: 10, 20, 50, 100 or 200, the one in use ringed |
-| **Reset every** buttons | A VWAP, a volume profile or a cumulative delta only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)), and Never for a cumulative delta |
+| **Reset every** buttons | A VWAP, a volume or market profile, or a cumulative delta only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)), and Never for a cumulative delta |
 | **Merge with previous profile** | A volume profile only, over a profile with one before it ([Composite profiles](/manual/indicators/volume/volume-profile/#composite-profiles)) |
 | **Split composite profile** | A volume profile only, over a composite |
 | **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies it and removes it |
@@ -254,7 +254,7 @@ On a chart that is on a template, every change to its indicators changes the tem
 
 ## Reset periods
 
-The [VWAP](/manual/indicators/averages-and-bands/vwap/), the [volume profile](/manual/indicators/volume/volume-profile/) and the [cumulative delta](/manual/indicators/volume/cumulative-delta/) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
+The [VWAP](/manual/indicators/averages-and-bands/vwap/), the [volume profile](/manual/indicators/volume/volume-profile/), the [market profile](/manual/indicators/volume/market-profile/) and the [cumulative delta](/manual/indicators/volume/cumulative-delta/) start over at the beginning of each period, chosen with **Reset every** in their settings. A cumulative delta can also be set to Never, one running total over the whole chart.
 
 | Period | Starts over |
 |---|---|
