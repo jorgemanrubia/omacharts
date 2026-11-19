@@ -1516,7 +1516,7 @@ mod tests {
                 for (n, (tip, _, points)) in super::super::market::arrows(market, &area, cell, &to_y).into_iter().enumerate() {
                     let tip = tip.expect("its row");
                     let (from, to) = (tip.min(tip - points * length), tip.max(tip - points * length));
-                    assert!(from >= room_from - 1e-6 && to <= room_to + 1e-6, "in its room: {case} {n} {from}..{to} {room:?}");
+                    assert!(from >= room_from + 3.0 && to <= room_to - 3.0, "in its room, clear of its edge: {case} {n} {from}..{to} {room:?}");
                     let row = if n == 0 { market.open_row } else { market.close_row };
                     let (cells_from, cells_to) = area.row(profile.rows[row].volume / profile.max_volume);
                     assert!(to <= cells_from + 1e-6 || from >= cells_to - 1e-6, "beside its TPOs: {case} {n}");

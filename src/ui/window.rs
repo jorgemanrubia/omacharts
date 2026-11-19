@@ -12025,7 +12025,7 @@ impl Window {
     /// computed for the ones it is drawing, when every change from those is
     /// one of paint. `false`, having touched nothing, when one is not.
     fn repaint_indicators(self: &Rc<Self>, pane: &Rc<ChartPane>) -> bool {
-        use omacharts_engine::Params::VolumeProfile;
+        use omacharts_engine::Params::{MarketProfile, VolumeProfile};
         let now = pane.indicators.borrow().clone();
         let theme = self.theming.borrow().theme();
         let colors = omacharts_engine::palette_colors(&now, &theme);
@@ -12042,8 +12042,10 @@ impl Window {
                     // Compared without them, and drawn with them still.
                     let mut computed_for = drawn.indicator.clone();
                     let mut indicator = now.clone();
-                    if let (VolumeProfile { merged: kept, .. }, VolumeProfile { merged, .. }) =
-                        (&mut computed_for.params, &mut indicator.params)
+                    if let (
+                        VolumeProfile { merged: kept, .. } | MarketProfile { merged: kept, .. },
+                        VolumeProfile { merged, .. } | MarketProfile { merged, .. },
+                    ) = (&mut computed_for.params, &mut indicator.params)
                     {
                         std::mem::swap(kept, merged);
                     }

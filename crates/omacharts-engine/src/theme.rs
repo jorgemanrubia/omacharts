@@ -179,8 +179,8 @@ pub const COMPANION_GAP: f64 = 0.12;
 /// stand against the chart, as contrast ratios: enough for a small filled
 /// glyph to be seen, no more, and the open the stronger of the two. See
 /// [`Theme::tpo_open`].
-const OPEN_TPO_CONTRAST: ContrastBand = ContrastBand::new(5.0, 5.5);
-const CLOSE_TPO_CONTRAST: ContrastBand = ContrastBand::new(3.0, 3.3);
+const OPEN_TPO_CONTRAST: ContrastBand = ContrastBand::new(5.4, 5.9);
+const CLOSE_TPO_CONTRAST: ContrastBand = ContrastBand::new(3.5, 3.8);
 
 /// The most OKLCh chroma they carry, and the most of their candle's: a
 /// tint of the up and down colours, well under half as vivid as either,

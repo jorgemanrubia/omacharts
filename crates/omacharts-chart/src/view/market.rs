@@ -200,6 +200,10 @@ pub(super) fn arrows(
     [mark(market.open_row, false, area.towards), mark(market.close_row, true, -area.towards)]
 }
 
+/// The room kept between an arrow's base and the edge of the profile's
+/// room, in pixels.
+const ARROW_CLEARANCE: f64 = 4.0;
+
 /// A fill's arrow size, as the chart is drawing fills.
 pub(super) fn arrow_size(state: &State) -> (f64, f64) {
     (executions::LENGTH * state.execution_scale, executions::HALF * state.execution_scale)
@@ -217,11 +221,12 @@ pub(super) fn cells(
     to_y: &impl Fn(f64) -> f64,
 ) -> (selection::ProfileBox, f64, f64) {
     if let omacharts_engine::Params::MarketProfile { open_close: true, .. } = params {
-        let gutter = arrow_size(state).0 + 2.0 * executions::STAND_OFF;
-        if area.span > 4.0 * gutter {
-            area.edge += area.towards * gutter;
-            area.span -= 2.0 * gutter;
-        }
+        // The tip hugs its TPO; the base keeps clear of whatever is beside
+        // the profile, so an arrow reads as this profile's.
+        let gutter = arrow_size(state).0 + executions::STAND_OFF + ARROW_CLEARANCE;
+        // However narrow the profile, so an arrow never reaches past it.
+        area.edge += area.towards * gutter;
+        area.span = (area.span - 2.0 * gutter).max(1.0);
     }
     let (cell, row_h) = cell(profile, &area, to_y);
     area.span = cell * profile.max_volume;

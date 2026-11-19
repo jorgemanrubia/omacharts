@@ -69,6 +69,10 @@ impl Params {
                 opacity,
                 highlight,
                 value_area_color,
+                value_area_alpha,
+                outside_alpha,
+                outline_alpha,
+                poc_alpha,
                 // Which periods are worked out, not only which are drawn.
                 last_only: _,
                 align,
@@ -90,9 +94,71 @@ impl Params {
                 opacity,
                 highlight,
                 value_area_color,
+                value_area_alpha,
+                outside_alpha,
+                outline_alpha,
+                poc_alpha,
                 align,
                 width,
                 colouring,
+            ),
+            // Its edge and width are where it is drawn, and whether it pairs
+            // with a volume profile is read from the settings as it is
+            // drawn, not from what was computed: paint.
+            Params::MarketProfile {
+                reset: _,
+                minutes: _,
+                row_ticks: _,
+                value_area: _,
+                style,
+                align,
+                width,
+                poc,
+                highlight,
+                poc_color,
+                poc_width,
+                poc_style,
+                value_area_color,
+                open_close,
+                open_color,
+                close_color,
+                open_alpha,
+                close_alpha,
+                outline,
+                outline_color,
+                outline_style,
+                outline_width,
+                outline_alpha,
+                alpha,
+                value_area_alpha,
+                outside_alpha,
+                poc_alpha,
+                last_only: _,
+                merged: _,
+            } => blank!(
+                style,
+                align,
+                width,
+                poc,
+                highlight,
+                poc_color,
+                poc_width,
+                poc_style,
+                value_area_color,
+                open_close,
+                open_color,
+                close_color,
+                open_alpha,
+                close_alpha,
+                outline,
+                outline_color,
+                outline_style,
+                outline_width,
+                outline_alpha,
+                alpha,
+                value_area_alpha,
+                outside_alpha,
+                poc_alpha,
             ),
             Params::Volume { height, colouring, up_color, down_color, opacity } => {
                 blank!(height, colouring, up_color, down_color, opacity)
@@ -149,7 +215,7 @@ impl Output {
             return false;
         }
         match self {
-            Output::Line(_) | Output::Profiles(_) | Output::Unmet(_) => true,
+            Output::Line(_) | Output::Profiles(_) | Output::MarketProfiles(_) | Output::Unmet(_) => true,
             Output::Bands(computed) => {
                 let Some(bands) = now.params.bands() else { return false };
                 if bands.len() != computed.bands.len() {
@@ -295,6 +361,61 @@ mod tests {
                 *colouring = Some(crate::theme::BarColouring::ALL[1]);
             }
         });
+        change("profile parts' transparency", &|i| {
+            if let Params::VolumeProfile { value_area_alpha, outside_alpha, outline_alpha, poc_alpha, .. }
+            | Params::MarketProfile { value_area_alpha, outside_alpha, outline_alpha, poc_alpha, .. } = &mut i.params
+            {
+                *value_area_alpha = Some(0.6);
+                *outside_alpha = Some(0.2);
+                *outline_alpha = Some(0.5);
+                *poc_alpha = Some(0.9);
+            }
+        });
+        change("market profile look", &|i| {
+            if let Params::MarketProfile {
+                style,
+                align,
+                width,
+                poc,
+                highlight,
+                poc_color,
+                poc_width,
+                poc_style,
+                value_area_color,
+                open_close,
+                open_color,
+                close_color,
+                open_alpha,
+                close_alpha,
+                outline,
+                outline_color,
+                outline_style,
+                outline_width,
+                alpha,
+                ..
+            } = &mut i.params
+            {
+                *style = market::Style::Blocks;
+                *align = profile::Align::Right;
+                *width = 0.7;
+                *poc = false;
+                *highlight = false;
+                *poc_color = red();
+                *poc_width = 3.0;
+                *poc_style = LineStyle::Dashed;
+                *value_area_color = red();
+                *open_close = true;
+                *open_color = red();
+                *close_color = red();
+                *open_alpha = Some(0.5);
+                *close_alpha = Some(0.5);
+                *outline = true;
+                *outline_color = red();
+                *outline_style = LineStyle::Dotted;
+                *outline_width = 2.0;
+                *alpha = Some(0.5);
+            }
+        });
         change("volume look", &|i| {
             if let Params::Volume { colouring, up_color, down_color, opacity, .. } = &mut i.params {
                 *colouring = Some(crate::theme::BarColouring::ALL[1]);
@@ -397,6 +518,31 @@ mod tests {
             ("profile reset", Indicator::new(1, Kind::VolumeProfile), |p| {
                 if let Params::VolumeProfile { reset, .. } = p {
                     *reset = Reset::Week;
+                }
+            }),
+            ("tpo period", Indicator::new(1, Kind::MarketProfile), |p| {
+                if let Params::MarketProfile { minutes, .. } = p {
+                    *minutes = 15;
+                }
+            }),
+            ("row ticks", Indicator::new(1, Kind::MarketProfile), |p| {
+                if let Params::MarketProfile { row_ticks, .. } = p {
+                    *row_ticks = Some(7);
+                }
+            }),
+            ("market profile value area", Indicator::new(1, Kind::MarketProfile), |p| {
+                if let Params::MarketProfile { value_area, .. } = p {
+                    *value_area = 0.5;
+                }
+            }),
+            ("market profile reset", Indicator::new(1, Kind::MarketProfile), |p| {
+                if let Params::MarketProfile { reset, .. } = p {
+                    *reset = Reset::Week;
+                }
+            }),
+            ("market profile last only", Indicator::new(1, Kind::MarketProfile), |p| {
+                if let Params::MarketProfile { last_only, .. } = p {
+                    *last_only = true;
                 }
             }),
             ("last only", Indicator::new(1, Kind::VolumeProfile), |p| {

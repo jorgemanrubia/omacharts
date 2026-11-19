@@ -79,11 +79,11 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 | **Outline colour** | The profile's **Colour**, solid | A palette name, or a custom colour. Its **Opacity** is how solid the outline is drawn, 0 to 100% |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Open and close** | Off | On marks where each profile starts and ends, one TPO each in a colour of its own (see below) |
-| **Open** | The theme's up colour, greyed, solid | A palette name, or a custom colour. Its **Opacity** is how solid the open's TPO is drawn, 0 to 100% |
-| **Close** | The theme's down colour, greyed and quieter than the open's, so the two tell apart by lightness as well as hue; solid | A palette name, or a custom colour. Its **Opacity** is how solid the close's TPO is drawn, 0 to 100% |
+| **Open and close** | Off | On marks where each profile starts and ends with a small arrow each (see below) |
+| **Open** | A muted, greyed relative of the theme's up colour, solid | A palette name, or a custom colour. Its **Opacity** is how solid the open's arrow is drawn, 0 to 100% |
+| **Close** | A muted, greyed relative of the theme's down colour, darker than the open's on a dark theme and lighter on a light one, so the two tell apart by lightness as well as hue; solid | A palette name, or a custom colour. Its **Opacity** is how solid the close's arrow is drawn, 0 to 100% |
 
-The **open** is the period's opening price, its first bar's open, and the **close** its closing price, its last bar's close; while a session is still forming, the close is its latest price. Each is marked on a single TPO: the open on the first TPO period's letter or block in the row of the opening price, which is the first in that row, and the close on the last TPO period's in the row of the closing price, the last in that row. The open need not be on the first letter's lowest or highest row: it is wherever the session opened in that first half hour. A composite profile marks the first part's open and the last part's close.
+The **open** is the period's opening price, its first bar's open, and the **close** its closing price, its last bar's close; while a session is still forming, the close is its latest price. Each is marked with a small arrow, the same as the chart's trade markers, beside a single TPO. The open's arrow stands just outside the profile's edge, pointing in at the first TPO period's letter or block in the row of the opening price. The close's arrow stands just past the last letter or block in the row of the closing price, pointing back at it. Aligned right, the profile is mirrored and so are the arrows. The open need not be on the first letter's lowest or highest row: it is wherever the session opened in that first TPO period. While the marks are on, the profile keeps a little room at each side for them, so they never cover a letter, the point of control or a volume profile beside it. A composite profile marks the first part's open and the last part's close.
 
 ### Value area
 

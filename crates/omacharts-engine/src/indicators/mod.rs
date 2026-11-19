@@ -677,10 +677,10 @@ pub enum Params {
         /// profile's own, the rest drawn fainter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value_area_color: Option<ColorChoice>,
-        /// Whether each profile marks its open and its close: the TPO at
-        /// its first bar's opening price, and the one at its last bar's
-        /// closing price (the latest, while it forms), a TPO each in colours
-        /// of their own. Missing, they are not. Read from `first_last` too,
+        /// Whether each profile marks its open and its close: an arrow
+        /// beside the TPO at its first bar's opening price, and one beside
+        /// the TPO at its last bar's closing price (the latest, while it
+        /// forms), each in a colour of its own. Missing, they are not. Read from `first_last` too,
         /// its name before it was released.
         #[serde(default, alias = "first_last")]
         open_close: bool,
@@ -692,9 +692,8 @@ pub enum Params {
         /// down colour: see [`crate::theme::Theme::tpo_close`].
         #[serde(default, alias = "last_color", skip_serializing_if = "Option::is_none")]
         close_color: Option<ColorChoice>,
-        /// How solid the open and the close are drawn as letters, nought to
-        /// one. Unset, solid, blocks a little fainter: see
-        /// [`market::end_strength`].
+        /// How solid the open and close arrows are drawn, nought to one.
+        /// Unset, solid: see [`market::end_strength`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         open_alpha: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
