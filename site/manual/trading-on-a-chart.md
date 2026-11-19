@@ -98,7 +98,7 @@ Order templates are **Beta**. A template is a set of exits that go in with an or
 |---|---|
 | **Ticks** | That many ticks from the fill |
 | **Money** | Where the exit's own contracts make, or lose, that much |
-| **Risk** | On a stop, where the whole order loses that much, which starts at **Value of 1R**. On a target, a multiple of R on the whole order, such as 2 for twice what 1R is worth |
+| **R** | A multiple of R on the whole order, 1 to begin with and fractions such as 0.5 or 1.5 allowed, R being Preferences › Trading › **Value of 1R**. A stop at 1R loses what 1R is worth on the whole order if it is hit, one at 0.5R half of it; a target at 2R makes twice it |
 
 Every distance rounds toward the entry, and is never under one tick.
 

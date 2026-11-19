@@ -83,7 +83,7 @@ The rest of Preferences › Trading sets how charts trade and what they show.
 | Order entry › **Edit quantities…** | The quantities a chart's **Qty** offers ([Quantities](/manual/trading-on-a-chart/#quantities)) |
 | Chart › **Order labels** | Whether the labels of orders and positions sit at the **Left** or the **Right** of the chart |
 | Chart › **Show P&L as** | **Money**, or **Risk (R)**: multiples of what one unit of risk is worth. Only what the charts show follows it; the Trading panel always shows money |
-| Chart › **Value of 1R** | What 1R is worth, in the account's currency; 500 until changed. Shown with Risk (R) |
+| Chart › **Value of 1R** | What 1R is worth, in the account's currency: P&L shown in R, and an order template's exits in R, count from it. 500 until changed, and never blank |
 
 The colours of orders, positions and P&L are in Preferences › Theme › **Trading**, on a theme of your own ([Themes and colours](/manual/themes/)).
 

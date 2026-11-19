@@ -931,12 +931,11 @@ pub fn no_template_text(templates: &[trading::order_templates::OrderTemplate], t
     }
 }
 
-/// One exit of an order template as typed: how far, `8t`, `$250`, `2r`
-/// (a target's multiple of R) or `$500r` (a stop's money at risk on the
-/// whole order; `1r` on a stop is what 1R is worth now), then how much
+/// One exit of an order template as typed: how far, `8t`, `$250` or a
+/// multiple of R on the whole order, `1r`, `0.5r`, `2r`, then how much
 /// after an `@`: `@1/2`, `@2`, `@all`. Without one, a share of the order
 /// splits it evenly with the others.
-pub fn exit_text(text: &str, stop: bool, r: f64) -> Result<trading::order_templates::Exit, String> {
+pub fn exit_text(text: &str) -> Result<trading::order_templates::Exit, String> {
     use trading::order_templates::{Distance, Exit, Size};
     let text = text.trim().to_lowercase();
     let (distance, size) = match text.split_once('@') {
@@ -957,24 +956,22 @@ pub fn exit_text(text: &str, stop: bool, r: f64) -> Result<trading::order_templa
             return Err(format!("{distance:?}: ticks are whole"));
         }
         Distance::Ticks(ticks as u32)
-    } else if let Some(risk) = distance.strip_suffix('r') {
-        match (risk.strip_prefix('$'), stop) {
-            (Some(money), true) => Distance::Risk(number(money)?),
-            (None, true) => Distance::Risk(number(risk)? * r),
-            (Some(_), false) => return Err(format!("{distance:?}: a target's risk is a multiple of R, such as 2r")),
-            (None, false) => Distance::Risk(number(risk)?),
+    } else if let Some(r) = distance.strip_suffix('r') {
+        if r.starts_with('$') {
+            return Err(format!("{distance:?}: R is a multiple of the Value of 1R, such as 1r or 0.5r; money is $250"));
         }
+        Distance::R(number(r)?)
     } else if let Some(money) = distance.strip_prefix('$') {
         Distance::Money(number(money)?)
     } else {
-        return Err(format!("{distance:?} is not 8t, $250, 2r or $500r"));
+        return Err(format!("{distance:?} is not 8t, $250 or 1r"));
     };
     Ok(Exit { distance, size: size.unwrap_or(Size::ALL) })
 }
 
 /// The exits of a group as typed, or none for `none`. Those that say no
 /// size split the order evenly among them.
-fn exits_typed(given: &[String], stop: bool, r: f64) -> Result<Vec<trading::order_templates::Exit>, Fault> {
+fn exits_typed(given: &[String], stop: bool) -> Result<Vec<trading::order_templates::Exit>, Fault> {
     use trading::order_templates::Size;
     let flag = if stop { "--stop" } else { "--target" };
     if given.len() == 1 && given[0].trim().eq_ignore_ascii_case("none") {
@@ -983,7 +980,7 @@ fn exits_typed(given: &[String], stop: bool, r: f64) -> Result<Vec<trading::orde
     let mut exits = Vec::new();
     for text in given {
         let sized = text.contains('@');
-        let mut exit = exit_text(text, stop, r).map_err(|why| Fault::usage(format!("{flag}: {why}")))?;
+        let mut exit = exit_text(text).map_err(|why| Fault::usage(format!("{flag}: {why}")))?;
         if !sized && given.len() > 1 {
             exit.size = Size::Share(1, given.len() as u32);
         }
@@ -1001,7 +998,7 @@ fn order_templates(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Opt
         let (mode, value) = match exit.distance {
             Distance::Ticks(ticks) => ("ticks", json!(ticks)),
             Distance::Money(money) => ("money", json!(money)),
-            Distance::Risk(risk) => ("risk", json!(risk)),
+            Distance::R(r) => ("r", json!(r)),
         };
         json!({"mode": mode, "value": value, "quantity": exit.size.text().to_lowercase()})
     };
@@ -1038,9 +1035,8 @@ fn order_templates(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Opt
             if name.is_empty() {
                 return Err(Fault::usage("a template needs a name".into()));
             }
-            let r = trading::chart_pnl::r_amount(store);
-            let targets = many("target").map(|given| exits_typed(&given, false, r)).transpose()?;
-            let stops = many("stop").map(|given| exits_typed(&given, true, r)).transpose()?;
+            let targets = many("target").map(|given| exits_typed(&given, false)).transpose()?;
+            let stops = many("stop").map(|given| exits_typed(&given, true)).transpose()?;
             let renamed = arg(m, "rename").map(|text| text.trim().to_string());
             if renamed.as_ref().is_some_and(String::is_empty) {
                 return Err(Fault::usage("--rename needs a name".into()));

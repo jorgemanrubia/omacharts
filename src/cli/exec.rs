@@ -7966,14 +7966,17 @@ mod tests {
         let out = run("trading templates set Scalp --target 8t --stop 4t", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert!(out.out.starts_with("Scalp: +8t"), "{}", out.out);
-        let out = run("trading templates set Runner --target 1r@1/2 --target 2r --stop $250r --json", &store);
+        let out = run("trading templates set Runner --target 1r@1/2 --target 2r --stop 0.5r --json", &store);
         let listed = json_of(&out);
         let runner = &listed["templates"][1];
         assert_eq!((runner["name"].as_str(), runner["key"].as_str()), (Some("Runner"), Some("Ctrl+Shift+2")));
-        assert_eq!(runner["targets"][0], json!({"mode": "risk", "value": 1.0, "quantity": "1/2"}));
+        assert_eq!(runner["targets"][0], json!({"mode": "r", "value": 1.0, "quantity": "1/2"}));
         assert_eq!(runner["targets"][1]["quantity"], "1/2", "split evenly with the first");
-        assert_eq!(runner["stops"][0], json!({"mode": "risk", "value": 250.0, "quantity": "all"}));
-        assert_ne!(run("trading templates set Runner --target $250r", &store).code, 0, "a target's risk in money");
+        assert_eq!(runner["stops"][0], json!({"mode": "r", "value": 0.5, "quantity": "all"}), "a multiple of R, never money");
+        assert_eq!(runner["summary"], "+1R 1/2 · +2R rest | −0.5R");
+        for money in ["--target $250r", "--stop $500r"] {
+            assert_ne!(run(&format!("trading templates set Runner {money}"), &store).code, 0, "{money}: R in money");
+        }
         assert_ne!(run("trading templates set Swing", &store).code, 0, "a new template with no exits");
         assert_eq!(run("trading templates set Runner --rename Scalp", &store).code, super::super::EXIT_REFUSED);
 

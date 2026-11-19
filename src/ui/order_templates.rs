@@ -63,7 +63,7 @@ fn build(store: Rc<Store>, changed: Rc<dyn Fn()>) -> adw::Dialog {
     add.connect_clicked(move |_| {
         let fresh = {
             let mut list = adding.templates.borrow_mut();
-            let fresh = templates::new_template(&list, adding.r);
+            let fresh = templates::new_template(&list);
             list.push(fresh.clone());
             fresh
         };
@@ -323,17 +323,15 @@ impl ExitGroup {
     /// split evenly, each but the last taking 1/n of it and the last the
     /// rest.
     fn add(self: &Rc<Self>) {
-        let r = self.editor.r;
         let stop = self.which == Group::Stops;
         self.change(
             |exits| {
                 let distance = match exits.last().map(|exit| exit.distance) {
-                    None if stop => Distance::Risk(r),
-                    None => Distance::Risk(2.0),
+                    None if stop => Distance::R(1.0),
+                    None => Distance::R(2.0),
                     Some(Distance::Ticks(ticks)) => Distance::Ticks(ticks.saturating_mul(2).max(1)),
                     Some(Distance::Money(money)) => Distance::Money(money * 2.0),
-                    Some(Distance::Risk(risk)) if stop => Distance::Risk(risk * 2.0),
-                    Some(Distance::Risk(multiple)) => Distance::Risk(multiple + 1.0),
+                    Some(Distance::R(multiple)) => Distance::R(multiple + 1.0),
                 };
                 let n = exits.len() as u32 + 1;
                 for exit in exits.iter_mut() {
@@ -401,13 +399,13 @@ impl ExitGroup {
         modes.set_selected(Mode::ALL.iter().position(|mode| *mode == exit.distance.mode()).unwrap_or(0) as u32);
         line.append(&modes);
 
-        let (prefix, suffix) = units(exit.distance.mode(), stop);
+        let (prefix, suffix) = units(exit.distance.mode());
         if let Some(prefix) = prefix {
             let label = gtk::Label::new(Some(prefix));
             label.add_css_class("dim-label");
             line.append(&label);
         }
-        let spin = amount_spin(exit.distance, stop);
+        let spin = amount_spin(exit.distance);
         spin.update_property(&[gtk::accessible::Property::Label(&format!("{name} amount"))]);
         line.append(&spin);
         if let Some(suffix) = suffix {
@@ -647,23 +645,23 @@ fn split_note(exits: &[Exit]) -> Option<String> {
     Some(format!("Sized top to bottom, the last takes the rest. {}", lines.join(", ")))
 }
 
-/// What is written before and after the amount: "$", "ticks", "R",
-/// "on the whole order".
-fn units(mode: Mode, stop: bool) -> (Option<&'static str>, Option<&'static str>) {
-    match (mode, stop) {
-        (Mode::Ticks, _) => (None, Some("ticks")),
-        (Mode::Money, _) => (Some("$"), Some("on this exit")),
-        (Mode::Risk, true) => (Some("$"), Some("on the whole order")),
-        (Mode::Risk, false) => (None, Some("R")),
+/// What is written before and after the amount: "$", "ticks", "R on
+/// the whole order".
+fn units(mode: Mode) -> (Option<&'static str>, Option<&'static str>) {
+    match mode {
+        Mode::Ticks => (None, Some("ticks")),
+        Mode::Money => (Some("$"), Some("on this exit")),
+        Mode::R => (None, Some("R on the whole order")),
     }
 }
 
 /// The amount, stepping as its mode does.
-fn amount_spin(distance: Distance, stop: bool) -> gtk::SpinButton {
-    let (low, high, step, digits) = match (distance.mode(), stop) {
-        (Mode::Ticks, _) => (1.0, 100_000.0, 1.0, 0),
-        (Mode::Money, _) | (Mode::Risk, true) => (1.0, 10_000_000.0, 25.0, 0),
-        (Mode::Risk, false) => (0.25, 100.0, 0.25, 2),
+fn amount_spin(distance: Distance) -> gtk::SpinButton {
+    let (low, high, step, digits) = match distance.mode() {
+        Mode::Ticks => (1.0, 100_000.0, 1.0, 0),
+        Mode::Money => (1.0, 10_000_000.0, 25.0, 0),
+        // A multiple of R, in fractions: 0.5, 1.5.
+        Mode::R => (0.05, 100.0, 0.25, 2),
     };
     let spin = gtk::SpinButton::with_range(low, high, step);
     spin.set_digits(digits);
@@ -677,18 +675,18 @@ fn with_value(distance: Distance, value: f64) -> Distance {
     match distance {
         Distance::Ticks(_) => Distance::Ticks(value.round().max(1.0) as u32),
         Distance::Money(_) => Distance::Money(value),
-        Distance::Risk(_) => Distance::Risk(value),
+        Distance::R(_) => Distance::R(value),
     }
 }
 
 /// Where an exit said another way starts: 8 ticks, what 1R is worth, or
-/// 2R for a target.
+/// 1R for a stop and 2R for a target.
 fn starting(mode: Mode, stop: bool, r: f64) -> Distance {
     match (mode, stop) {
         (Mode::Ticks, _) => Distance::Ticks(8),
         (Mode::Money, _) => Distance::Money(r),
-        (Mode::Risk, true) => Distance::Risk(r),
-        (Mode::Risk, false) => Distance::Risk(2.0),
+        (Mode::R, true) => Distance::R(1.0),
+        (Mode::R, false) => Distance::R(2.0),
     }
 }
 
@@ -744,11 +742,11 @@ mod tests {
             add.emit_clicked();
             let saved = templates::load(&store);
             assert_eq!(saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["New template", "New template 2"]);
-            assert_eq!(saved[0].summary(), "+2R | −$500 order", "a target at 2R and a stop of what 1R is worth");
+            assert_eq!(saved[0].summary(), "+2R | −1R", "a target at 2R and a stop at 1R");
             assert!(told.get() >= 2, "every change is handed on");
             assert_eq!(nav.visible_page().unwrap().title(), "New template 2", "a new template opens");
             let groups = groups_in(root.upcast_ref());
-            assert_eq!(rows_of(&groups[0]), ["New template | +2R | −$500 order", "New template 2 | +2R | −$500 order"]);
+            assert_eq!(rows_of(&groups[0]), ["New template | +2R | −1R", "New template 2 | +2R | −1R"]);
         });
     }
 

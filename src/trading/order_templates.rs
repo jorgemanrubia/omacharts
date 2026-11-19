@@ -12,13 +12,12 @@
 //! - **Ticks**, from the fill.
 //! - **Money**, what this exit's own contracts make (a target) or lose (a
 //!   stop) at its price.
-//! - **Risk**, measured on the whole order: for a stop, the money the whole
-//!   order loses if it is hit, which starts at what 1R is worth; for a
-//!   target, a multiple of R — 0.5, 1.5, 2 — the whole order makes there,
-//!   R being the "Value of 1R" setting the charts write P&L in, so a 2R
-//!   target reads +2R on the chart once it is working.
+//! - **R**, a multiple of R — 0.5, 1, 1.5, 2 — on the whole order, R being
+//!   the "Value of 1R" setting: a stop at 1R loses what 1R is worth if it
+//!   is hit, one at 0.5R half of it; a target at 2R makes twice it, and
+//!   reads +2R on the chart once it is working.
 //!
-//! Money and risk become ticks with what a tick of the contract is worth,
+//! Money and R become ticks with what a tick of the contract is worth,
 //! rounded **toward the entry**, and never under one tick: an exit never
 //! risks, nor asks for, more than it says.
 //!
@@ -47,9 +46,9 @@ pub enum Distance {
     Ticks(u32),
     /// What the exit's own contracts make or lose there.
     Money(f64),
-    /// A stop's money lost by the whole order; a target's multiple of R
-    /// made by it.
-    Risk(f64),
+    /// A multiple of R lost (a stop) or made (a target) by the whole
+    /// order: 1 is the "Value of 1R" setting.
+    R(f64),
 }
 
 impl Distance {
@@ -57,14 +56,14 @@ impl Distance {
         match self {
             Distance::Ticks(_) => Mode::Ticks,
             Distance::Money(_) => Mode::Money,
-            Distance::Risk(_) => Mode::Risk,
+            Distance::R(_) => Mode::R,
         }
     }
 
     pub fn value(self) -> f64 {
         match self {
             Distance::Ticks(ticks) => f64::from(ticks),
-            Distance::Money(value) | Distance::Risk(value) => value,
+            Distance::Money(value) | Distance::R(value) => value,
         }
     }
 }
@@ -74,17 +73,17 @@ impl Distance {
 pub enum Mode {
     Ticks,
     Money,
-    Risk,
+    R,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 3] = [Mode::Ticks, Mode::Money, Mode::Risk];
+    pub const ALL: [Mode; 3] = [Mode::Ticks, Mode::Money, Mode::R];
 
     pub fn label(self) -> &'static str {
         match self {
             Mode::Ticks => "Ticks",
             Mode::Money => "Money",
-            Mode::Risk => "Risk",
+            Mode::R => "R",
         }
     }
 
@@ -92,7 +91,7 @@ impl Mode {
         match self {
             Mode::Ticks => "ticks",
             Mode::Money => "money",
-            Mode::Risk => "risk",
+            Mode::R => "r",
         }
     }
 }
@@ -195,7 +194,7 @@ impl OrderTemplate {
     }
 
     /// In one line, for a menu or a tooltip: the targets, then the stops,
-    /// "+1R 1/2 · +2R rest | −$500 order".
+    /// "+1R 1/2 · +2R rest | −1R".
     pub fn summary(&self) -> String {
         let group = |exits: &[Exit], stop: bool| -> String {
             let sizes = exits.len() > 1;
@@ -207,8 +206,7 @@ impl OrderTemplate {
                     let distance = match exit.distance {
                         Distance::Ticks(ticks) => format!("{sign}{ticks}t"),
                         Distance::Money(money) => format!("{sign}${}", amount(money)),
-                        Distance::Risk(risk) if stop => format!("{sign}${} order", amount(risk)),
-                        Distance::Risk(r) => format!("{sign}{}R", amount(r)),
+                        Distance::R(r) => format!("{sign}{}R", amount(r)),
                     };
                     match (sizes, at + 1 == exits.len()) {
                         (false, _) => distance,
@@ -270,13 +268,13 @@ pub fn fresh_name(templates: &[OrderTemplate]) -> String {
         .unwrap_or_default()
 }
 
-/// A new template: a target at 2R and a stop risking what 1R is worth.
-pub fn new_template(templates: &[OrderTemplate], r: f64) -> OrderTemplate {
+/// A new template: a target at 2R and a stop at 1R.
+pub fn new_template(templates: &[OrderTemplate]) -> OrderTemplate {
     OrderTemplate {
         id: next_id(templates),
         name: fresh_name(templates),
-        targets: vec![Exit { distance: Distance::Risk(2.0), size: Size::ALL }],
-        stops: vec![Exit { distance: Distance::Risk(r), size: Size::ALL }],
+        targets: vec![Exit { distance: Distance::R(2.0), size: Size::ALL }],
+        stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
     }
 }
 
@@ -325,7 +323,7 @@ pub fn split(sizes: &[Size], qty: u32) -> Vec<u32> {
 }
 
 /// What an order on a contract is worth a tick, and what R is, to turn
-/// money and risk into ticks.
+/// money and R into ticks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Worth {
     /// The step its price moves in.
@@ -343,7 +341,7 @@ pub fn bracket(template: &OrderTemplate, qty: u32, worth: Worth) -> Result<Exits
     if !(worth.tick.is_finite() && worth.tick > 0.0) {
         return Err("the contract's tick is not known, so the template's exits cannot be counted in ticks".into());
     }
-    let group = |exits: &[Exit], stop: bool| -> Result<Vec<ExitLeg>, String> {
+    let group = |exits: &[Exit]| -> Result<Vec<ExitLeg>, String> {
         let sizes: Vec<Size> = exits.iter().map(|exit| exit.size).collect();
         let mut legs = Vec::new();
         for (exit, leg_qty) in exits.iter().zip(split(&sizes, qty)) {
@@ -353,15 +351,14 @@ pub fn bracket(template: &OrderTemplate, qty: u32, worth: Worth) -> Result<Exits
             let ticks = match exit.distance {
                 Distance::Ticks(ticks) => ticks.max(1),
                 Distance::Money(money) => ticks_for(money, leg_qty, worth)?,
-                Distance::Risk(risk) if stop => ticks_for(risk, qty, worth)?,
-                Distance::Risk(r) => ticks_for(r * worth.r, qty, worth)?,
+                Distance::R(r) => ticks_for(r * worth.r, qty, worth)?,
             };
             legs.push(ExitLeg { qty: leg_qty, ticks });
         }
         Ok(legs)
     };
     // A template with no exits sends the order plain: nothing to refuse.
-    Ok(Exits { targets: group(&template.targets, false)?, stops: group(&template.stops, true)? })
+    Ok(Exits { targets: group(&template.targets)?, stops: group(&template.stops)? })
 }
 
 /// How many ticks from the fill `money` is made or lost on `qty`
@@ -397,8 +394,8 @@ mod tests {
     fn templates_are_saved_read_back_and_none_to_begin_with() {
         let store = Store::memory().unwrap();
         assert!(load(&store).is_empty());
-        let mut templates = vec![new_template(&[], 500.0)];
-        templates.push(new_template(&templates, 250.0));
+        let mut templates = vec![new_template(&[])];
+        templates.push(new_template(&templates));
         templates[1].targets.push(exit(Distance::Ticks(16), Size::Share(1, 2)));
         templates[1].stops = vec![exit(Distance::Money(120.5), Size::Fixed(2))];
         save(&store, &templates);
@@ -411,9 +408,9 @@ mod tests {
 
     #[test]
     fn templates_are_found_by_name_or_id_and_moved() {
-        let mut templates = vec![new_template(&[], 500.0)];
-        templates.push(new_template(&templates, 500.0));
-        templates.push(new_template(&templates, 500.0));
+        let mut templates = vec![new_template(&[])];
+        templates.push(new_template(&templates));
+        templates.push(new_template(&templates));
         assert_eq!(find(&templates, "new TEMPLATE 2").map(|t| t.id), Some(2));
         assert_eq!(find(&templates, "id:3").map(|t| t.id), Some(3));
         assert_eq!(find(&templates, "nothing"), None);
@@ -442,7 +439,8 @@ mod tests {
     }
 
     /// Ticks are ticks; money is what the exit's own contracts make or
-    /// lose; risk is the whole order's, a stop's in money, a target's in R.
+    /// lose; R is a multiple of the Value of 1R on the whole order, a stop's
+    /// and a target's alike.
     #[test]
     fn each_mode_becomes_ticks_with_what_a_tick_is_worth() {
         // ES: $12.50 a tick a contract.
@@ -455,13 +453,20 @@ mod tests {
         assert_eq!(exits.stops, [ExitLeg { qty: 2, ticks: 10 }], "$250 on two contracts is 10 ticks");
 
         let risk = template(
-            vec![exit(Distance::Risk(1.0), Size::Share(1, 2)), exit(Distance::Risk(2.0), Size::Share(1, 2))],
-            vec![exit(Distance::Risk(500.0), Size::ALL)],
+            vec![exit(Distance::R(1.0), Size::Share(1, 2)), exit(Distance::R(2.0), Size::Share(1, 2))],
+            vec![exit(Distance::R(1.0), Size::ALL)],
         );
         let exits = bracket(&risk, 4, ES).unwrap();
         // The whole order: 4 contracts at $12.50 a tick is $50 a tick.
         assert_eq!(exits.stops, [ExitLeg { qty: 4, ticks: 10 }], "$500 risked on the order");
         assert_eq!(exits.targets, [ExitLeg { qty: 2, ticks: 10 }, ExitLeg { qty: 2, ticks: 20 }], "1R and 2R on the order");
+
+        // Half of R risked: $250 on 4 contracts, 5 ticks; one and a half,
+        // $750, 15.
+        for (r, ticks) in [(0.5, 5), (1.5, 15)] {
+            let stop = template(vec![], vec![exit(Distance::R(r), Size::ALL)]);
+            assert_eq!(bracket(&stop, 4, ES).unwrap().stops, [ExitLeg { qty: 4, ticks }], "{r}R");
+        }
 
         // Money on each target's own contracts.
         let money = template(vec![exit(Distance::Money(100.0), Size::Fixed(1)), exit(Distance::Money(100.0), Size::ALL)], vec![]);
@@ -485,10 +490,12 @@ mod tests {
         assert_eq!(ticks(100.0, mes), Ok(80));
         let nq = Worth { tick: 0.25, point: Some(20.0), r: 500.0 };
         assert_eq!(ticks(100.0, nq), Ok(20));
-        // A target in R uses what 1R is worth now.
-        let target = template(vec![exit(Distance::Risk(1.5), Size::ALL)], vec![]);
+        // R is what 1R is worth now, for a target and a stop alike.
+        let target = template(vec![exit(Distance::R(1.5), Size::ALL)], vec![]);
         let worth = Worth { r: 250.0, ..ES };
         assert_eq!(bracket(&target, 1, worth).map(|exits| exits.targets[0].ticks), Ok(30));
+        let stop = template(vec![], vec![exit(Distance::R(1.0), Size::ALL)]);
+        assert_eq!(bracket(&stop, 1, worth).map(|exits| exits.stops[0].ticks), Ok(20));
     }
 
     #[test]
@@ -504,16 +511,22 @@ mod tests {
     #[test]
     fn a_template_says_itself_in_one_line() {
         let risk = template(
-            vec![exit(Distance::Risk(1.0), Size::Share(1, 2)), exit(Distance::Risk(2.0), Size::Share(1, 2))],
-            vec![exit(Distance::Risk(500.0), Size::ALL)],
+            vec![exit(Distance::R(1.0), Size::Share(1, 2)), exit(Distance::R(2.0), Size::Share(1, 2))],
+            vec![exit(Distance::R(1.0), Size::ALL)],
         );
-        assert_eq!(risk.summary(), "+1R 1/2 · +2R rest | −$500 order");
+        assert_eq!(risk.summary(), "+1R 1/2 · +2R rest | −1R");
+        assert_eq!(template(vec![], vec![exit(Distance::R(0.5), Size::ALL)]).summary(), "−0.5R");
+        assert_eq!(
+            serde_json::to_value(exit(Distance::R(0.5), Size::ALL)).unwrap()["distance"],
+            serde_json::json!({"mode": "r", "value": 0.5}),
+            "kept as a multiple of R"
+        );
         let ticks = template(vec![exit(Distance::Ticks(16), Size::ALL)], vec![]);
         assert_eq!(ticks.summary(), "+16t");
         let stop = template(vec![], vec![exit(Distance::Money(1250.0), Size::ALL)]);
         assert_eq!(stop.summary(), "−$1,250");
         assert_eq!(template(vec![], vec![]).summary(), "No exits · orders go plain");
-        assert_eq!(template(vec![exit(Distance::Risk(1.5), Size::ALL)], vec![]).summary(), "+1.5R");
+        assert_eq!(template(vec![exit(Distance::R(1.5), Size::ALL)], vec![]).summary(), "+1.5R");
     }
 
     #[test]

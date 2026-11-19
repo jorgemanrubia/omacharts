@@ -1785,15 +1785,17 @@ chart trades with are [`chart set`](#chart-set) flags: `--account`,
 | `trading bracket ORDER --template T` | Gives a working entry an order template's exits, or `none` takes them off: it is cancelled and placed again as one bracket (Beta) |
 
 An exit is how far, then optionally how much after an `@`. How far is `8t`
-(ticks), `$250` (what the exit's own contracts make or lose), `2r` on a
-target (a multiple of R on the whole order), or on a stop `$500r` (money
-lost on the whole order) or `1r` (Preferences › Trading › **Value of 1R**, as it is now). How much is a share
+(ticks), `$250` (what the exit's own contracts make or lose), or a
+multiple of R on the whole order, such as `1r`, `0.5r` or `2r`, for a
+target or a stop alike: R is Preferences › Trading › **Value of 1R**, 500
+until it is changed, so a stop at `1r` risks it and one at `0.5r` half of
+it. How much is a share
 such as `@1/2`, a number of contracts such as `@2`, or `@all`; exits that say
 none split the order evenly, and the last takes the rest.
 
 ```
 $ omacharts trading templates set Runner --target 1r@1/2 --target 2r --stop 1r
-Runner: +1R 1/2 · +2R rest | −$500 order
+Runner: +1R 1/2 · +2R rest | −1R
   [exit 0]
 
 $ omacharts chart set --order-template Runner

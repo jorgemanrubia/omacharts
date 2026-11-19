@@ -249,7 +249,7 @@ mod tests {
             quantity: 2,
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             account: "Practice".into(),
-            templates: vec![(4, "Scalp".into(), "+8t | −4t".into()), (7, "Swing".into(), "+2R | −$500 order".into())],
+            templates: vec![(4, "Scalp".into(), "+8t | −4t".into()), (7, "Swing".into(), "+2R | −1R".into())],
             template: Some(7),
         }
     }

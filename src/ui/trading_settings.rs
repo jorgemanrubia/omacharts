@@ -396,15 +396,15 @@ fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
         }
     });
     group.add(&row);
-    let amount = r_amount_row(panel);
-    group.add(&pnl_display_row(panel, &amount));
-    group.add(&amount);
+    group.add(&pnl_display_row(panel));
+    group.add(&r_amount_row(panel));
     group
 }
 
 /// "Show P&L as": Money, as the account's books say it, or Risk (R). The
-/// row for what 1R is worth is under it while R is chosen, and only then.
-fn pnl_display_row(panel: &Rc<Panel>, amount: &adw::SpinRow) -> adw::ComboRow {
+/// row for what 1R is worth is under it either way, since an order
+/// template's exits in R count from it too.
+fn pnl_display_row(panel: &Rc<Panel>) -> adw::ComboRow {
     use trading::chart_pnl::{self, Display};
     let row = adw::ComboRow::new();
     row.set_title("Show P&L as");
@@ -412,14 +412,9 @@ fn pnl_display_row(panel: &Rc<Panel>, amount: &adw::SpinRow) -> adw::ComboRow {
     row.set_model(Some(&gtk::StringList::new(&names)));
     let current = chart_pnl::display(&panel.store);
     row.set_selected(Display::ALL.iter().position(|display| *display == current).unwrap_or(0) as u32);
-    amount.set_visible(current == Display::Risk);
     let weak = Rc::downgrade(panel);
-    let amount = amount.downgrade();
     row.connect_selected_notify(move |row| {
         let (Some(panel), Some(display)) = (weak.upgrade(), Display::ALL.get(row.selected() as usize)) else { return };
-        if let Some(amount) = amount.upgrade() {
-            amount.set_visible(*display == Display::Risk);
-        }
         if *display == chart_pnl::display(&panel.store) {
             return;
         }
@@ -776,12 +771,11 @@ mod tests {
                 assert!(row.subtitle().is_none_or(|s| s.is_empty()), "no hint under {}", row.title());
             }
             assert_eq!(display.selected(), 0, "Money");
-            assert!(!amount.is_visible(), "a value of 1R with money shown");
+            assert!(amount.is_visible(), "a value of 1R with money shown: templates count R from it");
 
             display.set_selected(1);
             assert_eq!(chart_pnl::display(&store), Display::Risk);
             assert_eq!(told.get(), 1, "the charts are told");
-            assert!(amount.is_visible());
             assert_eq!(amount.value(), 500.0);
 
             rebuild(&panel);
@@ -793,7 +787,7 @@ mod tests {
 
             display.set_selected(0);
             assert_eq!(chart_pnl::load(&store), ChartPnl::Money);
-            assert!(!amount.is_visible());
+            assert!(amount.is_visible());
             assert_eq!(told.get(), 2);
         });
     }

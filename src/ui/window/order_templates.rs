@@ -598,10 +598,10 @@ mod tests {
             id: 2,
             name: "Runner".into(),
             targets: vec![
-                Exit { distance: Distance::Risk(1.0), size: Size::Share(1, 2) },
-                Exit { distance: Distance::Risk(2.0), size: Size::Share(1, 2) },
+                Exit { distance: Distance::R(1.0), size: Size::Share(1, 2) },
+                Exit { distance: Distance::R(2.0), size: Size::Share(1, 2) },
             ],
-            stops: vec![Exit { distance: Distance::Risk(250.0), size: Size::ALL }],
+            stops: vec![Exit { distance: Distance::R(1.0), size: Size::ALL }],
         };
         templates::save(&window.store, &[scalp, runner]);
         window.store.set_setting(crate::trading::chart_pnl::R_AMOUNT, "250");
@@ -682,7 +682,7 @@ mod tests {
             assert!(wait(&window, || heard() == Some("bracket")), "no bracket sent: {:?}", heard());
             // Filled at once at the fake's last, 7,612.25, and its exits in.
             // ES at $12.50 a tick a contract, two contracts: $25 a tick.
-            // 1R is $250: 10 ticks, 2R 20, and $250 at risk 10 ticks.
+            // 1R is $250: 10 ticks, 2R 20, and the stop at 1R 10 ticks.
             let mut exits: Vec<(OrderKind, u32, f64)> = session
                 .book()
                 .orders
