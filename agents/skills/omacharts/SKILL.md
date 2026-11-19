@@ -319,12 +319,12 @@ lettered TPO periods of `--tpo-minutes`, rows `--row-ticks` ticks tall or
 `auto`. "TPO" means this, not the volume profile. It is a study of its own:
 add it alone, with no volume profile, and `chart profile merge` / `split`
 work on it as on a volume profile. On one chart with a volume profile study
-of the same `--anchor`, the two pair: each session's two sit side by side
-inside it, the volume profile against the edge and the letters after it,
-drawn from the market profile's `--align`, and `chart profile merge` /
-`split` on either does both. With different anchors each keeps to itself,
-on its own `--align` with its own merges. `--align right` on
-the market profile mirrors them; `--tpo-style blocks` swaps
+of the same `--anchor`, the two pair: each session's two are drawn inside
+it, and `chart profile merge` / `split` on either does both. Each grows from
+its own `--align`: set alike, side by side from that edge, the volume
+profile against it; one `left` and one `right`, back to back on a spine
+centred in the session. With different anchors each keeps to itself, with
+its own merges. `--align right` mirrors a profile; `--tpo-style blocks` swaps
 letters for squares; `--first-last-tpo on` draws each profile's opening and
 closing TPO periods in colours of their own (`--first-tpo-color`,
 `--last-tpo-color`, `none` for the theme's); `--transparency`,

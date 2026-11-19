@@ -19,7 +19,8 @@ use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 use omacharts_engine::BarColouring;
 
 pub use crate::ui::property_rows::{
-    COLOUR, LINE_STYLE, SHOW, THICKNESS, TRANSPARENCY, percent_row, switch_row, thickness_row, transparency_row,
+    COLOUR, LINE_STYLE, SHOW, THICKNESS, TRANSPARENCY, Transparency, colour_row, percent_row, switch_row,
+    thickness_row,
 };
 #[cfg(test)]
 pub use crate::ui::property_rows::titles;
@@ -37,7 +38,6 @@ pub const OUTLINE: &str = "Outline";
 pub const OUTLINE_COLOUR: &str = "Outline colour";
 pub const OUTLINE_STYLE: &str = "Outline style";
 pub const OUTLINE_THICKNESS: &str = "Outline thickness";
-pub const OUTLINE_TRANSPARENCY: &str = "Outline transparency %";
 pub const FIRST_LAST: &str = "First and last TPO";
 pub const FIRST_COLOUR: &str = "First TPO colour";
 pub const LAST_COLOUR: &str = "Last TPO colour";
@@ -73,10 +73,10 @@ const ROWS_UNKNOWN: usize = 48;
 /// An outline's switch and the rows it shows: a volume profile's.
 pub struct OutlineRows {
     pub switch: adw::SwitchRow,
+    /// Its colour and transparency, on the standard colour row.
     pub colour: gtk::Widget,
     pub thickness: gtk::Widget,
     pub style: gtk::Widget,
-    pub transparency: gtk::Widget,
 }
 
 /// The first and last TPO's switch and their colours: a market profile's.
@@ -90,9 +90,8 @@ pub struct EndRows {
 pub struct StyleRows {
     /// Filled or outline; letters or blocks.
     pub display: gtk::Widget,
-    /// The rows' colour.
+    /// The rows' colour and transparency, on the standard colour row.
     pub colour: gtk::Widget,
-    pub transparency: gtk::Widget,
     pub outline: Option<OutlineRows>,
     pub ends: Option<EndRows>,
     pub alignment: gtk::Widget,
@@ -104,8 +103,8 @@ pub struct StyleRows {
 /// The rows of the Value area group.
 pub struct ValueAreaRows {
     pub highlight: adw::SwitchRow,
+    /// Its colour and transparency, on the standard colour row.
     pub colour: gtk::Widget,
-    pub transparency: gtk::Widget,
     /// The rows outside the value area.
     pub outside: gtk::Widget,
 }
@@ -114,10 +113,10 @@ pub struct ValueAreaRows {
 /// drawn apart, not a line, and has no thickness or line style.
 pub struct PocRows {
     pub show: adw::SwitchRow,
+    /// Its colour and transparency, on the standard colour row.
     pub colour: gtk::Widget,
     pub thickness: Option<gtk::Widget>,
     pub style: Option<gtk::Widget>,
-    pub transparency: gtk::Widget,
 }
 
 /// Every look row of a profile.
@@ -128,8 +127,8 @@ pub struct LookRows {
 }
 
 /// The Style, Value area and Point of control groups, in that order, each
-/// in its one order: a stroke's colour, thickness, style and transparency
-/// in that order, as on every line in every dialog. The rows a switch
+/// in its one order: a stroke's colour and transparency, on one row, then
+/// its thickness and style. The rows a switch
 /// governs are there while it is on.
 pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
     let LookRows { style, value_area, poc } = rows;
@@ -146,10 +145,9 @@ pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
     styled.add(&style.alignment);
     styled.add(&style.width);
     styled.add(&style.colour);
-    styled.add(&style.transparency);
     if let Some(outline) = style.outline {
         styled.add(&outline.switch);
-        let rows = vec![outline.colour, outline.thickness, outline.style, outline.transparency];
+        let rows = vec![outline.colour, outline.thickness, outline.style];
         for row in &rows {
             styled.add(row);
         }
@@ -166,7 +164,7 @@ pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
 
     let area = group(VALUE_AREA_GROUP);
     area.add(&value_area.highlight);
-    let rows = vec![value_area.colour, value_area.transparency, value_area.outside];
+    let rows = vec![value_area.colour, value_area.outside];
     for row in &rows {
         area.add(row);
     }
@@ -177,7 +175,6 @@ pub fn look_groups(rows: LookRows) -> Vec<adw::PreferencesGroup> {
     let mut rows = vec![poc.colour];
     rows.extend(poc.thickness);
     rows.extend(poc.style);
-    rows.push(poc.transparency);
     for row in &rows {
         point.add(row);
     }
@@ -198,16 +195,12 @@ fn follow_switch(switch: &adw::SwitchRow, rows: Vec<gtk::Widget>) {
     });
 }
 
-/// How solid something is drawn, as the Transparency rows say it: one
-/// minus `alpha`, and the way to show another strength. Hands back a
-/// strength, not a transparency.
-pub fn strength_row(
-    title: &str,
-    alpha: f64,
-    changed: impl Fn(f64) + 'static,
-) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    let (row, show) = percent_row(title, 1.0 - alpha, 0.0, 1.0, move |share| changed(1.0 - share));
-    (row, Rc::new(move |alpha| show(1.0 - alpha)))
+/// How solid something is drawn, as a transparency says it: one minus
+/// `alpha`, and the way to show another strength. Hands back a strength,
+/// not a transparency. Goes on a colour row, or on one of its own.
+pub fn strength(alpha: f64, changed: impl Fn(f64) + 'static) -> (Transparency, Rc<dyn Fn(f64)>) {
+    let (transparency, show) = Transparency::new(1.0 - alpha, move |share| changed(1.0 - share));
+    (transparency, Rc::new(move |alpha| show(1.0 - alpha)))
 }
 
 /// The rows of the Parameters group, built by each side, laid out here.

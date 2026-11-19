@@ -106,21 +106,35 @@ const SESSIONS: [(usize, usize); 4] = [(0, 23), (24, 47), (48, 71), (72, 95)];
 #[test]
 fn the_two_pair_only_on_the_same_period() {
     use Align::{Left, Right};
+    let ids = |pair: Vec<&Indicator>| pair.iter().map(|i| i.id).collect::<Vec<_>>();
     for (tpo, vp) in [(Left, Left), (Left, Right), (Right, Left), (Right, Right)] {
         let all = [volume_profile(1, Reset::Session, vp), market_profile(2, Reset::Session, tpo)];
+        let shown: Vec<&Indicator> = all.iter().collect();
         for me in &all {
             assert_eq!(indicators::paired_with(&me.params, &all, Some(HOURLY)).map(|i| i.id), Some(2));
-            assert_eq!(indicators::drawn_align(&me.params, &all, Some(HOURLY)), tpo, "the market profile's edge");
+            // Each keeps the edge it is set to: paired, not led.
+            assert_eq!(ids(indicators::pair(me, &shown, Some(HOURLY))), vec![1, 2]);
         }
-        // Another period: each on its own edge.
+        // Another period: no pair.
         let all = [volume_profile(1, Reset::Week, vp), market_profile(2, Reset::Session, tpo)];
+        let shown: Vec<&Indicator> = all.iter().collect();
         assert_eq!(indicators::paired_with(&all[0].params, &all, Some(HOURLY)), None);
-        assert_eq!(indicators::drawn_align(&all[0].params, &all, Some(HOURLY)), vp);
-        assert_eq!(indicators::drawn_align(&all[1].params, &all, Some(HOURLY)), tpo);
+        assert!(indicators::pair(&all[0], &shown, Some(HOURLY)).is_empty());
+        assert!(indicators::pair(&all[1], &shown, Some(HOURLY)).is_empty());
     }
     // Two volume profiles and no market profile pair with nothing.
     let all = [volume_profile(1, Reset::Session, Right), volume_profile(2, Reset::Session, Left)];
-    assert_eq!(indicators::drawn_align(&all[0].params, &all, Some(HOURLY)), Right);
+    let shown: Vec<&Indicator> = all.iter().collect();
+    assert!(indicators::pair(&all[0], &shown, Some(HOURLY)).is_empty());
+    // A second market profile of the period is drawn on its own.
+    let all = [
+        market_profile(1, Reset::Session, Left),
+        volume_profile(2, Reset::Session, Right),
+        market_profile(3, Reset::Session, Right),
+    ];
+    let shown: Vec<&Indicator> = all.iter().collect();
+    assert_eq!(ids(indicators::pair(&all[1], &shown, Some(HOURLY))), vec![1, 2]);
+    assert!(indicators::pair(&all[2], &shown, Some(HOURLY)).is_empty());
 }
 
 #[test]

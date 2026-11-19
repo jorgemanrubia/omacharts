@@ -595,7 +595,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("value-area", "F", "the share of volume, or of a market profile's TPOs, the value area covers, 0-1"),
     Flag::valued("poc-color", "COLOUR", "the volume or market profile's point of control"),
     Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
-    Flag::valued("align", "EDGE", "the edge of its period a volume or market profile grows from; right mirrors it. A volume profile beside a market profile of the same period is drawn from the market profile's").of(PROFILE_ALIGNS),
+    Flag::valued("align", "EDGE", "the edge of its period a volume or market profile grows from; right mirrors it. Each profile keeps its own, beside a market profile of the same period too: grown apart, the two are drawn back to back").of(PROFILE_ALIGNS),
     Flag::valued("profile-width", "F", "how much of its period a volume or market profile's longest row reaches, 0.1-1; of the space past the last bar for the live session aligned right. Profiles on one edge share their period side by side"),
     Flag::valued("profile-method", "WHAT", "what a volume profile's rows measure: all the volume at each price, or the ask volume less the bid volume, which needs a feed with volume at price").of(PROFILE_METHODS),
     Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),

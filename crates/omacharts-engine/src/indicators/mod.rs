@@ -858,11 +858,9 @@ impl Params {
 /// them that resets on the same period, on `timeframe` when it is known.
 /// Nothing when there is none, and for any other kind.
 ///
-/// Paired, a session's two profiles are drawn side by side from one edge of
-/// it, the market profile's, whichever edge each was set to on its own:
-/// each from an edge of its own would put one's base against the session's
-/// close, beside the next session's profile growing from its open, and the
-/// two read as a pair that is not one.
+/// Paired, a session's profiles are drawn inside that session, each
+/// growing from the edge it is set to: side by side when they grow the same
+/// way, back to back when they grow apart. See [`pair`].
 pub fn paired_with<'a>(
     me: &Params,
     shown: impl IntoIterator<Item = &'a Indicator>,
@@ -876,15 +874,26 @@ pub fn paired_with<'a>(
     })
 }
 
-/// The edge a volume or market profile is drawn from among `shown`: the
-/// market profile's it is paired with (see [`paired_with`]), or its own.
-pub fn drawn_align<'a>(
-    me: &Params,
-    shown: impl IntoIterator<Item = &'a Indicator>,
-    timeframe: Option<Timeframe>,
-) -> profile::Align {
-    let own = me.profile_edge().map_or(profile::Align::Left, |(_, align)| align);
-    paired_with(me, shown, timeframe).and_then(|leader| leader.params.profile_edge()).map_or(own, |(_, align)| align)
+/// The profiles of `shown` drawn as one pair with `me`, itself among them,
+/// in legend order: the market profile it is paired with and every volume
+/// profile paired with that one. Empty when `me` is in no pair: a profile
+/// alone on its period, two volume profiles without a market profile, or a
+/// second market profile of a period, which is drawn on its own.
+pub fn pair<'a>(me: &Indicator, shown: &[&'a Indicator], timeframe: Option<Timeframe>) -> Vec<&'a Indicator> {
+    let leader = |of: &Params| paired_with(of, shown.iter().copied(), timeframe).map(|leader| leader.id);
+    let Some(lead) = leader(&me.params) else { return Vec::new() };
+    let together: Vec<&Indicator> = shown
+        .iter()
+        .copied()
+        .filter(|other| {
+            other.id == lead
+                || (matches!(other.params, Params::VolumeProfile { .. }) && leader(&other.params) == Some(lead))
+        })
+        .collect();
+    match together.len() > 1 && together.iter().any(|other| other.id == me.id) {
+        true => together,
+        false => Vec::new(),
+    }
 }
 
 /// The volume and market profiles of `all` that merge and split together

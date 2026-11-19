@@ -3359,31 +3359,31 @@ mod outside_change_tests {
             let colour = || titled_in::<adw::ActionRow>(&window, r::POC_GROUP, r::COLOUR).pop().expect("its colour");
             let pattern = || titled_in::<adw::ActionRow>(&window, r::POC_GROUP, r::LINE_STYLE).pop().expect("its style");
             let width = || titled_in::<adw::SpinRow>(&window, r::POC_GROUP, r::THICKNESS).pop().expect("its thickness");
-            let strength = || titled_in::<adw::ActionRow>(&window, r::POC_GROUP, r::TRANSPARENCY).pop().expect("its strength");
             let drawn = || {
                 let stored = window.indicators();
                 let params = &stored.iter().find(|i| i.id == profile).expect("the profile").params;
                 matches!(params, omacharts_engine::indicators::Params::VolumeProfile { poc: true, .. })
             };
             let shown = || {
-                [colour().upcast::<gtk::Widget>(), pattern().upcast(), width().upcast(), strength().upcast()]
+                [colour().upcast::<gtk::Widget>(), pattern().upcast(), width().upcast()]
                     .map(|row| row.property::<bool>("visible"))
             };
             assert!(switch().is_active() && drawn(), "on to begin with");
-            assert_eq!(shown(), [true; 4]);
+            assert_eq!(shown(), [true; 3]);
             assert_eq!(switch().next_sibling().as_ref(), Some(colour().upcast_ref()), "above its colour");
             assert_eq!(colour().next_sibling().as_ref(), Some(width().upcast_ref()), "its thickness under its colour");
             assert_eq!(width().next_sibling().as_ref(), Some(pattern().upcast_ref()), "its style under its thickness");
-            assert_eq!(pattern().next_sibling().as_ref(), Some(strength().upcast_ref()), "its strength under its style");
+            // Its strength is on its colour's row.
+            assert!(rows::<gtk::Scale>(colour().upcast_ref()).len() == 1, "its transparency on its colour's row");
 
             for method in ["total", "delta"] {
                 command(&window, &["chart", "indicator", "set", "volume_profile", "--profile-method", method]);
                 switch().set_active(false);
                 assert!(!drawn(), "off on {method}");
-                assert_eq!(shown(), [false; 4], "hidden on {method}");
+                assert_eq!(shown(), [false; 3], "hidden on {method}");
                 switch().set_active(true);
                 assert!(drawn(), "on again on {method}");
-                assert_eq!(shown(), [true; 4]);
+                assert_eq!(shown(), [true; 3]);
             }
         });
     }
@@ -3513,10 +3513,29 @@ mod outside_change_tests {
             let row = || {
                 titled_in::<adw::ActionRow>(&window, r::STYLE_GROUP, crate::ui::chart_settings::PROFILE_TRANSPARENCY_LABEL)
                     .pop()
-                    .expect("a Transparency row")
+                    .expect("a Colour row")
             };
-            let above = row().prev_sibling().and_then(|w| w.downcast::<adw::ActionRow>().ok());
-            assert_eq!(above.map(|r| r.title()).as_deref(), Some(r::COLOUR), "Transparency is not under Colour");
+            // The rows' transparency is on their colour's row, before the
+            // swatch, as on every colour row.
+            {
+                let mut order = Vec::new();
+                let mut stack = vec![row().upcast::<gtk::Widget>()];
+                while let Some(widget) = stack.pop() {
+                    if widget.is::<gtk::Scale>() {
+                        order.push("slider");
+                    } else if widget.is::<gtk::MenuButton>() {
+                        order.push("swatch");
+                    }
+                    let mut children = Vec::new();
+                    let mut child = widget.first_child();
+                    while let Some(next) = child {
+                        child = next.next_sibling();
+                        children.push(next);
+                    }
+                    stack.extend(children.into_iter().rev());
+                }
+                assert_eq!(order, ["slider", "swatch"], "the transparency, then the colour");
+            }
             let slider = |row: adw::ActionRow| rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
             assert!((slider(row()).value() - 70.0).abs() < 1e-9, "{}", slider(row()).value());
             assert!((opacity() - 0.30).abs() < 1e-9);
@@ -3543,18 +3562,18 @@ mod outside_change_tests {
             let in_area = |title: &str| {
                 titled_in::<adw::ActionRow>(&window, r::VALUE_AREA_GROUP, title).pop().expect("a Value area row")
             };
-            let rows = || [r::COLOUR, r::TRANSPARENCY, r::OUTSIDE_TRANSPARENCY].map(|title| in_area(title).property::<bool>("visible"));
+            let rows = || [r::COLOUR, r::OUTSIDE_TRANSPARENCY].map(|title| in_area(title).property::<bool>("visible"));
             assert!(switch().is_active() && highlighted());
-            assert_eq!(rows(), [true; 3]);
+            assert_eq!(rows(), [true; 2]);
 
             // Each part's strength follows the rows' until set apart: the
             // value area at the rows', the rest at the designed share.
             let percent = |title: &str| slider(in_area(title)).value();
             slider(row()).set_value(75.0);
-            assert!((percent(r::TRANSPARENCY) - 75.0).abs() < 1e-9, "{}", percent(r::TRANSPARENCY));
+            assert!((percent(r::COLOUR) - 75.0).abs() < 1e-9, "{}", percent(r::COLOUR));
             let outside = 100.0 * (1.0 - 0.25 * omacharts_engine::indicators::profile::OUTSIDE_SHARE);
             assert!((percent(r::OUTSIDE_TRANSPARENCY) - outside).abs() < 1.0, "{}", percent(r::OUTSIDE_TRANSPARENCY));
-            slider(in_area(r::TRANSPARENCY)).set_value(20.0);
+            slider(in_area(r::COLOUR)).set_value(20.0);
             let own = || match &window.indicators().iter().find(|i| i.id == profile).expect("the profile").params {
                 omacharts_engine::indicators::Params::VolumeProfile { value_area_alpha, alpha, .. } => (*value_area_alpha, *alpha),
                 other => panic!("{other:?}"),
@@ -3562,13 +3581,13 @@ mod outside_change_tests {
             assert_eq!(own(), (Some(0.8), 0.25), "set apart, the rows' as they were");
             slider(row()).set_value(50.0);
             assert_eq!(own(), (Some(0.8), 0.5));
-            assert!((percent(r::TRANSPARENCY) - 20.0).abs() < 1e-9, "kept apart: {}", percent(r::TRANSPARENCY));
+            assert!((percent(r::COLOUR) - 20.0).abs() < 1e-9, "kept apart: {}", percent(r::COLOUR));
             let outside = 100.0 * (1.0 - 0.5 * omacharts_engine::indicators::profile::OUTSIDE_SHARE);
             assert!((percent(r::OUTSIDE_TRANSPARENCY) - outside).abs() < 1.0, "following: {}", percent(r::OUTSIDE_TRANSPARENCY));
 
             switch().set_active(false);
             assert!(!highlighted(), "the switch did not reach the profile");
-            assert_eq!(rows(), [false; 3], "a value area not set apart has nothing to set");
+            assert_eq!(rows(), [false; 2], "a value area not set apart has nothing to set");
         });
     }
 

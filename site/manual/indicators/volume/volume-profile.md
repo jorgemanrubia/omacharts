@@ -42,26 +42,25 @@ The settings are in four groups, in the order below. A switch's rows show while 
 
 ### Style
 
+A colour and its transparency share one row: the colour's name, a slider and a figure for how much of the chart shows through it, then the swatch.
+
 | Setting | Default | Allowed |
 |---|---|---|
 | **Display** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
-| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period it is greyed, because the market profile's is used for both, so the pair are drawn from one edge |
+| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period ([Aligned right](#aligned-right)). Beside a market profile with the same period each keeps its own ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: how far the longest row reaches, of the period's width, or of the empty space past the last bar for the session drawn there |
-| **Colour** | The next free colour | A palette name, or a custom colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** |
-| **Transparency %** | 70% | 0 to 100%: how much of the chart shows through the rows. At 0% they are solid, and at 100% the profile is gone. The value area's two transparencies follow it until they are set |
+| **Colour** | The next free colour, 70% transparent | A palette name, or a custom colour, greyed for Ask volume - bid volume, whose rows are in its **Colouring**. Its slider is how much of the chart shows through the rows, 0 to 100%: at 0% they are solid, and at 100% the profile is gone. The value area's two transparencies follow it until they are set |
 | **Outline** | Off | On for an edge round filled rows. Always on, and greyed, while **Display** is Outline |
-| **Outline colour** | The profile's **Colour** | A palette name, or a custom colour |
+| **Outline colour** | The profile's **Colour**, 55% transparent round filled rows; in the Outline display its transparency follows the rows' | A palette name, or a custom colour. Its slider is how much of the chart shows through the edge, 0 to 100%; once set, it stays put when the rows' moves |
 | **Outline thickness** | 1 px | 0.5 to 12 px |
 | **Outline style** | Solid | Solid, Dashed, Dotted |
-| **Outline transparency %** | 55% round filled rows. In the Outline display it follows **Transparency %** | 0 to 100%. Once set, it stays put when **Transparency %** moves |
 
 ### Value area
 
 | Setting | Default | Allowed |
 |---|---|---|
 | **Highlight** | On | Off draws every row alike. The group is greyed for Ask volume - bid volume, which has no value area |
-| **Colour** | The profile's **Colour** | A palette name, or a custom colour, for the value area |
-| **Transparency %** | Follows the Style group's | 0 to 100%, for the value area's rows |
+| **Colour** | The profile's **Colour**, its transparency following the Style group's | A palette name, or a custom colour, for the value area. Its slider is how much of the chart shows through the value area's rows, 0 to 100% |
 | **Outside rows transparency %** | A little under half as strong as the value area | 0 to 100%, for the rows above and below the value area |
 
 ### Point of control
@@ -69,14 +68,13 @@ The settings are in four groups, in the order below. A switch's rows show while 
 | Setting | Default | Allowed |
 |---|---|---|
 | **Show** | On | Off leaves the profile without its point of control line |
-| **Colour** | A contrasting colour from the theme | A palette name, or a custom colour |
+| **Colour** | A contrasting colour from the theme, 10% transparent | A palette name, or a custom colour. Its slider is how much of the chart shows through the line, 0 to 100% |
 | **Thickness** | 1 px | 0.5 to 12 px |
 | **Line style** | Solid | Solid, Dashed, Dotted |
-| **Transparency %** | 10% | 0 to 100% |
 
 Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A market profile among them sits beyond the volume profiles.
 
-A volume profile can be shown on its own or next to a [market profile](/manual/indicators/volume/market-profile/), which is a study of its own too. With a market profile of the same **Reset every** on the chart, each session's two are drawn side by side inside it, from the market profile's **Alignment**, and they merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With different periods, each one keeps to itself.
+A volume profile can be shown on its own or next to a [market profile](/manual/indicators/volume/market-profile/), which is a study of its own too. With a market profile of the same **Reset every** on the chart, each session's two are drawn inside it, each from its own **Alignment**: side by side when they are set alike, back to back when one is Left and the other Right. They merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With different periods, each one keeps to itself.
 
 ```
 # A volume profile on its own

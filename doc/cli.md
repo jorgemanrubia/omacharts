@@ -142,10 +142,12 @@ alone it merges and splits with `chart profile` as a volume profile does. It
 can also sit beside volume profiles:
 
 - With a volume profile study on the same chart and the same `--anchor`, the
-  two pair: each session's two are drawn side by side inside it, the volume
-  profile against the edge and the letters after it, each as wide as its
-  `--profile-width`, both from the market profile's `--align` (`right`
-  mirrors both), and they merge and split together.
+  two pair: each session's two are drawn inside it, each as wide as its
+  `--profile-width`, and they merge and split together. Each grows from its
+  own `--align`. Set alike, they sit side by side from that edge, the volume
+  profile against it and the letters after it. Set apart (one `left`, one
+  `right`), they are drawn back to back, their bases on a shared spine
+  centred in the session.
 - With different anchors, each keeps to itself: its own `--align` and its
   own merges.
 
@@ -156,6 +158,9 @@ omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
 # A market profile beside a volume profile, both per session: drawn side by side
 omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
 omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Back to back instead: the letters grow left, the volume profile's rows right
+omacharts chart indicator set market_profile --align right
 
 # Merge a session into the one before it, and split it again; a pair does both
 omacharts chart profile merge --at 2026-11-18

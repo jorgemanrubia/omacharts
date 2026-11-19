@@ -54,26 +54,25 @@ Defaults are those of configuration 1 as shipped, with the other configurations'
 
 ### Style
 
+A colour and its transparency share one row: the colour's name, a slider and a figure for how much of the chart shows through it, then the swatch.
+
 | Property | What it does | Default |
 |---|---|---|
 | **Display** | **Filled** draws the rows as solid bars. **Outline** draws only their edge, which leaves the candles under it clear | Filled |
 | **Alignment** | **Left** grows the rows to the right from the start of the span. **Right** grows them to the left from its end | Left |
 | **Width %** | How far the longest row reaches, 10 to 100% of the span's width | 100% |
-| **Colour** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Greyed for Ask volume - bid volume, whose rows are in its **Colouring** | The configuration's |
-| **Transparency %** | How much of the chart shows through the rows, 0 to 100%. At 0% they are solid; at 100% the profile is gone. The outline and the value area follow it until their own are set | 70% |
-| **Outline** | Draws an edge round the filled rows. Always on, and greyed, while **Display** is Outline, since the edge is then all there is. The four outline rows below show while it is on | Off |
-| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the rows. Greyed for Ask volume - bid volume, whose edge is in its **Colouring** | The configuration's |
+| **Colour** | The rows' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour, greyed for Ask volume - bid volume, whose rows are in its **Colouring**. Its slider is how much of the chart shows through the rows, 0 to 100%: at 0% they are solid; at 100% the profile is gone. The outline and the value area follow it until their own are set | The configuration's, 70% transparent |
+| **Outline** | Draws an edge round the filled rows. Always on, and greyed, while **Display** is Outline, since the edge is then all there is. The three outline rows below show while it is on | Off |
+| **Outline colour** | The colour of the edge round the rows. Every configuration ships it the same colour as the rows. Greyed for Ask volume - bid volume, whose edge is in its **Colouring**. Its slider is how much of the chart shows through the edge, 0 to 100%; once set, it stays put when the rows' moves | The configuration's, its transparency following the rows' |
 | **Outline thickness** | How thick the edge is, 0.5 to 12 px in halves | 1 px on a filled profile, 1.5 px on an outline |
 | **Outline style** | **Solid**, **Dashed** or **Dotted** | Solid |
-| **Outline transparency %** | How much of the chart shows through the edge, 0 to 100%. Once set, it stays put when **Transparency %** moves | Follows **Transparency %** |
 
 ### Value area
 
 | Property | What it does | Default |
 |---|---|---|
 | **Highlight** | Draws the value area's rows apart from the others, in their own colour and transparency. Off draws every row alike. The group is greyed for Ask volume - bid volume, which has no value area | On |
-| **Colour** | The value area's own colour. **Reset** goes back to the rows' **Colour** | The rows' |
-| **Transparency %** | How much of the chart shows through the value area's rows, 0 to 100% | Follows the Style group's |
+| **Colour** | The value area's own colour. **Reset** goes back to the rows' **Colour**. Its slider is how much of the chart shows through the value area's rows, 0 to 100% | The rows', its transparency following the Style group's |
 | **Outside rows transparency %** | How much shows through the rows above and below the value area, 0 to 100% | A little under half as strong as the value area |
 
 ### Point of control
@@ -81,10 +80,9 @@ Defaults are those of configuration 1 as shipped, with the other configurations'
 | Property | What it does | Default |
 |---|---|---|
 | **Show** | Draws a line across the price with the most volume. Off leaves the profile without it. The rows below show while it is on | On |
-| **Colour** | The colour of the line at the busiest price. Every configuration ships it in Ink, so it stands apart from the rows | Ink |
+| **Colour** | The colour of the line at the busiest price. Every configuration ships it in Ink, so it stands apart from the rows. Its slider is how much of the chart shows through the line, 0 to 100% | Ink, 10% transparent |
 | **Thickness** | How thick the line is, 0.5 to 12 px in halves | 1.5 px |
 | **Line style** | **Solid**, **Dashed** or **Dotted** | Solid |
-| **Transparency %** | How much of the chart shows through the line, 0 to 100% | 10% |
 
 ## Configurations
 

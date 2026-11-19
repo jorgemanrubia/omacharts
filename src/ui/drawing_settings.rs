@@ -921,6 +921,51 @@ fn style_editor(
             });
             shows.push(Rc::new(move |s: &Style| show(s.profile.value_area)));
 
+            // How much of the chart shows through each part, each on its
+            // colour's row. The outline fades with the rows.
+            let (transparency, show) =
+                property_rows::Transparency::new(transparency_share(&style.borrow()), {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |share| {
+                        style.borrow_mut().set_profile_alpha(1.0 - share);
+                        emit();
+                    }
+                });
+            shows.push(Rc::new(move |s: &Style| show(transparency_share(s))));
+
+            // Each part's own strength, following the rows' until set apart:
+            // shown again whenever the style is, which is after every change.
+            let mut strength = |read: fn(&Style) -> f64, write: fn(&mut drawings::ProfileLook, f64)| {
+                let (transparency, show) = profile_rows::strength(read(&style.borrow()), {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |alpha| {
+                        write(&mut style.borrow_mut().profile, alpha);
+                        emit();
+                    }
+                });
+                shows.push(Rc::new(move |s: &Style| show(read(s))));
+                transparency
+            };
+            let outline_strength = strength(
+                |s| s.profile_strengths().outline_in(s.profile.shape),
+                |look, alpha| look.outline_alpha = Some(alpha),
+            );
+            let area_strength = strength(
+                |s| s.profile_strengths().value_area,
+                |look, alpha| look.value_area_alpha = Some(alpha),
+            );
+            let outside_strength = strength(
+                |s| s.profile_strengths().outside,
+                |look, alpha| look.outside_alpha = Some(alpha),
+            )
+            .alone(profile_rows::OUTSIDE_TRANSPARENCY);
+            let poc_strength = strength(
+                |s| s.profile_strengths().poc,
+                |look, alpha| look.poc_alpha = Some(alpha),
+            );
+
             // The value area set apart from the other rows, or not; and in
             // a colour of its own, or in the rows' colour, only stronger.
             let area_paint = |s: &Style| {
@@ -931,8 +976,7 @@ fn style_editor(
             };
             // Reset sits before the swatch and greys out while there is
             // nothing to reset, as on every other colour with a Reset.
-            let area_row = adw::ActionRow::new();
-            area_row.set_title(profile_rows::COLOUR);
+            let area_row = property_rows::colour_row(profile_rows::COLOUR, Some(area_strength));
             let reset = gtk::Button::with_label("Reset");
             reset.add_css_class("flat");
             reset.add_css_class("subtle-link");
@@ -1041,9 +1085,10 @@ fn style_editor(
                 let theme = theme.clone();
                 Ink::new(move || style.borrow().colour.hex(&theme))
             };
-            let (outline_row, show) = paint_row(
+            let (outline_row, show) = paint_row_with(
                 &theme,
                 profile_rows::OUTLINE_COLOUR,
+                Some(outline_strength),
                 &style.borrow().colour,
                 {
                     let style = style.clone();
@@ -1095,7 +1140,7 @@ fn style_editor(
             shows.push(Rc::new(move |s: &Style| show(s.width)));
 
             let (background, show) =
-                paint_row(&theme, profile_rows::COLOUR, &style.borrow().fill, {
+                paint_row_with(&theme, profile_rows::COLOUR, Some(transparency), &style.borrow().fill, {
                     let style = style.clone();
                     let emit = emit.clone();
                     move |paint| {
@@ -1105,54 +1150,7 @@ fn style_editor(
                 });
             shows.push(Rc::new(move |s: &Style| show(&s.fill)));
 
-            // The outline fades with the rows.
-            let (transparency, show) =
-                profile_rows::transparency_row(transparency_share(&style.borrow()), {
-                    let style = style.clone();
-                    let emit = emit.clone();
-                    move |share| {
-                        style.borrow_mut().set_profile_alpha(1.0 - share);
-                        emit();
-                    }
-                });
-            shows.push(Rc::new(move |s: &Style| show(transparency_share(s))));
 
-            // Each part's own strength, following the rows' until set apart:
-            // shown again whenever the style is, which is after every change.
-            let mut strength = |title: &str,
-                                read: fn(&Style) -> f64,
-                                write: fn(&mut drawings::ProfileLook, f64)| {
-                let (row, show) = profile_rows::strength_row(title, read(&style.borrow()), {
-                    let style = style.clone();
-                    let emit = emit.clone();
-                    move |alpha| {
-                        write(&mut style.borrow_mut().profile, alpha);
-                        emit();
-                    }
-                });
-                shows.push(Rc::new(move |s: &Style| show(read(s))));
-                row
-            };
-            let outline_strength = strength(
-                profile_rows::OUTLINE_TRANSPARENCY,
-                |s| s.profile_strengths().outline_in(s.profile.shape),
-                |look, alpha| look.outline_alpha = Some(alpha),
-            );
-            let area_strength = strength(
-                profile_rows::TRANSPARENCY,
-                |s| s.profile_strengths().value_area,
-                |look, alpha| look.value_area_alpha = Some(alpha),
-            );
-            let outside_strength = strength(
-                profile_rows::OUTSIDE_TRANSPARENCY,
-                |s| s.profile_strengths().outside,
-                |look, alpha| look.outside_alpha = Some(alpha),
-            );
-            let poc_strength = strength(
-                profile_rows::TRANSPARENCY,
-                |s| s.profile_strengths().poc,
-                |look, alpha| look.poc_alpha = Some(alpha),
-            );
 
             let (show_poc, show) = profile_rows::switch_row(
                 profile_rows::SHOW,
@@ -1173,9 +1171,10 @@ fn style_editor(
                 let theme = theme.clone();
                 Ink::new(move || style.borrow().profile.poc.hex(&theme))
             };
-            let (poc_colour, show) = paint_row(
+            let (poc_colour, show) = paint_row_with(
                 &theme,
                 profile_rows::COLOUR,
+                Some(poc_strength),
                 &style.borrow().profile.poc,
                 {
                     let style = style.clone();
@@ -1277,13 +1276,11 @@ fn style_editor(
                 style: profile_rows::StyleRows {
                     display: shape.upcast(),
                     colour: background.clone().upcast(),
-                    transparency: transparency.upcast(),
                     outline: Some(profile_rows::OutlineRows {
                         switch: edge,
                         colour: outline_row.clone().upcast(),
                         thickness: outline_thickness.upcast(),
                         style: outline_pattern.upcast(),
-                        transparency: outline_strength.upcast(),
                     }),
                     ends: None,
                     alignment: alignment.upcast(),
@@ -1292,7 +1289,6 @@ fn style_editor(
                 value_area: profile_rows::ValueAreaRows {
                     highlight,
                     colour: area_row.upcast(),
-                    transparency: area_strength.upcast(),
                     outside: outside_strength.upcast(),
                 },
                 poc: profile_rows::PocRows {
@@ -1300,7 +1296,6 @@ fn style_editor(
                     colour: poc_colour.upcast(),
                     thickness: Some(poc_thickness.upcast()),
                     style: Some(poc_style.upcast()),
-                    transparency: poc_strength.upcast(),
                 },
             });
             // A delta is painted in its colouring, outline and all: the
@@ -2693,8 +2688,19 @@ fn paint_row(
     current: &Paint,
     on_pick: impl Fn(Paint) + Clone + 'static,
 ) -> (adw::ActionRow, Shower<Paint>) {
-    let row = adw::ActionRow::new();
-    row.set_title(title);
+    paint_row_with(theme, title, None, current, on_pick)
+}
+
+/// [`paint_row`] carrying how much of the chart shows through the colour,
+/// on the app's standard colour row ([`property_rows::colour_row`]).
+fn paint_row_with(
+    theme: &Theme,
+    title: &str,
+    transparency: Option<property_rows::Transparency>,
+    current: &Paint,
+    on_pick: impl Fn(Paint) + Clone + 'static,
+) -> (adw::ActionRow, Shower<Paint>) {
+    let row = property_rows::colour_row(title, transparency);
     let (button, show) = paint_button(theme, current, on_pick);
     row.add_suffix(&button);
     (row, show)
@@ -3342,11 +3348,11 @@ mod tests {
                 vec![
                     ("Parameters".to_string(), names(parameters)),
                     (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::TRANSPARENCY, r::OUTLINE,
-                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE, r::OUTLINE_TRANSPARENCY,
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::OUTLINE,
+                        r::OUTLINE_COLOUR, r::OUTLINE_THICKNESS, r::OUTLINE_STYLE,
                     ])),
-                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::TRANSPARENCY, r::OUTSIDE_TRANSPARENCY])),
-                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE, r::TRANSPARENCY])),
+                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::THICKNESS, r::LINE_STYLE])),
                 ]
             };
             assert_eq!(
@@ -3368,11 +3374,11 @@ mod tests {
                         chart_settings::MARKET_ROW_TICKS_LABEL, r::VALUE_AREA,
                     ])),
                     (r::STYLE_GROUP.to_string(), names(&[
-                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::TRANSPARENCY, r::FIRST_LAST,
+                        r::DISPLAY_AS, r::ALIGNMENT, r::WIDTH, r::COLOUR, r::FIRST_LAST,
                         r::FIRST_COLOUR, r::LAST_COLOUR,
                     ])),
-                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::TRANSPARENCY, r::OUTSIDE_TRANSPARENCY])),
-                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR, r::TRANSPARENCY])),
+                    (r::VALUE_AREA_GROUP.to_string(), names(&[r::HIGHLIGHT, r::COLOUR, r::OUTSIDE_TRANSPARENCY])),
+                    (r::POC_GROUP.to_string(), names(&[r::SHOW, r::COLOUR])),
                 ],
                 "the volume profile's, less its method and outline, a line's thickness and style"
             );

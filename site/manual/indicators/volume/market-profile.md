@@ -31,7 +31,7 @@ crop: none
 
 A market profile is a study of its own. It needs no volume profile, and on its own it is drawn, merged and split as a volume profile is ([Composite profiles](#composite-profiles)).
 
-It can also be shown next to volume profiles. When a volume profile study with the same **Reset every** is on the chart, each session's two are drawn side by side and merge and split together ([Beside a volume profile](#beside-a-volume-profile)). With different periods, each one keeps to itself.
+It can also be shown next to volume profiles. When a volume profile study with the same **Reset every** is on the chart, each session's two are drawn inside it, each from its own **Alignment**, and merge and split together ([Beside a volume profile](#beside-a-volume-profile)). With different periods, each one keeps to itself.
 
 From the [CLI](/manual/cli/#volume-and-market-profiles):
 
@@ -42,6 +42,9 @@ omacharts chart indicator add market_profile --tpo-minutes 30 --row-ticks auto
 # Beside a volume profile, both per session: each session's two side by side
 omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
 omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Back to back instead: the letters grow left, the volume profile's rows right
+omacharts chart indicator set market_profile --align right
 
 # Merge a session into the one before it, and split it again; a pair does both
 omacharts chart profile merge --at 2026-11-18
@@ -64,13 +67,14 @@ The settings are in a [volume profile's](/manual/indicators/volume/volume-profil
 
 ### Style
 
+A colour and its transparency share one row: the colour's name, a slider and a figure for how much of the chart shows through it, then the swatch.
+
 | Setting | Default | Allowed |
 |---|---|---|
 | **Display** | Letters | Letters, or Blocks: a square for each letter. Letters too small to read are drawn as blocks |
-| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). A volume profile with the same period is drawn from this edge too ([Beside a volume profile](#beside-a-volume-profile)) |
+| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period, the letters too, and the session still forming is drawn past the last bar as a volume profile's is ([Aligned right](/manual/indicators/volume/volume-profile/#aligned-right)). Beside a volume profile with the same period, each keeps its own ([Beside a volume profile](#beside-a-volume-profile)) |
 | **Width %** | 40% | 10 to 100%: the furthest the row with the most letters may reach, of the period's width. Each letter or block is about as wide as its row is tall, so a profile with room to spare stays that compact |
-| **Colour** | The next free colour | A palette name, or a custom colour |
-| **Transparency %** | 5% | 0 to 100%: how much of the chart shows through the letters. Blocks are drawn fainter than letters at the same setting, so they do not cover the candles. The value area's two transparencies follow it until they are set |
+| **Colour** | The next free colour, 5% transparent | A palette name, or a custom colour. Its slider is how much of the chart shows through the letters, 0 to 100%. Blocks are drawn fainter than letters at the same setting, so they do not cover the candles. The value area's two transparencies follow it until they are set |
 | **First and last TPO** | Off | On draws each profile's first TPO period's letters, and its last's, in colours of their own. In a composite profile, the first part's first and the last part's last |
 | **First TPO colour** | The theme's up colour, greyed | A palette name, or a custom colour |
 | **Last TPO colour** | The theme's down colour, greyed, and quieter than the first, so the two tell apart by lightness as well as hue | A palette name, or a custom colour |
@@ -80,8 +84,7 @@ The settings are in a [volume profile's](/manual/indicators/volume/volume-profil
 | Setting | Default | Allowed |
 |---|---|---|
 | **Highlight** | On | Off draws every row alike |
-| **Colour** | The profile's **Colour** | A palette name, or a custom colour, for the value area |
-| **Transparency %** | Follows the Style group's | 0 to 100%, for the value area's letters |
+| **Colour** | The profile's **Colour**, its transparency following the Style group's | A palette name, or a custom colour, for the value area. Its slider is how much of the chart shows through the value area's letters, 0 to 100% |
 | **Outside rows transparency %** | 45% | 0 to 100%, for the letters above and below the value area |
 
 ### Point of control
@@ -89,8 +92,7 @@ The settings are in a [volume profile's](/manual/indicators/volume/volume-profil
 | Setting | Default | Allowed |
 |---|---|---|
 | **Show** | On | Off draws the point of control's row as the value area's |
-| **Colour** | A contrasting colour from the theme | A palette name, or a custom colour |
-| **Transparency %** | 0% | 0 to 100% |
+| **Colour** | A contrasting colour from the theme, solid | A palette name, or a custom colour. Its slider is how much of the chart shows through the row, 0 to 100% |
 
 The point of control is its row drawn in its own colour, not a line across it, so it has no **Thickness** or **Line style**. Letters have no edge to draw, so there is no **Outline**.
 
@@ -108,7 +110,7 @@ window: 2560x1440 @2, bin/headless-window, scratchpad kit (seven invented SPY se
 state:
   omacharts chart set --symbol SPY --resolution 5m --session regular --template none
   omacharts chart indicator add market_profile --profile-width 1
-  omacharts chart indicator add volume_profile --profile-width 0.4 --align right --value-area-transparency 0.45 --outside-transparency 0.8 --poc-width 3 --poc-transparency 0
+  omacharts chart indicator add volume_profile --profile-width 0.4 --value-area-transparency 0.45 --outside-transparency 0.8 --poc-width 3 --poc-transparency 0
   key ctrl+shift+b
   scroll 640 360 7
   drag 700 500 612 500
@@ -118,11 +120,18 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/indicators/market-profile-paired.jpg" alt="SPY 5m over five sessions, each with a volume profile and a market profile side by side from the session's start" caption="Five sessions, each with its volume profile and market profile side by side." %}
 
-A market profile and a [volume profile](/manual/indicators/volume/volume-profile/) with the same **Reset every** are drawn as a pair: each session's two sit side by side inside that session, touching, the volume profile against the edge they are drawn from and the market profile's letters starting where its longest rows end. Each is as wide as its **Width %**, and the two are squeezed alike when they come to more than the session. They are drawn from the market profile's **Alignment**, whatever the volume profile's says: from the session's start when it is Left, and back from the session's end, mirrored, when it is Right, the session still forming then drawn past the last bar with both in it. A volume profile's own **Alignment** is greyed while it is paired, because this one's is used for both.
+A market profile and a [volume profile](/manual/indicators/volume/volume-profile/) with the same **Reset every** are drawn as a pair: each session's two inside that session, never over each other. Each is as wide as its **Width %**, and each grows from its own **Alignment**, so every combination of the two is a layout of its own:
 
-So a session's volume profile is never drawn against the next session's market profile. With each from an edge of its own, one's rows would grow back from the session's end and the other's on from the next session's start, and the two would read as one pair across the boundary.
+| Market profile | Volume profile | Each session |
+|---|---|---|
+| Left | Left | Side by side from the session's start: the volume profile against it, the letters starting where its longest rows end |
+| Right | Right | Side by side back from the session's end, mirrored: the volume profile against it, the letters before it. The session still forming is drawn past the last bar, both in it |
+| Right | Left | Back to back: the letters grow left and the volume profile's rows right, from a spine they share, centred in the session |
+| Left | Right | Back to back the other way: the volume profile's rows grow left and the letters right, from a shared spine, centred in the session |
 
-With different periods, each is drawn from its own **Alignment**, as it is alone. Change either's **Reset every** to match the other's and they pair again. Profiles drawn from the same edge still share their room side by side, as several volume profiles do: volume profiles nearest the edge, then market profiles, each kind in the order the legend lists it.
+Back to back, the two are centred with the room left over split either side, so neither has its base against the session's edge, where it would sit beside the next session's profile or the last one's and read as their pair. The session still forming is drawn on its bars, both of it. Side by side or back to back, the two are squeezed alike when their widths come to more than the session.
+
+With different periods, each is drawn from its own **Alignment**, as it is alone. Change either's **Reset every** to match the other's and they pair again. Profiles of different periods drawn from the same edge still share their room side by side, as several volume profiles do.
 
 ## Composite profiles
 
