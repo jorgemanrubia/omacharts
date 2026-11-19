@@ -203,13 +203,9 @@ pub fn mark_tag(kind: OrderKind, side: Side, exit: bool, size: &str) -> String {
     }
 }
 
-/// The mark after an order template's name where the app, not the trading
-/// service, places its exits as the entry fills: they go in only while
-/// Omacharts runs (Sierra Chart).
-pub const APP_HELD: &str = "Omacharts";
-
-/// What the mark means, in its tooltip.
-pub const APP_HELD_WORDS: &str = "Omacharts places the exits as the entry fills, only while Omacharts runs";
+/// The line in an order template's tooltip where the app, not the trading
+/// service, places its exits as the entry fills (Sierra Chart).
+pub const APP_HELD_WORDS: &str = "Omacharts places the exits when the entry fills";
 
 /// A working order's tag, closing some of a position of `net` or not:
 /// "L 1", and once some of it has filled, how much of how much: "L 1/2".

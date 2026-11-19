@@ -2090,7 +2090,6 @@ impl Window {
         };
         let bracketed = self.trade.bracketed.borrow();
         let can_bracket = target.capabilities.brackets;
-        let app_held = target.capabilities.bracket_holder == trading::Holder::App;
         let picked = self.trade.picked.borrow().as_ref().filter(|(id, _)| *id == pane.id).map(|(_, basket)| basket.clone());
         let mut orders: Vec<super::marks::OrderMark> = view
             .book
@@ -2113,10 +2112,8 @@ impl Window {
                 let (body, colour) = order_look(order.side, order.kind, left, at);
                 let entry = !trading::is_exit(order.side, order.kind, net);
                 let bracketed = bracketed.get(&order.basket_id);
-                // An entry says the template it went with, and "Omacharts"
-                // after it where its exits are the app's to place as it fills.
+                // An entry says the template it went with.
                 let body = match bracketed.and_then(|bracketed| bracketed.name.clone()) {
-                    Some(name) if entry && app_held => Some(format!("{name} · {}", trading::APP_HELD)),
                     Some(name) if entry => Some(name),
                     _ => body,
                 };
@@ -2441,7 +2438,7 @@ pub(super) mod tests {
 
     /// Every trading setting is in Preferences with no login, ready for
     /// the first: the Theme page's Trading colours and lines on a theme of
-    /// one's own, the header's P&L, Buy Sell and Quantity in its Right, and
+    /// one's own, the header's P&L, Buy/Sell and Quantity in its Right, and
     /// the Trading page's own groups.
     #[test]
     fn preferences_show_every_trading_setting_without_a_login() {
@@ -2492,7 +2489,7 @@ pub(super) mod tests {
             for group in ["Trading", "Right", "Order entry", "Chart"] {
                 assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
             }
-            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Order labels"] {
+            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy/Sell", "Quantity", "Order template", "Current position", "Total", "Order labels"] {
                 assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
             }
             dialog.force_close();
@@ -3711,7 +3708,7 @@ pub(super) mod tests {
             let shown_day = day(&window).expect("the day's P&L");
             let day_class = if shown_day < 0.0 { Some("pnl-loss") } else { Some("pnl-gain") };
             assert_eq!(pane.day_pnl_text(), Some((trading::pnl_text(shown_day, Some("USD")), day_class)));
-            assert_eq!(pane.position_text(), Some(("+1 (+$500.00)".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Total: +$500.00".into(), Some("pnl-gain"))));
             // A target 10 points up: $500 more than the average, an exit.
             let avg = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.avg).expect("an average");
             session.place(&resting(Side::Sell, OrderKind::Limit, Some(avg + 10.0))).unwrap();
@@ -3724,11 +3721,11 @@ pub(super) mod tests {
             assert!(pill().ends_with("+1.00R"), "{}", pill());
             assert!(order().contains("+1.00R"), "{}", order());
             assert_eq!(pane.day_pnl_text(), Some((chart_pnl::r_text(shown_day, 500.0), day_class)));
-            assert_eq!(pane.position_text(), Some(("+1 (+1.00R)".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Total: +1.00R".into(), Some("pnl-gain"))));
             chart_pnl::save_amount(&window.store, 250.0);
             window.adopt_pnl_display();
             assert!(pill().ends_with("+2.00R"), "{}", pill());
-            assert_eq!(pane.position_text(), Some(("+1 (+2.00R)".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Total: +2.00R".into(), Some("pnl-gain"))));
 
             window.show_trading_panel(true);
             let panel = window.trade.panel.borrow().clone().expect("the panel");
@@ -3740,14 +3737,14 @@ pub(super) mod tests {
             chart_pnl::save_display(&window.store, Display::Money);
             window.adopt_pnl_display();
             assert!(pill().ends_with("+$500.00"), "{}", pill());
-            assert_eq!(pane.position_text(), Some(("+1 (+$500.00)".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Total: +$500.00".into(), Some("pnl-gain"))));
         });
     }
 
     /// The Current position part says the position the chart trades, its
-    /// size signed and its open P&L in brackets in the day's colours, plain
-    /// at nothing; its size alone until the P&L has come; and nothing at
-    /// all, taking no room, with nothing held or no account.
+    /// size signed, and the Total part its open P&L in the day's colours,
+    /// plain at nothing; the size alone until the P&L has come; and nothing
+    /// at all, taking no room, with nothing held or no account.
     #[test]
     fn the_current_position_part_says_what_is_held_long_or_short() {
         crate::ui::on_gtk(|| {
@@ -3759,9 +3756,9 @@ pub(super) mod tests {
             assert_eq!(pane.position_text(), Some(("+1".into(), None)), "its size until the P&L has come");
             let avg = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.avg).expect("an average");
             for (at, words, class) in [
-                (avg + 2.5, "+1 (+$125.00)", Some("pnl-gain")),
-                (avg - 5.0, "+1 (-$250.00)", Some("pnl-loss")),
-                (avg, "+1 (+$0.00)", None),
+                (avg + 2.5, "+1 Total: +$125.00", Some("pnl-gain")),
+                (avg - 5.0, "+1 Total: -$250.00", Some("pnl-loss")),
+                (avg, "+1 Total: +$0.00", None),
             ] {
                 *session.market.lock().unwrap() = Some(at);
                 window.trade.marked_at.set(None);
@@ -3778,14 +3775,14 @@ pub(super) mod tests {
             *session.market.lock().unwrap() = Some(avg + 1.0);
             window.trade.marked_at.set(None);
             window.mark_to_market();
-            settle(&window, || pane.position_text().is_some_and(|(said, _)| said.starts_with("-2 (")));
+            settle(&window, || pane.position_text().is_some_and(|(said, _)| said.starts_with("-2 Total: ")));
             let open = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.open_pnl).expect("open P&L");
             let class = match open.partial_cmp(&0.0) {
                 Some(std::cmp::Ordering::Greater) => Some("pnl-gain"),
                 Some(std::cmp::Ordering::Less) => Some("pnl-loss"),
                 _ => None,
             };
-            assert_eq!(pane.position_text(), Some((format!("-2 ({})", trading::pnl_text(open, Some("USD"))), class)));
+            assert_eq!(pane.position_text(), Some((format!("-2 Total: {}", trading::pnl_text(open, Some("USD"))), class)));
 
             // Flat: nothing at all.
             session.place(&trading::OrderRequest { qty: 2, ..resting(Side::Buy, OrderKind::Market, None) }).unwrap();
@@ -3847,6 +3844,38 @@ pub(super) mod tests {
             settle(&window, || held().is_none() && !session.book().order(&resting_basket).unwrap().status.working());
             assert_eq!(held(), None, "Ctrl+F left a position");
             assert!(!session.book().order(&resting_basket).unwrap().status.working(), "Ctrl+F left an order");
+        });
+    }
+
+    /// Buy/Sell taken out of the header takes its buttons and nothing
+    /// else: Ctrl+B still buys, the chart menu's Sell at market still sells,
+    /// and the New order dialog still opens.
+    #[test]
+    fn buy_sell_out_of_the_header_leaves_the_keys_the_menus_and_the_dialog() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(trading::Linking::AfterTheFact);
+            let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            let mut header = crate::header::load(&window.store);
+            header.right.retain(|part| *part != crate::header::Part::Trade);
+            crate::header::save(&window.store, &header);
+            window.apply_header();
+            assert!(pane.trade_part.parent().is_none(), "Buy and Sell still in the header");
+            assert!(pane.size_menu.parent().is_some(), "the quantity went with them");
+            settle(&window, || held() == Some(1) && free(&window));
+
+            assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+            settle(&window, || held() == Some(2) && free(&window));
+            assert_eq!(held(), Some(2), "Ctrl+B bought one");
+
+            let actions = window.trade.chart_actions.borrow().clone().expect("the chart's actions");
+            actions.activate_action(SELL_MARKET, None);
+            settle(&window, || held() == Some(1) && free(&window));
+            assert_eq!(held(), Some(1), "the menu's Sell at market sold one");
+
+            gio::prelude::ActionGroupExt::activate_action(&window.window, super::super::order_templates::ORDER_ENTRY, None);
+            settle(&window, || window.window.visible_dialog().is_some());
+            assert!(window.window.visible_dialog().is_some(), "no New order dialog");
         });
     }
 

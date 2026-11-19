@@ -811,8 +811,8 @@ mod tests {
     }
 
     /// Where the app, not the trading service, places a template's exits
-    /// as the entry fills (Sierra Chart), the header's template and the
-    /// entry's name say "Omacharts"; nowhere else.
+    /// as the entry fills (Sierra Chart), the header's template says so in
+    /// its tooltip; the header and the entry say only the template's name.
     #[test]
     fn a_template_whose_exits_the_app_places_says_so() {
         crate::ui::on_gtk(|| {
@@ -820,7 +820,7 @@ mod tests {
             let (scalp, _) = templates_in(&window);
             assert_eq!(pane.order_template_text(), Some(String::new()), "no template, no mark");
             window.pick_order_template(pane.id, Some(scalp));
-            assert_eq!(pane.order_template_text(), Some(format!("Scalp · {}", trading::APP_HELD)));
+            assert_eq!(pane.order_template_text(), Some("Scalp".into()));
             assert!(pane.order_template_menu.tooltip_text().is_some_and(|tip| tip.contains(trading::APP_HELD_WORDS)));
             wait(&window, || pane.view.last_price().is_some());
             let at = (pane.view.last_price().expect("a last price") / 0.25).round() * 0.25 - 2.0;
@@ -829,12 +829,14 @@ mod tests {
             window.template_on_order(&pane, &basket, Some(scalp));
             assert!(wait(&window, || window.trade.bracketed.borrow().len() == 1), "never bracketed");
             let words = pane.view.marks().1;
-            assert!(words.iter().any(|w| w.contains(&format!("Scalp · {}", trading::APP_HELD))), "{words:?}");
+            assert!(words.iter().any(|w| w.ends_with("· Scalp")), "{words:?}");
+            assert!(!words.iter().any(|w| w.contains("Omacharts")), "{words:?}");
 
             let (window, pane, _, _) = long_es(trading::Linking::AfterTheFact);
             let (scalp, _) = templates_in(&window);
             window.pick_order_template(pane.id, Some(scalp));
             assert_eq!(pane.order_template_text(), Some("Scalp".into()), "the trading service holds them");
+            assert!(!pane.order_template_menu.tooltip_text().is_some_and(|tip| tip.contains(trading::APP_HELD_WORDS)));
         });
     }
 

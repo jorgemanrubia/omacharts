@@ -209,9 +209,9 @@ tested against `dtc::fake` only.
 
 An order template is an entry with any number of targets and stops. On
 Sierra Chart the app places them (`src/trading/services/sierra/brackets.rs`),
-and the chart says so: "· Omacharts" after the template's name in the
-header and on the working entry, its tooltip that the exits go in only
-while Omacharts runs.
+and the header's template says so in its tooltip: Omacharts places the
+exits when the entry fills. The header and the working entry show only the
+template's name.
 
 **Why not DTC's own bracket.** The protocol has one: an entry sent with
 `IsParentOrder`, then SUBMIT_NEW_OCO_ORDER naming it in

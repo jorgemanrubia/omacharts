@@ -1926,6 +1926,7 @@ same.
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
 | `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Charts › Header › Left | [Charts](/manual/charts/) |
 | `chart_header_center` | the same | `title` | Charts › Header › Center | [Charts](/manual/charts/) |
+| `chart_header_right` | the same, and `account`, `day_pnl`, `trade`, `size`, `order_template`, `position`, `total`, `settings`, `maximize`, `link` | `account,day_pnl,trade,size,order_template,position,total,settings,maximize,link` | Charts › Header › Right | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
@@ -1979,7 +1980,7 @@ omacharts: no such data feed: "thinkorswimm"; the feeds are yahoo, tos
   [exit 2]
 
 $ omacharts config set chart_header symbol,banana
-omacharts: "banana" is not part of a header; try symbol, resolution, change, template, title, feed, stripe, settings, maximize, link
+omacharts: "banana" is not part of a header; try symbol, resolution, change, template, title, account, feed, day_pnl, trade, size, order_template, position, total, stripe, settings, maximize, link
   [exit 2]
 
 $ omacharts config set chart_time_zone Europe/London

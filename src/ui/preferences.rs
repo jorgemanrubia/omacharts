@@ -2320,7 +2320,7 @@ mod tests {
             assert_eq!(right.group.title(), "Right");
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Total, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(center.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
@@ -2343,7 +2343,7 @@ mod tests {
                 Some(&Header {
                     left: vec![Part::Symbol, Part::Stripe],
                     center: Vec::new(),
-                    right: vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link]
+                    right: vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Total, Part::Settings, Part::Maximize, Part::Link]
                 })
             );
             // The corner's controls move like any other part: the gear out
@@ -2378,7 +2378,7 @@ mod tests {
             restore();
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Total, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);

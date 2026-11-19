@@ -29,8 +29,8 @@
 //!   filled while the app was closed is said in the Log, not guessed at.
 //!
 //! All of it needs the app running and signed in: an entry that fills while
-//! it is closed gets no exits until it runs again. The chart says so,
-//! "· Omacharts" after the template's name
+//! it is closed gets no exits until it runs again. The header's template
+//! says so in its tooltip
 //! ([`crate::trading::Capabilities::bracket_holder`]).
 
 use std::collections::HashMap;
