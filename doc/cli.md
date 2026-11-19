@@ -1517,7 +1517,7 @@ target, `$500r` or `1r` on a stop, then `@1/2`, `@2` or `@all`:
 
 ```
 $ omacharts trading templates set Scalp --target 8t --stop 4t
-Scalp: +8t / −4t
+Scalp: +8t | −4t
   [exit 0]
 ```
 

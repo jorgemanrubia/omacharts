@@ -130,6 +130,7 @@ fn rebuild(editor: &Rc<Editor>) {
     if list.is_empty() {
         let row = adw::ActionRow::new();
         row.set_title("No order templates");
+        row.set_subtitle("A template's exits go in with every order from a chart on it");
         row.add_css_class("dim-label");
         editor.list.add(&row);
         editor.rows.borrow_mut().push(row.upcast());
@@ -212,7 +213,10 @@ fn template_row(editor: &Rc<Editor>, at: usize, template: &OrderTemplate) -> adw
 }
 
 fn confirm_remove(editor: &Rc<Editor>, over: &impl IsA<gtk::Widget>, id: u32, name: &str) {
-    let alert = adw::AlertDialog::new(Some(&format!("Remove {name}?")), None);
+    let alert = adw::AlertDialog::new(
+        Some(&format!("Remove {name}?")),
+        Some("Charts on it go back to No template, and their orders are sent with no exits."),
+    );
     alert.add_responses(&[("cancel", "Cancel"), ("remove", "Remove")]);
     alert.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
     alert.set_default_response(Some("cancel"));
@@ -246,11 +250,17 @@ fn open(editor: &Rc<Editor>, id: u32) {
     let titled = nav_page.clone();
     name.connect_changed(move |row| {
         let text = row.text().trim().to_string();
-        match text.is_empty() {
+        let taken = renaming
+            .templates
+            .borrow()
+            .iter()
+            .any(|other| other.id != id && other.name.eq_ignore_ascii_case(&text));
+        match text.is_empty() || taken {
             true => row.add_css_class("error"),
             false => row.remove_css_class("error"),
         }
-        if text.is_empty() {
+        row.set_tooltip_text(taken.then_some("Another template has this name"));
+        if text.is_empty() || taken {
             return;
         }
         titled.set_title(&text);
@@ -309,8 +319,9 @@ impl ExitGroup {
         }
     }
 
-    /// A new exit at the end, like the last one and further, the last
-    /// taking what is left and the one before it half.
+    /// A new exit at the end, like the last one and further: the order
+    /// split evenly, each but the last taking 1/n of it and the last the
+    /// rest.
     fn add(self: &Rc<Self>) {
         let r = self.editor.r;
         let stop = self.which == Group::Stops;
@@ -324,10 +335,11 @@ impl ExitGroup {
                     Some(Distance::Risk(risk)) if stop => Distance::Risk(risk * 2.0),
                     Some(Distance::Risk(multiple)) => Distance::Risk(multiple + 1.0),
                 };
-                if let Some(last) = exits.last_mut() {
-                    last.size = Size::Share(1, 2);
+                let n = exits.len() as u32 + 1;
+                for exit in exits.iter_mut() {
+                    exit.size = Size::Share(1, n);
                 }
-                exits.push(Exit { distance, size: Size::Share(1, 2) });
+                exits.push(Exit { distance, size: Size::Share(1, n) });
             },
             true,
         );
@@ -338,6 +350,7 @@ impl ExitGroup {
             self.group.remove(&row);
         }
         let exits = self.exits();
+        self.group.set_description(split_note(&exits).as_deref());
         if exits.is_empty() {
             let row = adw::ActionRow::new();
             row.set_title(match self.which {
@@ -375,7 +388,15 @@ impl ExitGroup {
             line.append(&handle);
         }
 
+        let name = format!("{} {}", if stop { "Stop" } else { "Target" }, at + 1);
+        let tag = gtk::Label::new(Some(&format!("{}{}", if stop { "S" } else { "T" }, at + 1)));
+        tag.add_css_class("dim-label");
+        tag.add_css_class("numeric");
+        tag.set_tooltip_text(Some(&name));
+        line.append(&tag);
+
         let modes = gtk::DropDown::from_strings(&Mode::ALL.map(Mode::label));
+        modes.update_property(&[gtk::accessible::Property::Label(&format!("{name} mode"))]);
         modes.set_valign(gtk::Align::Center);
         modes.set_selected(Mode::ALL.iter().position(|mode| *mode == exit.distance.mode()).unwrap_or(0) as u32);
         line.append(&modes);
@@ -387,6 +408,7 @@ impl ExitGroup {
             line.append(&label);
         }
         let spin = amount_spin(exit.distance, stop);
+        spin.update_property(&[gtk::accessible::Property::Label(&format!("{name} amount"))]);
         line.append(&spin);
         if let Some(suffix) = suffix {
             let label = gtk::Label::new(Some(suffix));
@@ -411,7 +433,7 @@ impl ExitGroup {
         let remove = gtk::Button::from_icon_name("user-trash-symbolic");
         remove.add_css_class("flat");
         remove.set_valign(gtk::Align::Center);
-        remove.set_tooltip_text(Some("Remove"));
+        remove.set_tooltip_text(Some(&format!("Remove {}", name.to_lowercase())));
         let removing = self.clone();
         remove.connect_clicked(move |_| {
             let again = removing.clone();
@@ -482,7 +504,8 @@ impl ExitGroup {
         let shares = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         shares.add_css_class("linked");
         let mut first: Option<gtk::ToggleButton> = None;
-        for share in Size::SHARES {
+        // Not all of it: an exit with more after it leaves them something.
+        for share in Size::SHARES.into_iter().filter(|share| *share != Size::ALL) {
             let toggle = gtk::ToggleButton::with_label(&share.text());
             toggle.set_active(share == size);
             if let Some(first) = &first {
@@ -516,7 +539,20 @@ impl ExitGroup {
             Size::Share(..) => 1.0,
         });
         fixed.append(&count);
+        let unit = gtk::Label::new(Some("contracts"));
+        unit.add_css_class("dim-label");
+        fixed.append(&unit);
+        let set = gtk::Button::with_label("Set");
+        fixed.append(&set);
         body.append(&fixed);
+        let (counted, closing) = (count.clone(), popover.clone());
+        set.connect_clicked(move |_| {
+            // Through value-changed below, also for the 1 already showing.
+            let value = counted.value();
+            counted.set_value(value + 1.0);
+            counted.set_value(value);
+            closing.popdown();
+        });
         let sizing = self.clone();
         let (shown, untoggled) = (button.clone(), first);
         count.connect_value_changed(move |count| {
@@ -588,13 +624,36 @@ impl ExitGroup {
     }
 }
 
+/// How the group splits an order of 1, 2 and 3, and a warning when an
+/// exit gets nothing on one of them: "Sized top to bottom, the last takes
+/// the rest. On 1: 1 · 0 (Target 2 not sent) …".
+fn split_note(exits: &[Exit]) -> Option<String> {
+    if exits.len() < 2 {
+        return None;
+    }
+    let sizes: Vec<Size> = exits.iter().map(|exit| exit.size).collect();
+    let mut lines = Vec::new();
+    for qty in 1..=3u32 {
+        let split = templates::split(&sizes, qty);
+        let words: Vec<String> = split.iter().map(u32::to_string).collect();
+        let empty = split.iter().filter(|n| **n == 0).count();
+        let note = match empty {
+            0 => String::new(),
+            1 => " (one not sent)".to_string(),
+            n => format!(" ({n} not sent)"),
+        };
+        lines.push(format!("On {qty}: {}{note}", words.join(" · ")));
+    }
+    Some(format!("Sized top to bottom, the last takes the rest. {}", lines.join(", ")))
+}
+
 /// What is written before and after the amount: "$", "ticks", "R",
-/// "total".
+/// "on the whole order".
 fn units(mode: Mode, stop: bool) -> (Option<&'static str>, Option<&'static str>) {
     match (mode, stop) {
         (Mode::Ticks, _) => (None, Some("ticks")),
-        (Mode::Money, _) => (Some("$"), None),
-        (Mode::Risk, true) => (Some("$"), Some("total")),
+        (Mode::Money, _) => (Some("$"), Some("on this exit")),
+        (Mode::Risk, true) => (Some("$"), Some("on the whole order")),
         (Mode::Risk, false) => (None, Some("R")),
     }
 }
@@ -638,6 +697,19 @@ fn starting(mode: Mode, stop: bool, r: f64) -> Distance {
 mod tests {
     use super::*;
 
+    /// A group of more than one says how it splits small orders, and which
+    /// exit an order that small would not send.
+    #[test]
+    fn a_group_says_how_it_splits_and_what_is_not_sent() {
+        let exit = |size| Exit { distance: Distance::Ticks(8), size };
+        assert_eq!(split_note(&[exit(Size::ALL)]), None, "one exit takes it all");
+        let halves = [exit(Size::Share(1, 2)), exit(Size::Share(1, 2))];
+        assert_eq!(
+            split_note(&halves).as_deref(),
+            Some("Sized top to bottom, the last takes the rest. On 1: 0 · 1 (one not sent), On 2: 1 · 1, On 3: 1 · 2")
+        );
+    }
+
     fn rows_of(group: &adw::PreferencesGroup) -> Vec<String> {
         let mut found = Vec::new();
         let mut stack = vec![group.clone().upcast::<gtk::Widget>()];
@@ -665,18 +737,18 @@ mod tests {
             let nav = dialog.child().and_downcast::<adw::NavigationView>().unwrap();
             let root = nav.visible_page().unwrap();
             let groups = groups_in(root.upcast_ref());
-            assert_eq!(rows_of(&groups[0]), ["No order templates | "]);
+            assert_eq!(rows_of(&groups[0]), ["No order templates | A template's exits go in with every order from a chart on it"]);
 
             let add = buttons_in(root.upcast_ref()).into_iter().find(|b| b.label().as_deref() == Some("Add a template")).unwrap();
             add.emit_clicked();
             add.emit_clicked();
             let saved = templates::load(&store);
             assert_eq!(saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["New template", "New template 2"]);
-            assert_eq!(saved[0].summary(), "+2R / −$500 total", "a target at 2R and a stop of what 1R is worth");
+            assert_eq!(saved[0].summary(), "+2R | −$500 order", "a target at 2R and a stop of what 1R is worth");
             assert!(told.get() >= 2, "every change is handed on");
             assert_eq!(nav.visible_page().unwrap().title(), "New template 2", "a new template opens");
             let groups = groups_in(root.upcast_ref());
-            assert_eq!(rows_of(&groups[0]), ["New template | +2R / −$500 total", "New template 2 | +2R / −$500 total"]);
+            assert_eq!(rows_of(&groups[0]), ["New template | +2R | −$500 order", "New template 2 | +2R | −$500 order"]);
         });
     }
 

@@ -287,6 +287,12 @@ impl Window {
         }
         let _ = kind;
         let exits = templates::bracket(&template, size.get(), self.worth(pane, target))?;
+        if exits.is_empty() {
+            // Nothing to bracket with, or every exit sized to nothing on
+            // this quantity: the order goes plain.
+            self.note_on(target, &format!("{} not used · it has no exits for {}", template.name, size.get()));
+            return Ok(None);
+        }
         Ok(Some(Bracketed { name: Some(template.name), exits }))
     }
 
@@ -536,6 +542,7 @@ impl Window {
         };
         let tick = Self::tick_of(&pane, &target).unwrap_or(0.01);
         let ticket = crate::ui::order_entry::Ticket {
+            account: self.account_label(&target.account.key()),
             contract: target.contract.clone(),
             tick,
             decimals: crate::ui::trading_panel::decimals_of(Some(tick)),
@@ -543,7 +550,7 @@ impl Window {
             quantity: self.size_of(&pane).get(),
             kinds: target.capabilities.kinds.clone(),
             templates: match target.capabilities.brackets {
-                true => self.trade.order_templates.borrow().iter().map(|t| (t.id, t.name.clone())).collect(),
+                true => self.trade.order_templates.borrow().iter().map(|t| (t.id, t.name.clone(), t.summary())).collect(),
                 false => Vec::new(),
             },
             template: pane.order_template.get(),

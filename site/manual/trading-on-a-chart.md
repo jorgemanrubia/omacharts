@@ -102,7 +102,7 @@ Order templates are **Beta**. A template is a set of exits that go in with an or
 
 Every distance rounds toward the entry, and is never under one tick.
 
-With more than one exit in a group, each but the last takes a share of the order, such as 1/2, or a number of contracts; the last takes the rest. A share rounds down, and an exit left with nothing is not sent. A 3-lot on two targets of 1/2 sends 1 and 2.
+With more than one exit in a group, each but the last takes a share of the order, such as 1/2, or a number of contracts; the last takes the rest. A share rounds down, and an exit left with nothing is not sent. A 3-lot on two targets of 1/2 sends 1 and 2. The editor says how its exits split an order of 1, 2 and 3, and which would not be sent. A template with no exits, or none left on the order's quantity, sends the order plain, and the Log says so.
 
 ### On a chart
 

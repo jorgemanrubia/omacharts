@@ -195,7 +195,7 @@ impl OrderTemplate {
     }
 
     /// In one line, for a menu or a tooltip: the targets, then the stops,
-    /// "+1R 1/2 · +2R rest / −$500 total".
+    /// "+1R 1/2 · +2R rest | −$500 order".
     pub fn summary(&self) -> String {
         let group = |exits: &[Exit], stop: bool| -> String {
             let sizes = exits.len() > 1;
@@ -207,23 +207,26 @@ impl OrderTemplate {
                     let distance = match exit.distance {
                         Distance::Ticks(ticks) => format!("{sign}{ticks}t"),
                         Distance::Money(money) => format!("{sign}${}", amount(money)),
-                        Distance::Risk(risk) if stop => format!("{sign}${} total", amount(risk)),
+                        Distance::Risk(risk) if stop => format!("{sign}${} order", amount(risk)),
                         Distance::Risk(r) => format!("{sign}{}R", amount(r)),
                     };
                     match (sizes, at + 1 == exits.len()) {
                         (false, _) => distance,
                         (true, true) => format!("{distance} rest"),
-                        (true, false) => format!("{distance} {}", exit.size.text()),
+                        (true, false) => match exit.size {
+                            Size::Fixed(n) => format!("{distance} ×{n}"),
+                            Size::Share(..) => format!("{distance} {}", exit.size.text()),
+                        },
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(" · ")
         };
         match (self.targets.is_empty(), self.stops.is_empty()) {
-            (true, true) => "No exits".to_string(),
+            (true, true) => "No exits · orders go plain".to_string(),
             (false, true) => group(&self.targets, false),
             (true, false) => group(&self.stops, true),
-            (false, false) => format!("{} / {}", group(&self.targets, false), group(&self.stops, true)),
+            (false, false) => format!("{} | {}", group(&self.targets, false), group(&self.stops, true)),
         }
     }
 }
@@ -357,11 +360,8 @@ pub fn bracket(template: &OrderTemplate, qty: u32, worth: Worth) -> Result<Exits
         }
         Ok(legs)
     };
-    let exits = Exits { targets: group(&template.targets, false)?, stops: group(&template.stops, true)? };
-    match exits.is_empty() {
-        true => Err(format!("{} has no exits to send", template.name)),
-        false => Ok(exits),
-    }
+    // A template with no exits sends the order plain: nothing to refuse.
+    Ok(Exits { targets: group(&template.targets, false)?, stops: group(&template.stops, true)? })
 }
 
 /// How many ticks from the fill `money` is made or lost on `qty`
@@ -371,7 +371,7 @@ fn ticks_for(money: f64, qty: u32, worth: Worth) -> Result<u32, String> {
         return Err("what a point of the contract is worth is not known, so money cannot be counted in ticks".into());
     };
     if !(money.is_finite() && money > 0.0) {
-        return Err("an exit's money is more than nothing".into());
+        return Err("an exit's amount must be more than 0".into());
     }
     let per_tick = worth.tick * point * f64::from(qty.max(1));
     // A hair over, so that $500 at $12.50 a tick is 40 ticks, not 39.
@@ -498,7 +498,7 @@ mod tests {
         assert!(bracket(&money, 1, Worth { tick: 0.0, ..ES }).is_err());
         let ticks = template(vec![exit(Distance::Ticks(4), Size::ALL)], vec![]);
         assert!(bracket(&ticks, 1, Worth { point: None, ..ES }).is_ok(), "ticks need no worth");
-        assert!(bracket(&template(vec![], vec![]), 1, ES).is_err());
+        assert!(bracket(&template(vec![], vec![]), 1, ES).is_ok_and(|exits| exits.is_empty()), "no exits: the order goes plain");
     }
 
     #[test]
@@ -507,12 +507,12 @@ mod tests {
             vec![exit(Distance::Risk(1.0), Size::Share(1, 2)), exit(Distance::Risk(2.0), Size::Share(1, 2))],
             vec![exit(Distance::Risk(500.0), Size::ALL)],
         );
-        assert_eq!(risk.summary(), "+1R 1/2 · +2R rest / −$500 total");
+        assert_eq!(risk.summary(), "+1R 1/2 · +2R rest | −$500 order");
         let ticks = template(vec![exit(Distance::Ticks(16), Size::ALL)], vec![]);
         assert_eq!(ticks.summary(), "+16t");
         let stop = template(vec![], vec![exit(Distance::Money(1250.0), Size::ALL)]);
         assert_eq!(stop.summary(), "−$1,250");
-        assert_eq!(template(vec![], vec![]).summary(), "No exits");
+        assert_eq!(template(vec![], vec![]).summary(), "No exits · orders go plain");
         assert_eq!(template(vec![exit(Distance::Risk(1.5), Size::ALL)], vec![]).summary(), "+1.5R");
     }
 

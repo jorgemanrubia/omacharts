@@ -19,6 +19,8 @@ pub const TITLE: &str = "New order";
 /// What the dialog starts from: the focused chart's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ticket {
+    /// The account it goes on, as the header names it.
+    pub account: String,
     /// What the order is for, as the button says it: "ES".
     pub contract: String,
     /// The step its price moves in, and how many places it is written to.
@@ -30,8 +32,9 @@ pub struct Ticket {
     pub quantity: u32,
     /// The kinds its trading service takes.
     pub kinds: Vec<OrderKind>,
-    /// The order templates, as listed, by id and name, and the chart's.
-    pub templates: Vec<(u32, String)>,
+    /// The order templates, as listed, by id, name and summary, and the
+    /// chart's. None at all when the trading service takes no brackets.
+    pub templates: Vec<(u32, String, String)>,
     pub template: Option<u32>,
 }
 
@@ -46,8 +49,17 @@ pub struct Asked {
 }
 
 /// The order in words, as its button says it: "Buy 2 ES at market",
-/// "Sell 2 ES at 5,412.25", "Buy 2 ES stop 5,420.00".
+/// "Sell 2 ES at 5,412.25", "Buy 2 ES stop 5,420.00", and its template
+/// after a dot when it has one: "Buy 2 ES at market · Runner".
 pub fn words(ticket: &Ticket, asked: &Asked) -> String {
+    let order = order_words(ticket, asked);
+    match asked.template.and_then(|id| ticket.templates.iter().find(|(each, ..)| *each == id)) {
+        Some((_, name, _)) => format!("{order} · {name}"),
+        None => order,
+    }
+}
+
+fn order_words(ticket: &Ticket, asked: &Asked) -> String {
     let side = match asked.side {
         Side::Buy => "Buy",
         Side::Sell => "Sell",
@@ -127,6 +139,7 @@ pub fn build(ticket: Ticket, place: impl Fn(Asked) + 'static) -> Form {
     let price = adw::SpinRow::with_range(tick, 100_000_000.0, tick);
     price.set_title("Price");
     price.set_digits(ticket.decimals as u32);
+    price.set_snap_to_ticks(true);
     price.set_value(ticket.last.unwrap_or(tick));
     price.set_visible(false);
     group.add(&price);
@@ -134,10 +147,13 @@ pub fn build(ticket: Ticket, place: impl Fn(Asked) + 'static) -> Form {
     let template = adw::ComboRow::new();
     template.set_title("Template");
     let mut names = vec!["No template".to_string()];
-    names.extend(ticket.templates.iter().map(|(_, name)| name.clone()));
+    names.extend(ticket.templates.iter().map(|(_, name, _)| name.clone()));
     template.set_model(Some(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>())));
-    let at = ticket.template.and_then(|id| ticket.templates.iter().position(|(each, _)| *each == id)).map_or(0, |at| at + 1);
+    let at = ticket.template.and_then(|id| ticket.templates.iter().position(|(each, ..)| *each == id)).map_or(0, |at| at + 1);
     template.set_selected(at as u32);
+    // No templates, or a trading service that takes no brackets: nothing
+    // to choose.
+    template.set_visible(!ticket.templates.is_empty());
     group.add(&template);
 
     let place_button = gtk::Button::new();
@@ -150,14 +166,18 @@ pub fn build(ticket: Ticket, place: impl Fn(Asked) + 'static) -> Form {
     page.add(&action_group);
 
     let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&adw::WindowTitle::new(TITLE, &format!("{} · {}", ticket.account, ticket.contract))));
+    toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&page));
     let dialog = adw::Dialog::new();
     dialog.set_title(TITLE);
     dialog.set_content_width(400);
     dialog.set_child(Some(&toolbar));
     dialog.set_default_widget(Some(&place_button));
-    dialog.set_focus(Some(&place_button));
+    // On the quantity, not the button: Ctrl+Shift+E and Enter does not
+    // send an order nobody has looked at.
+    dialog.set_focus(Some(&quantity));
 
     let form = Form { dialog, buy, sell, kind, quantity, price, template, place: place_button };
     let kinds = Rc::new(kinds);
@@ -174,7 +194,7 @@ pub fn build(ticket: Ticket, place: impl Fn(Asked) + 'static) -> Form {
                 price: (kind != OrderKind::Market).then(|| price.value()),
                 template: match template.selected() {
                     0 => None,
-                    at => ticket.templates.get(at as usize - 1).map(|(id, _)| *id),
+                    at => ticket.templates.get(at as usize - 1).map(|(id, ..)| *id),
                 },
             }
         }
@@ -182,10 +202,13 @@ pub fn build(ticket: Ticket, place: impl Fn(Asked) + 'static) -> Form {
     let read = Rc::new(read);
     let said = {
         let (button, price, ticket, read) = (form.place.clone(), form.price.clone(), ticket.clone(), read.clone());
+        let template = form.template.clone();
         Rc::new(move || {
             let asked = read();
             price.set_visible(asked.kind != OrderKind::Market);
             button.set_label(&words(&ticket, &asked));
+            let summary = asked.template.and_then(|id| ticket.templates.iter().find(|(each, ..)| *each == id));
+            template.set_subtitle(summary.map_or("Sent with no exits", |(.., summary)| summary.as_str()));
         })
     };
     said();
@@ -225,7 +248,8 @@ mod tests {
             last: Some(5412.25),
             quantity: 2,
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
-            templates: vec![(4, "Scalp".into()), (7, "Swing".into())],
+            account: "Practice".into(),
+            templates: vec![(4, "Scalp".into(), "+8t | −4t".into()), (7, "Swing".into(), "+2R | −$500 order".into())],
             template: Some(7),
         }
     }
@@ -249,14 +273,15 @@ mod tests {
             let placed = Rc::new(std::cell::RefCell::new(None));
             let kept = placed.clone();
             let form = build(ticket(), move |asked| *kept.borrow_mut() = Some(asked));
-            assert_eq!(form.place.label().as_deref(), Some("Buy 2 ES at market"));
+            assert_eq!(form.place.label().as_deref(), Some("Buy 2 ES at market · Swing"));
             assert_eq!(form.template.selected(), 2, "the chart's template");
             assert!(!form.price.is_visible());
             form.sell.set_active(true);
             form.kind.set_selected(1);
             assert!(form.price.is_visible());
-            assert_eq!(form.place.label().as_deref(), Some("Sell 2 ES at 5,412.25"));
+            assert_eq!(form.place.label().as_deref(), Some("Sell 2 ES at 5,412.25 · Swing"));
             form.template.set_selected(0);
+            assert_eq!(form.place.label().as_deref(), Some("Sell 2 ES at 5,412.25"));
             form.place.emit_clicked();
             assert_eq!(
                 *placed.borrow(),

@@ -1793,7 +1793,7 @@ none split the order evenly, and the last takes the rest.
 
 ```
 $ omacharts trading templates set Runner --target 1r@1/2 --target 2r --stop 1r
-Runner: +1R 1/2 · +2R rest / −$500 total
+Runner: +1R 1/2 · +2R rest | −$500 order
   [exit 0]
 
 $ omacharts chart set --order-template Runner
