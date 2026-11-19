@@ -134,9 +134,17 @@ pub fn colour_row(title: &str, transparency: Option<Transparency>) -> adw::Actio
     row.set_title(title);
     if let Some(transparency) = transparency {
         transparency.name(&format!("{title} transparency"));
-        // Narrower than a row of its own, so the swatch and Reset still fit
+        // The figure is typed or dragged, never stepped: the box drops its
+        // − and + so the slider keeps its width beside the swatch and Reset
         // at the dialog's width.
         transparency.slider.set_size_request(COLOUR_ROW_SLIDER, -1);
+        let mut part = transparency.entry.first_child();
+        while let Some(widget) = part {
+            part = widget.next_sibling();
+            if widget.is::<gtk::Button>() {
+                widget.set_visible(false);
+            }
+        }
         transparency.slider.set_tooltip_text(Some(TRANSPARENCY));
         transparency.entry.set_tooltip_text(Some(TRANSPARENCY));
         row.add_suffix(&transparency.slider);
@@ -146,7 +154,7 @@ pub fn colour_row(title: &str, transparency: Option<Transparency>) -> adw::Actio
 }
 
 /// The width of the transparency slider on a colour row.
-pub const COLOUR_ROW_SLIDER: i32 = 120;
+pub const COLOUR_ROW_SLIDER: i32 = 180;
 
 /// A line's thickness in pixels, 0.5 to 12 by halves, and the way to show
 /// it another.
@@ -270,6 +278,12 @@ mod tests {
             let slider = order[0].clone().downcast::<gtk::Scale>().unwrap();
             assert_eq!(slider.width_request(), COLOUR_ROW_SLIDER);
             assert!((slider.value() - 30.0).abs() < 1e-9);
+            let entry = order[1].clone();
+            let mut part = entry.first_child();
+            while let Some(widget) = part {
+                assert!(!(widget.is::<gtk::Button>() && widget.is_visible()), "no − and + on its figure");
+                part = widget.next_sibling();
+            }
 
             show(0.5);
             assert_eq!(heard.get(), None, "shown, not heard");
