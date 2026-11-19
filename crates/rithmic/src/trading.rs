@@ -1030,22 +1030,24 @@ impl Trading {
         Ok(basket)
     }
 
-    /// Place `order` as Rithmic's own bracket: the entry, and a target
-    /// `target` ticks and a stop `stop` ticks from its fill, which Rithmic
-    /// puts in, linked, as the entry fills. Blocks until Rithmic has taken
+    /// Place `order` as Rithmic's own bracket: the entry, and its targets
+    /// and stops, each `(quantity, ticks from the fill)`, which Rithmic
+    /// puts in, linked, as the entry fills. Each group's quantities add up
+    /// to the entry's, or the group is empty. Blocks until Rithmic has taken
     /// it and returns the entry's basket id; the exits arrive on the book
     /// as orders of their own. Never sent twice.
     pub fn place_bracket(
         &self,
         order: &Order,
-        target: Option<u32>,
-        stop: Option<u32>,
+        targets: &[(u32, u32)],
+        stops: &[(u32, u32)],
     ) -> Result<String, Error> {
         let side = match order.side {
             Side::Buy => OrderSide::Buy,
             Side::Sell => OrderSide::Sell,
         };
-        let ticks = |ticks: u32| i32::try_from(ticks).unwrap_or(i32::MAX);
+        let whole = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+        let legs = |legs: &[(u32, u32)]| legs.iter().map(|(qty, ticks)| (whole(*qty), whole(*ticks))).collect::<Vec<_>>();
         let mut built = RithmicBracketOrder::new()
             .symbol(&order.contract)
             .exchange(&order.exchange)
@@ -1066,11 +1068,11 @@ impl Trading {
                 ));
             }
         };
-        if let Some(target) = target {
-            built = built.target(ticks(target));
+        if !targets.is_empty() {
+            built = built.targets(legs(targets));
         }
-        if let Some(stop) = stop {
-            built = built.stop(ticks(stop));
+        if !stops.is_empty() {
+            built = built.stops(legs(stops));
         }
         let built = built.build().map_err(error_of)?;
         let replies = self.on_desk(&order.account, async |desk| {

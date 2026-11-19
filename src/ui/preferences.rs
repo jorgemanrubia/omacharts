@@ -1293,21 +1293,7 @@ fn agent_groups_for(
 /// The robot the Agent section is shown by, which no icon theme has: put
 /// where the display's icon theme finds it, once, and named.
 fn agent_icon() -> &'static str {
-    const NAME: &str = "omacharts-agent-symbolic";
-    const SVG: &str = include_str!("../../assets/symbolic/omacharts-agent-symbolic.svg");
-    let Some(display) = gtk::gdk::Display::default() else { return NAME };
-    let theme = gtk::IconTheme::for_display(&display);
-    if theme.has_icon(NAME) {
-        return NAME;
-    }
-    let folder = crate::store::data_dir().join("icons");
-    let file = folder.join(format!("{NAME}.svg"));
-    if std::fs::read_to_string(&file).ok().as_deref() != Some(SVG) {
-        let _ = std::fs::create_dir_all(&folder);
-        let _ = std::fs::write(&file, SVG);
-    }
-    theme.add_search_path(&folder);
-    NAME
+    crate::ui::symbolic_icon("omacharts-agent-symbolic", include_str!("../../assets/symbolic/omacharts-agent-symbolic.svg"))
 }
 
 /// The clock every chart reads, and how it writes the time.
@@ -1736,6 +1722,8 @@ fn build_data_page(context: &Rc<Context>) {
     );
     let window = context.window.clone();
     trading.set_edit_sizes(Rc::new(move |anchor: &gtk::Widget| window.edit_trading_sizes(anchor)));
+    let window = context.window.clone();
+    trading.set_edit_order_templates(Rc::new(move |anchor: &gtk::Widget| window.edit_order_templates(anchor)));
     let window = context.window.clone();
     trading.set_labels_moved(Rc::new(move || window.adopt_order_labels()));
     let window = context.window.clone();
@@ -2332,7 +2320,7 @@ mod tests {
             assert_eq!(right.group.title(), "Right");
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Total, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(center.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
@@ -2355,7 +2343,7 @@ mod tests {
                 Some(&Header {
                     left: vec![Part::Symbol, Part::Stripe],
                     center: Vec::new(),
-                    right: vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
+                    right: vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Total, Part::Settings, Part::Maximize, Part::Link]
                 })
             );
             // The corner's controls move like any other part: the gear out
@@ -2390,7 +2378,7 @@ mod tests {
             restore();
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
             assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::OrderTemplate, Part::Position, Part::Total, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
             assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);

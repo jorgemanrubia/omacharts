@@ -15,27 +15,29 @@ A chart trades what it charts, on its account. ES, whichever feed draws it, trad
 With an account to trade on, the chart's top-right corner leads with its trading parts, before the gear.
 
 <!-- regenerate:
-theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
-window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
-  (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
+theme: tokyo-night (its colors.toml in the sandbox HOME's .local/state/omarchy/current/theme, and theme.name beside it)
+window: bin/headless-window start --size 2800x1800 --scale 2; built with --features fakes, a sandboxed HOME and XDG_*
+  (seed a fresh rithmic-systems.json in the data dir, so no sign-in dialog asks Rithmic for its systems)
 state:
-  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
-  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
+  omacharts trading login fake ; click User, type DEMO-0001, click Name, ctrl+a, type Demo, Sign in
+  omacharts trading login fake ; click User, type DEMO-0002, click Name, ctrl+a, type Practice, Sign in
   # the fakes build numbers each account after its user, and holds a different day for each login
   omacharts chart set --symbol ES --resolution 15m
-  move 1130 880           # off the chart, so its gear is hidden
+  move 1300 880           # off the chart, so its gear is hidden
 capture: bin/headless-window shot /tmp/account-part.png
-crop: 1000x88+1110+4
+crop: 1160x88+1000+4
 -->
-{% include figure.html src="/assets/manual/trading-on-a-chart/account-part.png" alt="A chart's top-right corner: the account, the day's P&L, Buy, Sell, Qty and the position held" caption="The Account part of a chart holding one contract." %}
+{% include figure.html src="/assets/manual/trading-on-a-chart/account-part.png" alt="A chart's top-right corner: the account, the day's P&L, Buy, Sell, Qty, the order template, the position held and its total" caption="The Account part of a chart holding one contract." %}
 
 | Part | Shows, and does |
 |---|---|
 | **Account** | The account the chart trades on, and its trouble if any, such as *signed out*. Click it to choose another, listed by login. Shown only when there is more than one account |
 | **P&L** | The account's P&L for the day, in the profit or loss colour |
-| **Buy**, **Sell** | Buy or sell the chart's quantity at the market. Greyed out with the reason in the tooltip when the chart cannot trade |
+| **Buy/Sell** | Buy or sell the chart's quantity at the market. Greyed out with the reason in the tooltip when the chart cannot trade. Taken out of the header, only the buttons go: the keys, the chart menu and the New order dialog still trade |
 | **Qty** | The quantity orders are sent with. Click it for the others on offer and **Edit quantities…** |
-| **Current position** | What the account holds in the contract, with its open P&L, such as *+1 (+$37.50)* |
+| **Order template** | The chart's [order template](#order-templates), or only its icon with none. Click it to pick another |
+| **Current position** | What the account holds in the contract, signed, such as *+1* |
+| **Total** | That position's open P&L, such as *Total: +$37.50*, in the profit or loss colour |
 
 A chart with no account of its own trades on the default one, and follows it when the default changes. Choosing the default account in the picker leaves it that way.
 
@@ -88,11 +90,49 @@ crop: 2236x1800+0+0
 -->
 {% include figure.html src="/assets/manual/trading-on-a-chart/orders.png" alt="An ES chart with a long position, a linked target and stop, and a buy limit below the market" caption="A position with a target and a stop linked by the trading service (the solid line), and a working buy limit." %}
 
+## Order templates
+
+Order templates are **Beta**. A template is a set of exits that go in with an order: any number of targets and of stops, or none of either. With one picked, every order the chart sends goes as a bracket, a market order too, and the exits are placed by the trading service as the entry fills. An order that closes some or all of the position goes without them, and the Log says so. On Sierra Chart, Omacharts places the exits itself as the entry fills, each target and stop as a pair Sierra Chart then holds, so the exits go in only while Omacharts runs. The template's tooltip in the chart's header says so.
+
+**Edit order templates…**, on the header's template menu or in Preferences › Trading › **Order entry**, opens **Order templates**. **Add a template** starts one as **Target and stop**, **Half off**, **Runner** or **Stop only**, named after it; click one to change its **Name** and its exits, drag the handle to put the templates in order, and the bin removes one. Each exit says how far it goes, in one of three ways:
+
+| Mode | How far |
+|---|---|
+| **Ticks** | That many ticks from the fill |
+| **Money** | Where the whole order makes, or loses, that much, whatever the exit itself closes. It starts at the **Value of 1R** |
+| **R** | The same, in multiples of R: 1 to begin with, fractions such as 0.5 or 1.5 allowed, R being Preferences › Trading › **Value of 1R**. A stop at 1R loses 1R on the whole order if it is hit, one at 0.5R half of it; a target at 2R makes twice it. With R at $500, an exit at 1R and one at $500 rest at the same price |
+
+Every distance rounds toward the entry, and is never under one tick.
+
+Each exit also says how much it closes: a number of contracts, the default; a share **of position**, such as 1/2, or one typed as 33% or 0.33; or the rest, **All** on a group's first exit and **Rest** after it. The position is the order's own quantity as it fills, the contracts its exits protect: a template on an order that adds to a position brackets that order only, and one that reduces it goes plain. Exits are sized top to bottom, shares rounding down as they add up, so two exits of 1/2 on a 3-lot close 1 and 2, and an exit left with nothing is not sent.
+
+Sizes need not add up. A group may close less than the position, and that part has no exit of its kind: under the group, the editor says so, as a warning for stops. It also says under how many contracts an order goes without one of its exits, and when a group asks for more than the position.
+
+For example, **Half off** stops all of the position at 1R and takes half of it off at 1.5R, leaving the other half to run without a target: with R at $500, a 2-lot of ES filled at 6,000.00 rests its stop at 5,995.00 and a 1-contract target at 6,007.50. On a 1-lot the half is nothing, so only the stop is sent, and the editor says *Orders under 2 contracts go without the target*. Add a target sized **Rest** to take the other half off too.
+
+A template with no exits, or none left on the order's quantity, sends the order plain, and the Log says so.
+
+### On a chart
+
+The template part of the header, at its right, shows the chart's template, or only its icon with none. Its menu lists **No template** and the templates in order, and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> to <kbd>9</kbd> picks the first to the ninth; <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> is no template. The template is kept with the chart.
+
+### On a working order
+
+A limit or stop entry that has not begun to fill can be given a template three ways: the **Order template** submenu in the right-click menu on its line, the **Template** in the New order dialog, or by clicking the order to pick it out (it is drawn raised) and pressing <kbd>Ctrl</kbd> + <kbd>Shift</kbd> and the template's digit. Its exits are drawn faint where they will rest, and the template's name beside it. **No template**, or <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd>, takes them off.
+
+An entry with no target or no stop wears the missing tabs, as a position does: drag **L** or **STP** off it to a price, and that exit goes in with it for the whole order. Dragging an exit already drawn moves it.
+
+Giving an entry exits, or changing them, cancels it and sends it again as one bracket, so it loses its place in the queue. If it fills before the cancel lands, nothing is sent again, and the Log says so. Omacharts remembers which template an entry was sent with only while it runs.
+
+## The New order dialog
+
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>E</kbd> opens **New order**, for the focused chart's account and contract: **Side**, **Type** (Market, Limit or Stop, those the trading service takes), **Quantity**, which starts at the chart's, **Price**, which starts at the last trade, and **Template**, which starts at the chart's. Its button says the order, such as **Buy 2 ESZ6 at 6,810.00**, and sends it through the chart's own checks.
+
 ## Moving, cancelling and flattening
 
 | To | Do |
 |---|---|
-| Move an order | Drag its line. While dragging, the label says where it goes and how far, such as *6,840.00 · +11 ticks*, an exit says the P&L it would close at, and either says why where it could not go, such as *Stop above market · not allowed* |
+| Move an order | Drag its line. While dragging, the label says where it goes and how far, such as *6,840.00 · +11 ticks*, an exit says the P&L it would close at, and either says why where it could not go, such as *Stop above market · not allowed*. What stays at the old price, its line, label and tab, is drawn faint until it is let go |
 | Cancel an order | The **×** on its line, or its **Cancel** item, such as **Cancel Sell Limit 2 ESZ6 at 6,840.00**, in the right-click menu on the line |
 | Flatten | The **×** on the position closes it at the market and cancels its exits. <kbd>Ctrl</kbd> + <kbd>F</kbd> closes it and cancels every working order in the contract |
 
@@ -111,12 +151,15 @@ Turn on the chart's settings › **Trading** › **Show fills** to mark the acco
 | <kbd>Ctrl</kbd> + <kbd>F</kbd> | Flatten the chart's contract and cancel its working orders |
 | <kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the quantity, first to ninth |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd>, <kbd>P</kbd>, <kbd>O</kbd> | Show or hide the accounts, positions or orders ([The Trading panel](/manual/trading-panel/)) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>E</kbd> | New order ([The New order dialog](#the-new-order-dialog)) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Pick the order template, first to ninth; with a working order picked out, give it that template ([Order templates](#order-templates)) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No order template, on the chart or the picked order |
 
 The first four act on the focused chart, and never while you are typing in a box. Until there is a trading login, none of these keys does anything.
 
 ## From the CLI
 
-`omacharts trading buy`, `sell`, `exit`, `modify`, `cancel` and `flatten` act as the chart does, through the same checks. `chart set --account`, `--quantity`, `--trading-symbol` and `--show-fills` set a chart's trading, and `trading quantities` the templates ([The CLI › Trading](/manual/cli/#trading)).
+`omacharts trading buy`, `sell`, `exit`, `modify`, `cancel` and `flatten` act as the chart does, through the same checks. `chart set --account`, `--quantity`, `--trading-symbol`, `--order-template` and `--show-fills` set a chart's trading, `trading quantities` the quantities, `trading templates` the order templates, and `trading bracket` gives a working order one ([The CLI › Trading](/manual/cli/#trading)).
 
 ## See also
 

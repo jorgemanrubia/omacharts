@@ -49,6 +49,10 @@ pub fn registry() -> Registry {
         if let Some(numbers) = std::env::var_os(super::fake::OPENED_LATER_ENV) {
             fake.opened_later = super::fake::opened_later(&numbers.to_string_lossy());
         }
+        #[cfg(not(test))]
+        if std::env::var_os(super::fake::APP_HELD_ENV).is_some() {
+            fake.app_held = true;
+        }
         services.push(Arc::new(fake));
     }
     Registry::of(services)

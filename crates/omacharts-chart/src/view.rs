@@ -4071,8 +4071,11 @@ impl ChartView {
                 glib::Propagation::Stop
             }
             // Alt+N: configuration N for the selected drawing, or for
-            // the one about to be drawn while a tool is in hand.
-            _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) => {
+            // the one about to be drawn while a tool is in hand. Not with
+            // Ctrl: Ctrl+Alt and a digit is the window's, a watchlist.
+            _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK)
+                && !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
+            {
                 let Some(number) = preset_number(key) else {
                     return glib::Propagation::Proceed;
                 };
@@ -6656,6 +6659,8 @@ impl ChartView {
                         _ if !allowed => return,
                         (Grab::Tab { .. }, Some(_)) if !travelled => return,
                         (Grab::Tab { mark, tab }, Some(_)) => MarkEvent::Tab { mark, tab, price: at },
+                        // Pressed and let go in place: picked out.
+                        (Grab::Move(mark), Some(_)) if !travelled => MarkEvent::Pick(mark),
                         // Back where it was: nothing to move.
                         (Grab::Move(_), Some(from)) if (from - at).abs() < 1e-9 => return,
                         (Grab::Move(mark), Some(_)) => MarkEvent::Move { mark, price: at },
@@ -8920,6 +8925,16 @@ impl State {
         ((mark.price - at).abs() > 1e-9).then_some(mark.id.as_str())
     }
 
+    /// The tab the hand has pulled off its mark, as its mark and its own
+    /// id, which is drawn faint where it was while its copy follows the
+    /// hand; only once it has left its price, as a mark taken whole is.
+    fn tab_held_off(&self) -> Option<(&str, &str)> {
+        let Some(Drag::Mark { what: Grab::Tab { mark, tab }, at, .. }) = &self.drag else { return None };
+        let held = self.marks.lines.iter().find(|held| held.id == *mark)?;
+        let tab = held.tabs.iter().find(|known| known.id == *tab)?;
+        ((held.price - at).abs() > 1e-9).then_some((held.id.as_str(), tab.id.as_str()))
+    }
+
     /// What the rules are asked about `dragged` in hand at `at`.
     fn drag_query<'a>(&self, dragged: &Dragged<'a>, at: f64, places: usize) -> MarkDrag<'a> {
         MarkDrag {
@@ -9187,6 +9202,7 @@ fn draw_marks(
     let lit = state.hover_mark.as_ref();
     // Faint on its way, or taken off its price by the hand.
     let held = state.mark_held_off();
+    let pulled_tab = state.tab_held_off();
     let faint_of = |mark: &PriceMark| mark.dim || held == Some(mark.id.as_str());
     let ys = |price: f64| Some(to_y(price).round()).filter(|y| shown(*y));
     let marks: Vec<(&PriceMark, f64)> =
@@ -9221,6 +9237,11 @@ fn draw_marks(
             draw_mark_label(cr, &row, y, &label, background, ink);
             for (n, x, w) in &row.tabs {
                 let tab = &mark.tabs[*n];
+                // Pulled off by the hand: faint where it was, over the
+                // ground so the line does not show through it.
+                let pulled = pulled_tab == Some((mark.id.as_str(), tab.id.as_str()));
+                ground(cr, pulled, &|cr| pill_path(cr, x + 0.5, y - tab_h / 2.0 + 0.5, w - 1.0, tab_h - 1.0));
+                faint(cr, pulled, &|cr| {
                 if lit.is_some_and(|hit| matches!(hit, MarkHit::Tab { mark: on, tab: which } if *on == mark.id && *which == tab.id)) {
                     halo(cr, *x, y, *w, tab_h);
                 }
@@ -9237,6 +9258,7 @@ fn draw_marks(
                 colors::set_source(cr, ink);
                 cr.move_to(x + TAB_PAD, baseline(cr, y));
                 let _ = cr.show_text(&tab.text);
+                });
             }
         });
     };
@@ -9248,7 +9270,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), faint_of(mark)));
         }
     }
-    draw_link(cr, lane, &marks, ink, &faint);
+    draw_link(cr, lane, &marks, ink, held, &faint);
     for (mark, y) in marks.iter().filter(|(mark, _)| mark.raised) {
         label(cr, mark, *y);
         if let Some(at) = &mark.chip {
@@ -9351,12 +9373,14 @@ fn pulse_band(state: &State, width: f64, height: f64) -> Option<pulse::Band> {
 
 /// The line joining linked marks, on the side of their labels that faces
 /// the plot: from the top one to the bottom one, with a short stroke into
-/// each. Dashed if any of them asks, faint while any is pending.
-fn draw_link(cr: &cairo::Context, lane: Lane, marks: &[(&PriceMark, f64)], ink: &str, faint: Faint) {
+/// each. Dashed if any of them asks, faint while any is pending or `held`
+/// off its price by the hand.
+fn draw_link(cr: &cairo::Context, lane: Lane, marks: &[(&PriceMark, f64)], ink: &str, held: Option<&str>, faint: Faint) {
     let linked: Vec<(MarkRow, f64, MarkLink)> = marks
         .iter()
         .filter_map(|(mark, y)| Some((label_row(cr, lane, mark), *y, mark.link?)))
         .collect();
+    let held_off = marks.iter().any(|(mark, _)| mark.link.is_some() && held == Some(mark.id.as_str()));
     if linked.len() < 2 {
         return;
     }
@@ -9373,7 +9397,7 @@ fn draw_link(cr: &cairo::Context, lane: Lane, marks: &[(&PriceMark, f64)], ink: 
     let x = x.round() + 0.5;
     let top = linked.iter().map(|(_, y, _)| *y).fold(f64::MAX, f64::min);
     let bottom = linked.iter().map(|(_, y, _)| *y).fold(f64::MIN, f64::max);
-    let pending = linked.iter().any(|(.., link)| link.pending);
+    let pending = held_off || linked.iter().any(|(.., link)| link.pending);
     let dashed = linked.iter().any(|(.., link)| link.dashed);
     faint(cr, pending, &|cr| {
         cr.set_line_width(1.0);
@@ -13504,6 +13528,33 @@ mod tests {
         assert_eq!(state.mark_held_off(), None, "a tab pulled out moves nothing");
         state.drag = None;
         assert_eq!(tag(&state), fill, "solid again once let go");
+
+        // A tab pulled off its mark is faint where it was, and solid again
+        // once let go or cancelled; its mark stays as it is.
+        let position = the_mark(&state, "position").clone();
+        let row = label_row(&cr, state.lane(&plan), &position);
+        let (_, tab_x, tab_w) = *row.tabs.iter().find(|(n, ..)| position.tabs[*n].id == "limit").expect("the limit tab");
+        let at = scale.to_y(position.price, plan.price_y, plan.price_h).round() as usize;
+        let pill = |state: &State| {
+            let pixels = frame(w, h, |cr| draw(cr, w, h, state));
+            (tab_x as usize..(tab_x + tab_w) as usize)
+                .map(|px| {
+                    let i = (at * w as usize + px) * 4;
+                    [pixels[i], pixels[i + 1], pixels[i + 2]]
+                })
+                .collect::<Vec<_>>()
+        };
+        let solid = pill(&state);
+        let pulled = |at: f64| Some(Drag::Mark { what: Grab::Tab { mark: "position".into(), tab: "limit".into() }, at, allowed: true });
+        state.drag = pulled(position.price);
+        assert_eq!(state.tab_held_off(), None, "pressed, not yet pulled");
+        assert_eq!(pill(&state), solid);
+        state.drag = pulled(position.price + 1.0);
+        assert_eq!(state.tab_held_off(), Some(("position", "limit")));
+        assert_ne!(pill(&state), solid, "faint once pulled off its price");
+        assert_eq!(tag(&state), fill, "the order beside it untouched");
+        state.drag = None;
+        assert_eq!(pill(&state), solid, "solid again once let go");
     }
 
     fn save_png(mut surface: cairo::ImageSurface, path: &str) {

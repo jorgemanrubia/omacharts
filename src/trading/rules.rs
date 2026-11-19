@@ -732,6 +732,8 @@ mod tests {
             link: Linking::AfterTheFact,
             history: true,
             snapshot: true,
+            brackets: true,
+            bracket_holder: Holder::TradingService,
         };
         assert_eq!(menu_orders(&all).len(), 6);
         assert_eq!(menu_orders(&all)[..2], [(Side::Buy, OrderKind::Market), (Side::Sell, OrderKind::Market)]);

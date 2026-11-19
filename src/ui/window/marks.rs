@@ -43,6 +43,37 @@ pub struct OrderMark {
     pub dim: bool,
     /// Linked with the position's other exit: drawn joined to it.
     pub link: Option<LinkMark>,
+    /// The exits a working entry can be given, a tab each, dragged off it
+    /// to bracket it: none for an exit, or where the trading service
+    /// holds no brackets.
+    pub exits: Vec<ExitTab>,
+    /// Picked out by a click, for a key to give it a template: drawn
+    /// raised and breathing.
+    pub picked: bool,
+}
+
+/// An exit a working entry is bracketed with, drawn where it will rest
+/// once the entry fills: its distance from the entry's price. Dragged, it
+/// rests further or nearer; its × takes it off. Either sends the entry
+/// again with its exits as they are then.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BracketMark {
+    /// The entry's basket.
+    pub basket: String,
+    /// A stop, or a target.
+    pub stop: bool,
+    /// Which of its group, in order.
+    pub at: usize,
+    pub price: f64,
+    /// The entry's price and side, which it is judged against.
+    pub entry: f64,
+    pub entry_side: Side,
+    pub tag: String,
+    pub body: Option<String>,
+    pub price_text: String,
+    pub colour: String,
+    pub style: LineStyle,
+    pub dim: bool,
 }
 
 /// How an exit is linked with the other, which the line joining them says:
@@ -115,12 +146,38 @@ pub enum TradeEvent {
     /// The × of a position held in another month of the chart's root:
     /// flatten that contract.
     FlattenHeld(String),
+    /// A target (a limit) or a stop dragged off the working entry
+    /// `basket` to `price`: the entry bracketed with it.
+    BracketAt { basket: String, kind: OrderKind, price: f64 },
+    /// An exit the entry `basket` is bracketed with, to `price`.
+    MoveExit { basket: String, stop: bool, at: usize, price: f64 },
+    /// An exit the entry `basket` is bracketed with, taken off.
+    DropExit { basket: String, stop: bool, at: usize },
+    /// The working order `basket` clicked: picked out, or let go.
+    Pick(String),
 }
 
 /// What each kind of mark is known by on the chart.
 const POSITION: &str = "position";
 const HELD: &str = "held:";
 const ORDER: &str = "order:";
+const EXIT: &str = "exit:";
+
+/// A bracketed entry's exit's id on the chart: `exit:t0:BASKET`.
+fn exit_id(basket: &str, stop: bool, at: usize) -> String {
+    format!("{EXIT}{}{at}:{basket}", if stop { 's' } else { 't' })
+}
+
+fn exit_of(id: &str) -> Option<(String, bool, usize)> {
+    let rest = id.strip_prefix(EXIT)?;
+    let (which, basket) = rest.split_once(':')?;
+    let stop = match which.chars().next()? {
+        's' => true,
+        't' => false,
+        _ => return None,
+    };
+    Some((basket.to_string(), stop, which[1..].parse().ok()?))
+}
 
 /// How heavy an order's line is: a stop heavier than a limit, so the two
 /// are told apart when they wear the same pattern, and both apart from the
@@ -151,8 +208,33 @@ fn tab_kind(id: &str) -> Option<OrderKind> {
 /// The orders, then the positions in other months, then the position: the
 /// order the chart draws them in, the position over the line joining its
 /// exits.
-pub fn price_marks(position: Option<&PositionMark>, held: &[PositionMark], orders: &[OrderMark]) -> Vec<PriceMark> {
-    let mut marks = Vec::with_capacity(orders.len() + held.len() + 1);
+pub fn price_marks(
+    position: Option<&PositionMark>,
+    held: &[PositionMark],
+    orders: &[OrderMark],
+    brackets: &[BracketMark],
+) -> Vec<PriceMark> {
+    let mut marks = Vec::with_capacity(orders.len() + brackets.len() + held.len() + 1);
+    for exit in brackets {
+        marks.push(PriceMark {
+            id: exit_id(&exit.basket, exit.stop, exit.at),
+            price: exit.price,
+            tag: exit.tag.clone(),
+            body: exit.body.clone(),
+            chip: Some(AxisChip { text: exit.price_text.clone(), filled: false }),
+            colour: exit.colour.clone(),
+            style: exit.style,
+            // As light as a target's: it is not working yet.
+            line: Some(order_weight(OrderKind::Limit)),
+            dim: exit.dim,
+            closable: true,
+            draggable: true,
+            tabs: Vec::new(),
+            link: None,
+            raised: false,
+            pulse: false,
+        });
+    }
     for order in orders {
         // A market order on its way has no price of its own: its label
         // beside the last price, no line, no × and no chip.
@@ -173,10 +255,10 @@ pub fn price_marks(position: Option<&PositionMark>, held: &[PositionMark], order
             dim: order.dim,
             closable: priced,
             draggable: true,
-            tabs: Vec::new(),
+            tabs: order.exits.iter().map(|tab| entry_tab(tab, order)).collect(),
             link: order.link.map(|link| MarkLink { dashed: link.holder == Holder::App, pending: link.pending }),
-            raised: false,
-            pulse: false,
+            raised: order.picked,
+            pulse: order.picked && !order.dim,
         });
     }
     // Only the chart's own position breathes, and not while it is faint.
@@ -223,10 +305,37 @@ fn exit_tab(tab: &ExitTab, net: i32) -> MarkTab {
     }
 }
 
+/// A tab to drag an exit off a working entry: as a position's, for the
+/// entry's quantity, on the side that closes what it opens.
+fn entry_tab(tab: &ExitTab, order: &OrderMark) -> MarkTab {
+    let side = match order.side {
+        Side::Buy => Side::Sell,
+        Side::Sell => Side::Buy,
+    };
+    MarkTab {
+        id: tab_id(tab.kind).to_string(),
+        text: trading::exit_tab(tab.kind).to_string(),
+        tag: trading::mark_tag(tab.kind, side, true, &order.qty.to_string()),
+        colour: tab.colour.clone(),
+        style: tab.style,
+        outline: order_weight(tab.kind) / order_weight(OrderKind::Limit),
+        weight: order_weight(tab.kind),
+    }
+}
+
 /// What the hand did, as the session hears it.
 pub fn trade_event(event: MarkEvent) -> Option<TradeEvent> {
     match event {
         MarkEvent::Close(id) if id == POSITION => Some(TradeEvent::Flatten),
+        MarkEvent::Close(id) if id.starts_with(EXIT) => {
+            let (basket, stop, at) = exit_of(&id)?;
+            Some(TradeEvent::DropExit { basket, stop, at })
+        }
+        MarkEvent::Move { mark, price } if mark.starts_with(EXIT) => {
+            let (basket, stop, at) = exit_of(&mark)?;
+            Some(TradeEvent::MoveExit { basket, stop, at, price })
+        }
+        MarkEvent::Pick(mark) => Some(TradeEvent::Pick(mark.strip_prefix(ORDER)?.to_string())),
         MarkEvent::Close(id) => match (id.strip_prefix(HELD), id.strip_prefix(ORDER)) {
             (Some(contract), _) => Some(TradeEvent::FlattenHeld(contract.to_string())),
             (_, Some(basket)) => Some(TradeEvent::Cancel(basket.to_string())),
@@ -236,7 +345,10 @@ pub fn trade_event(event: MarkEvent) -> Option<TradeEvent> {
             Some(TradeEvent::Move { basket: mark.strip_prefix(ORDER)?.to_string(), price })
         }
         MarkEvent::Tab { mark, tab, price } if mark == POSITION => Some(TradeEvent::ExitAt { kind: tab_kind(&tab)?, price }),
-        MarkEvent::Tab { .. } => None,
+        MarkEvent::Tab { mark, tab, price } => match mark.strip_prefix(ORDER) {
+            Some(basket) => Some(TradeEvent::BracketAt { basket: basket.to_string(), kind: tab_kind(&tab)?, price }),
+            None => None,
+        },
     }
 }
 
@@ -252,6 +364,12 @@ pub fn mark_event(event: TradeEvent) -> MarkEvent {
         TradeEvent::Cancel(basket) => MarkEvent::Close(format!("{ORDER}{basket}")),
         TradeEvent::Flatten => MarkEvent::Close(POSITION.into()),
         TradeEvent::FlattenHeld(contract) => MarkEvent::Close(format!("{HELD}{contract}")),
+        TradeEvent::BracketAt { basket, kind, price } => {
+            MarkEvent::Tab { mark: format!("{ORDER}{basket}"), tab: tab_id(kind).into(), price }
+        }
+        TradeEvent::MoveExit { basket, stop, at, price } => MarkEvent::Move { mark: exit_id(&basket, stop, at), price },
+        TradeEvent::DropExit { basket, stop, at } => MarkEvent::Close(exit_id(&basket, stop, at)),
+        TradeEvent::Pick(basket) => MarkEvent::Pick(format!("{ORDER}{basket}")),
     }
 }
 
@@ -264,6 +382,10 @@ pub struct TradeRules {
     position: Option<Held>,
     /// Each order's id on the chart, its side, kind and size.
     orders: Vec<(String, Side, OrderKind, u32)>,
+    /// Each bracketed entry's exit on the chart, by id, with the entry's
+    /// price and side and whether it is a stop: held to its side of the
+    /// entry.
+    brackets: Vec<(String, f64, Side, bool)>,
     /// The day's lowest and highest prices the exchange takes an order at,
     /// as far as they are known.
     limits: (Option<f64>, Option<f64>),
@@ -314,9 +436,40 @@ impl TradeRules {
                 .iter()
                 .map(|order| (format!("{ORDER}{}", order.basket), order.side, order.kind, order.qty))
                 .collect(),
+            brackets: Vec::new(),
             limits,
             market: Market::Chart,
         }
+    }
+
+    /// With the exits drawn for bracketed entries, each held to its side
+    /// of its entry.
+    pub fn with_brackets(mut self, brackets: &[BracketMark]) -> TradeRules {
+        self.brackets = brackets
+            .iter()
+            .map(|exit| (exit_id(&exit.basket, exit.stop, exit.at), exit.entry, exit.entry_side, exit.stop))
+            .collect();
+        self
+    }
+
+    /// Where an exit of an entry of `side` at `entry` may rest: a target
+    /// past it the way the entry profits, a stop the other way.
+    fn exit_side_of_entry(side: Side, entry: f64, stop: bool, at: f64) -> bool {
+        match (side, stop) {
+            (Side::Buy, false) | (Side::Sell, true) => at > entry,
+            (Side::Buy, true) | (Side::Sell, false) => at < entry,
+        }
+    }
+
+    /// The entry and the exit a drag off an entry's tab, or of a bracket's
+    /// exit, is about: the entry's price and side, and whether a stop.
+    fn bracket_drag(&self, drag: &MarkDrag) -> Option<(f64, Side, bool)> {
+        if let Some((_, entry, side, stop)) = self.brackets.iter().find(|(id, ..)| id == drag.mark) {
+            return Some((*entry, *side, *stop));
+        }
+        let tab = drag.tab?;
+        let (_, side, _, _) = self.orders.iter().find(|(id, ..)| id == drag.mark)?;
+        Some((drag.from, *side, tab_kind(tab)? == OrderKind::Stop))
     }
 
     /// Judged against `market` rather than the chart's own last price.
@@ -377,10 +530,13 @@ impl TradeRules {
 
 impl MarkRules for TradeRules {
     fn allowed(&self, drag: &MarkDrag) -> bool {
-        let Some(last) = self.last(drag) else { return false };
         if trading::past_limit(drag.at, self.limits).is_some() {
             return false;
         }
+        if let Some((entry, side, stop)) = self.bracket_drag(drag) {
+            return Self::exit_side_of_entry(side, entry, stop, drag.at);
+        }
+        let Some(last) = self.last(drag) else { return false };
         match self.dragged(drag) {
             Some((kind, None)) => {
                 let net = self.position.as_ref().map_or(0, |held| held.net);
@@ -401,6 +557,11 @@ impl MarkRules for TradeRules {
                 }
             };
             return MarkPreview { text, colour: None };
+        }
+        // A bracket's exit says how far from its entry it rests.
+        if let Some((entry, ..)) = self.bracket_drag(drag) {
+            let ticks = drag.tick.map(|tick| trading::ticks_between(entry, drag.at, tick));
+            return MarkPreview { text: trading::preview_text(&grouped_decimals(drag.at, drag.places), ticks), colour: None };
         }
         if let Some((pnl, held)) = self.pnl(drag) {
             let colour = if pnl < 0.0 { held.loss.clone() } else { held.profit.clone() };
@@ -512,6 +673,8 @@ mod tests {
             style: LineStyle::Dashed,
             dim: false,
             link: None,
+            exits: Vec::new(),
+            picked: false,
         };
         (position, vec![order])
     }
@@ -637,7 +800,7 @@ mod tests {
         assert!(order_weight(OrderKind::Stop) > order_weight(OrderKind::Limit));
         assert!(order_weight(OrderKind::Limit) > 1.0, "heavier than the last price's hairline");
         let (position, _) = long();
-        let marks = price_marks(Some(&position), &[], &[]);
+        let marks = price_marks(Some(&position), &[], &[], &[]);
         let outlines: Vec<_> = marks[0].tabs.iter().map(|tab| (tab.id.as_str(), tab.outline)).collect();
         assert_eq!(outlines, vec![("limit", 1.0), ("stop", 2.0 / 1.5)]);
     }
@@ -654,7 +817,7 @@ mod tests {
         orders.push(market);
         let mut held = position.clone();
         held.contract = "ESH7".into();
-        let marks = price_marks(Some(&position), &[held], &orders);
+        let marks = price_marks(Some(&position), &[held], &orders, &[]);
         let ids: Vec<_> = marks.iter().map(|mark| mark.id.as_str()).collect();
         assert_eq!(ids, ["order:B1", "order:B2", "held:ESH7", "position"]);
         let shape = |mark: &PriceMark| (mark.line.is_some(), mark.closable, mark.chip.is_some(), mark.raised);
@@ -682,5 +845,68 @@ mod tests {
         assert_eq!(trade_event(MarkEvent::Move { mark: POSITION.into(), price: 1.0 }), None);
         assert_eq!(trade_event(MarkEvent::Tab { mark: "held:ESH7".into(), tab: "stop".into(), price: 1.0 }), None);
         assert_eq!(trade_event(MarkEvent::Close("elsewhere".into())), None);
+    }
+
+    /// A working buy limit with a target and a stop to drag off it: each
+    /// only to its side of the entry, saying how far from it it rests;
+    /// let go, the entry is bracketed with it. A bracket's exit drawn for
+    /// it moves and goes as its own mark.
+    #[test]
+    fn exits_are_dragged_off_a_working_entry() {
+        let (_, mut orders) = long();
+        orders[0].side = Side::Buy;
+        orders[0].price = 5000.0;
+        orders[0].exits = vec![
+            ExitTab { kind: OrderKind::Limit, colour: "#00aa00".into(), style: LineStyle::Dashed },
+            ExitTab { kind: OrderKind::Stop, colour: "#aa0000".into(), style: LineStyle::Dashed },
+        ];
+        let exit = BracketMark {
+            basket: "B1".into(),
+            stop: true,
+            at: 0,
+            price: 4995.0,
+            entry: 5000.0,
+            entry_side: Side::Buy,
+            tag: "S 1".into(),
+            body: None,
+            price_text: "4,995.00".into(),
+            colour: "#aa0000".into(),
+            style: LineStyle::Dashed,
+            dim: false,
+        };
+        let rules = TradeRules::new(None, &orders, (None, None)).with_brackets(std::slice::from_ref(&exit));
+        let tab = |tab: &'static str, at: f64| MarkDrag { mark: "order:B1", tab: Some(tab), from: 5000.0, at, last: None, tick: Some(0.25), places: 2 };
+        assert!(rules.allowed(&tab("limit", 5002.0)), "a target above a buy, with no market known");
+        assert!(!rules.allowed(&tab("limit", 4998.0)));
+        assert!(rules.allowed(&tab("stop", 4998.0)));
+        assert!(!rules.allowed(&tab("stop", 5001.0)));
+        assert_eq!(rules.preview(&tab("stop", 4998.0), true).text, trading::preview_text("4,998.00", Some(-8)));
+        let id = "exit:s0:B1";
+        let moved = MarkDrag { mark: id, tab: None, from: 4995.0, at: 4990.0, last: None, tick: Some(0.25), places: 2 };
+        assert!(rules.allowed(&moved));
+        assert!(!rules.allowed(&MarkDrag { at: 5003.0, ..moved }), "a stop stays under a buy");
+
+        let marks = price_marks(None, &[], &orders, &[exit]);
+        assert_eq!(marks[0].id, id);
+        assert!(marks[0].draggable && marks[0].closable);
+        assert_eq!(marks[1].tabs.iter().map(|tab| tab.id.as_str()).collect::<Vec<_>>(), ["limit", "stop"]);
+        assert_eq!(
+            trade_event(MarkEvent::Tab { mark: "order:B1".into(), tab: "stop".into(), price: 4998.0 }),
+            Some(TradeEvent::BracketAt { basket: "B1".into(), kind: OrderKind::Stop, price: 4998.0 })
+        );
+        assert_eq!(
+            trade_event(MarkEvent::Move { mark: id.into(), price: 4990.0 }),
+            Some(TradeEvent::MoveExit { basket: "B1".into(), stop: true, at: 0, price: 4990.0 })
+        );
+        assert_eq!(trade_event(MarkEvent::Close(id.into())), Some(TradeEvent::DropExit { basket: "B1".into(), stop: true, at: 0 }));
+        assert_eq!(trade_event(MarkEvent::Pick("order:B1".into())), Some(TradeEvent::Pick("B1".into())));
+        for event in [
+            TradeEvent::BracketAt { basket: "B1".into(), kind: OrderKind::Limit, price: 1.0 },
+            TradeEvent::MoveExit { basket: "B:2".into(), stop: false, at: 3, price: 1.0 },
+            TradeEvent::DropExit { basket: "B1".into(), stop: true, at: 0 },
+            TradeEvent::Pick("B1".into()),
+        ] {
+            assert_eq!(trade_event(mark_event(event.clone())), Some(event));
+        }
     }
 }

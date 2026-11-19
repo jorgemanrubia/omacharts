@@ -53,6 +53,7 @@ mod executions;
 mod glow;
 mod log;
 mod marks;
+mod order_templates;
 mod trade;
 mod trade_cli;
 mod updates;
@@ -205,7 +206,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             // row says where it works: pressed over a chart it does
             // nothing, and nothing is hard to ask a question about.
             ("Ctrl+Alt+Shift+↑ ↓", "Previous or next watchlist, in the sidebar"),
-            ("Ctrl+Shift+1 … 9", "Watchlist N, in the switcher's order"),
+            ("Ctrl+Alt+1 … 9", "Watchlist N, in the switcher's order"),
             ("Ctrl+N", "Add a symbol, in the sidebar"),
             ("Ctrl+Shift+N", "Add a section, in the sidebar"),
             ("Delete", "Remove the symbol"),
@@ -301,6 +302,9 @@ const TRADING_SHORTCUTS: (&str, &[(&str, &str)]) = (
         ("Ctrl+Shift+A", "Show or hide the accounts"),
         ("Ctrl+Shift+P", "Show or hide the positions"),
         ("Ctrl+Shift+O", "Show or hide the orders"),
+        ("Ctrl+Shift+E", "New order, with every choice"),
+        ("Ctrl+Shift+1 … 9", "Pick the order template, 1st to 9th; on a picked order, attach it"),
+        ("Ctrl+Shift+0", "No order template"),
     ],
 );
 
@@ -742,6 +746,7 @@ mod tests {
                 source: None,
                 account: None,
                 trading_size: None,
+            order_template: None,
                 trading_symbol: None,
                 trading_suffix: None,
                 shows_fills: false,
@@ -881,6 +886,7 @@ mod tests {
             source: None,
             account: None,
             trading_size: None,
+            order_template: None,
             trading_symbol: None,
             trading_suffix: None,
             shows_fills: false,
@@ -937,6 +943,24 @@ mod tests {
         // Neither: a letter off the row is no number at all.
         assert_eq!(shifted_number(Key::B, 56), None);
         assert_eq!(shifted_number(Key::exclam, 9), None);
+    }
+
+    /// Ctrl+Shift and a digit is always the order template's, 0 included;
+    /// Ctrl+Alt and one the watchlist's, from 1; the rest none of theirs.
+    #[test]
+    fn the_digit_chords_are_order_templates_on_shift_and_watchlists_on_alt() {
+        use gtk::gdk::Key;
+        assert_eq!(digit_chord(true, false, true, Key::exclam, 10), Some(DigitChord::OrderTemplate(1)));
+        assert_eq!(digit_chord(true, false, true, Key::parenright, 19), Some(DigitChord::OrderTemplate(0)));
+        assert_eq!(digit_chord(true, true, false, Key::_3, 12), Some(DigitChord::Watchlist(3)));
+        // AZERTY types "é" on 2 without Shift: where it is says 2.
+        assert_eq!(digit_chord(true, true, false, Key::eacute, 11), Some(DigitChord::Watchlist(2)));
+        assert_eq!(digit_chord(true, true, false, Key::_0, 19), None, "no watchlist 0");
+        // The chart template's, the trading size's and a drawing
+        // configuration's are not these.
+        assert_eq!(digit_chord(true, true, true, Key::exclam, 10), None);
+        assert_eq!(digit_chord(true, false, false, Key::_1, 10), None);
+        assert_eq!(digit_chord(false, true, false, Key::_1, 10), None);
     }
 
     /// None and two templates: stepping goes round both ways.
@@ -3870,14 +3894,42 @@ fn shifted_number(key: gtk::gdk::Key, keycode: u32) -> Option<usize> {
     number_row(keycode).or_else(|| key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize))
 }
 
+/// What Ctrl and a digit with other keys held is for, besides the chart
+/// template's Ctrl+Alt+Shift and the trading size's Ctrl alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DigitChord {
+    /// Ctrl+Shift: the order template, 1 to 9 as listed, 0 none.
+    OrderTemplate(usize),
+    /// Ctrl+Alt: the watchlist, counting down the switcher from 1, beside
+    /// Ctrl+Alt+Shift and an arrow, which steps through them. From
+    /// anywhere, rail open or not: nothing is typed with Ctrl held.
+    Watchlist(usize),
+}
+
+/// The digit chord a key is, by where the key is as well as what it types
+/// (see `shifted_number` and `plain_number`). Bare digits are the
+/// resolution's, Alt with one a drawing configuration's.
+fn digit_chord(ctrl: bool, alt: bool, shift: bool, key: gtk::gdk::Key, keycode: u32) -> Option<DigitChord> {
+    match (ctrl, alt, shift) {
+        (true, false, true) => shifted_number(key, keycode).map(DigitChord::OrderTemplate),
+        (true, true, false) => plain_number(key, keycode).filter(|n| *n > 0).map(DigitChord::Watchlist),
+        _ => None,
+    }
+}
+
+/// Which digit a key without Shift means: the digit it typed, or where it
+/// is when the layout types something else there, as AZERTY's row does.
+fn plain_number(key: gtk::gdk::Key, keycode: u32) -> Option<usize> {
+    key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize).or_else(|| number_row(keycode))
+}
+
 /// The chart action a trading key reaches, and its target: Ctrl+B, Ctrl+S
 /// and Ctrl+F by letter, Ctrl and a digit by the digit or the number row.
 fn trading_key(key: gtk::gdk::Key, keycode: u32) -> Option<(&'static str, Option<glib::Variant>)> {
     use gtk::gdk::Key;
     // The digit typed, or where the key is when the layout types something
     // else there without Shift, as AZERTY's row does.
-    let digit = key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize);
-    if let Some(n) = digit.or_else(|| number_row(keycode)).filter(|n| *n > 0) {
+    if let Some(n) = plain_number(key, keycode).filter(|n| *n > 0) {
         return Some((trade::TRADING_SIZE, Some((n as i32).to_variant())));
     }
     match key {
@@ -4404,6 +4456,11 @@ struct StoredPane {
     /// of its template, which is every chart until somebody picks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     trading_size: Option<crate::trading::sizes::Picked>,
+    /// The order template its orders are bracketed with, by the template's
+    /// number. Missing for a chart with none, which is every chart until
+    /// somebody picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    order_template: Option<u32>,
     /// What this chart's orders go to when it is not what it charts, by
     /// symbol and suffix, as `symbol` and `suffix` name what it charts.
     /// Missing for a chart that trades what it charts, which is every chart
@@ -4457,6 +4514,7 @@ impl StoredPane {
             source: None,
             account: None,
             trading_size: None,
+            order_template: None,
             trading_symbol: None,
             trading_suffix: None,
             shows_fills: false,
@@ -5702,6 +5760,12 @@ impl Window {
             popup_menu(&trade::size_part_menu(), &anchor, x, y);
         });
         pane.size_menu.add_controller(size_menu);
+        let builder = Rc::downgrade(self);
+        pane.order_template_menu.set_create_popup_func(move |button| {
+            if let Some(this) = builder.upgrade() {
+                crate::ui::menus::set_model(button, &this.order_template_menu(id));
+            }
+        });
         // Buy and Sell are the keys' orders, for this chart.
         for (button, side) in [(&pane.buy_button, crate::trading::Side::Buy), (&pane.sell_button, crate::trading::Side::Sell)] {
             let this = Rc::downgrade(self);
@@ -6243,6 +6307,7 @@ impl Window {
     fn trade_as(from: &ChartPane, added: &ChartPane) {
         added.account.replace(from.account.borrow().clone());
         added.trading_size.replace(from.trading_size.borrow().clone());
+        added.order_template.set(from.order_template.get());
         added.trading_symbol.replace(from.trading_symbol.borrow().clone());
         added.trading_pending.replace(from.trading_pending.borrow().clone());
         added.shows_fills.set(from.shows_fills.get());
@@ -6802,6 +6867,17 @@ impl Window {
             }
         });
         pane.menu_actions.add_action(&quantity);
+        // The Order template part's: the template's id, 0 for none.
+        let order_template =
+            gio::SimpleAction::new_stateful("order-template", Some(glib::VariantTy::INT32), &0i32.to_variant());
+        let this = Rc::downgrade(self);
+        order_template.connect_activate(move |action, value| {
+            let (Some(this), Some(n)) = (this.upgrade(), value.and_then(|value| value.get::<i32>())) else { return };
+            action.set_state(&n.to_variant());
+            this.focus(id);
+            this.pick_order_template(id, u32::try_from(n).ok().filter(|n| *n > 0));
+        });
+        pane.menu_actions.add_action(&order_template);
     }
 
     /// Mark `value` as the chart's choice in its menu named `name`.
@@ -7044,6 +7120,7 @@ impl Window {
                     source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
+                    order_template: pane.order_template.get(),
                     // One still to be found is written back as it was kept.
                     trading_symbol: pane
                         .trading_symbol
@@ -7414,6 +7491,7 @@ impl Window {
             *pane.feed.borrow_mut() = stored.source.as_deref().map(|id| crate::feeds::current_id(&self.store, id));
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
+            pane.order_template.set(stored.order_template);
             pane.shows_fills.set(stored.shows_fills);
             // The window opens on the curated half, which may not name it:
             // then it waits for the rest, as the chart's own symbol does,
@@ -9018,20 +9096,19 @@ impl Window {
                 }
             }
 
-            // Ctrl+Shift and a digit shows that watchlist, counting down the
-            // switcher from 1. From anywhere, rail open or not: nothing is
-            // typed with Ctrl held. Bare digits are the resolution's, Alt
-            // with one a drawing configuration's and Ctrl with one the
-            // trading size's. By where the key is, as the templates' are,
-            // since Shift changes what the row types.
-            if ctrl
-                && !alt
-                && shift
-                && let Some(n) = shifted_number(key, keycode).filter(|n| *n > 0)
-                && let Some(rail) = this.watchlist.borrow().clone()
-                && rail.show_numbered(n)
-            {
-                return glib::Propagation::Stop;
+            // Ctrl+Shift and a digit is the focused chart's order template,
+            // or that of the working order picked out on it; Ctrl+Alt and
+            // one a watchlist. See `digit_chord`.
+            match digit_chord(ctrl, alt, shift, key, keycode) {
+                Some(DigitChord::OrderTemplate(n)) if !this.is_typing() && this.on_order_template_key(n) => {
+                    return glib::Propagation::Stop;
+                }
+                Some(DigitChord::Watchlist(n))
+                    if this.watchlist.borrow().clone().is_some_and(|rail| rail.show_numbered(n)) =>
+                {
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
             }
 
             // The trading keys, only with a trading account and never while

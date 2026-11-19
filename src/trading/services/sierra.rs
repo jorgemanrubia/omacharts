@@ -22,7 +22,10 @@
 //! connection: a drop forgets it, and until the book is asked for again
 //! nothing in it is taken for the server's spelling.
 
+mod brackets;
+
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -78,12 +81,41 @@ impl TradingService for Sierra {
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         let changed: Arc<dyn Fn(Change) + Send + Sync> = Arc::from(changed);
         let told = changed.clone();
-        let trading = dtc::Trading::sign_in(&endpoint_of(login), CLIENT_NAME, move |pulse| match pulse {
-            dtc::Pulse::Back => told(Change::Back),
-            dtc::Pulse::Moved | dtc::Pulse::Lost(_) => told(Change::Moved),
+        // Every move of the book wakes the keeper of the app's brackets,
+        // which places exits as entries fill: see `brackets`.
+        let (moved, moves) = std::sync::mpsc::channel::<()>();
+        let moved = Mutex::new(moved);
+        let trading = dtc::Trading::sign_in(&endpoint_of(login), CLIENT_NAME, move |pulse| {
+            let _ = moved.lock().unwrap_or_else(|e| e.into_inner()).send(());
+            match pulse {
+                dtc::Pulse::Back => told(Change::Back),
+                dtc::Pulse::Moved | dtc::Pulse::Lost(_) => told(Change::Moved),
+            }
         })
         .map_err(said)?;
-        Ok(Arc::new(SierraSession::new(login.id.clone(), trading)))
+        let session = Arc::new(SierraSession::new(login.id.clone(), trading));
+        let watched = Arc::downgrade(&session);
+        std::thread::Builder::new()
+            .name("sierra-brackets".into())
+            .spawn(move || {
+                loop {
+                    let woken = match moves.recv_timeout(Duration::from_millis(200)) {
+                        Ok(()) => true,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    };
+                    while moves.try_recv().is_ok() {}
+                    let Some(session) = watched.upgrade() else { return };
+                    if session.ended.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if woken || session.keeper.waiting() {
+                        session.keep_brackets();
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(session)
     }
 
     fn open(&self) -> bool {
@@ -245,11 +277,23 @@ struct SierraSession {
     spelled: Mutex<Spelled>,
     /// The server's symbols that name no dated contract, said once each.
     unread: Mutex<HashSet<String>>,
+    /// The entries whose exits the app places as they fill.
+    keeper: brackets::Keeper,
+    /// Signed out: the keeper stops.
+    ended: AtomicBool,
 }
 
 impl SierraSession {
     fn new(login: String, trading: dtc::Trading) -> SierraSession {
-        SierraSession { login, trading, folder: Folder::default(), spelled: Mutex::default(), unread: Mutex::default() }
+        SierraSession {
+            login,
+            trading,
+            folder: Folder::default(),
+            spelled: Mutex::default(),
+            unread: Mutex::default(),
+            keeper: brackets::Keeper::default(),
+            ended: AtomicBool::new(false),
+        }
     }
 
     /// The symbols the server names what is held and working by now:
@@ -451,6 +495,9 @@ impl Session for SierraSession {
             },
             history: true,
             snapshot: true,
+            // Placed by the app as the entry fills: see `brackets`.
+            brackets: true,
+            bracket_holder: Holder::App,
         }
     }
 
@@ -514,7 +561,17 @@ impl Session for SierraSession {
                     }
                 })
                 .collect(),
-            orders: book.orders.iter().map(order_of).collect(),
+            orders: book
+                .orders
+                .iter()
+                .map(|order| {
+                    let mut known = order_of(order);
+                    if let Some(asked) = self.keeper.asked_tag(order) {
+                        known.tag = Some(asked);
+                    }
+                    known
+                })
+                .collect(),
         }
     }
 
@@ -551,6 +608,12 @@ impl Session for SierraSession {
         self.trading.modify(basket, Some(price), None).map_err(failed)
     }
 
+    /// The entry alone; its exits go in as it fills, from the app: see
+    /// `brackets`.
+    fn place_bracket(&self, order: &OrderRequest, exits: &crate::trading::brackets::Exits) -> Result<String, Failure> {
+        self.place_held_bracket(order, exits)
+    }
+
     /// Never asked: [`Plan`] links Sierra Chart's orders as a pair.
     fn link(&self, _account: &str, _baskets: &[String]) -> Result<(), Failure> {
         Err(Failure::Refused("Sierra Chart links orders only as they are placed together".into()))
@@ -579,6 +642,7 @@ impl Session for SierraSession {
     }
 
     fn sign_out(&self) {
+        self.ended.store(true, Ordering::Release);
         self.trading.sign_out();
     }
 }
@@ -1370,5 +1434,318 @@ mod tests {
     fn a_server_that_is_not_there_is_no_session() {
         let unused = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         assert!(Sierra.sign_in(&login(unused), Box::new(|_| {})).is_err());
+    }
+
+    // Order templates on Sierra Chart: the app places the exits as the
+    // entry fills, and keeps them within the position. `dtc::fake` only.
+
+    use crate::trading::brackets::{ExitLeg, Exits};
+
+    /// Buy `qty` ES, `kind`, at `price` for a limit.
+    fn buy(qty: u32, kind: OrderKind, price: Option<f64>) -> OrderRequest {
+        OrderRequest {
+            account: "Sim1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Buy,
+            qty,
+            kind,
+            price,
+            tag: new_tag(),
+        }
+    }
+
+    /// Runner for two: a target 8 ticks off for one, 16 for the other, a
+    /// stop 6 ticks off for both.
+    fn runner() -> Exits {
+        Exits {
+            targets: vec![ExitLeg { qty: 1, ticks: 8 }, ExitLeg { qty: 1, ticks: 16 }],
+            stops: vec![ExitLeg { qty: 2, ticks: 6 }],
+        }
+    }
+
+    /// The exits the app placed working on the fake, as (kind, qty left,
+    /// price), targets first, then by price.
+    fn exits(fake: &dtc::fake::Fake) -> Vec<(dtc::OrderKind, u32, f64)> {
+        let mut exits: Vec<_> = fake
+            .working()
+            .into_iter()
+            .filter(|order| order.tag.starts_with(brackets::EXIT))
+            .map(|order| (order.kind, order.qty - order.filled, order.price1))
+            .collect();
+        exits.sort_by(|a, b| {
+            (a.0 != dtc::OrderKind::Limit)
+                .cmp(&(b.0 != dtc::OrderKind::Limit))
+                .then(a.2.total_cmp(&b.2))
+        });
+        exits
+    }
+
+    fn eventually(done: impl Fn() -> bool) -> bool {
+        for _ in 0..600 {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    fn signed_in(fake: &dtc::fake::Fake) -> Arc<dyn Session> {
+        let session = Sierra
+            .sign_in(&login(fake.port()), Box::new(|_| {}))
+            .expect("signed in");
+        session.refresh().expect("refreshed");
+        session
+    }
+
+    const TARGET: dtc::OrderKind = dtc::OrderKind::Limit;
+    const STOP: dtc::OrderKind = dtc::OrderKind::Stop;
+
+    /// Sierra Chart takes order templates, its exits held by the app.
+    /// Nothing goes in before the fill; on it, each target with its share
+    /// of the stop as one OCO pair, at their distance from the fill. A
+    /// target filled takes its share of the stop with it, on Sierra
+    /// Chart's side; the stop filled then takes the last target.
+    #[test]
+    fn a_template_s_exits_go_in_on_the_fill_and_a_target_or_stop_filled_takes_its_pair() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").start();
+        let session = signed_in(&fake);
+        let capabilities = session.capabilities();
+        assert!(capabilities.brackets);
+        assert_eq!(capabilities.bracket_holder, Holder::App);
+        let asked = buy(2, OrderKind::Market, None);
+        let entry = session.place_bracket(&asked, &runner()).expect("placed");
+        assert!(
+            fake.order(&entry)
+                .is_some_and(|order| order.tag.starts_with(brackets::ENTRY)),
+            "the exits ride in the entry's tag"
+        );
+        assert!(
+            until(session.as_ref(), |book| book
+                .orders
+                .iter()
+                .any(|order| order.basket_id == entry
+                    && order.tag.as_deref() == Some(asked.tag.as_str()))),
+            "the chart knows it by the tag it asked for"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(exits(&fake), [], "nothing before the fill");
+
+        fake.fill(&entry, 2, 7_600.0);
+        let placed = [
+            (TARGET, 1, 7_602.0),
+            (TARGET, 1, 7_604.0),
+            (STOP, 1, 7_598.5),
+            (STOP, 1, 7_598.5),
+        ];
+        assert!(eventually(|| exits(&fake) == placed), "{:?}", exits(&fake));
+        assert_eq!(
+            fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER).len(),
+            2,
+            "a pair for each target"
+        );
+
+        let first = fake
+            .working()
+            .into_iter()
+            .find(|order| order.tag.starts_with(brackets::EXIT) && order.price1 == 7_602.0)
+            .unwrap();
+        fake.fill(&first.server_id, 1, 7_602.0);
+        assert!(
+            eventually(|| exits(&fake) == [(TARGET, 1, 7_604.0), (STOP, 1, 7_598.5)]),
+            "{:?}",
+            exits(&fake)
+        );
+        let stop = fake
+            .working()
+            .into_iter()
+            .find(|order| order.kind == STOP)
+            .unwrap();
+        fake.fill(&stop.server_id, 1, 7_598.5);
+        assert!(
+            eventually(|| exits(&fake).is_empty()),
+            "the last target goes with the stop: {:?}",
+            exits(&fake)
+        );
+        assert!(until(session.as_ref(), |book| book
+            .positions
+            .iter()
+            .all(|held| held.net == 0)));
+        session.sign_out();
+    }
+
+    /// An entry filling in parts: each part gets its exits as it fills,
+    /// the template's legs in order, and the parts add up to the
+    /// template.
+    #[test]
+    fn a_part_filled_gets_its_exits_and_the_rest_theirs_as_it_fills() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").start();
+        let session = signed_in(&fake);
+        let entry = session
+            .place_bracket(&buy(2, OrderKind::Limit, Some(7_590.0)), &runner())
+            .expect("placed");
+        fake.fill(&entry, 1, 7_590.0);
+        assert!(
+            eventually(|| exits(&fake) == [(TARGET, 1, 7_592.0), (STOP, 1, 7_588.5)]),
+            "{:?}",
+            exits(&fake)
+        );
+        fake.fill(&entry, 1, 7_590.0);
+        let whole = [
+            (TARGET, 1, 7_592.0),
+            (TARGET, 1, 7_594.0),
+            (STOP, 1, 7_588.5),
+            (STOP, 1, 7_588.5),
+        ];
+        assert!(eventually(|| exits(&fake) == whole), "{:?}", exits(&fake));
+        session.sign_out();
+    }
+
+    /// An entry cancelled before it filled leaves nothing behind; one
+    /// cancelled after a part filled leaves that part's exits alone.
+    #[test]
+    fn a_cancelled_entry_gets_no_exits_or_only_those_of_what_filled() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").start();
+        let session = signed_in(&fake);
+        let entry = session
+            .place_bracket(&buy(2, OrderKind::Limit, Some(7_590.0)), &runner())
+            .expect("placed");
+        session.cancel("Sim1", &entry).expect("cancelled");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(exits(&fake), []);
+        assert_eq!(fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER).len(), 0);
+
+        let entry = session
+            .place_bracket(&buy(2, OrderKind::Limit, Some(7_580.0)), &runner())
+            .expect("placed");
+        fake.fill(&entry, 1, 7_580.0);
+        assert!(eventually(|| exits(&fake).len() == 2));
+        session.cancel("Sim1", &entry).expect("the rest cancelled");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            exits(&fake),
+            [(TARGET, 1, 7_582.0), (STOP, 1, 7_578.5)],
+            "the part filled keeps its exits, and no more"
+        );
+        session.sign_out();
+    }
+
+    /// The app closed and opened again: an entry it left working still
+    /// gets its exits when it fills, from its tag; exits it left working
+    /// over what is held now are cut back to it, once they have stood
+    /// so long enough not to be a fill heard before its position.
+    #[test]
+    fn a_restart_picks_up_a_working_entry_and_cuts_exits_left_over_the_position() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").start();
+        let session = signed_in(&fake);
+        let entry = session
+            .place_bracket(&buy(2, OrderKind::Limit, Some(7_590.0)), &runner())
+            .expect("placed");
+        session.sign_out();
+        drop(session);
+
+        let session = signed_in(&fake);
+        fake.fill(&entry, 2, 7_590.0);
+        let whole = [
+            (TARGET, 1, 7_592.0),
+            (TARGET, 1, 7_594.0),
+            (STOP, 1, 7_588.5),
+            (STOP, 1, 7_588.5),
+        ];
+        assert!(
+            eventually(|| exits(&fake) == whole),
+            "resumed from the tag: {:?}",
+            exits(&fake)
+        );
+        session.sign_out();
+        drop(session);
+
+        // Closed out by hand elsewhere to one contract while the app was
+        // closed: the exits for two are cut to one, newest first.
+        fake.set_position("Sim1", "ESZ26_FUT_CME", 1, 7_590.0);
+        let session = signed_in(&fake);
+        std::thread::sleep(brackets::SETTLE / 4);
+        assert_eq!(
+            exits(&fake).len(),
+            4,
+            "not before they have stood over it a while"
+        );
+        assert!(eventually(|| exits(&fake).len() == 2), "{:?}", exits(&fake));
+        let left = exits(&fake);
+        assert_eq!(
+            left.iter()
+                .filter(|exit| exit.0 == TARGET)
+                .map(|exit| exit.1)
+                .sum::<u32>(),
+            1
+        );
+        assert_eq!(
+            left.iter()
+                .filter(|exit| exit.0 == STOP)
+                .map(|exit| exit.1)
+                .sum::<u32>(),
+            1
+        );
+
+        // Flat: none of them is left to open a position.
+        fake.set_position("Sim1", "ESZ26_FUT_CME", 0, 0.0);
+        session.refresh().expect("refreshed");
+        assert!(eventually(|| exits(&fake).is_empty()), "{:?}", exits(&fake));
+        session.sign_out();
+    }
+
+    /// A fill's order update heard before its position update is not a
+    /// position smaller than the exits: they are left alone.
+    #[test]
+    fn exits_are_not_cut_for_a_position_update_on_its_way() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").start();
+        let session = signed_in(&fake);
+        let entry = session
+            .place_bracket(
+                &buy(1, OrderKind::Market, None),
+                &Exits::single(1, Some(8), Some(6)),
+            )
+            .expect("placed");
+        fake.hold_positions(true);
+        fake.fill(&entry, 1, 7_600.0);
+        assert!(eventually(|| exits(&fake).len() == 2), "{:?}", exits(&fake));
+        std::thread::sleep(brackets::SETTLE / 2);
+        fake.release_positions();
+        std::thread::sleep(brackets::SETTLE * 2);
+        assert_eq!(exits(&fake), [(TARGET, 1, 7_602.0), (STOP, 1, 7_598.5)]);
+        session.sign_out();
+    }
+
+    /// A server that takes no OCO: the exits go in one by one, and the app
+    /// cancels the stop once the target has closed the position.
+    #[test]
+    fn with_no_oco_the_app_cancels_the_exit_left_over() {
+        let fake = dtc::fake::Fake::builder()
+            .account("Sim1")
+            .oco_unsupported()
+            .start();
+        let session = signed_in(&fake);
+        let entry = session
+            .place_bracket(
+                &buy(1, OrderKind::Market, None),
+                &Exits::single(1, Some(8), Some(6)),
+            )
+            .expect("placed");
+        fake.fill(&entry, 1, 7_600.0);
+        assert!(eventually(|| exits(&fake).len() == 2), "{:?}", exits(&fake));
+        assert_eq!(fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER).len(), 0);
+        let target = fake
+            .working()
+            .into_iter()
+            .find(|order| order.kind == TARGET)
+            .unwrap();
+        fake.fill(&target.server_id, 1, 7_602.0);
+        assert!(
+            eventually(|| exits(&fake).is_empty()),
+            "the stop left over is cancelled: {:?}",
+            exits(&fake)
+        );
+        session.sign_out();
     }
 }

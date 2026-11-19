@@ -123,6 +123,13 @@ pub struct Capabilities {
     /// What is held and working now can be asked for, with
     /// [`Session::refresh`], rather than only heard of as it moves.
     pub snapshot: bool,
+    /// An entry can be placed with its exits as one bracket,
+    /// [`Session::place_bracket`]: what an order template needs.
+    pub brackets: bool,
+    /// Who keeps a bracket's exits: the trading service, whether or not
+    /// the app runs (Rithmic), or the app, which places them as the entry
+    /// fills and only while it runs (Sierra Chart). The chart says which.
+    pub bracket_holder: super::Holder,
 }
 
 /// What an order on an instrument is sent as: the contract trading now,

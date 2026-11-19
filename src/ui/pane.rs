@@ -31,6 +31,8 @@ pub struct LadderSource {
 }
 
 /// One chart filling the window, and the way back.
+use crate::trading::APP_HELD_WORDS;
+
 pub const MAXIMIZE: &str = "Maximize";
 pub const RESTORE: &str = "Restore";
 
@@ -270,16 +272,25 @@ pub struct ChartPane {
     /// taking no room, unless the chart has an account to trade on.
     pub size_menu: gtk::MenuButton,
     size_label: gtk::Label,
+    /// The order template the chart's orders go with: the bracket alone on
+    /// none, its name beside it once one is picked.
+    pub order_template_menu: gtk::MenuButton,
+    order_template_label: gtk::Label,
     /// "P&L" and the account's P&L for the day after it.
     pub day_part: gtk::Box,
     day_amount: gtk::Label,
-    /// The position held, signed, and its open P&L in brackets.
+    /// The position held, signed.
     pub position_part: gtk::Box,
     position_net: gtk::Label,
-    position_pnl: gtk::Label,
+    /// "Total:" and the position's open P&L after it.
+    pub total_part: gtk::Box,
+    total_amount: gtk::Label,
     /// The size somebody picked for this chart, and from which template;
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
+    /// The order template its orders are bracketed with, by number; none
+    /// until somebody picks one.
+    pub order_template: Cell<Option<u32>>,
     /// What this chart's orders go to when it is not what it charts, MES
     /// for a chart of ES; `None` trades what it charts. See
     /// [`ChartPane::traded`].
@@ -591,6 +602,22 @@ impl ChartPane {
         size_menu.set_child(Some(&size_line));
         size_menu.set_always_show_arrow(false);
         size_menu.set_visible(false);
+        // The bracket, quiet, and the template's name beside it in full
+        // once there is one: what the next order goes with.
+        let order_template_icon = gtk::Image::from_icon_name(crate::ui::bracket_icon());
+        order_template_icon.add_css_class("dim-label");
+        let order_template_label = gtk::Label::new(None);
+        order_template_label.set_visible(false);
+        let order_template_line = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        order_template_line.append(&order_template_icon);
+        order_template_line.append(&order_template_label);
+        let order_template_menu = gtk::MenuButton::new();
+        order_template_menu.add_css_class("flat");
+        order_template_menu.add_css_class("readout-symbol");
+        order_template_menu.set_valign(gtk::Align::Center);
+        order_template_menu.set_child(Some(&order_template_line));
+        order_template_menu.set_always_show_arrow(false);
+        order_template_menu.set_visible(false);
         // Read like the quantity: the word quiet, the money in the profit
         // or loss colour, or plain at nothing either way.
         let day_word = gtk::Label::new(Some("P&L"));
@@ -602,18 +629,26 @@ impl ChartPane {
         day_part.append(&day_word);
         day_part.append(&day_amount);
         day_part.set_visible(false);
-        // The size signed, "+3", in full; the money in brackets after it in
-        // the profit or loss colour, as the day's P&L is.
+        // The size signed, "+3", in full.
         let position_net = gtk::Label::new(None);
-        let position_pnl = gtk::Label::new(None);
         let position_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
         position_part.add_css_class("readout-symbol");
         position_part.set_valign(gtk::Align::Center);
         position_part.append(&position_net);
-        position_part.append(&position_pnl);
         position_part.set_visible(false);
+        // Its open P&L read as the day's is: the word quiet, the money in
+        // the profit or loss colour.
+        let total_word = gtk::Label::new(Some("Total:"));
+        total_word.add_css_class("dim-label");
+        let total_amount = gtk::Label::new(None);
+        let total_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        total_part.add_css_class("readout-symbol");
+        total_part.set_valign(gtk::Align::Center);
+        total_part.append(&total_word);
+        total_part.append(&total_amount);
+        total_part.set_visible(false);
         // A part's tooltip is not drawn over its own open menu.
-        for part in [&account_menu, &feed_menu, &size_menu] {
+        for part in [&account_menu, &feed_menu, &size_menu, &order_template_menu] {
             part.connect_active_notify(|part| {
                 let open = part.is_active();
                 part.set_has_tooltip(!open && part.tooltip_text().is_some());
@@ -624,6 +659,12 @@ impl ChartPane {
         for label in [&change_label, &template_label] {
             label.set_margin_start(8);
             label.set_margin_end(8);
+        }
+        // And the position and its total, which are as often beside each
+        // other as beside a button.
+        for part in [&position_part, &total_part] {
+            part.set_margin_start(4);
+            part.set_margin_end(4);
         }
         // As tall as the strip, so the symbol reads on the same line as the
         // resolutions. Alone it is shorter than the strip and sat above it.
@@ -853,12 +894,16 @@ impl ChartPane {
             sell_button,
             size_menu,
             size_label,
+            order_template_menu,
+            order_template_label,
             day_part,
             day_amount,
             position_part,
+            total_part,
+            total_amount,
             position_net,
-            position_pnl,
             trading_size: RefCell::new(None),
+            order_template: Cell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
             shows_fills: Cell::new(false),
@@ -1113,7 +1158,7 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 15] = [
+        let parts: [(Part, gtk::Widget); 17] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
@@ -1124,7 +1169,9 @@ impl ChartPane {
             (Part::DayPnl, self.day_part.clone().upcast()),
             (Part::Trade, self.trade_part.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
+            (Part::OrderTemplate, self.order_template_menu.clone().upcast()),
             (Part::Position, self.position_part.clone().upcast()),
+            (Part::Total, self.total_part.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
             (Part::Settings, self.gear.clone().upcast()),
             (Part::Maximize, self.expand.clone().upcast()),
@@ -1320,6 +1367,38 @@ impl ChartPane {
         }
     }
 
+    /// The order template the next order goes with: `None` hides the part,
+    /// `Some(None)` is the bracket alone, for none, and `Some(Some(..))`
+    /// its name and what it holds, for the tooltip. `app_held`: its exits
+    /// are placed by the app as the entry fills, which the tooltip says.
+    pub fn write_order_template(&self, template: Option<Option<(&str, &str)>>, app_held: bool) {
+        let visible = template.is_some();
+        if self.order_template_menu.is_visible() != visible {
+            self.order_template_menu.set_visible(visible);
+        }
+        let Some(template) = template else { return };
+        let name = template.map_or("", |(name, _)| name);
+        if self.order_template_label.text() != name {
+            self.order_template_label.set_text(name);
+        }
+        self.order_template_label.set_visible(template.is_some());
+        let tip = match template {
+            None => "Order template".to_string(),
+            Some((name, summary)) if app_held => format!("{name}: {summary}\n{APP_HELD_WORDS}"),
+            Some((name, summary)) => format!("{name}: {summary}"),
+        };
+        if self.order_template_menu.tooltip_text().as_deref() != Some(tip.as_str()) {
+            self.order_template_menu.set_tooltip_text(Some(&tip));
+        }
+    }
+
+    /// What the Order template part says, for the tests: `None` hidden,
+    /// an empty name for none.
+    #[cfg(test)]
+    pub fn order_template_text(&self) -> Option<String> {
+        self.order_template_menu.get_visible().then(|| self.order_template_label.text().to_string())
+    }
+
     /// The account's P&L for the day, already written as money, and whether
     /// it is up or down; nothing at all, and no room taken, without an
     /// account or while its trading service has not said.
@@ -1337,35 +1416,38 @@ impl ChartPane {
     /// The position held, its size signed and its open P&L already written
     /// with whether it is up or down, the P&L `None` until the trading service
     /// has said it; nothing at all, and no room taken, with nothing held.
+    /// The size is the Current position part, the P&L the Total part.
     pub fn write_position(&self, held: Option<(i32, Option<(&str, std::cmp::Ordering)>)>) {
         if self.position_part.get_visible() != held.is_some() {
             self.position_part.set_visible(held.is_some());
         }
-        let Some((net, pnl)) = held else { return };
+        let pnl = held.and_then(|(_, pnl)| pnl);
+        if self.total_part.get_visible() != pnl.is_some() {
+            self.total_part.set_visible(pnl.is_some());
+        }
+        let Some((net, _)) = held else { return };
         let net = crate::trading::net_text(net);
         if self.position_net.text() != net {
             self.position_net.set_text(&net);
         }
-        let text = pnl.map(|(text, _)| format!("({text})")).unwrap_or_default();
-        if self.position_pnl.text() != text {
-            self.position_pnl.set_text(&text);
+        let Some((text, sign)) = pnl else { return };
+        if self.total_amount.text() != text {
+            self.total_amount.set_text(text);
         }
-        if self.position_pnl.get_visible() != pnl.is_some() {
-            self.position_pnl.set_visible(pnl.is_some());
-        }
-        signed_colour(&self.position_pnl, pnl.map_or(std::cmp::Ordering::Equal, |(_, sign)| sign));
+        signed_colour(&self.total_amount, sign);
     }
 
-    /// What the Current position part says and the colour of its P&L, for
-    /// the tests.
+    /// What the Current position and Total parts say, one after the other,
+    /// and the colour of the total, for the tests.
     #[cfg(test)]
     pub fn position_text(&self) -> Option<(String, Option<&'static str>)> {
         self.position_part.get_visible().then(|| {
-            let class = ["pnl-gain", "pnl-loss"].into_iter().find(|class| self.position_pnl.has_css_class(class));
             let mut words = self.position_net.text().to_string();
-            if self.position_pnl.get_visible() {
-                words.push(' ');
-                words.push_str(&self.position_pnl.text());
+            let mut class = None;
+            if self.total_part.get_visible() {
+                class = ["pnl-gain", "pnl-loss"].into_iter().find(|class| self.total_amount.has_css_class(class));
+                words.push_str(" Total: ");
+                words.push_str(&self.total_amount.text());
             }
             (words, class)
         })
@@ -2337,7 +2419,9 @@ mod tests {
                     pane.day_part.clone().upcast(),
                     pane.trade_part.clone().upcast(),
                     pane.size_menu.clone().upcast(),
+                    pane.order_template_menu.clone().upcast(),
                     pane.position_part.clone().upcast(),
+                    pane.total_part.clone().upcast(),
                     pane.gear.clone().upcast(),
                     pane.expand.clone().upcast(),
                     pane.link.clone().upcast()
@@ -2354,9 +2438,9 @@ mod tests {
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
             header(Header::standard().left, Header::standard().right);
-            // The account, the P&L, Buy and Sell and the quantity, then the
-            // three controls.
-            assert_eq!(corner(&pane).len(), 8);
+            // The account, the P&L, Buy and Sell, the quantity, the order
+            // template, the position and its total, then the three controls.
+            assert_eq!(corner(&pane).len(), 10);
         });
     }
 

@@ -456,6 +456,11 @@ const ORDER_FLAGS: &[Flag] = &[
     Flag::valued("limit", "PRICE", "a limit order at this price, rather than at the market"),
     Flag::valued("stop", "PRICE", "a stop order at this price, rather than at the market"),
     Flag::valued("quantity", "N", "how many contracts or shares, any whole number above 0 (default: what the chart's Qty shows)"),
+    Flag::valued(
+        "template",
+        "TEMPLATE",
+        "the order template it is bracketed with, by name or id:N, or `none` (default: the chart's)",
+    ),
 ];
 
 pub const CHART_SELECTOR: &str =
@@ -1214,6 +1219,11 @@ pub const SURFACE: &[Noun] = &[
                     ),
                     Flag::valued("quantity", "N", "what its orders are for: one of the quantities its Qty offers"),
                     Flag::valued(
+                        "order-template",
+                        "TEMPLATE",
+                        "the order template its orders are bracketed with, by name or id:N, or `none`",
+                    ),
+                    Flag::valued(
                         "trading-symbol",
                         "SYMBOL",
                         "trade this instead of what it charts, MES on an ES chart, or `none`",
@@ -1727,6 +1737,19 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
+                name: "bracket",
+                about: "Give a working limit or stop entry an order template's exits, or take them off: it is cancelled and placed again as one bracket",
+                args: &[Arg::req("ORDER", "the order's id, from `trading orders`")],
+                flags: &[
+                    Flag::valued("template", "TEMPLATE", "the order template, by name or id:N, or `none` for no exits"),
+                    Flag::valued("account", "ACCOUNT", "the order's account, when two accounts have an order of that id"),
+                ],
+                example: "omacharts trading bracket 17 --template none",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
                 name: "flatten",
                 about: "Close a position at the market: what a chart trades, its orders cancelled too, or a contract named",
                 args: &[Arg::opt("CONTRACT", "a contract held, such as ESZ6, as `trading positions` names it")],
@@ -1753,6 +1776,34 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("symbols", "SYMBOLS", "only these roots or tickers, with set, such as MES,ES; \"\" for all"),
                 ],
                 example: "omacharts trading quantities set Micros 1,2,5,10 --symbols MES,MNQ",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "templates",
+                about: "The order templates a chart brackets its orders with: list them, or set, remove or reorder one",
+                args: &[
+                    Arg::opt("ACTION", "what to do (default: list)").of(&["list", "set", "remove", "move"]),
+                    Arg::opt("NAME", "the template, by name or id:N, for set, remove and move"),
+                    Arg::opt("POSITION", "for move: where it goes, from 1, which is its Ctrl+Shift digit"),
+                ],
+                flags: &[
+                    Flag::valued(
+                        "target",
+                        "EXIT",
+                        "for set, a target: 8t, $250 (the whole trade's P&L there) or 2r (in multiples of the Value of 1R), then @2 contracts, a share of the position, @1/2 or @33%, or @rest; without, 1 contract, the last the rest. Once per target, or `none`",
+                    )
+                    .repeating(),
+                    Flag::valued(
+                        "stop",
+                        "EXIT",
+                        "for set, a stop: 8t, $250 (the whole trade's loss there) or 1r (in multiples of the Value of 1R: 0.5r risks half of it), then @2, @1/2 or @rest as for a target. Once per stop, or `none`",
+                    )
+                    .repeating(),
+                    Flag::valued("rename", "NAME", "for set, a new name"),
+                ],
+                example: "omacharts trading templates set Scalp --target 1r@1/2 --target 2r --stop 1r",
                 json: true,
                 writes: false,
                 workspace: false,
@@ -2091,6 +2142,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("source", "chart set", "--feed"),
     ("account", "chart set", "--account"),
     ("trading_size", "chart set", "--quantity"),
+    ("order_template", "chart set", "--order-template"),
     ("trading_symbol", "chart set", "--trading-symbol"),
     ("trading_suffix", "chart set", "--trading-symbol"),
     ("shows_fills", "chart set", "--show-fills"),

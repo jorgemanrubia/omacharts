@@ -111,6 +111,7 @@ impl Window {
     pub fn adopt_trading_settings(self: &Rc<Self>) {
         self.adopt_trading();
         self.adopt_sizes();
+        self.adopt_order_templates();
         self.adopt_order_labels();
         self.desk.tell();
     }
@@ -119,13 +120,28 @@ impl Window {
     /// as the command's failure.
     pub fn trade_command(self: &Rc<Self>, act: Act) -> Result<Said, Fault> {
         match act {
-            Act::Order { chart, side, kind, price, quantity, exits } => {
+            Act::Order { chart, side, kind, price, quantity, bracket } => {
                 let pane = self.chart_to_trade(chart)?;
                 // Any quantity, not only those the chart's Qty offers.
                 let size = quantity.and_then(trading::Quantity::new);
                 self.heard_doing(|| {
-                    self.order_with_exits(&pane, side, kind, None, price, size, exits)
+                    self.order_with_exits(&pane, side, kind, None, price, size, bracket)
                 })
+            }
+            Act::Bracket { basket, account, bracket } => {
+                let order = self.working_order(&basket, account.as_deref())?;
+                let pane = self.chart_trading(&order.account, &order.contract).ok_or_else(|| {
+                    Fault::refused(format!(
+                        "Not changed · no chart trades {} on {}: open one to bracket it from",
+                        order.contract,
+                        self.account_label(&order.account)
+                    ))
+                })?;
+                let template = match bracket {
+                    crate::cli::trading::Bracket::Template(template) => template,
+                    _ => return Err(Fault::usage("say which template, or none".into())),
+                };
+                self.heard_doing(|| self.template_on_order(&pane, &basket, template))
             }
             Act::Exit { chart, target, stop } => {
                 let pane = self.chart_to_trade(chart)?;

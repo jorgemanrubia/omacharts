@@ -431,6 +431,8 @@ impl Session for RithmicSession {
             link: Linking::AfterTheFact,
             history: true,
             snapshot: true,
+            brackets: true,
+            bracket_holder: Holder::TradingService,
         }
     }
 
@@ -549,14 +551,14 @@ impl Session for RithmicSession {
     }
 
     /// Rithmic's own bracket order: the exits are its to put in as the
-    /// entry fills, linked.
+    /// entry fills, linked, each sized as the bracket says.
     fn place_bracket(
         &self,
         order: &OrderRequest,
         exits: &crate::trading::brackets::Exits,
     ) -> Result<String, Failure> {
         self.trading
-            .place_bracket(&rithmic_order(order), exits.target, exits.stop)
+            .place_bracket(&rithmic_order(order), &legs(&exits.targets), &legs(&exits.stops))
             .map_err(failed)
     }
 
@@ -613,6 +615,11 @@ fn rithmic_order(order: &OrderRequest) -> rithmic::Order {
         price: order.price,
         tag: order.tag.clone(),
     }
+}
+
+/// A bracket's exits as Rithmic takes them: `(quantity, ticks)` each.
+fn legs(legs: &[crate::trading::brackets::ExitLeg]) -> Vec<(u32, u32)> {
+    legs.iter().map(|leg| (leg.qty, leg.ticks)).collect()
 }
 
 #[cfg(test)]

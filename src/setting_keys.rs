@@ -85,9 +85,11 @@ const SHARED: &[&str] = &[
     "indicators",
     "providers",
     "default_account",
-    // The lists of trading sizes a chart picks from: a trader's choice, the
+    // The lists of trading sizes a chart picks from, and the order templates
+    // it brackets its orders with: a trader's choice, the
     // same on every machine they trade from.
     "trading_size_templates",
+    "trading_order_templates",
     // Which side of a chart the orders' labels sit at: how somebody reads
     // their charts, wherever they trade from.
     "order_labels",
@@ -114,6 +116,7 @@ const SHARED: &[&str] = &[
     "chart_header",
     "chart_header_center",
     "chart_header_right",
+    "chart_header_known",
     "chartbook_templates",
     "chart_time_zone",
     "time_format",
@@ -157,6 +160,7 @@ mod tests {
         assert_eq!(kind("chart_header"), Kind::Shared);
         assert_eq!(kind("chart_header_center"), Kind::Shared);
         assert_eq!(kind("chart_header_right"), Kind::Shared);
+        assert_eq!(kind("chart_header_known"), Kind::Shared);
         assert_eq!(kind("chartbook_templates"), Kind::Shared);
         assert_eq!(kind("feature.sierra"), Kind::Local);
         assert_eq!(kind("agent_model.claude"), Kind::Shared);

@@ -86,6 +86,9 @@ pub const BINDINGS: &[Binding] = &[
     global("win.trading-accounts", &["<Ctrl><Shift>a"]),
     global("win.trading-positions", &["<Ctrl><Shift>p"]),
     global("win.trading-orders", &["<Ctrl><Shift>o"]),
+    // A new order with every choice in front of you, E for entry: N is the
+    // rail's new watchlist and O the orders tab already.
+    global("win.order-entry", &["<Ctrl><Shift>e"]),
     // Alt with a letter is the drawing tools' register: a line and a
     // rectangle. Resetting the view used to be Alt+R and gave the key up:
     // a tool is reached for many times an hour and a reset once. Escape
@@ -385,6 +388,7 @@ mod tests {
                 ("<Ctrl><Shift>a", "win.trading-accounts", Key::A),
                 ("<Ctrl><Shift>p", "win.trading-positions", Key::P),
                 ("<Ctrl><Shift>o", "win.trading-orders", Key::O),
+                ("<Ctrl><Shift>e", "win.order-entry", Key::E),
             ] {
                 let actions = app.actions_for_accel(accel);
                 assert!(actions.iter().any(|a| a == action), "{accel} reaches {actions:?}, not {action}");
