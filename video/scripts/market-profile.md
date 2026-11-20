@@ -1,9 +1,10 @@
 ---
 title: Market profile
-stage: script
+stage: render
 length: 225s
 theme: tokyo-night
 voice: narrator
+music_file: video/out/market-profile/music/candidate-3-seed1074.flac
 music: ambient electronic, soft analog pads and a gentle plucked arpeggio over a light, even pulse that steps like the half hours a profile counts, a note added at a time as the letters stack; curious and a little playful in the colour-cycling opening, unhurried and clear through the reading of real sessions, warmer and fuller once the market and volume profiles meet back to back, resolving bright and calm for the close
 ---
 
