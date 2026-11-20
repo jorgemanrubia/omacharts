@@ -160,8 +160,32 @@ pub fn colour_row(title: &str, picker: &impl IsA<gtk::Widget>, transparency: Opt
         row.add_suffix(&transparency.slider);
         row.add_suffix(&transparency.entry);
         bare_figure(&transparency.slider, &transparency.entry);
+        whole_words(&row, title);
     }
     row
+}
+
+/// A name of one word is never broken inside it: beside the slider, the
+/// title's column is narrow enough that "Background" came out hyphenated.
+/// A name of several words still wraps between them.
+fn whole_words(row: &adw::ActionRow, title: &str) {
+    if title.contains(' ') {
+        return;
+    }
+    let mut stack = vec![row.clone().upcast::<gtk::Widget>()];
+    while let Some(widget) = stack.pop() {
+        if let Some(label) = widget.downcast_ref::<gtk::Label>()
+            && label.has_css_class("title")
+        {
+            label.set_wrap(false);
+            return;
+        }
+        let mut next = widget.first_child();
+        while let Some(child) = next {
+            next = child.next_sibling();
+            stack.push(child);
+        }
+    }
 }
 
 /// The colour row's figure without its − and +: the row holds a swatch and

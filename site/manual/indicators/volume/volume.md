@@ -57,7 +57,7 @@ crop: 700,84,1160,1276
 
 <!-- regenerate:
 as above, with the Colouring row closed
-crop: 762,640,1036,518 (the Colours group)
+crop: the Colours group, from its title to the Down row
 -->
 {% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring, then Up and Down, each with its Opacity slider at 85%" caption="Up and Down, each with its opacity, under the strip's Colouring." %}
 

@@ -190,8 +190,8 @@ second line's, `--band-transparency` a band's edges, and
 (`--opacity` is both, the other way up). `default` hands one back.
 
 ```
-omacharts chart indicator set sma --transparency 0.5
-omacharts chart indicator set volume --down-transparency 0.4
+omacharts chart indicator add sma --period 50 --transparency 0.5
+omacharts chart indicator add volume --down-transparency 0.4
 ```
 
 **Shade the sessions.** Session Times is one indicator holding ranges, each
