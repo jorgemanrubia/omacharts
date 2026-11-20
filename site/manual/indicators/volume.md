@@ -18,4 +18,4 @@ The volume indicators show how much traded: bar by bar, at each price, and by wh
 ## See also
 
 - [Indicators](/manual/indicators/)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Volume from the CLI](/manual/cli/indicators/volume/)

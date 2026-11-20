@@ -109,5 +109,5 @@ A feed that streams, such as thinkorswim, charts no formulas. Each of its symbol
 
 ## See also
 
-- [Searching symbols from the CLI](/manual/cli/#symbols)
+- [Searching symbols from the CLI](/manual/cli/symbols/)
 - [Opening the app on a symbol](/manual/cli/#launching-the-app)

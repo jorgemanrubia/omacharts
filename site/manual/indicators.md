@@ -272,4 +272,4 @@ A period needs at least five bars at the chart's resolution. One with fewer uses
 - [Volume](/manual/indicators/volume/)
 - [Momentum and volatility](/manual/indicators/momentum-and-volatility/)
 - [Session times](/manual/indicators/session-times/)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Indicators from the CLI](/manual/cli/indicators/)

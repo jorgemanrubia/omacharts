@@ -1467,7 +1467,7 @@ Provider, which is the same four facts with a button.
 
 Trading is experimental. The `trading` group does what the Trading panel and
 a chart's Account part do, and the reference is [the CLI page of the
-manual](../site/manual/cli.md#trading). Three things shape it.
+manual](../site/manual/cli/trading.md). Three things shape it.
 
 Orders go through the window. The sessions are signed in there, so `buy`,
 `sell`, `exit`, `modify`, `cancel` and `flatten` exit `6` with no window

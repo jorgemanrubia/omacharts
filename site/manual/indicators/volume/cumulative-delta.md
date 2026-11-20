@@ -57,4 +57,4 @@ The estimate uses the chart's own bars, so it is coarser on a coarser chart. Whi
 
 - [Volume](/manual/indicators/volume/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Volume from the CLI](/manual/cli/indicators/volume/)

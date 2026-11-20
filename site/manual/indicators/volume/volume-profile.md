@@ -25,6 +25,26 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/indicators/volume-profile.jpg" alt="SPY 5m with a volume profile at the start of each session" caption="SPY 5m with a session volume profile." %}
 
+## Alone or beside a market profile
+
+A volume profile can be shown on its own or next to a [market profile](/manual/indicators/volume/market-profile/), which is a study of its own too. With a market profile of the same **Reset every** on the chart, each session's two are drawn inside it, each from its own **Alignment**: side by side when they are set alike, back to back when one is Left and the other Right. They merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With different periods, each one keeps to itself.
+
+From the [CLI](/manual/cli/indicators/volume/volume-profile/):
+
+```
+# A volume profile on its own
+omacharts chart indicator add volume_profile --anchor session
+
+# Beside a market profile, both per session: each session's two side by side
+omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
+omacharts chart indicator add market_profile --anchor session --profile-width 0.4
+
+# Merge a session into the one before it, and split it again; a pair does both
+omacharts chart profile merge --at 2026-11-18
+omacharts chart profile split --at 2026-11-18
+```
+
+
 ## Settings
 
 The settings are in four groups, in the order below. A switch's rows show while it is on. A [market profile](/manual/indicators/volume/market-profile/#settings) has the same groups, with the same names in the same places.
@@ -74,23 +94,6 @@ A colour and its opacity share one row: the colour's name, the swatch, then **Op
 
 Several profiles aligned to the same edge sit side by side, in the order the legend lists them, each as wide as its **Width %** says, and squeezed alike when they would not fit. A market profile among them sits beyond the volume profiles.
 
-A volume profile can be shown on its own or next to a [market profile](/manual/indicators/volume/market-profile/), which is a study of its own too. With a market profile of the same **Reset every** on the chart, each session's two are drawn inside it, each from its own **Alignment**: side by side when they are set alike, back to back when one is Left and the other Right. They merge and split together ([Beside a volume profile](/manual/indicators/volume/market-profile/#beside-a-volume-profile)). With different periods, each one keeps to itself.
-
-```
-# A volume profile on its own
-omacharts chart indicator add volume_profile --anchor session
-
-# Beside a volume profile, both per session: each session's two side by side
-omacharts chart indicator add volume_profile --anchor session --profile-width 0.3
-omacharts chart indicator add market_profile --anchor session --profile-width 0.4
-
-# Merge a session into the one before it, and split it again; a pair does both
-omacharts chart profile merge --at 2026-11-18
-omacharts chart profile split --at 2026-11-18
-```
-
-
-
 ## Ask volume - bid volume
 
 Each row is what was bought at the ask less what was sold at the bid at its prices: rows where buyers took more reach out in the up colour of its **Colouring**, rows where sellers took more in the down colour. The point of control is the row furthest either way, and there is no value area. The legend reads **VP Δ**.
@@ -123,4 +126,4 @@ A composite belongs to the chart it was made on, to the symbol it is showing and
 
 - [Volume](/manual/indicators/volume/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [The Volume Profile from the CLI](/manual/cli/indicators/volume/volume-profile/)

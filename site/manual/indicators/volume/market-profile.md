@@ -33,7 +33,7 @@ A market profile is a study of its own. It needs no volume profile, and on its o
 
 It can also be shown next to volume profiles. When a volume profile study with the same **Reset every** is on the chart, each session's two are drawn inside it, each from its own **Alignment**, and merge and split together ([Beside a volume profile](#beside-a-volume-profile)). With different periods, each one keeps to itself.
 
-From the [CLI](/manual/cli/#volume-and-market-profiles):
+From the [CLI](/manual/cli/indicators/volume/market-profile/):
 
 ```
 # On its own
@@ -175,3 +175,9 @@ capture: bin/headless-window cli chart screenshot --output /tmp/expanded.png; ma
 crop: none
 -->
 {% include figure.html src="/assets/manual/indicators/market-profile-expanded.jpg" alt="SPY 5m with an earlier session and the forming session expanded, their TPOs laid out over their bars, the forming session's volume profile past the last bar" caption="An earlier session expanded, and the forming one kept expanded with Expand last profile." %}
+
+## See also
+
+- [Volume](/manual/indicators/volume/)
+- [Adding an indicator](/manual/indicators/#adding-an-indicator)
+- [The Market Profile from the CLI](/manual/cli/indicators/volume/market-profile/)

@@ -89,4 +89,4 @@ Restoring puts the arrangement back as it was. <kbd>Alt</kbd> + an arrow still m
 
 ## See also
 
-- [Arranging charts from the CLI](/manual/cli/#arranging-charts)
+- [Arranging charts from the CLI](/manual/cli/arranging-charts/)

@@ -43,4 +43,4 @@ Moving the fast length up to the slow one pushes the slow one along, and the oth
 
 - [Momentum and volatility](/manual/indicators/momentum-and-volatility/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Momentum and volatility from the CLI](/manual/cli/indicators/momentum-and-volatility/)

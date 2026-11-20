@@ -392,7 +392,7 @@ To choose one yourself, <kbd>Tab</kbd> to it. Only a resolution that can show th
 
 The chart keeps the window until you zoom or pan. A new symbol, new bars and a resized window are laid across the same days, so the year to date stays the year to date on any symbol. While it holds, its name shows in the corner under the price axis, such as **YTD**. It is not saved with the chartbook.
 
-`omacharts chart range ytd` does the same from a terminal ([`chart range`](/manual/cli/#chart-range)).
+`omacharts chart range ytd` does the same from a terminal ([`chart range`](/manual/cli/charts/#chart-range)).
 
 ## Gridlines
 
@@ -491,7 +491,7 @@ There are five ways to edit it:
 - **<kbd>F2</kbd>**, with no drawing selected. It edits the chart title in the header, or opens the **Chart title** dialog when the header leaves the chart title out or has no room for it. With a drawing selected, <kbd>F2</kbd> puts the caret in the drawing's text instead ([Drawings](/manual/drawings/)).
 - **Edit chart title…** in the [chart menu](#the-chart-menu), which opens the **Chart title** dialog. **Save** keeps what is typed, blank included, and **Cancel** changes nothing.
 - The **Title** row at the top of [Chart settings](/manual/chart-settings/), which changes it as it is typed.
-- `chart set --title`, and `--title ""` to remove it ([Changing charts from the CLI](/manual/cli/#charts)).
+- `chart set --title`, and `--title ""` to remove it ([Changing charts from the CLI](/manual/cli/charts/)).
 
 <!-- regenerate:
 theme: tokyo-night
@@ -561,4 +561,4 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 
 ## See also
 
-- [Changing charts from the CLI](/manual/cli/#charts)
+- [Changing charts from the CLI](/manual/cli/charts/)

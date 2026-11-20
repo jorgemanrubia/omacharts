@@ -105,7 +105,7 @@ crop: 2800x640+0+1040
 
 ## From the CLI
 
-`omacharts trading accounts`, `positions` and `orders --all` print the same tables, and `--json` gives them as fields. `trading flatten ESZ6` and `trading cancel --all` do what the buttons do ([The CLI › Trading](/manual/cli/#trading)).
+`omacharts trading accounts`, `positions` and `orders --all` print the same tables, and `--json` gives them as fields. `trading flatten ESZ6` and `trading cancel --all` do what the buttons do ([The CLI › Trading](/manual/cli/trading/)).
 
 ## See also
 

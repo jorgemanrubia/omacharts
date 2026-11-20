@@ -151,4 +151,4 @@ The Omarchy plugin takes its colours from the desktop theme, even when the windo
 
 ## See also
 
-- [The `theme` setting in the CLI](/manual/cli/#settings)
+- [The `theme` setting in the CLI](/manual/cli/preferences/#settings)

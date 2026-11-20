@@ -117,4 +117,4 @@ Preferences › Charts › Defaults › Indicators › **Template** is the templ
 
 ## See also
 
-- [Chart templates from the CLI](/manual/cli/#chart-templates)
+- [Chart templates from the CLI](/manual/cli/chart-templates/)

@@ -123,4 +123,4 @@ in the others.
 
 ## See also
 
-- [Chartbook templates from the CLI](/manual/cli/#chartbook-templates)
+- [Chartbook templates from the CLI](/manual/cli/chartbook-templates/)

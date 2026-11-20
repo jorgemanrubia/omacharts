@@ -66,4 +66,4 @@ crop: 762,640,1036,518 (the Colours group)
 
 - [Volume](/manual/indicators/volume/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Volume from the CLI](/manual/cli/indicators/volume/)

@@ -143,4 +143,4 @@ its place. The last chartbook can't be removed.
 
 ## See also
 
-- [Managing chartbooks with the CLI](/manual/cli/#chartbooks)
+- [Managing chartbooks with the CLI](/manual/cli/chartbooks/)

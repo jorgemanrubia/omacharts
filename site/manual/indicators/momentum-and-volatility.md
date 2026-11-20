@@ -18,4 +18,4 @@ Momentum and volatility indicators each have a [strip](/manual/indicators/#overl
 ## See also
 
 - [Indicators](/manual/indicators/)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Momentum and volatility from the CLI](/manual/cli/indicators/momentum-and-volatility/)

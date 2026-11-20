@@ -159,7 +159,7 @@ The first four act on the focused chart, and never while you are typing in a box
 
 ## From the CLI
 
-`omacharts trading buy`, `sell`, `exit`, `modify`, `cancel` and `flatten` act as the chart does, through the same checks. `chart set --account`, `--quantity`, `--trading-symbol`, `--order-template` and `--show-fills` set a chart's trading, `trading quantities` the quantities, `trading templates` the order templates, and `trading bracket` gives a working order one ([The CLI › Trading](/manual/cli/#trading)).
+`omacharts trading buy`, `sell`, `exit`, `modify`, `cancel` and `flatten` act as the chart does, through the same checks. `chart set --account`, `--quantity`, `--trading-symbol`, `--order-template` and `--show-fills` set a chart's trading, `trading quantities` the quantities, `trading templates` the order templates, and `trading bracket` gives a working order one ([The CLI › Trading](/manual/cli/trading/)).
 
 ## See also
 

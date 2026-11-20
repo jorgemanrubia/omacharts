@@ -44,4 +44,4 @@ Two tabs: **General** for the circle itself and **Text** for a label in it. <kbd
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings)
+- [Circle from the CLI](/manual/cli/drawings/circle/)

@@ -72,7 +72,7 @@ The **Time** group on the **Other** tab sets the clock every chart reads. A chan
 | **Time zone** | **Each chart's exchange**, or a city, each listed with its offset from UTC today, such as **London (UTC+1)** | New York |
 | **Time format** | **24-hour (15:30)**, **12-hour (3:30 PM)** | The desktop's clock format |
 
-**Each chart's exchange** puts each chart in its own exchange's clock: ES in Chicago time, a Madrid listing in Madrid time, crypto in UTC. The crosshair's time then ends with the zone, such as **21 Oct 2026 07:30 CT**, so two linked charts that disagree about the time say why. Any other time zone, by its IANA name such as `Asia/Kolkata`, can be set from the CLI ([Settings](/manual/cli/#settings)); the row then lists it too.
+**Each chart's exchange** puts each chart in its own exchange's clock: ES in Chicago time, a Madrid listing in Madrid time, crypto in UTC. The crosshair's time then ends with the zone, such as **21 Oct 2026 07:30 CT**, so two linked charts that disagree about the time say why. Any other time zone, by its IANA name such as `Asia/Kolkata`, can be set from the CLI ([Settings](/manual/cli/preferences/#settings)); the row then lists it too.
 
 Daily and longer bars are dates and read the same in every time zone.
 
@@ -127,4 +127,4 @@ The screenshot folder, the **Keep at most** limit, **Update automatically** and 
 
 ## See also
 
-- [Settings from the CLI](/manual/cli/#preferences)
+- [Settings from the CLI](/manual/cli/preferences/)

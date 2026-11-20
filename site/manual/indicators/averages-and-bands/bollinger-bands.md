@@ -40,4 +40,4 @@ The legend includes the multiple, as in **BB 20 2** and **BB 20 2.5**.
 
 - [Averages and bands](/manual/indicators/averages-and-bands/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Averages and bands from the CLI](/manual/cli/indicators/averages-and-bands/)

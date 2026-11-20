@@ -84,4 +84,4 @@ What counts is how far the bar sits from the bars around it, so a real crash day
 
 ## See also
 
-- [Feeds and signing in from the CLI](/manual/cli/#market-data)
+- [Feeds and signing in from the CLI](/manual/cli/market-data/)

@@ -28,4 +28,4 @@ All three are part of the configuration, so changing one gives the text a **Cust
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings)
+- [Text from the CLI](/manual/cli/drawings/text/)
