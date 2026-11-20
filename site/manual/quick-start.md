@@ -104,7 +104,8 @@ state:
   type rsi
   key Return
 capture: bin/headless-window shot add-rsi.png
-crop: 720,100,1120,1240
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
 {% include figure.html src="/assets/manual/quick-start/add-rsi.png" alt="The RSI dialog with its Parameters and Line sections and the Cancel and Add buttons" caption="The RSI dialog." %}
 

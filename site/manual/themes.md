@@ -136,9 +136,10 @@ state:
   click 849 315          # its Colour swatch
   move 1270 790
 capture: bin/headless-window shot /tmp/picker.png
-crop: 751,500,1206,600   (the Line group and the palette, 16px layout margin round both)
+crop: the Line group and the palette, 16px round both
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row: nine colours in three rows, Neutral last, the colour in use ringed and Custom… below" caption="The palette picker." %}
+{% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row, beside its Opacity slider: Default on top, nine colours in three rows, Neutral last, the colour in use ringed and Custom… below" caption="The palette picker." %}
 
 | Choice | When the theme changes |
 |---|---|

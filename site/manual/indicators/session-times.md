@@ -99,9 +99,10 @@ state:
   click 380 334            # the Sessions · ETH, London row
   move 795 1050
 capture: bin/headless-window shot /tmp/session-times.png
-crop: 223,150,1152,1902   (the whole dialog, 16px margin)
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/indicators/session-times-settings.png" alt="The settings of Session Times with an ETH group describing the CME's day, a London group with its hours and time zone, Add a range, and the Legend switch off" caption="Session Times with ETH and London." %}
+{% include figure.html src="/assets/manual/indicators/session-times-settings.png" alt="The settings of Session Times with an ETH group describing the CME's day, a London group with its hours and time zone, each with a Colour and its Opacity, Add a range, and the Legend switch off" caption="Session Times with ETH and London." %}
 
 Each range is a group, titled with its name, with a bin in its header that removes it. The ETH and RTH groups say what they shade on this chart, such as **as Chicago Mercantile Exchange keeps them: trading 18:00–17:00, regular 09:30–16:00, New York time**, or why there is nothing to shade.
 

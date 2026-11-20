@@ -39,9 +39,10 @@ state:
   key alt+Return
   move 1275 795
 capture: bin/headless-window shot /tmp/props.png
-crop: 840,220,880,1160
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/drawings/properties-general.png" alt="The General tab of a box's properties, with a picture of the box tagged 6 across the top" caption="A box's **General** tab." %}
+{% include figure.html src="/assets/manual/drawings/properties-general.png" alt="The General tab of a box's properties, with a picture of the box tagged 1 across the top, then Background and Border colour each with its Opacity" caption="A box's **General** tab." %}
 
 ### Text
 

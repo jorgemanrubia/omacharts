@@ -51,9 +51,10 @@ state:
   (one NVDA 1D chart on the Default template, sidebar hidden)
   key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume); click 800 383 (the Colouring row)
 capture: bin/headless-window shot /tmp/volume-colouring.png
-crop: 700,84,1160,1276
+crop: the dialog, 16px round it and the open list
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open: Same as the chart, Vivid, Soft, Quiet, Monochrome" caption="A volume strip's own Colouring." %}
+{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open on Default, Vivid, Soft and Quiet, over the Up and Down rows with their Opacity" caption="A volume strip's own Colouring." %}
 
 <!-- regenerate:
 as above, with the Colouring row closed

@@ -65,10 +65,11 @@ state:
   click 1088 189   (the later retracement's 50% level)
   key alt+Return
   scroll 824 500 6
-capture: bin/headless-window shot /tmp/fibprops.png; magick /tmp/fibprops.png -crop 926x1406+817+17 +repage site/assets/manual/drawings/fib-properties.png
-crop: 817,17,926,1406
+capture: bin/headless-window shot /tmp/fibprops.png
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/drawings/fib-properties.png" alt="A Fib retracement's properties: Colour, Fib labels on and Price labels off, then the seven levels from 0% to 100%, each with its switch and a sample of its line" caption="A retracement's properties, on configuration 1." %}
+{% include figure.html src="/assets/manual/drawings/fib-properties.png" alt="A Fib retracement's properties: Colour with its Opacity at 70, Fib labels on and Price labels off, then the seven levels from 0% to 100%, each with its switch and a sample of its line" caption="A retracement's properties, on configuration 1." %}
 
 <!-- regenerate:
 theme: tokyo-night
@@ -77,10 +78,11 @@ state:
   (the state of the previous figure)
   click 824 539    (the 61.8% row's arrow)
   scroll 824 500 6
-capture: bin/headless-window shot /tmp/fiblevel.png; magick /tmp/fiblevel.png -crop 926x1406+817+17 +repage site/assets/manual/drawings/fib-level-properties.png
-crop: 817,17,926,1406
+capture: bin/headless-window shot /tmp/fiblevel.png
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/drawings/fib-level-properties.png" alt="The same properties with the 61.8% level open on its Colour, Thickness and Line style, dotted" caption="A level open: its own colour, thickness and line style." %}
+{% include figure.html src="/assets/manual/drawings/fib-level-properties.png" alt="The same properties with the 61.8% level open on its Colour and Opacity, Thickness and Line style, dotted" caption="A level open: its own colour, thickness and line style." %}
 
 <!-- regenerate:
 theme: catppuccin-latte

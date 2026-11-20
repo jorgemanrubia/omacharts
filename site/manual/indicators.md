@@ -78,7 +78,8 @@ state:
   type macd
   key Return
 capture: bin/headless-window shot /tmp/macd.png
-crop: 223,150,1152,1902   (the whole dialog, 16px layout margin)
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
 {% include figure.html src="/assets/manual/indicators/macd-parameters.png" alt="The settings dialog of a MACD being added" caption="The settings of a MACD being added." %}
 
@@ -147,7 +148,8 @@ state:
   click 500 333          # the RSI 14 row
   move 1270 710
 capture: bin/headless-window shot /tmp/panel.png
-crop: 688,68,1184,1304   (the whole dialog, 16px layout margin)
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
 {% include figure.html src="/assets/manual/indicators/panel-on-a-template.png" alt="The settings of an RSI on a chart on the Momentum template, opening with a row that says it is editing the template" caption="An RSI's settings on a chart on the **Momentum** template." %}
 
