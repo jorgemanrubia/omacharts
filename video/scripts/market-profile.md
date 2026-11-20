@@ -32,7 +32,7 @@ with nothing moving, saying what it is about.
 1. **What it's for.** Over the colour-cycling profile: a market profile
    shows how value is transferred, where the market accepted a price
    over time. It's close to a volume profile, but different: a volume
-   profile counts the contracts traded at each price, a market profile
+   profile shows the volume traded at each price, a market profile
    counts time, one letter for each half hour the price was there, A for
    the first, B for the next. Same shape idea, a different question.
 2. **Reading real sessions.** A few real ES (or SPY) sessions, letters
@@ -169,7 +169,7 @@ value. {rose}Where they thin out, it turned the price away and moved on.
 **Picture.** The same two Blue profiles, held. Nothing moves.
 
 **Voice.** It looks like a volume profile, but it asks a different
-question. A volume profile counts the contracts traded at each price. This
+question. A volume profile shows the volume traded at each price. This one
 counts time, in letters called TPOs.
 
     after: 0.6

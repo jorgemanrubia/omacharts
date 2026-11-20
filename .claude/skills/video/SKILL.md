@@ -211,6 +211,9 @@ principles of a good screencast, which the scriptwriter also follows.
 - **No grid.** Charts in a video have their gridlines turned off, both
   ways, unless a script asks for them: the price and the drawings read
   cleaner without them. The author set this on 2026-11-08.
+- **Volume, not contracts.** Narration speaks of volume traded, not of
+  contracts or shares, so it holds for futures and stocks alike and says
+  what the chart draws. The author set this on 2026-11-20.
 - **Text on screen stays up long enough to read.** A caption, a label, a
   key badge or a title holds at least four to five seconds, longer for
   longer text, and never flashes on for a second or two: the author said
