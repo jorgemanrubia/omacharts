@@ -154,9 +154,10 @@ Violet, then Teal, then Rose, and end back on Blue, each colour held at
 least four seconds. Nothing else moves.
 
 **Voice.** A market profile shows where the market spent its time.
-{violet}Each letter is half an hour at a price: A for the first, B for the
-next. {teal}Where the letters pile up, the market accepted the price as
-value. {rose}Where they thin out, it turned the price away and moved on.
+{violet}Read it by its shape: wide where the market traded for hours,
+narrow where it passed straight through. {teal}The wide part is where it
+accepted the price as value. {rose}Where it thins out, it turned the price
+away and moved on.
 {blue}It's a simple way to see value change hands.
 
     violet: cli chart indicator set market_profile --color Violet
@@ -210,8 +211,8 @@ buying tail, with the AB rows above them, all inside the frame with margin.
 Held through the scene; the cursor stays off the chart, so nothing lets
 the frame go early.
 
-**Voice.** {tail}At the bottom of the first session, a few rows hold a
-single A. Price fell there in the first half hour and never came back.
+**Voice.** {tail}At the bottom of the first session, the profile ends in a
+thin tail. Price touched those lows early and never came back.
 That's excess: buyers turned those prices away fast.
 
     tail: frame 0% 55% 30% 98%
@@ -224,8 +225,8 @@ October 12's profile: its lowest row has only K and L, the row above J, K
 and L, a flat, blunt bottom with no tail (x ≈ 33–37%, y ≈ 50–55%), framed
 with some of the profile above it for context.
 
-**Voice.** {low}The next session ends flat instead: two letters side by
-side at its low, and no tail. That's a poor low. It looks unfinished,
+**Voice.** {low}The next session ends flat instead: a blunt bottom, and no
+tail. That's a poor low. It looks unfinished,
 and markets tend to come back to one.
 
     low: frame 27% 22% 55% 62%
@@ -238,8 +239,7 @@ October 13's profile to its right, whose D and E letters reach below the
 level of October 12's low (October 13's lower letters reach y ≈ 77%). Held
 until it eases back to the full chart.
 
-**Voice.** {next}The next day did. Its D and E letters trade right through
-that low.
+**Voice.** {next}The next day did, trading right back through that low.
 
     next: frame 29% 36% 80% 84%
     after: 3.0
