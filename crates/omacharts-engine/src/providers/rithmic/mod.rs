@@ -2065,7 +2065,7 @@ mod tests {
         let two = Timeframe::minutes(2);
         let bar = AT;
         let whole = ohlc(bar - 120, 100.0, 104.0, 98.0, 101.0, 50.0);
-        let plant_bars = vec![ohlc(bar - 240, 99.0, 100.0, 98.0, 100.0, 40.0), whole];
+        let plant_bars = [ohlc(bar - 240, 99.0, 100.0, 98.0, 100.0, 40.0), whole];
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recording = calls.clone();
         let clock = Arc::new(std::sync::atomic::AtomicI64::new(bar - 200));
@@ -2097,7 +2097,7 @@ mod tests {
         at(bar + 20);
         served.reconcile();
         served.reconcile();
-        drawn(&served, &mut series, |series| series.iter().any(|drawn| *drawn == whole));
+        drawn(&served, &mut series, |series| series.contains(&whole));
         // A trade after both, to be sure the second asked nothing.
         served.trade(bar + 21, 101.0, 1);
         drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.close == 101.0));
