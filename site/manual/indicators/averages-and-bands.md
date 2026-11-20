@@ -31,4 +31,4 @@ A VWAP and Bollinger Bands draw the same kind of band, a line a multiple of a st
 ## See also
 
 - [Indicators](/manual/indicators/)
-- [Indicators from the CLI](/manual/cli/indicators/)
+- [Averages and bands from the CLI](/manual/cli/indicators/averages-and-bands/)

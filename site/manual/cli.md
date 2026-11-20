@@ -13,11 +13,11 @@ moved:
   chart-range: /manual/cli/charts/#chart-range
   config-bars: /manual/cli/charts/#config-bars
   indicators: /manual/cli/indicators/
-  session-times: /manual/cli/indicators/#session-times
+  session-times: /manual/cli/indicators/session-times/
   chart-templates: /manual/cli/chart-templates/
   comparing-markets: /manual/cli/comparing-markets/
-  measuring-a-move: /manual/cli/measuring-a-move/
-  volume-and-market-profiles: /manual/cli/volume-and-market-profiles/
+  measuring-a-move: /manual/cli/drawings/measure/
+  volume-and-market-profiles: /manual/cli/indicators/volume/
   drawings: /manual/cli/drawings/
   arranging-charts: /manual/cli/arranging-charts/
   chart-split: /manual/cli/arranging-charts/#chart-split
@@ -335,7 +335,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](/manual/cli/watchlists-and-sections/); `watchlist feed` under [The Omarchy plugin](/manual/cli/the-omarchy-plugin/#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](/manual/cli/watchlists-and-sections/) |
 | `chartbook` | Chartbooks | [Chartbooks](/manual/cli/chartbooks/); `chartbook template` under [Chartbook templates](/manual/cli/chartbook-templates/); `chartbook sidebar` under [Showing and hiding the sidebars](/manual/cli/showing-and-hiding-the-sidebars/); `chartbook screenshot` under [Screenshots](/manual/cli/screenshots/) |
-| `chart` | The charts in a chartbook | [Charts](/manual/cli/charts/) (`set`, `range`), [Indicators](/manual/cli/indicators/), [Drawings](/manual/cli/drawings/), [Measuring a move](/manual/cli/measuring-a-move/), [Arranging charts](/manual/cli/arranging-charts/) (`list`, `split`, `close`, `focus`), [Linking](/manual/cli/linking/), [Sharing the crosshair](/manual/cli/sharing-the-crosshair/) (`crosshair`), [Showing and hiding the sidebars](/manual/cli/showing-and-hiding-the-sidebars/) (`drawing-tools`), [Screenshots](/manual/cli/screenshots/) |
+| `chart` | The charts in a chartbook | [Charts](/manual/cli/charts/) (`set`, `range`), [Indicators](/manual/cli/indicators/), [Drawings](/manual/cli/drawings/), [Measure](/manual/cli/drawings/measure/), [Arranging charts](/manual/cli/arranging-charts/) (`list`, `split`, `close`, `focus`), [Linking](/manual/cli/linking/), [Sharing the crosshair](/manual/cli/sharing-the-crosshair/) (`crosshair`), [Showing and hiding the sidebars](/manual/cli/showing-and-hiding-the-sidebars/) (`drawing-tools`), [Screenshots](/manual/cli/screenshots/) |
 | `template` | Chart templates | [Chart templates](/manual/cli/chart-templates/) |
 | `provider` | The data feed, and signing in to one | [Market data](/manual/cli/market-data/) |
 | `trading` | Trading logins, accounts, positions and orders | [Trading](/manual/cli/trading/) |

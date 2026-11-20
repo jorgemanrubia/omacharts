@@ -42,4 +42,4 @@ Two tabs: **General** for the level itself and **Text** for a label on it. <kbd>
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/drawings/)
+- [Horizontal line from the CLI](/manual/cli/drawings/horizontal-line/)

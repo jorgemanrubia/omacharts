@@ -72,4 +72,4 @@ Every configuration is its colour at 1.5 px, solid, from the typical price, with
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/drawings/)
+- [Anchored VWAP from the CLI](/manual/cli/drawings/anchored-vwap/)

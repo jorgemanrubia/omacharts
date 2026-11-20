@@ -42,4 +42,4 @@ Two tabs: **General** for the zig-zag itself and **Text** for a label on it. <kb
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/drawings/)
+- [Zig-zag from the CLI](/manual/cli/drawings/zig-zag/)

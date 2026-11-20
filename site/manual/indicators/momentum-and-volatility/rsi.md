@@ -41,4 +41,4 @@ Moving one level past the other pushes the other along.
 
 - [Momentum and volatility](/manual/indicators/momentum-and-volatility/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/indicators/)
+- [Momentum and volatility from the CLI](/manual/cli/indicators/momentum-and-volatility/)

@@ -42,4 +42,4 @@ Two tabs: **General** for the arrow itself and **Text** for a label on it. <kbd>
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/drawings/)
+- [Arrow from the CLI](/manual/cli/drawings/arrow/)

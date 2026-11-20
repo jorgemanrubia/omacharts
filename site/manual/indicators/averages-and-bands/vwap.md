@@ -39,4 +39,4 @@ The three bands sit at 1, 1.5 and 2 standard deviations. When on, the first is s
 
 - [Averages and bands](/manual/indicators/averages-and-bands/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/indicators/)
+- [Averages and bands from the CLI](/manual/cli/indicators/averages-and-bands/)

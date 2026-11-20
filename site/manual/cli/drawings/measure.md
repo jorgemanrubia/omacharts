@@ -1,9 +1,9 @@
 ---
-title: "Measuring a move"
+title: "Measure"
 description: "A ruler on the focused chart, and the measurements it returns."
 section: agents
-parent: cli
-nav_order: 6
+parent: cli/drawings
+nav_order: 1
 ---
 
 `omacharts chart measure` displays a temporary ruler on the focused chart and

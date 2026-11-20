@@ -115,4 +115,4 @@ Every property is part of the configuration, so **Save as…** keeps each level'
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/drawings/)
+- [Fib retracement from the CLI](/manual/cli/drawings/fib-retracement/)

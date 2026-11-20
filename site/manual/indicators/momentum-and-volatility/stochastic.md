@@ -43,4 +43,4 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/stochast
 
 - [Momentum and volatility](/manual/indicators/momentum-and-volatility/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/indicators/)
+- [Momentum and volatility from the CLI](/manual/cli/indicators/momentum-and-volatility/)

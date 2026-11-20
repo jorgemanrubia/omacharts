@@ -470,5 +470,14 @@ next writer needs the case. One dated line each, newest last.
   (launching, where a command runs, which chart it acts on, naming, exit
   codes, output, help, scripting, the command groups); each topic from
   Symbols on is an article under `site/manual/cli/`, with the same content.
-  The chapter's `moved:` sends an old `/manual/cli/#topic` link on to its
-  article.
+  Then "same for drawings", and "treat both indicators normally and
+  consistently both regular manual and CLI manual": CLI › Indicators and
+  CLI › Drawings mirror the regular manual's trees, with the same titles in
+  the same order. Each landing page keeps the flags every indicator or every
+  drawing takes; a drawing kind's page has its own flags and examples, even
+  when that is little. Indicators are mirrored by family, each study's flags
+  in its family's article, except the Volume Profile and the Market Profile,
+  which are pages of their own under Volume, built alike: adding it, its
+  flags, reading its profiles, merging and splitting, then what is its own.
+  Each regular page links to its CLI article. A `moved:` map sends an old
+  `/manual/cli/#topic` link on to its article.
