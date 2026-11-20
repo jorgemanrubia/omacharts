@@ -1,6 +1,6 @@
 ---
 title: Market profile
-stage: render
+stage: done
 length: 225s
 theme: tokyo-night
 voice: narrator
