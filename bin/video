@@ -173,7 +173,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
-                "frame": 4, "keep": 4, "terminal": None, "focus": 1}
+                "frame": 4, "keep": 4, "deselect": 0, "terminal": None, "focus": 1}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -185,6 +185,8 @@ def parse_action(text):
     verb, _, rest = text.strip().partition(" ")
     if verb not in ACTION_ARITY:
         die(f"unknown action {verb!r} in {text!r}")
+    if ACTION_ARITY[verb] == 0:
+        return (verb,)
     if ACTION_ARITY[verb] is None:
         return (verb, rest.strip())
     args = rest.split()
@@ -615,7 +617,48 @@ hl.config({{
             event["args"] = args[0].split(maxsplit=1)
         elif verb == "focus":
             self.focus(args[0])
+        elif verb == "deselect":
+            event["pressed"] = self.deselect()
         events.append(event)
+
+    # Nothing stays selected once the hands are done with it (Taste): a
+    # selected study or drawing is drawn with a heavy outline, which reads
+    # as part of the chart. One Esc is not always enough — after a settings
+    # dialog closes, the next one can land before the chart has the
+    # keyboard back — so the studio asks the app and presses until it says
+    # nothing is selected.
+
+    def selection(self):
+        found = []
+        for noun, key in (("indicator", "indicators"), ("drawing", "drawings")):
+            result = subprocess.run([str(self.binary), "chart", noun, "list", "--json"], env=self.env, capture_output=True, text=True)
+            try:
+                found += [item for item in json.loads(result.stdout).get(key, []) if item.get("selected")]
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        return found
+
+    def deselect(self, tries=6):
+        pressed = 0
+        while self.selection() and pressed < tries:
+            self.key("Escape")
+            pressed += 1
+            time.sleep(0.35)
+        if self.selection():
+            say("warning: something is still selected after six Escs")
+        return pressed
+
+    def settle(self, actions, events, now=0.0, scene=None, cue=None):
+        """After a cue whose hands are done — the last thing they did was
+        close something with Esc, add with Ctrl+Enter, or change the chart
+        from the command line — leave nothing selected. Never after a
+        click or a key that may have opened a menu or a dialog, where an
+        Esc would close what the next cue works in. `deselect: off` in the
+        frontmatter turns it off."""
+        done = [a for a in actions if a[0] not in ("wait", "move", "zoom", "frame", "keep", "deselect")]
+        if done and (done[-1][0] == "cli" or (done[-1][0] == "key" and done[-1][1].lower() in ("escape", "ctrl+return"))):
+            if self.selection():
+                self.perform(("deselect",), events, now=now, scene=scene, cue=cue)
 
     # The terminal, for a scene about the command line: a real one, tiled
     # beside the app, running a real shell whose `omacharts` is this studio's.
@@ -878,6 +921,8 @@ def board(script):
                     n += 1
                     time.sleep(0.5)
                     studio.shot(steps / f"{scene.number:02d}-{n:02d}-{cue}-{action[0]}.png")
+                if script.meta.get("deselect", "on") != "off":
+                    studio.settle(scene.actions.get(cue, []), events, scene=scene.number, cue=cue)
             time.sleep(1.2)
             studio.shot(stills / f"{scene.number:02d}.png")
     studio.keep_data()
@@ -1058,7 +1103,13 @@ def render(script):
                 pause(zero + at - lead - time.monotonic())
                 for action in v["scene"].actions[cue]:
                     studio.perform(action, events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)
+                if script.meta.get("deselect", "on") != "off":
+                    studio.settle(v["scene"].actions[cue], events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)
         pause(zero + plan["total"] - time.monotonic())
+        # The render check: nothing left selected at the end (studio.md).
+        left = studio.selection()
+        if left:
+            say(f"warning: still selected at the end: {[item.get('kind') for item in left]}")
         recorder.send_signal(signal.SIGINT)
         recorder.wait(timeout=30)
     studio.keep_data()
@@ -1561,6 +1612,8 @@ def main():
                     for cue in re.findall(r"\{(\w+)\}", scene.voice):
                         for action in scene.actions.get(cue, []):
                             studio.perform(action, events)
+                        if script.meta.get("deselect", "on") != "off":
+                            studio.settle(scene.actions.get(cue, []), events)
                     time.sleep(0.6)
             say("studio up; act on it with  bin/video act 'click 50% 50%' ... [--shot FILE]; Ctrl+C or kill to take it down")
             while True:

@@ -203,8 +203,16 @@ principles of a good screencast, which the scriptwriter also follows.
   also says, in plain words, the idea that ties the video together.
 - **Nothing selected unless it is being worked on.** A study or drawing
   is selected only while the cursor is acting on it — its menu, a drag, a
-  merge — and deselected (Esc) right after, so the chart shows it as it
-  looks, not with the selection's heavy outline.
+  merge — and deselected right after every action on it: after adding it,
+  after its settings dialog closes, after a right-click menu, after a drag
+  or a change from the command line. A selected study or drawing is drawn
+  with a heavy outline, which the viewer takes for part of the chart. The
+  studio deselects by itself after a cue that ends in Esc, Ctrl+Enter or a
+  `cli` change, and `deselect` does it anywhere else; a script never relies
+  on a single Esc. The render check confirms it: no selection outline on
+  any study or drawing in any review frame except while the cursor is on
+  it, and no "still selected" warning from the render. The author had to
+  point this out again on 2026-11-20, after a render left profiles outlined.
 - **Film the latest main.** Videos show omacharts as it is on main —
   `bin/video` fetches it and builds it in a worktree of its own — unless the
   author asks for something else, which goes in the script as `build:`.

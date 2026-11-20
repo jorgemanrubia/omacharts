@@ -132,8 +132,14 @@ protocol for the mouse. Lessons, each paid for:
 - The wheel over the price axis scales price, not time, and turns auto
   scale off: aim time zooms at 94% across, not at the plot's very edge.
 - After a settings dialog closes with Esc, the next Esc can land before
-  the chart has the keyboard back, leaving the study selected; three Escs,
-  0.6s apart, leave nothing selected.
+  the chart has the keyboard back, leaving the study selected, and a
+  selected study's outline looks just like the profile's Outline setting:
+  the author saw a whole render of outlined profiles. So the studio asks
+  the app (`chart indicator list --json`, `chart drawing list --json`,
+  `selected`) and presses Esc until nothing is (`deselect`), by itself
+  after any cue that ends in Esc, Ctrl+Enter or a `cli` change, and the
+  render warns if anything is still selected at the end. Don't film a
+  profile's Outline setting either: on screen it reads as a selection.
 - A fresh window ignores its first chord: the studio sends two Escapes on
   start, never anything on camera.
 - No Hyprland animations, and `disable_watchdog_warning`: a nested Hyprland
