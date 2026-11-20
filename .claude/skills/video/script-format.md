@@ -95,6 +95,8 @@ block names each cue once:
 | `scroll <x%> <y%> <steps>` | wheel notches; negative scrolls up |
 | `wait <seconds>` | pause the timeline |
 | `zoom <x%> <y%> <scale>` | a zoom there, held until the next action, the next zoom or 8 s |
+| `frame <x1%> <y1%> <x2%> <y2%>` | a zoom that fits that region on screen whole, its aspect kept, held like `zoom`. Prefer it to `zoom`: it cannot push what it frames off an edge |
+| `keep <x1%> <y1%> <x2%> <y2%>` | a region an automatic zoom must keep whole — the menu or dialog the next clicks are in. A dialog taller than the screen's height over 1.25 simply gets no zoom |
 | `terminal open [command]` / `terminal close` | a real terminal, themed like the app, tiled on the right at 38% of the width; the chart reflows beside it. Its shell runs this studio's `omacharts` and every played agent in `video/agent/`; a command given starts in it at once, so nothing is typed just to begin the scene. The composer covers the snap with a light sweep and labels the two panes while it is open |
 | `focus app` / `focus terminal` | which window the keys go to |
 

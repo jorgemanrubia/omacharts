@@ -37,6 +37,15 @@ script.md ──► voice ──► record ──► polish ──► compose �
    For something near an edge, aim at the edge or corner itself (`zoom 1%
    1% 2.2`). An asked-for zoom lets go on the hands' next move as well as
    their next click or key; it once held through a crosshair glide.
+   An automatic zoom used to put its origin at the middle of the clicks,
+   so a run near an edge, or a menu opening right and down of its
+   right-click, was shown with part of it off the frame: it looked good
+   and did not fit. `zoom_origin` now works out the origin from the
+   window the zoom shows (it starts at origin × (1 − 1/scale)), centring
+   the region and pushing it back from any edge; `frame` uses the same
+   to fit a region exactly, and `keep` adds a menu's or dialog's bounds to
+   an automatic zoom's region, which for a settings dialog (80% of the
+   height) means no zoom at all.
 4. **Compose.** ffmpeg: the cover held and faded into the polished recording,
    the voice placed scene by scene, music ducked under it, the mix mastered,
    a 4K H.264 file and a 1080p one, and subtitles from the aligned words.
@@ -116,6 +125,15 @@ protocol for the mouse. Lessons, each paid for:
   switch has settled. A chartbook switched to comes back at the zoom it had
   but on its latest bar, and very wide views are cut down, so a span that
   must be on screen is set after the last switch to that chartbook.
+- A custom `chart range` survives switching chartbooks away and back
+  (0.3.11), but one set before that chartbook's data has arrived is lost
+  to the latest bars: a setup visits each chartbook again at the end,
+  with a wait, and sets its range there.
+- The wheel over the price axis scales price, not time, and turns auto
+  scale off: aim time zooms at 94% across, not at the plot's very edge.
+- After a settings dialog closes with Esc, the next Esc can land before
+  the chart has the keyboard back, leaving the study selected; three Escs,
+  0.6s apart, leave nothing selected.
 - A fresh window ignores its first chord: the studio sends two Escapes on
   start, never anything on camera.
 - No Hyprland animations, and `disable_watchdog_warning`: a nested Hyprland

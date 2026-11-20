@@ -173,7 +173,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
-                "terminal": None, "focus": 1}
+                "frame": 4, "keep": 4, "terminal": None, "focus": 1}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -606,6 +606,10 @@ hl.config({{
             event["at"] = self.hand.scroll(*self.at(*args[:2]), int(args[2]))
         elif verb == "zoom":
             event["at"] = self.at(*args[:2])
+        elif verb in ("frame", "keep"):
+            # A region, not a point: `frame` fits it on screen, `keep` makes
+            # sure an automatic zoom never cuts it off (a menu, a dialog).
+            event["at"], event["to"] = self.at(*args[:2]), self.at(*args[2:])
         elif verb == "terminal":
             self.terminal(args[0])
             event["args"] = args[0].split(maxsplit=1)
@@ -913,7 +917,12 @@ def contact_sheet(script, stills, events):
         still = Image.open(stills / f"{scene.number:02d}.png").convert("RGB").resize((tile_w, tile_h), Image.LANCZOS)
         mark = ImageDraw.Draw(still)
         for event in events:
-            if event["scene"] == scene.number and event.get("at"):
+            if event["scene"] == scene.number and event["verb"] in ("frame", "keep"):
+                (x1, y1), (x2, y2) = event["at"], event["to"]
+                colour = "#ffd166" if event["verb"] == "frame" else "#4dd0e1"
+                mark.rectangle((x1 * scale, y1 * scale, x2 * scale, y2 * scale), outline=colour, width=4)
+                mark.text((x1 * scale + 8, y1 * scale + 6), f"{event['verb']} {event['cue']}", fill=colour, font=font(22, True))
+            elif event["scene"] == scene.number and event.get("at"):
                 ex, ey = event["at"][0] * scale, event["at"][1] * scale
                 mark.ellipse((ex - 14, ey - 14, ex + 14, ey + 14), outline="#ff4d6d", width=4)
                 mark.text((ex + 18, ey - 12), event["cue"] or "", fill="#ff4d6d", font=font(22, True))
@@ -1083,6 +1092,25 @@ KEY_NAMES = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "super": "Super", "
              "question": "?", "BackSpace": "⌫", "Tab": "Tab", "space": "Space"}
 
 
+# Text on screen stays long enough to read without hurry: a badge that is
+# gone in a second or two looks like a glitch (Taste, 2026-11-20). It gives
+# way early only to the next badge.
+BADGE_HOLD = 4.0
+
+
+def zoom_origin(box, scale):
+    """The transform origin, in layout pixels, that shows `box` whole at
+    `scale`, centred where it can be and pushed back from any edge it would
+    otherwise cross. A zoom keeps its origin where it is on screen, so the
+    window it shows starts at origin * (1 - 1/scale)."""
+    origin = []
+    for low, high, size in ((box[0], box[2], LAYOUT[0]), (box[1], box[3], LAYOUT[1])):
+        span = size / scale
+        start = min(max(0.0, (low + high) / 2 - span / 2), size - span)
+        origin.append(start / (1 - 1 / scale) if scale > 1 else size / 2)
+    return origin
+
+
 def polish_plan(events, total):
     """Where to zoom and which keys to show, from what the recording did.
 
@@ -1093,39 +1121,61 @@ def polish_plan(events, total):
     chord with a modifier, which is how the viewer learns the key."""
     scale_px = SIZE[0] / LAYOUT[0]
     zooms, badges, run = [], [], []
+    scened = [e for e in events if e.get("scene") is not None]
+    keeps = [e for e in scened if e["verb"] == "keep"]
 
     def close_run(until):
         if len(run) >= 2:
-            xs = [e["at"][0] for e in run] + [e["to"][0] for e in run if e.get("to")]
-            ys = [e["at"][1] for e in run] + [e["to"][1] for e in run if e.get("to")]
             pad = 240
-            w, h = max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad
-            zoom = min(1.8, 0.9 * min(LAYOUT[0] / w, LAYOUT[1] / h))
+            xs = [x for e in run for x in (e["at"][0] - pad, e["at"][0] + pad)] + [x for e in run if e.get("to") for x in (e["to"][0] - pad, e["to"][0] + pad)]
+            ys = [y for e in run for y in (e["at"][1] - pad, e["at"][1] + pad)] + [y for e in run if e.get("to") for y in (e["to"][1] - pad, e["to"][1] + pad)]
+            # What the script says must stay whole on screen through this run:
+            # the menu or dialog the clicks are in, not only the clicks.
+            for keep in keeps:
+                if run[0]["t"] - 1.5 <= keep["t"] <= run[-1]["t"] + 0.5:
+                    xs += [keep["at"][0], keep["to"][0]]
+                    ys += [keep["at"][1], keep["to"][1]]
+            box = (max(0, min(xs)), max(0, min(ys)), min(LAYOUT[0], max(xs)), min(LAYOUT[1], max(ys)))
+            zoom = min(1.8, 0.9 * min(LAYOUT[0] / (box[2] - box[0]), LAYOUT[1] / (box[3] - box[1])))
             if zoom >= 1.25:
                 start = max(0.0, run[0]["t"] - 0.45)
                 end = min(until, run[-1]["t"] + 1.6)
                 if end - start >= 1.8:
+                    x, y = zoom_origin(box, zoom)
                     zooms.append({"start": round(start, 3), "end": round(end, 3),
-                                  "x": round((min(xs) + max(xs)) / 2 * scale_px), "y": round((min(ys) + max(ys)) / 2 * scale_px),
-                                  "scale": round(zoom, 3)})
+                                  "x": round(x * scale_px), "y": round(y * scale_px), "scale": round(zoom, 3)})
         run.clear()
 
     # An asked-for zoom, held until the next one, the hands' next move or a
     # few seconds, whichever comes first.
-    asked = [e for e in events if e.get("scene") is not None and e["verb"] == "zoom" and e.get("at")]
+    asked = [e for e in scened if e["verb"] in ("zoom", "frame") and e.get("at")]
     for i, event in enumerate(asked):
-        later = [e["t"] for e in events if e.get("scene") is not None and e["t"] > event["t"] + 0.5
-                 and e["verb"] in ("key", "type", "cli", "zoom", "terminal", "move", *POINTER)]
+        later = [e["t"] for e in scened if e["t"] > event["t"] + 0.5
+                 and e["verb"] in ("key", "type", "cli", "zoom", "frame", "terminal", "move", *POINTER)]
+        # Followed straight by another asked-for zoom, it lets go a little
+        # before, so the two do not overlap (an overlapping one is dropped)
+        # and the camera passes through the full frame between areas.
+        nxt = next((e for e in scened if e["t"] > event["t"] + 0.5 and e["verb"] in ("key", "type", "cli", "zoom", "frame", "terminal", "move", *POINTER)), None)
+        if nxt and nxt["verb"] in ("zoom", "frame"):
+            later = [nxt["t"] - 0.25]
         end = min([event["t"] + 8.0, total, *later[:1]])
-        if end - event["t"] >= 1.5:
+        if event["verb"] == "frame":
+            # The region fitted on screen whole, its aspect kept, and the
+            # origin worked out so that none of it falls off an edge.
+            box = (min(event["at"][0], event["to"][0]), min(event["at"][1], event["to"][1]),
+                   max(event["at"][0], event["to"][0]), max(event["at"][1], event["to"][1]))
+            scale = min(LAYOUT[0] / (box[2] - box[0]), LAYOUT[1] / (box[3] - box[1]), 4.0)
+            x, y = zoom_origin(box, scale)
+        else:
+            scale, (x, y) = float(event["args"][2]), event["at"]
+        if end - event["t"] >= 1.5 and scale > 1.05:
             zooms.append({"start": round(max(0.0, event["t"] - 0.2), 3), "end": round(end, 3),
-                          "x": round(event["at"][0] * scale_px), "y": round(event["at"][1] * scale_px),
-                          "scale": round(float(event["args"][2]), 3)})
+                          "x": round(x * scale_px), "y": round(y * scale_px), "scale": round(scale, 3)})
 
     for event in events:
         if event.get("scene") is None:
             continue
-        if event["verb"] == "zoom":
+        if event["verb"] in ("zoom", "frame", "keep"):
             continue
         if event["verb"] in POINTER and event.get("at"):
             if run and (event["t"] - run[-1]["t"] > 3.0 or math.hypot(event["at"][0] - run[-1]["at"][0], event["at"][1] - run[-1]["at"][1]) > 700):
@@ -1138,7 +1188,7 @@ def polish_plan(events, total):
             chord = event["args"][0] if event["verb"] == "key" else ""
             if "+" in chord:
                 keys = [KEY_NAMES.get(part, KEY_NAMES.get(part.lower(), part.upper() if len(part) == 1 else part)) for part in chord.split("+")]
-                badges.append({"start": round(event["t"], 3), "end": round(event["t"] + 1.6, 3), "keys": keys})
+                badges.append({"start": round(event["t"], 3), "end": round(event["t"] + BADGE_HOLD, 3), "keys": keys})
     close_run(total)
     zooms.sort(key=lambda z: z["start"])
     # Zooms never overlap: the later one waits for the earlier to let go.

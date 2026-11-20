@@ -39,7 +39,8 @@ General craft, distilled from people who make these well. The Taste rules in
 - The cursor moves slowly on gently curved, eased paths and rests when it is
   not needed, clear of what is being read. In keyboard sections, hide it.
   Default size; no trails, halos or click sparkles.
-- Show a key badge for every chord, long enough to read (a second at least).
+- Show a key badge for every chord, long enough to read (four seconds; see
+  Taste).
   Omacharts is keyboard first, and the badge is how the viewer learns the
   key.
 - No transitions beyond a cut or a short crossfade.
