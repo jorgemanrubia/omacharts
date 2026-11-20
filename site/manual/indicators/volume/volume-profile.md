@@ -123,4 +123,4 @@ A composite belongs to the chart it was made on, to the symbol it is showing and
 
 - [Volume](/manual/indicators/volume/)
 - [Adding an indicator](/manual/indicators/#adding-an-indicator)
-- [Indicators from the CLI](/manual/cli/#indicators)
+- [Indicators from the CLI](/manual/cli/indicators/)

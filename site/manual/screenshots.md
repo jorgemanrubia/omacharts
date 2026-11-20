@@ -84,5 +84,5 @@ Preferences › General › **Screenshots**:
 
 ## See also
 
-- [Taking screenshots from the CLI](/manual/cli/#screenshots)
-- [Settings](/manual/cli/#settings)
+- [Taking screenshots from the CLI](/manual/cli/screenshots/)
+- [Settings](/manual/cli/preferences/#settings)

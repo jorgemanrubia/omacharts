@@ -9,7 +9,7 @@ Say what you want with Omacharts in front, and Omarchy's default agent does
 it in the open window, with the `omacharts` command.
 
 {: .warning }
-The agent can run any `omacharts` command, the [trading commands](/manual/cli/#trading) included, and nothing asks before it does. With a trading service signed in, "sell two at the market" places that order. Don't dictate an order unless you mean it.
+The agent can run any `omacharts` command, the [trading commands](/manual/cli/trading/) included, and nothing asks before it does. With a trading service signed in, "sell two at the market" places that order. Don't dictate an order unless you mean it.
 
 ## Dictating
 
@@ -103,7 +103,7 @@ Preferences › **Agent** holds what dictation goes with.
 | **Context** | Text sent after the fixed line at the start of each conversation, such as `Prefer 5 minute charts.` Empty by default, and saved as you type. |
 
 From a terminal these are the `agent_model.<agent>` and `agent_context`
-settings ([Settings](/manual/cli/#settings)).
+settings ([Settings](/manual/cli/preferences/#settings)).
 
 ## An example
 
@@ -145,6 +145,6 @@ The next request opens a new conversation.
 ## See also
 
 - [The agent skill](/manual/agent-skill/)
-- [Settings in the CLI](/manual/cli/#settings)
-- [Trading with the CLI](/manual/cli/#trading)
+- [Settings in the CLI](/manual/cli/preferences/#settings)
+- [Trading with the CLI](/manual/cli/trading/)
 - [Preferences](/manual/preferences/#agent)

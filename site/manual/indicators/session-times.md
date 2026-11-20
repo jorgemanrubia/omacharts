@@ -126,4 +126,4 @@ Session Times starts out of the chart's legend. **Legend** › **Show in chart l
 - [Indicators](/manual/indicators/)
 - [Sessions](/manual/charts/#sessions), for **Regular hours only**
 - [Time](/manual/preferences/#time), for the charts' time zone and time format
-- [Session Times from the CLI](/manual/cli/#session-times)
+- [Session Times from the CLI](/manual/cli/indicators/#session-times)

@@ -73,5 +73,5 @@ What a chart compares, its base and Lines only are saved with the chart and come
 
 ## See also
 
-- [Comparing markets with the CLI](/manual/cli/#comparing-markets)
+- [Comparing markets with the CLI](/manual/cli/comparing-markets/)
 - [The chart menu](/manual/charts/#the-chart-menu)

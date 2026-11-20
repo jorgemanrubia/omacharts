@@ -71,4 +71,4 @@ crop: 840,220,880,1160
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings)
+- [Drawing from the CLI](/manual/cli/drawings/)

@@ -11,7 +11,7 @@ A ruler over a move between two points: its percentage change, its price change,
 
 | Key | Placing it | CLI |
 |---|---|---|
-| <kbd>Alt</kbd> + <kbd>M</kbd>, or **Measure** just below the pointer at the top of the tools | Click the start, move the mouse, then click the end | [`chart measure`](/manual/cli/#measuring-a-move) |
+| <kbd>Alt</kbd> + <kbd>M</kbd>, or **Measure** just below the pointer at the top of the tools | Click the start, move the mouse, then click the end | [`chart measure`](/manual/cli/measuring-a-move/) |
 
 <!-- regenerate:
 theme: tokyo-night
@@ -48,4 +48,4 @@ Points beyond the loaded candles use the chart's estimated times.
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Measuring from the CLI](/manual/cli/#measuring-a-move)
+- [Measuring from the CLI](/manual/cli/measuring-a-move/)

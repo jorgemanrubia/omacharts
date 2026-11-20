@@ -91,4 +91,4 @@ plugin updates the next time the window opens.
 
 ## See also
 
-- [The Omarchy plugin in the CLI](/manual/cli/#the-omarchy-plugin)
+- [The Omarchy plugin in the CLI](/manual/cli/the-omarchy-plugin/)

@@ -97,4 +97,4 @@ Every configuration's point of control is Ink, and its outline and rows are the 
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings)
+- [Drawing from the CLI](/manual/cli/drawings/)

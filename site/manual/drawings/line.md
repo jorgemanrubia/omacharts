@@ -42,4 +42,4 @@ Two tabs: **General** for the line itself and **Text** for a label on it. <kbd>A
 ## See also
 
 - [Drawings](/manual/drawings/)
-- [Drawing from the CLI](/manual/cli/#drawings)
+- [Drawing from the CLI](/manual/cli/drawings/)

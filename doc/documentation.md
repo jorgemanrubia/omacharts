@@ -143,11 +143,11 @@ list.
 3. **Sections by sub-topic.** Each: the behaviour in prose, then the keys.
    Tables where there are more than two of anything.
 4. **No CLI section.** Every command and flag is in *The CLI*
-   (`site/manual/cli.md`), one section per topic. The chapter ends with a
-   `## See also` heading and a bullet list of links under it, even when
-   there is only one — `- [Managing chartbooks with the
-   CLI](/manual/cli/#chartbooks)` — and may name a single command in prose
-   where it makes a point.
+   (`site/manual/cli.md`), one article per topic under
+   `site/manual/cli/`. The chapter ends with a `## See also` heading and a
+   bullet list of links under it, even when there is only one — `- [Managing
+   chartbooks with the CLI](/manual/cli/chartbooks/)` — and may name a single
+   command in prose where it makes a point.
 5. **Cross-links** to the owning chapter for anything mentioned but owned
    elsewhere, instead of repeating it. A key is owned by the chapter whose
    behaviour it triggers and listed again, once, in *Hotkeys*; indicator
@@ -464,3 +464,11 @@ next writer needs the case. One dated line each, newest last.
   better." The Drawings page's Properties keeps only what is common to every
   drawing (opening the dialog, the configuration picture, how the shared
   rows behave) and links to each tool's page; no tool-specific tables there.
+- 2026-11-20 — "Divide the CLI into smaller sections … starting at Symbols,
+  Symbol should be a nested article inside the section, like with indicators
+  or drawings." The CLI chapter keeps what applies to every command
+  (launching, where a command runs, which chart it acts on, naming, exit
+  codes, output, help, scripting, the command groups); each topic from
+  Symbols on is an article under `site/manual/cli/`, with the same content.
+  The chapter's `moved:` sends an old `/manual/cli/#topic` link on to its
+  article.

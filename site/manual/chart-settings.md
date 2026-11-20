@@ -99,5 +99,5 @@ Once a row has changed, *New charts will use these options.* and **Apply to all 
 
 ## See also
 
-- [Changing charts from the CLI](/manual/cli/#charts)
-- [The chart defaults from the CLI](/manual/cli/#settings)
+- [Changing charts from the CLI](/manual/cli/charts/)
+- [The chart defaults from the CLI](/manual/cli/preferences/#settings)

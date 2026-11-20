@@ -89,7 +89,7 @@ The colours of orders, positions and P&L are in Preferences › Theme › **Trad
 
 ## From the CLI
 
-`omacharts trading logins`, `login rithmic`, `sign-in`, `sign-out`, `remove`, `data`, `accounts` and `default` do the same from a terminal. A password is only ever typed in the window's dialog ([The CLI › Trading](/manual/cli/#trading)).
+`omacharts trading logins`, `login rithmic`, `sign-in`, `sign-out`, `remove`, `data`, `accounts` and `default` do the same from a terminal. A password is only ever typed in the window's dialog ([The CLI › Trading](/manual/cli/trading/)).
 
 ## See also
 

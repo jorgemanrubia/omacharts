@@ -67,7 +67,7 @@ A restore takes effect at once, even in an open window. The charts, the sidebar 
 |---|---|
 | Everything | On the other machine, Preferences › Data › **Restore… › Choose a File…** and pick a copy of `omacharts.db` or any file from `backups/`. |
 | Everything, before the first launch | Put `omacharts.db` in `~/.local/share/omacharts/` on a machine that has never run Omacharts. |
-| Watchlists only | Export them on this machine and import them on the other with the CLI. Importing adds to that machine's lists rather than replacing them ([Watchlists and sections in the CLI](/manual/cli/#watchlists-and-sections)). |
+| Watchlists only | Export them on this machine and import them on the other with the CLI. Importing adds to that machine's lists rather than replacing them ([Watchlists and sections in the CLI](/manual/cli/watchlists-and-sections/)). |
 
 None of these carries the thinkorswim session. Sign in again on the other machine.
 
@@ -98,4 +98,4 @@ The next launch starts like a first one, with the default watchlist, one chart a
 
 ## See also
 
-- [Backups and the cache from the CLI](/manual/cli/#your-data)
+- [Backups and the cache from the CLI](/manual/cli/your-data/)
