@@ -1,7 +1,7 @@
 ---
 title: Market profile
 stage: script
-length: 180s
+length: 225s
 theme: tokyo-night
 voice: narrator
 music: ambient electronic, soft analog pads and a gentle plucked arpeggio over a light, even pulse that steps like the half hours a profile counts, a note added at a time as the letters stack; curious and a little playful in the colour-cycling opening, unhurried and clear through the reading of real sessions, warmer and fuller once the market and volume profiles meet back to back, resolving bright and calm for the close
@@ -35,6 +35,7 @@ with nothing moving, saying what it is about.
    profile shows the volume traded at each price, a market profile
    counts time, one letter for each half hour the price was there, A for
    the first, B for the next. Same shape idea, a different question.
+   Time is simpler and less noisy, so it reads market structure clearly.
 2. **Reading real sessions.** A few real ES (or SPY) sessions, letters
    readable, one zoom per feature, each zoom framed to fit the whole
    feature: the point of control (the price with the most letters) and
@@ -170,7 +171,8 @@ value. {rose}Where they thin out, it turned the price away and moved on.
 
 **Voice.** It looks like a volume profile, but it asks a different
 question. A volume profile shows the volume traded at each price. This one
-counts time, in letters called TPOs.
+counts time, in letters called TPOs. Time is simpler and less noisy than
+volume. That makes the profile a clear way to read market structure.
 
     after: 0.6
 
