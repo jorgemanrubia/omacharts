@@ -21,7 +21,7 @@ Two tabs: **General** for the line itself and **Text** for a label on it. <kbd>A
 
 | Property | What it does | Default |
 |---|---|---|
-| **Colour** | The line's colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme | The configuration's |
+| **Colour** | The line's colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme. Its **Opacity** is how solid the line is drawn | The configuration's, at 100% |
 | **Thickness** | How thick the line is drawn, 0.5 to 12 px in halves. An arrowhead grows with it | 1.5 px |
 | **Line style** | **Solid**, **Dashed** or **Dotted**. The dashes and dots lengthen as the line thickens. An arrowhead is always solid | Solid |
 | **Arrow** | Which ends get an arrowhead: **None**, **At the end** (the point you placed last), **At the start**, or **Both ends**. The list draws each choice in the line's colour and thickness | None |
@@ -33,7 +33,7 @@ Two tabs: **General** for the line itself and **Text** for a label on it. <kbd>A
 |---|---|---|
 | **Position** | Where the label sits, picked on a grid of nine. Left, centre and right put it at the line's left end, its middle or its right end; the top row puts it above the line, the bottom row below, and the middle row just above it, so the words never cover the line. It stays on the part of the line that is on the chart, at any zoom | Centre |
 | **Text** | The label's words. Empty means no label. Typing here drops any bold or italic; to set those, type on the chart instead ([Text and labels](/manual/drawings/#text-and-labels)) | Empty |
-| **Colour** | The label's colour. It is lightened or darkened where it would not read against what is behind it | The configuration's |
+| **Colour** | The label's colour, and its **Opacity**. It is lightened or darkened where it would not read against what is behind it | The configuration's, at 100% |
 | **Font** | **System font**, the desktop's own, named with its family, or any font installed on this computer | System font |
 | **Font size** | The label's size, 6 to 96 px. <kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>−</kbd> on the chart changes it a pixel at a time | 18 px |
 

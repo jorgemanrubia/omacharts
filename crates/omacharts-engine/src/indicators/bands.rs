@@ -35,9 +35,18 @@ pub struct Band {
     #[serde(default)]
     pub fill_alpha: Option<f64>,
     pub stroke: Stroke,
+    /// How solid its edges are drawn, nought to one. `None` is solid, as
+    /// every band's edges were before it could be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_alpha: Option<f64>,
 }
 
 impl Band {
+    /// How solid its edges are drawn.
+    pub fn edge_alpha(&self) -> f64 {
+        super::strength_or(self.line_alpha, 1.0)
+    }
+
     /// The shading's opacity, anywhere from fully clear to fully solid.
     ///
     /// What is left of the guard is only what alpha means — a fraction of the
@@ -68,6 +77,8 @@ pub struct BandSeries {
     pub fill: bool,
     pub fill_alpha: f64,
     pub stroke: Stroke,
+    /// How solid its edges are drawn: [`Band::edge_alpha`].
+    pub line_alpha: f64,
     pub upper: Vec<Option<f64>>,
     pub lower: Vec<Option<f64>>,
 }
@@ -103,6 +114,7 @@ impl Bands {
                     fill: band.fill,
                     fill_alpha: band.alpha(),
                     stroke: band.stroke,
+                    line_alpha: band.edge_alpha(),
                     upper: vec![None; n],
                     lower: vec![None; n],
                 })
@@ -163,6 +175,7 @@ mod tests {
             fill: false,
             fill_alpha: None,
             stroke: Stroke::default(),
+            line_alpha: None,
         }
     }
 

@@ -22,12 +22,15 @@ pub const COLOUR: &str = "Colour";
 pub const THICKNESS: &str = "Thickness";
 pub const LINE_STYLE: &str = "Line style";
 pub const BACKGROUND: &str = "Background";
-/// A row of its own for how solid a fill is.
-pub const OPACITY: &str = "Opacity %";
 /// The word before the slider on a colour row, and its tooltip.
 pub const OPACITY_LABEL: &str = "Opacity";
 pub const SHOW: &str = "Show";
 pub const SHADED: &str = "Shaded";
+/// How solid a band's shading is, on a row of its own, titled as a
+/// profile's outside rows are: the shading is in the band's colour, which
+/// is on the band's colour row with its edges' opacity.
+pub const SHADING: &str = "Shading opacity %";
+pub const SHADING_TIP: &str = "Opacity of the shading between the band's edges";
 
 /// A share as a whole percent, between `least` and `most`, on the slider and
 /// box every bounded figure has, and the way to show it another.
@@ -63,17 +66,6 @@ pub fn percent_row(
         quiet.set(false);
     });
     (bounded.row, show)
-}
-
-/// How solid a fill is, shown as its opacity: 100% its colour, solid, 0%
-/// invisible. Handed and heard as a transparency, `share` of the chart
-/// showing through.
-pub fn transparency_row(
-    share: f64,
-    changed: impl Fn(f64) + 'static,
-) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
-    let (row, show) = percent_row(OPACITY, 1.0 - share, 0.0, 1.0, move |opacity| changed(1.0 - opacity));
-    (row, Rc::new(move |share| show(1.0 - share)))
 }
 
 /// How solid a colour is drawn, shown as its opacity, as a slider and a box

@@ -18,6 +18,7 @@ nav_order: 10
 | `--band-shaded B` | `on`, `off` | Whether the band shades the area between its edges |
 | `--band-alpha F` | 0 to 1 | How solid that shading is |
 | `--band-color C` | A colour; `line` | The band's colour; `line` follows the line's |
+| `--band-transparency F` | 0 to 1, or `default` for solid | How much of the chart shows through the band's edges |
 | `--band-width F` | 0 to 12 | The thickness of the band's edges; 0 draws none |
 | `--band-style S` | `solid`, `dashed`, `dotted` | How the band's edges are drawn |
 

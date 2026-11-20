@@ -7802,7 +7802,7 @@ fn draw_volume(
     let to_y = |volume: f64| inner_top + inner_h * (high - volume) / (high - low).max(f64::EPSILON);
     let base = to_y(0.0);
     let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
-    let opacity = volume_opacity(indicator);
+    let (up_alpha, down_alpha) = volume_alphas(indicator);
     let lit = state.picked == Some(indicator.id);
     // Lit, the glow goes down first, under every bar, and the bars over it
     // at full strength, whatever their opacity.
@@ -7830,7 +7830,8 @@ fn draw_volume(
                 let alpha = match (glow, lit) {
                     (true, _) => selection::glow_alpha(&state.theme),
                     (false, true) => 1.0,
-                    (false, false) => opacity,
+                    (false, false) if rising => up_alpha,
+                    (false, false) => down_alpha,
                 };
                 colors::set_source_alpha(cr, colour, alpha);
                 let _ = cr.fill();
@@ -8250,10 +8251,12 @@ fn draw_pane(
         }
         cr.restore().ok();
     }
-    stroke_pane_line(cr, stroke, &drawn.color, values, columns, &strip);
+    let alpha = drawn.indicator.line_alpha();
+    stroke_pane_line(cr, stroke, (&drawn.color, alpha), values, columns, &strip);
     if let Some((signal, colour)) = &signal {
         let stroke = indicators::Stroke::new(stroke.width, signal_style(drawn).unwrap_or(stroke.style));
-        stroke_pane_line(cr, stroke, colour, on_screen(signal, first, visible), columns, &strip);
+        let alpha = drawn.indicator.second_alpha();
+        stroke_pane_line(cr, stroke, (colour, alpha), on_screen(signal, first, visible), columns, &strip);
     }
     if lit {
         for (series, colour) in &lines {
@@ -8373,7 +8376,7 @@ fn draw_delta_line(
     cr.save().ok();
     cr.set_line_width(stroke.width);
     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
-    colors::set_source(cr, &drawn.color);
+    colors::set_source_alpha(cr, &drawn.color, drawn.indicator.line_alpha());
     let mut pen_down = false;
     for at in 0..columns.len() {
         let Some((x, y, starts)) = point(at) else {
@@ -8564,7 +8567,7 @@ fn draw_histogram(
 fn stroke_pane_line(
     cr: &cairo::Context,
     stroke: indicators::Stroke,
-    colour: &str,
+    (colour, alpha): (&str, f64),
     values: &[Option<f64>],
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
@@ -8572,7 +8575,7 @@ fn stroke_pane_line(
     cr.save().ok();
     cr.set_line_width(stroke.width);
     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
-    colors::set_source(cr, colour);
+    colors::set_source_alpha(cr, colour, alpha);
     let mut pen_down = false;
     for at in 0..columns.len() {
         let Some(Some(value)) = values.get(columns.offset(at)) else {
@@ -10104,6 +10107,13 @@ fn draw_drawing(
     let colour = style.colour.hex(&state.theme);
     match drawing.kind {
         DrawingKind::Line | DrawingKind::Horizontal | DrawingKind::Arrow | DrawingKind::Zigzag => {
+            // Drawn solid and laid down at its strength as one, so where a
+            // head sits over the line's end it is not twice as strong.
+            let alpha = style.colour_strength(drawing.kind);
+            let faded = alpha < 1.0;
+            if faded {
+                cr.push_group();
+            }
             colors::set_source(cr, &colour);
             cr.set_line_width(style.width);
             cr.set_line_cap(cairo::LineCap::Round);
@@ -10139,6 +10149,10 @@ fn draw_drawing(
                     arrowhead(cr, first.1, first.0, style.width, style.head);
                 }
             }
+            if faded {
+                let _ = cr.pop_group_to_source();
+                let _ = cr.paint_with_alpha(alpha);
+            }
         }
         DrawingKind::Rect => {
             let (x, y, w, h) = projected.bounds();
@@ -10156,7 +10170,7 @@ fn draw_drawing(
                 // keeps a hairline a hairline.
                 let width = style.width.max(1.0);
                 let half = width / 2.0;
-                colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                colors::set_source_alpha(cr, &colour, style.colour_strength(drawing.kind));
                 cr.set_line_width(width);
                 // Square ends on whole pixels, as the edge is: a hairline's
                 // dots are single pixels, not smudged discs.
@@ -10201,7 +10215,7 @@ fn draw_drawing(
             let _ = cr.fill();
             if style.border {
                 let width = style.width.max(1.0);
-                colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                colors::set_source_alpha(cr, &colour, style.colour_strength(drawing.kind));
                 cr.set_line_width(width);
                 set_edge_pattern(cr, style.line_style, width, 0.0);
                 ellipse(cr, width / 2.0);
@@ -10350,7 +10364,18 @@ fn draw_label(
     let ground = drawings::text_ground(drawing.kind, style, &state.theme);
     let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
     let at = crate::text::placement(drawing.kind, &drawing.text);
+    // Set solid and laid down at its strength as one, so glyphs that touch
+    // are not stronger where they meet.
+    let alpha = style.text.strength();
+    let faded = alpha < 1.0;
+    if faded {
+        cr.push_group();
+    }
     crate::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
+    if faded {
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint_with_alpha(alpha);
+    }
 }
 
 /// One leg of a stroke, with either end pulled in by half the line's width
@@ -10549,7 +10574,7 @@ fn draw_indicator_lines(
                 }
                 cr.save().ok();
                 cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
-                colors::set_source(cr, &drawn.color);
+                colors::set_source_alpha(cr, &drawn.color, drawn.indicator.line_alpha());
                 cr.set_line_width(stroke.width);
                 stroke_series(cr, values, &[], columns, to_y);
                 cr.restore().ok();
@@ -10596,7 +10621,7 @@ fn draw_indicator_lines(
                     }
                     cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
                     cr.set_line_width(band.stroke.width);
-                    colors::set_source(cr, &band_colour(band, drawn, &state.theme));
+                    colors::set_source_alpha(cr, &band_colour(band, drawn, &state.theme), band.line_alpha);
                     stroke_series(cr, &band.upper, &bands.starts, columns, to_y);
                     stroke_series(cr, &band.lower, &bands.starts, columns, to_y);
                 }
@@ -10606,7 +10631,7 @@ fn draw_indicator_lines(
                 if !stroke.is_hidden() {
                     cr.save().ok();
                     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
-                    colors::set_source(cr, &drawn.color);
+                    colors::set_source_alpha(cr, &drawn.color, drawn.indicator.line_alpha());
                     cr.set_line_width(stroke.width);
                     stroke_series(cr, &bands.center, &bands.starts, columns, to_y);
                     cr.restore().ok();
@@ -10729,7 +10754,7 @@ pub fn volume_colours(
 }
 
 /// How solid a volume pane's bars are drawn, kept within what the row offers
-/// so a hand-edited chart cannot make them vanish.
+/// so a hand-edited chart cannot draw them past either end.
 pub fn volume_opacity(indicator: &Indicator) -> f64 {
     use omacharts_engine::indicators::{DEFAULT_VOLUME_OPACITY, MIN_VOLUME_OPACITY};
     match indicator.params {
@@ -10738,6 +10763,13 @@ pub fn volume_opacity(indicator: &Indicator) -> f64 {
         }
         _ => DEFAULT_VOLUME_OPACITY,
     }
+}
+
+/// How solid a volume pane's rising and falling bars are drawn: each its
+/// own, or the pane's opacity.
+pub fn volume_alphas(indicator: &Indicator) -> (f64, f64) {
+    let both = volume_opacity(indicator);
+    indicator.params.volume_alphas().unwrap_or((both, both))
 }
 
 /// The colours one side of a volume profile is drawn in: its rows', and
@@ -11127,7 +11159,7 @@ fn draw_fib_drawing(
     let (left, right) = (projected.from.0.min(projected.to.0), projected.from.0.max(projected.to.0));
     cr.save().ok();
     // The swing itself, a quiet dashed guide.
-    colors::set_source_alpha(cr, colour, drawings::FIB_TREND_ALPHA);
+    colors::set_source_alpha(cr, colour, style.fib_trend_strength());
     cr.set_line_width(1.0);
     cr.set_dash(&[4.0, 4.0], 0.0);
     cr.move_to(projected.from.0, projected.from.1);
@@ -11145,7 +11177,7 @@ fn draw_fib_drawing(
             1 => y.round() + 0.5,
             _ => y.round(),
         };
-        colors::set_source_alpha(cr, &level.paint(&style.colour).hex(theme), drawings::FIB_ALPHA);
+        colors::set_source_alpha(cr, &level.paint(&style.colour).hex(theme), style.level_strength(level));
         cr.set_line_width(width);
         cr.set_dash(&level.stroke.style.dashes(width), 0.0);
         cr.move_to(left, y);
@@ -11204,7 +11236,7 @@ fn draw_fib_labels(
         if cut && x + extents.x_advance() + 2.0 > shown_right {
             continue;
         }
-        let drawn = omacharts_engine::theme::mix(&level.paint(&style.colour).hex(theme), bg, 1.0 - drawings::FIB_ALPHA);
+        let drawn = omacharts_engine::theme::mix(&level.paint(&style.colour).hex(theme), bg, 1.0 - style.level_strength(level));
         let ink = omacharts_engine::theme::held_to(&drawn, bg, drawings::TEXT_CONTRAST, None);
         // A plate of the chart's own background behind the text, so a label
         // laid over candles still reads, and reads as nothing else.
@@ -11285,7 +11317,7 @@ fn draw_vwap_drawing(
         if band.stroke.is_hidden() {
             continue;
         }
-        colors::set_source(cr, &band.paint(&style.colour).hex(&state.theme));
+        colors::set_source_alpha(cr, &band.paint(&style.colour).hex(&state.theme), band.edge_alpha());
         cr.set_line_width(band.stroke.width);
         cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
         for side in [1.0, -1.0] {
@@ -11306,7 +11338,7 @@ fn draw_vwap_drawing(
         return;
     }
     cr.save().ok();
-    colors::set_source(cr, colour);
+    colors::set_source_alpha(cr, colour, style.colour_strength(drawing.kind));
     match single {
         // One bar from the anchor: a dot where the line will start.
         true => {

@@ -29,10 +29,10 @@ impl Indicator {
     /// same of this compute the same output over the same bars.
     pub fn unpainted(&self) -> Indicator {
         let mut bare = self.clone();
-        let Indicator { id: _, kind: _, params, color, stroke, visible, above_price, in_legend } = &mut bare;
+        let Indicator { id: _, kind: _, params, color, alpha, stroke, visible, above_price, in_legend } = &mut bare;
         // Hidden or shown, an indicator is computed: showing it again is
         // only drawing what was already there.
-        blank!(color, stroke, visible, above_price, in_legend);
+        blank!(color, alpha, stroke, visible, above_price, in_legend);
         params.unpaint();
         bare
     }
@@ -164,16 +164,16 @@ impl Params {
                 outside_alpha,
                 poc_alpha,
             ),
-            Params::Volume { height, colouring, up_color, down_color, opacity } => {
-                blank!(height, colouring, up_color, down_color, opacity)
+            Params::Volume { height, colouring, up_color, down_color, opacity, up_alpha, down_alpha } => {
+                blank!(height, colouring, up_color, down_color, opacity, up_alpha, down_alpha)
             }
             Params::Cvd { reset: _, style, height, colouring } => blank!(style, height, colouring),
             // The levels are in what an RSI or a stochastic computes: its
             // guides and the band between them.
             Params::Rsi { period: _, height, overbought: _, oversold: _ } => blank!(height),
             Params::Atr { period: _, height } => blank!(height),
-            Params::Macd { fast: _, slow: _, signal: _, height, signal_color, signal_style } => {
-                blank!(height, signal_color, signal_style)
+            Params::Macd { fast: _, slow: _, signal: _, height, signal_color, signal_style, signal_alpha } => {
+                blank!(height, signal_color, signal_style, signal_alpha)
             }
             Params::Stochastic {
                 period: _,
@@ -184,7 +184,8 @@ impl Params {
                 oversold: _,
                 d_color,
                 d_style,
-            } => blank!(height, d_color, d_style),
+                d_alpha,
+            } => blank!(height, d_color, d_style, d_alpha),
             Params::SessionTimes { ranges } => ranges.iter_mut().for_each(TimeRange::unpaint),
         }
     }
@@ -193,8 +194,8 @@ impl Params {
 impl Band {
     fn unpaint(&mut self) {
         // A band that is off is computed anyway, so turning it on is paint.
-        let Band { deviations: _, enabled, color, fill, fill_alpha, stroke } = self;
-        blank!(enabled, color, fill, fill_alpha, stroke);
+        let Band { deviations: _, enabled, color, fill, fill_alpha, stroke, line_alpha } = self;
+        blank!(enabled, color, fill, fill_alpha, stroke, line_alpha);
     }
 }
 
@@ -231,6 +232,7 @@ impl Output {
                     series.fill = band.fill;
                     series.fill_alpha = band.alpha();
                     series.stroke = band.stroke;
+                    series.line_alpha = band.edge_alpha();
                 }
                 true
             }
@@ -306,6 +308,7 @@ mod tests {
             }
         };
         change("colour", &|i| i.color = red());
+        change("line opacity", &|i| i.alpha = Some(0.4));
         change("thickness", &|i| i.stroke.width = 4.0);
         change("line style", &|i| i.stroke.style = LineStyle::Dotted);
         change("hidden", &|i| i.visible = false);
@@ -323,6 +326,7 @@ mod tests {
                     band.fill = !band.fill;
                     band.fill_alpha = Some(0.4);
                     band.stroke.width = 2.5;
+                    band.line_alpha = Some(0.5);
                 }
             }
         });
@@ -428,14 +432,22 @@ mod tests {
                 *opacity = 0.5;
             }
         });
+        change("volume bars' opacity apart", &|i| {
+            if let Params::Volume { up_alpha, down_alpha, .. } = &mut i.params {
+                *up_alpha = Some(0.3);
+                *down_alpha = Some(0.6);
+            }
+        });
         change("second line", &|i| match &mut i.params {
-            Params::Macd { signal_color, signal_style, .. } => {
+            Params::Macd { signal_color, signal_style, signal_alpha, .. } => {
                 *signal_color = red();
                 *signal_style = Some(LineStyle::Dashed);
+                *signal_alpha = Some(0.5);
             }
-            Params::Stochastic { d_color, d_style, .. } => {
+            Params::Stochastic { d_color, d_style, d_alpha, .. } => {
                 *d_color = red();
                 *d_style = Some(LineStyle::Dashed);
+                *d_alpha = Some(0.5);
             }
             _ => {}
         });

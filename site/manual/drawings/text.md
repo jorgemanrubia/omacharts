@@ -19,7 +19,7 @@ One page with no tabs, since a text drawing is its words. What it says is typed 
 
 | Property | What it does | Default |
 |---|---|---|
-| **Colour** | The words' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme. It is lightened or darkened where it would not read against the chart | The configuration's |
+| **Colour** | The words' colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme. It is lightened or darkened where it would not read against the chart. Its **Opacity** is how solid the words are drawn | The configuration's, at 100% |
 | **Font** | **System font**, the desktop's own, named with its family, or any font installed on this computer | System font |
 | **Font size** | The words' size, 6 to 96 px. <kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>−</kbd> on the chart changes it a pixel at a time | 18 px |
 

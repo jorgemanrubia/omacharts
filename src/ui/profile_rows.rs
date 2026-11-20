@@ -19,7 +19,7 @@ use omacharts_engine::indicators::profile::{Method, DELTA_COLOURINGS};
 use omacharts_engine::BarColouring;
 
 pub use crate::ui::property_rows::{
-    COLOUR, LINE_STYLE, SHOW, THICKNESS, OPACITY, Transparency, colour_row, percent_row, switch_row,
+    COLOUR, LINE_STYLE, SHOW, THICKNESS, Transparency, colour_row, percent_row, switch_row,
     thickness_row,
 };
 #[cfg(test)]

@@ -1090,6 +1090,13 @@ impl Arrow {
 pub struct Style {
     /// A line's colour; a rectangle's edge.
     pub colour: Paint,
+    /// How solid `colour` is drawn, nought to one. Unset, as each kind was
+    /// drawn before it could be set: a line solid, a box's or an ellipse's
+    /// edge at [`BORDER_ALPHA`], a retracement's levels at [`FIB_ALPHA`].
+    /// A volume profile's outline has its own, [`ProfileLook::outline_alpha`].
+    /// See [`Style::colour_strength`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour_alpha: Option<f64>,
     /// A line's thickness; a rectangle's edge, when it has one.
     pub width: f64,
     #[serde(default)]
@@ -1190,9 +1197,17 @@ pub struct VwapBand {
     /// Its two edges. A width of zero draws none, which is how the inner
     /// band is a shade with no outline.
     pub stroke: Stroke,
+    /// How solid its edges are drawn. Unset, solid, as the study's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_alpha: Option<f64>,
 }
 
 impl VwapBand {
+    /// How solid its edges are drawn.
+    pub fn edge_alpha(&self) -> f64 {
+        strength_or(self.line_alpha, 1.0)
+    }
+
     /// The colour it is drawn in, under a line of `line`.
     pub fn paint<'a>(&'a self, line: &'a Paint) -> &'a Paint {
         self.colour.as_ref().unwrap_or(line)
@@ -1211,6 +1226,7 @@ pub fn vwap_bands() -> Vec<VwapBand> {
             fill: band.fill,
             fill_alpha: band.alpha(),
             stroke: band.stroke,
+            line_alpha: band.line_alpha,
         })
         .collect()
 }
@@ -1240,7 +1256,7 @@ pub const VWAP_BAND_COUNT: usize = 3;
 pub const MIN_VWAP_DEVIATIONS: f64 = 0.1;
 pub const MAX_VWAP_DEVIATIONS: f64 = 6.0;
 
-pub use crate::indicators::{LineStyle, Stroke};
+pub use crate::indicators::{strength_or, LineStyle, Stroke};
 pub use crate::indicators::vwap::Source as VwapSource;
 
 /// The ratios a Fibonacci retracement draws a level at, from the end of the
@@ -1364,11 +1380,15 @@ pub struct FibLevel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colour: Option<Paint>,
     pub stroke: Stroke,
+    /// How solid it is drawn. `None` is the drawing's own, and follows it:
+    /// see [`Style::level_strength`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f64>,
 }
 
 impl FibLevel {
     pub fn new(ratio: f64) -> FibLevel {
-        FibLevel { ratio, enabled: true, colour: None, stroke: Stroke::new(FIB_WIDTH, LineStyle::Solid) }
+        FibLevel { ratio, enabled: true, colour: None, stroke: Stroke::new(FIB_WIDTH, LineStyle::Solid), alpha: None }
     }
 
     /// The colour it is drawn in, on a drawing of `colour`.
@@ -1616,6 +1636,10 @@ pub struct TextStyle {
     /// printer's points.
     #[serde(default = "TextStyle::default_size")]
     pub size: f64,
+    /// How solid the words are drawn, nought to one. Unset, solid, as all
+    /// words were before it could be set. See [`TextStyle::strength`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f64>,
 }
 
 impl Default for TextStyle {
@@ -1634,11 +1658,16 @@ impl TextStyle {
     /// paint time, against the ground it lands on, so where the preset is
     /// already readable the word is the figure's colour exactly.
     pub fn of(preset: Preset) -> TextStyle {
-        TextStyle { colour: Paint::preset(preset), family: None, size: TEXT_SIZE }
+        TextStyle { colour: Paint::preset(preset), family: None, size: TEXT_SIZE, alpha: None }
     }
 
     fn default_size() -> f64 {
         TEXT_SIZE
+    }
+
+    /// How solid the words are drawn.
+    pub fn strength(&self) -> f64 {
+        strength_or(self.alpha, 1.0)
     }
 
     /// The family as a font system wants it: the name, or nothing at all for
@@ -1659,6 +1688,7 @@ impl Style {
     pub fn line(preset: Preset) -> Style {
         Style {
             colour: Paint::preset(preset),
+            colour_alpha: None,
             width: DEFAULT_WIDTH,
             arrow: Arrow::None,
             head: ArrowHead::Filled,
@@ -1683,6 +1713,7 @@ impl Style {
     pub fn rect(preset: Preset) -> Style {
         Style {
             colour: Paint::preset(preset),
+            colour_alpha: None,
             width: BORDER_WIDTH,
             arrow: Arrow::None,
             head: ArrowHead::Filled,
@@ -1736,6 +1767,29 @@ impl Style {
     /// box in nothing.
     pub fn text(preset: Preset) -> Style {
         Style { border: false, alpha: 0.0, ..Style::rect(preset) }
+    }
+
+    /// How solid `colour` is drawn on a drawing of `kind`: its own
+    /// strength, or what that kind was always drawn at.
+    pub fn colour_strength(&self, kind: Kind) -> f64 {
+        let designed = match kind {
+            Kind::Rect | Kind::Ellipse => BORDER_ALPHA,
+            Kind::Fib => FIB_ALPHA,
+            _ => 1.0,
+        };
+        strength_or(self.colour_alpha, designed)
+    }
+
+    /// How solid a retracement's level is drawn: its own strength, or the
+    /// drawing's.
+    pub fn level_strength(&self, level: &FibLevel) -> f64 {
+        strength_or(level.alpha, self.colour_strength(Kind::Fib))
+    }
+
+    /// The line from a retracement's start to its end: as much quieter than
+    /// its levels as [`FIB_TREND_ALPHA`] is than [`FIB_ALPHA`].
+    pub fn fib_trend_strength(&self) -> f64 {
+        self.colour_strength(Kind::Fib) * FIB_TREND_ALPHA / FIB_ALPHA
     }
 
     /// How solid a volume profile's value area is drawn: its alpha, faded
@@ -3381,6 +3435,44 @@ mod shape_tests {
 mod tests {
     use super::*;
 
+    /// Every drawing configuration stored before its colours carried an
+    /// opacity reads back with none set, drawn at its kind's own strength
+    /// as before; one nobody changed writes none, and one set comes back.
+    #[test]
+    fn a_style_stored_before_its_colours_had_an_opacity_reads_as_it_was_drawn() {
+        for kind in Kind::ALL {
+            let fresh = Style::of(kind, Preset::Blue);
+            let written = serde_json::to_string(&fresh).unwrap();
+            for key in ["colour_alpha", "line_alpha"] {
+                assert!(!written.contains(&format!("\"{key}\"")), "{kind:?} wrote {key}: {written}");
+            }
+            let read: Style = serde_json::from_str(&written).unwrap();
+            assert_eq!(read, fresh, "{kind:?}");
+            let designed = match kind {
+                Kind::Rect | Kind::Ellipse => BORDER_ALPHA,
+                Kind::Fib => FIB_ALPHA,
+                _ => 1.0,
+            };
+            assert_eq!(read.colour_strength(kind), designed, "{kind:?}");
+            assert_eq!(read.text.strength(), 1.0, "{kind:?}");
+            assert!((read.fib_trend_strength() - FIB_TREND_ALPHA).abs() < 1e-9, "{kind:?}");
+            for level in &read.fib.levels {
+                assert_eq!(read.level_strength(level), FIB_ALPHA, "{kind:?}: a level as the retracement's");
+            }
+        }
+        let mut set = Style::of(Kind::Vwap, Preset::Blue);
+        set.colour_alpha = Some(0.5);
+        set.text.alpha = Some(0.25);
+        set.vwap.bands[1].line_alpha = Some(0.4);
+        set.fib.levels[2].alpha = Some(0.1);
+        let read: Style = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+        assert_eq!(read.colour_strength(Kind::Vwap), 0.5);
+        assert_eq!(read.text.strength(), 0.25);
+        assert_eq!(read.vwap.bands[1].edge_alpha(), 0.4);
+        assert_eq!(read.vwap.bands[0].edge_alpha(), 1.0);
+        assert_eq!(read.level_strength(&read.fib.levels[2]), 0.1);
+    }
+
     /// A profile drawing, a volume profile study and a market profile
     /// stored before each part's transparency could be set read back with
     /// none set apart, so each is drawn as it was; and one nobody changed is
@@ -4535,6 +4627,7 @@ mod edge_grip_tests {
             fill: true,
             fill_alpha: 0.3,
             stroke: Stroke::new(2.5, LineStyle::Dashed),
+            line_alpha: Some(0.6),
         };
         let mut configs = Configurations::default();
         configs.set(Kind::Vwap, 7, style.clone());

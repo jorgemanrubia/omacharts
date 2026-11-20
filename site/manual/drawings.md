@@ -187,6 +187,8 @@ A drawing's colour is one of nine presets, or a hex colour.
 
 A preset changes with the theme ([Themes and colours](/manual/themes/)). A hex colour does not. **Custom…** in any colour row picks one.
 
+Every colour row carries its opacity: the colour's name, the swatch, then **Opacity**, a slider and a figure for how solid the colour is drawn, 100% solid and 0% invisible. The command line's `--*-transparency` flags set the same thing the other way up, as how much of the chart shows through.
+
 A label's colour is lightened or darkened when it would not read against the fill or the chart background.
 
 ## Text and labels

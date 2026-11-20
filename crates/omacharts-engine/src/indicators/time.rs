@@ -114,10 +114,11 @@ impl Hours {
     }
 }
 
-/// The least and the most a shading can be: below the one it is not there at
-/// all, and past the other it is no longer a background.
-pub const MIN_ALPHA: f64 = 0.02;
-pub const MAX_ALPHA: f64 = 0.6;
+/// The least and the most a shading can be: the whole of what an opacity
+/// is, as on every other colour's row. It was 2% to 60%, from when the
+/// shading had a row of its own; nothing stored outside that changes.
+pub const MIN_ALPHA: f64 = 0.0;
+pub const MAX_ALPHA: f64 = 1.0;
 
 /// The ranges people reach for, ready made.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

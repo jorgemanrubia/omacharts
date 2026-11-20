@@ -21,10 +21,9 @@ Two tabs: **General** for the circle itself and **Text** for a label in it. <kbd
 
 | Property | What it does | Default |
 |---|---|---|
-| **Background** | The fill's colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme | The configuration's |
-| **Opacity %** | How solid the fill is, 0 to 100%, on a slider with a box to type it in. At 100% the fill is solid and hides the candles under it; at 0% there is no fill, only the border | 13% |
+| **Background** | The fill's colour: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour that stays the same in every theme. Its **Opacity** is how solid the fill is, 0 to 100%: at 100% it hides the candles under it; at 0% there is no fill, only the border | The configuration's, at 13% |
 | **Border** | Draws an edge round the circle. Off leaves the fill on its own. The three border rows below show only while it is on | On |
-| **Border colour** | The edge's colour. The edge is drawn at about a third of the colour's strength, so it reads as the rim of the fill rather than a separate line | The configuration's |
+| **Border colour** | The edge's colour. Its **Opacity** is how solid the edge is drawn; at about a third, as shipped, it reads as the rim of the fill rather than a separate line | The configuration's, at 35% |
 | **Border thickness** | How thick the edge is, 0.5 to 12 px in halves | 1 px |
 | **Border style** | **Solid**, **Dashed** or **Dotted** | Solid |
 | **Select by border only** | Makes only the edge pick the circle up, whether or not a border is drawn. A click or a <kbd>Shift</kbd> + drag inside it then goes to the chart and the drawings under it. Turn it on for a large circle over bars you still want to click and draw on | Off |
@@ -35,7 +34,7 @@ Two tabs: **General** for the circle itself and **Text** for a label in it. <kbd
 |---|---|---|
 | **Position** | Where the label sits inside the circle, picked on a grid of nine: a corner, the middle of an edge, or the centre. Corners and edges are inside the curve, so a top-left label stays within the circle rather than in the corner of the box around it | Centre |
 | **Text** | The label's words. Empty means no label. Typing here drops any bold or italic; to set those, type on the chart instead ([Text and labels](/manual/drawings/#text-and-labels)) | Empty |
-| **Colour** | The label's colour. It is lightened or darkened where it would not read against the fill | The configuration's |
+| **Colour** | The label's colour, and its **Opacity**. It is lightened or darkened where it would not read against the fill | The configuration's, at 100% |
 | **Font** | **System font**, the desktop's own, named with its family, or any font installed on this computer | System font |
 | **Font size** | The label's size, 6 to 96 px. <kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>−</kbd> on the chart changes it a pixel at a time | 18 px |
 

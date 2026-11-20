@@ -240,13 +240,15 @@ A **palette name** (Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutra
 
 Each **Colour** row opens the theme's palette ([Themes and colours](/manual/themes/)). **Custom…** under it picks an exact colour. **Default**, first in the palette, goes back to the automatic colour.
 
+A colour and its opacity share one row: the colour's name, the swatch, then **Opacity**, a slider and a figure for how solid the colour is drawn, 100% solid and 0% invisible. The command line's `--transparency` and `--*-transparency` flags set the same thing the other way up, as how much of the chart shows through.
+
 | Row | Choices | Default |
 |---|---|---|
-| **Colour** | A palette name, or a custom colour | The next free colour of the sequence |
+| **Colour** | A palette name, or a custom colour, and its **Opacity** | The next free colour of the sequence, at 100% |
 | **Thickness** | No line, 1, 1.5, 2.5, 4 px | 1.5 px |
 | **Line style** | Solid, Dashed, Dotted | Solid |
 
-A MACD's signal line and a stochastic's %D have a second colour row, and a line style row under it. Left alone, the colour is a contrasting one from the theme and the line style is the first line's.
+A MACD's signal line and a stochastic's %D have a second colour row, and a line style row under it. Left alone, the colour is a contrasting one from the theme, its opacity and line style the first line's.
 
 ## Indicators on a chart on a template
 

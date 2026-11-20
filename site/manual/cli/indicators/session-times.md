@@ -20,7 +20,7 @@ indicator refuses them.
 | `--from TIME`, `--to TIME` | A time of day, written any way the editor takes: `9am`, `0930`, `21h30`, `1:30pm` | The range's hours, in the chart's time zone unless it has one of its own. `--to` before `--from` runs past midnight. ETH and RTH have none |
 | `--zone ZONE` | An IANA name such as `Europe/London`, or `chart` for the chart's own time zone | The clock the range's hours keep |
 | `--color C` | A colour | The range's shading. Every range's, when none is named |
-| `--shade-alpha F` | 0.02 to 0.6 | How solid the shading is. Every range's, when none is named |
+| `--shade-alpha F` | 0 to 1 | How solid the shading is. Every range's, when none is named |
 
 With one range, the flags change it without `--range`. With more, `--name`,
 `--from`, `--to` and `--zone` need `--range`, or come straight after

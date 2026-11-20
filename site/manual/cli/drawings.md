@@ -57,11 +57,13 @@ These work on every kind. Each kind's own are on its page.
 | `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing and an anchored VWAP take `--from` only |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
 | `--color C` | A colour | A line's colour; a box's or circle's edge |
+| `--color-transparency F` | 0 to 1, or `default` | How much of the chart shows through that colour. `default` is the kind's own: solid for a line, 0.65 for an edge, 0.3 for a Fib retracement's levels. Not a volume profile's or a text drawing's |
 | `--width F` | 0.5 to 12; 0 on an anchored VWAP | A line's thickness; an edge's; every level of a Fib retracement. 0 leaves an anchored VWAP only its bands |
 | `--line-style S` | `solid`, `dashed`, `dotted` | How a line, an arrow, a zig-zag, a box's or circle's edge, a volume profile's outline, or an anchored VWAP's line is drawn |
 | `--text WORDS` | Words; `""` | The whole of a text drawing; a label on any other. The empty string removes a label. `**bold**`, `*italic*` and `***both***` are read as emphasis, `\*` as an asterisk |
 | `--text-at WHERE` | `center`, `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left`, `bottom-right` | Where a figure's label sits; `center` by default |
 | `--text-color C` | A colour | The words' colour |
+| `--text-transparency F` | 0 to 1, or `default` for solid | How much of the chart shows through the words |
 | `--font FAMILY` | A family; `system` | The words' font. A family this machine lacks falls back to the system's |
 | `--font-size F` | 6 to 96 | The words' size in pixels |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
@@ -69,8 +71,8 @@ These work on every kind. Each kind's own are on its page.
 
 A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
-which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
-`--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
+which does not. Any of `--color`, `--color-transparency`, `--width`, `--arrow`, `--head`,
+`--border`, `--fill`, `--alpha`, `--text-color`, `--text-transparency`, `--font`, `--font-size`,
 `--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency` and the other `--*-transparency` flags, `--highlight-value-area`, `--value-area-color`, `--poc-width`, `--poc-style`, `--poc`, `--rows`, `--profile-method`, `--colouring`, `--profile-width`, the `--outline*` flags, `--source`, `--style`, `--bands`, the `--band-*` flags, `--levels`, `--fib-labels`, `--price-labels` and the `--level-*` flags gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.

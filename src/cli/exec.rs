@@ -2729,6 +2729,9 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
                     "kind": i["kind"],
                     "params": i["params"],
                     "color": i["color"],
+                    // How solid the line is drawn, beside its colour; null
+                    // while solid, as stored. --transparency is 1 less it.
+                    "alpha": i.get("alpha").cloned().unwrap_or(Value::Null),
                     "stroke": i["stroke"],
                     "visible": i["visible"],
                     // Absent from an indicator stored before it could be
@@ -3493,6 +3496,8 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
 fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> Value {
     let mut out = json!({
         "color": style.colour.spell(),
+        // As drawn, its own or the kind's.
+        "color_transparency": 1.0 - style.colour_strength(kind),
         // A retracement's thickness is its levels': the one they share, or
         // null when they differ.
         "width": match kind {
@@ -3507,6 +3512,7 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
         "fill": style.fill.spell(),
         "alpha": style.alpha,
         "text_color": style.text.colour.spell(),
+        "text_transparency": 1.0 - style.text.strength(),
         // Null for the desktop's own font, which is a role rather than a
         // family and resolves differently on another machine.
         "font": style.text.family_name(),
@@ -3553,6 +3559,7 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
                 "color": band.colour.as_ref().map(|paint| paint.spell()),
                 "shaded": band.fill,
                 "band_alpha": band.fill_alpha,
+                "transparency": 1.0 - band.edge_alpha(),
                 "width": band.stroke.width,
                 "style": band.stroke.style.label().to_lowercase(),
             })).collect::<Vec<_>>(),
@@ -3568,6 +3575,7 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
                 "enabled": level.enabled,
                 // Null for the drawing's own colour, which it follows.
                 "color": level.colour.as_ref().map(|paint| paint.spell()),
+                "transparency": 1.0 - style.level_strength(level),
                 "width": level.stroke.width,
                 "style": level.stroke.style.label().to_lowercase(),
             })).collect::<Vec<_>>(),
@@ -3737,6 +3745,12 @@ fn describe_text_style(style: &omacharts_engine::Style) -> String {
 /// and checked before any is written.
 struct StyleEdits {
     colour: Option<omacharts_engine::Paint>,
+    /// How solid the colour, the words, a band's edges and a level are
+    /// drawn, as strengths; `Some(None)` is `default`.
+    colour_alpha: Option<Option<f64>>,
+    text_alpha: Option<Option<f64>>,
+    band_line_alpha: Option<Option<f64>>,
+    level_alpha: Option<Option<f64>>,
     width: Option<f64>,
     arrow: Option<omacharts_engine::Arrow>,
     head: Option<omacharts_engine::ArrowHead>,
@@ -4014,6 +4028,10 @@ impl StyleEdits {
             },
             show_poc: switch("poc")?,
             colour: paint("color")?,
+            colour_alpha: Parts::part(m, "color-transparency")?,
+            text_alpha: Parts::part(m, "text-transparency")?,
+            band_line_alpha: Parts::part(m, "band-transparency")?,
+            level_alpha: Parts::part(m, "level-transparency")?,
             width,
             arrow,
             head,
@@ -4033,6 +4051,8 @@ impl StyleEdits {
 
     fn is_empty(&self) -> bool {
         self.colour.is_none()
+            && self.colour_alpha.is_none()
+            && self.text_alpha.is_none()
             && self.width.is_none()
             && self.arrow.is_none()
             && self.head.is_none()
@@ -4085,7 +4105,10 @@ impl StyleEdits {
     /// Whether anything is said about the look of a retracement's level, as
     /// opposed to which are drawn.
     fn edits_a_level(&self) -> bool {
-        self.level_colour.is_some() || self.level_width.is_some() || self.level_style.is_some()
+        self.level_colour.is_some()
+            || self.level_alpha.is_some()
+            || self.level_width.is_some()
+            || self.level_style.is_some()
     }
 
     /// Whether anything is said about the look of a band, as opposed to
@@ -4094,6 +4117,7 @@ impl StyleEdits {
         self.band_deviations.is_some()
             || self.band_shaded.is_some()
             || self.band_alpha.is_some()
+            || self.band_line_alpha.is_some()
             || self.band_colour.is_some()
             || self.band_width.is_some()
             || self.band_style.is_some()
@@ -4103,6 +4127,15 @@ impl StyleEdits {
     /// reads it: a line of no width is a line nobody can find, except on an
     /// anchored VWAP, whose bands are still there to see.
     fn check(&self, kind: omacharts_engine::DrawingKind) -> Result<(), Fault> {
+        // A profile's parts have their own; words have --text-transparency.
+        if self.colour_alpha.is_some()
+            && matches!(kind, omacharts_engine::DrawingKind::Profile | omacharts_engine::DrawingKind::Text)
+        {
+            return Err(Fault::usage(format!(
+                "--color-transparency is a line's or an edge's; a {} has none",
+                kind.label().to_lowercase()
+            )));
+        }
         if self.width == Some(0.0) && kind != omacharts_engine::DrawingKind::Vwap {
             return Err(Fault::usage(format!(
                 "--width 0 leaves only an anchored VWAP's bands; a {} needs {} to {}",
@@ -4200,6 +4233,12 @@ impl StyleEdits {
         if let Some(colour) = &self.colour {
             style.colour = colour.clone();
         }
+        if let Some(alpha) = self.colour_alpha {
+            style.colour_alpha = alpha;
+        }
+        if let Some(alpha) = self.text_alpha {
+            style.text.alpha = alpha;
+        }
         if let Some(width) = self.width {
             // A retracement's thickness is its levels'.
             match kind {
@@ -4218,6 +4257,9 @@ impl StyleEdits {
             }
             if let Some(colour) = &self.level_colour {
                 level.colour = colour.clone();
+            }
+            if let Some(alpha) = self.level_alpha {
+                level.alpha = alpha;
             }
             if let Some(width) = self.level_width {
                 level.stroke.width = width;
@@ -4356,6 +4398,9 @@ impl StyleEdits {
             }
             if let Some(alpha) = self.band_alpha {
                 band.fill_alpha = alpha;
+            }
+            if let Some(alpha) = self.band_line_alpha {
+                band.line_alpha = alpha;
             }
             if let Some(colour) = &self.band_colour {
                 band.colour = colour.clone();
@@ -4658,11 +4703,19 @@ struct Edits {
     poc_style: Option<LineStyle>,
     signal_style: Option<LineStyle>,
     d_style: Option<LineStyle>,
-    /// How far a volume profile fades, 0 as designed.
+    /// How much of the chart shows through a line, or a volume or market
+    /// profile's rows: 0 solid.
     transparency: Option<f64>,
     /// How solid each part of a profile is drawn, set apart from its rows';
     /// `Some(None)` follows them again.
     parts: Parts,
+    /// How solid a second line, a band's edges and volume's bars are
+    /// drawn, as `parts` are; `Some(None)` is `default`.
+    signal_alpha: Option<Option<f64>>,
+    d_alpha: Option<Option<f64>>,
+    band_line_alpha: Option<Option<f64>>,
+    up_alpha: Option<Option<f64>>,
+    down_alpha: Option<Option<f64>>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     /// `Some(None)` puts volume back on the chart's own colouring, and a
@@ -4853,6 +4906,11 @@ impl Edits {
             d_style: line_style(m, "d-style")?,
             transparency: bounded(m, "transparency", 0.0, 1.0)?,
             parts: Parts::of(m)?,
+            signal_alpha: Parts::part(m, "signal-transparency")?,
+            d_alpha: Parts::part(m, "d-transparency")?,
+            band_line_alpha: Parts::part(m, "band-transparency")?,
+            up_alpha: Parts::part(m, "up-transparency")?,
+            down_alpha: Parts::part(m, "down-transparency")?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -4998,6 +5056,11 @@ impl Edits {
             && self.d_style.is_none()
             && self.transparency.is_none()
             && self.parts.is_empty()
+            && self.signal_alpha.is_none()
+            && self.d_alpha.is_none()
+            && self.band_line_alpha.is_none()
+            && self.up_alpha.is_none()
+            && self.down_alpha.is_none()
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
@@ -5279,7 +5342,24 @@ impl Edits {
                     params["opacity"] = json!(omacharts_engine::indicators::profile::opaque());
                 }
                 IndicatorKind::MarketProfile => params["alpha"] = json!(1.0 - clear),
-                _ => return Err(refuse("transparency")),
+                // Volume has --opacity, and session shading --shade-alpha.
+                IndicatorKind::Volume | IndicatorKind::SessionTimes => return Err(refuse("transparency")),
+                // A line's: on the indicator beside its colour, written
+                // below with it.
+                _ => {}
+            }
+        }
+        for (alpha, key, what, kinds) in [
+            (self.signal_alpha, "signal_alpha", "signal line", kind == IndicatorKind::Macd),
+            (self.d_alpha, "d_alpha", "%D line", kind == IndicatorKind::Stochastic),
+            (self.up_alpha, "up_alpha", "up bars' transparency", kind == IndicatorKind::Volume),
+            (self.down_alpha, "down_alpha", "down bars' transparency", kind == IndicatorKind::Volume),
+        ] {
+            if let Some(alpha) = alpha {
+                match kinds {
+                    true => params[key] = json!(alpha),
+                    false => return Err(refuse(what)),
+                }
             }
         }
         let profiles = matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile);
@@ -5354,7 +5434,18 @@ impl Edits {
         }
         if let Some(opacity) = self.opacity {
             match kind == IndicatorKind::Volume {
-                true => params["opacity"] = json!(opacity),
+                // Both, so the bars' own strengths go, unless this command
+                // sets one of them again.
+                true => {
+                    params["opacity"] = json!(opacity);
+                    for (key, own) in [("up_alpha", self.up_alpha), ("down_alpha", self.down_alpha)] {
+                        if own.is_none()
+                            && let Some(params) = params.as_object_mut()
+                        {
+                            params.remove(key);
+                        }
+                    }
+                }
                 false => return Err(refuse("opacity")),
             }
         }
@@ -5393,7 +5484,11 @@ impl Edits {
         }
         // A VWAP and a Bollinger both carry bands, in the same shape, so both
         // answer to the same flags. Anything else has none.
-        if self.bands.is_some() || self.band_alpha.is_some() || self.deviations.is_some() {
+        if self.bands.is_some()
+            || self.band_alpha.is_some()
+            || self.band_line_alpha.is_some()
+            || self.deviations.is_some()
+        {
             let what = match self.deviations.is_some() {
                 true => "deviations",
                 false => "bands",
@@ -5431,6 +5526,9 @@ impl Edits {
                 if let Some(alpha) = self.band_alpha {
                     band["fill_alpha"] = json!(alpha);
                 }
+                if let Some(alpha) = self.band_line_alpha {
+                    band["line_alpha"] = json!(alpha);
+                }
                 if let Some(deviations) = self.deviations {
                     band["deviations"] = json!(deviations);
                 }
@@ -5445,6 +5543,11 @@ impl Edits {
             && kind != IndicatorKind::SessionTimes
         {
             stored["color"] = to_value(colour)?;
+        }
+        if let Some(clear) = self.transparency
+            && !matches!(kind, IndicatorKind::VolumeProfile | IndicatorKind::MarketProfile)
+        {
+            stored["alpha"] = json!(1.0 - clear);
         }
         if let Some(width) = self.width {
             stored["stroke"]["width"] = json!(width.max(0.0));
@@ -9491,7 +9594,7 @@ mod tests {
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(opacity(&store), Some(1.0));
 
-        for refused in ["chart indicator set volume --book Macro --opacity 0.1", "chart indicator set volume --book Macro --opacity 1.5"] {
+        for refused in ["chart indicator set volume --book Macro --opacity -0.1", "chart indicator set volume --book Macro --opacity 1.5"] {
             let out = run(refused, &store);
             assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
         }
@@ -11426,7 +11529,7 @@ mod tests {
     fn indicator_line_styles_and_a_profile_s_transparency_are_set_from_a_command() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
-        for kind in ["volume_profile", "macd", "stochastic", "rsi"] {
+        for kind in ["volume_profile", "macd", "stochastic", "rsi", "session_times"] {
             let out = run(&format!("chart indicator add {kind} --book Macro"), &store);
             assert_eq!(out.code, 0, "{kind}: {}", out.err);
         }
@@ -11459,7 +11562,7 @@ mod tests {
             "rsi --signal-style dashed",
             "rsi --d-style dashed",
             "macd --outline-style dotted",
-            "rsi --transparency 0.5",
+            "session_times --transparency 0.5",
             "volume_profile --transparency 1.5",
             "rsi --highlight-value-area off",
             "volume_profile --highlight-value-area maybe",
@@ -11468,6 +11571,135 @@ mod tests {
             "macd --signal-style wavy",
         ] {
             let out = run(&format!("chart indicator set {bad} --book Macro"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
+    }
+
+    /// Every study colour's transparency is set from a command beside it:
+    /// a line's on --transparency, a second line's, a band's edges' and
+    /// each direction of volume's on their own, `default` hands each back,
+    /// and an indicator without that colour refuses it.
+    #[test]
+    fn every_study_colour_takes_its_transparency_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        for kind in ["sma", "macd", "stochastic", "bollinger", "volume"] {
+            let out = run(&format!("chart indicator add {kind} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{kind}: {}", out.err);
+        }
+        for words in [
+            "sma --transparency 0.25",
+            "macd --transparency 0.5 --signal-transparency 0.75",
+            "stochastic --d-transparency 0.4",
+            "bollinger --band-transparency 0.6",
+            "volume --up-transparency 0.1 --down-transparency 0.3",
+        ] {
+            let out = run(&format!("chart indicator set {words} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        }
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        let near = |value: &Value, want: f64| value.as_f64().is_some_and(|v| (v - want).abs() < 1e-9);
+        let of = |n: usize| listed["indicators"][n].clone();
+        assert!(near(&of(0)["alpha"], 0.75), "{}", of(0));
+        assert!(near(&of(1)["alpha"], 0.5), "{}", of(1));
+        assert!(near(&of(1)["params"]["signal_alpha"], 0.25), "{}", of(1));
+        assert!(near(&of(2)["params"]["d_alpha"], 0.6), "{}", of(2));
+        assert!(near(&of(3)["params"]["bands"][0]["line_alpha"], 0.4), "{}", of(3));
+        assert!(near(&of(4)["params"]["up_alpha"], 0.9), "{}", of(4));
+        assert!(near(&of(4)["params"]["down_alpha"], 0.7), "{}", of(4));
+
+        // `default` follows the line again, and --opacity is both bars'.
+        for words in ["macd --signal-transparency default", "volume --opacity 0.5"] {
+            let out = run(&format!("chart indicator set {words} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        }
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert!(listed["indicators"][1]["params"]["signal_alpha"].is_null(), "{}", listed["indicators"][1]);
+        let volume = &listed["indicators"][4]["params"];
+        assert!(volume["up_alpha"].is_null() && volume["down_alpha"].is_null(), "{volume}");
+        assert_eq!(volume["opacity"], 0.5);
+
+        for bad in [
+            "sma --signal-transparency 0.5",
+            "sma --d-transparency 0.5",
+            "sma --band-transparency 0.5",
+            "sma --up-transparency 0.5",
+            "volume --transparency 0.5",
+            "sma --transparency 1.5",
+            "macd --signal-transparency -1",
+        ] {
+            let out = run(&format!("chart indicator set {bad} --book Macro"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
+        }
+    }
+
+    /// A drawing's colour, its words, an anchored VWAP band's edges and a
+    /// retracement level each take a transparency from a command, on a
+    /// configuration as on one drawing; the JSON says each as drawn, and
+    /// `default` hands back the kind's own.
+    #[test]
+    fn every_drawing_colour_takes_its_transparency_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let near = |value: &Value, want: f64| value.as_f64().is_some_and(|v| (v - want).abs() < 1e-9);
+        let span = "--from 2026-09-01,180 --to 2026-09-19,192";
+        let added = |kind: &str| {
+            let out = run(&format!("chart drawing add {kind} {span} --book Macro"), &store);
+            assert_eq!(out.code, 0, "{kind}: {}", out.err);
+            let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+            listed["drawings"].as_array().unwrap().iter().filter_map(|d| d["id"].as_u64()).max().expect("an id")
+        };
+        let style = |id: u64| {
+            let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+            let drawing = listed["drawings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["id"].as_u64() == Some(id))
+                .cloned()
+                .expect("the drawing");
+            drawing["style"].clone()
+        };
+        let set = |words: String| {
+            let out = run(&format!("chart drawing set --book Macro {words}"), &store);
+            assert_eq!(out.code, 0, "{words}: {}", out.err);
+        };
+
+        let rect = added("rect");
+        assert!(near(&style(rect)["color_transparency"], 0.65), "a box's edge as it always looked: {}", style(rect));
+        set(format!("--id {rect} --color-transparency 0.2 --text-transparency 0.5"));
+        assert!(near(&style(rect)["color_transparency"], 0.2), "{}", style(rect));
+        assert!(near(&style(rect)["text_transparency"], 0.5), "{}", style(rect));
+        set(format!("--id {rect} --color-transparency default"));
+        assert!(near(&style(rect)["color_transparency"], 0.65), "its own again: {}", style(rect));
+
+        let vwap = added("vwap");
+        set(format!("--id {vwap} --band 2 --band-transparency 0.4"));
+        let bands = style(vwap)["vwap"]["bands"].clone();
+        assert!(near(&bands[1]["transparency"], 0.4), "{bands}");
+        assert!(near(&bands[0]["transparency"], 0.0), "only the band named: {bands}");
+
+        let fib = added("fib");
+        assert!(near(&style(fib)["fib"]["levels"][0]["transparency"], 0.3), "{}", style(fib));
+        set(format!("--id {fib} --level 0.618 --level-transparency 0"));
+        let levels = style(fib)["fib"]["levels"].clone();
+        let at = |ratio: f64| levels.as_array().unwrap().iter().find(|l| near(&l["level"], ratio)).cloned().unwrap();
+        assert!(near(&at(0.618)["transparency"], 0.0), "{levels}");
+        assert!(near(&at(0.5)["transparency"], 0.3), "{levels}");
+
+        // A configuration carries them as one drawing does.
+        let out = run("chart drawing configure line --config 3 --color-transparency 0.5 --json", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(near(&json_of(&out)["style"]["color_transparency"], 0.5), "{}", out.out);
+        let line = added("line --config 3");
+        assert!(near(&style(line)["color_transparency"], 0.5), "a drawing follows it: {}", style(line));
+
+        for bad in [
+            format!("--id {rect} --color-transparency 2"),
+            format!("--id {rect} --band-transparency 0.5"),
+            format!("--id {rect} --level-transparency 0.5"),
+        ] {
+            let out = run(&format!("chart drawing set --book Macro {bad}"), &store);
             assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad} was taken: {}", out.out);
         }
     }

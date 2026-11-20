@@ -444,7 +444,15 @@ impl Kind {
                 expand_last: false,
                 expanded: Vec::new(),
             },
-            Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
+            Kind::Volume => Params::Volume {
+                height: 0.18,
+                colouring: None,
+                up_color: None,
+                down_color: None,
+                opacity: DEFAULT_VOLUME_OPACITY,
+                up_alpha: None,
+                down_alpha: None,
+            },
             Kind::Cvd => Params::Cvd {
                 reset: Some(Reset::Session),
                 style: cvd::Style::Candles,
@@ -464,7 +472,15 @@ impl Kind {
             // Twelve, twenty-six and nine, which is what Appel published and
             // what `ta.macd` defaults to.
             Kind::Macd => {
-                Params::Macd { fast: 12, slow: 26, signal: 9, height: 0.16, signal_color: None, signal_style: None }
+                Params::Macd {
+                fast: 12,
+                slow: 26,
+                signal: 9,
+                height: 0.16,
+                signal_color: None,
+                signal_style: None,
+                signal_alpha: None,
+            }
             }
             // TradingView's: fourteen bars, %K and %D each smoothed over three,
             // overbought at eighty and oversold at twenty.
@@ -477,6 +493,7 @@ impl Kind {
                 oversold: 20.0,
                 d_color: None,
                 d_style: None,
+                d_alpha: None,
             },
             // The extended hours, set back: what most charts of a market with
             // a regular session want, and the one range that needs no clock.
@@ -485,9 +502,17 @@ impl Kind {
     }
 }
 
-/// The least opacity a volume pane's bars take: below it they are hard to
-/// tell from the chart behind them.
-pub const MIN_VOLUME_OPACITY: f64 = 0.2;
+/// A strength somebody set, kept to nought to one, or `otherwise` when
+/// none was set or what was set is not a number: what every optional alpha
+/// on an indicator is read through.
+pub fn strength_or(set: Option<f64>, otherwise: f64) -> f64 {
+    set.filter(|alpha| alpha.is_finite()).map_or(otherwise, |alpha| alpha.clamp(0.0, 1.0))
+}
+
+/// The least opacity a volume pane's bars take: none, as every other
+/// colour's opacity can be set to. It was a fifth, from when the bars had a
+/// row of their own for it; nothing stored below that, so nothing changes.
+pub const MIN_VOLUME_OPACITY: f64 = 0.0;
 /// How solid volume bars are drawn unless somebody chose otherwise.
 pub const DEFAULT_VOLUME_OPACITY: f64 = 0.85;
 
@@ -773,6 +798,13 @@ pub enum Params {
         /// a choice opens at the default.
         #[serde(default = "default_volume_opacity")]
         opacity: f64,
+        /// How solid a rising and a falling bar are drawn, each set apart
+        /// from `opacity`. Unset, each follows it, as both did before they
+        /// could be told apart. See [`Params::volume_alphas`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_alpha: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        down_alpha: Option<f64>,
     },
     Cvd {
         /// The period the running delta starts again from nought at, or
@@ -818,6 +850,10 @@ pub enum Params {
         /// what it was drawn in before it could be set apart.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signal_style: Option<LineStyle>,
+        /// How solid the signal line is drawn. Unset is the MACD line's
+        /// own: see [`Indicator::second_alpha`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal_alpha: Option<f64>,
     },
     Stochastic {
         /// Bars whose range the close is placed in: %K's length.
@@ -837,6 +873,10 @@ pub enum Params {
         /// it could be set apart.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         d_style: Option<LineStyle>,
+        /// How solid the %D line is drawn. Unset is %K's own: see
+        /// [`Indicator::second_alpha`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        d_alpha: Option<f64>,
     },
     SessionTimes {
         /// The stretches of each day it shades, each in its own colour,
@@ -846,6 +886,14 @@ pub enum Params {
 }
 
 impl Params {
+    /// How solid a volume pane's rising and falling bars are drawn: each
+    /// its own strength, or the pane's opacity. `None` for any other kind.
+    pub fn volume_alphas(&self) -> Option<(f64, f64)> {
+        let Params::Volume { opacity, up_alpha, down_alpha, .. } = self else { return None };
+        let both = strength_or(Some(*opacity), DEFAULT_VOLUME_OPACITY);
+        Some((strength_or(*up_alpha, both), strength_or(*down_alpha, both)))
+    }
+
     /// The envelope this indicator carries, if it carries one.
     ///
     /// A VWAP and a Bollinger both do, and they are the same bands drawn by
@@ -989,6 +1037,13 @@ pub struct Indicator {
     pub params: Params,
     /// Unset means "whatever the palette offers for my slot".
     pub color: Option<ColorChoice>,
+    /// How solid `color` is drawn on a line or a strip's line, nought to
+    /// one. Unset, solid, as every line was drawn before it could be set.
+    /// A volume or market profile's rows have strengths of their own in
+    /// their params, and volume bars and session shading draw no line, so
+    /// those pay this no mind. See [`Indicator::line_alpha`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f64>,
     #[serde(default)]
     pub stroke: Stroke,
     pub visible: bool,
@@ -1066,12 +1121,29 @@ impl Indicator {
         }
     }
 
+    /// How solid its line is drawn: its own strength, or solid.
+    pub fn line_alpha(&self) -> f64 {
+        strength_or(self.alpha, 1.0)
+    }
+
+    /// How solid a strip's second line is drawn, a MACD's signal or a
+    /// stochastic's %D: its own strength, or the first line's.
+    pub fn second_alpha(&self) -> f64 {
+        let own = match &self.params {
+            Params::Macd { signal_alpha, .. } => *signal_alpha,
+            Params::Stochastic { d_alpha, .. } => *d_alpha,
+            _ => None,
+        };
+        strength_or(own, self.line_alpha())
+    }
+
     pub fn new(id: u32, kind: Kind) -> Indicator {
         Indicator {
             id,
             kind,
             params: kind.default_params(),
             color: None,
+            alpha: None,
             stroke: Stroke::default(),
             visible: true,
             above_price: false,
@@ -2000,6 +2072,53 @@ mod tests {
 
     use super::*;
 
+    /// Every indicator and band stored before its colours carried an
+    /// opacity reads back with none set, drawn as it always was; one nobody
+    /// changed writes none, and one set comes back as set.
+    #[test]
+    fn colours_stored_before_they_had_an_opacity_read_as_they_were_drawn() {
+        for kind in Kind::ALL {
+            let fresh = Indicator::new(1, kind);
+            let written = serde_json::to_value(&fresh).unwrap();
+            assert!(written.get("alpha").is_none(), "{kind:?} wrote its line's alpha: {written}");
+            for key in ["signal_alpha", "d_alpha", "up_alpha", "down_alpha", "line_alpha"] {
+                assert!(!written.to_string().contains(&format!("\"{key}\"")), "{kind:?} wrote {key}: {written}");
+            }
+            let read: Indicator = serde_json::from_value(written).unwrap();
+            assert_eq!(read, fresh, "{kind:?}");
+            assert_eq!(read.line_alpha(), 1.0, "{kind:?}: a line solid as before");
+            assert_eq!(read.second_alpha(), 1.0, "{kind:?}");
+        }
+        let volume = Indicator::new(1, Kind::Volume);
+        let opacity = match volume.params {
+            Params::Volume { opacity, .. } => opacity,
+            _ => unreachable!(),
+        };
+        assert_eq!(volume.params.volume_alphas(), Some((opacity, opacity)), "both bars at the one opacity");
+
+        let mut set = Indicator::new(1, Kind::Macd);
+        set.alpha = Some(0.4);
+        if let Params::Macd { signal_alpha, .. } = &mut set.params {
+            *signal_alpha = Some(0.6);
+        }
+        let read: Indicator = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+        assert_eq!((read.line_alpha(), read.second_alpha()), (0.4, 0.6));
+
+        let mut bands = Indicator::new(1, Kind::Bollinger);
+        if let Some(bands) = bands.params.bands_mut() {
+            bands[0].line_alpha = Some(0.3);
+        }
+        let read: Indicator = serde_json::from_str(&serde_json::to_string(&bands).unwrap()).unwrap();
+        assert_eq!(read.params.bands().map(|b| b[0].edge_alpha()), Some(0.3));
+
+        let mut volume = Indicator::new(1, Kind::Volume);
+        if let Params::Volume { up_alpha, down_alpha, .. } = &mut volume.params {
+            (*up_alpha, *down_alpha) = (Some(0.2), Some(0.9));
+        }
+        let read: Indicator = serde_json::from_str(&serde_json::to_string(&volume).unwrap()).unwrap();
+        assert_eq!(read.params.volume_alphas(), Some((0.2, 0.9)));
+    }
+
     /// A volume profile stored before its strength, highlight and value
     /// area colour could be set reads as it was drawn, its old fade kept;
     /// a new one writes none of the three, and one set writes them back.
@@ -2153,7 +2272,7 @@ mod tests {
     #[test]
     fn an_absurd_pane_height_is_brought_back_into_range() {
         let mut volume = Indicator::new(1, Kind::Volume);
-        volume.params = Params::Volume { height: 5.0, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY };
+        volume.params = Params::Volume { height: 5.0, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY, up_alpha: None, down_alpha: None };
         match compute(&volume, &bars(&[1.0, 2.0]), 0, Timeframe::days(1), None) {
             Output::Volume { height, .. } => assert_eq!(height, MAX_PANE_SHARE),
             other => panic!("{other:?}"),

@@ -182,6 +182,18 @@ omacharts chart set --chart pos:1 --template Momentum
 omacharts template indicator set Momentum rsi --period 21
 ```
 
+Every colour an indicator has carries how much of the chart shows through
+it, 0 solid to 1 invisible: `--transparency` is the line's,
+`--signal-transparency` and `--d-transparency` the MACD's and stochastic's
+second line's, `--band-transparency` a band's edges, and
+`--up-transparency` and `--down-transparency` volume's bars apart
+(`--opacity` is both, the other way up). `default` hands one back.
+
+```
+omacharts chart indicator set sma --transparency 0.5
+omacharts chart indicator set volume --down-transparency 0.4
+```
+
 **Shade the sessions.** Session Times is one indicator holding ranges, each
 shaded behind the bars. The "Default" template holds it with the extended
 hours set back, so changing it there changes every chart on it. Add London and a custom lunch hour, then recolour the second range:
@@ -276,7 +288,12 @@ configurations — `--config N`, shipped as the nine theme presets in order, 1
 being the up colour and 2 the down colour — or gets a look of its own from
 `--color`, `--width`, `--line-style solid|dashed|dotted`, `--arrow`, `--head`,
 `--fill`, `--alpha`, `--border`, and `--select-by-border on` for a box or an
-ellipse taken by its edge alone, its inside left to the chart. Prefer a
+ellipse taken by its edge alone, its inside left to the chart.
+`--color-transparency` is how much of the chart shows through the line or a
+box's edge, 0 to 1, or `default` for the kind's own (a box's edge ships at
+0.65); `--text-transparency`, `--band-transparency` and
+`--level-transparency` do the same for the words, an anchored VWAP band's
+edges and a retracement's level. Prefer a
 configuration or a preset name to a hex, so the drawing keeps following the
 desktop theme:
 
@@ -286,6 +303,7 @@ omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --con
 omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --config 5
 omacharts chart drawing list --json
 omacharts chart drawing set --id 1 --color ink --arrow end
+omacharts chart drawing set --id 1 --color-transparency 0.5
 omacharts chart drawing configs line --json
 omacharts chart drawing remove --id 2
 ```

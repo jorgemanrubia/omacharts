@@ -773,7 +773,9 @@ fn style_editor(
                 let theme = theme.clone();
                 Ink::new(move || style.borrow().colour.hex(&theme))
             };
-            let (row, show) = paint_row(&theme, property_rows::COLOUR, &style.borrow().colour, {
+            let (strength, show_strength) = colour_strength(&style, &emit, kind);
+            shows.push(show_strength);
+            let (row, show) = paint_row_with(&theme, property_rows::COLOUR, Some(strength), &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 let ink = ink.clone();
@@ -1339,7 +1341,9 @@ fn style_editor(
             // The bands' samples too: a band with no colour of its own is
             // drawn in the line's.
             let inks: Rc<RefCell<Vec<Ink>>> = Rc::new(RefCell::new(vec![ink.clone()]));
-            let (row, show) = paint_row(&theme, property_rows::COLOUR, &style.borrow().colour, {
+            let (strength, show_strength) = colour_strength(&style, &emit, kind);
+            shows.push(show_strength);
+            let (row, show) = paint_row_with(&theme, property_rows::COLOUR, Some(strength), &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 let inks = inks.clone();
@@ -1386,7 +1390,9 @@ fn style_editor(
         // opens on its own colour, thickness and pattern.
         Kind::Fib => {
             let inks: Rc<RefCell<Vec<Ink>>> = Rc::new(RefCell::new(Vec::new()));
-            let (row, show) = paint_row(&theme, property_rows::COLOUR, &style.borrow().colour, {
+            let (strength, show_strength) = colour_strength(&style, &emit, kind);
+            shows.push(show_strength);
+            let (row, show) = paint_row_with(&theme, property_rows::COLOUR, Some(strength), &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 let inks = inks.clone();
@@ -1437,8 +1443,12 @@ fn style_editor(
         // under an edge — and differ only in the outline drawn round them, so
         // they are edited by the same rows.
         Kind::Rect | Kind::Ellipse => {
-            // Background and how much of it shows.
-            let (row, show) = paint_row(&theme, property_rows::BACKGROUND, &style.borrow().fill, {
+            // Background and how much of it shows, on one row, as every
+            // colour is.
+            let (fill_strength, show_fill_strength) =
+                style_strength(&style, &emit, |s| s.alpha.clamp(0.0, 1.0), |s, alpha| s.alpha = alpha);
+            shows.push(show_fill_strength);
+            let (row, show) = paint_row_with(&theme, property_rows::BACKGROUND, Some(fill_strength), &style.borrow().fill, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |paint| {
@@ -1448,19 +1458,6 @@ fn style_editor(
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.fill)));
-
-            // As much of the chart through it as through a profile's rows,
-            // on the same slider and box.
-            let (alpha_row, show_alpha) = property_rows::transparency_row(1.0 - style.borrow().alpha, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |share| {
-                    style.borrow_mut().alpha = (1.0 - share).clamp(0.0, 1.0);
-                    emit();
-                }
-            });
-            group.add(&alpha_row);
-            shows.push(Rc::new(move |s: &Style| show_alpha(1.0 - s.alpha)));
 
             // The edge: whether, what colour, how thick, what pattern.
             let border_row = adw::SwitchRow::new();
@@ -1480,7 +1477,9 @@ fn style_editor(
                 let theme = theme.clone();
                 Ink::new(move || style.borrow().colour.hex(&theme))
             };
-            let (colour_row, show_colour) = paint_row(&theme, "Border colour", &style.borrow().colour, {
+            let (border_strength, show_border_strength) = colour_strength(&style, &emit, kind);
+            shows.push(show_border_strength);
+            let (colour_row, show_colour) = paint_row_with(&theme, "Border colour", Some(border_strength), &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 let ink = ink.clone();
@@ -1881,7 +1880,9 @@ fn text_rows(
 ) -> Vec<StyleRow> {
     let mut rows: Vec<StyleRow> = Vec::new();
 
-    let (row, show) = paint_row(theme, property_rows::COLOUR, &style.borrow().text.colour, {
+    let (strength, show_strength) =
+        style_strength(style, emit, |s| s.text.strength(), |s, alpha| s.text.alpha = Some(alpha));
+    let (row, show) = paint_row_with(theme, property_rows::COLOUR, Some(strength), &style.borrow().text.colour, {
         let style = style.clone();
         let emit = emit.clone();
         move |paint| {
@@ -1889,7 +1890,13 @@ fn text_rows(
             emit();
         }
     });
-    rows.push((row, Rc::new(move |s: &Style| show(&s.text.colour))));
+    rows.push((
+        row,
+        Rc::new(move |s: &Style| {
+            show(&s.text.colour);
+            show_strength(s);
+        }),
+    ));
 
     let (row, show) = font_row(&style.borrow().text, {
         let style = style.clone();
@@ -2272,24 +2279,19 @@ fn vwap_band_group(
     group.add(&shaded);
     shows.push(Rc::new(move |s: &Style| shaded.set_active(s.vwap.bands[index].fill)));
 
-    let shading = controls::bounded_row(
-        "Shading %",
-        None,
-        band.fill_alpha * 100.0,
-        omacharts_engine::indicators::bands::MIN_FILL_ALPHA * 100.0,
-        omacharts_engine::indicators::bands::MAX_FILL_ALPHA * 100.0,
-        1.0,
-        0,
-        {
-            let edit = edit.clone();
-            move |percent| edit(&|band| band.fill_alpha = percent / 100.0)
+    // How solid the shading is, titled as the study's band's.
+    let (shading, show_shading) = style_strength(
+        style,
+        emit,
+        move |s| s.vwap.bands[index].fill_alpha.clamp(0.0, 1.0),
+        move |s, alpha| {
+            if let Some(band) = s.vwap.bands.get_mut(index) {
+                band.fill_alpha = alpha;
+            }
         },
     );
-    group.add(&shading.row);
-    {
-        let adjustment = shading.adjustment.clone();
-        shows.push(Rc::new(move |s: &Style| adjustment.set_value(s.vwap.bands[index].fill_alpha * 100.0)));
-    }
+    group.add(&shading.alone(property_rows::SHADING, property_rows::SHADING_TIP));
+    shows.push(show_shading);
 
     // The band's own colour, or the line's while it has none: the same
     // answer the chart draws.
@@ -2331,7 +2333,18 @@ fn vwap_band_group(
         Some(default),
     );
     *shower.borrow_mut() = Some(show_paint.clone());
-    group.add(&property_rows::colour_row(property_rows::COLOUR, &button, None));
+    let (strength, show_strength) = style_strength(
+        style,
+        emit,
+        move |s| s.vwap.bands[index].edge_alpha(),
+        move |s, alpha| {
+            if let Some(band) = s.vwap.bands.get_mut(index) {
+                band.line_alpha = Some(alpha);
+            }
+        },
+    );
+    shows.push(show_strength);
+    group.add(&property_rows::colour_row(property_rows::COLOUR, &button, Some(strength)));
     {
         let ink = ink.clone();
         shows.push(Rc::new(move |s: &Style| {
@@ -2409,7 +2422,7 @@ fn fib_level_row(
             }
             let width = level.stroke.width;
             let y = (h as f64 / 2.0).round() + if (width.round() as i64) % 2 == 1 { 0.5 } else { 0.0 };
-            colors::set_source_alpha(cr, &ink.colour(), drawings::FIB_ALPHA);
+            colors::set_source_alpha(cr, &ink.colour(), style.level_strength(level));
             cr.set_line_width(width);
             cr.set_dash(&level.stroke.style.dashes(width), 0.0);
             cr.move_to(2.0, y);
@@ -2471,7 +2484,18 @@ fn fib_level_row(
         Some(default),
     );
     *shower.borrow_mut() = Some(show_paint.clone());
-    row.add_row(&property_rows::colour_row(property_rows::COLOUR, &button, None));
+    let (strength, show_strength) = style_strength(
+        style,
+        emit,
+        move |s| s.level_strength(&s.fib.levels[index]),
+        move |s, alpha| {
+            if let Some(level) = s.fib.levels.get_mut(index) {
+                level.alpha = Some(alpha);
+            }
+        },
+    );
+    shows.push(show_strength);
+    row.add_row(&property_rows::colour_row(property_rows::COLOUR, &button, Some(strength)));
     {
         let ink = ink.clone();
         shows.push(Rc::new(move |s: &Style| {
@@ -2661,17 +2685,37 @@ fn transparency_share(style: &Style) -> f64 {
     1.0 - style.profile_alpha()
 }
 
-fn paint_row(
-    theme: &Theme,
-    title: &str,
-    current: &Paint,
-    on_pick: impl Fn(Paint) + Clone + 'static,
-) -> (adw::ActionRow, Shower<Paint>) {
-    paint_row_with(theme, title, None, current, on_pick)
+/// How solid one of a style's colours is drawn, for its colour row: `read`
+/// says how solid it is now, and `write` sets it as it is moved, as a
+/// strength; and the way to show it a style.
+fn style_strength(
+    style: &Rc<RefCell<Style>>,
+    emit: &Rc<dyn Fn()>,
+    read: impl Fn(&Style) -> f64 + 'static,
+    write: impl Fn(&mut Style, f64) + 'static,
+) -> (property_rows::Transparency, Shower<Style>) {
+    let (transparency, show) = profile_rows::strength(read(&style.borrow()), {
+        let style = style.clone();
+        let emit = emit.clone();
+        move |alpha| {
+            write(&mut style.borrow_mut(), alpha);
+            emit();
+        }
+    });
+    (transparency, Rc::new(move |s: &Style| show(read(s))))
 }
 
-/// [`paint_row`] carrying how much of the chart shows through the colour,
-/// on the app's standard colour row ([`property_rows::colour_row`]).
+/// How solid a drawing of `kind` draws its colour, a line or an edge.
+fn colour_strength(
+    style: &Rc<RefCell<Style>>,
+    emit: &Rc<dyn Fn()>,
+    kind: Kind,
+) -> (property_rows::Transparency, Shower<Style>) {
+    style_strength(style, emit, move |s| s.colour_strength(kind), |s, alpha| s.colour_alpha = Some(alpha))
+}
+
+/// A row that picks a colour, carrying how much of the chart shows through
+/// it, on the app's standard colour row ([`property_rows::colour_row`]).
 fn paint_row_with(
     theme: &Theme,
     title: &str,
@@ -3402,7 +3446,8 @@ mod tests {
     /// Every drawing that has a stroke row of its own lists its colour, its
     /// thickness and its style in that order, as a study's line does, and
     /// its thickness is the study's spin row; a box's fill shows through
-    /// on the slider and box a profile's does.
+    /// on its Background row, and its edge on its Border colour row, as a
+    /// study's colours do, with no row of its own for either.
     #[test]
     fn a_drawing_s_stroke_and_fill_rows_are_the_studys() {
         crate::ui::on_gtk(|| {
@@ -3411,6 +3456,23 @@ mod tests {
             let edit = |kind: Kind| {
                 let editor = style_editor(&window, kind, Style::of(kind, Preset::Blue), Rc::new(|_| {}), Rc::new(|| None));
                 rows_of(&editor.group)
+            };
+            let carries = |row: &gtk::Widget, pick: &dyn Fn(&gtk::Widget) -> bool| {
+                let mut stack = vec![row.clone()];
+                while let Some(widget) = stack.pop() {
+                    if pick(&widget) {
+                        return true;
+                    }
+                    let mut next = widget.first_child();
+                    while let Some(c) = next {
+                        next = c.next_sibling();
+                        stack.push(c);
+                    }
+                }
+                false
+            };
+            let opacity = |row: &gtk::Widget| {
+                carries(row, &|w| w.is::<gtk::Scale>()) && carries(row, &|w| w.is::<gtk::SpinButton>())
             };
             for kind in [Kind::Line, Kind::Horizontal, Kind::Arrow, Kind::Zigzag] {
                 let rows = edit(kind);
@@ -3421,6 +3483,7 @@ mod tests {
                     "{kind:?}"
                 );
                 assert!(rows[1].is::<adw::SpinRow>(), "{kind:?}: the study's thickness row");
+                assert!(opacity(&rows[0]), "{kind:?}: the colour row carries its opacity");
             }
             for kind in [Kind::Rect, Kind::Ellipse] {
                 let rows = edit(kind);
@@ -3429,21 +3492,13 @@ mod tests {
                 assert_eq!(at("Border colour") + 1, at("Border thickness"), "{kind:?}: {titles:?}");
                 assert_eq!(at("Border thickness") + 1, at("Border style"), "{kind:?}: {titles:?}");
                 assert!(rows[at("Border thickness")].is::<adw::SpinRow>(), "{kind:?}");
-                let transparency = &rows[at(property_rows::OPACITY)];
-                let row = transparency.downcast_ref::<adw::ActionRow>().expect("an action row");
+                assert!(!titles.iter().any(|t| t.contains("Opacity")), "{kind:?}: no opacity row of its own: {titles:?}");
+                let background = &rows[at(property_rows::BACKGROUND)];
+                let row = background.downcast_ref::<adw::ActionRow>().expect("an action row");
                 assert!(row.subtitle().is_none_or(|s| s.is_empty()), "{kind:?}: no hint under it");
-                let mut entry = false;
-                let mut child = Some(transparency.clone());
-                let mut stack = Vec::new();
-                while let Some(widget) = child.take().or_else(|| stack.pop()) {
-                    entry |= widget.is::<gtk::SpinButton>();
-                    let mut next = widget.first_child();
-                    while let Some(c) = next {
-                        next = c.next_sibling();
-                        stack.push(c);
-                    }
-                }
-                assert!(entry, "{kind:?}: a box to type the figure in, as the study's has");
+                assert!(opacity(background), "{kind:?}: the background carries its opacity");
+                let entry = opacity(&rows[at("Border colour")]);
+                assert!(entry, "{kind:?}: the border carries its opacity");
             }
         });
     }
