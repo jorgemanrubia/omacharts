@@ -211,6 +211,16 @@ principles of a good screencast, which the scriptwriter also follows.
 - **No grid.** Charts in a video have their gridlines turned off, both
   ways, unless a script asks for them: the price and the drawings read
   cleaner without them. The author set this on 2026-11-08.
+- **Text on screen stays up long enough to read.** A caption, a label, a
+  key badge or a title holds at least four to five seconds, longer for
+  longer text, and never flashes on for a second or two: the author said
+  a short flash of text looks weird (2026-11-20). Key badges hold four
+  seconds, giving way only to the next badge.
+- **Every zoom fits.** A zoom frames everything it is about — a whole
+  menu, dialog, profile or row of letters — with nothing cut off at an
+  edge, and the render's review frames are checked for it. The author has
+  seen zooms that looked good but did not fit (2026-11-20). Use `frame`
+  for asked-for zooms, `keep` round menus and dialogs being clicked.
 - **Every video opens on its cover,** held about two and a half seconds
   with the music already playing, then faded into the first scene. The
   voice waits until the fade is over and the app has been on screen, silent,
