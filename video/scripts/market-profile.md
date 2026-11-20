@@ -151,19 +151,18 @@ profiles of letters fill the screen, October 12 at the left edge (x ≈
 2–18%) and October 13 in the middle (x ≈ 49–67%), each with its orange
 point of control line and its brighter value area. Nothing is selected and
 the cursor is off the chart. The profiles start Blue; on cue they turn
-Violet, then Teal, then Rose, and end back on Blue, each colour held at
+Violet, then Teal, and end back on Blue, each colour held at
 least four seconds. Nothing else moves.
 
 **Voice.** A market profile shows where the market spent its time.
 {violet}Read it by its shape: wide where the market traded for hours,
 narrow where it passed straight through. {teal}The wide part is where it
-accepted the price as value. {rose}Where it thins out, it turned the price
+accepted the price as value. Where it thins out, it turned the price
 away and moved on.
 {blue}It's a simple way to see value change hands.
 
     violet: cli chart indicator set market_profile --color Violet
     teal:   cli chart indicator set market_profile --color Teal
-    rose:   cli chart indicator set market_profile --color Rose
     blue:   cli chart indicator set market_profile --color Blue
     after: 1.0
 
@@ -221,16 +220,16 @@ That's excess: buyers turned those prices away fast.
 
 ### 6. A poor low
 
-**Picture.** The camera comes off October 9 and frames the bottom of
-October 12's profile: its lowest row has only K and L, the row above J, K
-and L, a flat, blunt bottom with no tail (x ≈ 33–37%, y ≈ 50–55%), framed
-with some of the profile above it for context.
+**Picture.** The camera comes off October 9, back through the full frame, and
+frames the whole of October 12's profile, top to bottom, its neighbours
+left outside the frame: its lowest row has only K and L, the row above J, K
+and L, a flat, blunt bottom with no tail (x ≈ 33–37%, y ≈ 50–55%).
 
 **Voice.** {low}The next session ends flat instead: a blunt bottom, and no
 tail. That's a poor low. It looks unfinished,
 and markets tend to come back to one.
 
-    low: frame 27% 22% 55% 62%
+    low: frame 24% 6% 52% 58%
     after: 0.6
 
 ### 7. Coming back
@@ -242,7 +241,7 @@ until it eases back to the full chart.
 
 **Voice.** {next}The next day did, trading right back through that low.
 
-    next: frame 29% 36% 80% 84%
+    next: frame 30% 6% 80% 82%
     after: 3.0
 
 ### 8. On a chart of your own
@@ -335,7 +334,7 @@ busiest price easy to spot, {close}even zoomed out.
 
 ### 14. Open and close
 
-**Picture.** A camera frame on the top of October 28's profile, so its
+**Picture.** A camera frame on the whole of October 28's profile, so its
 two small arrows read: the open's beside the first letter in the row of
 the opening price, pointing in at it, and the close's just past the last
 letter in the row of the closing price, pointing back at it. (The
@@ -345,7 +344,7 @@ cursor stays off the chart.
 **Voice.** {arrows}The two small arrows mark each session's open and close.
 The open points in at the first letter, and the close back at the last.
 
-    arrows: frame 2% 10% 30% 45%
+    arrows: frame 1% 6.5% 30% 60.5%
     after: 1.0
 
 ### 15. Zoom out
