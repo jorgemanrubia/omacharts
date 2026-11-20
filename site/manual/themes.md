@@ -145,6 +145,8 @@ crop: 751,500,1206,600   (the Line group and the palette, 16px layout margin rou
 | A swatch | The colour changes with the theme. |
 | **Custom…** | Opens the colour chooser. The colour picked there does not change with the theme. |
 
+Every palette colour can be seen on every shipped theme, light and dark. A line in it has at least 3:1 contrast against the chart, and a volume profile filled in it stands clear of the chart's background. A custom colour is kept exactly as picked, so a near white picked on a dark theme is near white on a light one too, where it all but disappears. For a plain colour that suits both, pick **Neutral**. The same goes for `--color`: a palette name changes with the theme and a `#rrggbb` does not.
+
 ## The Omarchy plugin's colours
 
 The Omarchy plugin takes its colours from the desktop theme, even when the window is on another theme ([Omarchy plugin](/manual/bar-widget/#what-it-shows)).
