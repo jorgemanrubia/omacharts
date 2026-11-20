@@ -362,8 +362,20 @@ pub trait Stream: Send + Sync {
     ) -> Result<Box<dyn Subscription>, ProviderError>;
 }
 
-/// An open subscription. It has no methods: dropping it is how it ends.
-pub trait Subscription: Send {}
+/// An open subscription. Dropping it is how it ends.
+pub trait Subscription: Send {
+    /// Bring the last bars up to date with the feed's own history: a chart
+    /// showing them has come back on screen, and whatever the stream may
+    /// have drawn short — a bar it joined part way through, one it asked
+    /// for whole before the feed had it — is to be asked for again, as it
+    /// stands now. What changes arrives as [`Update::Bar`]s, oldest first.
+    ///
+    /// Returns at once, and costs nothing on a feed whose every bar is
+    /// whole as it is streamed, which is what it does by default. A feed
+    /// that does something here keeps it cheap: the last few bars, never the
+    /// history, and not asked again within moments of the last time.
+    fn reconcile(&self) {}
+}
 
 /// One piece of news from a live ladder feed, in the order it was heard.
 #[derive(Clone, Debug, PartialEq)]

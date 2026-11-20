@@ -430,6 +430,15 @@ fn placeholder() -> Instrument {
 /// missing is asked for once it is due, with everything after it, and so
 /// is a bar the plant folded as forming that closed before it answered.
 ///
+/// The plant is not always that quick: at an open, with everybody asking,
+/// it can be a minute behind. An answer without the bar asked for, and
+/// with nothing after it either, is the plant still behind rather than a
+/// slot nobody traded in, and the bar is asked for again, each time twice
+/// as long after ([`Owed`]); the forming bar's minutes too. One that holds
+/// a later bar says the slot is empty, and it is not asked again. After
+/// [`PATIENCE`] misses a bar is left as it is until the next
+/// [`Fold::reconcile`], which a chart coming back on screen asks for.
+///
 /// Only a trade for a bar older than the one forming is dropped. That bar is
 /// the snapshot's, or is asked for whole.
 struct Fold {
@@ -441,9 +450,16 @@ struct Fold {
     /// The snapshot's own forming bar, and when the plant answered, in
     /// nanoseconds: a trade in it matched no later than that may be in it.
     counted: Option<(i64, i64)>,
-    /// Bars that may be missing trades, or missing altogether, by start:
-    /// asked for again, with every bar after them, once they have closed.
-    partial: Vec<i64>,
+    /// Bars that may be missing trades, or missing altogether: asked for
+    /// again, with every bar after them, once they have closed.
+    partial: Vec<Owed>,
+    /// Those asked for and not yet answered.
+    asked: Vec<Owed>,
+    /// The oldest bar asked for [`PATIENCE`] times and never had: the next
+    /// reconcile reaches back to it.
+    doubt: Option<i64>,
+    /// When the plant was last asked to reconcile, in seconds.
+    reconciled: Option<i64>,
     /// The next new bar is partial.
     fresh: bool,
     /// The forming bar the trades started part-way through, waiting for
@@ -469,12 +485,41 @@ struct Seed {
     after: i64,
     /// The size of the trades from `after` on, which those minutes do not.
     volume: f64,
-    /// Asked for already: it is asked once.
+    /// When to ask for its minutes, in seconds.
+    due: i64,
+    /// Asked for, and not yet answered.
     asked: bool,
+    /// Answers so far without its minutes.
+    missed: u32,
+}
+
+/// A bar to be asked for whole, with every bar after it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Owed {
+    start: i64,
+    /// When to ask, in seconds.
+    due: i64,
+    /// Answers so far that did not have it.
+    missed: u32,
 }
 
 /// The plant has a closed minute a few seconds after it closes.
 const SETTLED: i64 = 30;
+
+/// How many answers without a bar are taken for the plant being behind.
+/// Asked after [`SETTLED`] and then twice as long each time, the last ask
+/// is a quarter of an hour after the bar closed.
+const PATIENCE: u32 = 5;
+
+/// How long after an answer at `asked`, in seconds, that missed a bar for
+/// the `missed`th time, to ask for it again.
+fn again(asked: i64, missed: u32) -> i64 {
+    asked + (SETTLED << missed.min(PATIENCE))
+}
+
+/// How many bars before the newest a reconcile asks for, as the first
+/// snapshot overlaps what the chart holds.
+const RECONCILED: i64 = 5;
 
 impl Fold {
     fn new(timeframe: Timeframe, root: &str) -> Fold {
@@ -485,6 +530,9 @@ impl Fold {
             forming: None,
             counted: None,
             partial: Vec::new(),
+            asked: Vec::new(),
+            doubt: None,
+            reconciled: None,
             fresh: true,
             seed: None,
             ready: false,
@@ -561,8 +609,9 @@ impl Fold {
 
     /// The bar starting at `start` is to be asked for whole once closed.
     fn owe(&mut self, start: i64) {
-        if !self.partial.contains(&start) {
-            self.partial.push(start);
+        if !self.partial.iter().chain(&self.asked).any(|owed| owed.start == start) {
+            let due = start + self.timeframe.seconds() + SETTLED;
+            self.partial.push(Owed { start, due, missed: 0 });
         }
     }
 
@@ -606,7 +655,8 @@ impl Fold {
                     // bar has nothing to be seeded from.
                     if self.timeframe.seconds() > 60 {
                         let after = (ts.div_euclid(60) + 1) * 60;
-                        self.seed = Some(Seed { start, after, volume: 0.0, asked: false });
+                        let due = after + SETTLED;
+                        self.seed = Some(Seed { start, after, volume: 0.0, due, asked: false, missed: 0 });
                     }
                 }
                 self.forming = Some(Bar {
@@ -626,11 +676,15 @@ impl Fold {
     /// closed long enough ago for the plant to have them whole, taken off
     /// the list, and the forming bar's minutes once it has the first.
     fn due(&mut self, now: i64) -> Vec<i64> {
-        let length = self.timeframe.seconds();
-        let (mut due, waiting): (Vec<i64>, Vec<i64>) =
-            self.partial.iter().partition(|start| **start + length + SETTLED <= now);
+        let (owed, waiting): (Vec<Owed>, Vec<Owed>) = self.partial.iter().partition(|owed| owed.due <= now);
         self.partial = waiting;
-        if let Some(seed) = self.seed.as_mut().filter(|seed| !seed.asked && seed.after + SETTLED <= now) {
+        let mut due: Vec<i64> = owed.iter().map(|owed| owed.start).collect();
+        self.asked.extend(owed);
+        // A bar that has closed is asked for whole, not for its minutes.
+        if self.seed.is_some_and(|seed| seed.start + self.timeframe.seconds() <= now) {
+            self.seed = None;
+        }
+        if let Some(seed) = self.seed.as_mut().filter(|seed| !seed.asked && seed.due <= now) {
             seed.asked = true;
             if !due.contains(&seed.start) {
                 due.push(seed.start);
@@ -640,7 +694,7 @@ impl Fold {
     }
 
     /// What the plant answered, asked at `asked` in nanoseconds, for bars
-    /// from a start on: the bars it changed, oldest first.
+    /// from `start` on: the bars it changed, oldest first.
     ///
     /// A bar that had closed when the plant was asked is whole, and is
     /// taken as it is. The one forming then is its finished minutes, and
@@ -649,13 +703,32 @@ impl Fold {
     /// high and low of both. The size is the minutes' and that of the
     /// trades after them; the bar is asked for whole once closed, which
     /// settles it.
-    fn mend(&mut self, bars: &[Bar], asked: i64) -> Vec<Bar> {
+    ///
+    /// A bar asked for that the answer does not have, with nothing after
+    /// it either, is the plant behind: it is asked for again later, and so
+    /// are the forming bar's minutes when they were not there.
+    fn mend(&mut self, start: i64, bars: &[Bar], asked: i64) -> Vec<Bar> {
         let open = self.bucket(asked);
+        let seconds = asked.div_euclid(1_000_000_000);
+        if let Some(at) = self.asked.iter().position(|owed| owed.start == start) {
+            let owed = self.asked.remove(at);
+            if !bars.iter().any(|bar| bar.ts >= start) {
+                let missed = owed.missed + 1;
+                match missed < PATIENCE {
+                    true => self.partial.push(Owed { start, due: again(seconds, missed), missed }),
+                    false => self.doubt = Some(self.doubt.map_or(start, |doubt| doubt.min(start))),
+                }
+            }
+        }
         let mut changed = Vec::new();
         for bar in bars {
             if bar.ts < open {
                 if let Some(forming) = self.forming.as_mut().filter(|forming| forming.ts == bar.ts) {
                     *forming = *bar;
+                }
+                // Whole now, so its minutes are not wanted any more.
+                if self.seed.is_some_and(|seed| seed.start == bar.ts) {
+                    self.seed = None;
                 }
                 changed.push(*bar);
                 continue;
@@ -673,7 +746,33 @@ impl Fold {
             self.seed = None;
             changed.push(*forming);
         }
+        // Still waiting for its minutes: the plant had not got to them.
+        if let Some(seed) = self.seed.as_mut().filter(|seed| seed.asked && seed.start == start) {
+            seed.asked = false;
+            seed.missed += 1;
+            seed.due = again(seconds, seed.missed);
+            if seed.missed >= PATIENCE {
+                self.seed = None;
+            }
+        }
         changed
+    }
+
+    /// Where to ask the plant from at `now`, in seconds, to bring the last
+    /// bars up to date, when it is worth asking: the few before `newest`,
+    /// the newest bar the chart was sent, and back to any bar given up on.
+    ///
+    /// Not before a snapshot, which is the same answer and is on its way,
+    /// and not again within [`SETTLED`] of the last: a chartbook flicked
+    /// through and back asks once.
+    fn reconcile(&mut self, now: i64, newest: Option<i64>) -> Option<i64> {
+        if !self.ready || self.loading > 0 || self.reconciled.is_some_and(|at| now - at < SETTLED) {
+            return None;
+        }
+        let newest = newest?;
+        self.reconciled = Some(now);
+        let from = newest - RECONCILED * self.timeframe.seconds();
+        Some(self.doubt.take().map_or(from, |doubt| doubt.min(from)))
     }
 }
 
@@ -685,8 +784,11 @@ enum Event {
     /// nanoseconds.
     Loaded { bars: Result<Vec<Bar>, ProviderError>, asked: i64, at: i64 },
     /// A partial bar asked for again once it closed, and the bars after it,
-    /// as the plant has them, and when it was asked, in nanoseconds.
-    Whole { bars: Vec<Bar>, asked: i64 },
+    /// as the plant has them, and when it was asked, in nanoseconds:
+    /// nothing, when the plant had nothing or could not be asked.
+    Whole { start: i64, bars: Vec<Bar>, asked: i64 },
+    /// A chart showing the series came back on screen.
+    Reconcile,
     Stop,
 }
 
@@ -711,7 +813,11 @@ struct Live {
     events: mpsc::Sender<Event>,
 }
 
-impl Subscription for Live {}
+impl Subscription for Live {
+    fn reconcile(&self) {
+        let _ = self.events.send(Event::Reconcile);
+    }
+}
 
 impl Drop for Live {
     fn drop(&mut self) {
@@ -776,13 +882,12 @@ fn fetch(jobs: mpsc::Receiver<Job>, mut load: Load, clock: Clock, back: mpsc::Se
                 let bars = load(from);
                 Event::Loaded { bars, asked, at: clock() }
             }
+            // Sent back even with nothing in it: that is how the fold
+            // knows to ask again.
             Job::Whole(start) => {
                 let asked = clock();
                 let bars: Vec<Bar> = load(start).unwrap_or_default().into_iter().filter(|bar| bar.ts >= start).collect();
-                if bars.is_empty() {
-                    continue;
-                }
-                Event::Whole { bars, asked }
+                Event::Whole { start, bars, asked }
             }
         };
         if back.send(event).is_err() {
@@ -862,10 +967,17 @@ fn serve(
                 fold.failed();
                 say(Update::Lost(FetchFailure::from(&error)));
             }
-            Event::Whole { bars, asked } => {
-                for bar in fold.mend(&bars, asked) {
+            Event::Whole { start, bars, asked } => {
+                for bar in fold.mend(start, &bars, asked) {
                     sent(&bar, &mut newest);
                     say(Update::Bar(bar));
+                }
+            }
+            Event::Reconcile => {
+                if let Some(from) = fold.reconcile(clock().div_euclid(1_000_000_000), newest)
+                    && jobs.send(Job::Whole(from)).is_err()
+                {
+                    return;
                 }
             }
             // The trade a subscription opens with is folded as any other:
@@ -1288,6 +1400,10 @@ mod tests {
 
         fn trade(&self, seconds: i64, price: f64, size: u64) {
             self.send.send(Event::Live(rithmic::Live::Trade(trade(seconds, price, size)))).unwrap();
+        }
+
+        fn reconcile(&self) {
+            self.send.send(Event::Reconcile).unwrap();
         }
 
         fn next(&self) -> Update {
@@ -1785,17 +1901,210 @@ mod tests {
     }
 
     /// A snapshot that ends at the close before a halt, answered as the
-    /// market reopens, asks once for the hour in between, which has
-    /// nothing, rather than a bar at a time.
+    /// market reopens, asks for the hour in between at once rather than a
+    /// bar at a time. An answer with nothing in it may be the plant still
+    /// behind, so it is asked again a minute on; one that holds the first
+    /// bar after the halt says the hour was empty, and that is the last.
     #[test]
-    fn a_halt_is_asked_for_once() {
+    fn a_halt_is_asked_for_until_the_plant_is_past_it() {
         let mut fold = Fold::new(Timeframe::minutes(2), "ES");
         let reopens = AT + 3_720;
         fold.snapshot(&[ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0)], reopens * NANOS, (reopens + 2) * NANOS);
         fold.trade(&trade(reopens + 3, 2.0, 1)).unwrap();
         assert_eq!(fold.due(reopens + 4), vec![AT]);
-        assert_eq!(fold.mend(&[], reopens * NANOS), vec![]);
-        assert!(fold.due(reopens + 60).is_empty());
+        assert_eq!(fold.mend(AT, &[], (reopens + 4) * NANOS), vec![]);
+        assert!(fold.due(reopens + 63).is_empty());
+        assert_eq!(fold.due(reopens + 64), vec![AT], "asked again");
+        // The bar forming at the reopen, as far as its minutes go: the
+        // trades' to draw, but the plant is past the halt.
+        let first = ohlc(reopens, 2.0, 2.0, 2.0, 2.0, 1.0);
+        assert_eq!(fold.mend(AT, &[first], (reopens + 64) * NANOS), vec![]);
+        assert!((0..2_000).all(|later| fold.due(reopens + 64 + later).iter().all(|start| *start != AT)), "and not again");
+    }
+
+    /// A bar the plant never has is asked for [`PATIENCE`] times, each
+    /// twice as long after the last, and then left; the next reconcile
+    /// reaches back to it, and asks once however often it is asked.
+    #[test]
+    fn a_bar_the_plant_never_has_is_left_to_the_next_reconcile() {
+        let two = Timeframe::minutes(2);
+        let mut fold = Fold::new(two, "ES");
+        fold.snapshot(&[ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0)], (AT + 5) * NANOS, (AT + 5) * NANOS);
+        fold.trade(&trade(AT + 6, 2.0, 1)).unwrap();
+        // The seed's minutes, and then the bar whole, never there.
+        let mut asks = Vec::new();
+        for now in AT + 6..AT + 3_000 {
+            for start in fold.due(now) {
+                asks.push((start, now));
+                fold.mend(start, &[], now * NANOS);
+            }
+        }
+        let seeds: Vec<i64> = asks.iter().filter(|(_, at)| *at < AT + 120).map(|(_, at)| *at - AT).collect();
+        assert_eq!(seeds, vec![90], "the minutes, while the bar formed");
+        let wholes: Vec<i64> = asks.iter().filter(|(_, at)| *at >= AT + 120).map(|(_, at)| *at - AT).collect();
+        assert_eq!(wholes, vec![150, 210, 330, 570, 1_050], "the bar whole, five times");
+        assert!(asks.iter().all(|(start, _)| *start == AT));
+
+        assert_eq!(fold.reconcile(AT + 3_000, Some(AT + 2_880)), Some(AT), "back to it");
+        assert_eq!(fold.reconcile(AT + 3_010, Some(AT + 2_880)), None, "once");
+        assert_eq!(fold.reconcile(AT + 3_030, Some(AT + 2_880)), Some(AT + 2_880 - 600), "and then the last few");
+    }
+
+    /// Nothing is asked to reconcile before a snapshot, which is the same
+    /// answer and on its way.
+    #[test]
+    fn a_reconcile_before_the_snapshot_asks_nothing() {
+        let mut fold = Fold::new(Timeframe::minutes(2), "ES");
+        assert_eq!(fold.reconcile(AT, Some(AT - 600)), None);
+        fold.asking();
+        fold.snapshot(&[ohlc(AT - 120, 1.0, 1.0, 1.0, 1.0, 1.0)], AT * NANOS, AT * NANOS);
+        fold.asking();
+        assert_eq!(fold.reconcile(AT, Some(AT - 120)), None, "another on its way");
+    }
+
+    /// The bug, as a chartbook switched back to met it at an open: the
+    /// subscription opened early in a two-minute bar, and the plant, busy,
+    /// settled each bar over a minute after it closed rather than the half
+    /// minute the fold allowed. The bar left out of the snapshot, the
+    /// forming bar's minutes and that bar whole were each asked for once,
+    /// came back without what was asked, and were never asked again: the
+    /// chart kept a missing slot and a stub that opened at the first trade
+    /// heard. Each is asked again until the plant has it, and every bar
+    /// ends up as the plant has it.
+    #[test]
+    fn a_chart_switched_back_to_while_the_plant_is_slow_ends_up_with_every_bar_whole() {
+        let two = Timeframe::minutes(2);
+        let bar = AT;
+        let since = bar - 600;
+        let mut minutes: Vec<Bar> = (0..20)
+            .map(|i| {
+                let price = 100.0 + f64::from(i);
+                ohlc(bar - 1_200 + 60 * i64::from(i), price, price + 0.75, price - 0.25, price + 0.5, 10.0)
+            })
+            .collect();
+        // The forming bar, and the one after it, minute by minute; the
+        // trades below are these minutes' prints from the switch on.
+        minutes.push(ohlc(bar, 120.0, 126.0, 119.0, 125.0, 10.0));
+        minutes.push(ohlc(bar + 60, 125.0, 127.0, 124.5, 127.0, 7.0));
+        minutes.push(ohlc(bar + 120, 127.0, 128.0, 126.5, 127.5, 7.0));
+        minutes.push(ohlc(bar + 180, 127.5, 128.0, 127.0, 128.0, 7.0));
+        let prints: Vec<(i64, f64)> = vec![
+            (bar + 15, 125.0),
+            (bar + 50, 125.0),
+            (bar + 61, 125.0),
+            (bar + 90, 127.0),
+            (bar + 110, 124.5),
+            (bar + 119, 127.0),
+            (bar + 121, 127.0),
+            (bar + 150, 128.0),
+            (bar + 170, 126.5),
+            (bar + 179, 127.5),
+            (bar + 181, 127.5),
+            (bar + 200, 128.0),
+            (bar + 220, 127.0),
+            (bar + 239, 128.0),
+        ];
+        let truth = plant(&minutes, two, 0, bar + 240, 0);
+
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        let reading = clock.clone();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let asking = asked.clone();
+        let fed = minutes.clone();
+        let served = Served::start_at(two, Some(since), bar + 10, move |from| {
+            asking.lock().unwrap().push(from);
+            // Seventy-five seconds behind every close.
+            Ok(plant(&fed, two, 75, reading.load(Ordering::SeqCst), from))
+        });
+        let at = |seconds: i64| {
+            served.at(seconds);
+            clock.store(seconds, Ordering::SeqCst);
+        };
+        at(bar + 10);
+        served.watching();
+        let mut series = Vec::new();
+        drawn(&served, &mut series, |series| !series.is_empty());
+
+        // The trades, and then the market quiet but for a print every ten
+        // seconds at the last price, which is when the fold asks.
+        let mut feed: Vec<(i64, f64)> = prints.clone();
+        feed.extend((bar + 240..bar + 1_200).step_by(10).map(|t| (t, 128.0)));
+        for (t, price) in feed {
+            at(t);
+            served.trade(t, price, 1);
+            while let Ok(update) = served.heard.recv_timeout(std::time::Duration::from_millis(20)) {
+                match update {
+                    Update::Snapshot(bars) => series = bars,
+                    Update::Bar(bar) => {
+                        crate::stream::upsert(&mut series, bar);
+                    }
+                    Update::Lost(why) => panic!("lost: {why:?}"),
+                }
+            }
+        }
+
+        let slots: Vec<i64> = series.iter().map(|drawn| drawn.ts).filter(|ts| *ts >= since && *ts <= bar + 120).collect();
+        assert_eq!(slots, (0..=6).map(|i| since + 120 * i).collect::<Vec<_>>(), "no slot missing");
+        for drawn in series.iter().filter(|drawn| drawn.ts < bar + 120) {
+            assert_eq!(Some(drawn), truth.iter().find(|whole| whole.ts == drawn.ts), "{}", drawn.ts - bar);
+        }
+        // The bar after, the trades' from its first print: as the plant
+        // has it, but for the size of prints this test makes up.
+        let next = series.iter().find(|drawn| drawn.ts == bar + 120).unwrap();
+        let whole = truth.iter().find(|whole| whole.ts == bar + 120).unwrap();
+        assert_eq!((next.open, next.high, next.low, next.close), (whole.open, whole.high, whole.low, whole.close));
+        let asks = asked.lock().unwrap().len();
+        assert!(asks <= 10, "a handful of asks, not one a trade: {asks}");
+    }
+
+    /// A chart that comes back on screen asks the plant for the last few
+    /// bars of a series streamed all along, and a bar the trades drew
+    /// short is put right: once, however often it is asked within moments.
+    #[test]
+    fn a_reconcile_puts_the_last_bars_right() {
+        let two = Timeframe::minutes(2);
+        let bar = AT;
+        let whole = ohlc(bar - 120, 100.0, 104.0, 98.0, 101.0, 50.0);
+        let plant_bars = vec![ohlc(bar - 240, 99.0, 100.0, 98.0, 100.0, 40.0), whole];
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recording = calls.clone();
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(bar - 200));
+        let reading = clock.clone();
+        let served = Served::start_at(two, Some(bar - 240), bar - 200, move |from| {
+            recording.lock().unwrap().push(from);
+            // Each bar fifteen seconds after it closes; the forming one as
+            // far as it has got.
+            let now = reading.load(Ordering::SeqCst);
+            Ok(plant_bars.iter().copied().filter(|bar| bar.ts >= from && bar.ts <= now && (bar.ts + 135 <= now || bar.ts + 120 > now)).collect())
+        });
+        let at = |seconds: i64| {
+            served.at(seconds);
+            clock.store(seconds, Ordering::SeqCst);
+        };
+        served.watching();
+        let mut series = Vec::new();
+        drawn(&served, &mut series, |series| !series.is_empty());
+        // The trades heard of the bar after the snapshot's, short of it:
+        // some of its prints never arrived.
+        at(bar - 115);
+        served.trade(bar - 115, 100.5, 1);
+        at(bar + 5);
+        served.trade(bar + 5, 101.5, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.ts == bar));
+        let short = *series.iter().find(|drawn| drawn.ts == bar - 120).unwrap();
+        assert_ne!(short, whole);
+
+        at(bar + 20);
+        served.reconcile();
+        served.reconcile();
+        drawn(&served, &mut series, |series| series.iter().any(|drawn| *drawn == whole));
+        // A trade after both, to be sure the second asked nothing.
+        served.trade(bar + 21, 101.0, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.close == 101.0));
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.last(), Some(&(bar - RECONCILED * 120)), "the last few bars");
+        assert_eq!(calls.iter().filter(|from| **from == bar - RECONCILED * 120).count(), 1, "{calls:?}");
+        assert_eq!(series.last().map(|last| (last.ts, last.open)), Some((bar, 101.5)), "the forming bar left to the trades");
     }
 
     #[test]
