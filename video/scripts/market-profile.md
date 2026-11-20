@@ -52,7 +52,7 @@ with nothing moving, saying what it is about.
    and H, so only the profiles are left; zoom back out.
 4. **Make it yours.** A short loop through the profile's settings
    dialog, one change at a time with a beat to see each: Value area
-   percent, the point of control's colour and line, Outline, Display as
+   percent, the point of control's colour and line, the value area's colour, Display as
    Letters or Blocks, and Open and close, the small arrows marking where
    each session opened and closed. Esc after, so nothing stays selected.
 5. **Zoom out.** As the sessions shrink, letters too small to read turn
@@ -299,22 +299,24 @@ it.
 
     after: 0.5
 
-### 12. Outline
+### 12. The value area
 
 **Picture.** The cursor right-clicks October 28's profile, on the left, on its letters; its
 menu opens, the Reset every buttons along the top and **Properties…** at
 the bottom, which it clicks. The settings dialog opens in the middle of the
-window, the chart dimmed behind it. A click on the **Outline** switch in
-the Style group: a stepped edge appears round every profile's letters,
-behind the dialog. Esc closes the dialog, and Esc again deselects the
-study (it takes two more, the first lands while the dialog is still going), and the chart holds with the outlines on. The cursor goes off the
-chart.
+window, the chart dimmed behind it. The wheel runs the dialog down to its
+**Value area** group, and a click on its **Colour** swatch opens the
+palette; a click picks **Teal**. Behind the dialog, the value area's letters
+turn teal on every profile, the rows outside it staying a dimmer blue. Esc
+closes the palette, Esc closes the dialog, and the studio presses Esc until
+nothing is selected: the profiles show as they look, with no selection
+outline anywhere. The cursor goes off the chart.
 
-**Voice.** {menu}Its properties are a right-click away. An outline gives
-each profile a stepped edge, {close}so the shapes stand out.
+**Voice.** {menu}Its properties are a right-click away. Give the value area
+a colour of its own, and the prices the market accepted {close}stand out.
 
-    menu:  keep 9% 28% 31% 55%; rclick 10% 30%; wait 0.6; click 13% 50.7%; wait 0.8; keep 35% 8% 65% 92%; click 61.5% 83%
-    close: key Escape; wait 0.6; key Escape; wait 0.3; key Escape; move 40% 99.3%
+    menu:  keep 9% 28% 31% 55%; rclick 10% 30%; wait 0.6; click 13% 50.7%; wait 0.8; keep 35% 8% 65% 92%; scroll 50% 60% 15; wait 0.6; click 43% 44.6%; wait 0.6; click 40.4% 56.8%
+    close: key Escape; wait 0.6; key Escape; deselect; move 40% 99.3%
     after: 1.5
 
 ### 13. A heavier point of control
@@ -322,14 +324,14 @@ each profile a stepped edge, {close}so the shapes stand out.
 **Picture.** Right-click October 28's profile again, **Properties…**; the
 wheel runs the dialog down to its **Point of control** group, and the
 Thickness **+** is clicked twice: the orange lines thicken across every
-profile behind the dialog. Esc, Esc, and the chart holds with the heavier
-lines. The cursor goes off the chart.
+profile behind the dialog. Esc closes the dialog, the study is deselected,
+and the chart holds with the heavier lines. The cursor goes off the chart.
 
 **Voice.** {menu}The point of control can be thicker too, which makes the
 busiest price easy to spot, {close}even zoomed out.
 
     menu:  keep 9% 28% 31% 55%; rclick 10% 30%; wait 0.6; click 13% 50.7%; wait 0.8; keep 35% 8% 65% 92%; scroll 50% 60% 15; wait 0.6; click 61.9% 70.8%; wait 0.4; click 61.9% 70.8%
-    close: key Escape; wait 0.6; key Escape; wait 0.3; key Escape; move 40% 99.3%
+    close: key Escape; wait 0.6; key Escape; deselect; move 40% 99.3%
     after: 1.5
 
 ### 14. Open and close
@@ -349,7 +351,7 @@ The open points in at the first letter, and the close back at the last.
 
 ### 15. Zoom out
 
-**Picture.** The three outlined letter profiles, bars hidden, held. Nothing
+**Picture.** The three letter profiles, bars hidden, nothing selected, held. Nothing
 moves.
 
 **Voice.** Zoomed out, a profile still shows how its day went.
@@ -361,7 +363,7 @@ moves.
 **Picture.** The cursor rests near the right of the plot and the wheel
 zooms time out, nine notches: as the sessions shrink to about seven on
 screen, the letters turn into
-blocks, and the outlined shapes still read. Held a few seconds. Then six
+blocks, and the shapes still read. Held a few seconds. Then six
 more notches, to three weeks of sessions side by side, October 9 to 29, each a
 small block profile with its point of control line. Every profile on
 screen fits top to bottom. Held, the cursor off the chart.
