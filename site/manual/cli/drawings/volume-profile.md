@@ -3,7 +3,7 @@ title: "Volume profile"
 description: "The volume at each price over a span you choose"
 section: agents
 parent: cli/drawings
-nav_order: 9
+nav_order: 10
 ---
 
 `profile`, or `vp`, is a volume profile of the span between `--from` and `--to`, whose prices are ignored. `--color` is its outline and `--fill` its background, and it takes no `--text`. Its rows are set with the flags below, beside the ones [every drawing takes](/manual/cli/drawings/#flags). A profile of every period is the [Volume Profile](/manual/cli/indicators/volume/volume-profile/) indicator. What it draws, and its properties in the window, are in [Volume profile](/manual/drawings/volume-profile/).

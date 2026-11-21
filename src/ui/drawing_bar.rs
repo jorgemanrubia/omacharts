@@ -51,6 +51,7 @@ fn tool_group(kind: Option<Kind>) -> u8 {
 enum Button {
     Pointer,
     Measure,
+    Zoom,
     Draw(Kind),
 }
 
@@ -62,6 +63,7 @@ fn tooltip(button: Button) -> String {
     match button {
         Button::Pointer => shortcuts::tooltip_with_key("Pointer", "Escape"),
         Button::Measure => shortcuts::tooltip("Measure", "chart.measure"),
+        Button::Zoom => shortcuts::tooltip("Zoom", "chart.zoom"),
         Button::Draw(kind) => shortcuts::tooltip(kind.label(), &format!("chart.draw-{}", kind.key())),
     }
 }
@@ -92,6 +94,7 @@ pub struct DrawingBar {
     /// the pointer's never shown.
     badges: Vec<gtk::Label>,
     ruler: gtk::ToggleButton,
+    zoom: gtk::ToggleButton,
     /// Set while the buttons are being shown a state, so their own signal
     /// does not read as a click.
     showing: std::cell::Cell<bool>,
@@ -110,16 +113,24 @@ impl DrawingBar {
         self.showing.set(false);
     }
 
+    pub fn show_zoom(&self, armed: bool) {
+        self.showing.set(true);
+        self.zoom.set_active(armed);
+        self.showing.set(false);
+    }
+
     /// `on_arm` is told which tool was picked — `None` for the pointer —
     /// and whether it should stay in hand after each drawing, which is what
     /// Ctrl on the click asks for;
     /// `on_configure` which kind's configurations to open; `on_toggle` that
-    /// the toggle was pressed.
+    /// the toggle was pressed; `on_ruler` and `on_zoom` that the ruler or
+    /// the zoom tool was picked up.
     pub fn new(
         on_arm: impl Fn(Option<Kind>, bool) + Clone + 'static,
         on_configure: impl Fn(Kind) + Clone + 'static,
         on_toggle: impl Fn() + 'static,
         on_ruler: impl Fn() + 'static,
+        on_zoom: impl Fn() + 'static,
     ) -> Rc<DrawingBar> {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
         column.add_css_class("drawing-bar");
@@ -203,14 +214,7 @@ impl DrawingBar {
             buttons.push((Some(kind), button, icon));
         }
 
-        let ruler = gtk::ToggleButton::new();
-        ruler.add_css_class("drawing-tool");
-        ruler.add_css_class("flat");
-        ruler.set_size_request(TOOL, TOOL);
-        ruler.set_tooltip_text(Some(&tooltip(Button::Measure)));
-        let icon = gtk::DrawingArea::new();
-        icon.set_size_request(TOOL - 10, TOOL - 10);
-        icon.set_draw_func(|area, cr, w, h| {
+        let ruler = hand_tool(Button::Measure, |area, cr, w, h| {
             // GTK may give the icon more than its requested 26 pixels.
             cr.translate(w as f64 / 2.0 - 14.0, h as f64 / 2.0 - 14.0);
             let fg = area.color();
@@ -233,12 +237,15 @@ impl DrawingBar {
             }
             cr.stroke().ok();
         });
-        ruler.set_child(Some(&icon));
-        // Straight under the pointer, inside its rule: both change what the
-        // hand does on the chart, where everything below the rule draws.
+        let zoom = hand_tool(Button::Zoom, paint_zoom);
+        // Straight under the pointer, inside its rule: all three change what
+        // the hand does on the chart, where everything below the rule draws.
+        // The zoom tool under the ruler: both are put down once used.
         if let Some((_, pointer, _)) = buttons.first() {
             ruler.set_group(Some(pointer));
+            zoom.set_group(Some(pointer));
             column.insert_child_after(&ruler, Some(pointer));
+            column.insert_child_after(&zoom, Some(&ruler));
         }
 
         let bar = Rc::new(DrawingBar {
@@ -247,6 +254,7 @@ impl DrawingBar {
             buttons,
             badges,
             ruler,
+            zoom,
             showing: std::cell::Cell::new(false),
             sticky_press: std::cell::Cell::new(false),
         });
@@ -277,6 +285,17 @@ impl DrawingBar {
                     && !bar.showing.get()
                 {
                     on_ruler();
+                }
+            });
+        }
+        {
+            let weak = Rc::downgrade(&bar);
+            bar.zoom.connect_toggled(move |button| {
+                if let Some(bar) = weak.upgrade()
+                    && button.is_active()
+                    && !bar.showing.get()
+                {
+                    on_zoom();
                 }
             });
         }
@@ -360,6 +379,11 @@ impl DrawingBar {
     pub fn restyle(&self) {
         for (_, _, icon) in &self.buttons {
             icon.queue_draw();
+        }
+        for button in [&self.ruler, &self.zoom] {
+            if let Some(icon) = button.child() {
+                icon.queue_draw();
+            }
         }
     }
 
@@ -601,6 +625,56 @@ impl DrawingBar {
     }
 }
 
+/// A button for something the hand does on the chart other than drawing —
+/// the ruler, the zoom tool — with its sign drawn by `paint`.
+fn hand_tool(
+    button: Button,
+    paint: impl Fn(&gtk::DrawingArea, &gtk::cairo::Context, i32, i32) + 'static,
+) -> gtk::ToggleButton {
+    let toggle = gtk::ToggleButton::new();
+    toggle.add_css_class("drawing-tool");
+    toggle.add_css_class("flat");
+    toggle.set_size_request(TOOL, TOOL);
+    toggle.set_tooltip_text(Some(&tooltip(button)));
+    let icon = gtk::DrawingArea::new();
+    icon.set_size_request(TOOL - 10, TOOL - 10);
+    icon.set_draw_func(paint);
+    toggle.set_child(Some(&icon));
+    toggle
+}
+
+/// The zoom tool's sign: a lens with a box in it. The lens is what every
+/// application's zoom is; the box inside, dashed the way a selection is,
+/// says this one zooms to what you drag out rather than a step at a time.
+fn paint_zoom(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
+    let (w, h) = (w as f64, h as f64);
+    let fg = area.color();
+    let (r, g, b, a) = (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+    cr.set_source_rgba(r, g, b, a);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    cr.set_line_join(gtk::cairo::LineJoin::Round);
+    // The lens up and to the left, so the handle has the corner.
+    let (cx, cy, radius) = (w / 2.0 - 2.5, h / 2.0 - 2.5, 8.0);
+    cr.set_line_width(1.3);
+    cr.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
+    let _ = cr.stroke();
+    let reach = std::f64::consts::FRAC_1_SQRT_2;
+    cr.set_line_width(1.75);
+    cr.move_to(cx + (radius + 0.65) * reach, cy + (radius + 0.65) * reach);
+    cr.line_to(cx + (radius + 6.0) * reach, cy + (radius + 6.0) * reach);
+    let _ = cr.stroke();
+    // The box, square inside the lens, on whole pixels and dashed so a
+    // dash sits on each corner, which keeps it a box at 1x.
+    let half = 3.5;
+    let (x0, y0) = ((cx - half).round() + 0.5, (cy - half).round() + 0.5);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(r, g, b, a * 0.8);
+    cr.set_dash(&[2.0, 1.0], 0.5);
+    cr.rectangle(x0, y0, half * 2.0, half * 2.0);
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +685,7 @@ mod tests {
         crate::ui::on_gtk(|| {
             assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
             assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
+            assert_eq!(tooltip(Button::Zoom), "Zoom (Alt+X)");
             assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
             for kind in Kind::ALL {
                 let tip = tooltip(Button::Draw(kind));

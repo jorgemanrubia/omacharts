@@ -136,6 +136,8 @@ Tools and configurations:
 | <kbd>Alt</kbd> + <kbd>W</kbd> | An anchored VWAP from the bar clicked | [Anchored VWAP](/manual/drawings/anchored-vwap/) |
 | <kbd>Alt</kbd> + <kbd>F</kbd> | A Fib retracement of the swing dragged across | [Fib retracement](/manual/drawings/fib-retracement/) |
 | <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Measure](/manual/drawings/measure/) |
+| <kbd>Alt</kbd> + <kbd>X</kbd> | Zoom: drag a box, and the chart shows just that | [Zoom](/manual/drawings/zoom/) |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Back to the view before the last zoom | [Zoom](/manual/drawings/zoom/#going-back) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Configuration N, for the selected drawing or the one about to be drawn | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd>, held | A point being placed or dragged snaps to the open, high, low or close of the candle under it | [Drawings](/manual/drawings/) |
 

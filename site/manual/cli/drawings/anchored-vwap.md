@@ -3,7 +3,7 @@ title: "Anchored VWAP"
 description: "The volume-weighted average price from the bar you click"
 section: agents
 parent: cli/drawings
-nav_order: 10
+nav_order: 11
 ---
 
 `avwap`, or `vwap`, is an anchored VWAP from the bar at `--from` to the last bar, whose price is ignored. It takes no `--text`. Its line, source and bands are set with the flags below, beside the ones [every drawing takes](/manual/cli/drawings/#flags). What it draws, and its properties in the window, are in [Anchored VWAP](/manual/drawings/anchored-vwap/).

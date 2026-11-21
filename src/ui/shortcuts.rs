@@ -110,6 +110,11 @@ pub const BINDINGS: &[Binding] = &[
     // F for Fibonacci: there is no menu bar for it to be a mnemonic of.
     global("chart.draw-fib", &["<Alt>f"]),
     global("chart.measure", &["<Alt>m"]),
+    // X, beside Z on the keyboard: Z is the zig-zag's already. Back is the
+    // Z with Shift, which nothing had, the way Ctrl+Shift+Z is redo's in
+    // the applications that use it — a step the other way.
+    global("chart.zoom", &["<Alt>x"]),
+    global("chart.zoom-back", &["<Alt><Shift>z"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
     // Ctrl+Shift+B for the rail on the right, Ctrl+Shift+D for the tools on
     // the left.

@@ -238,6 +238,26 @@ impl Outcome {
     }
 }
 
+/// What a zoom, or a step back from one, left on the focused chart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Zoomed {
+    /// The chart, named back as every command names it.
+    pub chart: String,
+    /// Whether the view changed: false for a step back with none to take,
+    /// or a zoom on a chart with no bars.
+    pub changed: bool,
+    /// The first and last moments in view and the prices at the bottom and
+    /// top of the scale, after.
+    pub view: Option<(i64, i64, f64, f64)>,
+    /// How many zooms are left to step back through.
+    pub back: usize,
+}
+
+/// What `chart zoom` asks of the focused chart: the bars from one moment to
+/// another and, given them, the prices at the bottom and top of the scale.
+/// Passed as an `Option`, where `None` is a step back.
+pub type ZoomSpan = (i64, i64, Option<(f64, f64)>);
+
 /// The window, to a command typed in a terminal.
 ///
 /// Three methods, and all three exist because of one thing: the arrangement
@@ -266,6 +286,13 @@ pub trait Live {
         &self,
         _anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
     ) -> Result<(String, Option<omacharts_engine::measurement::Measurement>), Fault> {
+        Err(Fault::no_window("focused chart"))
+    }
+
+    /// Zoom the focused chart to the bars from one moment to another, the
+    /// price scale held at `prices` when given, or with `None` step back to
+    /// the view before its last zoom. Held by the chart on screen only.
+    fn zoom(&self, _span: Option<ZoomSpan>) -> Result<Zoomed, Fault> {
         Err(Fault::no_window("focused chart"))
     }
 
@@ -1320,6 +1347,10 @@ impl Live for Rc<crate::ui::Window> {
         anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
     ) -> Result<(String, Option<omacharts_engine::measurement::Measurement>), Fault> {
         Ok(crate::ui::Window::measure(self, anchors))
+    }
+
+    fn zoom(&self, span: Option<ZoomSpan>) -> Result<Zoomed, Fault> {
+        Ok(crate::ui::Window::zoom_focused(self, span))
     }
 
     fn profile(&self, id: Option<u32>, ts: i64, merge: bool) -> Result<String, Fault> {

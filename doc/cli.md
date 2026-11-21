@@ -1114,6 +1114,28 @@ not a forecast of exchange opening times. The ruler is not saved or shared.
 In the window, Alt+M or Measure in the drawing tools picks up the ruler: click,
 move, click; Escape clears it.
 
+## Zooming to a box
+
+With a window open, `chart zoom` shows the focused chart's bars from one
+moment to another and, given `--low` and `--high`, holds the price scale at
+those prices, as dragging a box with the Zoom tool does. `chart zoom back`
+returns to the view before the last zoom, one at a time:
+
+```sh
+omacharts chart zoom --from 2026-09-01 --to 2026-09-19 --low 180 --high 195
+omacharts chart zoom --from 2026-09-01T09:30 --to 2026-09-01T16:00 --json
+omacharts chart zoom back
+```
+
+Dates and times use the focused chart's time zone. Both bars named are shown
+whole. Without `--low` and `--high` the price scale is left as it is; with
+them it stops fitting the bars. The reply names the chart and what is now in
+view, and `--json` adds `back`, how many zooms are left to step back through.
+`back` with none left changes nothing and says so, exit 0. The zooms are
+forgotten when the chart's symbol or resolution changes, or it is reset. In
+the window, Alt+X or Zoom in the drawing tools picks up the tool: drag a box;
+Alt+Shift+Z goes back.
+
 ## Taking a picture of a chart
 
 ```

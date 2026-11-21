@@ -1395,6 +1395,21 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
+                name: "zoom",
+                about: "Zoom the focused chart to a box of time and prices, as the Zoom tool (Alt+X) does: the bars from --from to --to fill it and the price scale holds --low to --high, autoscale off; or, with back, return to the view before the last zoom (Alt+Shift+Z); requires a window",
+                args: &[Arg::opt("ACTION", "back: the view before the last zoom, one zoom at a time").of(&["back"])],
+                flags: &[
+                    Flag::valued("from", "WHEN", "the first bar shown: 2026-09-01 or 2026-09-01T14:30 in the chart's clock, or unix seconds"),
+                    Flag::valued("to", "WHEN", "the last bar shown; required with --from"),
+                    Flag::valued("low", "PRICE", "the price at the bottom of the scale; with --high, or neither, which leaves the scale as it is"),
+                    Flag::valued("high", "PRICE", "the price at the top of the scale"),
+                ],
+                example: "omacharts chart zoom --from 2026-09-01 --to 2026-09-19 --low 180 --high 195",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
                 name: "profile",
                 about: "List the focused chart's volume or market profiles, with their rows and high- and low-volume nodes on request (a market profile's rows count TPOs and name their letters, and its TPO periods with --tpos; each profile says which profile of the study it is drawn beside pairs with it), merge one at a moment into the one before it, or split a composite back into its periods; a market profile and the volume profiles of the same period merge and split together; expand a market profile at a moment, its TPOs laid out over time, a column for each TPO period at its bars, or collapse it back into a stack; requires a window",
                 args: &[Arg::req("ACTION", "what to do").of(&["list", "merge", "split", "expand", "collapse"])],

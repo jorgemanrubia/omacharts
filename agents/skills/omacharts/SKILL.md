@@ -331,6 +331,17 @@ anchors at opposite corners of the box it is drawn in, the same fill and
 edge, never held round. Reach for it over a box when the empty corners
 matter.
 
+**"Zoom in on that range" is `chart zoom`.** The bars from `--from` to `--to`
+fill the focused chart, and `--low` and `--high` hold the price scale there,
+off autoscale. Each zoom is remembered on that chart; `chart zoom back` returns
+to the one before, and its `--json` says how many are left. They are forgotten
+when the symbol or resolution changes.
+
+```
+omacharts chart zoom --from 2026-09-01 --to 2026-09-19 --low 180 --high 195
+omacharts chart zoom back
+```
+
 **A market profile, alone or beside a volume profile.** `market_profile` (TPO, or
 "market profile" in the picker) is time at price: each period cut into
 lettered TPO periods of `--tpo-minutes`, rows `--row-ticks` ticks tall or

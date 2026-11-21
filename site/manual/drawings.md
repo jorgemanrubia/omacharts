@@ -151,7 +151,7 @@ Each tool's page lists its properties, each with what it does and its default:
 | [Anchored VWAP](/manual/drawings/anchored-vwap/#properties) | Source, the line and three bands |
 | [Fib retracement](/manual/drawings/fib-retracement/#properties) | Colour, labels, and each level's look |
 
-[Measure](/manual/drawings/measure/) has no properties.
+[Measure](/manual/drawings/measure/) and [Zoom](/manual/drawings/zoom/) have no properties.
 
 ## Configurations
 
