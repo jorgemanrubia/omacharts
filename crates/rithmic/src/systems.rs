@@ -1,7 +1,7 @@
 //! The systems a Rithmic gateway offers, asked before anyone signs in.
 //!
 //! Every Rithmic system (Rithmic 01, Rithmic Paper Trading, a prop firm's
-//! own such as Tradeify) is reached through the same gateways, and a login
+//! own) is reached through the same gateways, and a login
 //! belongs to exactly one of them. A gateway names them to whoever asks,
 //! with no user or password: the ticker plant is dialled, asked, and let go,
 //! and nothing is signed in to.

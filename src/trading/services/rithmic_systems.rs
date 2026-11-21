@@ -1,6 +1,5 @@
 //! The Rithmic systems a login can be on, as Rithmic's production gateway
-//! names them: Rithmic 01, Rithmic Paper Trading, and each prop firm's own,
-//! such as Tradeify or LucidTrading.
+//! names them: Rithmic 01, Rithmic Paper Trading, and each prop firm's own.
 //!
 //! Asked of the gateway with no login (see `rithmic::systems`) and kept in
 //! `$XDG_DATA_HOME/omacharts/rithmic-systems.json`, so the sign-in dialog
@@ -80,14 +79,14 @@ mod tests {
         let _ = std::fs::remove_file(path());
         assert!(kept().is_none() && stale());
 
-        keep(&["Rithmic 01".into(), "Tradeify".into()]);
-        assert_eq!(kept().unwrap(), ["Rithmic 01", "Tradeify"]);
+        keep(&["Rithmic 01".into(), "Practice".into()]);
+        assert_eq!(kept().unwrap(), ["Rithmic 01", "Practice"]);
         assert!(!stale());
 
-        let old = Kept { asked: now() - FRESH.as_secs(), systems: vec!["Tradeify".into()] };
+        let old = Kept { asked: now() - FRESH.as_secs(), systems: vec!["Practice".into()] };
         std::fs::write(path(), serde_json::to_string(&old).unwrap()).unwrap();
         assert!(stale());
-        assert_eq!(kept().unwrap(), ["Tradeify"], "a stale list is still shown");
+        assert_eq!(kept().unwrap(), ["Practice"], "a stale list is still shown");
         let _ = std::fs::remove_file(path());
     }
 }

@@ -76,13 +76,17 @@ theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
-  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
-  # the fakes build numbers each account after its user, and holds a different day for each login
+  omacharts config set providers '["fake","yahoo"]'   # ES from the fakes build's invented feed
+  key ctrl+comma ; click Data, Fake Rich Feed's Sign in…, type any member number, Sign in ; Escape
+  omacharts trading login fake ; click User, type DEMO-0001, click Name, ctrl+a, type Demo, Sign in
+  omacharts trading login fake ; click User, type DEMO-0002, click Name, ctrl+a, type Practice, Sign in
+  # the fakes build numbers each account after its user, holds a different day for each login,
+  # and prices it off the chart
   omacharts chart set --symbol ES --resolution 15m
   omacharts trading cancel --all
-  omacharts trading exit --target 7640 --stop 7540
-  omacharts trading buy --limit 7550
+  at() { omacharts trading positions --json | jq ".positions[0].average $1"; }   # the Demo position's average
+  omacharts trading exit --target $(at +6) --stop $(at -8)
+  omacharts trading buy --limit $(at -5)
   move 1130 880
   (wait for, or close, the notices of the day's orders)
 capture: bin/headless-window shot /tmp/orders-on-chart.png

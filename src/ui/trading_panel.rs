@@ -1,5 +1,5 @@
 //! The trading panel, under the charts: the accounts, the positions held
-//! and the orders of the day, with "Cancel all · Lucid" for the default
+//! and the orders of the day, with "Cancel all · Demo" for the default
 //! account.
 //!
 //! Only ever built once a trading service login exists, and only the first time it
@@ -731,8 +731,8 @@ mod tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let panel = panel(&store);
-            let rithmic = crate::trading::fake::tests::test_login("a", "Lucid", "Rithmic Test");
-            let other = crate::trading::fake::tests::test_login("b", "Tradeify", "Rithmic Test");
+            let rithmic = crate::trading::fake::tests::test_login("a", "Demo", "Rithmic Test");
+            let other = crate::trading::fake::tests::test_login("b", "Practice", "Rithmic Test");
             panel.redraw(&View { logins: vec![rithmic, other], ..view(Vec::new()) });
             assert_eq!(panel.credited(), ["rithmic"]);
             let logos = panel.credits.first_child().expect("Rithmic's logos");

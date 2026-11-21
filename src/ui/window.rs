@@ -12497,7 +12497,7 @@ impl Window {
     }
 
     /// Say which account and feed a chart is on. The Account part names
-    /// the account, "Lucid 1234", with its trouble after it, while there
+    /// the account, "Demo 1234", with its trouble after it, while there
     /// is more than one account to be on. The Data feed part's dot is
     /// `serving`'s, told what the order passed over to reach it, while
     /// there is more than Yahoo to be on or connected to. With one account

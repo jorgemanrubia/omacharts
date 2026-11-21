@@ -229,7 +229,7 @@ pub struct ChartPane {
     /// The header's right: the corner the controls stand in until somebody
     /// moves them.
     corner: gtk::Box,
-    /// The Account part: which trading account the chart is on, "Lucid
+    /// The Account part: which trading account the chart is on, "Demo
     /// 1234", with its trouble after it. Clicked, it offers the accounts.
     /// Hidden with at most one account, which leaves nothing to choose,
     /// and a hidden child of the row takes no room at all.

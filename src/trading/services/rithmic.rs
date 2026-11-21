@@ -54,7 +54,7 @@ impl TradingService for Rithmic {
         system_of(login).to_string()
     }
 
-    /// Its system: "Rithmic Test", "LucidTrading".
+    /// Its system: "Rithmic Test", "DemoTrading".
     fn signs_in_to(&self, login: &Login) -> Option<String> {
         Some(system_of(login).to_string())
     }
@@ -756,8 +756,8 @@ mod tests {
     /// also where a new password for it goes.
     #[test]
     fn a_migrated_login_finds_its_password_where_it_was_kept() {
-        let migrated = r#"{"id":"1","name":"Lucid","broker":"rithmic","user":"trader",
-                           "values":[["system","LucidTrading"],["gateway","wss://x"]]}"#;
+        let migrated = r#"{"id":"1","name":"Demo","broker":"rithmic","user":"trader",
+                           "values":[["system","DemoTrading"],["gateway","wss://x"]]}"#;
         let login: Login = serde_json::from_str(migrated).unwrap();
         assert_eq!(crate::trading::service_for(&login.service).map(|service| service.id()), Some("rithmic"));
         assert_eq!(
@@ -765,11 +765,11 @@ mod tests {
             rithmic::Login::Keyring {
                 login: "1".into(),
                 user: "trader".into(),
-                system: "LucidTrading".into(),
+                system: "DemoTrading".into(),
                 url: "wss://x".into(),
             }
         );
-        assert_eq!(Rithmic.signs_in_to(&login).as_deref(), Some("LucidTrading"));
+        assert_eq!(Rithmic.signs_in_to(&login).as_deref(), Some("DemoTrading"));
         let bare = Login { values: Vec::new(), ..login };
         assert_eq!(system_of(&bare), rithmic::TEST_SYSTEM, "a login with no system is on Rithmic Test");
     }

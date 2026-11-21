@@ -99,17 +99,16 @@ Sources: [Rithmic APIs page](https://rithmic.com/apis) (Wix site, the page did n
 
 ### 1.4 Systems, gateways, URLs
 
-- A **system** is a named Rithmic environment: "Rithmic Test", "Rithmic Paper Trading", "Rithmic 01", or a firm's own system such as "Apex", "TopstepTrader", "LucidTrading", "Earn2Trade" or "Tradesea". A **gateway** is a regional server ("Chicago Area", "Aurora Area", "Europe", "Frankfurt", "Singapore", "Tokyo" and so on).
+- A **system** is a named Rithmic environment: "Rithmic Test", "Rithmic Paper Trading", "Rithmic 01", or a firm's own system, usually named after the firm, or "Tradesea". A **gateway** is a regional server ("Chicago Area", "Aurora Area", "Europe", "Frankfurt", "Singapore", "Tokyo" and so on).
   - R\|Trader Pro v17.106 showed 31 systems and 18 gateways for Rithmic 01. [pickmytrade server list](https://pickmytrade.io/help/rithmic/rithmic-server-list/) [tertiary, but a dated observation]
 - **The protocol can list them itself:**
   - `RequestRithmicSystemInfo` returns system names, sent before login.
   - `RequestRithmicSystemGatewayInfo` returns a system's `gateway_name[]` and `gateway_uri[]`.
   - So Omacharts can fill a "System" dropdown from the server instead of shipping a list. (fields in [rithmic-rs src/rti.rs](https://github.com/pbeets/rithmic-rs/blob/main/src/rti.rs))
 - **How a user picks:** the prop firm's welcome email or help page names the system and gateway, and the user selects them in the platform.
-  - Apex: "Apex" system, Chicago Area.
-  - Bulenox: "Rithmic Paper Trading", Chicago.
-  - BluSky, Elite Trader Funding and Take Profit Trader use the generic "Rithmic Paper Trading" system.
-  - Firms with dedicated systems since 2024 include 4PropTrader, DayTraders.com, 10XFutures, Lucid, Thrive, Legends, Earn2Trade, **Tradesea (Oct 2025)** and Halcyon (Apr 2026).
+  - Firm A: its own system, Chicago Area.
+  - Several firms use the generic "Rithmic Paper Trading" system, Chicago.
+  - About a dozen firms have had dedicated systems since 2024, as has **Tradesea (Oct 2025)**.
 
   Sources: [Linn Software: Rithmic prop firm support](https://www.linnsoft.com/support/rithmic-prop-firm-support) [secondary].
 - **URLs:**
@@ -138,7 +137,7 @@ Sources: [Rithmic APIs page](https://rithmic.com/apis) (Wix site, the page did n
 
 - **API / dev kit:** no public price list. A 2019–2020 forum post reports **$100/month for API access to Paper Trading** ([Elite Trader](https://www.elitetrader.com/et/threads/rithmic-api-for-python.334570/page-5)). Unverified and possibly stale.
 - **Broker examples** (Ironbeam): $25/month Rithmic connection fee, $0.10 per contract routing fee, non-professional L1 from $3/exchange/month, full CME L2 bundle $41/month. Ironbeam also says "all APIs include historical tick data back to December 2011". ([Ironbeam](https://www.ironbeam.com/rithmic-api-futures-trading/)) [secondary]
-- **Prop firms** usually bundle data. Tradeify: "does not charge data fees", but the user must sign the non-professional data agreement on first login, or they get delayed quotes. ([Tradeify platforms post](https://tradeify.co/post/futures-prop-trading-platforms-tradeify)) [primary]
+- **Prop firms** usually bundle data. Firm B: "does not charge data fees", but the user must sign the non-professional data agreement on first login, or they get delayed quotes. (the firm's own platforms page) [primary]
 
 ### 2.3 CME licensing
 
@@ -148,13 +147,13 @@ Sources: [Rithmic APIs page](https://rithmic.com/apis) (Wix site, the page did n
   - Fees are charged per device (session), per exchange, per month.
   - CME allows a non-professional at most **two concurrent market-data sessions** per distributor. A third pushes the user to professional rates (about $105/exchange or $420 for the bundle, multiplied per session, under the 2020 rule).
   - Rithmic's mitigation is **R\|Trader Pro plug-in mode**: other apps on the same machine connect through R\|Trader Pro and count as one session.
-  - Sources: [Optimus: CME fees, users and logins](https://community.optimusfutures.com/t/cme-market-data-fees-update-users-logins-and-data/3450), [Optimus plug-in article](https://optimusfutures.com/blog/r-trader-pro-plugin-how-to-avoid-professional-fees-with-concurrent-logins/), [Topstep help](https://intercom.help/topstep-llc/en/articles/8284189) [secondary]
+  - Sources: [Optimus: CME fees, users and logins](https://community.optimusfutures.com/t/cme-market-data-fees-update-users-logins-and-data/3450), [Optimus plug-in article](https://optimusfutures.com/blog/r-trader-pro-plugin-how-to-avoid-professional-fees-with-concurrent-logins/), a firm's help centre [secondary]
 - **CME list prices, Jan 2026** (as reported; the CME PDF did not download here): non-pro top of book $1.55/exchange or $4.65 for the 4-exchange bundle; non-pro depth $12.10/exchange or $36.50 for the bundle. ([pickmytrade fee page](https://pickmytrade.io/help/rithmic/rithmic-exchange-data-fees/) citing the [CME Jan 2026 fee list](https://www.cmegroup.com/market-data/files/january-2026-market-data-fee-list.pdf)) Brokers mark these up.
 - **Linux problem:** R\|Trader Pro desktop is **Windows-only** (a web version exists at `rtraderpro.rithmic.com/rtraderpro-web`). Plug-in mode is therefore not available on Omarchy. An Omacharts login is a direct session that counts toward the two-session limit. A user also running R\|Trader web or a phone app at the same time could become billable as professional. ([pickmytrade system requirements](https://pickmytrade.io/help/rithmic/rithmic-system-requirements/)) [tertiary on the web URL]
 
 ### 2.4 What prop-firm users need
 
-- **Sign Rithmic agreements and the market-data self-certification first.** This is usually done in R\|Trader Pro, but the repository plant can do it over the API. Without it, an API login fails even with valid credentials. ([async_rithmic #24](https://github.com/rundef/async_rithmic/issues/24), [DayTraders: signing agreements](https://help.daytraders.com/en/articles/10159643-signing-your-rithmic-agreements), [rithmic-rs Repository plant](https://github.com/pbeets/rithmic-rs#repository-plant))
+- **Sign Rithmic agreements and the market-data self-certification first.** This is usually done in R\|Trader Pro, but the repository plant can do it over the API. Without it, an API login fails even with valid credentials. ([async_rithmic #24](https://github.com/rundef/async_rithmic/issues/24), a firm's help centre on signing agreements, [rithmic-rs Repository plant](https://github.com/pbeets/rithmic-rs#repository-plant))
 - **Use the right system and gateway**, and the firm-issued Rithmic user ID, which is not always the firm's portal login.
 - **Third-party API entitlement.** Reports say a user ID can log in to R\|Trader Pro yet get "permission denied" on R\|Protocol, and that free Rithmic trial IDs cannot use R\|Protocol at all. ([async_rithmic #24](https://github.com/rundef/async_rithmic/issues/24), [Sierra Chart support board](https://www.sierrachart.com/SupportBoard.php?ThreadID=107178), [pickmytrade access-denied article](https://blog.pickmytrade.io/rithmic-access-denied-api-access-level-error-fix/) [tertiary])
 - **The firm must allow the platform** (section 4).
@@ -166,7 +165,7 @@ Sources: [Rithmic APIs page](https://rithmic.com/apis) (Wix site, the page did n
 ### 3.1 Tradesea
 
 - **What it is.** A web and mobile (iOS; Android in beta) futures platform on Rithmic. TradingView-powered charts with chart trading (drag SL/TP), a DOM ladder with one-click entry and draggable orders, and three entry modes (Scalp / DOM / Order). Brackets, OCO and trailing stops. Multi-account management with an account selector. A lead/follower copier. Personal daily loss and profit limits, position risk settings, and **personal lockouts**. The **Compass** journal auto-logs and tags every fill. **Polaris** is an AI assistant wired to the user's own trades.
-- **Distribution.** Only through partner prop firms and brokers, with pricing set by the firm. It has its **own Rithmic system** (since Oct 2025). Partners reported in 2026: Lucid, Tradeify, BluSky, FundedSeat (add-on fee), Halcyon, EdgeProp, Onyx, Tradentry, YRM Prop.
+- **Distribution.** Only through partner prop firms and brokers, with pricing set by the firm. It has its **own Rithmic system** (since Oct 2025). About ten partner firms were reported in 2026, some charging an add-on fee.
 - **Onboarding.** Account Centre, then Connect New, then pick the firm, enter the Rithmic credentials, pick Simulation or Live, and verify status.
 - **What stands out:** zero install; a TradingView-like workspace instead of a legacy DOM tool; one place for execution, journal and AI; multi-prop-account handling; risk lockouts.
 - **Reported weaknesses:** mobile lag, bracket slippage, a thinner order-flow toolset (no footprint or volume-profile emphasis), Rithmic only, and it does not enforce firm payout or consistency rules.
@@ -177,8 +176,8 @@ Sources: [Rithmic platforms page](https://www.rithmic.com/platforms), [tradingfu
 
 | Platform | Rithmic onboarding | Notable for prop traders |
 |---|---|---|
-| **Quantower** | Connection screen: user, password, server ("Rithmic Paper Chicago" / "Rithmic Aurora Chicago" or a firm's system); optional "Use RTrader" plug-in mode; "Enable MBO" toggle. ([help](https://help.quantower.com/connections/connection-to-rithmic)) | DOM Trader, chart trading, footprint/cluster and volume analysis (paid tier), multi-account. Free for many prop firms (Tradeify unlocks it with Tradesea). |
-| **Volumetrica / DeepCharts** | Select Rithmic, use the firm credentials. Bundled free by some firms (FundedSeat, Phidias, YRM). ([tradingfunder](https://tradingfunder.com/platforms/volumetrica/)) | Order-flow first: volume profile, footprint, DeepMap heatmap, T&S, web version, copier. Volumetrica also sells prop-firm risk infrastructure. |
+| **Quantower** | Connection screen: user, password, server ("Rithmic Paper Chicago" / "Rithmic Aurora Chicago" or a firm's system); optional "Use RTrader" plug-in mode; "Enable MBO" toggle. ([help](https://help.quantower.com/connections/connection-to-rithmic)) | DOM Trader, chart trading, footprint/cluster and volume analysis (paid tier), multi-account. Free for many prop firms (Firm B unlocks it with Tradesea). |
+| **Volumetrica / DeepCharts** | Select Rithmic, use the firm credentials. Bundled free by some firms. ([tradingfunder](https://tradingfunder.com/platforms/volumetrica/)) | Order-flow first: volume profile, footprint, DeepMap heatmap, T&S, web version, copier. Volumetrica also sells prop-firm risk infrastructure. |
 | **ATAS** | Rithmic connection with firm credentials; plug-in mode supported. | Footprint/cluster charts, smart DOM, volume profile, Smart Tape. |
 | **Bookmap** | Rithmic, plug-in mode. Loads only **about 1 hour** of Rithmic backfill; deeper history needs dxFeed ($14/month) or locally recorded data. ([Bookmap forum](https://bookmap.com/forum/viewtopic.php?p=6193)) | Depth heatmap (needs live MBO/MBP), recorded locally over time. |
 | **MotiveWave** | Rithmic: historical ticks yes, full depth yes, server-side orders yes. ([docs](https://docs.motivewave.com/knowledge-base/connection/connection-details)) | DOM, chart trading, Linux/macOS desktop builds (Java). |
@@ -215,20 +214,17 @@ Synthesised from the platforms above.
 
 ### 4.1 Allowed platforms (and changes)
 
-- **Topstep:** since Aug 1, 2025, new Combines and resets are **TopstepX only**. Rithmic is legacy. Not a target for a new Rithmic platform. ([Topstep help](https://help.topstep.com/en/articles/11667498-important-changes-to-topstep-supported-platforms)) [primary]
-- **Apex:** supports Rithmic, Tradovate and WealthCharts in 2026. The platform is fixed at purchase. On Rithmic, the user picks any Rithmic-compatible front end (NinjaTrader, Sierra, Bookmap, ATAS, Quantower and so on). ([traderspost](https://blog.traderspost.io/article/best-apex-trader-funding-supported-platforms-for-prop-traders)) [tertiary; check Apex's help centre, which returned 403]
-- **Tradeify:** lists Tradovate, WealthCharts, **Tradesea**, Sierra Chart, Quantower, TradingView (via Tradovate) and NinjaTrader (Elite Live only). Choosing Tradesea at checkout "also unlocks Sierra Chart and Quantower" because they connect through Rithmic. **An explicit allow-list:** an unlisted Rithmic front end may not be permitted. ([Tradeify](https://tradeify.co/post/futures-prop-trading-platforms-tradeify)) [primary]
-- ProjectX white-label platforms at Bulenox, Tradeify, Lucid, Alpha and Phidias **shut down in Feb 2026**, and their traders moved to Tradovate, Rithmic or NinjaTrader. (search summary of [Topstep wiki](https://en.wikipedia.org/wiki/Topstep) and others) [tertiary]
+- **Firm D:** since Aug 1, 2025, new evaluations and resets are on its own platform only. Rithmic is legacy. Not a target for a new Rithmic platform. (the firm's help centre) [primary]
+- **Firm A:** supports Rithmic, Tradovate and WealthCharts in 2026. The platform is fixed at purchase. On Rithmic, the user picks any Rithmic-compatible front end (NinjaTrader, Sierra, Bookmap, ATAS, Quantower and so on). (a third-party summary) [tertiary; check the firm's help centre, which returned 403]
+- **Firm B:** lists Tradovate, WealthCharts, **Tradesea**, Sierra Chart, Quantower, TradingView (via Tradovate) and NinjaTrader (one plan only). Choosing Tradesea at checkout "also unlocks Sierra Chart and Quantower" because they connect through Rithmic. **An explicit allow-list:** an unlisted Rithmic front end may not be permitted. (the firm's own platforms page) [primary]
+- ProjectX white-label platforms at several firms **shut down in Feb 2026**, and their traders moved to Tradovate, Rithmic or NinjaTrader. (search summaries) [tertiary]
 
 ### 4.2 Typical rules (examples)
 
-**Tradeify (help centre):** [primary] ([rules overview](https://intercom.help/tradeify/en/articles/12268167-essential-trading-rules-overview))
+**Firm B (help centre):** [primary]
 - **Drawdown:** end-of-day trailing drawdown, but a breach is checked in real time.
-- **Daily loss limit:** a soft breach that pauses trading until 6 PM ET. Growth $50k: $1,250. Select Eval: none.
-- **Consistency:**
-  - Select Eval: 40%.
-  - Growth Funded: 35%.
-  - Lightning: 20/25/30% by payout number.
+- **Daily loss limit:** a soft breach that pauses trading until 6 PM ET. $1,250 on a $50k account on one plan, none on another.
+- **Consistency:** 20% to 40%, by plan and payout number.
 - **Max contracts:** $50k: 4 minis or 40 micros; $150k: 12 minis or 120 micros.
 - **Flat by 4:45 PM ET:** no overnight positions.
 - **News:** allowed.
@@ -236,15 +232,15 @@ Synthesised from the platforms above.
 - **No hedging:** including across accounts.
 - **Automation:** allowed only if the trader owns the strategy; no HFT.
 
-**Apex (4.0, March 2026):** [tertiary; verify]
+**Firm A (March 2026):** [tertiary; verify]
 - **Drawdown:** EOD trailing or intraday trailing (intraday trails unrealised peak).
 - **Daily loss limit:** EOD accounts only; $50k: $1,000; pauses trading, does not fail the account.
-- **Consistency:** funded (PA) consistency rule raised from 30% to 50%.
+- **Consistency:** funded consistency rule raised from 30% to 50%.
 - **Rules removed:** MAE, 5:1 R:R, and others.
-- **Scaling:** tiered contract scaling in PA; half size until the threshold is cleared (pre-4.0 rule, may have changed).
+- **Scaling:** tiered contract scaling on funded accounts; half size until the threshold is cleared (pre-4.0 rule, may have changed).
 - **News:** normal trading during news allowed, "news gambling" (orders on both sides) is not.
 
-Sources: [tanto Apex rules](https://tanto-website.pages.dev/learn/apex-trader-funding-rules-what-you-need-to-know), [dev.to consistency change](https://dev.to/acesley_chan_5b46dfd6bd24/apex-just-doubled-its-consistency-rule-from-30-to-50-heres-who-gets-richer-and-who-gets-culled-4n5i).
+Sources: third-party summaries of the firm's rules.
 
 ### 4.3 What a platform shows or enforces
 
@@ -288,11 +284,11 @@ Sources: [response_tick_bar_replay.proto](https://github.com/rundef/async_rithmi
 1. **Conformance contents and cost.** No public checklist or price list exists. The process comes from open-source authors' recollections, one of them an account that reads as possibly machine-written ([#42](https://github.com/rundef/async_rithmic/issues/42)). The $100/month figure dates from about 2020.
 2. **"Personal use" vs "product offered to customers."** Rithmic asks which one applies. A distributed app used by many people probably falls under different (vendor/ISV) terms, fees or contracts than one person's tool. Nothing public describes those terms.
 3. **Licence on the `.proto` files.** async_rithmic and rithmic-rs redistribute them (as source or generated code); rithmic-rapi says they are proprietary. This matters for an open-source repo.
-4. **Whether a conformed `app_name` works on every prop-firm system** or each firm must enable it, and whether firms with allow-lists (Tradeify) would refuse Omacharts logins or treat them as a rule breach. Tradesea's model (firm partnerships plus its own system) suggests that firm cooperation matters.
+4. **Whether a conformed `app_name` works on every prop-firm system** or each firm must enable it, and whether firms with allow-lists would refuse Omacharts logins or treat them as a rule breach. Tradesea's model (firm partnerships plus its own system) suggests that firm cooperation matters.
 5. **R\|Protocol and plug-in mode.** It is unclear whether an R\|Protocol client can join R\|Trader Pro plug-in mode; it is documented for desktop platforms. There is no R\|Trader Pro on Linux in any case, so the two-session CME limit is a live risk.
 6. **History depth per plant / per entitlement.** Reports range from 1 day to back to 2011, and they may depend on the FCM, the system (prop systems vs Rithmic 01) or the era. The weekly byte quota figure (40 GB) is from 2020.
 7. **Rithmic Test data.** Described as "very limited", and reportedly no R\|Protocol on paper demos with live data. Development may need a real prop or broker account.
-8. **Apex rules and platform list.** Taken from third-party summaries; Apex's help centre returned 403. Prop rules change often (Apex 4.0 in March 2026, Tradeify consistency changes in Sept 2025).
+8. **Firm A's rules and platform list.** Taken from third-party summaries; its help centre returned 403. Prop rules change often (Firm A's in March 2026, Firm B's consistency changes in Sept 2025).
 9. **CME fee figures.** The CME PDF could not be downloaded; figures are as quoted by third parties.
 10. **Exact R\|Protocol rate limits** (requests per second, concurrent replays) are undocumented publicly. Rithmic can force a logout (`ForcedLogout` message).
 11. **Rithmic's own site** (rithmic.com, a Wix site) did not render for fetching, so Rithmic's own wording was only seen in search snippets.
@@ -303,6 +299,6 @@ Sources: [response_tick_bar_replay.proto](https://github.com/rundef/async_rithmi
 2. **Wrap `rithmic-rs`** (Apache/MIT, active, has everything listed above, but native-tls only and no reconnect) **or write an own transport** in a `crates/rithmic` crate like `tos-market`. Get Rithmic's answer on proto redistribution either way.
 3. **Charting-only first, or trading from day one?** Trading needs a new broker/account boundary (orders, positions, PnL, RMS), a DOM, brackets, flatten and confirmations, plus much more conformance and liability exposure. Market data alone fits the existing `Provider`/`Stream` with a new trade/profile data type.
 4. **Data model for profiles:** store raw ticks (exact, heavy, hits the weekly quota), store server volume-profile minute bars (light, footprints at 1 minute or coarser), or both: profile bars for history and live ticks forward.
-5. **Which firms to target first.** Apex (open to any Rithmic front end), Tradeify (allow-list), Lucid and others. Skip Topstep. Possibly approach a firm about allow-listing, as Tradesea did.
+5. **Which firms to target first.** One open to any Rithmic front end before one with an allow-list. Skip any firm that has left Rithmic. Possibly approach a firm about allow-listing, as Tradesea did.
 6. **Which risk rules to show or enforce client-side.** Recommended: display RMS and PnL limits from Rithmic, and offer optional personal lockouts. Do not try to compute consistency or payout rules.
 7. **How to handle the CME two-session limit on Linux.** Plug-in mode is not available. Warn users, or share a single session across Omacharts windows and processes (the widget bar included).

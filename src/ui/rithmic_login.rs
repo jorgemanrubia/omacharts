@@ -5,7 +5,7 @@
 //! The systems are the ones Rithmic's gateway names (see
 //! `rithmic_systems`): those last kept show at once, and a list a week old
 //! is asked for again while the dialog is open. A login is called what its
-//! system is, numbered past the names taken: Tradeify, Tradeify 2.
+//! system is, numbered past the names taken: Practice, Practice 2.
 //!
 //! Prefilled from the login being signed in again, except the password,
 //! which is never read back out of the keyring to be shown. Left empty, the
@@ -292,8 +292,8 @@ mod tests {
             empty.values,
             vec![("system".to_string(), TEST_SYSTEM.to_string()), ("gateway".to_string(), TEST_GATEWAY.to_string())]
         );
-        let named = typed("Lucid", "trader", "secret", "LucidTrading", "wss://x");
-        assert_eq!((named.name.as_str(), named.values[0].1.as_str()), ("Lucid", "LucidTrading"));
+        let named = typed("Demo", "trader", "secret", "DemoTrading", "wss://x");
+        assert_eq!((named.name.as_str(), named.values[0].1.as_str()), ("Demo", "DemoTrading"));
     }
 
     /// A new login is called what its system is, numbered past the names
@@ -325,21 +325,21 @@ mod tests {
     /// follows the system chosen.
     #[test]
     fn a_named_login_keeps_its_name() {
-        let login = |name: &str| crate::trading::fake::tests::test_login("a", name, "Tradeify");
-        let named = login("My funded account");
-        assert_eq!(namer(Some(&named), &[], "Tradeify")("Rithmic 01"), "My funded account");
-        let plain = login("Tradeify");
-        assert_eq!(namer(Some(&plain), &[], "Tradeify")("LucidTrading"), "LucidTrading");
-        assert_eq!(namer(None, &["Tradeify".into()], TEST_SYSTEM)("Tradeify"), "Tradeify 2");
+        let login = |name: &str| crate::trading::fake::tests::test_login("a", name, "Practice");
+        let named = login("My practice account");
+        assert_eq!(namer(Some(&named), &[], "Practice")("Rithmic 01"), "My practice account");
+        let plain = login("Practice");
+        assert_eq!(namer(Some(&plain), &[], "Practice")("DemoTrading"), "DemoTrading");
+        assert_eq!(namer(None, &["Practice".into()], TEST_SYSTEM)("Practice"), "Practice 2");
     }
 
     /// Rithmic 01 and Paper Trading come first, the firms after them by
     /// name; Rithmic 04 Colo and Rithmic Test are not among them.
     #[test]
     fn production_puts_rithmic_first_and_the_firms_after() {
-        let named = ["Tradeify", "Apex", "Rithmic 04 Colo", "Rithmic Paper Trading", "LucidTrading", "Rithmic 01", "tradesea"];
+        let named = ["Practice", "Acme", "Rithmic 04 Colo", "Rithmic Paper Trading", "DemoTrading", "Rithmic 01", "sandbox"];
         let offered = production(Some(named.iter().map(|name| name.to_string()).collect()));
-        assert_eq!(offered, ["Rithmic 01", "Rithmic Paper Trading", "Apex", "LucidTrading", "Tradeify", "tradesea"]);
+        assert_eq!(offered, ["Rithmic 01", "Rithmic Paper Trading", "Acme", "DemoTrading", "Practice", "sandbox"]);
         assert_eq!(production(None), ["Rithmic 01", "Rithmic Paper Trading"]);
     }
 
@@ -347,9 +347,9 @@ mod tests {
     /// Rithmic's gateways, Chicago first.
     #[test]
     fn rithmic_test_is_first_and_production_follows_with_its_gateways() {
-        let listed = choices(TEST_SYSTEM, TEST_GATEWAY, &production(Some(vec!["Tradeify".into()])));
+        let listed = choices(TEST_SYSTEM, TEST_GATEWAY, &production(Some(vec!["Practice".into()])));
         let names: Vec<&str> = listed.iter().map(|choice| choice.name.as_str()).collect();
-        assert_eq!(names, ["Rithmic Test", "Tradeify"]);
+        assert_eq!(names, ["Rithmic Test", "Practice"]);
         assert_eq!(listed[0].gateways, vec![("Chicago".to_string(), TEST_GATEWAY.to_string())]);
         assert_eq!(listed[1].gateways.len(), 13);
         assert_eq!(listed[1].gateways[0], ("Chicago".to_string(), "wss://rprotocol.rithmic.com:443".to_string()));
@@ -361,9 +361,9 @@ mod tests {
     #[test]
     fn a_saved_system_or_gateway_is_kept() {
         let offered = production(None);
-        let lucid = choices("LucidTrading", "wss://rprotocol.example.com:443", &offered);
-        let last = lucid.last().unwrap();
-        assert_eq!(last.name, "LucidTrading");
+        let demo = choices("DemoTrading", "wss://rprotocol.example.com:443", &offered);
+        let last = demo.last().unwrap();
+        assert_eq!(last.name, "DemoTrading");
         assert_eq!(last.gateways, vec![("rprotocol.example.com".to_string(), "wss://rprotocol.example.com:443".to_string())]);
 
         let elsewhere = choices(TEST_SYSTEM, "wss://other.example.com:443", &offered);

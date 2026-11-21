@@ -354,9 +354,9 @@ mod tests {
     /// toast, but a warning, and never as "Not flattened".
     #[test]
     fn a_flatten_that_left_orders_working_says_it_is_flat_and_to_check_them() {
-        let one = flattened_uncancelled("Lucid", 1);
+        let one = flattened_uncancelled("Demo", 1);
         assert_eq!((one.level, one.text.as_str(), one.confirms), (Level::Warning, "Flattened · 1 order could not be cancelled: check it", true));
-        let two = flattened_uncancelled("Lucid", 2);
+        let two = flattened_uncancelled("Demo", 2);
         assert_eq!((two.level, two.text.as_str(), two.confirms), (Level::Warning, "Flattened · 2 orders could not be cancelled: check them", true));
     }
 
@@ -408,9 +408,9 @@ mod tests {
             price: None,
             tag: "omacharts:1".into(),
         };
-        assert_eq!(order_sent("Lucid", &order, 2).text, "Buy 2 ESZ6 at market");
+        assert_eq!(order_sent("Demo", &order, 2).text, "Buy 2 ESZ6 at market");
         (order.kind, order.price, order.side) = (OrderKind::Limit, Some(7_620.0), trading::Side::Sell);
-        assert_eq!(order_sent("Lucid", &order, 2).text, "Sell Limit 2 ESZ6 at 7,620.00");
+        assert_eq!(order_sent("Demo", &order, 2).text, "Sell Limit 2 ESZ6 at 7,620.00");
     }
 
     #[test]
