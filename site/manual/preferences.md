@@ -37,6 +37,7 @@ crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 | Screenshots › **Also save a PNG** | Keeps a file as well as copying to the clipboard, which always happens. | [Screenshots](/manual/screenshots/) |
 | Screenshots › **Save to**, **Change…** | The folder the PNG goes to. Greyed out while the switch above is off. | [Screenshots](/manual/screenshots/) |
 | Updates › **Update automatically** | Downloads new releases in the background, to start at the next launch. On by default. | [Installation](/manual/installing/#updates) |
+| Updates › **Update symbol listings daily** | Downloads the newest list of US stocks and ETFs once a day, so a company that listed this week is in the search without a new release. On by default. | [Symbols and search](/manual/symbols/#new-listings) |
 
 ### Charts
 
@@ -123,7 +124,7 @@ Trading has a **Beta** tag in the list of sections: it is experimental. The page
 
 ## Settings that stay with this machine
 
-The screenshot folder, the **Keep at most** limit, **Update automatically** and the sidebar width stay with this machine. Restoring another machine's backup leaves them as they were ([Restoring](/manual/your-data/#restoring)).
+The screenshot folder, the **Keep at most** limit, **Update automatically**, **Update symbol listings daily** and the sidebar width stay with this machine. Restoring another machine's backup leaves them as they were ([Restoring](/manual/your-data/#restoring)).
 
 ## See also
 

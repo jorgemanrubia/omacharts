@@ -510,7 +510,10 @@ bin/release 0.1.3
 That is the whole thing. A release bumps the last number — 0.2.0 is followed
 by 0.2.1, new features or not — unless the maintainer explicitly says otherwise. The script writes the version into the three places a
 tag cannot float — `Cargo.toml`, `Cargo.lock` and the PKGBUILD's `pkgver` —
-then builds and tests with `--locked` to prove the
+copies the US listings the `listings` branch publishes into
+`crates/omacharts-engine/src/listings.tsv` when they pass
+`tools/check_listings.py` (and carries on with the old copy, warning, when
+they cannot be fetched), then builds and tests with `--locked` to prove the
 tree agrees with itself, commits, tags and pushes. It refuses to run on a dirty
 tree, off `main`, behind `origin`, or onto a tag that already exists.
 

@@ -57,6 +57,7 @@ mod order_templates;
 mod trade;
 mod trade_cli;
 mod updates;
+mod listings;
 mod about;
 #[cfg(test)]
 mod repaint_tests;
@@ -5524,6 +5525,18 @@ impl Window {
         this.search.list_contracts_through(move |root, done| {
             crate::feeds::list_contracts(crate::feeds::order(&ordered), root, done);
         });
+        // A ticker nobody listed is asked of the same feeds, and what they
+        // know is searchable from then on, here and in every process after.
+        let (ordered, found) = (store.clone(), this.index.clone());
+        this.search.look_up_through(move |guess, answer| {
+            let found = found.clone();
+            crate::feeds::look_up(crate::feeds::order(&ordered), guess, move |looked| {
+                if let Ok(instrument) = &looked {
+                    found.add_found(instrument.clone());
+                }
+                answer(looked.map_err(|why| why.message().to_string()));
+            });
+        });
         this.watch_trading();
         this.watch_log();
         this.sign_in_after_first_frame();
@@ -5669,14 +5682,8 @@ impl Window {
         // and the main loop is waiting for this constructor to return. So the
         // charts that could not be resolved are filled in from here, once —
         // and the rail, which left out its symbols outside the curated half.
-        let waiting = this.clone();
-        crate::inventory::load_in_background(this.index.clone(), move |_| {
-            waiting.resolve_pending();
-            let rail = waiting.watchlist.borrow().as_ref().cloned();
-            if let Some(rail) = rail {
-                rail.rebuild();
-            }
-        });
+        this.load_listings();
+        this.keep_listings_current();
 
         if !this.restore_workspace() {
             this.restore_last_symbol();

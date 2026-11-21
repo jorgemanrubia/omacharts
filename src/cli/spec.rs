@@ -175,7 +175,14 @@ pub struct Noun {
 /// A table rather than a field on every verb: forty verbs saying "no" to
 /// make two say "yes" is a worse description of the surface than one list
 /// of the exceptions with the reason written on it.
-pub const IN_THE_CALLER: &[(&str, &str)] = &[("provider", "login"), ("provider", "logout")];
+///
+/// `symbol refresh` is a download, and the same reasoning holds at a smaller
+/// size: a few seconds on a good line, the timeout on a bad one, and none of
+/// it the window's main loop's to sit through. It reads no database either.
+/// An open window is then told to read the file again, which is
+/// `symbol reload` ([`HIDDEN_VERBS`]).
+pub const IN_THE_CALLER: &[(&str, &str)] =
+    &[("provider", "login"), ("provider", "logout"), ("symbol", "refresh")];
 
 /// The groups the parser accepts and no listing shows: not `--help`, not
 /// `surface --json`, not the completions, the man page or the skill, all of
@@ -228,6 +235,22 @@ pub const HIDDEN: &[Noun] = &[Noun {
 /// quote`, `chart bars` and `chart values` read a chart in numbers for an
 /// agent that trades, behind the `agent-trading` flag.
 pub const HIDDEN_VERBS: &[(&str, Verb)] = &[
+    // Not experimental: the second half of `symbol refresh`, which downloads
+    // in the process it was typed in and then hands this to an open window
+    // so it searches what was downloaded. Nothing for a person to type.
+    (
+        "symbol",
+        Verb {
+            name: "reload",
+            about: "Read the US listings from disk again, in an open window",
+            args: &[],
+            flags: &[],
+            example: "omacharts symbol reload",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+    ),
     (
         "symbol",
         Verb {
@@ -703,6 +726,17 @@ pub const SURFACE: &[Noun] = &[
                 args: &[Arg::req("ROOT", "a futures root, such as ES")],
                 flags: &[],
                 example: "omacharts symbol contracts ES",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "refresh",
+                about: "Fetch the newest US listings now, whatever Preferences says, and say when they were \
+                        built and how many there are. An open window searches them at once",
+                args: &[],
+                flags: &[],
+                example: "omacharts symbol refresh",
                 json: true,
                 writes: false,
                 workspace: false,

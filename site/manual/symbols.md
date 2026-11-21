@@ -50,7 +50,7 @@ The box reads **Symbol or name**. It matches a ticker or any part of a name, in 
 
 Each row shows the ticker, the name, the venue (NASDAQ, NYSE Arca, TWSE, BME and so on) and the kind, one of **Index**, **Futures**, **Stock**, **ETF**, **FX** or **Crypto**. Ten rows show at a time and the list scrolls to 24. Type more to narrow it. Once something is typed, a button in the search row clears it.
 
-Something that looks like a ticker, such as `XYZ` or `2330.TW`, is offered even when it matches nothing, as **Not in the list — look it up anyway**. Pick it and the chart asks the [feed](/manual/market-data/); if the feed does not have the symbol, the chart says so. A name that matches nothing is not offered.
+A ticker the search does not know, such as `ANT` on the day Anthropic listed, is offered at the top as **ANT: look it up on the feed**. The highlight stays on the best match below it, so <kbd>Enter</kbd> still charts that. Pick the row and the [feed](/manual/market-data/) is asked whether it has the symbol. If it does, the chart changes to it, with the name the feed gives, and the search finds it from then on. If not, the row says so, for example **Yahoo Finance does not know XYZQ**, and nothing changes. A name that matches nothing is not offered.
 
 Picking a symbol charts it on the focused chart, and on every Follow chart too when the focused chart is one ([Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist)).
 
@@ -66,6 +66,12 @@ Picking a symbol charts it on the focused chart, and on every Follow chart too w
 | Listings abroad | The large companies of Europe and Japan by their home listing (`SAP.DE`, `BBVA.MC`, `7203.T`), and anything else you type with a [venue suffix](#listings-abroad) |
 
 The best match comes first. `GC` is gold futures, and `semi` lists the semiconductor ETFs before companies with *semi* in the name.
+
+## New listings
+
+The list of US stocks and ETFs is rebuilt every weekday from Nasdaq's daily files, before the open and again after the close. Omacharts downloads it once a day, in the background, and the search uses it at once, with no restart. A company that listed today is usually in it by the next morning, and until then you can look it up on the feed from the search.
+
+Turn this off with Preferences › Updates › **Update symbol listings daily** ([Preferences](/manual/preferences/)). The search then uses the list that came with your version, which is refreshed with every release. A download that fails, or that looks wrong, is ignored, and the search keeps the list it had.
 
 ## Listings abroad
 

@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::bars::{Bar, Timeframe, Unit};
-use crate::provider::{Capability, Closes, Pacing, Provider, ProviderError, SharedCooldown};
+use crate::provider::{Capability, Closes, Described, Pacing, Provider, ProviderError, SharedCooldown};
 use crate::exchanges::registry;
 use crate::symbols::{Instrument, InstrumentKind};
 
@@ -475,6 +475,15 @@ impl Provider for Yahoo {
         parse_chart(&body).map(|bars| collapse_days(bars, timeframe, session))
     }
 
+    /// The chart endpoint's own header, which names what it charts: a
+    /// symbol nobody has listed yet comes back with its name, whether it is
+    /// a stock or a fund, and its venue, from the request a chart of it
+    /// would have made.
+    fn describe(&self, symbol: &str) -> Result<Described, ProviderError> {
+        let url = format!("{ENDPOINT}/{}?range=5d&interval=1d", encode(symbol));
+        parse_described(&self.ask(&url)?)
+    }
+
     fn pacing(&self) -> Pacing {
         PACING
     }
@@ -537,6 +546,35 @@ impl Provider for Yahoo {
 /// Yahoo pads its arrays with nulls wherever it has no print, so a bar is only
 /// real if every one of its four prices is present. Inventing a value here
 /// would put a candle on the chart that never traded.
+/// What the chart endpoint's header says of the symbol it charted.
+pub fn parse_described(body: &serde_json::Value) -> Result<Described, ProviderError> {
+    let chart = &body["chart"];
+    if let Some(code) = chart["error"]["code"].as_str() {
+        return Err(match code {
+            "Not Found" => ProviderError::NotFound,
+            other => ProviderError::Malformed(other.to_string()),
+        });
+    }
+    let meta = &chart["result"]
+        .get(0)
+        .ok_or_else(|| ProviderError::Malformed("no result".into()))?["meta"];
+    let text = |key: &str| meta[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let kind = match meta["instrumentType"].as_str() {
+        Some("EQUITY") => Some(InstrumentKind::Equity),
+        Some("ETF") => Some(InstrumentKind::Etf),
+        // An index, a currency or a future: a row offered as a stock is
+        // the wrong thing to find, and nothing listed is spelled that way.
+        Some(_) => return Err(ProviderError::NotFound),
+        None => None,
+    };
+    Ok(Described {
+        name: text("longName").or_else(|| text("shortName")),
+        kind,
+        exchange: text("fullExchangeName").or_else(|| text("exchangeName")),
+        currency: text("currency"),
+    })
+}
+
 pub fn parse_chart(body: &serde_json::Value) -> Result<Vec<Bar>, ProviderError> {
     let chart = &body["chart"];
     if let Some(code) = chart["error"]["code"].as_str() {
@@ -1042,6 +1080,29 @@ mod tests {
         let bars = parse_chart(&body).unwrap();
         assert_eq!(bars.len(), 1);
         assert_eq!(bars[0].volume, 0.0);
+    }
+
+    /// A company that listed this morning: the chart endpoint's header is
+    /// what names it, before any list has a row for it.
+    #[test]
+    fn the_chart_header_describes_a_symbol_nobody_listed() {
+        let body = serde_json::json!({"chart": {"result": [{"meta": {
+            "symbol": "ANT", "currency": "USD", "exchangeName": "NMS",
+            "fullExchangeName": "NasdaqGS", "instrumentType": "EQUITY",
+            "longName": "Anthropic, PBC", "shortName": "Anthropic"
+        }}], "error": null}});
+        let described = parse_described(&body).unwrap();
+        assert_eq!(described.name.as_deref(), Some("Anthropic, PBC"));
+        assert_eq!(described.kind, Some(InstrumentKind::Equity));
+        assert_eq!(described.exchange.as_deref(), Some("NasdaqGS"));
+        assert_eq!(described.currency.as_deref(), Some("USD"));
+
+        let missing = serde_json::json!({"chart": {"result": null, "error": {"code": "Not Found"}}});
+        assert!(matches!(parse_described(&missing), Err(ProviderError::NotFound)));
+
+        // A future answers to the name too, and is not the stock asked for.
+        let future = serde_json::json!({"chart": {"result": [{"meta": {"instrumentType": "FUTURE"}}]}});
+        assert!(matches!(parse_described(&future), Err(ProviderError::NotFound)));
     }
 
     #[test]

@@ -1,37 +1,103 @@
-name: Refresh listings
+name: Listings
+
+# Every US listing, rebuilt from Nasdaq Trader's files each weekday and
+# published where every running copy of the app fetches it: the `listings`
+# branch, one commit holding two files, served by raw.githubusercontent.com.
+#
+#   listings.tsv    what tools/build_listings.py wrote
+#   listings.json   {"built", "rows", "sha256"}: the app reads this first
+#
+# Not a pull request: this used to open one a week, and every one of them
+# failed on a repository setting ("GitHub Actions is not permitted to create
+# or approve pull requests"), so for seven weeks nothing refreshed and a
+# company that listed was not searchable. Pushing a branch needs no setting,
+# and nobody has to merge a data file for the app to have it.
+#
+# Not the Pages site either: a Pages deployment replaces the whole site, so
+# the manual's deploys would have to rebuild this file too or delete it, and
+# both would share deploy-pages' occasional "no artifact" failure. Not a
+# release asset: a release named `listings` would sit among the versions,
+# where releases/latest, the generated notes and the package recipe that
+# follows the releases all look.
+#
+# The compiled-in copy stays the fallback, and bin/release copies the
+# published file into the tree before each tag.
+#
+# A pull request that touches the build runs everything but the push, so a
+# change here is proved before it publishes anything.
 
 on:
   schedule:
-    - cron: '17 6 * * 1'
+    # Before the US open, so a company listing today is searchable when it
+    # first trades, and again after the close, when the day's volumes that
+    # rank the funds are in. A run that changes nothing pushes nothing.
+    - cron: '30 11 * * 1-5'
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/listings.yml'
+      - 'tools/build_listings.py'
+      - 'tools/check_listings.py'
 
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: listings
+  cancel-in-progress: false
 
 jobs:
-  refresh:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rebuild from Nasdaq Trader
-        run: tools/build_listings.py > crates/omacharts-engine/src/listings.tsv
-      - name: Open a pull request if anything listed or delisted
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: 'Refresh the generated symbol listings'
-          title: 'Refresh the generated symbol listings'
-          body: |
-            Rebuilt from Nasdaq Trader's daily files by `tools/build_listings.py`.
-            The diff is every symbol that listed or delisted since the last run,
-            plus the ones whose popularity band moved — that column is a rank
-            over market cap and traded value, so a little churn each week is
-            the column working, not a fault.
 
-            A `warning:` line in the build step means a ranking feed was down.
-            That is survivable by design: those rows go out unranked and search
-            falls back to the ordering it had before the column existed. Worth
-            re-running rather than merging a file that lost half its ranking.
-          branch: listings-refresh
-          delete-branch: true
-          add-paths: crates/omacharts-engine/src/listings.tsv
+      - name: Take what is published now, to compare against
+        run: |
+          if git fetch --quiet --depth=1 origin listings:refs/published 2>/dev/null; then
+            git show refs/published:listings.tsv > previous.tsv
+          else
+            # Nothing published yet: the compiled-in copy is what the app has.
+            cp crates/omacharts-engine/src/listings.tsv previous.tsv
+          fi
+
+      - name: Build from Nasdaq Trader
+        run: |
+          tools/build_listings.py > listings.tsv 2> build.log
+          cat build.log
+
+      - name: Check it is fit to publish
+        run: |
+          tools/check_listings.py listings.tsv previous.tsv > listings.json
+          cat listings.json
+          echo "### Listings" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat build.log listings.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish on the listings branch
+        if: github.event_name != 'pull_request'
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          # The build date alone moving is not news.
+          if diff -q <(grep -v '^#' previous.tsv) <(grep -v '^#' listings.tsv) >/dev/null \
+             && git cat-file -e refs/published:listings.json 2>/dev/null; then
+            echo "Nothing listed or delisted since the last publish."
+            exit 0
+          fi
+          built=$(jq -r .built listings.json)
+          rows=$(jq -r .rows listings.json)
+          site=$(mktemp -d)
+          cp listings.tsv listings.json "$site/"
+          cd "$site"
+          # One commit, force-pushed: a branch of data, not a history of it.
+          git init --quiet --initial-branch=listings
+          git add listings.tsv listings.json
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet -m "Listings built $built: $rows rows"
+          git push --quiet --force \
+            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" listings
+          echo "Published $rows listings built $built."
