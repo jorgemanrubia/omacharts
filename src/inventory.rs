@@ -14,8 +14,15 @@
 //! milliseconds on the startup path is five milliseconds, and the names
 //! somebody is most likely to type are in the half that is already there.
 //!
-//! A file in the data directory beats the compiled copy when it exists, which
-//! is how the inventory can be refreshed without a new binary.
+//! A file in the data directory beats the compiled copy when it was built
+//! later, which is how the inventory is refreshed without a new binary: see
+//! [`crate::listings`], which fetches it once a day.
+//!
+//! And a third, small one: symbols nobody has listed yet that a data feed
+//! said it knows, kept from the moment somebody asked ([`remember`]). A
+//! company that listed this morning has prices before it has a row in any
+//! file, and once looked up it stays findable — in a watchlist, a chart
+//! restored at the next launch, a command — until the listings carry it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -31,15 +38,70 @@ const LISTINGS: &str = include_str!("../crates/omacharts-engine/src/listings.tsv
 /// Every TWSE and TPEx listing, built the same way.
 const TAIWAN_LISTINGS: &str = include_str!("../crates/omacharts-engine/src/listings_tw.tsv");
 
-/// Where a refreshed inventory would be written.
-pub fn listings_path(home: &std::path::Path) -> PathBuf {
-    home.join(".local/share/omacharts/listings.tsv")
+/// The US listings compiled into this binary.
+pub fn compiled() -> &'static str {
+    LISTINGS
 }
 
-/// Both generated files as one text. They are two files because they come
-/// from unrelated feeds that fail independently.
+/// Where a refreshed inventory is written: beside the store.
+pub fn listings_path() -> PathBuf {
+    crate::listings::path_in(&crate::listings::dir())
+}
+
+/// The symbols a feed confirmed that no listing had: see [`remember`].
+pub fn found_path() -> PathBuf {
+    crate::store::data_dir().join("found.tsv")
+}
+
+/// The US listings to search: downloaded or compiled in, whichever was built
+/// later. A download that never happened, or went wrong, leaves the app
+/// exactly as it shipped rather than without an inventory.
+pub fn us_listings() -> std::borrow::Cow<'static, str> {
+    match std::fs::read_to_string(listings_path()) {
+        Ok(downloaded) if !std::ptr::eq(crate::listings::choose(Some(&downloaded), LISTINGS), LISTINGS) => downloaded.into(),
+        _ => LISTINGS.into(),
+    }
+}
+
 fn generated(us: &str) -> String {
     format!("{us}\n{TAIWAN_LISTINGS}")
+}
+
+/// The symbols feeds confirmed before any listing had them. Nothing, and no
+/// cost past one failed open, until somebody has looked one up.
+fn found_on_disk() -> Vec<Instrument> {
+    match std::fs::read_to_string(found_path()) {
+        Ok(text) => omacharts_engine::symbols::parse_seed(&text),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `items` and every one of `found` it does not already name: a listing that
+/// has since taken a found symbol in is the row kept.
+fn and_found(mut items: Vec<Instrument>, found: &[Instrument]) -> Vec<Instrument> {
+    if found.is_empty() {
+        return items;
+    }
+    let mut missing: Vec<&Instrument> = found.iter().collect();
+    for item in &items {
+        missing.retain(|f| f.symbol != item.symbol || f.suffix != item.suffix);
+        if missing.is_empty() {
+            return items;
+        }
+    }
+    let mut seen: Vec<(&str, Option<&str>)> = Vec::new();
+    let extra: Vec<Instrument> = missing
+        .into_iter()
+        .filter(|f| {
+            let key = (f.symbol.as_str(), f.suffix.as_deref());
+            let new = !seen.contains(&key);
+            seen.push(key);
+            new
+        })
+        .cloned()
+        .collect();
+    items.extend(extra);
+    items
 }
 
 /// The index everything searches, replaced once the long tail has loaded.
@@ -57,6 +119,11 @@ pub struct Inventory {
     /// earlier: the curated half cannot name most of what they could have
     /// stored.
     complete: Rc<Cell<bool>>,
+    /// Symbols a feed confirmed while this window was open, kept apart so an
+    /// index swapped in afterwards — the long tail landing, a refresh —
+    /// cannot lose one that was read from disk a moment before it was
+    /// written there.
+    found: Rc<RefCell<Vec<Instrument>>>,
 }
 
 impl Inventory {
@@ -67,6 +134,7 @@ impl Inventory {
                 omacharts_engine::symbols::seed(),
             )))),
             complete: Rc::new(Cell::new(false)),
+            found: Rc::default(),
         }
     }
 
@@ -94,9 +162,28 @@ impl Inventory {
     }
 
     pub(crate) fn replace(&self, index: SearchIndex) {
-        *self.index.borrow_mut() = Rc::new(index);
+        *self.index.borrow_mut() = Rc::new(with_found(index, &self.found.borrow()));
         self.complete.set(true);
     }
+
+    /// Add one symbol a feed confirmed, searchable at once.
+    pub fn add_found(&self, instrument: Instrument) {
+        self.found.borrow_mut().push(instrument);
+        let index = SearchIndex::new(self.get().items().to_vec());
+        *self.index.borrow_mut() = Rc::new(with_found(index, &self.found.borrow()));
+    }
+}
+
+/// `index` with every one of `found` it does not already name.
+fn with_found(index: SearchIndex, found: &[Instrument]) -> SearchIndex {
+    let missing: Vec<&Instrument> =
+        found.iter().filter(|f| index.find(&f.symbol, f.suffix.as_deref()).is_none()).collect();
+    if missing.is_empty() {
+        return index;
+    }
+    let mut items = index.items().to_vec();
+    items.extend(missing.into_iter().cloned());
+    SearchIndex::new(items)
 }
 
 /// Every instrument, built now rather than on a thread.
@@ -107,7 +194,8 @@ impl Inventory {
 /// milliseconds, so it pays the few milliseconds once and searches
 /// everything.
 pub fn everything() -> SearchIndex {
-    SearchIndex::new(merge(&generated(LISTINGS), omacharts_engine::symbols::seed()))
+    let items = merge(&generated(&us_listings()), omacharts_engine::symbols::seed());
+    SearchIndex::new(and_found(items, &found_on_disk()))
 }
 
 /// The generated listings and the curated rows, as one list.
@@ -161,25 +249,215 @@ pub fn merge(listings: &str, mut curated: Vec<Instrument>) -> Vec<Instrument> {
 
 /// Parse the listings off the main thread and hand back one merged index.
 pub fn load_in_background(inventory: Inventory, done: impl Fn(usize) + 'static) {
-    let (sender, receiver) = async_channel::bounded::<Vec<Instrument>>(1);
-    let home = crate::store::home();
+    let (sender, receiver) = async_channel::bounded::<SearchIndex>(1);
+    // The symbols found this session, so the index arrives with them and the
+    // main loop has nothing left to build.
+    let mut found = inventory.found.borrow().clone();
 
+    // Reading, parsing and indexing all happen here; the main loop only swaps
+    // a pointer. The text read is dropped once it is indexed.
     std::thread::spawn(move || {
-        // A refreshed file if there is one, the compiled copy otherwise. A
-        // download that never happened, or happened and went wrong, leaves the
-        // app exactly as it shipped rather than without an inventory.
-        let text = std::fs::read_to_string(listings_path(&home))
-            .unwrap_or_else(|_| LISTINGS.to_string());
-        let _ = sender.send_blocking(merge(&generated(&text), omacharts_engine::symbols::seed()));
+        found.extend(found_on_disk());
+        let items = merge(&generated(&us_listings()), omacharts_engine::symbols::seed());
+        let _ = sender.send_blocking(SearchIndex::new(and_found(items, &found)));
     });
 
     glib::spawn_future_local(async move {
-        if let Ok(items) = receiver.recv().await {
-            let count = items.len();
-            inventory.replace(SearchIndex::new(items));
+        if let Ok(index) = receiver.recv().await {
+            let count = index.len();
+            inventory.replace(index);
             done(count);
         }
     });
+}
+
+/// Whether `query` is a whole word of `name`, whatever the case: `nvidia`
+/// of "NVIDIA Corporation", and not `ant` of "Antero Resources". A query a
+/// listed name answers to is somebody typing a name, so neither the search
+/// nor a command offers it to the feed as a ticker.
+pub fn names_it(name: &str, query: &str) -> bool {
+    let query = query.trim();
+    name.split(|c: char| !c.is_alphanumeric()).any(|word| word.eq_ignore_ascii_case(query))
+}
+
+/// A symbol the inventory does not have, if `query` could be one: what the
+/// search offers to look up on the feed, and what a command naming a symbol
+/// asks the feed about before refusing it.
+///
+/// Strict about shape rather than about existence: the feed decides whether
+/// it exists. `2330.TW` is a ticker on a venue, and a ticker abroad may be
+/// all digits — every Taiwanese and Japanese one is. Without a venue a ticker
+/// has to start with a letter, which keeps a stray number from being offered
+/// as a US listing.
+pub fn guess(query: &str) -> Option<Instrument> {
+    let typed = query.trim().to_uppercase();
+    let (symbol, suffix) = omacharts_engine::symbols::split_suffix(&typed);
+    let plausible = (1..=6).contains(&symbol.chars().count())
+        && symbol
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || (suffix.is_some() && c.is_ascii_digit()))
+        && symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    plausible.then(|| Instrument {
+        symbol: symbol.to_string(),
+        name: format!("{symbol}: look it up on the feed"),
+        kind: omacharts_engine::InstrumentKind::Equity,
+        suffix: suffix.map(str::to_string),
+        currency: None,
+        tier: 2,
+        session_origin: 0,
+        overrides: Vec::new(),
+        exchange: None,
+        popularity: 0,
+        local_name: None,
+        formula: None,
+    })
+}
+
+/// Why a symbol could not be looked up, in a sentence for the person who
+/// asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotLookedUp {
+    /// The feed answered, and has no such symbol.
+    Unknown(String),
+    /// No answer worth believing either way: offline, refused, no feed.
+    Unanswered(String),
+}
+
+impl NotLookedUp {
+    pub fn message(&self) -> &str {
+        match self {
+            NotLookedUp::Unknown(said) | NotLookedUp::Unanswered(said) => said,
+        }
+    }
+}
+
+/// Ask the feed that would chart `guess` whether it knows it, and the
+/// instrument it is if so: named, and a stock or a fund, as far as the feed
+/// can say. Blocks on the network.
+pub fn look_up(feeds: &crate::feeds::Feeds, guess: &Instrument) -> Result<Instrument, NotLookedUp> {
+    let shown = guess.display_symbol();
+    let Some((provider, native)) = feeds.route(guess) else {
+        return Err(NotLookedUp::Unanswered(format!("no data feed here charts {shown}")));
+    };
+    let described = provider.describe(&native).map_err(|error| match error {
+        omacharts_engine::ProviderError::NotFound => {
+            NotLookedUp::Unknown(format!("{} does not know {shown}", provider.label()))
+        }
+        other => NotLookedUp::Unanswered(format!("{} could not look up {shown}: {other}", provider.label())),
+    })?;
+    Ok(Instrument {
+        name: described.name.unwrap_or_else(|| guess.symbol.clone()),
+        kind: described.kind.unwrap_or(guess.kind),
+        exchange: described.exchange,
+        currency: described.currency,
+        ..guess.clone()
+    })
+}
+
+/// The feeds a command asks about a symbol nobody listed: the order the
+/// window charts from. A test build asks [`testing::Newly`] instead, which
+/// knows two invented symbols and nothing else, so no test reaches the
+/// network.
+#[cfg(not(test))]
+pub fn look_up_feeds(store: &crate::store::Store) -> crate::feeds::Feeds {
+    crate::feeds::Feeds::load(store)
+}
+
+#[cfg(test)]
+pub fn look_up_feeds(_store: &crate::store::Store) -> crate::feeds::Feeds {
+    crate::feeds::Feeds::of(vec![Box::new(testing::Newly)])
+}
+
+/// A feed for tests that knows two symbols no listing has, and nothing else.
+#[cfg(test)]
+pub mod testing {
+    use omacharts_engine::{Bar, Capability, Described, Instrument, InstrumentKind, Provider, ProviderError, Timeframe};
+
+    /// Knows `ZQNEW`, a stock it can name, and `ZQFND`, a fund it can only
+    /// say has bars — the default answer, through the default `describe`.
+    pub struct Newly;
+
+    impl Provider for Newly {
+        fn id(&self) -> &'static str {
+            "newly"
+        }
+        fn label(&self) -> &'static str {
+            "Test Feed"
+        }
+        fn delay_minutes(&self, _: InstrumentKind) -> u32 {
+            0
+        }
+        fn native_symbol(&self, instrument: &Instrument) -> Option<String> {
+            matches!(instrument.kind, InstrumentKind::Equity | InstrumentKind::Etf).then(|| instrument.display_symbol())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            &[]
+        }
+        fn bars(&self, symbol: &str, _: Timeframe, _: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+            match symbol {
+                "ZQNEW" | "ZQFND" => Ok(vec![Bar { ts: 1_795_000_000, open: 1.0, high: 2.0, low: 0.5, close: 1.5, volume: 10.0 }]),
+                _ => Err(ProviderError::NotFound),
+            }
+        }
+        fn describe(&self, symbol: &str) -> Result<Described, ProviderError> {
+            match symbol {
+                "ZQNEW" => Ok(Described {
+                    name: Some("Zq Newly Listed, Inc.".into()),
+                    kind: Some(InstrumentKind::Equity),
+                    exchange: Some("NasdaqGS".into()),
+                    currency: Some("USD".into()),
+                }),
+                "ZQOFF" => Err(ProviderError::Offline("no route to the feed".into())),
+                // The trait's own answer: a daily fetch.
+                _ => match self.bars(symbol, Timeframe::days(1), None)?.is_empty() {
+                    true => Err(ProviderError::NotFound),
+                    false => Ok(Described::default()),
+                },
+            }
+        }
+    }
+}
+
+/// Keep a symbol a feed confirmed, so that it is in the inventory of every
+/// process from now on. One row per symbol, the newest kept; written whole.
+pub fn remember(found: &Instrument) -> std::io::Result<()> {
+    remember_in(&found_path(), found)
+}
+
+fn remember_in(path: &std::path::Path, found: &Instrument) -> std::io::Result<()> {
+    let clean = |text: &str| text.replace(['\t', '\n', '\r'], " ");
+    let row = format!(
+        "{}\t{}\t{}\t{}\t{}\t2\t0\t-\t{}\t-",
+        if found.kind == omacharts_engine::InstrumentKind::Etf { "etf" } else { "equity" },
+        clean(&found.symbol),
+        clean(&found.name),
+        found.suffix.as_deref().map(clean).unwrap_or_else(|| "-".into()),
+        found.currency.as_deref().map(clean).unwrap_or_else(|| "-".into()),
+        found.exchange.as_deref().map(clean).unwrap_or_else(|| "-".into()),
+    );
+    let before = std::fs::read_to_string(path).unwrap_or_default();
+    let same = |line: &str| {
+        let fields: Vec<&str> = line.split('\t').collect();
+        fields.get(1) == Some(&found.symbol.as_str())
+            && fields.get(3).copied().filter(|s| *s != "-") == found.suffix.as_deref()
+    };
+    let mut text: String = before
+        .lines()
+        .filter(|line| line.starts_with('#') || !same(line))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    if text.is_empty() {
+        text.push_str("# Symbols a data feed confirmed before any listing had them. Written by the app.\n");
+    }
+    text.push_str(&row);
+    text.push('\n');
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let incoming = path.with_extension(format!("incoming-{}", std::process::id()));
+    std::fs::write(&incoming, text)?;
+    std::fs::rename(&incoming, path)
 }
 
 use gtk::glib;
@@ -253,6 +531,106 @@ mod tests {
         for symbol in ["GC", "EURUSD", "BTC", "GSPC"] {
             assert!(merged.iter().any(|i| i.symbol == symbol), "{symbol} went missing");
         }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omacharts-found-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// The shapes worth asking a feed about, and the ones not worth it.
+    #[test]
+    fn only_a_ticker_shape_is_a_guess() {
+        let ant = guess("ant").expect("a ticker");
+        assert_eq!((ant.symbol.as_str(), ant.suffix.as_deref()), ("ANT", None));
+        let tw = guess("2330.tw").expect("a ticker abroad may be digits");
+        assert_eq!((tw.symbol.as_str(), tw.suffix.as_deref()), ("2330", Some("TW")));
+        for not in ["", "2330", "semiconductor", "GC/SI", "a b", "$$"] {
+            assert!(guess(not).is_none(), "{not:?}");
+        }
+    }
+
+    /// The feed is asked, and what it says is the instrument: named, with
+    /// its kind and venue, when it can say them; the symbol alone when all
+    /// it can say is that it has bars.
+    #[test]
+    fn a_feed_names_what_no_listing_has() {
+        let feeds = crate::feeds::Feeds::of(vec![Box::new(testing::Newly)]);
+        let new = look_up(&feeds, &guess("zqnew").unwrap()).unwrap();
+        assert_eq!(new.symbol, "ZQNEW");
+        assert_eq!(new.name, "Zq Newly Listed, Inc.");
+        assert_eq!(new.kind, omacharts_engine::InstrumentKind::Equity);
+        assert_eq!(new.exchange.as_deref(), Some("NasdaqGS"));
+        assert_eq!(new.currency.as_deref(), Some("USD"));
+        assert_eq!(new.tier, 2, "below anything curated, like any listing");
+
+        let bare = look_up(&feeds, &guess("ZQFND").unwrap()).unwrap();
+        assert_eq!(bare.name, "ZQFND", "nothing more to say than that it exists");
+
+        let unknown = look_up(&feeds, &guess("ZZZQX").unwrap()).unwrap_err();
+        assert_eq!(unknown, NotLookedUp::Unknown("Test Feed does not know ZZZQX".into()));
+        let offline = look_up(&feeds, &guess("ZQOFF").unwrap()).unwrap_err();
+        assert!(matches!(offline, NotLookedUp::Unanswered(_)), "{offline:?}");
+
+        let none = crate::feeds::Feeds::of(Vec::new());
+        assert!(matches!(look_up(&none, &guess("ZQNEW").unwrap()), Err(NotLookedUp::Unanswered(_))));
+    }
+
+    /// Once found, kept: one row per symbol, the newest; and a listing that
+    /// has since taken the symbol in is the row searched.
+    #[test]
+    fn a_found_symbol_is_kept_until_a_listing_has_it() {
+        let dir = scratch("kept");
+        let path = dir.join("found.tsv");
+        let feeds = crate::feeds::Feeds::of(vec![Box::new(testing::Newly)]);
+        let new = look_up(&feeds, &guess("ZQNEW").unwrap()).unwrap();
+        remember_in(&path, &new).unwrap();
+        remember_in(&path, &look_up(&feeds, &guess("ZQFND").unwrap()).unwrap()).unwrap();
+        remember_in(&path, &new).unwrap();
+        let found = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(found.lines().filter(|l| l.contains("\tZQNEW\t")).count(), 1, "{found}");
+        assert!(!dir.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("incoming")));
+
+        let found = omacharts_engine::symbols::parse_seed(&found);
+        let merged = and_found(merge(LISTINGS, omacharts_engine::symbols::seed()), &found);
+        let kept = merged.iter().find(|i| i.symbol == "ZQNEW").expect("found, so searchable");
+        assert_eq!(kept.name, "Zq Newly Listed, Inc.");
+        assert_eq!(kept.exchange.as_deref(), Some("NasdaqGS"));
+
+        // The day the listings carry it, theirs is the row.
+        let listed = LISTINGS.replacen(
+            "\nequity\tA\t",
+            "\nequity\tZQNEW\tZq Newly Listed\t-\tUSD\t2\t0\t-\tNASDAQ\t7\nequity\tA\t",
+            1,
+        );
+        let merged = and_found(merge(&listed, omacharts_engine::symbols::seed()), &found);
+        let rows: Vec<&Instrument> = merged.iter().filter(|i| i.symbol == "ZQNEW").collect();
+        assert_eq!(rows.len(), 1, "one row, not two");
+        assert_eq!(rows[0].popularity, 7, "the listing's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refreshed file swapped in names what the old one did not, and a
+    /// symbol found in the meantime survives the swap.
+    #[test]
+    fn a_swapped_index_keeps_what_was_found() {
+        let inventory = Inventory::curated();
+        let feeds = crate::feeds::Feeds::of(vec![Box::new(testing::Newly)]);
+        inventory.add_found(look_up(&feeds, &guess("ZQNEW").unwrap()).unwrap());
+        assert!(inventory.find("ZQNEW", None).is_some(), "searchable at once");
+        assert!(!inventory.complete(), "and the curated half is still only that");
+
+        let refreshed = LISTINGS.replacen(
+            "\nequity\tA\t",
+            "\nequity\tZQSWP\tZq Swapped In\t-\tUSD\t2\t0\t-\tNASDAQ\t5\nequity\tA\t",
+            1,
+        );
+        inventory.replace(SearchIndex::new(merge(&refreshed, omacharts_engine::symbols::seed())));
+        assert!(inventory.complete());
+        assert_eq!(inventory.find("ZQSWP", None).map(|i| i.name), Some("Zq Swapped In".into()));
+        assert!(inventory.find("ZQNEW", None).is_some(), "found before the swap, still there after it");
+        assert!(inventory.find("AAPL", None).is_some());
     }
 
     /// A Taiwan listing is a ticker that is only a number, so it is the

@@ -506,6 +506,37 @@ pub fn list_contracts(order: Vec<String>, root: &omacharts_engine::Instrument, d
     });
 }
 
+/// Ask the feed that would chart `guess` whether it knows it, on a thread,
+/// through the order `order`; then `done` on the main loop with the
+/// instrument it is, already kept for every process after this one
+/// ([`crate::inventory::remember`]), or the sentence saying why not.
+pub fn look_up(
+    order: Vec<String>,
+    guess: &omacharts_engine::Instrument,
+    done: impl Fn(Result<omacharts_engine::Instrument, crate::inventory::NotLookedUp>) + 'static,
+) {
+    let (tell, heard) = async_channel::bounded(1);
+    let guess = guess.clone();
+    std::thread::Builder::new()
+        .name("omacharts look-up".into())
+        .spawn(move || {
+            let feeds = Feeds::of(providers::ordered(&order));
+            let answer = crate::inventory::look_up(&feeds, &guess);
+            if let Ok(found) = &answer
+                && let Err(error) = crate::inventory::remember(found)
+            {
+                eprintln!("omacharts: {} not kept for next time: {error}", found.display_symbol());
+            }
+            let _ = tell.send_blocking(answer);
+        })
+        .ok();
+    gtk::glib::MainContext::default().spawn_local(async move {
+        if let Ok(answer) = heard.recv().await {
+            done(answer);
+        }
+    });
+}
+
 /// How the top feed is offered — its name, what it serves, whether it needs
 /// signing in to. The one a window is charting from first, otherwise the
 /// flag for this launch, otherwise the stored order, otherwise the default.

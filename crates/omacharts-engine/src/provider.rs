@@ -220,6 +220,18 @@ pub struct Closes {
     pub previous_at: i64,
 }
 
+/// What a provider said of a symbol it was asked about by name: whatever it
+/// could say beyond "it exists", which may be nothing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Described {
+    pub name: Option<String>,
+    /// Stock or fund, when the provider says which.
+    pub kind: Option<InstrumentKind>,
+    /// The venue, in the provider's words.
+    pub exchange: Option<String>,
+    pub currency: Option<String>,
+}
+
 /// A provider's cooldown in terms another process can read.
 ///
 /// Wall-clock seconds rather than an [`Instant`], which means nothing outside
@@ -587,6 +599,22 @@ pub trait Provider: Send + Sync {
     /// stands in for.
     fn contracts(&self, root: &str) -> Result<Vec<(String, chrono::NaiveDate)>, ProviderError> {
         Err(ProviderError::Unsupported(format!("{} lists no contracts of {root}", self.label())))
+    }
+
+    /// What this provider knows of `symbol`, in its own spelling, when no
+    /// list does: a company that listed this morning has prices before it
+    /// has a row anywhere. `Err(NotFound)` when the provider has no such
+    /// symbol.
+    ///
+    /// By default the question is asked the way a chart would ask it, with
+    /// one daily fetch: a feed with bars for a symbol knows it, and that is
+    /// all a feed with nothing more to say can answer. One that can name it
+    /// too says so here.
+    fn describe(&self, symbol: &str) -> Result<Described, ProviderError> {
+        match self.bars(symbol, Timeframe::days(1), None)?.is_empty() {
+            true => Err(ProviderError::NotFound),
+            false => Ok(Described::default()),
+        }
     }
 
     /// How far apart this provider's requests must be kept.

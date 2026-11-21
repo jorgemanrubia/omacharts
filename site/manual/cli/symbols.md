@@ -8,7 +8,8 @@ nav_order: 1
 
 `symbol` searches the same instruments the window searches. Which
 instruments there are, and how a listing abroad is named, is in [Symbols and
-search](/manual/symbols/).
+search](/manual/symbols/). `symbol refresh` fetches the newest US listings now
+and says when they were built and how many there are (`--json`: `built`, `rows`, `updated`).
 
 ## `symbol search`
 
@@ -36,7 +37,7 @@ GCAL       Goldman Sachs Dynamic California … ETF      NYSE Arca
 | `--limit N` | How many to show; 10 when not given |
 | `--json` | The result as JSON |
 
-Nothing matching exits 3: `omacharts: nothing matches "ZZZQX"`.
+A ticker no listing has yet, such as `ANT` the day it listed, is asked of the [feed](/manual/market-data/), and comes first when the feed knows it. Nothing matching, here or on the feed, exits 3: `omacharts: nothing matches "ZZZQX"`.
 
 ## `symbol show`
 
@@ -59,18 +60,23 @@ currency  EUR
 | `SUFFIX` | The venue suffix, when not part of `SYMBOL` |
 | `--json` | The result as JSON, with the symbol, suffix and local name as separate fields |
 
-An instrument the search does not know exits 3 and says what to try.
+A ticker the search does not know is asked of the feed, the same as in `symbol search`. One the feed does not know either exits 3 and says what to try.
 
 ## `--suffix` on other commands
 
 `--suffix` names a symbol's venue on `chart set`, `watchlist add`, `watchlist
 remove` and `watchlist move`. On `add` and `remove` it applies to every
 symbol given. `--symbol SAP --suffix DE` and `--symbol SAP.DE` are the same.
-A symbol typed in lower case is charted in capitals. One the search does not
-know is refused with exit 3:
+A symbol typed in lower case is charted in capitals. A ticker the search
+does not know is asked of the feed on `chart set` and `watchlist add`, and
+charted or added when the feed knows it; from then on the search knows it
+too. One the feed does not know either is refused with exit 3:
 
 ```
 $ omacharts chart set --symbol zzzqx
-omacharts: no instrument called ZZZQX; try `omacharts symbol search ZZZQX`
+omacharts: no instrument called ZZZQX (Yahoo Finance does not know ZZZQX); try `omacharts symbol search ZZZQX`
   [exit 3]
 ```
+
+Asking the feed takes as long as one request to it, a second or two.
+

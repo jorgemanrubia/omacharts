@@ -115,8 +115,10 @@ pub fn dispatch(
     }
 
     let result = match (noun, verb) {
-        ("symbol", "search") => symbol_search(m, json),
-        ("symbol", "show") => symbol_show(m, json),
+        ("symbol", "search") => symbol_search(store, m, json, live),
+        ("symbol", "show") => symbol_show(store, m, json, live),
+        ("symbol", "refresh") => symbol_refresh(json),
+        ("symbol", "reload") => symbol_reload(live),
         ("symbol", "quote") | ("chart", "bars") | ("chart", "values")
             if !crate::features::agent_trading() =>
         {
@@ -132,8 +134,8 @@ pub fn dispatch(
         ("watchlist", "create") => watchlist_create(store, m, json),
         ("watchlist", "rename") => watchlist_rename(store, m, json),
         ("watchlist", "delete") => watchlist_delete(store, m, json),
-        ("watchlist", "add") => watchlist_add(store, m, json, true),
-        ("watchlist", "remove") => watchlist_add(store, m, json, false),
+        ("watchlist", "add") => watchlist_add(store, m, json, true, live),
+        ("watchlist", "remove") => watchlist_add(store, m, json, false, live),
         ("watchlist", "move") => watchlist_move(store, m, json),
         ("watchlist", "sort") => watchlist_sort(store, m, json),
         ("watchlist", "feed") => Ok(super::watchlist_json(store, flag(m, "refresh"), live)),
@@ -365,7 +367,12 @@ fn surface(m: &clap::ArgMatches) -> Outcome {
 
 // -- symbols --------------------------------------------------------------
 
-fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+fn symbol_search(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
     let query = required(m, "QUERY")?;
     let limit: usize = m
         .get_one::<String>("limit")
@@ -374,11 +381,25 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let index = crate::inventory::everything();
     // A whole formula first, the way the search field offers it.
     let exact = index.spelled(query);
-    let hits: Vec<&omacharts_engine::Instrument> = exact
-        .iter()
-        .chain(index.search(query, limit).iter().filter_map(|h| index.get(h.index)))
-        .take(limit)
-        .collect();
+    let found: Vec<&omacharts_engine::Instrument> =
+        index.search(query, limit).iter().filter_map(|h| index.get(h.index)).collect();
+    // Then a ticker no listing has, when the feed knows it: what the search
+    // field offers to look up, looked up, since a command cannot be asked
+    // twice. A feed that does not know it adds nothing, and says nothing.
+    // Not for a word some name answers to: `nvidia` is a name, and a search
+    // for one never waits on the network.
+    let asked = match crate::inventory::guess(query) {
+        Some(guess)
+            if exact.is_none()
+                && index.find(&guess.symbol, guess.suffix.as_deref()).is_none()
+                && !found.iter().any(|hit| crate::inventory::names_it(&hit.name, query)) =>
+        {
+            ask_feed(store, &guess, live).ok()
+        }
+        _ => None,
+    };
+    let hits: Vec<&omacharts_engine::Instrument> =
+        exact.iter().chain(asked.iter()).chain(found).take(limit).collect();
     if hits.is_empty() {
         return Err(Fault::not_found(format!("nothing matches {query:?}")));
     }
@@ -401,6 +422,84 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n")
+}
+
+/// `symbol refresh`: the published listings fetched now, in the process it
+/// was typed in. `main` then hands `symbol reload` to an open window.
+fn symbol_refresh(as_json: bool) -> Result<String, Fault> {
+    let fetched = crate::listings::refresh(
+        &crate::listings::source(),
+        &crate::listings::dir(),
+        crate::inventory::compiled(),
+    )
+    .map_err(|why| Fault::new(super::EXIT_ERROR, format!("{why}; search keeps the listings it had")))?;
+    let built = fetched.summary.built.as_deref().unwrap_or("before build dates were recorded");
+    said(
+        as_json,
+        json!({"built": fetched.summary.built, "rows": fetched.summary.rows, "updated": fetched.updated}),
+        match fetched.updated {
+            true => format!("downloaded the US listings built {built}: {} of them", fetched.summary.rows),
+            false => format!("the US listings are current: built {built}, {} of them", fetched.summary.rows),
+        },
+    )
+}
+
+/// `symbol reload`: an open window reads the listings again. Silent, since
+/// it is the tail of `symbol refresh`, whose answer — JSON or a line — has
+/// already been printed and must stay the only one.
+fn symbol_reload(live: Option<&dyn Live>) -> Result<String, Fault> {
+    if let Some(live) = live {
+        live.reload_listings();
+    }
+    Ok(String::new())
+}
+
+/// Ask the feed about `guess`, a ticker no listing has, and keep what it
+/// knows: on disk for every process after this one, and in an open window.
+fn ask_feed(
+    store: &Store,
+    guess: &omacharts_engine::Instrument,
+    live: Option<&dyn Live>,
+) -> Result<omacharts_engine::Instrument, crate::inventory::NotLookedUp> {
+    let found = crate::inventory::look_up(&crate::inventory::look_up_feeds(store), guess)?;
+    if let Err(error) = crate::inventory::remember(&found) {
+        eprintln!("omacharts: {} not kept for next time: {error}", found.display_symbol());
+    }
+    if let Some(live) = live {
+        live.learned(&found);
+    }
+    Ok(found)
+}
+
+/// The instrument `symbol` names: the inventory's, or for a ticker it does
+/// not have, the feed's. A company that listed this morning is charted by
+/// the command that names it, not refused until the listings catch up.
+fn known_or_asked(
+    store: &Store,
+    index: &omacharts_engine::SearchIndex,
+    symbol: &str,
+    suffix: Option<&str>,
+    live: Option<&dyn Live>,
+) -> Result<omacharts_engine::Instrument, Fault> {
+    if let Some(found) = index.resolve(symbol, suffix) {
+        return Ok(found);
+    }
+    let spelled = spell(symbol, suffix);
+    let Some(guess) = crate::inventory::guess(&spelled) else {
+        return Err(Fault::not_found(format!(
+            "no instrument called {spelled}; try `omacharts symbol search {symbol}`"
+        )));
+    };
+    ask_feed(store, &guess, live).map_err(|why| {
+        let listings = match why {
+            crate::inventory::NotLookedUp::Unknown(_) => "",
+            crate::inventory::NotLookedUp::Unanswered(_) => " in the listings",
+        };
+        Fault::not_found(format!(
+            "no instrument called {spelled}{listings} ({}); try `omacharts symbol search {symbol}`",
+            why.message()
+        ))
+    })
 }
 
 /// A root's dated contracts as the rule lists them, or as a feed listed
@@ -447,16 +546,16 @@ fn symbol_contracts(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault
         + "\n")
 }
 
-fn symbol_show(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+fn symbol_show(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
     let index = crate::inventory::everything();
     let (symbol, suffix) =
         listing(&index, required(m, "SYMBOL")?, arg(m, "SUFFIX").map(|s| s.to_uppercase()));
-    let found = index.resolve(&symbol, suffix.as_deref()).ok_or_else(|| {
-        Fault::not_found(format!(
-            "no instrument called {}; try `omacharts symbol search {symbol}`",
-            spell(&symbol, suffix.as_deref())
-        ))
-    })?;
+    let found = known_or_asked(store, &index, &symbol, suffix.as_deref(), live)?;
     let found = &found;
     if as_json {
         return Ok(format!("{}\n", instrument_json(found)));
@@ -878,6 +977,7 @@ fn watchlist_add(
     m: &clap::ArgMatches,
     as_json: bool,
     adding: bool,
+    live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let (id, name) = find_list(store, required(m, "LIST")?)?;
     let suffix = arg(m, "suffix").map(|s| s.to_uppercase());
@@ -900,7 +1000,11 @@ fn watchlist_add(
     for typed in &symbols {
         // Each one on its own, so `2330.TW 6488.TWO` can share a command.
         let (symbol, suffix) = listing(&index, typed, suffix.clone());
-        if index.resolve(&symbol, suffix.as_deref()).is_none() {
+        // Taking out what nobody listed needs no feed's word for it; adding
+        // a ticker the listings do not have yet asks.
+        let known = index.resolve(&symbol, suffix.as_deref()).is_some()
+            || (adding && known_or_asked(store, &index, &symbol, suffix.as_deref(), live).is_ok());
+        if !known {
             unknown.push(spell(&symbol, suffix.as_deref()));
             continue;
         }
@@ -1996,7 +2100,7 @@ fn chart_verb(
             workspace.book_mut(at)?["focused"] = json!(id);
             format!("focused {}", chart_label(&book, id))
         }
-        "set" => return chart_set(store, m, as_json, workspace, at, pane),
+        "set" => return chart_set(store, m, as_json, workspace, at, pane, live),
         "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane, &selection),
         "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane, &selection),
         "compare" => return chart_compare(store, m, as_json, workspace, at, pane),
@@ -2014,6 +2118,7 @@ fn chart_set(
     workspace: &mut Workspace,
     at: usize,
     pane: u32,
+    live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let given = arg(m, "suffix").map(|s| s.to_uppercase());
     let mut changed: Vec<String> = Vec::new();
@@ -2025,12 +2130,7 @@ fn chart_set(
         Some(text) => {
             let index = crate::inventory::everything();
             let (symbol, suffix) = listing(&index, text, given);
-            if index.resolve(&symbol, suffix.as_deref()).is_none() {
-                return Err(Fault::not_found(format!(
-                    "no instrument called {}; try `omacharts symbol search {symbol}`",
-                    spell(&symbol, suffix.as_deref())
-                )));
-            }
+            known_or_asked(store, &index, &symbol, suffix.as_deref(), live)?;
             (Some(symbol), suffix)
         }
     };
@@ -8009,6 +8109,57 @@ mod tests {
         let args: Vec<String> =
             std::iter::once("omacharts".to_string()).chain(line.split_whitespace().map(String::from)).collect();
         dispatch(&args, store, None, &super::super::Here)
+    }
+
+    /// A company that listed this morning: no listing has it, the feed does,
+    /// and every command that names it asks the feed rather than refusing.
+    /// The feed is `inventory::testing::Newly`, which a test build asks
+    /// instead of the real ones.
+    #[test]
+    fn a_ticker_no_listing_has_is_asked_of_the_feed() {
+        let store = bare();
+        run("chartbook create Main --symbol SPY --switch", &store);
+
+        let search = json_of(&run("symbol search zqnew --json", &store));
+        assert_eq!(search["symbols"][0]["symbol"], "ZQNEW", "{search}");
+        assert_eq!(search["symbols"][0]["name"], "Zq Newly Listed, Inc.");
+
+        let shown = run("symbol show ZQNEW", &store);
+        assert_eq!(shown.code, 0, "{}", shown.err);
+        assert!(shown.out.contains("Zq Newly Listed, Inc."), "{}", shown.out);
+        assert!(shown.out.contains("NasdaqGS"), "{}", shown.out);
+
+        let set = run("chart set --book Main --symbol zqnew", &store);
+        assert_eq!(set.code, 0, "{}", set.err);
+        assert!(set.out.contains("ZQNEW"), "{}", set.out);
+
+        let added = run("watchlist add Default ZQFND", &store);
+        assert_eq!(added.code, 0, "{}", added.err);
+
+        // A feed that does not know it either: refused, saying who was asked.
+        let refused = run("chart set --book Main --symbol zzzqx", &store);
+        assert_eq!(refused.code, super::super::EXIT_NOT_FOUND);
+        assert!(refused.err.contains("no instrument called ZZZQX"), "{}", refused.err);
+        assert!(refused.err.contains("Test Feed does not know ZZZQX"), "{}", refused.err);
+        assert!(refused.err.contains("omacharts symbol search ZZZQX"), "{}", refused.err);
+        // A word a listed name answers to is a name, not asked about.
+        assert!(!crate::inventory::names_it("Antero Resources", "ant"));
+        assert!(crate::inventory::names_it("NVIDIA Corporation", "nvidia"));
+
+        // And a search adds nothing for it, as before.
+        assert_eq!(run("symbol search ZZZQX", &store).code, super::super::EXIT_NOT_FOUND);
+    }
+
+    /// `symbol refresh` never reaches GitHub from a test, and failing to
+    /// reach anything is an error that says search is unharmed.
+    #[test]
+    fn a_refresh_that_reaches_nothing_says_search_is_unharmed() {
+        let out = run("symbol refresh", &bare());
+        assert_eq!(out.code, super::super::EXIT_ERROR);
+        assert!(out.err.contains("search keeps the listings it had"), "{}", out.err);
+        assert!(super::super::runs_in_the_caller(&["omacharts".into(), "symbol".into(), "refresh".into()]));
+        assert!(super::super::tells_the_window(&["omacharts".into(), "symbol".into(), "refresh".into()]));
+        assert_eq!(run("symbol reload", &bare()).out, "", "silent: refresh has had its say");
     }
 
     /// A store whose new charts open with nothing on them, said outright.

@@ -18,6 +18,13 @@
 //! replaces them when it answers. Typing a contract's own symbol, `ESH7`,
 //! or a root and a month letter, `ESH`, puts the contract first without
 //! opening anything.
+//!
+//! A ticker the inventory does not have is offered too, on a row of its
+//! own at the top — "ANT: look it up on the feed" — because a company that
+//! listed this morning has prices before it has a row in any list. Picking
+//! it asks the feed, with the picker still open: what the feed knows is
+//! handed over as a pick like any other, and a feed that does not know it
+//! says so on the row, quietly, and nothing else happens.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -41,6 +48,9 @@ type Handler = Rc<RefCell<Option<Box<dyn Fn(Instrument)>>>>;
 /// Asks the feeds what contracts a root lists, and says when they have
 /// answered.
 type Lister = Rc<dyn Fn(&Instrument, Box<dyn Fn()>)>;
+/// Asks the feed whether it knows a symbol nobody listed, and hands back the
+/// instrument it is, or the sentence to put on the row.
+type LookUp = Rc<dyn Fn(&Instrument, Box<dyn Fn(Result<Instrument, String>)>)>;
 
 pub struct SymbolSearch {
     frame: Rc<PickFrame>,
@@ -63,6 +73,12 @@ pub struct SymbolSearch {
     /// Once is enough: what it says is kept by the engine.
     asked: RefCell<HashSet<String>>,
     lister: RefCell<Option<Lister>>,
+    look_up: RefCell<Option<LookUp>>,
+    /// The row offering a symbol nobody listed, when there is one.
+    guess_at: std::cell::Cell<Option<usize>>,
+    /// Counts openings and queries, so an answer from the feed about a list
+    /// that has since changed, or a picker since closed, is let go.
+    asking: std::cell::Cell<u64>,
     /// Futures alone, roots and their months, for a pick of what a chart
     /// trades: what a trading service takes an order on.
     futures_only: std::cell::Cell<bool>,
@@ -83,6 +99,9 @@ impl SymbolSearch {
             expanded: RefCell::new(HashSet::new()),
             asked: RefCell::new(HashSet::new()),
             lister: RefCell::new(None),
+            look_up: RefCell::new(None),
+            guess_at: std::cell::Cell::new(None),
+            asking: std::cell::Cell::new(0),
             futures_only: std::cell::Cell::new(false),
             tracking: RefCell::new(None),
         });
@@ -109,7 +128,20 @@ impl SymbolSearch {
         *self.lister.borrow_mut() = Some(Rc::new(lister));
     }
 
+    /// How to ask the feed about a symbol nobody listed; without it, the
+    /// row is handed over as it is and the chart asks.
+    pub fn look_up_through(&self, look_up: impl Fn(&Instrument, Box<dyn Fn(Result<Instrument, String>)>) + 'static) {
+        *self.look_up.borrow_mut() = Some(Rc::new(look_up));
+    }
+
     fn wire(self: &Rc<Self>) {
+        // Picking the offered symbol asks the feed with the picker still
+        // open, so its answer has somewhere to be said.
+        let weak = Rc::downgrade(self);
+        self.frame.hold_open_when(move |at| {
+            weak.upgrade().is_some_and(|search| search.guess_at.get() == Some(at) && search.look_up.borrow().is_some())
+        });
+
         let entry = &self.frame.entry;
         // Undo the select-all an entry does when it gains focus, for as long
         // as the picker is still opening. Typing a letter on the chart opens
@@ -172,17 +204,33 @@ impl SymbolSearch {
             list.remove(&child);
         }
         let futures = self.futures_only.get().then(|| self.tracking.borrow().clone());
-        let rows = rows_for(&self.index.get(), &self.expanded.borrow(), query, contracts::today(), futures.as_ref().map(Option::as_deref));
+        let rows = rows_for(
+            &self.index.get(),
+            &self.expanded.borrow(),
+            query,
+            contracts::today(),
+            futures.as_ref().map(Option::as_deref),
+            self.index.complete(),
+        );
         let weak = Rc::downgrade(self);
         for row in &rows {
             list.append(&widget_for(row, &weak));
         }
+        let guess_at = rows.iter().position(|row| matches!(row, Row::Unlisted(_)));
+        self.guess_at.set(guess_at);
+        self.asking.set(self.asking.get() + 1);
         let shown: Vec<Instrument> = rows.into_iter().map(Row::into_instrument).collect();
         let kept = keep.and_then(|keep| shown.iter().position(|row| same(row, &keep)));
+        // The offered symbol is a question, not the best match: the
+        // highlight starts on the first thing listed, when there is one.
+        let best = match guess_at {
+            Some(0) if shown.len() > 1 => 1,
+            _ => 0,
+        };
         *self.shown.borrow_mut() = shown;
 
         // Always leave the best match highlighted, so Enter is enough.
-        if let Some(row) = list.row_at_index(kept.unwrap_or(0) as i32) {
+        if let Some(row) = list.row_at_index(kept.unwrap_or(best) as i32) {
             list.select_row(Some(&row));
             // A new query is a new list: whatever was scrolled to belonged
             // to the old one.
@@ -308,11 +356,66 @@ impl SymbolSearch {
         }
     }
 
-    /// Hand the row at `at` to whoever opened the picker.
-    fn pick(&self, at: usize) {
+    /// Hand the row at `at` to whoever opened the picker: or, for the symbol
+    /// nobody listed, ask the feed about it first.
+    fn pick(self: &Rc<Self>, at: usize) {
         let picked = self.shown.borrow().get(at).cloned();
-        if let (Some(instrument), Some(handler)) = (picked, self.handler.borrow().as_ref()) {
-            handler(instrument);
+        let look_up = self.look_up.borrow().clone().filter(|_| self.guess_at.get() == Some(at));
+        match (picked, look_up) {
+            (Some(guess), Some(look_up)) => self.ask_feed(at, &guess, look_up),
+            (Some(instrument), None) => {
+                if let Some(handler) = self.handler.borrow().as_ref() {
+                    handler(instrument);
+                }
+            }
+            (None, _) => {}
+        }
+    }
+
+    /// Ask the feed about `guess`, on row `at`, saying so on the row. What
+    /// it knows is picked; what it does not is said on the row instead.
+    fn ask_feed(self: &Rc<Self>, at: usize, guess: &Instrument, look_up: LookUp) {
+        let asking = self.asking.get();
+        let symbol = guess.display_symbol();
+        self.say_on_row(at, &format!("Looking {symbol} up on the feed…"));
+        let weak = Rc::downgrade(self);
+        look_up(
+            guess,
+            Box::new(move |answer| {
+                let Some(search) = weak.upgrade() else { return };
+                // Typed over, picked from or closed since: not this question.
+                if search.asking.get() != asking || !search.frame.popover.is_visible() {
+                    return;
+                }
+                match answer {
+                    Ok(found) => {
+                        // Twice for one question would chart it twice.
+                        search.asking.set(asking + 1);
+                        search.frame.close();
+                        glib::idle_add_local_once(move || {
+                            if let Some(handler) = search.handler.borrow().as_ref() {
+                                handler(found);
+                            }
+                        });
+                    }
+                    Err(said) => search.say_on_row(at, &said),
+                }
+            }),
+        );
+    }
+
+    /// Put `text` where row `at` names what it is.
+    fn say_on_row(&self, at: usize, text: &str) {
+        let Some(row) = self.frame.list.row_at_index(at as i32) else { return };
+        let mut child = row.child().and_then(|line| line.first_child());
+        while let Some(widget) = child {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>()
+                && label.has_css_class("pick-name")
+            {
+                label.set_text(text);
+                return;
+            }
+            child = widget.next_sibling();
         }
     }
 
@@ -357,6 +460,7 @@ impl SymbolSearch {
     fn open(self: &Rc<Self>, over: Over, query: &str, on_pick: impl Fn(Instrument) + 'static) {
         *self.handler.borrow_mut() = Some(Box::new(on_pick));
         self.opening.set(true);
+        self.asking.set(self.asking.get() + 1);
         self.expanded.borrow_mut().clear();
         self.asked.borrow_mut().clear();
         let entry = &self.frame.entry;
@@ -465,7 +569,14 @@ fn futures_root(index: &SearchIndex, symbol: &str) -> Option<Instrument> {
 /// roots are hits when `futures` is given, and an empty query lists them
 /// all, the most traded first; only those tracking the root it names, when
 /// it names one.
-fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today: NaiveDate, futures: Option<Option<&str>>) -> Vec<Row> {
+fn rows_for(
+    index: &SearchIndex,
+    expanded: &HashSet<String>,
+    query: &str,
+    today: NaiveDate,
+    futures: Option<Option<&str>>,
+    complete: bool,
+) -> Vec<Row> {
     let futures_only = futures.is_some();
     let tracks = |instrument: &Instrument| match futures.flatten() {
         Some(root) => omacharts_engine::specs::underlying(instrument.root()) == root,
@@ -531,50 +642,27 @@ fn rows_for(index: &SearchIndex, expanded: &HashSet<String>, query: &str, today:
         }
     }
 
-    // Nothing matched, but the query looks like a ticker: offer it anyway.
+    // The query is a ticker nothing listed is spelled as: offer it anyway,
+    // at the top, where it is seen.
     //
-    // The inventory is a list of symbols somebody wrote down, and the provider
-    // knows more symbols than any list does — a company that listed this
-    // morning has prices before it has an entry. Refusing to try is the app
-    // asserting something it cannot know.
-    if let Some(guess) = (rows.is_empty() && !futures_only).then(|| unlisted(query)).flatten() {
-        rows.push(Row::Unlisted(guess));
+    // The inventory is a list of symbols somebody wrote down, and the feed
+    // knows more than any list does — a company that listed this morning has
+    // prices before it has an entry. Refusing to try is the app asserting
+    // something it cannot know. Only once the whole catalogue has loaded,
+    // though, or every listing outside the curated few would be offered as
+    // unknown for the moment after the window opens; and never over a
+    // contract the query spelled.
+    let spelled_contract = rows.iter().any(|row| matches!(row, Row::Contract { .. }));
+    let offer = !futures_only && (rows.is_empty() || (complete && !spelled_contract));
+    if let Some(guess) = offer.then(|| crate::inventory::guess(query)).flatten()
+        && index.find(&guess.symbol, guess.suffix.as_deref()).is_none()
+        && !rows.iter().any(|row| matches!(row, Row::Listed { instrument, .. } if same(instrument, &guess)))
+        // `nvidia` is a name somebody is typing, not a ticker to look up.
+        && !rows.iter().any(|row| matches!(row, Row::Listed { instrument, .. } if crate::inventory::names_it(&instrument.name, query)))
+    {
+        rows.insert(0, Row::Unlisted(guess));
     }
     rows
-}
-
-/// A symbol the inventory does not have, if the query could be one.
-///
-/// Deliberately strict about shape rather than about existence: the provider
-/// decides whether it exists, and a chart that says "no data for this symbol"
-/// is a better answer than a picker that says nothing at all.
-fn unlisted(query: &str) -> Option<Instrument> {
-    let typed = query.trim().to_uppercase();
-    // `2330.TW` is a ticker on a venue, and a ticker abroad may be all
-    // digits — every Taiwanese and Japanese one is. Without a venue a ticker
-    // has to start with a letter, which is what keeps a stray number typed
-    // into the field from being offered as a US listing.
-    let (symbol, suffix) = omacharts_engine::symbols::split_suffix(&typed);
-    let plausible = (1..=6).contains(&symbol.chars().count())
-        && symbol
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || (suffix.is_some() && c.is_ascii_digit()))
-        && symbol.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    plausible.then(|| Instrument {
-        symbol: symbol.to_string(),
-        name: "Not in the list — look it up anyway".to_string(),
-        kind: omacharts_engine::InstrumentKind::Equity,
-        suffix: suffix.map(str::to_string),
-        currency: None,
-        tier: 2,
-        session_origin: 0,
-        overrides: Vec::new(),
-        exchange: None,
-        popularity: 0,
-        local_name: None,
-        formula: None,
-    })
 }
 
 fn widget_for(row: &Row, search: &Weak<SymbolSearch>) -> gtk::ListBoxRow {
@@ -851,6 +939,90 @@ mod tests {
             settle();
             assert!(folded(&search));
             search.frame.close();
+        });
+    }
+
+    /// A ticker nothing listed is spelled as: offered at the top, the
+    /// highlight left on the best real match, and picked only once the feed
+    /// has said it knows it. A feed that does not says so on the row, and
+    /// nothing is picked.
+    #[test]
+    fn a_ticker_nobody_listed_is_offered_and_asked_about() {
+        crate::ui::on_gtk(|| {
+            let index = crate::inventory::Inventory::curated();
+            let mut items = omacharts_engine::symbols::seed();
+            let mut near = items[0].clone();
+            near.symbol = "ZQNEWS".into();
+            near.name = "Zq News Corp".into();
+            items.push(near);
+            index.replace(SearchIndex::new(items));
+
+            let search = SymbolSearch::new(index.clone());
+            let knows: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(true));
+            let asked: Rc<RefCell<Vec<String>>> = Rc::default();
+            let (feed_knows, noted) = (knows.clone(), asked.clone());
+            search.look_up_through(move |guess, answer| {
+                noted.borrow_mut().push(guess.symbol.clone());
+                match feed_knows.get() {
+                    true => answer(Ok(Instrument { name: "Zq Newly Listed, Inc.".into(), ..guess.clone() })),
+                    false => answer(Err(format!("Test Feed does not know {}", guess.symbol))),
+                }
+            });
+            let window = gtk::Window::new();
+            window.set_title(Some("omacharts search test"));
+            let inside = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            window.set_child(Some(&inside));
+            // On screen, since an answer for a picker nobody can see is
+            // dropped.
+            window.fullscreen();
+            window.present();
+            for _ in 0..300 {
+                if window.is_mapped() && window.is_active() {
+                    break;
+                }
+                arrive();
+            }
+            assert!(window.is_active(), "the test window never took the screen");
+            let picked: Rc<RefCell<Option<Instrument>>> = Rc::default();
+            let handed = picked.clone();
+            search.present_with(Over::window(&inside, "a test"), "zqnew", move |instrument| {
+                *handed.borrow_mut() = Some(instrument);
+            });
+            settle();
+
+            let list = &search.frame.list;
+            assert_eq!(symbols(&search)[..2], ["ZQNEW".to_string(), "ZQNEWS".to_string()]);
+            assert_eq!(labels(&list.row_at_index(0).unwrap())[1], "ZQNEW: look it up on the feed");
+            assert_eq!(list.selected_row().map(|row| row.index()), Some(1), "Enter still takes the listed one");
+
+            // Not known: said on the row, the picker still open, nothing picked.
+            knows.set(false);
+            list.row_at_index(0).unwrap().activate();
+            settle();
+            assert_eq!(*asked.borrow(), ["ZQNEW"]);
+            assert!(picked.borrow().is_none());
+            assert!(search.frame.popover.is_visible(), "the answer needs somewhere to be said");
+            assert_eq!(labels(&list.row_at_index(0).unwrap())[1], "Test Feed does not know ZQNEW");
+
+            // Known: picked, as the feed named it.
+            knows.set(true);
+            list.row_at_index(0).unwrap().activate();
+            settle();
+            let got = picked.borrow().clone().expect("picked once the feed knew it");
+            assert_eq!((got.symbol.as_str(), got.name.as_str()), ("ZQNEW", "Zq Newly Listed, Inc."));
+
+            // A word a listed name answers to: a name, nothing to offer.
+            search.present_with(Over::window(&inside, "a test"), "zq", |_| {});
+            settle();
+            assert!(!labels(&list.row_at_index(0).unwrap())[1].contains("look it up"), "{:?}", symbols(&search));
+
+            // Spelled exactly as something listed: nothing to offer.
+            search.present_with(Over::window(&inside, "a test"), "zqnews", |_| {});
+            settle();
+            assert_eq!(symbols(&search).first().map(String::as_str), Some("ZQNEWS"));
+            assert!(!symbols(&search).contains(&"ZQNEW".to_string()), "{:?}", symbols(&search));
+            search.frame.close();
+            window.close();
         });
     }
 

@@ -381,6 +381,17 @@ pub trait Live {
     /// catalogue has to build one then, and had better say so.
     fn symbols(&self) -> Option<Rc<SearchIndex>>;
 
+    /// A symbol a feed confirmed that no listing has: searchable in the
+    /// window from now on, so a chart a command just set to it can be
+    /// restored. Nothing to do without a window.
+    fn learned(&self, _instrument: &Instrument) {}
+
+    /// Read the US listings from disk again and search them: the window's
+    /// half of `symbol refresh`. Whether there was a window to do it.
+    fn reload_listings(&self) -> bool {
+        false
+    }
+
     /// Lay the focused chart across `range`, at `resolution` when one is
     /// given, and say which chart that was. Held by the chart on screen and
     /// not stored, so without a window there is nothing to set.
@@ -576,6 +587,12 @@ pub fn runs_in_the_caller(args: &[String]) -> bool {
     // person inside the window's main loop is a frozen window.
     let Some(second) = args.get(2).map(String::as_str) else { return false };
     spec::IN_THE_CALLER.contains(&(first, second))
+}
+
+/// Whether a command that ran in the caller has to tell an open window
+/// afterwards: `symbol refresh`, whose download the window must read.
+pub fn tells_the_window(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some("symbol") && args.get(2).map(String::as_str) == Some("refresh")
 }
 
 /// Run one command.
@@ -1413,6 +1430,15 @@ impl Live for Rc<crate::ui::Window> {
 
     fn symbols(&self) -> Option<Rc<SearchIndex>> {
         crate::ui::Window::symbols(self)
+    }
+
+    fn learned(&self, instrument: &Instrument) {
+        crate::ui::Window::learn_symbol(self, instrument);
+    }
+
+    fn reload_listings(&self) -> bool {
+        self.load_listings();
+        true
     }
 
     fn streaming(&self) -> Vec<crate::live::Report> {

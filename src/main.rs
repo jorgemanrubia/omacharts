@@ -35,14 +35,14 @@ fn run() -> glib::ExitCode {
     omacharts::update::wait_for_restart(app_is_running);
 
     omacharts::feeds::identify();
-    let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
+    let mut launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
 
     // The launch options come off first, so that everything below reads a
     // command line of commands and symbols: `--provider` says what this
     // process charts from, and nothing after this point has to know it
     // exists. `launch` keeps them, because a second invocation's arguments
     // are handed to the window and the flag has an answer to earn there too.
-    let args = match cli::peel_launch(&launch) {
+    let mut args = match cli::peel_launch(&launch) {
         Ok(peeled) => {
             if let Some(feed) = peeled.provider {
                 omacharts::feeds::use_for_this_launch(feed);
@@ -71,7 +71,18 @@ fn run() -> glib::ExitCode {
     // cannot be written.
     if cli::runs_in_the_caller(&args) {
         let nothing = Store::memory().expect("an empty database");
-        return report(cli::run(&args, &nothing, None, &cli::Here));
+        let outcome = cli::run(&args, &nothing, None, &cli::Here);
+        let succeeded = outcome.code == 0;
+        let code = report(outcome);
+        // `symbol refresh` downloaded the listings here, and an open window
+        // has to be told to read them; the rest of this function is how a
+        // command reaches it.
+        if !(succeeded && cli::tells_the_window(&args) && app_is_running()) {
+            return code;
+        }
+        let program = args.first().cloned().unwrap_or_else(|| "omacharts".into());
+        args = vec![program, "symbol".into(), "reload".into()];
+        launch = args.clone();
     }
 
     // Everything else goes where its result can be shown.

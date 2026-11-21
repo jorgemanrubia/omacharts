@@ -77,6 +77,7 @@ fn window_content(from: &impl IsA<gtk::Widget>) -> gtk::Widget {
 
 type OnPick = Rc<dyn Fn(usize)>;
 type OnEnter = Rc<dyn Fn()>;
+type Holds = Rc<dyn Fn(usize) -> bool>;
 
 pub struct PickFrame {
     pub popover: gtk::Popover,
@@ -103,6 +104,9 @@ pub struct PickFrame {
     /// window it is on. Only there while the frame is open.
     catcher: RefCell<Option<(glib::WeakRef<gtk::Widget>, gtk::EventControllerKey)>>,
     on_pick: RefCell<Option<OnPick>>,
+    /// The rows a pick leaves the frame open for: see
+    /// [`PickFrame::hold_open_when`].
+    holds: RefCell<Option<Holds>>,
     /// The list as a dropdown under the box, shown only when asked for; see
     /// [`PickFrame::drop_list`]. `None` for a frame whose list is always
     /// there.
@@ -182,6 +186,7 @@ impl PickFrame {
             back: RefCell::new(None),
             catcher: RefCell::new(None),
             on_pick: RefCell::new(None),
+            holds: RefCell::new(None),
             drop: RefCell::new(None),
             on_enter: RefCell::new(None),
             overlay: RefCell::new(None),
@@ -258,6 +263,11 @@ impl PickFrame {
             let Some(frame) = weak.upgrade() else { return };
             let Some(pick) = frame.on_pick.borrow().clone() else { return };
             let at = row.index().max(0) as usize;
+            let holds = frame.holds.borrow().clone();
+            if holds.is_some_and(|holds| holds(at)) {
+                pick(at);
+                return;
+            }
             frame.popover.popdown();
             glib::idle_add_local_once(move || pick(at));
         });
@@ -404,6 +414,13 @@ impl PickFrame {
     /// Keep this width rather than one taken from the window.
     pub fn set_width(&self, width: i32) {
         self.width.set(Some(width));
+    }
+
+    /// Leave the frame open when the row at an index `holds` is true of is
+    /// picked, and hand it over at once: for a pick that has to ask
+    /// something first, and say the answer in the frame when it is no.
+    pub fn hold_open_when(&self, holds: impl Fn(usize) -> bool + 'static) {
+        *self.holds.borrow_mut() = Some(Rc::new(holds));
     }
 
     pub fn close(&self) {

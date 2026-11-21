@@ -1,37 +1,98 @@
-name: Refresh listings
+name: Listings
+
+# Every US listing, rebuilt from Nasdaq Trader's files each weekday and
+# committed to main as the compiled-in copy,
+# crates/omacharts-engine/src/listings.tsv, whenever a listing came or went.
+# One file: the Pages build serves it at omacharts.org/data/listings.tsv with
+# a sidecar (pages.yml), every running copy of the app fetches it from there
+# once a day, and every release compiles in whatever main has.
+#
+# Not a pull request: this used to open one a week, and every one of them
+# failed on a repository setting ("GitHub Actions is not permitted to create
+# or approve pull requests"), so for seven weeks nothing refreshed and a
+# company that listed was not searchable. Pushing to main needs no setting,
+# and nobody has to merge a data file for the app to have it.
+#
+# A push made with the workflow's own token starts no other workflow, so CI
+# and the perf checks do not run on these commits — the file is checked here
+# instead, by the same rules the app holds a download to — and the Pages
+# deploy that publishes it is started here, by a dispatch, which is the one
+# event such a token is allowed to start.
+#
+# A pull request that touches the build runs everything but the commit, so a
+# change here is proved before it writes anything.
 
 on:
   schedule:
-    - cron: '17 6 * * 1'
+    # Before the US open, so a company listing today is searchable when it
+    # first trades, and again after the close, when the day's volumes that
+    # rank the funds are in. A run that changes no listing commits nothing.
+    - cron: '30 11 * * 1-5'
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/listings.yml'
+      - 'tools/build_listings.py'
+      - 'tools/check_listings.py'
 
 permissions:
   contents: write
-  pull-requests: write
+  # To start the Pages deploy.
+  actions: write
+
+concurrency:
+  group: listings
+  cancel-in-progress: false
+
+env:
+  LISTINGS: crates/omacharts-engine/src/listings.tsv
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Rebuild from Nasdaq Trader
-        run: tools/build_listings.py > crates/omacharts-engine/src/listings.tsv
-      - name: Open a pull request if anything listed or delisted
-        uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: 'Refresh the generated symbol listings'
-          title: 'Refresh the generated symbol listings'
-          body: |
-            Rebuilt from Nasdaq Trader's daily files by `tools/build_listings.py`.
-            The diff is every symbol that listed or delisted since the last run,
-            plus the ones whose popularity band moved — that column is a rank
-            over market cap and traded value, so a little churn each week is
-            the column working, not a fault.
+          # Enough history for the rebase below to find where main moved from.
+          fetch-depth: 20
 
-            A `warning:` line in the build step means a ranking feed was down.
-            That is survivable by design: those rows go out unranked and search
-            falls back to the ordering it had before the column existed. Worth
-            re-running rather than merging a file that lost half its ranking.
-          branch: listings-refresh
-          delete-branch: true
-          add-paths: crates/omacharts-engine/src/listings.tsv
+      - name: Build from Nasdaq Trader
+        run: |
+          tools/build_listings.py > fresh.tsv 2> build.log
+          cat build.log
+
+      - name: Check it is fit to ship
+        run: |
+          tools/check_listings.py fresh.tsv "$LISTINGS" > fresh.json
+          cat fresh.json
+          echo "### Listings" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat build.log fresh.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit it to main, and publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The build date alone moving is not news.
+          if diff -q <(grep -v '^#' "$LISTINGS") <(grep -v '^#' fresh.tsv) >/dev/null; then
+            echo "Nothing listed or delisted; nothing to commit."
+            exit 0
+          fi
+          mv fresh.tsv "$LISTINGS"
+          git add "$LISTINGS"
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet -m "Refresh the symbol listings"
+          # Main may have moved during the build. Nothing else writes this
+          # file, so a rebase is always clean.
+          for attempt in 1 2 3; do
+            git pull --quiet --rebase origin main && git push --quiet origin HEAD:main && break
+            sleep 5
+          done
+          git fetch --quiet origin main
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::could not push"; exit 1; }
+          gh workflow run pages.yml --ref main
+          echo "Committed $(jq -r .rows fresh.json) listings built $(jq -r .built fresh.json); Pages deploy started."

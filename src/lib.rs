@@ -25,6 +25,7 @@ pub mod store;
 pub mod templates;
 pub mod theming;
 pub mod launch;
+pub mod listings;
 pub mod trading;
 pub mod update;
 pub mod zoom;

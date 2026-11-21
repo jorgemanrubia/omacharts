@@ -148,6 +148,11 @@ after the first line is the user's own standing instructions.
 
 The orders commands go in, which is the part a surface cannot express.
 
+**A company that listed this week.** `symbol search ANT`, `symbol show ANT`,
+`chart set --symbol ANT` and `watchlist add` ask the data feed about a ticker
+no listing has yet, and use it when the feed knows it; exit 3 means the feed
+does not either. `symbol refresh` fetches the newest US listings now.
+
 **Watchlists onto another machine.** `watchlist export > file` there, then
 `watchlist import file` (or `import - < file` over ssh) here. Import only adds
 what is missing, so it is safe to repeat; `--replace` makes each list match the

@@ -17,6 +17,12 @@ on:
       # The sidebar shows the version, read from here at build time, so a
       # release redeploys the manual.
       - 'Cargo.toml'
+      # Served at /data/listings.tsv for the app to fetch. The listings
+      # workflow's own commits trigger nothing (a push made with
+      # GITHUB_TOKEN never does), so it dispatches this itself; this path is
+      # for a person's commit to the file.
+      - 'crates/omacharts-engine/src/listings.tsv'
+      - 'tools/check_listings.py'
   workflow_dispatch:
 
 permissions:
@@ -51,6 +57,22 @@ jobs:
         working-directory: site
         env:
           JEKYLL_ENV: production
+      # The US listings the app fetches once a day: the compiled-in copy, so
+      # there is one file and a release always ships what the site serves,
+      # with a sidecar saying when it was built, how many rows it has and its
+      # sha256. Added after Jekyll, so no page, menu, search index or feed
+      # knows it is there. A file that fails the checks is left out and the
+      # app keeps the copy it has.
+      - name: Add the listings
+        run: |
+          mkdir -p site/_site/data
+          if tools/check_listings.py crates/omacharts-engine/src/listings.tsv > site/_site/data/listings.json; then
+            cp crates/omacharts-engine/src/listings.tsv site/_site/data/listings.tsv
+            cat site/_site/data/listings.json
+          else
+            rm -f site/_site/data/listings.json
+            echo "::warning::the compiled-in listings failed tools/check_listings.py; not published"
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/_site
