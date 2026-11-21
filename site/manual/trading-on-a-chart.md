@@ -25,19 +25,19 @@ state:
   omacharts chart set --symbol ES --resolution 15m
   move 1300 880           # off the chart, so its gear is hidden
 capture: bin/headless-window shot /tmp/account-part.png
-crop: 1160x88+1000+4
+crop: 1240x88+838+4
 -->
-{% include figure.html src="/assets/manual/trading-on-a-chart/account-part.png" alt="A chart's top-right corner: the account, the day's P&L, Buy, Sell, Qty, the order template, the position held and its total" caption="The Account part of a chart holding one contract." %}
+{% include figure.html src="/assets/manual/trading-on-a-chart/account-part.png" alt="A chart's top-right corner: the account, Day P&L, Buy, Sell, Qty, the order template, the position held and Pos P&L" caption="The Account part of a chart holding one contract." %}
 
 | Part | Shows, and does |
 |---|---|
 | **Account** | The account the chart trades on, and its trouble if any, such as *signed out*. Click it to choose another, listed by login. Shown only when there is more than one account |
-| **P&L** | The account's P&L for the day, in the profit or loss colour |
+| **Day P&L** | The account's P&L for the day, such as *Day P&L +$112.50*, in the profit or loss colour |
 | **Buy/Sell** | Buy or sell the chart's quantity at the market. Greyed out with the reason in the tooltip when the chart cannot trade. Taken out of the header, only the buttons go: the keys, the chart menu and the New order dialog still trade |
 | **Qty** | The quantity orders are sent with. Click it for the others on offer and **Edit quantities…** |
 | **Order template** | The chart's [order template](#order-templates), or only its icon with none. Click it to pick another |
 | **Current position** | What the account holds in the contract, signed, such as *+1* |
-| **Total** | That position's open P&L, such as *Total: +$37.50*, in the profit or loss colour |
+| **Position P&L** | That position's open P&L, such as *Pos P&L +$37.50*, in the profit or loss colour |
 
 A chart with no account of its own trades on the default one, and follows it when the default changes. Choosing the default account in the picker leaves it that way.
 

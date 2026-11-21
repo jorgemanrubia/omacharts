@@ -276,13 +276,14 @@ pub struct ChartPane {
     /// none, its name beside it once one is picked.
     pub order_template_menu: gtk::MenuButton,
     order_template_label: gtk::Label,
-    /// "P&L" and the account's P&L for the day after it.
+    /// "Day P&L" and the account's P&L for the day after it.
     pub day_part: gtk::Box,
     day_amount: gtk::Label,
     /// The position held, signed.
     pub position_part: gtk::Box,
     position_net: gtk::Label,
-    /// "Total:" and the position's open P&L after it.
+    /// "Pos P&L" and the position's open P&L after it, the word cut short
+    /// to keep the header compact.
     pub total_part: gtk::Box,
     total_amount: gtk::Label,
     /// The size somebody picked for this chart, and from which template;
@@ -620,7 +621,7 @@ impl ChartPane {
         order_template_menu.set_visible(false);
         // Read like the quantity: the word quiet, the money in the profit
         // or loss colour, or plain at nothing either way.
-        let day_word = gtk::Label::new(Some("P&L"));
+        let day_word = gtk::Label::new(Some("Day P&L"));
         day_word.add_css_class("dim-label");
         let day_amount = gtk::Label::new(None);
         let day_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
@@ -638,7 +639,7 @@ impl ChartPane {
         position_part.set_visible(false);
         // Its open P&L read as the day's is: the word quiet, the money in
         // the profit or loss colour.
-        let total_word = gtk::Label::new(Some("Total:"));
+        let total_word = gtk::Label::new(Some("Pos P&L"));
         total_word.add_css_class("dim-label");
         let total_amount = gtk::Label::new(None);
         let total_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
@@ -1416,7 +1417,7 @@ impl ChartPane {
     /// The position held, its size signed and its open P&L already written
     /// with whether it is up or down, the P&L `None` until the trading service
     /// has said it; nothing at all, and no room taken, with nothing held.
-    /// The size is the Current position part, the P&L the Total part.
+    /// The size is the Current position part, the P&L the Position P&L part.
     pub fn write_position(&self, held: Option<(i32, Option<(&str, std::cmp::Ordering)>)>) {
         if self.position_part.get_visible() != held.is_some() {
             self.position_part.set_visible(held.is_some());
@@ -1437,7 +1438,7 @@ impl ChartPane {
         signed_colour(&self.total_amount, sign);
     }
 
-    /// What the Current position and Total parts say, one after the other,
+    /// What the Current position and Position P&L parts say, one after the other,
     /// and the colour of the total, for the tests.
     #[cfg(test)]
     pub fn position_text(&self) -> Option<(String, Option<&'static str>)> {
@@ -1446,14 +1447,14 @@ impl ChartPane {
             let mut class = None;
             if self.total_part.get_visible() {
                 class = ["pnl-gain", "pnl-loss"].into_iter().find(|class| self.total_amount.has_css_class(class));
-                words.push_str(" Total: ");
+                words.push_str(" Pos P&L ");
                 words.push_str(&self.total_amount.text());
             }
             (words, class)
         })
     }
 
-    /// What the P&L part says and in which colour, for the tests.
+    /// What the Day P&L part says and in which colour, for the tests.
     #[cfg(test)]
     pub fn day_pnl_text(&self) -> Option<(String, Option<&'static str>)> {
         self.day_part.get_visible().then(|| {

@@ -75,7 +75,7 @@ pub enum Part {
     /// other feeds when there are any. Nothing at all with Yahoo alone:
     /// nothing to choose, and nothing to connect to.
     Feed,
-    /// The account's P&L for the day, closed and open: "P&L +$1,250.00".
+    /// The account's P&L for the day, closed and open: "Day P&L +$1,250.00".
     /// Nothing at all unless the chart has an account to trade on, or
     /// while its trading service has not said.
     DayPnl,
@@ -95,7 +95,7 @@ pub enum Part {
     /// trades.
     Position,
     /// That position's open P&L, the word quiet and the money in the profit
-    /// or loss colour: "Total: +$125.00", "Total: -0.50R". Nothing at all
+    /// or loss colour: "Pos P&L +$125.00", "Pos P&L -0.50R". Nothing at all
     /// until the trading service has said it.
     Total,
     /// The preset resolutions as a row of buttons, on the focused chart only.
@@ -203,12 +203,12 @@ impl Part {
             Part::Template => "Chart template",
             Part::Account => "Account",
             Part::Feed => "Data feed",
-            Part::DayPnl => "P&L",
+            Part::DayPnl => "Day P&L",
             Part::Trade => "Buy/Sell",
             Part::Size => "Quantity",
             Part::OrderTemplate => "Order template",
             Part::Position => "Current position",
-            Part::Total => "Total",
+            Part::Total => "Position P&L",
             Part::Stripe => "Resolutions stripe",
             Part::Title => "Chart title",
             Part::Settings => "Chart settings",
@@ -675,7 +675,8 @@ mod tests {
         assert!(!without.contains(Part::OrderTemplate) && !without.contains(Part::Total), "{without:?}");
         assert_eq!(parse("order_template,total"), Ok(vec![Part::OrderTemplate, Part::Total]));
         assert_eq!(Part::OrderTemplate.label(), "Order template");
-        assert_eq!(Part::Total.label(), "Total");
+        assert_eq!(Part::Total.label(), "Position P&L");
+        assert_eq!(Part::DayPnl.label(), "Day P&L");
         assert_eq!(Part::Trade.label(), "Buy/Sell");
     }
 

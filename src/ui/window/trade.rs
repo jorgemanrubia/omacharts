@@ -2489,7 +2489,7 @@ pub(super) mod tests {
             for group in ["Trading", "Right", "Order entry", "Chart"] {
                 assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
             }
-            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy/Sell", "Quantity", "Order template", "Current position", "Total", "Order labels"] {
+            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "Day P&L", "Buy/Sell", "Quantity", "Order template", "Current position", "Position P&L", "Order labels"] {
                 assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
             }
             dialog.force_close();
@@ -3708,7 +3708,7 @@ pub(super) mod tests {
             let shown_day = day(&window).expect("the day's P&L");
             let day_class = if shown_day < 0.0 { Some("pnl-loss") } else { Some("pnl-gain") };
             assert_eq!(pane.day_pnl_text(), Some((trading::pnl_text(shown_day, Some("USD")), day_class)));
-            assert_eq!(pane.position_text(), Some(("+1 Total: +$500.00".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Pos P&L +$500.00".into(), Some("pnl-gain"))));
             // A target 10 points up: $500 more than the average, an exit.
             let avg = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.avg).expect("an average");
             session.place(&resting(Side::Sell, OrderKind::Limit, Some(avg + 10.0))).unwrap();
@@ -3721,11 +3721,11 @@ pub(super) mod tests {
             assert!(pill().ends_with("+1.00R"), "{}", pill());
             assert!(order().contains("+1.00R"), "{}", order());
             assert_eq!(pane.day_pnl_text(), Some((chart_pnl::r_text(shown_day, 500.0), day_class)));
-            assert_eq!(pane.position_text(), Some(("+1 Total: +1.00R".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Pos P&L +1.00R".into(), Some("pnl-gain"))));
             chart_pnl::save_amount(&window.store, 250.0);
             window.adopt_pnl_display();
             assert!(pill().ends_with("+2.00R"), "{}", pill());
-            assert_eq!(pane.position_text(), Some(("+1 Total: +2.00R".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Pos P&L +2.00R".into(), Some("pnl-gain"))));
 
             window.show_trading_panel(true);
             let panel = window.trade.panel.borrow().clone().expect("the panel");
@@ -3737,12 +3737,12 @@ pub(super) mod tests {
             chart_pnl::save_display(&window.store, Display::Money);
             window.adopt_pnl_display();
             assert!(pill().ends_with("+$500.00"), "{}", pill());
-            assert_eq!(pane.position_text(), Some(("+1 Total: +$500.00".into(), Some("pnl-gain"))));
+            assert_eq!(pane.position_text(), Some(("+1 Pos P&L +$500.00".into(), Some("pnl-gain"))));
         });
     }
 
     /// The Current position part says the position the chart trades, its
-    /// size signed, and the Total part its open P&L in the day's colours,
+    /// size signed, and the Position P&L part its open P&L in the day's colours,
     /// plain at nothing; the size alone until the P&L has come; and nothing
     /// at all, taking no room, with nothing held or no account.
     #[test]
@@ -3756,9 +3756,9 @@ pub(super) mod tests {
             assert_eq!(pane.position_text(), Some(("+1".into(), None)), "its size until the P&L has come");
             let avg = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.avg).expect("an average");
             for (at, words, class) in [
-                (avg + 2.5, "+1 Total: +$125.00", Some("pnl-gain")),
-                (avg - 5.0, "+1 Total: -$250.00", Some("pnl-loss")),
-                (avg, "+1 Total: +$0.00", None),
+                (avg + 2.5, "+1 Pos P&L +$125.00", Some("pnl-gain")),
+                (avg - 5.0, "+1 Pos P&L -$250.00", Some("pnl-loss")),
+                (avg, "+1 Pos P&L +$0.00", None),
             ] {
                 *session.market.lock().unwrap() = Some(at);
                 window.trade.marked_at.set(None);
@@ -3775,14 +3775,14 @@ pub(super) mod tests {
             *session.market.lock().unwrap() = Some(avg + 1.0);
             window.trade.marked_at.set(None);
             window.mark_to_market();
-            settle(&window, || pane.position_text().is_some_and(|(said, _)| said.starts_with("-2 Total: ")));
+            settle(&window, || pane.position_text().is_some_and(|(said, _)| said.starts_with("-2 Pos P&L ")));
             let open = window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.open_pnl).expect("open P&L");
             let class = match open.partial_cmp(&0.0) {
                 Some(std::cmp::Ordering::Greater) => Some("pnl-gain"),
                 Some(std::cmp::Ordering::Less) => Some("pnl-loss"),
                 _ => None,
             };
-            assert_eq!(pane.position_text(), Some((format!("-2 Total: {}", trading::pnl_text(open, Some("USD"))), class)));
+            assert_eq!(pane.position_text(), Some((format!("-2 Pos P&L {}", trading::pnl_text(open, Some("USD"))), class)));
 
             // Flat: nothing at all.
             session.place(&trading::OrderRequest { qty: 2, ..resting(Side::Buy, OrderKind::Market, None) }).unwrap();
