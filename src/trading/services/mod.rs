@@ -34,10 +34,12 @@ pub fn registry() -> Registry {
         let mut fake = super::fake::FakeService::listed();
         // A build with the feature has a day of orders to look at, a
         // different one for its second login, on an account numbered after
-        // the user typed; the tests start from nothing, on FAKE-1.
+        // the user typed, priced off the charts whatever they show; the
+        // tests start from nothing, on FAKE-1, at prices they pin.
         #[cfg(not(test))]
         {
             fake.numbered_by_user = true;
+            fake.follows_charts = true;
             fake.in_turn = vec![super::fake::day_of_orders, super::fake::another_day];
             fake.held.lock().unwrap().insert(String::new(), super::fake::day_of_orders());
         }

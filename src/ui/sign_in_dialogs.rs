@@ -83,7 +83,7 @@ fn row_titled<Row: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(widget: &gtk::Wi
 pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
     match feed.kind() {
         id if id == omacharts_engine::providers::sierra::LISTED.id => Some(sierra_setup::dialog),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "fakes"))]
         id if id == omacharts_engine::providers::fake::LISTED.id => Some(fake::dialog),
         _ => None,
     }
@@ -180,7 +180,6 @@ fn leaves_room(model: &gtk::gio::MenuModel, id: &str) -> bool {
 #[cfg(any(test, feature = "fakes"))]
 pub(crate) mod fake {
     use adw::prelude::*;
-    #[cfg(test)]
     use omacharts_engine::providers::{fake, Saved};
 
     use crate::trading::{Login, Typed};
@@ -227,7 +226,6 @@ pub(crate) mod fake {
         dialog.present(Some(parent));
     }
 
-    #[cfg(test)]
     pub fn dialog(known: Saved, done: Box<dyn Fn(Saved)>) -> adw::AlertDialog {
         let dialog = adw::AlertDialog::new(Some(&format!("Sign in to {}", fake::LISTED.label)), None);
         let list = gtk::ListBox::new();

@@ -341,6 +341,14 @@ impl Window {
                 vec![(instrument, last)]
             })
             .collect();
+        for pane in self.panes.borrow().iter() {
+            let (Some(traded), Some(last)) = (pane.traded(), pane.view.last_price()) else { continue };
+            for session in logins.iter().filter_map(|login| self.desk.session(&login.id)) {
+                if let Ok(contract) = session.contract_for(&traded) {
+                    session.charted(&contract.symbol, last);
+                }
+            }
+        }
         self.desk.marked(logins, |held| {
             trading::charted_price(held, charts.iter().map(|(instrument, last)| (instrument, *last)))
         })
