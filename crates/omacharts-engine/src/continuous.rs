@@ -784,11 +784,15 @@ static CHECKING: std::sync::Once = std::sync::Once::new();
 /// A subscription to a stitched root's front month, followed for a roll
 /// while it is held.
 struct Following {
-    _subscription: Box<dyn Subscription>,
+    subscription: Box<dyn Subscription>,
     _alive: Arc<()>,
 }
 
-impl Subscription for Following {}
+impl Subscription for Following {
+    fn reconcile(&self) {
+        self.subscription.reconcile();
+    }
+}
 
 /// `subscription`, of `spelled`'s front month, noted as followed: when the
 /// feed's front month of the root is another, [`on_rolled`] hears it.
@@ -809,7 +813,7 @@ fn follow(inner: Arc<dyn Provider>, spelled: Spelled, subscription: Box<dyn Subs
             check_rolls();
         });
     });
-    Following { _subscription: subscription, _alive: alive }
+    Following { subscription, _alive: alive }
 }
 
 /// Be told when a stitched root followed live has rolled: its feed's front

@@ -240,7 +240,17 @@ impl Live {
         let mut watched = self.watched.borrow_mut();
         if let Some(entry) = watched.get_mut(&series) {
             entry.watchers.insert(pane);
-            entry.idle = false;
+            // Back on screen after nothing showed it: what the stream drew
+            // while nobody was looking is asked after. A chartbook switch
+            // leaves every series idle for a moment, so each one on the
+            // book shown, kept or shared, is asked once; one opened afresh
+            // has its snapshot coming, which is the same answer.
+            if std::mem::take(&mut entry.idle)
+                && entry.bars.is_some()
+                && let Some(handle) = &entry.handle
+            {
+                handle.reconcile();
+            }
             self.by_pane.borrow_mut().insert(pane, series);
             return if entry.bars.is_some() { Watching::Showing } else { Watching::Opening };
         }
@@ -711,6 +721,8 @@ mod tests {
         sinks: Vec<(String, Timeframe, Arc<Sink>)>,
         dropped: usize,
         refuse: Option<ProviderError>,
+        /// Every reconcile asked of a subscription, by symbol and timeframe.
+        reconciled: Vec<(String, Timeframe)>,
     }
 
     struct FakeHandle {
@@ -719,7 +731,11 @@ mod tests {
         timeframe: Timeframe,
     }
 
-    impl Subscription for FakeHandle {}
+    impl Subscription for FakeHandle {
+        fn reconcile(&self) {
+            self.inner.lock().unwrap().reconciled.push((self.symbol.clone(), self.timeframe));
+        }
+    }
 
     impl Drop for FakeHandle {
         fn drop(&mut self) {
@@ -855,6 +871,42 @@ mod tests {
         live.reap();
         assert_eq!(fake.lock().unwrap().dropped, 1);
         assert!(live.watchers(&series("ES", M1)).is_empty());
+    }
+
+    /// A series that comes back on screen with nothing having shown it is
+    /// asked to reconcile its last bars, once, however many charts on the
+    /// chartbook show it; a series still being opened, or one somebody was
+    /// already showing, is not.
+    #[test]
+    fn a_series_back_on_screen_is_asked_to_reconcile_once() {
+        let (live, fake) = live();
+        let reconciled = || fake.lock().unwrap().reconciled.clone();
+        live.watch(1, series("ES", M1), "ES", None);
+        live.watch(2, series("ES", H1), "ES", None);
+        assert!(live.unwatch_all());
+        live.watch(3, series("ES", M1), "ES", None);
+        assert!(reconciled().is_empty(), "no snapshot yet: it is the answer, and on its way");
+        live.reap();
+        live.watch(4, series("ES", H1), "ES", None);
+
+        push(&fake, "ES", M1, Update::Snapshot(vec![bar(0, 1.0)]));
+        push(&fake, "ES", H1, Update::Snapshot(vec![bar(0, 1.0)]));
+        live.drain();
+        live.watch(5, series("ES", M1), "ES", None);
+        assert!(reconciled().is_empty(), "opened afresh, or showing all along");
+
+        // Another chartbook, sharing the minutes, and back.
+        assert!(live.unwatch_all());
+        live.watch(6, series("ES", M1), "ES", None);
+        live.reap();
+        assert_eq!(reconciled(), vec![("ES".to_string(), M1)]);
+        assert!(live.unwatch_all());
+        live.watch(7, series("ES", M1), "ES", None);
+        live.watch(8, series("ES", M1), "ES", None);
+        live.watch(9, series("ES", H1), "ES", None);
+        assert_eq!(reconciled(), vec![("ES".to_string(), M1), ("ES".to_string(), M1)], "once each time");
+        let opened = fake.lock().unwrap().opened.clone();
+        assert_eq!(opened.len(), 4, "the hours, reaped each time, opened again: {opened:?}");
     }
 
     /// A thousand ticks are one drain with one tail from one bar, and the

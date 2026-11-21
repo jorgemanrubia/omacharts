@@ -1811,6 +1811,9 @@ mod scroll_back_tests {
         floor: i64,
         reach: bool,
         asked: Mutex<Vec<(Timeframe, i64, i64, usize)>>,
+        /// Every subscription opened, and every reconcile asked of one, by
+        /// resolution.
+        streamed: Arc<Mutex<Vec<(&'static str, Timeframe)>>>,
     }
 
     fn series(timeframe: Timeframe, from: i64, until: i64) -> Vec<omacharts_engine::Bar> {
@@ -1865,9 +1868,14 @@ mod scroll_back_tests {
     impl Stream for Deep {
         fn subscribe(&self, symbol: &str, timeframe: Timeframe, since: Option<i64>, sink: Sink) -> Result<Box<dyn Subscription>, omacharts_engine::ProviderError> {
             sink(Update::Snapshot(self.bars(symbol, timeframe, since)?));
-            struct Done;
-            impl Subscription for Done {}
-            Ok(Box::new(Done))
+            struct Done(Arc<Mutex<Vec<(&'static str, Timeframe)>>>, Timeframe);
+            impl Subscription for Done {
+                fn reconcile(&self) {
+                    self.0.lock().unwrap().push(("reconciled", self.1));
+                }
+            }
+            self.streamed.lock().unwrap().push(("opened", timeframe));
+            Ok(Box::new(Done(self.streamed.clone(), timeframe)))
         }
     }
 
@@ -1903,7 +1911,7 @@ mod scroll_back_tests {
                 let native = timeframe.native();
                 let step = native.seconds();
                 let floor = (NOW - 650 * step).div_euclid(step) * step;
-                let deep = Arc::new(Deep { floor, reach: true, asked: Mutex::new(Vec::new()) });
+                let deep = Arc::new(Deep { floor, reach: true, asked: Mutex::new(Vec::new()), streamed: Arc::default() });
                 let store = Rc::new(Store::memory().expect("a store"));
                 let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
                 let window = Window::build_with(&app, store.clone(), vec![deep.clone() as Arc<dyn Provider>]);
@@ -1948,12 +1956,66 @@ mod scroll_back_tests {
         });
     }
 
+    /// A chartbook shown again asks each series streamed on it to bring its
+    /// last bars up to date with the feed, once, whatever number of charts
+    /// show it and at whatever resolution: a stream that drew a bar short
+    /// while the book was off screen is put right as it comes back, and
+    /// none is fetched again whole. Here the second book is a copy, so
+    /// both series stay open across the switch.
+    #[test]
+    fn a_chartbook_shown_again_reconciles_every_series_on_it() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let deep = Arc::new(Deep { floor: 0, reach: false, asked: Mutex::new(Vec::new()), streamed: Arc::default() });
+            let store = Rc::new(Store::memory().expect("a store"));
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            let window = Window::build_with(&app, store, vec![deep.clone() as Arc<dyn Provider>]);
+            let es = window.index.find("ES", None).expect("ES");
+            let first = window.focused_pane();
+            window.split_focused(true);
+            let second = window.panes.borrow().iter().find(|pane| pane.id != first.id).cloned().expect("a second chart");
+            window.split_focused(true);
+            let third = window
+                .panes
+                .borrow()
+                .iter()
+                .find(|pane| pane.id != first.id && pane.id != second.id)
+                .cloned()
+                .expect("a third chart");
+            // Two charts on the two-minute series, one folded from hours.
+            for (pane, label) in [(&first, "2m"), (&second, "4h"), (&third, "2m")] {
+                pane.timeframe.set(Timeframe::parse(label).expect("a resolution"));
+                window.show_in(pane, es.clone());
+            }
+            let charted = |window: &Rc<Window>| {
+                settle(|| window.panes.borrow().iter().all(|pane| pane.view.with_bars(|bars| !bars.is_empty())))
+            };
+            assert!(charted(&window), "the bars never came");
+            let streamed = || std::mem::take(&mut *deep.streamed.lock().unwrap());
+            let mut opened = streamed();
+            opened.sort_by_key(|(_, tf)| tf.seconds());
+            assert_eq!(opened, vec![("opened", Timeframe::minutes(2)), ("opened", Timeframe::hours(1))]);
+
+            let reconciled = vec![("reconciled", Timeframe::minutes(2)), ("reconciled", Timeframe::hours(1))];
+            let sorted = |mut heard: Vec<(&'static str, Timeframe)>| {
+                heard.sort_by_key(|(_, tf)| tf.seconds());
+                heard
+            };
+            window.duplicate_chartbook();
+            assert!(charted(&window));
+            assert_eq!(sorted(streamed()), reconciled, "the copy shown");
+            window.activate_book(0);
+            assert!(charted(&window));
+            assert_eq!(sorted(streamed()), reconciled, "and the first again");
+        });
+    }
+
     /// A feed with nothing more than its first load took is never asked.
     #[test]
     fn a_feed_with_nothing_older_is_never_asked() {
         crate::ui::on_gtk(|| {
             let _ = adw::init();
-            let deep = Arc::new(Deep { floor: 0, reach: false, asked: Mutex::new(Vec::new()) });
+            let deep = Arc::new(Deep { floor: 0, reach: false, asked: Mutex::new(Vec::new()), streamed: Arc::default() });
             let store = Rc::new(Store::memory().expect("a store"));
             let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
             let window = Window::build_with(&app, store, vec![deep.clone() as Arc<dyn Provider>]);
