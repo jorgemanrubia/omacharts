@@ -56,9 +56,11 @@ pub fn found_path() -> PathBuf {
 /// The US listings to search: downloaded or compiled in, whichever was built
 /// later. A download that never happened, or went wrong, leaves the app
 /// exactly as it shipped rather than without an inventory.
-pub fn us_listings() -> String {
-    let downloaded = std::fs::read_to_string(listings_path()).ok();
-    crate::listings::choose(downloaded.as_deref(), LISTINGS).to_string()
+pub fn us_listings() -> std::borrow::Cow<'static, str> {
+    match std::fs::read_to_string(listings_path()) {
+        Ok(downloaded) if !std::ptr::eq(crate::listings::choose(Some(&downloaded), LISTINGS), LISTINGS) => downloaded.into(),
+        _ => LISTINGS.into(),
+    }
 }
 
 /// Every generated file as one text, the symbols feeds found last. They are
@@ -218,16 +220,22 @@ pub fn merge(listings: &str, mut curated: Vec<Instrument>) -> Vec<Instrument> {
 
 /// Parse the listings off the main thread and hand back one merged index.
 pub fn load_in_background(inventory: Inventory, done: impl Fn(usize) + 'static) {
-    let (sender, receiver) = async_channel::bounded::<Vec<Instrument>>(1);
+    let (sender, receiver) = async_channel::bounded::<SearchIndex>(1);
+    // The symbols found this session, so the index arrives with them and the
+    // main loop has nothing left to build.
+    let found = inventory.found.borrow().clone();
 
+    // Reading, parsing and indexing all happen here; the main loop only swaps
+    // a pointer. The text read is dropped once it is indexed.
     std::thread::spawn(move || {
-        let _ = sender.send_blocking(merge(&generated(&us_listings()), omacharts_engine::symbols::seed()));
+        let items = merge(&generated(&us_listings()), omacharts_engine::symbols::seed());
+        let _ = sender.send_blocking(with_found(SearchIndex::new(items), &found));
     });
 
     glib::spawn_future_local(async move {
-        if let Ok(items) = receiver.recv().await {
-            let count = items.len();
-            inventory.replace(SearchIndex::new(items));
+        if let Ok(index) = receiver.recv().await {
+            let count = index.len();
+            inventory.replace(index);
             done(count);
         }
     });

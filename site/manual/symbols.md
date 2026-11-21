@@ -67,12 +67,6 @@ Picking a symbol charts it on the focused chart, and on every Follow chart too w
 
 The best match comes first. `GC` is gold futures, and `semi` lists the semiconductor ETFs before companies with *semi* in the name.
 
-## New listings
-
-The list of US stocks and ETFs is rebuilt every weekday from Nasdaq's daily files, before the open and again after the close. Omacharts downloads it once a day, in the background, and the search uses it at once, with no restart. A company that listed today is usually in it by the next morning, and until then you can look it up on the feed from the search.
-
-Turn this off with Preferences › Updates › **Update symbol listings daily** ([Preferences](/manual/preferences/)). The search then uses the list that came with your version, which is refreshed with every release. A download that fails, or that looks wrong, is ignored, and the search keeps the list it had.
-
 ## Listings abroad
 
 A listing outside the US is its ticker plus its venue's suffix. `SAP DE` and `SAP.DE` are the same instrument. A dot followed by anything that is not one of these suffixes stays part of the ticker, so `BRK.B` is one US ticker.

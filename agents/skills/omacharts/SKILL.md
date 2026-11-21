@@ -151,8 +151,7 @@ The orders commands go in, which is the part a surface cannot express.
 **A company that listed this week.** `symbol search ANT`, `symbol show ANT`,
 `chart set --symbol ANT` and `watchlist add` ask the data feed about a ticker
 no listing has yet, and use it when the feed knows it; exit 3 means the feed
-does not either. The US listings refresh daily by themselves; `symbol
-refresh` fetches them now and says when they were built.
+does not either. `symbol refresh` fetches the newest US listings now.
 
 **Watchlists onto another machine.** `watchlist export > file` there, then
 `watchlist import file` (or `import - < file` over ssh) here. Import only adds

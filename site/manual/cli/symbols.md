@@ -8,7 +8,8 @@ nav_order: 1
 
 `symbol` searches the same instruments the window searches. Which
 instruments there are, and how a listing abroad is named, is in [Symbols and
-search](/manual/symbols/).
+search](/manual/symbols/). `symbol refresh` fetches the newest US listings now
+and says when they were built and how many there are (`--json`: `built`, `rows`, `updated`).
 
 ## `symbol search`
 
@@ -79,27 +80,3 @@ omacharts: no instrument called ZZZQX (Yahoo Finance does not know ZZZQX); try `
 
 Asking the feed takes as long as one request to it, a second or two.
 
-## `symbol refresh`
-
-Downloads the newest list of US stocks and ETFs now, whatever Preferences
-says, and reports when it was built and how many listings it has. An open
-window searches it at once. It is the download Omacharts makes once a day
-by itself ([New listings](/manual/symbols/#new-listings)).
-
-```
-$ omacharts symbol refresh
-downloaded the US listings built 2026-11-21: 11394 of them
-  [exit 0]
-
-$ omacharts symbol refresh
-the US listings are current: built 2026-11-21, 11394 of them
-  [exit 0]
-```
-
-| Flag | Takes |
-|---|---|
-| `--json` | The result as JSON: `built`, `rows`, and `updated`, whether anything was downloaded |
-
-A download that fails, or that looks wrong, exits 1 and changes nothing:
-`omacharts: listings not reachable: …; search keeps the
-listings it had`.

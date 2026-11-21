@@ -68,26 +68,30 @@ impl Window {
         if !self.store.setting_bool(listings::SETTING, true) {
             return;
         }
-        let dir = listings::dir();
-        if !listings::due(&dir, SystemTime::now()) {
-            return;
-        }
+        // Everything from here, the file's time included, on a thread of its
+        // own: the main loop never waits on the disk or the network. Nobody
+        // joins it, so a slow line never holds up quitting either.
         let (send, receive) = async_channel::bounded(1);
         std::thread::Builder::new()
             .name("omacharts listings".into())
             .spawn(move || {
-                let _ = send.send_blocking(listings::refresh(&listings::source(), &dir, crate::inventory::compiled()));
+                let dir = listings::dir();
+                let answer = match listings::due(&dir, SystemTime::now()) {
+                    true => Some(listings::refresh(&listings::source(), &dir, crate::inventory::compiled())),
+                    false => None,
+                };
+                let _ = send.send_blocking(answer);
             })
             .ok();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            match receive.recv().await {
-                Ok(Ok(fetched)) if fetched.updated => {
+            match receive.recv().await.ok().flatten() {
+                Some(Ok(fetched)) if fetched.updated => {
                     if let Some(this) = weak.upgrade() {
                         this.load_listings();
                     }
                 }
-                Ok(Err(why)) => eprintln!("omacharts: {why}"),
+                Some(Err(why)) => eprintln!("omacharts: {why}"),
                 _ => {}
             }
         });
