@@ -687,9 +687,9 @@ futures 1 to 9. Beside it, the header's **Buy** and **Sell** buy or sell
 the quantity at market, in the theme's Buy and Sell colours (its Blue and
 Amber, the chart's entries' own), and say why
 not, greyed, when the chart cannot trade. Ahead of them, first on the
-header's right, the header's **P&L**: the account's P&L for the day,
-closed and open, marked to every trade ("P&L +$1,250.00" in the profit
-colour, "P&L -$340.50" in the loss colour), and nothing until the broker
+header's right, the header's **Day P&L**: the account's P&L for the day,
+closed and open, marked to every trade ("Day P&L +$1,250.00" in the profit
+colour, "Day P&L -$340.50" in the loss colour), and nothing until the broker
 has said. The P&L, the two and the quantity lead the header's right, and
 are there only while the chart has an account to trade on. With a trading account, Ctrl+B buys the quantity at market,
 Ctrl+S sells it, and Ctrl+F cancels every
