@@ -381,21 +381,25 @@ fn symbol_search(
     let index = crate::inventory::everything();
     // A whole formula first, the way the search field offers it.
     let exact = index.spelled(query);
+    let found: Vec<&omacharts_engine::Instrument> =
+        index.search(query, limit).iter().filter_map(|h| index.get(h.index)).collect();
     // Then a ticker no listing has, when the feed knows it: what the search
     // field offers to look up, looked up, since a command cannot be asked
     // twice. A feed that does not know it adds nothing, and says nothing.
+    // Not for a word some name answers to: `nvidia` is a name, and a search
+    // for one never waits on the network.
     let asked = match crate::inventory::guess(query) {
-        Some(guess) if exact.is_none() && index.find(&guess.symbol, guess.suffix.as_deref()).is_none() => {
+        Some(guess)
+            if exact.is_none()
+                && index.find(&guess.symbol, guess.suffix.as_deref()).is_none()
+                && !found.iter().any(|hit| names_it(&hit.name, query)) =>
+        {
             ask_feed(store, &guess, live).ok()
         }
         _ => None,
     };
-    let hits: Vec<&omacharts_engine::Instrument> = exact
-        .iter()
-        .chain(asked.iter())
-        .chain(index.search(query, limit).iter().filter_map(|h| index.get(h.index)))
-        .take(limit)
-        .collect();
+    let hits: Vec<&omacharts_engine::Instrument> =
+        exact.iter().chain(asked.iter()).chain(found).take(limit).collect();
     if hits.is_empty() {
         return Err(Fault::not_found(format!("nothing matches {query:?}")));
     }
@@ -418,6 +422,13 @@ fn symbol_search(
         .collect::<Vec<_>>()
         .join("\n")
         + "\n")
+}
+
+/// Whether `query` is a whole word of `name`, whatever the case: `nvidia`
+/// of "NVIDIA Corporation", and not `ant` of "Antero Resources".
+fn names_it(name: &str, query: &str) -> bool {
+    let query = query.trim();
+    name.split(|c: char| !c.is_alphanumeric()).any(|word| word.eq_ignore_ascii_case(query))
 }
 
 /// `symbol refresh`: the published listings fetched now, in the process it
@@ -8138,6 +8149,10 @@ mod tests {
         assert!(refused.err.contains("no instrument called ZZZQX"), "{}", refused.err);
         assert!(refused.err.contains("Test Feed does not know ZZZQX"), "{}", refused.err);
         assert!(refused.err.contains("omacharts symbol search ZZZQX"), "{}", refused.err);
+        // A word a listed name answers to is a name, not asked about.
+        assert!(!names_it("Antero Resources", "ant"));
+        assert!(names_it("NVIDIA Corporation", "nvidia"));
+
         // And a search adds nothing for it, as before.
         assert_eq!(run("symbol search ZZZQX", &store).code, super::super::EXIT_NOT_FOUND);
     }

@@ -63,13 +63,45 @@ pub fn us_listings() -> std::borrow::Cow<'static, str> {
     }
 }
 
-/// Every generated file as one text, the symbols feeds found last. They are
-/// separate files because they come from unrelated sources that fail
-/// independently; a found symbol a listing has since taken in is dropped by
-/// [`merge`], which keeps the first row of any symbol.
 fn generated(us: &str) -> String {
-    let found = std::fs::read_to_string(found_path()).unwrap_or_default();
-    format!("{us}\n{TAIWAN_LISTINGS}\n{found}")
+    format!("{us}\n{TAIWAN_LISTINGS}")
+}
+
+/// The symbols feeds confirmed before any listing had them. Nothing, and no
+/// cost past one failed open, until somebody has looked one up.
+fn found_on_disk() -> Vec<Instrument> {
+    match std::fs::read_to_string(found_path()) {
+        Ok(text) => omacharts_engine::symbols::parse_seed(&text),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `items` and every one of `found` it does not already name: a listing that
+/// has since taken a found symbol in is the row kept.
+fn and_found(mut items: Vec<Instrument>, found: &[Instrument]) -> Vec<Instrument> {
+    if found.is_empty() {
+        return items;
+    }
+    let mut missing: Vec<&Instrument> = found.iter().collect();
+    for item in &items {
+        missing.retain(|f| f.symbol != item.symbol || f.suffix != item.suffix);
+        if missing.is_empty() {
+            return items;
+        }
+    }
+    let mut seen: Vec<(&str, Option<&str>)> = Vec::new();
+    let extra: Vec<Instrument> = missing
+        .into_iter()
+        .filter(|f| {
+            let key = (f.symbol.as_str(), f.suffix.as_deref());
+            let new = !seen.contains(&key);
+            seen.push(key);
+            new
+        })
+        .cloned()
+        .collect();
+    items.extend(extra);
+    items
 }
 
 /// The index everything searches, replaced once the long tail has loaded.
@@ -162,7 +194,8 @@ fn with_found(index: SearchIndex, found: &[Instrument]) -> SearchIndex {
 /// milliseconds, so it pays the few milliseconds once and searches
 /// everything.
 pub fn everything() -> SearchIndex {
-    SearchIndex::new(merge(&generated(&us_listings()), omacharts_engine::symbols::seed()))
+    let items = merge(&generated(&us_listings()), omacharts_engine::symbols::seed());
+    SearchIndex::new(and_found(items, &found_on_disk()))
 }
 
 /// The generated listings and the curated rows, as one list.
@@ -185,10 +218,6 @@ pub fn everything() -> SearchIndex {
 /// futures root would have gone out labelled NYSE.
 pub fn merge(listings: &str, mut curated: Vec<Instrument>) -> Vec<Instrument> {
     let mut items = omacharts_engine::symbols::parse_seed(listings);
-    // The first row of a symbol is the one kept: a listing over a symbol a
-    // feed found before the listings had it.
-    let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
-    items.retain(|i| seen.insert((i.symbol.clone(), i.suffix.clone())));
 
     let listed: HashMap<(&str, Option<&str>), &Instrument> =
         items.iter().map(|i| ((i.symbol.as_str(), i.suffix.as_deref()), i)).collect();
@@ -223,13 +252,14 @@ pub fn load_in_background(inventory: Inventory, done: impl Fn(usize) + 'static) 
     let (sender, receiver) = async_channel::bounded::<SearchIndex>(1);
     // The symbols found this session, so the index arrives with them and the
     // main loop has nothing left to build.
-    let found = inventory.found.borrow().clone();
+    let mut found = inventory.found.borrow().clone();
 
     // Reading, parsing and indexing all happen here; the main loop only swaps
     // a pointer. The text read is dropped once it is indexed.
     std::thread::spawn(move || {
+        found.extend(found_on_disk());
         let items = merge(&generated(&us_listings()), omacharts_engine::symbols::seed());
-        let _ = sender.send_blocking(with_found(SearchIndex::new(items), &found));
+        let _ = sender.send_blocking(SearchIndex::new(and_found(items, &found)));
     });
 
     glib::spawn_future_local(async move {
@@ -553,7 +583,8 @@ mod tests {
         assert_eq!(found.lines().filter(|l| l.contains("\tZQNEW\t")).count(), 1, "{found}");
         assert!(!dir.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("incoming")));
 
-        let merged = merge(&format!("{LISTINGS}\n{found}"), omacharts_engine::symbols::seed());
+        let found = omacharts_engine::symbols::parse_seed(&found);
+        let merged = and_found(merge(LISTINGS, omacharts_engine::symbols::seed()), &found);
         let kept = merged.iter().find(|i| i.symbol == "ZQNEW").expect("found, so searchable");
         assert_eq!(kept.name, "Zq Newly Listed, Inc.");
         assert_eq!(kept.exchange.as_deref(), Some("NasdaqGS"));
@@ -564,7 +595,7 @@ mod tests {
             "\nequity\tZQNEW\tZq Newly Listed\t-\tUSD\t2\t0\t-\tNASDAQ\t7\nequity\tA\t",
             1,
         );
-        let merged = merge(&format!("{listed}\n{found}"), omacharts_engine::symbols::seed());
+        let merged = and_found(merge(&listed, omacharts_engine::symbols::seed()), &found);
         let rows: Vec<&Instrument> = merged.iter().filter(|i| i.symbol == "ZQNEW").collect();
         assert_eq!(rows.len(), 1, "one row, not two");
         assert_eq!(rows[0].popularity, 7, "the listing's");
