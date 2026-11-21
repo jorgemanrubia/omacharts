@@ -732,8 +732,8 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "refresh",
-                about: "Fetch the newest US listings now, whatever Preferences says, and say when they were \
-                        built and how many there are. An open window searches them at once",
+                about: "Fetch the newest US listings now rather than at the daily check, and say when they \
+                        were built and how many there are. An open window searches them at once",
                 args: &[],
                 flags: &[],
                 example: "omacharts symbol refresh",
