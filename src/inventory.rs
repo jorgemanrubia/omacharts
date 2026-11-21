@@ -271,6 +271,15 @@ pub fn load_in_background(inventory: Inventory, done: impl Fn(usize) + 'static) 
     });
 }
 
+/// Whether `query` is a whole word of `name`, whatever the case: `nvidia`
+/// of "NVIDIA Corporation", and not `ant` of "Antero Resources". A query a
+/// listed name answers to is somebody typing a name, so neither the search
+/// nor a command offers it to the feed as a ticker.
+pub fn names_it(name: &str, query: &str) -> bool {
+    let query = query.trim();
+    name.split(|c: char| !c.is_alphanumeric()).any(|word| word.eq_ignore_ascii_case(query))
+}
+
 /// A symbol the inventory does not have, if `query` could be one: what the
 /// search offers to look up on the feed, and what a command naming a symbol
 /// asks the feed about before refusing it.

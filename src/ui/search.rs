@@ -657,6 +657,8 @@ fn rows_for(
     if let Some(guess) = offer.then(|| crate::inventory::guess(query)).flatten()
         && index.find(&guess.symbol, guess.suffix.as_deref()).is_none()
         && !rows.iter().any(|row| matches!(row, Row::Listed { instrument, .. } if same(instrument, &guess)))
+        // `nvidia` is a name somebody is typing, not a ticker to look up.
+        && !rows.iter().any(|row| matches!(row, Row::Listed { instrument, .. } if crate::inventory::names_it(&instrument.name, query)))
     {
         rows.insert(0, Row::Unlisted(guess));
     }
@@ -1008,6 +1010,11 @@ mod tests {
             settle();
             let got = picked.borrow().clone().expect("picked once the feed knew it");
             assert_eq!((got.symbol.as_str(), got.name.as_str()), ("ZQNEW", "Zq Newly Listed, Inc."));
+
+            // A word a listed name answers to: a name, nothing to offer.
+            search.present_with(Over::window(&inside, "a test"), "zq", |_| {});
+            settle();
+            assert!(!labels(&list.row_at_index(0).unwrap())[1].contains("look it up"), "{:?}", symbols(&search));
 
             // Spelled exactly as something listed: nothing to offer.
             search.present_with(Over::window(&inside, "a test"), "zqnews", |_| {});

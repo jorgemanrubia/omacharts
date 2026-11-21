@@ -392,7 +392,7 @@ fn symbol_search(
         Some(guess)
             if exact.is_none()
                 && index.find(&guess.symbol, guess.suffix.as_deref()).is_none()
-                && !found.iter().any(|hit| names_it(&hit.name, query)) =>
+                && !found.iter().any(|hit| crate::inventory::names_it(&hit.name, query)) =>
         {
             ask_feed(store, &guess, live).ok()
         }
@@ -422,13 +422,6 @@ fn symbol_search(
         .collect::<Vec<_>>()
         .join("\n")
         + "\n")
-}
-
-/// Whether `query` is a whole word of `name`, whatever the case: `nvidia`
-/// of "NVIDIA Corporation", and not `ant` of "Antero Resources".
-fn names_it(name: &str, query: &str) -> bool {
-    let query = query.trim();
-    name.split(|c: char| !c.is_alphanumeric()).any(|word| word.eq_ignore_ascii_case(query))
 }
 
 /// `symbol refresh`: the published listings fetched now, in the process it
@@ -8150,8 +8143,8 @@ mod tests {
         assert!(refused.err.contains("Test Feed does not know ZZZQX"), "{}", refused.err);
         assert!(refused.err.contains("omacharts symbol search ZZZQX"), "{}", refused.err);
         // A word a listed name answers to is a name, not asked about.
-        assert!(!names_it("Antero Resources", "ant"));
-        assert!(names_it("NVIDIA Corporation", "nvidia"));
+        assert!(!crate::inventory::names_it("Antero Resources", "ant"));
+        assert!(crate::inventory::names_it("NVIDIA Corporation", "nvidia"));
 
         // And a search adds nothing for it, as before.
         assert_eq!(run("symbol search ZZZQX", &store).code, super::super::EXIT_NOT_FOUND);
