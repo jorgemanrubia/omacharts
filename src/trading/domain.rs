@@ -13,7 +13,7 @@ pub struct Login {
     /// The app's own name for it, which never changes. Its password is kept
     /// under this, and its accounts are known by it.
     pub id: String,
-    /// What the trader calls it: "Lucid", "Tradeify", "Rithmic Test".
+    /// What the trader calls it: "Demo", "Practice", "Rithmic Test".
     pub name: String,
     /// The trading service it signs in to, by the id it is listed under.
     /// Stored as `broker`, the name it was first written under.

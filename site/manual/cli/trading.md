@@ -61,42 +61,42 @@ name, the focused one by default ([Which chart a command acts
 on](/manual/cli/#which-chart-a-command-acts-on)), in the open chartbook: an order goes
 from a chart on screen. An account is named by its name or its number, or,
 when two logins share a number, by its login's name and its number, such as
-`Lucid/1234`, or by its `account` in `trading accounts --json`.
+`Demo/1234`, or by its `account` in `trading accounts --json`.
 
 ```
 $ omacharts trading logins
-Lucid                Rithmic                live · data
+Demo                 Rithmic                live · data
   [exit 0]
 
 $ omacharts trading positions
-Lucid              ESZ6        +1 at     6,824.25  +$37.50
+Demo               ESZ6        +1 at     6,824.25  +$37.50
   [exit 0]
 
 $ omacharts trading buy --limit 6810 --quantity 2
-Lucid: Buy Limit 2 ESZ6 at 6,810.00
+Demo: Buy Limit 2 ESZ6 at 6,810.00
   [exit 0]
 
 $ omacharts trading exit --target 6840 --stop 6815
-Lucid: Sell Stop 1 ESZ6 at 6,815.00
-Lucid: Sell Limit 1 ESZ6 at 6,840.00
+Demo: Sell Stop 1 ESZ6 at 6,815.00
+Demo: Sell Limit 1 ESZ6 at 6,840.00
   [exit 0]
 
 $ omacharts trading orders
-B4           14:31:09 Lucid          ESZ6     Sell    1 Limit      6,840.00  Working
-B3           14:31:09 Lucid          ESZ6     Sell    1 Stop       6,815.00  Working
-B2           14:31:07 Lucid          ESZ6     Buy     2 Limit      6,810.00  Working
+B4           14:31:09 Demo           ESZ6     Sell    1 Limit      6,840.00  Working
+B3           14:31:09 Demo           ESZ6     Sell    1 Stop       6,815.00  Working
+B2           14:31:07 Demo           ESZ6     Buy     2 Limit      6,810.00  Working
   [exit 0]
 
 $ omacharts trading modify B2 --price 6805
-Lucid: Move Buy Limit 2 ESZ6 to 6,805.00
+Demo: Move Buy Limit 2 ESZ6 to 6,805.00
   [exit 0]
 
 $ omacharts trading flatten
-Lucid: Flatten ESZ6 and cancel its orders
+Demo: Flatten ESZ6 and cancel its orders
   [exit 0]
 
 $ omacharts trading buy --limit 6900
-omacharts: Lucid: Not placed · 6,900.00 is above the market now
+omacharts: Demo: Not placed · 6,900.00 is above the market now
   [exit 5]
 ```
 

@@ -235,7 +235,7 @@ mod tests {
 
     fn an_order(basket: &str, stage: Stage, filled: u32) -> Order {
         Order {
-            account: "lucid/LT50-1043".into(),
+            account: "demo/DEMO-0001".into(),
             basket_id: basket.into(),
             contract: "ESZ6".into(),
             exchange: "CME".into(),
@@ -255,7 +255,7 @@ mod tests {
 
     fn held(net: i32) -> Position {
         Position {
-            account: "lucid/LT50-1043".into(),
+            account: "demo/DEMO-0001".into(),
             contract: "ESZ6".into(),
             exchange: "CME".into(),
             net,
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                json!({"ev": "placed", "id": "B1", "acct": "LT50-1043", "sym": "ESZ6", "side": "B", "qty": 1, "type": "lmt", "px": 7610.0})
+                json!({"ev": "placed", "id": "B1", "acct": "DEMO-0001", "sym": "ESZ6", "side": "B", "qty": 1, "type": "lmt", "px": 7610.0})
             ]
         );
         assert_eq!(text(&events[0]), "placed B1 B 1 ESZ6 lmt @7610");
@@ -283,12 +283,12 @@ mod tests {
         let events = diff(&placed, &filled);
         assert_eq!(events.len(), 2);
         assert_eq!(text(&events[0]), "filled B1 B 1 ESZ6 lmt @7610 filled 1 at 7610");
-        assert_eq!(events[1], json!({"ev": "pos", "acct": "LT50-1043", "sym": "ESZ6", "net": 1, "was": 0, "avg": 7610.0}));
-        assert_eq!(text(&events[1]), "pos ESZ6 +1 was 0 avg 7610 acct LT50-1043");
+        assert_eq!(events[1], json!({"ev": "pos", "acct": "DEMO-0001", "sym": "ESZ6", "net": 1, "was": 0, "avg": 7610.0}));
+        assert_eq!(text(&events[1]), "pos ESZ6 +1 was 0 avg 7610 acct DEMO-0001");
 
         let flat = Book { orders: filled.orders.clone(), ..Book::default() };
         let events = diff(&filled, &flat);
-        assert_eq!(events, vec![json!({"ev": "pos", "acct": "LT50-1043", "sym": "ESZ6", "net": 0, "was": 1, "avg": null})]);
+        assert_eq!(events, vec![json!({"ev": "pos", "acct": "DEMO-0001", "sym": "ESZ6", "net": 0, "was": 1, "avg": null})]);
         assert!(diff(&flat, &flat).is_empty(), "nothing moved, nothing said");
     }
 

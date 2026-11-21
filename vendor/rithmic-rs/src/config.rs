@@ -390,7 +390,7 @@ impl RithmicConfig {
     /// - `RITHMIC_{DEMO,LIVE,TEST}_SYSTEM_NAME`: Rithmic system name to log in
     ///   to. Defaults to "Rithmic Paper Trading" (Demo), "Rithmic 01" (Live),
     ///   or "Rithmic Test" (Test). Set it on Live to select another provider,
-    ///   e.g. Thrive Trading.
+    ///   e.g. Demo Trading.
     /// - `RITHMIC_REQUEST_TIMEOUT_SECS`: no longer used. A value that is not
     ///   whole seconds written as plain digits, such as `30s` or `007`, is
     ///   logged as a warning; any value is ignored.
@@ -415,7 +415,7 @@ impl RithmicConfig {
         let password = require_env(&format!("{prefix}_PW"))?;
 
         // The environment's usual system name is only a default: on Live in
-        // particular, providers other than Rithmic 01 (Thrive Trading, etc.)
+        // particular, providers other than Rithmic 01 (Demo Trading, etc.)
         // are selected by overriding it.
         let system_name = env::var(format!("{prefix}_SYSTEM_NAME"))
             .unwrap_or_else(|_| env.default_system_name().to_string());
@@ -1087,12 +1087,12 @@ mod tests {
     #[test]
     fn from_env_overrides_the_system_name_when_set() {
         let mut vars = live_env_vars();
-        vars.push(("RITHMIC_LIVE_SYSTEM_NAME", Some("Thrive Trading")));
+        vars.push(("RITHMIC_LIVE_SYSTEM_NAME", Some("Demo Trading")));
 
         temp_env::with_vars(vars, || {
             let config = RithmicConfig::from_env(RithmicEnv::Live).unwrap();
 
-            assert_eq!(config.system_name, "Thrive Trading");
+            assert_eq!(config.system_name, "Demo Trading");
         });
     }
 

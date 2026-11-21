@@ -1483,11 +1483,11 @@ would show. A reply says what was sent, not what the trading service did with it
 
 ```
 $ omacharts trading buy --limit 6810 --quantity 2
-Lucid 50K: Buy Limit 2 ESZ6 at 6,810.00
+Demo: Buy Limit 2 ESZ6 at 6,810.00
   [exit 0]
 
 $ omacharts trading orders
-B2           14:31:07 Lucid 50K      ESZ6     Buy     2 Limit      6,810.00  Working
+B2           14:31:07 Demo           ESZ6     Buy     2 Limit      6,810.00  Working
   [exit 0]
 ```
 

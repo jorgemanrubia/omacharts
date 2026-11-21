@@ -64,6 +64,8 @@ pub struct FakeService {
     /// Its sessions tell the chart the app keeps their brackets' exits, as
     /// Sierra Chart's does: [`APP_HELD_ENV`].
     pub app_held: bool,
+    /// Its sessions price themselves off the charts: [`FakeSession::follows_charts`].
+    pub follows_charts: bool,
     pub signed_in: AtomicUsize,
     pub signed_out: Arc<AtomicUsize>,
 }
@@ -103,7 +105,7 @@ pub fn day_of_orders() -> Book {
                 ..order("B4", 17, Side::Sell, OrderKind::Limit, Some(7_636.50), Stage::PartiallyFilled.into())
             },
             order("B3", 31, Side::Buy, OrderKind::Limit, Some(7_540.00), Status::said(Stage::Cancelled, "by the trader")),
-            order("B2", 48, Side::Buy, OrderKind::Limit, Some(7_000.00), Status::said(Stage::Rejected, "too far from the market")),
+            order("B2", 48, Side::Buy, OrderKind::Limit, Some(7_450.00), Status::said(Stage::Rejected, "too far from the market")),
             filled("B1", 63, Side::Buy, 2, 7_612.25),
         ],
         positions: vec![Position {
@@ -157,6 +159,27 @@ pub fn another_day() -> Book {
             limits: Some(Limits { loss_limit: Some(3_000.0), liquidate_at: Some(97_000.0), ..Limits::default() }),
         }],
         ..Book::default()
+    }
+}
+
+/// The market `book` was written at in `contract`: where its position's
+/// open P&L says the contract stood.
+fn written_at(book: &Book, contract: &str) -> Option<f64> {
+    let held = book.positions.iter().find(|held| held.contract == contract && held.net != 0)?;
+    let point = held.point.filter(|point| *point > 0.0)?;
+    Some(held.avg? + held.open_pnl? / (held.net as f64 * point))
+}
+
+/// Every price in `contract` moved by `by`: the orders', their fills' and
+/// the positions' averages.
+fn shift(book: &mut Book, contract: &str, by: f64) {
+    for order in book.orders.iter_mut().filter(|order| order.contract == contract) {
+        order.price = order.price.map(|price| price + by);
+        order.fill_price = order.fill_price.map(|price| price + by);
+        order.fills.iter_mut().for_each(|fill| fill.price += by);
+    }
+    for held in book.positions.iter_mut().filter(|held| held.contract == contract) {
+        held.avg = held.avg.map(|avg| avg + by);
     }
 }
 
@@ -313,7 +336,16 @@ pub struct FakeSession {
     pub histories: AtomicUsize,
     /// How many times it was refreshed.
     pub refreshes: AtomicUsize,
+    /// What a market order fills at, and a flatten.
     pub last: Mutex<f64>,
+    /// Priced off the charts, as a build with the `fakes` feature is: a
+    /// market order fills at the last price a chart of its contract shows,
+    /// and what it holds of a contract is moved, the first time a chart of
+    /// it is seen, to stand where it stood against the market it was
+    /// written at. Else, as the tests have it, at `last` and as written.
+    pub follows_charts: bool,
+    /// The contracts it has moved to their charts.
+    rebased: Mutex<std::collections::HashSet<String>>,
     /// What [`Session::last_price`] and [`Session::price_of`] say: the
     /// trading service's own market, which need not be the chart's.
     pub market: Mutex<Option<f64>>,
@@ -392,6 +424,8 @@ impl FakeSession {
             histories: AtomicUsize::new(0),
             refreshes: AtomicUsize::new(0),
             last: Mutex::new(7_612.25),
+            follows_charts: false,
+            rebased: Mutex::default(),
             market: Mutex::default(),
             limits: Mutex::default(),
             changed,
@@ -641,6 +675,22 @@ impl Session for FakeSession {
     }
     fn price_of(&self, _contract: &str, _exchange: &str) -> Option<f64> {
         *self.market.lock().unwrap()
+    }
+    fn charted(&self, contract: &str, price: f64) {
+        if !self.follows_charts || !price.is_finite() {
+            return;
+        }
+        *self.last.lock().unwrap() = price;
+        if !self.rebased.lock().unwrap().insert(contract.to_string()) {
+            return;
+        }
+        let tick = *self.tick.lock().unwrap();
+        let mut held = self.held.lock().unwrap();
+        let mut book = self.book.lock().unwrap();
+        let Some(written_at) = written_at(&book, contract).or_else(|| written_at(&held, contract)) else { return };
+        let by = ((price - written_at) / tick).round() * tick;
+        shift(&mut book, contract, by);
+        shift(&mut held, contract, by);
     }
     fn book(&self) -> Book {
         self.book.lock().unwrap().clone()
@@ -945,6 +995,7 @@ impl TradingService for FakeService {
         if self.app_held {
             session.bracket_holder = Holder::App;
         }
+        session.follows_charts = self.follows_charts;
         *session.contracts.lock().unwrap() = self.contracts.clone();
         *session.held.lock().unwrap() = book;
         *session.past.lock().unwrap() = before;
@@ -1052,18 +1103,62 @@ pub(crate) mod tests {
     fn a_login_s_account_is_numbered_after_its_user_when_asked() {
         let fake = FakeService { numbered_by_user: true, ..FakeService::listed() };
         fake.held.lock().unwrap().insert(String::new(), day_of_orders());
-        let login = Login { service: "fake".into(), user: " LT50-1043 ".into(), ..test_login("l1", "Lucid", TEST_SYSTEM) };
+        let login = Login { service: "fake".into(), user: " DEMO-0001 ".into(), ..test_login("l1", "Demo", TEST_SYSTEM) };
         let session = fake.sign_in(&login, Box::new(|_| {})).expect("signed in");
-        assert_eq!(session.accounts().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["LT50-1043"]);
+        assert_eq!(session.accounts().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["DEMO-0001"]);
         assert_eq!(session.accounts()[0].balance, Some(50_000.0));
         let held = fake.sessions.lock().unwrap()[0].held.lock().unwrap().clone();
-        assert!(held.orders.iter().all(|order| order.account == "LT50-1043"));
-        assert!(held.positions.iter().all(|position| position.account == "LT50-1043"));
-        assert!(held.accounts.iter().all(|money| money.key == "LT50-1043"));
+        assert!(held.orders.iter().all(|order| order.account == "DEMO-0001"));
+        assert!(held.positions.iter().all(|position| position.account == "DEMO-0001"));
+        assert!(held.accounts.iter().all(|money| money.key == "DEMO-0001"));
 
         let plain = FakeService::listed();
         let session = plain.sign_in(&login, Box::new(|_| {})).expect("signed in");
         assert_eq!(session.accounts()[0].id, "FAKE-1");
+    }
+
+    /// Priced off the charts, what it holds of a contract moves, the first
+    /// time a chart of it is seen, to stand where it stood against the
+    /// market it was written at, and a market order fills at the chart.
+    /// Not following, it keeps the prices it was given.
+    #[test]
+    fn a_session_that_follows_the_charts_is_priced_off_them() {
+        let fake = FakeService { follows_charts: true, ..FakeService::listed() };
+        fake.held.lock().unwrap().insert(String::new(), day_of_orders());
+        let session = fake.sign_in(&test_login("l1", "Demo", TEST_SYSTEM), Box::new(|_| {})).expect("signed in");
+        session.refresh().unwrap();
+        // Written long one at 7,612.25 with 112.50 open, at a market of 7,614.50.
+        session.charted("ESZ6", 312.4);
+        let book = session.book();
+        assert_eq!(book.positions[0].avg, Some(310.25), "2.25 under the chart, on a tick");
+        let price = |basket: &str| book.order(basket).and_then(|order| order.price);
+        assert_eq!(price("B6"), Some(296.25));
+        assert_eq!(book.order("B1").and_then(|order| order.fill_price), Some(310.25));
+        assert_eq!(book.order("B4").map(|order| order.fills[0].price), Some(334.5));
+
+        // Only the first time: a chart that moves moves the fills, not the book.
+        session.charted("ESZ6", 320.0);
+        assert_eq!(session.book().positions[0].avg, Some(310.25));
+        let bought = session
+            .place(&OrderRequest {
+                account: "FAKE-1".into(),
+                contract: "ESZ6".into(),
+                exchange: "CME".into(),
+                side: Side::Buy,
+                qty: 1,
+                kind: OrderKind::Market,
+                price: None,
+                tag: new_tag(),
+            })
+            .unwrap();
+        assert_eq!(session.book().order(&bought).and_then(|order| order.fill_price), Some(320.0));
+
+        let pinned = FakeService::listed();
+        pinned.held.lock().unwrap().insert(String::new(), day_of_orders());
+        let session = pinned.sign_in(&test_login("l2", "Practice", TEST_SYSTEM), Box::new(|_| {})).expect("signed in");
+        session.refresh().unwrap();
+        session.charted("ESZ6", 312.4);
+        assert_eq!(session.book().positions[0].avg, Some(7_612.25));
     }
 
     /// Held in turn, the first login finds the first day and the second the

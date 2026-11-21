@@ -596,7 +596,7 @@ fn trading(home: &Path, rows: &mut Vec<Row>) {
         password: "not a password".into(),
         values: Vec::new(),
     };
-    for name in ["Lucid", "Tradeify"] {
+    for name in ["Demo", "Practice"] {
         trading::add_login(&store, &Kept::default(), &typed(name)).expect("a login");
     }
 

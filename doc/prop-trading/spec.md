@@ -9,7 +9,7 @@ is in [research.md](research.md).
 Omacharts becomes a platform a prop-firm trader can use all day: the charts
 they already have, fed by their Rithmic login, and in time the buy and sell
 buttons beside them. Rithmic is the piece that matters, because most futures
-prop firms (Lucid, Tradeify, Apex, Bulenox and others) give their traders a
+prop firms give their traders a
 Rithmic login and let them choose the platform.
 
 Each person's copy signs in to Rithmic directly with their own login. No
@@ -187,7 +187,7 @@ sign-in rows.
 ```
 Data feeds
 Symbols use the first data feed that offers them.
-  ⋮ Rithmic   CME futures, continuous · live · through Lucid
+  ⋮ Rithmic   CME futures, continuous · live · through Demo
   ⋮ Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed   [Remove]
   [ Add a data feed… ]
 ```
@@ -203,7 +203,7 @@ Symbols use the first data feed that offers them.
   or Sign out) and Remove. Its subtitle says what it serves and how it
   stands: "live", "not signed in", "session expired", or the feed's own
   words for a refusal ("permission denied").
-- **Rithmic's row says "through Lucid"**, the login its data comes through,
+- **Rithmic's row says "through Demo"**, the login its data comes through,
   and has no action and no Remove of its own: signing in and out, and
   removing it, are the Trading page's.
 - **thinkorswim** is a feed added like the others, still marked
@@ -269,7 +269,7 @@ is of.
   The feed declares it as its own series, as traded, as thinkorswim's and
   Yahoo's are; live trades come from the front month. An expired month on
   its own is refused with "reference data not available" (seen on a
-  LucidTrading login, November 2026), so there are no months to stitch, and
+  firm's system, November 2026), so there are no months to stitch, and
   where a root has no series the front month stands in.
 - **A month is asked for as Rithmic spells it.** The stitcher names a month
   `ESZ26`; Rithmic spells it `ESZ6`, which is also December 2016, and its
@@ -475,8 +475,8 @@ not moved.
 Three things, kept apart, so the broker an order goes to and the feed a chart
 is drawn from can be combined freely:
 
-- **A login** is a broker connection: a name the trader chooses ("Lucid",
-  "Tradeify", "Rithmic Test"), the Rithmic user ID, system and gateway, and
+- **A login** is a broker connection: a name the trader chooses ("Demo",
+  "Practice", "Rithmic Test"), the Rithmic user ID, system and gateway, and
   the password in the keyring under that login. There can be any number of
   them. Each login has its own session; one login is one session, because a
   second sign-in on the same login forces the first one out.
@@ -501,8 +501,8 @@ none is left. Nothing else on the Data page is touched.
 
 ```
 Trading accounts
-  Lucid                                            [Sign out] [Remove]
-  LucidTrading · live · data
+  Demo                                             [Sign out] [Remove]
+  DemoTrading · live · data
       1234   USD · $50,210                                  Default
       1235   USD · $48,900                             [Make default]
   Rithmic Test                      [Use for data] [Sign out] [Remove]
@@ -545,19 +545,19 @@ removed goes back to the default account and its default feed.
 **The header's Account part** names the chart's account and feed, and
 clicking it opens the picker. It is offered when there is more than one
 account or more than one feed; otherwise it is blank, takes no space and
-cannot be clicked. An account is named by its login, `Lucid`, with its
+cannot be clicked. An account is named by its login, `Demo`, with its
 number only when the login holds several or another login has the same
-name, `Lucid 1234`. The text names the account whenever there is one, and
+name, `Demo 1234`. The text names the account whenever there is one, and
 the feed only when it is not the account's default; trouble goes after the
 thing in trouble:
 
 | Case | Text |
 |---|---|
 | No account, several feeds | `Yahoo`, or `Yahoo · Rithmic not signed in` when one was passed over |
-| An account on its default feed | `Rithmic`, `Lucid 1234` |
-| A feed chosen, or fallen back to | `Rithmic · Yahoo`, `Lucid 1234 · Yahoo` |
-| Several accounts and one feed | `Lucid 1234` |
-| The login in trouble | `Rithmic signed out`, `Lucid 1234 signed out · Yahoo` |
+| An account on its default feed | `Rithmic`, `Demo 1234` |
+| A feed chosen, or fallen back to | `Rithmic · Yahoo`, `Demo 1234 · Yahoo` |
+| Several accounts and one feed | `Demo 1234` |
+| The login in trouble | `Rithmic signed out`, `Demo 1234 signed out · Yahoo` |
 | The chosen feed refused | `Rithmic · Yahoo not signed in` |
 | No feed serves the instrument | `Rithmic · no data feed` |
 
@@ -863,14 +863,14 @@ signs in by itself after the first frame, as Signing in says.
 3. **Enforce prop rules?** *Recommendation:* show Rithmic's RMS limits and
    the distance to them; enforce nothing. A prop firm's own rules change
    too often to copy into the app.
-4. **Target a firm first?** *Recommendation:* Lucid, because the author has
-   accounts there. Tradeify keeps an allow-list of platforms and has to be
+4. **Target a firm first?** *Recommendation:* one open to any Rithmic
+   front end. A firm that keeps an allow-list of platforms has to be
    asked.
 5. **Does conformance open every firm's system?** Probably not. Rithmic's
    own answer was that each funding evaluator or broker decides which
-   applications its users may use, and Tradeify publishes an allow-list.
+   applications its users may use, and some firms publish an allow-list.
    *Recommendation:* ask Rithmic whether a conformed app is blocked on a
-   firm's system until the firm enables it, ask Lucid whether it would, and
+   firm's system until the firm enables it, ask a firm whether it would, and
    use nothing but Rithmic Test until a firm says yes.
 6. **History depth for ladders.** *Recommendation:* decide after stage 1
    shows how far back Rithmic goes on a prop system. Test is not a guide.

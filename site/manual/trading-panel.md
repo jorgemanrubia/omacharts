@@ -27,9 +27,12 @@ theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
-  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
-  # the fakes build numbers each account after its user, and holds a different day for each login
+  omacharts config set providers '["fake","yahoo"]'   # ES from the fakes build's invented feed
+  key ctrl+comma ; click Data, Fake Rich Feed's Sign in…, type any member number, Sign in ; Escape
+  omacharts trading login fake ; click User, type DEMO-0001, click Name, ctrl+a, type Demo, Sign in
+  omacharts trading login fake ; click User, type DEMO-0002, click Name, ctrl+a, type Practice, Sign in
+  # the fakes build numbers each account after its user, holds a different day for each login,
+  # and prices it off the chart
   omacharts chart set --symbol ES --resolution 15m
   click 1363 886          # the Trading toggle, opens on Accounts
   move 700 300
@@ -54,9 +57,12 @@ theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
-  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
-  # the fakes build numbers each account after its user, and holds a different day for each login
+  omacharts config set providers '["fake","yahoo"]'   # ES from the fakes build's invented feed
+  key ctrl+comma ; click Data, Fake Rich Feed's Sign in…, type any member number, Sign in ; Escape
+  omacharts trading login fake ; click User, type DEMO-0001, click Name, ctrl+a, type Demo, Sign in
+  omacharts trading login fake ; click User, type DEMO-0002, click Name, ctrl+a, type Practice, Sign in
+  # the fakes build numbers each account after its user, holds a different day for each login,
+  # and prices it off the chart
   omacharts chart set --symbol ES --resolution 15m
   click 1363 886          # the Trading toggle
   click 205 770           # Positions
@@ -82,14 +88,17 @@ theme: tokyo-night (copied into the sandbox HOME's .local/share/omarchy/themes)
 window: 1400x900 @2, bin/headless-window; built with --features fakes, a sandboxed HOME and XDG_*
   (seed a fresh rithmic-systems.json in the data dir, so the Rithmic dialog does not ask Rithmic for its systems)
 state:
-  omacharts trading login fake ; click User, type LT50-1043, click Name, ctrl+a, type Lucid, Sign in
-  omacharts trading login fake ; click User, type TDY100-2287, click Name, ctrl+a, type Tradeify, Sign in
-  # the fakes build numbers each account after its user, and holds a different day for each login
+  omacharts config set providers '["fake","yahoo"]'   # ES from the fakes build's invented feed
+  key ctrl+comma ; click Data, Fake Rich Feed's Sign in…, type any member number, Sign in ; Escape
+  omacharts trading login fake ; click User, type DEMO-0001, click Name, ctrl+a, type Demo, Sign in
+  omacharts trading login fake ; click User, type DEMO-0002, click Name, ctrl+a, type Practice, Sign in
+  # the fakes build numbers each account after its user, holds a different day for each login,
+  # and prices it off the chart
   omacharts chart set --symbol ES --resolution 15m
   click 1363 886          # the Trading toggle
   drag 560 750 560 520    # the panel taller, for the whole day
   click 338 540           # Orders
-  click 1203 540          # All
+  click 1077 540          # All
   move 700 200
 capture: bin/headless-window shot /tmp/orders.png
 crop: 2800x640+0+1040

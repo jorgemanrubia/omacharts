@@ -593,14 +593,14 @@ pub(crate) mod tests {
             assert!(window.notice_shown().is_none(), "a notice for a warning");
             assert_eq!(overlays(&window), bare, "built with nothing to say");
 
-            window.say(Entry::error("Lucid", "Not flattened · nothing held"));
+            window.say(Entry::error("Demo", "Not flattened · nothing held"));
             window.catch_up_log();
             let notice = window.notice_shown().expect("a notice");
-            assert_eq!(notice.text(), "Lucid · Not flattened · nothing held");
+            assert_eq!(notice.text(), "Demo · Not flattened · nothing held");
             assert_eq!(notice.more(), None);
             let first = log.entries().last().unwrap().id;
 
-            window.say(Entry::error("Lucid", "Not moved · filled meanwhile"));
+            window.say(Entry::error("Demo", "Not moved · filled meanwhile"));
             window.say(Entry::error("Rithmic Test", "Signed out · forced logout"));
             window.say(Entry::error("Rithmic Test", "Signed out · forced logout"));
             window.catch_up_log();
@@ -622,7 +622,7 @@ pub(crate) mod tests {
 
             // With the Log open, an error is in it and nowhere else.
             let before = open.len();
-            window.say(Entry::error("Lucid", "Not placed: price out of band"));
+            window.say(Entry::error("Demo", "Not placed: price out of band"));
             window.catch_up_log();
             assert!(window.notice_shown().is_none(), "a notice over the open Log");
             assert_eq!(open.len(), before + 1);
@@ -658,7 +658,7 @@ pub(crate) mod tests {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             let log = private(&window);
-            window.say(Entry::info("Lucid", "Buy Market 1 ESZ6"));
+            window.say(Entry::info("Demo", "Buy Market 1 ESZ6"));
             window.say(Entry::warning("Yahoo Finance", "Lost ES 1m · The data feed is not answering."));
             window.say(Entry::error("Settings", "Settings not backed up").detail("disk I/O error (code 10)"));
             window.open_log();
@@ -666,11 +666,11 @@ pub(crate) mod tests {
             assert_eq!(open.len(), 3);
             let kept = open.object(0).expect("a row");
 
-            window.say(Entry::info("Lucid", "Filled 1 ESZ6 at 7,612.25").confirming());
+            window.say(Entry::info("Demo", "Filled 1 ESZ6 at 7,612.25").confirming());
             window.catch_up_log();
             assert_eq!(open.len(), 4);
             assert_eq!(open.object(0).as_ref(), Some(&kept), "the list was rebuilt");
-            window.say(Entry::info("Lucid", "Filled 1 ESZ6 at 7,612.25").confirming());
+            window.say(Entry::info("Demo", "Filled 1 ESZ6 at 7,612.25").confirming());
             window.catch_up_log();
             assert_eq!(open.len(), 4, "a repeat added a row");
             assert!(open.text().contains("(×2)"), "{}", open.text());

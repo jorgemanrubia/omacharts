@@ -192,6 +192,10 @@ pub trait Session: Send + Sync {
     fn price_of(&self, _contract: &str, _exchange: &str) -> Option<f64> {
         None
     }
+    /// The last price of a chart on screen that trades `contract`, told
+    /// each time the window reads the book. A trading service has its own
+    /// market and nothing to do with it; the fake prices itself off it.
+    fn charted(&self, _contract: &str, _price: f64) {}
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
     /// Ask the trading service for what the accounts hold now — the money and the
@@ -751,8 +755,8 @@ impl View {
         account_label(account, &self.logins, &self.accounts)
     }
 
-    /// What the account with the key `key` is called here: "Lucid", or
-    /// "Lucid 1234" when the login holds several; its number alone when it
+    /// What the account with the key `key` is called here: "Demo", or
+    /// "Demo 1234" when the login holds several; its number alone when it
     /// is no longer listed.
     pub fn name_of(&self, key: &str) -> String {
         self.accounts
@@ -841,7 +845,7 @@ mod tests {
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let login = Login {
             id: "1".into(),
-            name: "Lucid".into(),
+            name: "Demo".into(),
             user: "a".into(),
             service: "fake".into(),
             values: Vec::new(),
@@ -885,7 +889,7 @@ mod tests {
     fn closing_signs_every_session_out() {
         let fake = Arc::new(FakeService::default());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
-        let logins = [test_login("1", "Lucid", TEST_SYSTEM), test_login("2", "Tradeify", TEST_SYSTEM)];
+        let logins = [test_login("1", "Demo", TEST_SYSTEM), test_login("2", "Practice", TEST_SYSTEM)];
         for login in &logins {
             assert!(desk.begin(&login.id));
             desk.opened(&login.id, fake.sign_in(login, Box::new(|_| {})));
@@ -908,25 +912,25 @@ mod tests {
         if skip() {
             return;
         }
-        let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
+        let demo = add_login(&store, &kept, &typed("Demo", "a")).unwrap();
         let fake = Arc::new(FakeService::default());
         let mut funded = account("", "1234");
         funded.balance = Some(50_210.4);
-        fake.accounts.lock().unwrap().insert("Lucid".into(), vec![funded, account("", "1235")]);
+        fake.accounts.lock().unwrap().insert("Demo".into(), vec![funded, account("", "1235")]);
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let login = logins(&store)[0].clone();
-        assert!(desk.begin(&lucid));
+        assert!(desk.begin(&demo));
         let session = fake.sign_in(&login, Box::new(|_| {}));
-        desk.opened(&lucid, session);
+        desk.opened(&demo, session);
         assert!(desk.note(&store));
         assert!(!desk.note(&store), "nothing new the second time");
         let cached = accounts(&store);
-        assert_eq!(cached.iter().map(|a| a.key()).collect::<Vec<_>>(), vec![format!("{lucid}/1234"), format!("{lucid}/1235")]);
+        assert_eq!(cached.iter().map(|a| a.key()).collect::<Vec<_>>(), vec![format!("{demo}/1234"), format!("{demo}/1235")]);
         assert_eq!(cached[0].balance_text().as_deref(), Some("$50,210"));
         assert_eq!(cached[1].balance_text(), None);
 
-        assert!(note_balance(&store, &lucid, "1235", 48_900.0));
-        cache_accounts(&store, &lucid, vec![account("", "1235")]);
+        assert!(note_balance(&store, &demo, "1235", 48_900.0));
+        cache_accounts(&store, &demo, vec![account("", "1235")]);
         assert_eq!(accounts(&store)[0].balance, Some(48_900.0), "kept across a listing without one");
     }
 
@@ -1051,9 +1055,9 @@ mod tests {
     #[test]
     fn a_saved_login_signs_in_with_what_its_accounts_hold() {
         let fake = Arc::new(FakeService { takes: std::time::Duration::from_millis(50), ..FakeService::listed() });
-        fake.held.lock().unwrap().insert("Lucid".into(), held_before());
+        fake.held.lock().unwrap().insert("Demo".into(), held_before());
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
-        let login = Login { service: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
+        let login = Login { service: "fake".into(), ..test_login("l", "Demo", TEST_SYSTEM) };
         let gone = Login { id: "g".into(), signed_out: true, ..login.clone() };
 
         let asked = std::time::Instant::now();
