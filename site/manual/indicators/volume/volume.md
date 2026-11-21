@@ -31,11 +31,10 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/volume.j
 |---|---|---|
 | **Pane height %** | 18% | 5 to 95% |
 | **Colouring** | **Default** | **Vivid**, **Soft** or **Quiet**, so the volume can be painted in a colouring the price is not ([Colouring](/manual/charts/#colouring)) |
-| **Opacity %** | 85% | 20 to 100%. At 100% the bars hide what is behind them |
-| **Up** colour | The colouring's up colour | A palette name, or a custom colour |
-| **Down** colour | The colouring's down colour | A palette name, or a custom colour |
+| **Up** | The colouring's up colour, at 85% opacity | A palette name, or a custom colour. Its **Opacity** is how solid rising bars are drawn, 0 to 100%. At 100% they hide what is behind them |
+| **Down** | The colouring's down colour, at 85% opacity | The same for falling bars |
 
-A selected strip is drawn solid whatever its **Opacity %**.
+A selected strip is drawn solid whatever its opacity. The command line's `--opacity` sets both bars' at once, and `--up-transparency` and `--down-transparency` each on its own.
 
 ## Colouring
 
@@ -52,15 +51,16 @@ state:
   (one NVDA 1D chart on the Default template, sidebar hidden)
   key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume); click 800 383 (the Colouring row)
 capture: bin/headless-window shot /tmp/volume-colouring.png
-crop: 700,84,1160,1276
+crop: the dialog, 16px round it and the open list
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open: Same as the chart, Vivid, Soft, Quiet, Monochrome" caption="A volume strip's own Colouring." %}
+{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open on Default, Vivid, Soft and Quiet, over the Up and Down rows with their Opacity" caption="A volume strip's own Colouring." %}
 
 <!-- regenerate:
 as above, with the Colouring row closed
-crop: 762,640,1036,518 (the Colours group)
+crop: the Colours group, from its title to the Down row
 -->
-{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring, then the Opacity slider at 85%, then Up and Down" caption="Opacity, under the strip's Colouring." %}
+{% include figure.html src="/assets/manual/indicators/volume-opacity.png" alt="The Volume indicator's Colours group: Colouring, then Up and Down, each with its Opacity slider at 85%" caption="Up and Down, each with its opacity, under the strip's Colouring." %}
 
 ## See also
 

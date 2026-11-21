@@ -78,7 +78,8 @@ state:
   type macd
   key Return
 capture: bin/headless-window shot /tmp/macd.png
-crop: 223,150,1152,1902   (the whole dialog, 16px layout margin)
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
 {% include figure.html src="/assets/manual/indicators/macd-parameters.png" alt="The settings dialog of a MACD being added" caption="The settings of a MACD being added." %}
 
@@ -147,7 +148,8 @@ state:
   click 500 333          # the RSI 14 row
   move 1270 710
 capture: bin/headless-window shot /tmp/panel.png
-crop: 688,68,1184,1304   (the whole dialog, 16px layout margin)
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
 {% include figure.html src="/assets/manual/indicators/panel-on-a-template.png" alt="The settings of an RSI on a chart on the Momentum template, opening with a row that says it is editing the template" caption="An RSI's settings on a chart on the **Momentum** template." %}
 
@@ -240,13 +242,15 @@ A **palette name** (Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan, Neutra
 
 Each **Colour** row opens the theme's palette ([Themes and colours](/manual/themes/)). **Custom…** under it picks an exact colour. **Default**, first in the palette, goes back to the automatic colour.
 
+A colour and its opacity share one row: the colour's name, the swatch, then **Opacity**, a slider and a figure for how solid the colour is drawn, 100% solid and 0% invisible. The command line's `--transparency` and `--*-transparency` flags set the same thing the other way up, as how much of the chart shows through.
+
 | Row | Choices | Default |
 |---|---|---|
-| **Colour** | A palette name, or a custom colour | The next free colour of the sequence |
+| **Colour** | A palette name, or a custom colour, and its **Opacity** | The next free colour of the sequence, at 100% |
 | **Thickness** | No line, 1, 1.5, 2.5, 4 px | 1.5 px |
 | **Line style** | Solid, Dashed, Dotted | Solid |
 
-A MACD's signal line and a stochastic's %D have a second colour row, and a line style row under it. Left alone, the colour is a contrasting one from the theme and the line style is the first line's.
+A MACD's signal line and a stochastic's %D have a second colour row, and a line style row under it. Left alone, the colour is a contrasting one from the theme, its opacity and line style the first line's.
 
 ## Indicators on a chart on a template
 

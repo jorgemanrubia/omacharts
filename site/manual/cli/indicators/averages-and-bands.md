@@ -15,10 +15,12 @@ The flags `chart indicator add` and `set` take for the [averages and bands](/man
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year`; `never` for one running total | VWAP, volume profile, market profile, cumulative delta; `never` only for cumulative delta |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
 | `--band-alpha F` | 0 to 1; 0.16 when not given | VWAP, Bollinger |
+| `--band-transparency F` | 0 to 1, or `default` for solid | VWAP, Bollinger: how much of the chart shows through every band's edges |
 
 `--bands` chooses which bands are drawn, `--band-alpha` how solid every
-band's shading is, and `--deviations` where a Bollinger's bands sit. A band's
-colour and edges, and a VWAP band's multiple, are set only in the window.
+band's shading is, `--band-transparency` how much shows through their edges,
+and `--deviations` where a Bollinger's bands sit. A band's colour and edges,
+and a VWAP band's multiple, are set only in the window.
 
 ```sh
 omacharts chart indicator add sma --period 200 --color Amber

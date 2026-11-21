@@ -40,7 +40,7 @@ Selected, it has a grip at each end. Drag a grip to move that end, or the levels
 
 | Property | What it does | Default |
 |---|---|---|
-| **Colour** | The colour of every level that has none of its own: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Changing it recolours all of those levels at once | Ink |
+| **Colour** | The colour of every level that has none of its own: one of the nine [presets](/manual/drawings/#colours), which change with the theme, or **Custom…** for a hex colour. Changing it recolours all of those levels at once. Its **Opacity** is how solid they are drawn, and the dashed line joining the points with them | Ink, at 70% |
 | **Fib labels** | Writes each level's ratio at its left end, as 61.8% | On |
 | **Price labels** | Writes each level's price at its left end, after the ratio when both are on | Off |
 
@@ -50,7 +50,7 @@ One row a level, **0%** to **100%**, each with a switch that shows or hides that
 
 | Property | What it does | Default |
 |---|---|---|
-| **Colour** | The level's own colour. **Default**, first in its palette, goes back to the drawing's, which the level then follows | The drawing's |
+| **Colour** | The level's own colour. **Default**, first in its palette, goes back to the drawing's, which the level then follows. Its **Opacity** is how solid the level is drawn | The drawing's, at its opacity |
 | **Thickness** | No line, 1, 1.5, 2.5 or 4 px, picked from drawn samples. No line keeps the level's label without its line | 1 px |
 | **Line style** | **Solid**, **Dashed** or **Dotted** | Solid for 0% and 100%; dashed for 50%; dotted for the rest |
 
@@ -65,10 +65,11 @@ state:
   click 1088 189   (the later retracement's 50% level)
   key alt+Return
   scroll 824 500 6
-capture: bin/headless-window shot /tmp/fibprops.png; magick /tmp/fibprops.png -crop 926x1406+817+17 +repage site/assets/manual/drawings/fib-properties.png
-crop: 817,17,926,1406
+capture: bin/headless-window shot /tmp/fibprops.png
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/drawings/fib-properties.png" alt="A Fib retracement's properties: Colour, Fib labels on and Price labels off, then the seven levels from 0% to 100%, each with its switch and a sample of its line" caption="A retracement's properties, on configuration 1." %}
+{% include figure.html src="/assets/manual/drawings/fib-properties.png" alt="A Fib retracement's properties: Colour with its Opacity at 70, Fib labels on and Price labels off, then the seven levels from 0% to 100%, each with its switch and a sample of its line" caption="A retracement's properties, on configuration 1." %}
 
 <!-- regenerate:
 theme: tokyo-night
@@ -77,10 +78,11 @@ state:
   (the state of the previous figure)
   click 824 539    (the 61.8% row's arrow)
   scroll 824 500 6
-capture: bin/headless-window shot /tmp/fiblevel.png; magick /tmp/fiblevel.png -crop 926x1406+817+17 +repage site/assets/manual/drawings/fib-level-properties.png
-crop: 817,17,926,1406
+capture: bin/headless-window shot /tmp/fiblevel.png
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/drawings/fib-level-properties.png" alt="The same properties with the 61.8% level open on its Colour, Thickness and Line style, dotted" caption="A level open: its own colour, thickness and line style." %}
+{% include figure.html src="/assets/manual/drawings/fib-level-properties.png" alt="The same properties with the 61.8% level open on its Colour and Opacity, Thickness and Line style, dotted" caption="A level open: its own colour, thickness and line style." %}
 
 <!-- regenerate:
 theme: catppuccin-latte

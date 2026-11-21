@@ -113,19 +113,21 @@ Every indicator the app has, with every parameter it exposes:
 | Indicator | Parameters |
 |---|---|
 | `sma`, `ema` | `--period` |
-| `bollinger` | `--period`, `--deviations`, `--bands` (`1` or `none`), `--band-alpha` |
+| `bollinger` | `--period`, `--deviations`, `--bands` (`1` or `none`), `--band-alpha`, `--band-transparency` |
 | `rsi` | `--period`, `--overbought`, `--oversold`, `--height` |
-| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--signal-style`, `--height` |
+| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--signal-transparency`, `--signal-style`, `--height` |
 | `atr` | `--period`, `--height` |
-| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color`, `--d-style` |
-| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
+| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color`, `--d-transparency`, `--d-style` |
+| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity` (0 to 1, both bars), `--up-color`, `--down-color`, `--up-transparency`, `--down-transparency` (0 to 1, or `default` to follow `--opacity`) |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
-| `vwap` | `--anchor`, `--bands`, `--band-alpha` |
+| `vwap` | `--anchor`, `--bands`, `--band-alpha`, `--band-transparency` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` and `--poc-transparency` (0 to 1, or `default` to follow `--transparency`, or for the point of control its own), `--last-only` (`on` or `off`), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 | `market_profile` | `--anchor`, `--tpo-minutes` (1 to 1440, 30 by default), `--row-ticks` (ticks to a row, or `auto`), `--tpo-style` (`letters` or `blocks`), `--open-close` (`on` or `off`, on by default: an arrow beside the TPO at the opening price and one beside the TPO at the closing price), `--open-color` and `--close-color` (a colour, or `none` for the theme's), `--open-transparency` and `--close-transparency` (0 to 1, or `default`), `--expand-last` (`on` or `off`, off by default: the newest profile drawn expanded, its TPOs laid out over its bars), `--value-area`, `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the letters' own), `--poc` (`on` or `off`), `--poc-color`, `--poc-width` (2 by default) and `--poc-style` (its point of control is a line across the profile, as a volume profile's), `--outline` (`on` or `off`, off by default: the stepped edge round its TPOs), `--outline-color`, `--outline-width`, `--outline-style`, `--transparency` (0 to 1, 0.05 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` (solid by default) and `--poc-transparency` (as a volume profile's), `--last-only` (`on` or `off`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1) |
 
-Anything that draws a line also takes `--color`, `--width` and `--line-style`
-(`--style`, its older name, still works), and everything takes `--visible`.
+Anything that draws a line also takes `--color`, `--transparency` (0 to 1:
+how much of the chart shows through the line, 0 solid, which it is unless
+set), `--width` and `--line-style` (`--style`, its older name, still works),
+and everything takes `--visible`.
 
 **A market profile counts time at each price rather than volume.** Each
 period is cut into TPO periods of `--tpo-minutes`, lettered A to Z and then a
@@ -894,7 +896,8 @@ study's three bands, at 1, 1.5 and 2 standard deviations and all off:
 `--bands` says which are drawn, any of `1,2,3` by place, or `none`. The
 `--band-*` flags change a band's look: `--band-deviations` (0.1 to 6),
 `--band-shaded on|off`, `--band-alpha` (0 to 1), `--band-color` (a colour, or
-`line` for the line's own), `--band-width` (0 to 12, 0 for no edges) and
+`line` for the line's own), `--band-transparency` (0 to 1, or `default` for
+solid edges), `--band-width` (0 to 12, 0 for no edges) and
 `--band-style`. `--band N` says which band they change; without it they
 change all three, except `--band-deviations`, which needs one. Every one of
 these is part of the style, so `configure avwap --config N` takes them all.
@@ -916,7 +919,8 @@ all on, each a hairline in the drawing's
 `none`), `--fib-labels on|off` whether each is labelled with its ratio (on
 unless set) and `--price-labels on|off` with its price (off unless set),
 and `--level-color` (a colour, or `drawing` for the drawing's own),
-`--level-width` and `--level-style` change a level's look; `--level RATIO`
+`--level-transparency` (0 to 1, or `default` to follow the drawing's
+`--color-transparency`), `--level-width` and `--level-style` change a level's look; `--level RATIO`
 says which, and without it they change all seven. `--width` sets every
 level's thickness at once. All of it is part of the style, so
 `configure fib --config N` takes it too. It is moved whole, like a line, and
@@ -941,7 +945,7 @@ omacharts chart drawing set --id 1 --text ""
 
 What a drawing says is never part of a configuration — a configuration says
 how words are set, never which words — so `--text` leaves a drawing on the
-configuration it follows. How they are set is: `--text-color`, `--font` and
+configuration it follows. How they are set is: `--text-color`, `--text-transparency`, `--font` and
 `--font-size` are among the nine, and giving one by hand takes the drawing
 off its configuration the way `--color` does. `--font system` is the
 desktop's own face, which is the default and what `--json` reports as a null
@@ -1206,7 +1210,8 @@ theme-soft`, which is painted its own way round whatever the chart's switch
 says, and `--colouring default` (or `chart`) to follow the chart again.
 Monochrome is refused for a volume pane, as for a delta. A hollow rise never
 reaches the volume: its bars are solid, with no body to leave open. They are
-the candles' own colours, drawn at `--opacity`, 0.2 to 1 and 0.85 unless set.
+the candles' own colours, drawn at `--opacity`, 0 to 1 and 0.85 unless set;
+`--up-transparency` and `--down-transparency` set each apart.
 
 `config set bar_scheme theme-mono` changes only what new charts open with, and
 does not remember the scheme that was in use.

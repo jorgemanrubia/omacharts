@@ -24,8 +24,8 @@ A VWAP and Bollinger Bands draw the same kind of band, a line a multiple of a st
 | **Show** | Draws the band | |
 | **Standard deviations** | How far out it sits | 0.1 to 6, in tenths |
 | **Shaded** | Fills the area between its edges | |
-| **Shading %** | How solid that fill is | 0 to 100%; 16% by default |
-| **Colour** | The band's colour. Left alone it is the indicator's | |
+| **Shading opacity %** | How solid that fill is | 0 to 100%; 16% by default |
+| **Colour** | The band's colour. Left alone it is the indicator's. Its **Opacity** is how solid the edges are drawn | 0 to 100%; 100% by default |
 | **Thickness**, **Line style** | Its edges. No line leaves a shaded band with no outline | |
 
 ## See also

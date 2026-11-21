@@ -13,9 +13,11 @@ The flags `chart indicator add` and `set` take for [momentum and volatility](/ma
 | `--period N` | Bars | SMA, EMA, Bollinger, RSI, ATR; the stochastic's %K length |
 | `--fast N`, `--slow N`, `--signal N` | Bars | MACD |
 | `--signal-color C` | A colour | MACD |
+| `--signal-transparency F` | 0 to 1, or `default` to follow `--transparency` | MACD: how much of the chart shows through its signal line |
 | `--signal-style S` | `solid`, `dashed`, `dotted`; the MACD line's when not given | MACD |
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
+| `--d-transparency F` | 0 to 1, or `default` to follow `--transparency` | Stochastic: how much of the chart shows through its %D line |
 | `--d-style S` | `solid`, `dashed`, `dotted`; %K's when not given | Stochastic |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |

@@ -32,7 +32,7 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/macd.jpg
 | **Fast length** | 12 | 1 to 199, below the slow length |
 | **Slow length** | 26 | 2 to 200, above the fast length |
 | **Signal length** | 9 | 1 to 200 |
-| **Signal colour** | A contrasting colour from the theme | A palette name, or a custom colour |
+| **Signal colour** | A contrasting colour from the theme, at the MACD line's opacity | A palette name, or a custom colour, and its **Opacity** |
 | **Signal line style** | The MACD line's | Solid, Dashed, Dotted |
 | **Pane height %** | 16% | 5 to 95% |
 | **Colour**, **Thickness**, **Line style** | The next free colour, 1.5 px, solid | See [Colours and lines](/manual/indicators/#colours-and-lines) |

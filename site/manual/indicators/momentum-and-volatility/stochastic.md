@@ -34,7 +34,7 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/stochast
 | **%D smoothing** | 3 | 1 to 50 |
 | **Overbought** | 80 | 0 to 100 |
 | **Oversold** | 20 | 0 to 100, below overbought |
-| **%D colour** | A contrasting colour from the theme | A palette name, or a custom colour |
+| **%D colour** | A contrasting colour from the theme, at %K's opacity | A palette name, or a custom colour, and its **Opacity** |
 | **%D line style** | %K's | Solid, Dashed, Dotted |
 | **Pane height %** | 16% | 5 to 95% |
 | **Colour**, **Thickness**, **Line style** | The next free colour, 1.5 px, solid | See [Colours and lines](/manual/indicators/#colours-and-lines) |

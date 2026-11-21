@@ -196,7 +196,14 @@ fn range_group(
     let theme = owner.theme();
     let (shown, _) =
         omacharts_engine::indicators::time::shade(range.color.as_ref(), range.alpha, range.hours.ground(), &theme);
-    group.add(&colour_row(
+    let strength = indicator_strength(owner, refresh, id, range.alpha.clamp(MIN_ALPHA, MAX_ALPHA), move |indicator, alpha| {
+        if let Params::SessionTimes { ranges } = &mut indicator.params
+            && let Some(range) = ranges.get_mut(at)
+        {
+            range.alpha = alpha.clamp(MIN_ALPHA, MAX_ALPHA);
+        }
+    });
+    group.add(&colour_row_with(
         owner,
         refresh,
         &Ink::new(String::new),
@@ -211,14 +218,8 @@ fn range_group(
             }
         },
         id,
+        Some(strength),
     ));
-    group.add(&percent_row(owner, refresh, id, "Shading %", range.alpha, MIN_ALPHA, MAX_ALPHA, move |indicator, share| {
-        if let Params::SessionTimes { ranges } = &mut indicator.params
-            && let Some(range) = ranges.get_mut(at)
-        {
-            range.alpha = share;
-        }
-    }));
     group
 }
 

@@ -67,7 +67,7 @@ The times on the chart are in the time zone chosen in Preferences ([Time](/manua
 
 ## Ranges
 
-| Range | Shades | Shading % |
+| Range | Shades | Opacity |
 |---|---|---|
 | **ETH** | Everything outside the regular session, by the chart's exchange | 3% |
 | **RTH** | The regular session, by the chart's exchange | 9% |
@@ -99,9 +99,10 @@ state:
   click 380 334            # the Sessions · ETH, London row
   move 795 1050
 capture: bin/headless-window shot /tmp/session-times.png
-crop: 223,150,1152,1902   (the whole dialog, 16px margin)
+crop: the dialog, 16px round it
+retaken: on the synthetic feed in a test window (fake prices, no live symbol), the same dialog in the same state
 -->
-{% include figure.html src="/assets/manual/indicators/session-times-settings.png" alt="The settings of Session Times with an ETH group describing the CME's day, a London group with its hours and time zone, Add a range, and the Legend switch off" caption="Session Times with ETH and London." %}
+{% include figure.html src="/assets/manual/indicators/session-times-settings.png" alt="The settings of Session Times with an ETH group describing the CME's day, a London group with its hours and time zone, each with a Colour and its Opacity, Add a range, and the Legend switch off" caption="Session Times with ETH and London." %}
 
 Each range is a group, titled with its name, with a bin in its header that removes it. The ETH and RTH groups say what they shade on this chart, such as **as Chicago Mercantile Exchange keeps them: trading 18:00–17:00, regular 09:30–16:00, New York time**, or why there is nothing to shade.
 
@@ -110,8 +111,7 @@ Each range is a group, titled with its name, with a bin in its header that remov
 | **Name** | The preset's name | Any text. The legend lists it. Not on ETH and RTH |
 | **Starts**, **Ends** | The preset's hours | A time, typed as you like ([Typing a time](#typing-a-time)). Not on ETH and RTH |
 | **Time zone** | The preset's city, or **Chart's time zone** for Custom | **Chart's time zone**, or a named zone. The subtitle says what the hours come to on the chart today, such as **03:00–11:30 New York time today** for London. Not on ETH and RTH |
-| **Colour** | None, which shades the background | A palette name, or a custom colour. **Default**, first in its palette, goes back to none |
-| **Shading %** | 3% for ETH, 9% for the rest | 2 to 60% |
+| **Colour** | None, which shades the background, at 3% opacity for ETH and 9% for the rest | A palette name, or a custom colour. **Default**, first in its palette, goes back to none. Its **Opacity** is how solid the shading is, 0 to 100% |
 
 The last group, **Add a range**, has a **+** that offers **ETH, extended hours**, **RTH, regular hours**, **Asia**, **London**, **New York** and **Custom**. ETH and RTH are greyed out once the list has them.
 

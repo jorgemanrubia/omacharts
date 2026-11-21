@@ -35,6 +35,7 @@ These work on every indicator. Each family's own are on its page.
 | `--id N` | An id from `list --json`, or `selected` for the one selected in the window, whose kind can then be left out | `set` and `remove` |
 | `--selected` | Nothing | `list`: only the one selected in the window |
 | `--color C` | A colour | The line of any indicator; a profile's bars; a Session Times range's shading |
+| `--transparency F` | 0 to 1, or `default`; 0 when not given | Any indicator with a line: how much of the chart shows through it. 0 is its colour solid, 1 invisible. A profile's rows take it too, on their own page |
 | `--width F` | Pixels; `0` draws no line | Any indicator with a line |
 | `--line-style S` | `solid`, `dashed`, `dotted`; `--style S` is its older name | Any indicator with a line |
 | `--visible B` | `on`, `off` | Any |

@@ -1464,7 +1464,10 @@ fn appearance_group(
         Ink::new(move || drawn_colour(&owner, &owner.indicators(), id))
     };
 
-    group.add(&colour_row(
+    let line_strength = indicator_strength(owner, refresh, id, indicator.line_alpha(), |indicator, alpha| {
+        indicator.alpha = Some(alpha)
+    });
+    group.add(&colour_row_with(
         owner,
         refresh,
         &ink,
@@ -1473,6 +1476,7 @@ fn appearance_group(
         indicator.color.clone(),
         move |indicator, choice| indicator.color = choice,
         id,
+        Some(line_strength),
     ));
     for row in stroke_rows(owner, refresh, &ink, id, "", indicator.stroke, {
         move |indicator: &mut Indicator, stroke: Stroke| indicator.stroke = stroke
@@ -1523,7 +1527,14 @@ fn appearance_group(
                 owner.theme().companion_or(chosen.as_ref(), &drawn)
             })
         };
-        group.add(&colour_row(
+        let second_strength = indicator_strength(owner, refresh, id, indicator.second_alpha(), |indicator, alpha| {
+            match &mut indicator.params {
+                Params::Stochastic { d_alpha, .. } => *d_alpha = Some(alpha),
+                Params::Macd { signal_alpha, .. } => *signal_alpha = Some(alpha),
+                _ => {}
+            }
+        });
+        group.add(&colour_row_with(
             owner,
             refresh,
             &second_ink,
@@ -1536,6 +1547,7 @@ fn appearance_group(
                 _ => {}
             },
             id,
+            Some(second_strength),
         ));
         let current = pattern.unwrap_or(indicator.stroke.style);
         group.add(&pattern_row(owner, refresh, &second_ink, id, pattern_title, current, |indicator, picked| {
@@ -1728,27 +1740,13 @@ pub(crate) fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::Dra
 }
 
 /// A colour row: the swatch, whose palette offers Default first, the way
-/// back to the colour the theme gives it.
+/// back to the colour the theme gives it, and how much of the chart shows
+/// through the colour, on the app's standard colour row
+/// ([`property_rows::colour_row`]).
 ///
 /// Default is offered whenever the colour has one to go back to, even when a
 /// pinned colour has the same hex as the theme's: pinning it still stops the
 /// indicator following the theme.
-#[allow(clippy::too_many_arguments)]
-fn colour_row(
-    owner: &Rc<Owner>,
-    refresh: &Refresh,
-    ink: &Ink,
-    title: &str,
-    current: &str,
-    choice: Option<ColorChoice>,
-    apply: impl Fn(&mut Indicator, Option<ColorChoice>) + Clone + 'static,
-    id: u32,
-) -> adw::ActionRow {
-    colour_row_with(owner, refresh, ink, title, current, choice, apply, id, None)
-}
-
-/// [`colour_row`] carrying how much of the chart shows through the colour,
-/// on the app's standard colour row ([`property_rows::colour_row`]).
 #[allow(clippy::too_many_arguments)]
 fn colour_row_with(
     owner: &Rc<Owner>,
@@ -1795,6 +1793,24 @@ fn colour_row_with(
         Some(default),
     );
     property_rows::colour_row(title, &button, transparency)
+}
+
+/// How solid one of an indicator's colours is drawn, `alpha` now, for its
+/// colour row: set by `write` as it is moved, as a strength.
+fn indicator_strength(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    alpha: f64,
+    write: impl Fn(&mut Indicator, f64) + 'static,
+) -> property_rows::Transparency {
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    profile_rows::strength(alpha, move |alpha| {
+        update(&owner, id, |indicator| write(indicator, alpha));
+        refresh.run();
+    })
+    .0
 }
 
 fn parameters_group(
@@ -2585,31 +2601,28 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
     let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
         return Vec::new();
     };
-    let opacity = percent_row(
-        owner,
-        refresh,
-        id,
-        VOLUME_OPACITY_LABEL,
-        crate::ui::chart::volume_opacity(indicator),
-        omacharts_engine::indicators::MIN_VOLUME_OPACITY,
-        1.0,
-        move |indicator, share| {
-            if let Params::Volume { opacity, .. } = &mut indicator.params {
-                *opacity = share;
-            }
-        },
-    );
+    let (up_alpha, down_alpha) = crate::ui::chart::volume_alphas(indicator);
+    let up_strength = indicator_strength(owner, refresh, id, up_alpha, |indicator, alpha| {
+        if let Params::Volume { up_alpha, .. } = &mut indicator.params {
+            *up_alpha = Some(alpha);
+        }
+    });
+    let down_strength = indicator_strength(owner, refresh, id, down_alpha, |indicator, alpha| {
+        if let Params::Volume { down_alpha, .. } = &mut indicator.params {
+            *down_alpha = Some(alpha);
+        }
+    });
     // The one a delta profile offers. Its Default is what volume always
     // followed, the chart's own colouring, and Monochrome, which a delta is
     // not offered, stays on offer to a volume pane already painted in it.
     let choice = colouring_row(owner, refresh, id, *colouring);
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
-    let up_row = colour_row(
+    let up_row = colour_row_with(
         owner,
         refresh,
         &unused,
-        "Up",
+        VOLUME_UP,
         &up,
         up_color.clone(),
         move |indicator, choice| {
@@ -2618,12 +2631,13 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
             }
         },
         id,
+        Some(up_strength),
     );
-    let down_row = colour_row(
+    let down_row = colour_row_with(
         owner,
         refresh,
         &unused,
-        "Down",
+        VOLUME_DOWN,
         &down,
         down_color.clone(),
         move |indicator, choice| {
@@ -2632,12 +2646,14 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
             }
         },
         id,
+        Some(down_strength),
     );
-    vec![choice.upcast(), opacity.upcast(), up_row.upcast(), down_row.upcast()]
+    vec![choice.upcast(), up_row.upcast(), down_row.upcast()]
 }
 
-/// The volume row that says how solid its bars are.
-pub const VOLUME_OPACITY_LABEL: &str = "Opacity %";
+/// The volume pane's colour rows, each with how solid its bars are.
+pub const VOLUME_UP: &str = "Up";
+pub const VOLUME_DOWN: &str = "Down";
 
 /// The colouring row a volume pane, a delta volume profile and a
 /// cumulative delta share: **Default** first, then the colourings that tell
@@ -3286,24 +3302,13 @@ fn band_groups(
         //
         // The ends come from the engine, as the pane height's do, so the
         // slider and the chart agree about where they are.
-        group.add(
-            &percent_row(
-                owner,
-                refresh,
-                id,
-                "Shading %",
-                band.alpha(),
-                MIN_FILL_ALPHA,
-                MAX_FILL_ALPHA,
-                move |indicator, share| {
-                    if let Some(band) =
-                        indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
-                    {
-                        band.fill_alpha = Some(share);
-                    }
-                },
-            ),
-        );
+        let shading = indicator_strength(owner, refresh, id, band.alpha(), move |indicator, alpha| {
+            if let Some(band) = indicator.params.bands_mut().and_then(|bands| bands.get_mut(index)) {
+                band.fill_alpha = Some(alpha.clamp(MIN_FILL_ALPHA, MAX_FILL_ALPHA));
+            }
+        })
+        .alone(property_rows::SHADING, property_rows::SHADING_TIP);
+        group.add(&shading);
 
         let current = band
             .color
@@ -3328,7 +3333,12 @@ fn band_groups(
             })
         };
 
-        group.add(&colour_row(
+        let edge_strength = indicator_strength(owner, refresh, id, band.edge_alpha(), move |indicator, alpha| {
+            if let Some(band) = indicator.params.bands_mut().and_then(|bands| bands.get_mut(index)) {
+                band.line_alpha = Some(alpha);
+            }
+        });
+        group.add(&colour_row_with(
             owner,
             refresh,
             &ink,
@@ -3343,6 +3353,7 @@ fn band_groups(
                 }
             },
             id,
+            Some(edge_strength),
         ));
 
         for row in stroke_rows(owner, refresh, &ink, id, "", band.stroke, {

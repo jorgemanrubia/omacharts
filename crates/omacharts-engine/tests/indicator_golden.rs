@@ -138,7 +138,7 @@ fn series() -> Vec<(&'static str, Vec<Bar>, Timeframe)> {
 }
 
 fn band(deviations: f64, enabled: bool) -> Band {
-    Band { deviations, enabled, color: None, fill: false, fill_alpha: None, stroke: Stroke::new(1.0, LineStyle::Solid) }
+    Band { deviations, enabled, color: None, fill: false, fill_alpha: None, stroke: Stroke::new(1.0, LineStyle::Solid), line_alpha: None }
 }
 
 /// Every indicator, at its defaults and across the parameters that change
@@ -171,7 +171,7 @@ fn indicators() -> Vec<(String, Indicator)> {
             format!("macd:{fast}-{slow}-{signal}"),
             with(
                 Kind::Macd,
-                Params::Macd { fast, slow, signal, height: 0.2, signal_color: None, signal_style: None },
+                Params::Macd { fast, slow, signal, height: 0.2, signal_color: None, signal_style: None, signal_alpha: None },
             ),
         ));
     }
@@ -189,6 +189,7 @@ fn indicators() -> Vec<(String, Indicator)> {
                     oversold: 20.0,
                     d_color: None,
                     d_style: None,
+                    d_alpha: None,
                 },
             ),
         ));

@@ -38,6 +38,7 @@ pub fn default_bands() -> Vec<Band> {
             fill: true,
             fill_alpha: None,
             stroke: Stroke::new(0.0, LineStyle::Solid),
+            line_alpha: None,
         },
         Band {
             deviations: 1.5,
@@ -46,6 +47,7 @@ pub fn default_bands() -> Vec<Band> {
             fill: false,
             fill_alpha: None,
             stroke: Stroke::new(1.0, LineStyle::Dashed),
+            line_alpha: None,
         },
         Band {
             deviations: 2.0,
@@ -54,6 +56,7 @@ pub fn default_bands() -> Vec<Band> {
             fill: false,
             fill_alpha: None,
             stroke: Stroke::new(1.0, LineStyle::Solid),
+            line_alpha: None,
         },
     ]
 }
@@ -197,6 +200,7 @@ mod tests {
                 fill: false,
                 fill_alpha: None,
                 stroke: Stroke::default(),
+                line_alpha: None,
             })
             .collect()
     }
