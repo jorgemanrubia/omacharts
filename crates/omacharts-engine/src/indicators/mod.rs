@@ -2395,45 +2395,80 @@ mod tests {
         assert!(colors.iter().all(|c| !c.is_empty()), "every one gets a colour");
     }
 
+    /// The time this thread has spent on a CPU: what a piece of work cost,
+    /// leaving out the time it waited while something else had the core.
+    fn on_cpu() -> std::time::Duration {
+        let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: `now` is a valid timespec for the call to write into.
+        let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+        assert_eq!(ok, 0, "the thread's CPU clock");
+        std::time::Duration::new(now.tv_sec as u64, now.tv_nsec as u32)
+    }
+
+    /// Caching indicators would mean storing and invalidating derived values
+    /// to save a few milliseconds a repaint. This exists to catch one that
+    /// stops being cheap, above all one that becomes quadratic.
+    ///
+    /// What it measures is the work, not the wait. A shared CI runner is a
+    /// slice of a busy machine, and the rest of the suite runs beside this
+    /// on its threads, so the wall clock there says as much about the
+    /// neighbours as about the indicators: it failed an 80 ms budget at 81,
+    /// 85 and 86 with no change to them. So each repaint is timed on this
+    /// thread's CPU clock, which stops while the thread waits for a core,
+    /// and the best of several is taken, which leaves out the rounds a busy
+    /// core's caches slowed. Neither can make the work look cheaper than it
+    /// is. The budget stays at 80 ms: this desktop's debug build spends 26
+    /// of CPU on it.
+    ///
+    /// And the shape is held as well as the size, because a fast machine
+    /// can hide a quadratic indicator under any budget. Four times the bars
+    /// costing four times as much is linear, and reads 4.0 to 4.2; wholly
+    /// quadratic would be sixteen. The line is at six, which leaves that
+    /// reading room to wobble and still catches a quadratic part by the
+    /// time it is half the cost. It holds on any machine, however fast,
+    /// because it is the same machine on both sides.
     #[test]
     fn computing_every_indicator_is_cheap_enough_to_do_on_every_repaint() {
-        // Two years of hourly bars, which is the most this app ever holds.
-        let series: Vec<Bar> = (0..12_000)
-            .map(|i| {
-                let price = 100.0 + (i as f64 / 50.0).sin() * 5.0;
-                Bar {
-                    ts: i as i64 * 3_600,
-                    open: price,
-                    high: price + 0.5,
-                    low: price - 0.5,
-                    close: price + 0.1,
-                    volume: 1_000.0,
-                }
-            })
-            .collect();
+        let series = |bars: usize| -> Vec<Bar> {
+            (0..bars)
+                .map(|i| {
+                    let price = 100.0 + (i as f64 / 50.0).sin() * 5.0;
+                    Bar {
+                        ts: i as i64 * 3_600,
+                        open: price,
+                        high: price + 0.5,
+                        low: price - 0.5,
+                        close: price + 0.1,
+                        volume: 1_000.0,
+                    }
+                })
+                .collect()
+        };
+        // Two years of hourly bars, which is the most this app ever holds,
+        // and a quarter of that.
+        let most = series(12_000);
+        let quarter = series(3_000);
 
         let indicators: Vec<Indicator> =
             Kind::ALL.into_iter().enumerate().map(|(i, k)| Indicator::new(i as u32, k)).collect();
-
-        let start = std::time::Instant::now();
-        let rounds = 20;
-        for _ in 0..rounds {
+        let repaint = |series: &[Bar]| {
+            let start = on_cpu();
             for indicator in &indicators {
-                let _ = compute(indicator, &series, 0, Timeframe::hours(1), None);
+                let _ = compute(indicator, series, 0, Timeframe::hours(1), None);
             }
-        }
-        let per_repaint = start.elapsed() / rounds;
+            on_cpu() - start
+        };
 
-        // Caching these would mean storing and invalidating derived values to
-        // save a few milliseconds a repaint. The budget here is deliberately
-        // loose; it exists to catch an indicator that becomes quadratic. It
-        // is 80 ms rather than 50 because shared CI runners measure up to
-        // about 70 ms for the same work, with no change to the engine.
-        assert!(
-            per_repaint < std::time::Duration::from_millis(80),
-            "all four indicators over 12k bars took {per_repaint:?}"
-        );
-        eprintln!("all indicators over 12k bars: {per_repaint:?} per repaint");
+        let (mut best, mut best_quarter) = (std::time::Duration::MAX, std::time::Duration::MAX);
+        for _ in 0..10 {
+            best_quarter = best_quarter.min(repaint(&quarter));
+            best = best.min(repaint(&most));
+        }
+
+        assert!(best < std::time::Duration::from_millis(80), "every indicator over 12k bars took {best:?}");
+        let growth = best.as_secs_f64() / best_quarter.as_secs_f64();
+        assert!(growth < 6.0, "four times the bars cost {growth:.1} times as much: {best_quarter:?} and then {best:?}");
+        eprintln!("every indicator over 12k bars: {best:?} per repaint, {growth:.1}x a quarter of them");
     }
 
     /// Volume, RSI and ATR in that order, with a moving average among them to

@@ -25,6 +25,11 @@ rithmic = { path = "../rithmic", optional = true }
 # Sierra Chart's DTC server, for what its files cannot say.
 dtc = { path = "../dtc", optional = true }
 
+[dev-dependencies]
+# The thread's own CPU clock, for the indicator cost test: std has only the
+# wall clock. Already in the build through sierra.
+libc = "0.2"
+
 [features]
 default = ["feeds"]
 # The data providers (`providers`). On for the app; off for a program that
