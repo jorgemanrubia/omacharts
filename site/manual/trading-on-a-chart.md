@@ -25,7 +25,7 @@ state:
   omacharts chart set --symbol ES --resolution 15m
   move 1300 880           # off the chart, so its gear is hidden
 capture: bin/headless-window shot /tmp/account-part.png
-crop: 1160x88+1000+4
+crop: 1240x88+838+4
 -->
 {% include figure.html src="/assets/manual/trading-on-a-chart/account-part.png" alt="A chart's top-right corner: the account, Day P&L, Buy, Sell, Qty, the order template, the position held and Pos P&L" caption="The Account part of a chart holding one contract." %}
 
