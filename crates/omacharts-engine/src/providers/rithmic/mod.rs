@@ -2060,23 +2060,28 @@ mod tests {
     /// A chart that comes back on screen asks the plant for the last few
     /// bars of a series streamed all along, and a bar the trades drew
     /// short is put right: once, however often it is asked within moments.
+    ///
+    /// Every ask is waited for as it is made, on the history thread, rather
+    /// than inferred from what the chart was sent: an earlier ask answered
+    /// late reads a later clock, and can bring the whole bar itself.
     #[test]
     fn a_reconcile_puts_the_last_bars_right() {
         let two = Timeframe::minutes(2);
         let bar = AT;
         let whole = ohlc(bar - 120, 100.0, 104.0, 98.0, 101.0, 50.0);
         let plant_bars = [ohlc(bar - 240, 99.0, 100.0, 98.0, 100.0, 40.0), whole];
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let recording = calls.clone();
+        let (asking, asks) = mpsc::channel();
         let clock = Arc::new(std::sync::atomic::AtomicI64::new(bar - 200));
         let reading = clock.clone();
         let served = Served::start_at(two, Some(bar - 240), bar - 200, move |from| {
-            recording.lock().unwrap().push(from);
             // Each bar fifteen seconds after it closes; the forming one as
-            // far as it has got.
+            // far as it has got. Told once the clock is read, so an ask
+            // seen is one already answered as of that moment.
             let now = reading.load(Ordering::SeqCst);
+            let _ = asking.send(from);
             Ok(plant_bars.iter().copied().filter(|bar| bar.ts >= from && bar.ts <= now && (bar.ts + 135 <= now || bar.ts + 120 > now)).collect())
         });
+        let asked = || asks.recv_timeout(std::time::Duration::from_secs(10)).expect("an ask");
         let at = |seconds: i64| {
             served.at(seconds);
             clock.store(seconds, Ordering::SeqCst);
@@ -2084,6 +2089,7 @@ mod tests {
         served.watching();
         let mut series = Vec::new();
         drawn(&served, &mut series, |series| !series.is_empty());
+        assert_eq!(asked(), bar - 240 - 5 * 120, "the first snapshot");
         // The trades heard of the bar after the snapshot's, short of it:
         // some of its prints never arrived.
         at(bar - 115);
@@ -2093,18 +2099,27 @@ mod tests {
         drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.ts == bar));
         let short = *series.iter().find(|drawn| drawn.ts == bar - 120).unwrap();
         assert_ne!(short, whole);
+        // The bar the snapshot had forming, asked for whole now it has
+        // closed: before the plant has the one after it.
+        assert_eq!(asked(), bar - 240, "the bar the snapshot had forming");
 
         at(bar + 20);
         served.reconcile();
         served.reconcile();
+        assert_eq!(asked(), bar - RECONCILED * 120, "the last few bars");
         drawn(&served, &mut series, |series| series.contains(&whole));
         // A trade after both, to be sure the second asked nothing.
         served.trade(bar + 21, 101.0, 1);
         drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.close == 101.0));
-        let calls = calls.lock().unwrap().clone();
-        assert_eq!(calls.last(), Some(&(bar - RECONCILED * 120)), "the last few bars");
-        assert_eq!(calls.iter().filter(|from| **from == bar - RECONCILED * 120).count(), 1, "{calls:?}");
         assert_eq!(series.last().map(|last| (last.ts, last.open)), Some((bar, 101.5)), "the forming bar left to the trades");
+        // Asks are made in order, so the next one tells: a bar later, and
+        // long enough after the first to count again, a reconcile asks from
+        // the new bar. Had the second of the pair asked, this would hear it.
+        at(bar + 125);
+        served.trade(bar + 125, 101.25, 1);
+        drawn(&served, &mut series, |series| series.last().is_some_and(|last| last.ts == bar + 120));
+        served.reconcile();
+        assert_eq!(asked(), bar + 120 - RECONCILED * 120, "asked once, however often it is asked within moments");
     }
 
     #[test]
