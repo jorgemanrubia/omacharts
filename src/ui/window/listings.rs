@@ -61,13 +61,10 @@ impl Window {
         });
     }
 
-    /// One check, on a thread, when Preferences allows it and a day has
-    /// passed since the last. Quiet whatever happens: a failure is a line on
-    /// stderr, and search goes on with the listings it had.
+    /// One check, on a thread, when a day has passed since the last. Quiet
+    /// whatever happens: a failure is a line on stderr, and search goes on
+    /// with the listings it had.
     fn refresh_listings_if_due(self: &Rc<Self>) {
-        if !self.store.setting_bool(listings::SETTING, true) {
-            return;
-        }
         // Everything from here, the file's time included, on a thread of its
         // own: the main loop never waits on the disk or the network. Nobody
         // joins it, so a slow line never holds up quitting either.

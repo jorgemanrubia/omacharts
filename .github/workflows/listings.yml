@@ -1,36 +1,32 @@
 name: Listings
 
 # Every US listing, rebuilt from Nasdaq Trader's files each weekday and
-# published where every running copy of the app fetches it: the `listings`
-# branch, one commit holding two files, served by raw.githubusercontent.com.
-#
-#   listings.tsv    what tools/build_listings.py wrote
-#   listings.json   {"built", "rows", "sha256"}: the app reads this first
+# committed to main as the compiled-in copy,
+# crates/omacharts-engine/src/listings.tsv, whenever a listing came or went.
+# One file: the Pages build serves it at omacharts.org/data/listings.tsv with
+# a sidecar (pages.yml), every running copy of the app fetches it from there
+# once a day, and every release compiles in whatever main has.
 #
 # Not a pull request: this used to open one a week, and every one of them
 # failed on a repository setting ("GitHub Actions is not permitted to create
 # or approve pull requests"), so for seven weeks nothing refreshed and a
-# company that listed was not searchable. Pushing a branch needs no setting,
+# company that listed was not searchable. Pushing to main needs no setting,
 # and nobody has to merge a data file for the app to have it.
 #
-# Not the Pages site either: a Pages deployment replaces the whole site, so
-# the manual's deploys would have to rebuild this file too or delete it, and
-# both would share deploy-pages' occasional "no artifact" failure. Not a
-# release asset: a release named `listings` would sit among the versions,
-# where releases/latest, the generated notes and the package recipe that
-# follows the releases all look.
+# A push made with the workflow's own token starts no other workflow, so CI
+# and the perf checks do not run on these commits — the file is checked here
+# instead, by the same rules the app holds a download to — and the Pages
+# deploy that publishes it is started here, by a dispatch, which is the one
+# event such a token is allowed to start.
 #
-# The compiled-in copy stays the fallback, and bin/release copies the
-# published file into the tree before each tag.
-#
-# A pull request that touches the build runs everything but the push, so a
-# change here is proved before it publishes anything.
+# A pull request that touches the build runs everything but the commit, so a
+# change here is proved before it writes anything.
 
 on:
   schedule:
     # Before the US open, so a company listing today is searchable when it
     # first trades, and again after the close, when the day's volumes that
-    # rank the funds are in. A run that changes nothing pushes nothing.
+    # rank the funds are in. A run that changes no listing commits nothing.
     - cron: '30 11 * * 1-5'
     - cron: '30 22 * * 1-5'
   workflow_dispatch:
@@ -42,62 +38,61 @@ on:
 
 permissions:
   contents: write
+  # To start the Pages deploy.
+  actions: write
 
 concurrency:
   group: listings
   cancel-in-progress: false
 
+env:
+  LISTINGS: crates/omacharts-engine/src/listings.tsv
+
 jobs:
-  publish:
+  refresh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Take what is published now, to compare against
-        run: |
-          if git fetch --quiet --depth=1 origin listings:refs/published 2>/dev/null; then
-            git show refs/published:listings.tsv > previous.tsv
-          else
-            # Nothing published yet: the compiled-in copy is what the app has.
-            cp crates/omacharts-engine/src/listings.tsv previous.tsv
-          fi
+        with:
+          # Enough history for the rebase below to find where main moved from.
+          fetch-depth: 20
 
       - name: Build from Nasdaq Trader
         run: |
-          tools/build_listings.py > listings.tsv 2> build.log
+          tools/build_listings.py > fresh.tsv 2> build.log
           cat build.log
 
-      - name: Check it is fit to publish
+      - name: Check it is fit to ship
         run: |
-          tools/check_listings.py listings.tsv previous.tsv > listings.json
-          cat listings.json
+          tools/check_listings.py fresh.tsv "$LISTINGS" > fresh.json
+          cat fresh.json
           echo "### Listings" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat build.log listings.json >> "$GITHUB_STEP_SUMMARY"
+          cat build.log fresh.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish on the listings branch
-        if: github.event_name != 'pull_request'
+      - name: Commit it to main, and publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
-          TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # The build date alone moving is not news.
-          if diff -q <(grep -v '^#' previous.tsv) <(grep -v '^#' listings.tsv) >/dev/null \
-             && git cat-file -e refs/published:listings.json 2>/dev/null; then
-            echo "Nothing listed or delisted since the last publish."
+          if diff -q <(grep -v '^#' "$LISTINGS") <(grep -v '^#' fresh.tsv) >/dev/null; then
+            echo "Nothing listed or delisted; nothing to commit."
             exit 0
           fi
-          built=$(jq -r .built listings.json)
-          rows=$(jq -r .rows listings.json)
-          site=$(mktemp -d)
-          cp listings.tsv listings.json "$site/"
-          cd "$site"
-          # One commit, force-pushed: a branch of data, not a history of it.
-          git init --quiet --initial-branch=listings
-          git add listings.tsv listings.json
+          mv fresh.tsv "$LISTINGS"
+          git add "$LISTINGS"
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              commit --quiet -m "Listings built $built: $rows rows"
-          git push --quiet --force \
-            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" listings
-          echo "Published $rows listings built $built."
+              commit --quiet -m "Refresh the symbol listings"
+          # Main may have moved during the build. Nothing else writes this
+          # file, so a rebase is always clean.
+          for attempt in 1 2 3; do
+            git pull --quiet --rebase origin main && git push --quiet origin HEAD:main && break
+            sleep 5
+          done
+          git fetch --quiet origin main
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::could not push"; exit 1; }
+          gh workflow run pages.yml --ref main
+          echo "Committed $(jq -r .rows fresh.json) listings built $(jq -r .built fresh.json); Pages deploy started."

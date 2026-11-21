@@ -20,10 +20,10 @@ goes to `-` and search falls back to exactly the ordering it had before.
 
 Run: tools/build_listings.py > crates/omacharts-engine/src/listings.tsv
 
-That is for a local look. The file the app uses is built every weekday by
-.github/workflows/listings.yml, checked by tools/check_listings.py, and
-published on the `listings` branch, which every running copy of the app
-fetches once a day; bin/release copies it in before a tag.
+.github/workflows/listings.yml does exactly that every weekday, checks the
+result with tools/check_listings.py and commits it to main when a listing
+came or went. The Pages build serves that file at omacharts.org/data/, where
+every running copy of the app fetches it once a day.
 """
 
 import csv

@@ -53,9 +53,6 @@ const KEYS: &[(&str, Kind)] = &[
     // Whether this machine downloads releases: about its install, which
     // another machine's settings know nothing of.
     (crate::update::SETTING, Kind::Local),
-    // Whether this machine fetches the symbol listings daily: the same kind
-    // of choice, about this machine's network.
-    (crate::listings::SETTING, Kind::Local),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),

@@ -1,7 +1,9 @@
 //! Keeping the US listings current without a new release.
 //!
-//! The listings workflow rebuilds every US listing each weekday and publishes
-//! it on the repository's `listings` branch, beside a small sidecar:
+//! The listings workflow rebuilds every US listing each weekday and commits
+//! it to main as the compiled-in copy whenever a listing came or went; the
+//! Pages build then serves that same file on the website, beside a small
+//! sidecar it writes:
 //!
 //! ```text
 //! listings.tsv    the file tools/build_listings.py writes
@@ -29,14 +31,13 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Where the listings workflow publishes: the `listings` branch, raw.
-pub const PUBLISHED: &str = "https://raw.githubusercontent.com/jorgemanrubia/omacharts/listings";
+/// Where the Pages build puts the compiled-in copy and its sidecar. Nothing
+/// on the site links to it; it is a file for this to fetch, not a page.
+pub const PUBLISHED: &str = "https://omacharts.org/data";
 
 /// Fetch from here instead, for a test or a mirror.
 pub const SOURCE_ENV: &str = "OMACHARTS_LISTINGS_URL";
 
-/// The setting behind Preferences → Update symbol listings daily.
-pub const SETTING: &str = "listings_update";
 
 /// How long a check stands before the window asks again.
 pub const CADENCE: Duration = Duration::from_secs(24 * 60 * 60);

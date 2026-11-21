@@ -1539,8 +1539,7 @@ fn confirm_delete_template(context: &Rc<Context>, anchor: &gtk::Button, id: u32,
 /// Whether newer releases are downloaded behind the window. Off stops the
 /// asking and leaves what is already downloaded in place: it is newer than
 /// what pacman installed, and settings it has migrated would not open in an
-/// older version. And whether the symbol listings are, which is the same
-/// question about a data file.
+/// older version.
 fn updates_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Updates");
@@ -1550,14 +1549,6 @@ fn updates_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let store = context.store.clone();
     row.connect_active_notify(move |row| store.set_setting_bool(crate::update::SETTING, row.is_active()));
     group.add(&row);
-    // The symbol listings, fetched once a day so a company that listed is
-    // searchable before the next release. Off keeps whatever was fetched.
-    let listings = adw::SwitchRow::new();
-    listings.set_title("Update symbol listings daily");
-    listings.set_active(context.store.setting_bool(crate::listings::SETTING, true));
-    let store = context.store.clone();
-    listings.connect_active_notify(move |row| store.set_setting_bool(crate::listings::SETTING, row.is_active()));
-    group.add(&listings);
     group
 }
 
