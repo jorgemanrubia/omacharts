@@ -3,7 +3,7 @@ title: "Line"
 description: "A straight line between two points"
 section: charting
 parent: drawings
-nav_order: 2
+nav_order: 3
 hotkey: "Alt + L"
 ---
 

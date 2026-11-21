@@ -3,7 +3,7 @@ title: "Text"
 description: "Words on the chart"
 section: agents
 parent: cli/drawings
-nav_order: 8
+nav_order: 9
 ---
 
 `text` is words at `--from`. `--text` is the whole of it, with `**bold**`, `*italic*` and `***both***` read as emphasis, and `--text-color`, `--font` and `--font-size` set how it looks ([Flags](/manual/cli/drawings/#flags)). What it draws, and its properties in the window, are in [Text](/manual/drawings/text/).

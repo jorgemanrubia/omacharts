@@ -3,7 +3,7 @@ title: "Zig-zag"
 description: "A line through as many corners as you place"
 section: charting
 parent: drawings
-nav_order: 5
+nav_order: 6
 hotkey: "Alt + Z"
 ---
 

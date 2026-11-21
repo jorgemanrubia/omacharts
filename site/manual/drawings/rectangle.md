@@ -3,7 +3,7 @@ title: "Rectangle"
 description: "A box between two corners"
 section: charting
 parent: drawings
-nav_order: 6
+nav_order: 7
 hotkey: "Alt + R"
 ---
 

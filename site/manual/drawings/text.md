@@ -3,7 +3,7 @@ title: "Text"
 description: "Words at a point on the chart"
 section: charting
 parent: drawings
-nav_order: 8
+nav_order: 9
 hotkey: "Alt + T"
 ---
 

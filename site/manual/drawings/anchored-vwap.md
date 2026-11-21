@@ -3,7 +3,7 @@ title: "Anchored VWAP"
 description: "The volume-weighted average price from the bar you click"
 section: charting
 parent: drawings
-nav_order: 10
+nav_order: 11
 hotkey: "Alt + W"
 ---
 

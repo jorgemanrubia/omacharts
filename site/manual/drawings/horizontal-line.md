@@ -3,7 +3,7 @@ title: "Horizontal line"
 description: "A level, flat across the time between its two ends"
 section: charting
 parent: drawings
-nav_order: 3
+nav_order: 4
 hotkey: "Alt + H"
 ---
 

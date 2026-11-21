@@ -3,7 +3,7 @@ title: "Zig-zag"
 description: "A line through several corners"
 section: agents
 parent: cli/drawings
-nav_order: 5
+nav_order: 6
 ---
 
 `zigzag` is a line through several corners, each a `--point` in order. It takes the flags [every drawing takes](/manual/cli/drawings/#flags). What it draws, and its properties in the window, are in [Zig-zag](/manual/drawings/zig-zag/).

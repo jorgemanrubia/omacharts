@@ -3,7 +3,7 @@ title: "Line"
 description: "A line between two anchors"
 section: agents
 parent: cli/drawings
-nav_order: 2
+nav_order: 3
 ---
 
 `line` is a straight line between `--from` and `--to`. It takes the flags [every drawing takes](/manual/cli/drawings/#flags), and an arrowhead at either end with `--arrow` and `--head` ([Arrow](/manual/cli/drawings/arrow/)). What it draws, and its properties in the window, are in [Line](/manual/drawings/line/).
