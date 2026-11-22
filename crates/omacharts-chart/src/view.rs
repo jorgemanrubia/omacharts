@@ -5782,7 +5782,7 @@ impl ChartView {
 
     /// The footprint of `pick`'s bars in numbers, each row as it is drawn,
     /// in rows of `row_ticks` or the step the footprint draws: see
-    /// [`footprint::read_out`]. None where the chart has no volume at price.
+    /// `footprint::read_out`. None where the chart has no volume at price.
     pub fn read_footprint(&self, pick: BarPick, row_ticks: Option<u32>) -> Option<FootprintRead> {
         footprint::read_out(&self.state.borrow(), pick, row_ticks)
     }

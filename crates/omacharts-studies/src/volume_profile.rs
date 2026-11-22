@@ -116,7 +116,7 @@ pub struct Nodes {
 /// a row and one of thirty rows are smoothed over the same share of their
 /// height, about five per cent, and a lone busy tick is not a node. Never
 /// less than one row.
-const NODE_SMOOTHING: f64 = 1.0 / 40.0;
+pub const NODE_SMOOTHING: f64 = 1.0 / 40.0;
 
 /// How far a peak must stand above the ground around it to be a high-volume
 /// node, as a share of the point of control's smoothed volume. A tenth keeps
