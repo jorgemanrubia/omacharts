@@ -35,6 +35,9 @@ crop: none
 | **Row height (ticks)** | Greyed while automatic, showing the ticks a row holds | 1 to 10000 ticks a row |
 | **Shade by delta** | On | Off fills every row alike, at its colour's opacity |
 | **Numbers** | On | Off draws the rows alone, with no number in them |
+| **Volume profile** | Off | On draws each bar's volume profile at its left ([Volume profile](#volume-profile)) |
+| **Profile colour** | The theme's **Blue**, at 55% | A palette name, or a custom colour, with its own **Opacity**. Shown only with **Volume profile** on |
+| **Profile numbers** | On | Off draws the profile's rows alone. Shown only with **Volume profile** on |
 | **Colouring** | **Default** | **Vivid**, **Soft**, **Quiet**, **Monochrome** or **Custom** ([Colours](/manual/indicators/order-flow/#colours)) |
 | **Opacity** | 85% | How solid buying and selling are both drawn, 0 to 100%. Shown for every colouring but **Custom** |
 | **Buying** | The colour buying was drawn in before **Custom** was chosen | A palette name, or a custom colour, with its own **Opacity**. Shown only for **Custom** |
@@ -43,6 +46,12 @@ crop: none
 ## Rows
 
 With **Automatic rows** on, a row holds 1, 2, 4, 5, 10, 20, 25, 50 or more ticks, the fewest that make it about a line of small type tall, 16 px, at the chart's price scale. The choice is made again only when the price scale changes, and kept while its rows stay between 13 and 40 px, so scrolling and small rescales leave the rows as they are. With it off, a row holds the **Row height (ticks)** set, or a multiple of it when that would make rows under 3 px. Every bar's rows cover the same prices. However far the chart is zoomed in, a row is never drawn taller than a line of small type: it is centred on its prices with a gap of a pixel or two to the next. A row's number is written inside it at its left, even when its bar is shorter than the number. It is left out once the rows are under 11 px tall, and written short past a thousand: **1.2K**, **-35K**, **2.5M**. With **Numbers** off, none is written and the rows' lengths and shades carry the delta alone, which also makes each frame cheaper to draw.
+
+## Volume profile
+
+With **Volume profile** on, each bar also shows everything that traded at each of its rows, sides or not: at_bid plus at_ask, and any volume whose side the feed did not say. The profile takes the left of the bar's column, each row ending against the narrow bar and as long as its total, and the narrow bar and the delta rows move right to make room, the two sides sharing the column half and half. Its rows are the delta rows' own: the same ticks to a row, the same height, gaps and grid, the same outline, and with **Shade by delta** on the same five strengths. A row's length and strength are measured against the most traded row on screen, as a delta row's are against the biggest delta on screen. Its total is written inside it, against the narrow bar, in the type the deltas are written in and written short the same way, dark on a row solid enough to need it. Its colour says nothing of up or down: one swatch, the theme's **Blue** unless another is picked, following the theme as it changes, at 55% at its strongest so it stays quieter than the deltas.
+
+A footprint with its profile needs room for both sides, so it comes on at about twice the bar width: about 130 px with both sides' numbers, less with either turned off. A chart with a footprint on can be zoomed in to four bars across, rather than twelve, to give it that room. With **Volume profile** off, nothing of it is drawn or measured and the footprint is exactly as it was.
 
 ## Shade by delta
 

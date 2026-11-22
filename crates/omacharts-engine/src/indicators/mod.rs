@@ -508,6 +508,7 @@ impl Kind {
                 numbers: true,
                 row_ticks: None,
                 inks: flow::Inks::default(),
+                profile: flow::BarProfile::default(),
             },
             Kind::LargeOrders => Params::LargeOrders {
                 regular: flow::REGULAR_THRESHOLD,
@@ -919,6 +920,9 @@ pub enum Params {
         row_ticks: Option<u32>,
         #[serde(default)]
         inks: flow::Inks,
+        /// Each bar's volume profile beside it: off unless turned on.
+        #[serde(default, skip_serializing_if = "flow::BarProfile::is_default")]
+        profile: flow::BarProfile,
     },
     /// A bubble at each order bigger than the threshold of the hours it
     /// traded in.

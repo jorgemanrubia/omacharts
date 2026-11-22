@@ -3351,6 +3351,50 @@ mod outside_change_tests {
         });
     }
 
+    /// A footprint's volume profile: a switch, off, with its colour and
+    /// numbers rows hidden under it; on, both show, and each changes the
+    /// profile alone, its colour on the one row with how solid it is.
+    #[test]
+    fn a_footprint_s_profile_is_switched_on_with_its_own_rows() {
+        use crate::ui::chart_settings::{FOOTPRINT_PROFILE_COLOUR_LABEL, FOOTPRINT_PROFILE_LABEL, FOOTPRINT_PROFILE_NUMBERS_LABEL};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "indicator", "add", "footprint"]);
+            let id = window.indicators().last().map(|i| i.id).expect("added");
+            let profile = || match window.indicators().into_iter().find(|i| i.id == id).expect("the footprint").params {
+                omacharts_engine::Params::Footprint { profile, .. } => profile,
+                _ => unreachable!(),
+            };
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, id);
+            let switch = || titled::<adw::SwitchRow>(&window, FOOTPRINT_PROFILE_LABEL).pop().expect("the profile switch");
+            let colour = || titled::<adw::ActionRow>(&window, FOOTPRINT_PROFILE_COLOUR_LABEL).pop().expect("its colour row");
+            let numbers = || titled::<adw::SwitchRow>(&window, FOOTPRINT_PROFILE_NUMBERS_LABEL).pop().expect("its numbers row");
+            let shown = |row: &gtk::Widget| row.property::<bool>("visible");
+            assert!(!switch().is_active(), "off unless turned on");
+            assert!(!shown(colour().upcast_ref()) && !shown(numbers().upcast_ref()), "its rows hidden while off");
+
+            switch().set_active(true);
+            assert!(profile().on);
+            assert!(shown(colour().upcast_ref()) && shown(numbers().upcast_ref()), "its rows shown while on");
+            assert!(numbers().is_active(), "its numbers on unless turned off");
+            numbers().set_active(false);
+            assert!(!profile().numbers);
+
+            // The colour row: a swatch and how solid, on one row.
+            let slider = rows::<gtk::Scale>(colour().upcast_ref()).into_iter().next().expect("its transparency");
+            assert!(!rows::<gtk::MenuButton>(colour().upcast_ref()).is_empty(), "its swatch on the same row");
+            assert_eq!(slider.value().round(), 55.0, "under the delta's strongest row");
+            slider.set_value(40.0);
+            assert!((profile().drawn_alpha() - 0.4).abs() < 1e-9);
+            assert!(profile().colour.is_none(), "the theme's swatch until one is picked");
+
+            switch().set_active(false);
+            assert!(!profile().on);
+            assert!(!shown(colour().upcast_ref()) && !shown(numbers().upcast_ref()));
+        });
+    }
+
     /// Every study painted in a colouring offers Custom last, from the one
     /// shared set of rows. A preset shows no colour of its own; Custom shows
     /// a row a colour the study draws with, each starting at the colour it

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use omacharts_studies::footprint::{auto_ticks, fixed_ticks, fold};
+use omacharts_studies::footprint::{Sides, Tick, auto_ticks, fixed_ticks, fold, point_of_control};
 
 const UNTRADED: i64 = i64::MIN;
 
@@ -58,15 +58,50 @@ fn bars() -> Vec<(i32, Vec<i64>)> {
     out
 }
 
+/// A bar's ticks with each side: the delta `cells` says, over a little
+/// traded both ways, and now and then some on neither side.
+fn sided(cells: &[i64]) -> Vec<Sides> {
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, delta)| match *delta {
+            UNTRADED => Sides::default(),
+            delta => {
+                let both = (i % 5) as u64 + 1;
+                Sides {
+                    at_bid: (-delta).max(0) as u64 + both,
+                    at_ask: delta.max(0) as u64 + both,
+                    unknown: u64::from(i % 3 == 0),
+                    trades: (i % 4) as u64 + 1,
+                }
+            }
+        })
+        .collect()
+}
+
 fn cases() -> BTreeMap<String, String> {
     let mut texts: BTreeMap<String, String> = BTreeMap::new();
     for step in [1, 2, 4, 5, 10, 20, 25, 50, 3, 7] {
         let text = texts.entry(format!("fold:{step}")).or_default();
         for (low, cells) in bars() {
-            fold(low, &cells, UNTRADED, step, |at, delta| {
-                let _ = write!(text, "{at}:{delta} ");
+            let ticks: Vec<Tick> = sided(&cells).iter().map(Sides::tick).collect();
+            fold(low, &ticks, step, |at, tick| {
+                let _ = write!(text, "{at}:{} ", tick.delta);
             });
             text.push('\n');
+        }
+    }
+    // Each row's sides and total, and each bar's point of control: what
+    // the profile beside a footprint draws and what it is read out as.
+    for step in [1, 2, 4, 5, 10, 3, 7] {
+        let text = texts.entry(format!("totals:{step}")).or_default();
+        for (low, cells) in bars() {
+            let sides = sided(&cells);
+            fold(low, &sides, step, |at, row: Sides| {
+                let _ = write!(text, "{at}:{}/{}/{}/{}={} ", row.at_bid, row.at_ask, row.unknown, row.trades, row.total());
+            });
+            let poc = point_of_control(low, &sides, step, Sides::total);
+            let _ = writeln!(text, "poc {poc:?}");
         }
     }
     // A scale breathing slowly, then jumping: what an automatic row holds
@@ -114,6 +149,22 @@ fn footprint_rows_hold() {
         .collect();
     let wrong: Vec<&String> = live.keys().filter(|name| stored.get(*name) != live.get(*name)).collect();
     assert!(wrong.is_empty() && stored.len() == live.len(), "changed: {wrong:?}");
+}
+
+/// The rows drawn and the rows read out are one fold: the same rows, each
+/// with the same delta and total, at every step.
+#[test]
+fn the_rows_drawn_are_the_rows_read_out() {
+    for step in [1, 2, 3, 4, 5, 7, 10, 25] {
+        for (low, cells) in bars() {
+            let sides = sided(&cells);
+            let ticks: Vec<Tick> = sides.iter().map(Sides::tick).collect();
+            let (mut drawn, mut read) = (Vec::new(), Vec::new());
+            fold(low, &ticks, step, |at, tick| drawn.push((at, tick.delta, tick.total)));
+            fold(low, &sides, step, |at, row: Sides| read.push((at, row.delta(), row.total())));
+            assert_eq!(drawn, read, "{step} ticks a row from {low}");
+        }
+    }
 }
 
 /// What the fingerprints stand for, spelled out where it can be read: the

@@ -213,6 +213,16 @@ impl FlowScene {
         self
     }
 
+    /// Each footprint's volume profile on, with its totals written or not.
+    pub fn footprint_profile(mut self, numbers: bool) -> FlowScene {
+        for drawn in &mut self.state.indicators {
+            if let Params::Footprint { profile, .. } = &mut drawn.indicator.params {
+                (profile.on, profile.numbers) = (true, numbers);
+            }
+        }
+        self
+    }
+
     /// The chart's bars drawn in `style`, rising in `up` and falling in
     /// `down`, filled.
     pub fn bars(mut self, style: omacharts_engine::bars::BarStyle, up: &str, down: &str) -> FlowScene {
@@ -238,6 +248,12 @@ impl FlowScene {
         let (x, y) = state.pointer.unwrap_or((width / 2.0, height / 2.0));
         let plan = layout(state, width, height);
         usize::from(plan.edge_at(y).is_some()) + usize::from(plan.control_at(x, y).is_some())
+    }
+
+    /// The chart as the scene holds it, for a test to look into.
+    #[cfg(test)]
+    pub(super) fn state(&self) -> &State {
+        &self.state
     }
 
     pub fn view_frame(&self, cr: &cairo::Context, width: f64, height: f64) {

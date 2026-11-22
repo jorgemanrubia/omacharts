@@ -121,7 +121,7 @@ Every indicator the app has, with every parameter it exposes:
 | `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--opacity` (0 to 1, both bars), `--up-color`, `--down-color` (a colour given on a preset makes it `custom`), `--up-transparency`, `--down-transparency` (0 to 1, or `default` to follow `--opacity`) |
 | `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--up-color` and `--down-color` (a colour given on a preset makes it `custom`), `--height` |
 | `volume_delta` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
-| `footprint` | `--intensity` (`on` or `off`, on by default: rows filled more solidly the bigger their delta), `--numbers` (`on` or `off`, on by default: each row's delta written in it; off draws the rows alone), `--row-ticks` (ticks to a row, 1 to 10000, or `auto`, the default: the fewest round ticks that make a row about a line of small type tall), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
+| `footprint` | `--intensity` (`on` or `off`, on by default: rows filled more solidly the bigger their delta), `--numbers` (`on` or `off`, on by default: each row's delta written in it; off draws the rows alone), `--row-ticks` (ticks to a row, 1 to 10000, or `auto`, the default: the fewest round ticks that make a row about a line of small type tall), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own), `--profile` (`on` or `off`, off by default: each bar's volume profile at its left, everything traded at each row's prices), `--profile-color` (a colour, or `default` for the theme's blue), `--profile-transparency` (0 to 1, or `default`), `--profile-numbers` (`on` or `off`, on by default); `list --json` reads the profile back as `params.profile` |
 | `large_orders` | `--rth-threshold` and `--eth-threshold` (the size, in contracts, an order has to be bigger than in and out of regular hours; 50 and 20 by default), `--size-against` (`visible`, `session` or `hours`; `session` by default), `--combine` (`on` or `off`, on by default: prints of one moment and one side are one order), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`, `theme-mono`, `monochrome` or `custom`), `--buy-color` and `--sell-color` (a colour, or `none` to let it go; a colour given on a preset makes it `custom`, the other side kept as drawn), `--buy-transparency` and `--sell-transparency` (0 to 1, or `default` for its own) |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha`, `--band-transparency` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--outline-style`, `--poc-style`, `--transparency` (0 to 1: 0 is its colour solid, 0.7 by default), `--value-area-transparency`, `--outside-transparency`, `--outline-transparency` and `--poc-transparency` (0 to 1, or `default` to follow `--transparency`, or for the point of control its own), `--last-only` (`on` or `off`), `--highlight-value-area` (`on` or `off`), `--value-area-color` (a colour, or `none` for the rows' own), `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
@@ -132,6 +132,20 @@ family, after Volume in the indicator picker. The footprint and large orders
 need a feed with volume at price; on any other they draw only a line saying
 so. The volume delta has no line, nor have the footprint and large orders, so
 they refuse `--color`, `--transparency`, `--width` and `--line-style`.
+
+`chart values --footprint` (behind `agent-trading`, as `chart values` is)
+reads each bar's footprint back as the chart draws it, from the same
+ladders and the same fold into rows: `--row-ticks auto|N` (`auto` is the
+footprint's own, else the step it draws, else one tick), and the bars on
+screen, `--last N`, or `--from WHEN [--to WHEN]` (`--to` not included). It is
+refused without volume at price. `--json` writes `{chart, symbol,
+resolution, tick_size, row_ticks, bars: [{time, open, high, low, close,
+volume, delta, poc, rows: [{low, high, at_bid, at_ask, delta, total,
+trades}]}]}`. `time` is unix seconds, `rows` run lowest first, and `low` and
+`high` are the first and last price a row covers. `delta` is `at_ask` less
+`at_bid`, and `total` includes trades with no known side. `poc` is the low
+of the most traded row. Without `--json` it writes a line a bar, then its
+rows from the top.
 
 Anything that draws a line also takes `--color`, `--transparency` (0 to 1:
 how much of the chart shows through the line, 0 solid, which it is unless

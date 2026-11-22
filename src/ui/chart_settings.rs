@@ -1892,7 +1892,7 @@ fn parameters_group(
             }
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Footprint { intensity, numbers, row_ticks, .. } => {
+        Params::Footprint { intensity, numbers, row_ticks, profile, .. } => {
             // Automatic, or so many ticks a row, as a market profile's:
             // greyed while automatic, showing the ticks being drawn.
             let granularity = {
@@ -1927,6 +1927,9 @@ fn parameters_group(
                     *numbers = on;
                 }
             }));
+            for row in footprint_profile_rows(owner, refresh, id, profile) {
+                group.add(&row);
+            }
         }
         Params::LargeOrders { regular, extended, compare, combine, .. } => {
             for (title, value, regular_hours) in
@@ -2741,6 +2744,9 @@ fn study_colours(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) ->
 /// The rows of the order flow indicators' own.
 pub const FOOTPRINT_INTENSITY_LABEL: &str = "Shade by delta";
 pub const FOOTPRINT_NUMBERS_LABEL: &str = "Numbers";
+pub const FOOTPRINT_PROFILE_LABEL: &str = "Volume profile";
+pub const FOOTPRINT_PROFILE_COLOUR_LABEL: &str = "Profile colour";
+pub const FOOTPRINT_PROFILE_NUMBERS_LABEL: &str = "Profile numbers";
 pub const LARGE_RTH_LABEL: &str = "RTH threshold";
 pub const LARGE_ETH_LABEL: &str = "ETH threshold";
 pub const LARGE_COMPARE_LABEL: &str = "Size against";
@@ -2766,6 +2772,66 @@ fn flow_switch(
         refresh.run();
     })
     .0
+}
+
+/// A footprint's volume profile: its switch, and under it while it is on,
+/// its colour beside how solid it is, and whether its totals are written.
+fn footprint_profile_rows(owner: &Rc<Owner>, refresh: &Refresh, id: u32, profile: &flow::BarProfile) -> Vec<gtk::Widget> {
+    let edit = {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        Rc::new(move |change: &dyn Fn(&mut flow::BarProfile)| {
+            update(&owner, id, |indicator| {
+                if let Params::Footprint { profile, .. } = &mut indicator.params {
+                    change(profile);
+                }
+            });
+            refresh.run();
+        })
+    };
+    let theme = owner.theme();
+    let drawn = profile.chosen().resolve(&theme);
+    let button = {
+        let picked = {
+            let edit = edit.clone();
+            move |choice: ColorChoice| edit(&|profile| profile.colour = Some(choice.clone()))
+        };
+        let default: Rc<dyn Fn() -> String> = {
+            let edit = edit.clone();
+            let theme = theme.clone();
+            Rc::new(move || {
+                edit(&|profile| profile.colour = None);
+                flow::BarProfile::default().chosen().resolve(&theme)
+            })
+        };
+        crate::ui::palette::picker(&theme, profile.colour.clone(), &drawn, picked, Some(default))
+    };
+    let (transparency, _) = {
+        let edit = edit.clone();
+        property_rows::Transparency::new(1.0 - profile.drawn_alpha(), move |share| {
+            edit(&|profile| profile.alpha = Some(1.0 - share))
+        })
+    };
+    let colour = property_rows::colour_row(FOOTPRINT_PROFILE_COLOUR_LABEL, &button, Some(transparency));
+    let numbers = {
+        let edit = edit.clone();
+        property_rows::switch_row(FOOTPRINT_PROFILE_NUMBERS_LABEL, profile.numbers, move |on| edit(&|profile| profile.numbers = on)).0
+    };
+    let shown = |on: bool| {
+        colour.set_visible(on);
+        numbers.set_visible(on);
+    };
+    shown(profile.on);
+    let switch = {
+        let (colour, numbers) = (colour.clone(), numbers.clone());
+        property_rows::switch_row(FOOTPRINT_PROFILE_LABEL, profile.on, move |on| {
+            edit(&|profile| profile.on = on);
+            colour.set_visible(on);
+            numbers.set_visible(on);
+        })
+        .0
+    };
+    vec![switch.upcast(), colour.upcast(), numbers.upcast()]
 }
 
 /// How an order flow indicator paints buying and selling: its colouring,

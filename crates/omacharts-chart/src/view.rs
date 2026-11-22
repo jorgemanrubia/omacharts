@@ -25,6 +25,7 @@ mod compare;
 mod bubbles;
 mod executions;
 mod footprint;
+pub use footprint::{BarPick, FootprintBar, FootprintRead, FootprintRow};
 mod market;
 mod pulse;
 mod selection;
@@ -120,6 +121,9 @@ pub fn clamp_thickness(thickness: u8) -> u8 {
 /// what a frame draws is bounded by the width of the plot however far out the
 /// view is zoomed.
 const MIN_VISIBLE: usize = 12;
+/// The fewest with a footprint on: a footprint with its volume profile
+/// and both sides' figures wants a bar some 130 pixels wide.
+const FOOTPRINT_MIN_VISIBLE: usize = 4;
 const MAX_VISIBLE: usize = 3000;
 /// The fewest and the most bars a chart spreads across its width, for
 /// whoever has to choose a resolution a stretch of time fits.
@@ -1613,6 +1617,16 @@ impl State {
     }
 
     /// The indicators on screen: the ones shown, while the chart shows any.
+    /// The fewest bars the chart spreads across its width: fewer with a
+    /// footprint on, whose rows, and its profile's beside them, want a wide
+    /// bar to be read.
+    fn fewest(&self) -> usize {
+        match self.indicators.iter().any(|drawn| matches!(drawn.indicator.params, omacharts_engine::Params::Footprint { .. })) {
+            true => FOOTPRINT_MIN_VISIBLE,
+            false => MIN_VISIBLE,
+        }
+    }
+
     fn shown_indicators(&self) -> impl DoubleEndedIterator<Item = &Drawn> {
         self.indicators.iter().filter(|drawn| self.show_indicators && drawn.indicator.visible)
     }
@@ -2747,7 +2761,7 @@ impl State {
         if self.bars.is_empty() {
             return 0;
         }
-        self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.span())
+        self.visible.clamp(self.fewest(), MAX_VISIBLE).min(self.span())
     }
 
     /// The most columns the view spreads across: the series and the resting
@@ -2764,8 +2778,8 @@ impl State {
     fn zoom_time(&mut self, factor: f64, anchor: f64, plot_w: f64) {
         let columns = self.columns();
         let next = ((columns as f64 * factor).round() as usize)
-            .clamp(MIN_VISIBLE, MAX_VISIBLE)
-            .min(self.span().max(MIN_VISIBLE));
+            .clamp(self.fewest(), MAX_VISIBLE)
+            .min(self.span().max(self.fewest()));
         // Anchored to the right edge, zooming reveals history and the last bar
         // stays put — which is what you want when looking at the live edge.
         if !self.anchored {
@@ -3032,7 +3046,7 @@ impl State {
         // Too wide for the view: wide enough for it, with room either side.
         let wanted = (last - first) + (last - first) / 2 + 2;
         if wanted > self.columns() || zoom_in {
-            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.visible = wanted.clamp(self.fewest(), MAX_VISIBLE);
         }
         let visible = self.columns().max(1);
         let middle = (first + last) / 2;
@@ -3080,7 +3094,7 @@ impl State {
                 self.timeframe.seconds(),
             );
             self.lead = 0;
-            self.visible = columns.clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.visible = columns.clamp(self.fewest(), MAX_VISIBLE);
             self.anchored = room > 0;
             self.overhang = room;
             self.overhang_by_hand = true;
@@ -3103,7 +3117,7 @@ impl State {
             // the live session, still leaves the range's first bar on screen.
             let share = selection::margin_share(self).min(MARGIN_MAX_SHARE_OF_VIEW);
             let wanted = ((len - first + RIGHT_MARGIN) as f64 / (1.0 - share)).ceil() as usize;
-            self.visible = wanted.clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.visible = wanted.clamp(self.fewest(), MAX_VISIBLE);
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
             self.overhang_by_hand = false;
@@ -3111,7 +3125,7 @@ impl State {
         }
         // Over before the last bar: its own bars edge to edge, from the
         // first of them, and new bars arriving move nothing.
-        self.visible = end.saturating_sub(first).clamp(MIN_VISIBLE, MAX_VISIBLE);
+        self.visible = end.saturating_sub(first).clamp(self.fewest(), MAX_VISIBLE);
         self.anchored = false;
         self.overhang = 0;
         self.overhang_by_hand = true;
@@ -5766,6 +5780,13 @@ impl ChartView {
         self.redraw();
     }
 
+    /// The footprint of `pick`'s bars in numbers, each row as it is drawn,
+    /// in rows of `row_ticks` or the step the footprint draws: see
+    /// [`footprint::read_out`]. None where the chart has no volume at price.
+    pub fn read_footprint(&self, pick: BarPick, row_ticks: Option<u32>) -> Option<FootprintRead> {
+        footprint::read_out(&self.state.borrow(), pick, row_ticks)
+    }
+
     /// Whether any drawing on this chart is a volume profile, which reads
     /// what traded at each price as the study does.
     pub fn has_profile_drawing(&self) -> bool {
@@ -6871,7 +6892,7 @@ impl ChartView {
                     // Dragging left compresses: more time on screen.
                     let factor = 2f64.powf(-offset_x / DRAG_PER_DOUBLING);
                     let next = ((visible as f64 * factor).round() as usize)
-                        .clamp(MIN_VISIBLE, MAX_VISIBLE);
+                        .clamp(s.fewest(), MAX_VISIBLE);
                     s.visible = next;
                     s.range = None;
                     s.keep_room_on_screen();

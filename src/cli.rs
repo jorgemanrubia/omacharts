@@ -484,6 +484,17 @@ pub trait Live {
     ) -> Result<crate::trading::reading::ChartRead, Fault> {
         Err(Fault::no_window("chart on screen"))
     }
+    /// Chart `chart`'s footprint in numbers, `pick`'s bars, rows of
+    /// `row_ticks` or the step it draws; none where it has no volume at
+    /// price.
+    fn read_footprint(
+        &self,
+        _chart: u32,
+        _pick: omacharts_chart::BarPick,
+        _row_ticks: Option<u32>,
+    ) -> Result<Option<omacharts_chart::FootprintRead>, Fault> {
+        Err(Fault::no_window("chart on screen"))
+    }
     /// The last price a chart on screen has of `instrument`, with when its
     /// last bar began and the step its price moves in; none with no chart
     /// of it.
@@ -1518,6 +1529,15 @@ impl Live for Rc<crate::ui::Window> {
         last: usize,
     ) -> Result<crate::trading::reading::ChartRead, Fault> {
         crate::ui::Window::read_chart(self, chart, last)
+    }
+
+    fn read_footprint(
+        &self,
+        chart: u32,
+        pick: omacharts_chart::BarPick,
+        row_ticks: Option<u32>,
+    ) -> Result<Option<omacharts_chart::FootprintRead>, Fault> {
+        crate::ui::Window::read_footprint(self, chart, pick, row_ticks)
     }
 
     fn chart_price(&self, instrument: &Instrument) -> Option<(f64, i64, Option<f64>)> {

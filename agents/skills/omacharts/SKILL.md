@@ -402,14 +402,19 @@ once a bar is wide enough for its rows to read (worked out from the figures' wid
 and each price's delta beside it, rows filled more solidly the bigger the
 delta unless `--intensity off`, the figures written in them unless
 `--numbers off`, `--row-ticks N` ticks a row or `auto` (the default: a
-compact line's worth); `large_orders` draws a bubble at the price of
+compact line's worth), and with `--profile on` each bar's volume profile
+at its left (total traded at each row, one colour: `--profile-color`,
+`--profile-transparency`, `--profile-numbers on|off`; it needs about twice
+the bar width); `large_orders` draws a bubble at the price of
 each order bigger than `--rth-threshold` (50) in regular hours or
 `--eth-threshold` (20) outside them, sized against `--size-against visible`,
 `session` or `hours`, prints of one moment and side counted as one order
 unless `--combine off`. The footprint and large orders need a feed with
 volume at price and say so on any other; the two deltas are estimated
 there and their legends read `≈`. The three new ones are painted by
-`--colouring default|theme|theme-soft|theme-quiet|theme-mono|custom` (Monochrome,
+`--colouring default|theme|theme-soft|theme-quiet|theme-mono|custom` (the one
+value set every study takes, Volume, CVD and profiles too; `default` is the
+chart's own bars and each preset is worn swapped when they are; Monochrome,
 also spelled `monochrome`: one colour for buying and selling alike, the
 Monochrome candles' ink; every colouring flag takes it, Volume's too; `custom`
 is each colour its own, starting from what was drawn), with `--buy-color`,
@@ -424,6 +429,17 @@ omacharts chart indicator add footprint --row-ticks 4
 omacharts chart indicator add large_orders --rth-threshold 100 --size-against visible
 omacharts chart indicator add volume_delta --colouring monochrome --sell-transparency 0.3
 ```
+
+To read a footprint in numbers rather than look at it, use `chart values
+--footprint` (it needs the experimental `agent-trading` flag and volume at
+price). It reads the bars on screen, `--last N`, or `--from WHEN [--to
+WHEN]`, in rows of `--row-ticks auto|N`. `--json` gives each bar's `time`,
+OHLC, `volume`, `delta` and `poc`, and `rows` lowest first, each with `low`,
+`high`, `at_bid`, `at_ask`, `delta`, `total` and `trades`. These are exactly
+the rows drawn. Look for absorption (a big `at_bid` at a low that holds),
+imbalances (one side several times the other) and where the `poc` sits in
+the bar. For a quick look at the last few bars, pipe `chart values
+--footprint --last 3 --json` into `jq '.bars[] | {time, delta, poc}'`.
 
 **A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
 the bars between `--from` and `--to`; only their times are read. `--color` is

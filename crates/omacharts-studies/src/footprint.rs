@@ -95,33 +95,133 @@ pub fn fixed_ticks(chosen: u32, tick_px: f64, least: f64) -> u32 {
     (f64::from(chosen) * needed).min(f64::from(MAX_ROW_TICKS * 10)) as u32
 }
 
-/// Fold one bar's ticks, `cells[i]` being the delta at `low_tick + i` or
-/// `untraded` where nothing traded, into rows of `step` ticks aligned to
-/// multiples of `step`, so a row covers the same prices on every bar. Each
-/// row that traded is handed to `each`, lowest first, as its low tick and
-/// its delta. Nothing is allocated.
+/// What a footprint keeps of one tick and sums into a row: the renderer's
+/// [`Tick`] and the export's [`Sides`] are folded by the one [`fold`], so
+/// what is drawn and what is read out are the same rows.
+pub trait Cell: Copy {
+    /// Whether anything traded at it: a row of nothing is no row.
+    fn traded(&self) -> bool;
+    fn add(&mut self, other: &Self);
+}
+
+/// One tick as a footprint draws it: what was bought less what was sold,
+/// and everything that traded, sides or not. A total of nought is a tick
+/// nothing traded at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Tick {
+    pub delta: i64,
+    pub total: u64,
+}
+
+impl Tick {
+    /// The tick of `at_bid` sold, `at_ask` bought and `unknown` traded on
+    /// neither side that anyone said.
+    #[inline]
+    pub fn of(at_bid: u64, at_ask: u64, unknown: u64) -> Tick {
+        Tick { delta: at_ask as i64 - at_bid as i64, total: at_bid + at_ask + unknown }
+    }
+}
+
+impl Cell for Tick {
+    #[inline]
+    fn traded(&self) -> bool {
+        self.total != 0
+    }
+    #[inline]
+    fn add(&mut self, other: &Tick) {
+        self.delta += other.delta;
+        self.total += other.total;
+    }
+}
+
+/// One tick, or a row, with each side and its trades: what a footprint is
+/// read out as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Sides {
+    /// Sold into the bid.
+    pub at_bid: u64,
+    /// Bought from the ask.
+    pub at_ask: u64,
+    /// Traded on neither side that anyone said.
+    pub unknown: u64,
+    /// Trades, where the feed counts them.
+    pub trades: u64,
+}
+
+impl Sides {
+    /// Bought less sold: the delta a footprint draws.
+    #[inline]
+    pub fn delta(&self) -> i64 {
+        self.at_ask as i64 - self.at_bid as i64
+    }
+
+    /// Everything that traded: the total a footprint's profile draws.
+    #[inline]
+    pub fn total(&self) -> u64 {
+        self.at_bid + self.at_ask + self.unknown
+    }
+
+    /// As the renderer keeps it.
+    #[inline]
+    pub fn tick(&self) -> Tick {
+        Tick::of(self.at_bid, self.at_ask, self.unknown)
+    }
+}
+
+impl Cell for Sides {
+    #[inline]
+    fn traded(&self) -> bool {
+        self.total() != 0
+    }
+    #[inline]
+    fn add(&mut self, other: &Sides) {
+        self.at_bid += other.at_bid;
+        self.at_ask += other.at_ask;
+        self.unknown += other.unknown;
+        self.trades += other.trades;
+    }
+}
+
+/// Fold one bar's ticks, `cells[i]` being the tick `low_tick + i`, into rows
+/// of `step` ticks aligned to multiples of `step`, so a row covers the same
+/// prices on every bar. Each row that traded is handed to `each`, lowest
+/// first, as its low tick and its sum; ticks nothing traded at add nothing.
+/// Nothing is allocated.
 #[inline]
-pub fn fold(low_tick: i32, cells: &[i64], untraded: i64, step: u32, mut each: impl FnMut(i32, i64)) {
+pub fn fold<C: Cell>(low_tick: i32, cells: &[C], step: u32, mut each: impl FnMut(i32, C)) {
     let step = step.max(1) as i32;
-    let mut open: Option<(i32, i64)> = None;
-    for (i, delta) in cells.iter().enumerate() {
-        if *delta == untraded {
+    let mut open: Option<(i32, C)> = None;
+    for (i, cell) in cells.iter().enumerate() {
+        if !cell.traded() {
             continue;
         }
         let low = (low_tick + i as i32).div_euclid(step) * step;
         match &mut open {
-            Some((at, sum)) if *at == low => *sum += *delta,
+            Some((at, sum)) if *at == low => sum.add(cell),
             _ => {
                 if let Some((at, sum)) = open.take() {
                     each(at, sum);
                 }
-                open = Some((low, *delta));
+                open = Some((low, *cell));
             }
         }
     }
     if let Some((at, sum)) = open {
         each(at, sum);
     }
+}
+
+/// The low tick of the row that traded most: a bar's point of control,
+/// the lower of two that traded alike.
+pub fn point_of_control<C: Cell>(low_tick: i32, cells: &[C], step: u32, total: impl Fn(&C) -> u64) -> Option<i32> {
+    let mut best: Option<(i32, u64)> = None;
+    fold(low_tick, cells, step, |low, sum| {
+        let traded = total(&sum);
+        if best.is_none_or(|(_, most)| traded > most) {
+            best = Some((low, traded));
+        }
+    });
+    best.map(|(low, _)| low)
 }
 
 /// How strongly a row of `delta` is filled, as one of `levels` steps from 1
@@ -260,18 +360,67 @@ mod tests {
         assert_eq!(fixed_ticks(4, 0.0, 3.0), 4);
     }
 
+    /// A bar's ticks as (at_bid, at_ask, unknown, trades), from tick 99: a
+    /// tick nothing traded at in the middle, and one traded on no side.
+    const BAR: [(u64, u64, u64, u64); 5] = [(3, 2, 0, 4), (1, 3, 0, 3), (2, 2, 1, 5), (0, 0, 0, 0), (0, 4, 0, 2)];
+
+    fn ticks() -> Vec<Tick> {
+        BAR.iter().map(|(bid, ask, unknown, _)| Tick::of(*bid, *ask, *unknown)).collect()
+    }
+
+    fn sides() -> Vec<Sides> {
+        BAR.iter().map(|(at_bid, at_ask, unknown, trades)| Sides { at_bid: *at_bid, at_ask: *at_ask, unknown: *unknown, trades: *trades }).collect()
+    }
+
     #[test]
     fn folding_lines_rows_up_across_bars() {
-        const NONE: i64 = i64::MIN;
         let mut seen = Vec::new();
-        fold(99, &[-1, 2, 0, NONE, 4], NONE, 1, |low, delta| seen.push((low, delta)));
+        fold(99, &ticks(), 1, |low, tick| seen.push((low, tick.delta)));
         assert_eq!(seen, vec![(99, -1), (100, 2), (101, 0), (103, 4)], "nothing traded, no row");
         seen.clear();
-        fold(99, &[-1, 2, 0, NONE, 4], NONE, 2, |low, delta| seen.push((low, delta)));
+        fold(99, &ticks(), 2, |low, tick| seen.push((low, tick.delta)));
         assert_eq!(seen, vec![(98, -1), (100, 2), (102, 4)]);
         seen.clear();
-        fold(-3, &[1, 1, 1], NONE, 2, |low, delta| seen.push((low, delta)));
+        fold(-3, &[Tick::of(0, 1, 0); 3], 2, |low, tick| seen.push((low, tick.delta)));
         assert_eq!(seen, vec![(-4, 1), (-2, 2)], "below nought on the same grid");
+    }
+
+    /// Golden: each row's total is everything that traded at its prices,
+    /// both sides and any traded on neither, at one tick a row and folded
+    /// two, three and five together.
+    #[test]
+    fn each_row_totals_everything_traded_at_its_prices() {
+        type Rows = &'static [(i32, i64, u64)];
+        let golden: [(u32, Rows); 4] = [
+            (1, &[(99, -1, 5), (100, 2, 4), (101, 0, 5), (103, 4, 4)]),
+            (2, &[(98, -1, 5), (100, 2, 9), (102, 4, 4)]),
+            (3, &[(99, 1, 14), (102, 4, 4)]),
+            (5, &[(95, -1, 5), (100, 6, 13)]),
+        ];
+        for (step, rows) in golden {
+            let mut seen = Vec::new();
+            fold(99, &ticks(), step, |low, tick| seen.push((low, tick.delta, tick.total)));
+            assert_eq!(seen, rows, "{step} ticks a row");
+        }
+        assert_eq!(point_of_control(99, &ticks(), 1, |tick| tick.total), Some(99), "the lower of two alike");
+        assert_eq!(point_of_control(99, &ticks(), 2, |tick| tick.total), Some(100));
+        assert_eq!(point_of_control::<Tick>(0, &[], 1, |tick| tick.total), None);
+    }
+
+    /// What is read out is what is drawn: the sides folded into rows give
+    /// each row the delta and total the renderer's ticks fold to, and add
+    /// the trades.
+    #[test]
+    fn the_sides_fold_to_the_rows_drawn() {
+        for step in [1, 2, 3, 4, 5, 10] {
+            let (mut drawn, mut read) = (Vec::new(), Vec::new());
+            fold(99, &ticks(), step, |low, tick| drawn.push((low, tick)));
+            fold(99, &sides(), step, |low, sides: Sides| read.push((low, sides.tick())));
+            assert_eq!(drawn, read, "{step}");
+        }
+        let mut trades = Vec::new();
+        fold(99, &sides(), 2, |low, sides: Sides| trades.push((low, sides.at_bid, sides.at_ask, sides.trades)));
+        assert_eq!(trades, vec![(98, 3, 2, 4), (100, 3, 5, 8), (102, 0, 4, 2)]);
     }
 
     #[test]

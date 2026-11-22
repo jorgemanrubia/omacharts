@@ -68,11 +68,53 @@ fn a_footprint_zoomed_out_allocates_nothing_a_chart_without_one_does_not() {
     };
     assert_eq!(ticked(true), ticked(false), "a trade on the forming bar, then a frame");
 
-    // And zoomed in, the footprint is drawn: the test above compares a
+    // And zoomed in, the footprint is drawn, its rows and figures with
+    // nothing allocated for them either: the test above compares a
     // footprint that is there, not one that never was.
     let zoomed_in = |footprint: bool| {
         let kinds: &[&str] = if footprint { &["volume", "footprint"] } else { &["volume"] };
-        allocs(&mut FlowScene::new(400, 20, kinds, 400, 0).without_legend(), |scene| scene.view_frame(&cr, WIDTH, HEIGHT))
+        let mut scene = FlowScene::new(400, 20, kinds, 400, 0).without_legend();
+        let allocated = allocs(&mut scene, |scene| scene.view_frame(&cr, WIDTH, HEIGHT));
+        let mut drawn = cairo::ImageSurface::create(cairo::Format::ARgb32, WIDTH as i32, HEIGHT as i32).unwrap();
+        {
+            let cr = cairo::Context::new(&drawn).unwrap();
+            scene.view_frame(&cr, WIDTH, HEIGHT);
+        }
+        drawn.flush();
+        (allocated, drawn.data().unwrap().to_vec())
     };
-    assert_ne!(zoomed_in(true), zoomed_in(false), "zoomed in, the footprint draws");
+    let ((with, drawn_with), (without, drawn_without)) = (zoomed_in(true), zoomed_in(false));
+    assert_ne!(drawn_with, drawn_without, "zoomed in, the footprint draws");
+    assert!(with <= without, "zoomed in, the footprint allocates nothing: {with} against {without}");
+}
+
+/// A footprint's volume profile is drawn from the bars the footprint has
+/// already read, with nothing allocated for it: zoomed in, a footprint with
+/// its profile on allocates exactly what one with it off does, its figures
+/// written or not; zoomed out, still what a chart without one does.
+#[test]
+fn a_footprint_s_profile_allocates_nothing_of_its_own() {
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, WIDTH as i32, HEIGHT as i32).unwrap();
+    let cr = cairo::Context::new(&surface).unwrap();
+    let frame = |scene: FlowScene| allocs(&mut scene.without_legend(), |scene| scene.view_frame(&cr, WIDTH, HEIGHT));
+    let footprint = || FlowScene::new(400, 10, &["volume", "footprint"], 400, 0);
+    // Cairo's own path buffers, grown by more rectangles, may come out an
+    // allocation either way: never more than without the profile.
+    for numbers in [true, false] {
+        let (with, without) = (frame(footprint().footprint_profile(numbers)), frame(footprint()));
+        assert!(with <= without, "zoomed in, figures {numbers}: {with} against {without}");
+    }
+    let ticked = |scene: FlowScene| {
+        allocs(&mut scene.without_legend(), |scene| {
+            scene.trade();
+            scene.view_frame(&cr, WIDTH, HEIGHT);
+        })
+    };
+    let (with, without) = (ticked(footprint().footprint_profile(true)), ticked(footprint()));
+    assert!(with <= without, "a trade, then a frame: {with} against {without}");
+    assert_eq!(
+        frame(FlowScene::new(1_000, 400, &["volume", "footprint"], 400, 0).footprint_profile(true)),
+        frame(FlowScene::new(1_000, 400, &["volume"], 400, 0)),
+        "zoomed out"
+    );
 }

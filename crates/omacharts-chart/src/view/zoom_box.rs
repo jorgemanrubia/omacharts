@@ -14,7 +14,7 @@
 //! is forgotten when either changes, and when the chart is reset to how it
 //! opens. It is not stored, as the view itself is not.
 
-use super::{layout, price_range, State, MAX_VISIBLE, MIN_VISIBLE};
+use super::{layout, price_range, State, MAX_VISIBLE};
 
 /// How many views back the chart remembers. Far more than anybody steps
 /// back through; there only so a session of zooming cannot grow it forever.
@@ -96,8 +96,8 @@ impl State {
             return false;
         }
         let Some(before) = self.viewport() else { return false };
-        let span = self.span().max(MIN_VISIBLE);
-        let columns = ((right - left).round() as usize).clamp(MIN_VISIBLE, MAX_VISIBLE).min(span);
+        let span = self.span().max(self.fewest());
+        let columns = ((right - left).round() as usize).clamp(self.fewest(), MAX_VISIBLE).min(span);
         let middle = (left + right) / 2.0;
         let len = self.bars.len() as i64;
         // At least one bar stays on screen at either end.
@@ -143,6 +143,7 @@ impl State {
 mod tests {
     use super::*;
     use omacharts_engine::Bar;
+    use super::super::MIN_VISIBLE;
 
     /// Where the view's left edge is, how many columns it spans, and the
     /// prices it holds.

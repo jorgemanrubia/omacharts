@@ -79,6 +79,21 @@ fn frames() {
     frame("footprint, 30 bars, just too narrow for its figures", &FlowScene::new(400, 30, &["volume", "footprint"], TRADES, 0));
     frame("footprint on but zoomed out, 400 bars", &FlowScene::new(1_000, 400, &["volume", "footprint"], TRADES, 0));
     frame("indicators off, 400 bars", &FlowScene::new(1_000, 400, &["volume"], TRADES, 0));
+    // A footprint's volume profile: twice the room, so fewer bars; and
+    // zoomed out it should cost what no footprint costs.
+    frame("footprint, 10 bars zoomed in", &FlowScene::new(400, 10, &["volume", "footprint"], TRADES, 0));
+    frame(
+        "footprint with its volume profile, 10 bars zoomed in",
+        &FlowScene::new(400, 10, &["volume", "footprint"], TRADES, 0).footprint_profile(true),
+    );
+    frame(
+        "footprint with its volume profile, numbers off, 20 bars",
+        &FlowScene::new(400, 20, &["volume", "footprint"], TRADES, 0).footprint_numbers(false).footprint_profile(false),
+    );
+    frame(
+        "footprint with its volume profile but zoomed out, 400 bars",
+        &FlowScene::new(1_000, 400, &["volume", "footprint"], TRADES, 0).footprint_profile(true),
+    );
 
     // Two charts of footprints, one over the other.
     let tiles = [(0.0, 0.0), (0.0, HEIGHT / 2.0)];

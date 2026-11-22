@@ -56,6 +56,54 @@ impl Inks {
     }
 }
 
+/// A footprint's volume profile: beside each bar, on the side away from its
+/// delta rows, everything that traded at each row's prices, in one colour
+/// that says nothing of up or down. Off unless turned on.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct BarProfile {
+    #[serde(default)]
+    pub on: bool,
+    /// Its colour, or unset for [`PROFILE_SWATCH`] of the theme, followed
+    /// as the theme changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<ColorChoice>,
+    /// How solid it is drawn, 0 to 1, or unset for [`PROFILE_ALPHA`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f64>,
+    /// Whether each row's total is written in it.
+    #[serde(default = "yes")]
+    pub numbers: bool,
+}
+
+impl Default for BarProfile {
+    fn default() -> BarProfile {
+        BarProfile { on: false, colour: None, alpha: None, numbers: true }
+    }
+}
+
+impl BarProfile {
+    pub fn is_default(&self) -> bool {
+        *self == BarProfile::default()
+    }
+
+    /// How solid it is drawn: its own, or [`PROFILE_ALPHA`].
+    pub fn drawn_alpha(&self) -> f64 {
+        self.alpha.filter(|a| a.is_finite()).map_or(PROFILE_ALPHA, |a| a.clamp(0.0, 1.0))
+    }
+
+    /// Its colour: its own, or the theme's [`PROFILE_SWATCH`].
+    pub fn chosen(&self) -> ColorChoice {
+        self.colour.clone().unwrap_or(ColorChoice::Swatch { name: PROFILE_SWATCH.to_string() })
+    }
+}
+
+/// The theme swatch a footprint's profile is drawn in unless told: a hue
+/// that is neither buying's nor selling's, so it reads as volume alone.
+pub const PROFILE_SWATCH: &str = "Blue";
+/// How solid its strongest row is unless told: under the delta's strongest,
+/// so the volume beside a bar never out-shouts who took it.
+pub const PROFILE_ALPHA: f64 = 0.55;
+
 /// How solid each indicator draws buying and selling unless told: the
 /// volume delta's candles as solid as the cumulative delta's, a footprint's
 /// strongest row strong without hiding its number, and bubbles see-through
@@ -137,6 +185,17 @@ mod tests {
         assert_eq!(inks.alphas(0.4), (0.4, 0.4));
         let set = Inks { buy_alpha: Some(2.0), sell_alpha: Some(f64::NAN), ..Inks::default() };
         assert_eq!(set.alphas(0.4), (1.0, 0.4));
+    }
+
+    #[test]
+    fn a_profile_left_alone_is_off_and_writes_nothing() {
+        let read: BarProfile = serde_json::from_str("{}").unwrap();
+        assert_eq!(read, BarProfile::default());
+        assert!(!read.on && read.numbers);
+        assert_eq!(read.drawn_alpha(), PROFILE_ALPHA);
+        assert_eq!(read.chosen(), ColorChoice::Swatch { name: PROFILE_SWATCH.into() });
+        let on: BarProfile = serde_json::from_str(r#"{"on":true,"numbers":false,"alpha":0.5}"#).unwrap();
+        assert_eq!(serde_json::from_str::<BarProfile>(&serde_json::to_string(&on).unwrap()).unwrap(), on);
     }
 
     #[test]

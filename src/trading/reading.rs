@@ -304,12 +304,133 @@ pub fn bars_text(bars: &[Bar], places: usize, intraday: bool, zone: chrono_tz::T
     out
 }
 
+/// A footprint read out, bar by bar, as `chart values --footprint --json`
+/// writes it: see `doc/cli.md` for the schema. A row's `low` and `high`
+/// are the first and last price it covers; `poc` is the low of the bar's
+/// most traded row.
+pub fn footprint_json(read: &omacharts_chart::FootprintRead, places: usize) -> Value {
+    let tick = read.tick_size;
+    let step = read.row_ticks as i32;
+    let at = |t: i32| price(Some(omacharts_engine::ladders::to_price(t, tick)), places);
+    let bars: Vec<Value> = read
+        .bars
+        .iter()
+        .map(|one| {
+            let bar = &one.bar;
+            let p = |value: f64| price(Some(value), places);
+            let rows: Vec<Value> = one
+                .rows
+                .iter()
+                .map(|row| {
+                    let s = &row.sides;
+                    json!({
+                        "low": at(row.low_tick),
+                        "high": at(row.low_tick + step - 1),
+                        "at_bid": s.at_bid,
+                        "at_ask": s.at_ask,
+                        "delta": s.delta(),
+                        "total": s.total(),
+                        "trades": s.trades,
+                    })
+                })
+                .collect();
+            let delta: i64 = one.rows.iter().map(|row| row.sides.delta()).sum();
+            json!({
+                "time": bar.ts,
+                "open": p(bar.open),
+                "high": p(bar.high),
+                "low": p(bar.low),
+                "close": p(bar.close),
+                "volume": bar.volume.round(),
+                "delta": delta,
+                "poc": one.poc.map_or(Value::Null, at),
+                "rows": rows,
+            })
+        })
+        .collect();
+    json!({"tick_size": tick, "row_ticks": read.row_ticks, "bars": bars})
+}
+
+/// The same as a terse table: a line a bar — time, open, high, low, close,
+/// volume, delta, point of control — then its rows from the top, each its
+/// low price, sold at the bid x bought at the ask, delta, total, trades.
+pub fn footprint_text(read: &omacharts_chart::FootprintRead, places: usize, intraday: bool, zone: chrono_tz::Tz) -> String {
+    let tick = read.tick_size;
+    let mut out = format!("rows of {} tick{}\n", read.row_ticks, if read.row_ticks == 1 { "" } else { "s" });
+    for one in &read.bars {
+        let bar = &one.bar;
+        let at = chrono::DateTime::from_timestamp(bar.ts, 0).map(|at| at.with_timezone(&zone));
+        let time = match (at, intraday) {
+            (Some(at), true) => at.format("%m-%d %H:%M").to_string(),
+            (Some(at), false) => at.format("%Y-%m-%d").to_string(),
+            (None, _) => bar.ts.to_string(),
+        };
+        let n = |price: f64| num(price, places);
+        let delta: i64 = one.rows.iter().map(|row| row.sides.delta()).sum();
+        let poc = one.poc.map_or("-".to_string(), |t| n(omacharts_engine::ladders::to_price(t, tick)));
+        out.push_str(&format!(
+            "{time} {} {} {} {} vol {} delta {delta:+} poc {poc}\n",
+            n(bar.open),
+            n(bar.high),
+            n(bar.low),
+            n(bar.close),
+            bar.volume.round()
+        ));
+        for row in one.rows.iter().rev() {
+            let s = &row.sides;
+            out.push_str(&format!(
+                "  {} {} x {} {:+} {} {}\n",
+                n(omacharts_engine::ladders::to_price(row.low_tick, tick)),
+                s.at_bid,
+                s.at_ask,
+                s.delta(),
+                s.total(),
+                s.trades
+            ));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn bar(ts: i64, open: f64, high: f64, low: f64, close: f64) -> Bar {
         Bar { ts, open, high, low, close, volume: 10.0 }
+    }
+
+    /// The footprint read out keeps its schema: a bar's fields, its rows
+    /// lowest first with each side, the price a row covers, and the point
+    /// of control at its row's low.
+    #[test]
+    fn a_footprint_reads_out_in_its_schema() {
+        use omacharts_chart::{FootprintBar, FootprintRead, FootprintRow};
+        use omacharts_engine::studies::footprint::Sides;
+        let row = |low_tick, at_bid, at_ask, unknown, trades| FootprintRow { low_tick, sides: Sides { at_bid, at_ask, unknown, trades } };
+        let read = FootprintRead {
+            tick_size: 0.25,
+            row_ticks: 2,
+            bars: vec![
+                FootprintBar {
+                    bar: Bar { ts: 1_700_000_040, open: 100.25, high: 101.0, low: 100.0, close: 100.75, volume: 40.0 },
+                    rows: vec![row(400, 6, 2, 0, 5), row(402, 3, 20, 1, 9), row(404, 0, 8, 0, 2)],
+                    poc: Some(402),
+                },
+                FootprintBar { bar: bar(1_700_000_100, 100.0, 100.0, 100.0, 100.0), rows: Vec::new(), poc: None },
+            ],
+        };
+        let json = footprint_json(&read, 2);
+        let expected: Value = serde_json::from_str(
+            r#"{"bars":[{"close":100.75,"delta":21,"high":101.0,"low":100.0,"open":100.25,"poc":100.5,"rows":[{"at_ask":2,"at_bid":6,"delta":-4,"high":100.25,"low":100.0,"total":8,"trades":5},{"at_ask":20,"at_bid":3,"delta":17,"high":100.75,"low":100.5,"total":24,"trades":9},{"at_ask":8,"at_bid":0,"delta":8,"high":101.25,"low":101.0,"total":8,"trades":2}],"time":1700000040,"volume":40.0},{"close":100.0,"delta":0,"high":100.0,"low":100.0,"open":100.0,"poc":null,"rows":[],"time":1700000100,"volume":10.0}],"row_ticks":2,"tick_size":0.25}"#,
+        )
+        .unwrap();
+        assert_eq!(json, expected);
+        let text = footprint_text(&read, 2, true, chrono_tz::UTC);
+        assert_eq!(
+            text,
+            "rows of 2 ticks\n11-14 22:14 100.25 101 100 100.75 vol 40 delta +21 poc 100.5\n  101 0 x 8 +8 8 2\n  100.5 3 x 20 +17 24 9\n  100 6 x 2 -4 8 5\n11-14 22:15 100 100 100 100 vol 10 delta +0 poc -\n"
+        );
     }
 
     #[test]
@@ -395,3 +516,4 @@ mod tests {
         assert_eq!(bar_json(&bar(5, 1.0, 2.0, 0.5, 1.5), 2), json!([5, 1.0, 2.0, 0.5, 1.5, 10.0]));
     }
 }
+

@@ -706,9 +706,18 @@ fn chart_values(
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
+    let footprint = flag(m, "footprint");
+    if !footprint
+        && let Some(id) = ["row-ticks", "last", "from", "to"].into_iter().find(|id| arg(m, id).is_some())
+    {
+        return Err(Fault::usage(format!("--{id} reads a footprint out; add --footprint")));
+    }
     let live = live.ok_or_else(no_chart_window)?;
     let chart = chart_on_screen(store, m)?;
     let read = live.read_chart(chart, 1)?;
+    if footprint {
+        return footprint_values(m, as_json, live, chart, &read);
+    }
     if as_json {
         return Ok(format!(
             "{}\n",
@@ -741,6 +750,68 @@ fn chart_values(
     }
     lines.push(format!("levels {}", read.levels.text(read.places)));
     Ok(format!("{}\n", lines.join("\n")))
+}
+
+/// `chart values --footprint`: each bar's footprint, row by row, as the
+/// chart draws it.
+fn footprint_values(
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: &dyn Live,
+    chart: u32,
+    read: &crate::trading::reading::ChartRead,
+) -> Result<String, Fault> {
+    use omacharts_chart::BarPick;
+    let row_ticks = match arg(m, "row-ticks").map(|text| text.trim()) {
+        None | Some("auto") => None,
+        Some(text) => Some(
+            text.parse::<u32>()
+                .ok()
+                .filter(|n| (1..=omacharts_engine::studies::footprint::MAX_ROW_TICKS).contains(n))
+                .ok_or_else(|| Fault::usage(format!("--row-ticks is auto or a number of ticks from 1 to 10000, not {text:?}")))?,
+        ),
+    };
+    let pick = match (arg(m, "last"), arg(m, "from"), arg(m, "to")) {
+        (None, None, None) => BarPick::Visible,
+        (Some(text), None, None) => BarPick::Last(
+            text.trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=10_000).contains(n))
+                .ok_or_else(|| Fault::usage(format!("--last is a number of bars from 1 to 10000, not {text:?}")))?,
+        ),
+        (None, Some(from), to) => {
+            let from = read_when(from, "from", read.zone)?;
+            let to = match to {
+                Some(to) => read_when(to, "to", read.zone)?,
+                None => i64::MAX,
+            };
+            if to <= from {
+                return Err(Fault::usage("--to has to be after --from".into()));
+            }
+            BarPick::Between(from, to)
+        }
+        (None, None, Some(_)) => return Err(Fault::usage("--to needs a --from".into())),
+        _ => return Err(Fault::usage("say which bars with --last, or with --from and --to, not both".into())),
+    };
+    let Some(footprint) = live.read_footprint(chart, pick, row_ticks)? else {
+        return Err(Fault::refused(format!(
+            "{} has no volume at price to read a footprint from: it needs a feed that sends each trade's side",
+            read.label
+        )));
+    };
+    if as_json {
+        let mut out = crate::trading::reading::footprint_json(&footprint, read.places);
+        out["chart"] = json!(read.label);
+        out["symbol"] = json!(read.symbol);
+        out["resolution"] = json!(read.timeframe);
+        return Ok(format!("{out}\n"));
+    }
+    Ok(format!(
+        "{}\n{}",
+        read.label,
+        crate::trading::reading::footprint_text(&footprint, read.places, read.intraday, read.zone)
+    ))
 }
 
 fn instrument_json(i: &omacharts_engine::Instrument) -> String {
@@ -4012,8 +4083,6 @@ struct StyleEdits {
     method: Option<omacharts_engine::drawings::ProfileMethod>,
     /// How a delta's sides are painted; `Some(None)` for the chart's bars'.
     colouring: Option<Option<omacharts_engine::colouring::Colouring>>,
-    /// The word `--colouring` was given as, for saying why it is refused.
-    colouring_word: Option<String>,
     /// What a delta's colours are worked out from, for `custom` to start
     /// from what was drawn: loaded only when a colouring is given.
     look: Option<ColourLook>,
@@ -4176,7 +4245,6 @@ impl StyleEdits {
         Ok(StyleEdits {
             method,
             colouring,
-            colouring_word: arg(m, "colouring").cloned(),
             look: None,
             profile_width: bounded(
                 m,
@@ -4962,8 +5030,6 @@ struct Edits {
     /// `Some(None)` puts a study back on the chart's own colouring; `custom` is each
     /// colour the study's own.
     colouring: Option<Option<omacharts_engine::colouring::Colouring>>,
-    /// The word `colouring` was given as, for saying why it is refused.
-    colouring_word: Option<String>,
     opacity: Option<f64>,
     color: Option<ColorChoice>,
     width: Option<f64>,
@@ -5000,6 +5066,13 @@ struct Edits {
     intensity: Option<bool>,
     /// Whether a footprint's rows have their figures written in them.
     numbers: Option<bool>,
+    /// A footprint's volume profile: on or off, its colour (`Some(None)`
+    /// for its default), how solid (`Some(None)` for its default), and
+    /// whether its totals are written.
+    profile: Option<bool>,
+    profile_color: Option<Option<ColorChoice>>,
+    profile_alpha: Option<Option<f64>>,
+    profile_numbers: Option<bool>,
     /// The sizes a large order is bigger than, in and out of regular hours.
     rth_threshold: Option<u64>,
     eth_threshold: Option<u64>,
@@ -5226,7 +5299,6 @@ impl Edits {
                     || Fault::usage(format!("{text:?} is not a bar colouring")),
                 )?)),
             },
-            colouring_word: arg(m, "colouring").cloned(),
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -5307,6 +5379,13 @@ impl Edits {
             sell_alpha: Parts::part(m, "sell-transparency")?,
             intensity: switch(m, "intensity")?,
             numbers: switch(m, "numbers")?,
+            profile: switch(m, "profile")?,
+            profile_color: match arg(m, "profile-color").map(String::as_str) {
+                Some("default") => Some(None),
+                _ => colour(m, "profile-color")?.map(Some),
+            },
+            profile_alpha: Parts::part(m, "profile-transparency")?,
+            profile_numbers: switch(m, "profile-numbers")?,
             rth_threshold: threshold(m, "rth-threshold")?,
             eth_threshold: threshold(m, "eth-threshold")?,
             size_against: match arg(m, "size-against") {
@@ -5394,6 +5473,10 @@ impl Edits {
             && self.sell_alpha.is_none()
             && self.intensity.is_none()
             && self.numbers.is_none()
+            && self.profile.is_none()
+            && self.profile_color.is_none()
+            && self.profile_alpha.is_none()
+            && self.profile_numbers.is_none()
             && self.rth_threshold.is_none()
             && self.eth_threshold.is_none()
             && self.size_against.is_none()
@@ -5422,7 +5505,6 @@ impl Edits {
             return Ok(());
         }
         let refuse = |what: &str| Fault::usage(format!("{} has no {what}", kind.short_name()));
-        let word = self.colouring_word.as_deref().unwrap_or_default();
         let ups = matches!(kind, IndicatorKind::Volume | IndicatorKind::Cvd);
         let sides = matches!(
             kind,
@@ -5515,6 +5597,36 @@ impl Edits {
             match kind == IndicatorKind::Footprint {
                 true => params["numbers"] = json!(on),
                 false => return Err(refuse("numbers")),
+            }
+        }
+        let profiled = self.profile.is_some() || self.profile_color.is_some() || self.profile_alpha.is_some() || self.profile_numbers.is_some();
+        if profiled {
+            if kind != IndicatorKind::Footprint {
+                return Err(refuse("volume profile of its own; --profile and the --profile-* flags are a footprint's"));
+            }
+            if !params["profile"].is_object() {
+                params["profile"] = json!({});
+            }
+            let profile = &mut params["profile"];
+            if let Some(on) = self.profile {
+                profile["on"] = json!(on);
+            }
+            if let Some(on) = self.profile_numbers {
+                profile["numbers"] = json!(on);
+            }
+            for (key, value) in [
+                ("colour", self.profile_color.as_ref().map(|c| c.as_ref().map(to_value).transpose()).transpose()?),
+                ("alpha", self.profile_alpha.map(|a| a.map(|a| json!(a)))),
+            ] {
+                match value {
+                    None => {}
+                    Some(Some(value)) => profile[key] = value,
+                    Some(None) => {
+                        if let Some(object) = profile.as_object_mut() {
+                            object.remove(key);
+                        }
+                    }
+                }
             }
         }
         for (size, key, what) in
@@ -10576,6 +10688,32 @@ mod tests {
             let out = run(&format!("chart indicator set footprint --book Macro --numbers {numbers}"), &store);
             assert_eq!(out.code, 0, "{}", out.err);
             assert_eq!(listed(&store, "footprint")["params"]["numbers"].as_bool(), Some(read));
+        }
+
+        // Its volume profile: off and not written until a flag sets it, each
+        // flag read back, `default` putting colour and strength back.
+        assert!(listed(&store, "footprint")["params"].get("profile").is_none(), "off, nothing written");
+        let out = run(
+            "chart indicator set footprint --book Macro --profile on --profile-color violet --profile-transparency 0.4 --profile-numbers off",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let profile = listed(&store, "footprint")["params"]["profile"].clone();
+        assert_eq!(profile["on"], true, "{profile}");
+        assert_eq!(profile["numbers"], false, "{profile}");
+        assert_eq!(profile["colour"]["name"], "Violet", "{profile}");
+        assert!((profile["alpha"].as_f64().unwrap() - 0.6).abs() < 1e-9, "{profile}");
+        let out = run("chart indicator set footprint --book Macro --profile-color default --profile-transparency default --profile-numbers on", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let profile = listed(&store, "footprint")["params"]["profile"].clone();
+        assert!(profile.get("colour").is_none() && profile.get("alpha").is_none(), "{profile}");
+        assert_eq!((profile["on"].as_bool(), profile["numbers"].as_bool()), (Some(true), Some(true)));
+        let out = run("chart indicator set footprint --book Macro --profile off", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(listed(&store, "footprint")["params"]["profile"]["on"], false, "off again");
+        for refused in ["footprint --profile maybe", "footprint --profile-transparency 2", "footprint --profile-color loud", "volume_delta --profile on"] {
+            let out = run(&format!("chart indicator set {refused} --book Macro"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
         }
 
         let out = run(

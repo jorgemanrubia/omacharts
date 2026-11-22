@@ -592,6 +592,17 @@ impl Window {
         Ok(self.chart_read(&pane, last))
     }
 
+    /// Chart `chart`'s footprint in numbers: see [`omacharts_chart::ChartView::read_footprint`].
+    pub fn read_footprint(
+        &self,
+        chart: u32,
+        pick: omacharts_chart::BarPick,
+        row_ticks: Option<u32>,
+    ) -> Result<Option<omacharts_chart::FootprintRead>, Fault> {
+        let pane = self.agent_pane(chart)?;
+        Ok(pane.view.read_footprint(pick, row_ticks))
+    }
+
     fn chart_read(&self, pane: &ChartPane, last: usize) -> reading::ChartRead {
         let instrument = pane.instrument.borrow().clone();
         let timeframe = pane.view.timeframe();

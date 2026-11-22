@@ -74,17 +74,26 @@ const FACE: &str = "monospace";
 thread_local! {
     /// The glyph of each of [`CHARS`] in [`FACE`], looked up once.
     static GLYPHS: Cell<Option<[c_ulong; 14]>> = const { Cell::new(None) };
+    /// [`FACE`] made once: selecting it by name copies the name every time.
+    static FONT: std::cell::OnceCell<Option<cairo::FontFace>> = const { std::cell::OnceCell::new() };
 }
 
-/// What a tick nothing traded at keeps in place of a delta.
-const UNTRADED: i64 = i64::MIN;
+/// Write in [`FACE`], without a copy of its name a frame.
+fn use_face(cr: &cairo::Context) {
+    FONT.with(|font| {
+        match font.get_or_init(|| cairo::FontFace::toy_create(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal).ok()) {
+            Some(face) => cr.set_font_face(face),
+            None => cr.select_font_face(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal),
+        }
+    });
+}
 
-/// One bar's ladder as a footprint keeps it: each tick's delta, from
-/// `low_tick` up, or [`UNTRADED`].
+/// One bar's ladder as a footprint keeps it: each tick's delta and total,
+/// from `low_tick` up, a total of nought where nothing traded.
 #[derive(Default, Debug)]
 struct Cells {
     low_tick: i32,
-    cells: Vec<i64>,
+    cells: Vec<rows::Tick>,
     /// The bar's volume when it was read, by its bits: a bar that has
     /// traded since is read again.
     volume: u64,
@@ -92,10 +101,11 @@ struct Cells {
 
 impl Cells {
     /// Each row of `step` ticks that traded, lowest first, as its low tick
-    /// and its delta: [`rows::fold`] over what was kept.
+    /// and its delta and total: [`rows::fold`] over what was kept, the fold
+    /// the footprint is read out by too.
     #[inline]
-    fn each_row(&self, step: u32, each: impl FnMut(i32, i64)) {
-        rows::fold(self.low_tick, &self.cells, UNTRADED, step, each);
+    fn each_row(&self, step: u32, each: impl FnMut(i32, rows::Tick)) {
+        rows::fold(self.low_tick, &self.cells, step, each);
     }
 }
 
@@ -173,41 +183,20 @@ impl Cache {
             }
             self.forming = forming;
         }
-        let days = match tf.is_intraday() {
-            true => None,
-            false => state.instrument.as_ref().map(omacharts_engine::ladders::Days::new),
-        };
+        let days = bar_days(state);
         for bar in columns.slice {
             let volume = bar.volume.to_bits();
             if self.bars.get(&bar.ts).is_some_and(|kept| kept.volume == volume) {
                 continue;
             }
-            self.scratch.clear();
-            let scratch = &mut self.scratch;
-            let read = match &days {
-                None => held.visit_between(bar.ts, bar.ts + tf.seconds(), |part| scratch.add_ladder(part)),
-                Some(days) => {
-                    let end = tf.shift(bar.ts, 1);
-                    match held.days_between(bar.ts.div_euclid(86_400), end.div_euclid(86_400), days) {
-                        Some(ladder) => {
-                            *scratch = ladder;
-                            true
-                        }
-                        None => false,
-                    }
-                }
-            };
-            if !read {
+            if !bar_ladder(held, bar.ts, tf, days.as_ref(), &mut self.scratch) {
                 continue;
             }
             let mut cells = self.bars.remove(&bar.ts).or_else(|| self.spare.pop()).unwrap_or_default();
             cells.low_tick = self.scratch.low_tick;
             cells.volume = volume;
             cells.cells.clear();
-            cells.cells.extend(self.scratch.levels.iter().map(|level| match level.volume() {
-                0 => UNTRADED,
-                _ => level.at_ask as i64 - level.at_bid as i64,
-            }));
+            cells.cells.extend(self.scratch.levels.iter().map(|level| rows::Tick::of(level.at_bid, level.at_ask, level.unknown)));
             self.bars.insert(bar.ts, cells);
         }
         // Scrolled a long way, the bars far off screen go.
@@ -230,6 +219,130 @@ impl Cache {
     }
 }
 
+/// The days a bar longer than a day is summed by: none for an intraday
+/// bar, which is summed by its minutes.
+fn bar_days(state: &State) -> Option<omacharts_engine::ladders::Days> {
+    match state.timeframe.is_intraday() {
+        true => None,
+        false => state.instrument.as_ref().map(omacharts_engine::ladders::Days::new),
+    }
+}
+
+/// Sum the bar opening at `ts` into `into`: the minutes in it, or a bar of
+/// days its days. False where `held` cannot answer it whole. What the
+/// footprint draws a bar from and what it is read out by, both.
+fn bar_ladder(held: &Held, ts: i64, tf: omacharts_engine::Timeframe, days: Option<&omacharts_engine::ladders::Days>, into: &mut Ladder) -> bool {
+    into.clear();
+    match days {
+        None => held.visit_between(ts, ts + tf.seconds(), |part| into.add_ladder(part)),
+        Some(days) => {
+            let end = tf.shift(ts, 1);
+            match held.days_between(ts.div_euclid(86_400), end.div_euclid(86_400), days) {
+                Some(ladder) => {
+                    *into = ladder;
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+}
+
+/// Which bars a footprint is read out for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarPick {
+    /// The bars on screen.
+    Visible,
+    /// The last so many, the one forming among them.
+    Last(usize),
+    /// The bars opening from the first time up to, not including, the second.
+    Between(i64, i64),
+}
+
+/// One row of a bar read out: its lowest tick and each side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FootprintRow {
+    pub low_tick: i32,
+    pub sides: rows::Sides,
+}
+
+/// One bar read out: the bar, its rows lowest first, and the low tick of
+/// its most traded row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootprintBar {
+    pub bar: omacharts_engine::Bar,
+    pub rows: Vec<FootprintRow>,
+    pub poc: Option<i32>,
+}
+
+/// A chart's footprint read out: the tick its rows are counted in, how many
+/// ticks a row holds, and the bars.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootprintRead {
+    pub tick_size: f64,
+    pub row_ticks: u32,
+    pub bars: Vec<FootprintBar>,
+}
+
+/// The ticks a row holds read out, unless told: the footprint's own, or the
+/// automatic step it drew last, or one tick where it has drawn none.
+fn read_step(state: &State) -> u32 {
+    let own = state.indicators.iter().find_map(|drawn| match drawn.indicator.params {
+        Params::Footprint { row_ticks, .. } => Some(row_ticks),
+        _ => None,
+    });
+    match own {
+        Some(Some(ticks)) => ticks.max(1),
+        _ => state.footprint.borrow().auto_step().unwrap_or(1),
+    }
+}
+
+/// `pick`'s bars of `state` read out as its footprint draws them, rows of
+/// `row_ticks` or [`read_step`]'s: the same ladders, summed by the same
+/// [`bar_ladder`] and folded by the same [`rows::fold`]. None where the
+/// chart has nothing to read them from.
+pub(super) fn read_out(state: &State, pick: BarPick, row_ticks: Option<u32>) -> Option<FootprintRead> {
+    let read = state.volume_at_price.as_ref()?;
+    let bars = &state.bars;
+    let range = match pick {
+        BarPick::Visible => {
+            let (first, visible) = state.slice();
+            first..(first + visible).min(bars.len())
+        }
+        BarPick::Last(n) => bars.len().saturating_sub(n)..bars.len(),
+        BarPick::Between(from, to) => bars.partition_point(|bar| bar.ts < from)..bars.partition_point(|bar| bar.ts < to),
+    };
+    let first = bars.first()?.ts;
+    let step = row_ticks.unwrap_or_else(|| read_step(state)).clamp(1, rows::MAX_ROW_TICKS);
+    let tf = state.timeframe;
+    let days = bar_days(state);
+    let mut out = None;
+    read(first, &mut |held, _| {
+        let Some(held) = held else { return };
+        let mut ladder = Ladder::default();
+        let mut cells: Vec<rows::Sides> = Vec::new();
+        let mut read_bars = Vec::with_capacity(range.len());
+        for bar in &bars[range.clone()] {
+            let mut rows_out = Vec::new();
+            let mut poc = None;
+            if bar_ladder(held, bar.ts, tf, days.as_ref(), &mut ladder) {
+                cells.clear();
+                cells.extend(ladder.levels.iter().map(|level| rows::Sides {
+                    at_bid: level.at_bid,
+                    at_ask: level.at_ask,
+                    unknown: level.unknown,
+                    trades: u64::from(level.bid_trades) + u64::from(level.ask_trades),
+                }));
+                rows::fold(ladder.low_tick, &cells, step, |low_tick, sides| rows_out.push(FootprintRow { low_tick, sides }));
+                poc = rows::point_of_control(ladder.low_tick, &cells, step, rows::Sides::total);
+            }
+            read_bars.push(FootprintBar { bar: *bar, rows: rows_out, poc });
+        }
+        out = Some(FootprintRead { tick_size: held.tick_size, row_ticks: step, bars: read_bars });
+    });
+    out
+}
+
 /// The footprint a chart draws in place of its bars at this zoom: the first
 /// one shown, once a column holds the narrow bar and a row that reads.
 ///
@@ -248,18 +361,24 @@ pub(super) fn shown<'a>(state: &'a State, columns: &Columns) -> Option<&'a Drawn
         state.footprint_on.set(false);
         return None;
     };
-    let numbers = matches!(drawn.indicator.params, Params::Footprint { numbers: true, .. });
-    let on = fits(columns.bar_px, bar_drawn(state), numbers, state.footprint_on.get());
+    let Params::Footprint { numbers, profile, .. } = &drawn.indicator.params else { return None };
+    let profile = profile.on.then_some(profile.numbers);
+    let on = fits(columns.bar_px, bar_drawn(state), *numbers, profile, state.footprint_on.get());
     state.footprint_on.set(on);
     on.then_some(drawn)
 }
 
 /// Do a footprint's rows fit a column `bar_px` wide, the narrow bar
-/// beside them or not, with their figures or not? A little less room will
-/// do for one shown already.
-fn fits(bar_px: f64, with_bar: bool, numbers: bool, shown: bool) -> bool {
+/// beside them or not, with their figures or not, and its profile's rows
+/// too where it has one on (`profile`, with its figures or not)? A little
+/// less room will do for one shown already.
+fn fits(bar_px: f64, with_bar: bool, numbers: bool, profile: Option<bool>, shown: bool) -> bool {
     let slack = if shown { HYSTERESIS } else { 0.0 };
-    rows_room(bar_px, with_bar) >= room_needed(numbers) - slack
+    let needed = match profile {
+        None => room_needed(numbers),
+        Some(profile_numbers) => room_needed(numbers).max(room_needed(profile_numbers)),
+    };
+    rows_room(bar_px, with_bar, profile.is_some()) >= needed - slack
 }
 
 /// How many pixels under the width it comes at a footprint goes.
@@ -296,7 +415,7 @@ fn widest() -> f64 {
         .ok()
         .and_then(|surface| cairo::Context::new(&surface).ok())
         .and_then(|cr| {
-            cr.select_font_face(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+            use_face(&cr);
             cr.set_font_size(FIGURE_SIZE);
             cr.text_extents(WIDEST_FIGURE).ok().map(|extents| extents.x_advance())
         })
@@ -307,13 +426,24 @@ fn widest() -> f64 {
 }
 
 /// The room a column `bar_px` wide leaves its rows: past the narrow bar
-/// and the gaps round it, or with no bar, all but the gaps.
-fn rows_room(bar_px: f64, with_bar: bool) -> f64 {
+/// and the gaps round it, or with no bar, all but the gaps; with a profile,
+/// each side's half of that, less the gap between them.
+fn rows_room(bar_px: f64, with_bar: bool, profile: bool) -> f64 {
     let (gap, body_w) = narrow(bar_px);
-    match with_bar {
+    let room = match with_bar {
         true => bar_px - 3.0 * gap - body_w,
         false => bar_px - 2.0 * gap,
+    };
+    match profile {
+        false => room,
+        true => profile_half(room - gap),
     }
+}
+
+/// A profile's width, out of the `room` it and the delta rows share: half,
+/// on whole pixels.
+fn profile_half(room: f64) -> f64 {
+    (room / 2.0).floor().max(0.0)
 }
 
 /// A colour of an order flow indicator's, as chosen, borrowed where it can
@@ -329,6 +459,18 @@ pub(super) fn chosen<'a>(choice: &'a omacharts_engine::theme::ColorChoice, state
     }
 }
 
+/// A footprint profile's colour: its own, or the theme's swatch for it,
+/// borrowed, so a frame allocates nothing for it.
+fn profile_colour<'a>(profile: &'a flow::BarProfile, state: &'a State) -> Cow<'a, str> {
+    match &profile.colour {
+        Some(choice) => chosen(choice, state),
+        None => match state.theme.swatches.iter().find(|s| s.name == flow::PROFILE_SWATCH) {
+            Some(swatch) => Cow::Borrowed(&swatch.hex),
+            None => Cow::Owned(profile.chosen().resolve(&state.theme)),
+        },
+    }
+}
+
 /// Buying's and selling's colours for `inks`: its colouring's, or while it
 /// is Custom, its own.
 pub(super) fn inks<'a>(state: &'a State, inks: &'a flow::Inks) -> (Cow<'a, str>, Cow<'a, str>) {
@@ -338,9 +480,10 @@ pub(super) fn inks<'a>(state: &'a State, inks: &'a flow::Inks) -> (Cow<'a, str>,
 /// Draw `drawn`'s footprint over the columns: falls back to the candles
 /// where there is nothing to read it from.
 pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
-    let Params::Footprint { intensity, numbers, row_ticks, inks: chosen_inks, .. } = &drawn.indicator.params else {
+    let Params::Footprint { intensity, numbers, row_ticks, inks: chosen_inks, profile } = &drawn.indicator.params else {
         return;
     };
+    let profile = profile.on.then_some(profile);
     let Some(read) = state.volume_at_price.as_ref() else { return };
     let Some(first) = state.bars.first() else { return };
     let mut drew = false;
@@ -350,7 +493,7 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &
         cache.fill(state, held, columns);
         let tick_px = (to_y(0.0) - to_y(held.tick_size)).abs();
         let step = cache.step_for(*row_ticks, tick_px);
-        paint(cr, state, &cache, held.tick_size, step, (*intensity, *numbers), chosen_inks, columns, to_y);
+        paint(cr, state, &cache, held.tick_size, step, (*intensity, *numbers), chosen_inks, profile, columns, to_y);
         drew = true;
     });
     if !drew && bar_drawn(state) {
@@ -363,6 +506,9 @@ pub(super) fn draw(cr: &cairo::Context, state: &State, drawn: &Drawn, columns: &
 struct Across {
     /// Where the rows start and how far they may reach.
     rows: (f64, f64),
+    /// Where its profile's rows may start and how far they reach, ending
+    /// against the narrow bar: nothing wide without one.
+    profile: (f64, f64),
 }
 
 /// The space either side of the narrow bar, and its body's width: an odd
@@ -374,17 +520,27 @@ fn narrow(bar_px: f64) -> (f64, f64) {
 }
 
 /// Across column `at`: the rows start past the narrow bar, or at the
-/// column's left where the chart draws no bar.
-fn across(columns: &Columns, at: usize, bar: bool) -> Across {
+/// column's left where the chart draws no bar. With a profile, it takes
+/// the column's left, as wide as the delta rows may be, and the narrow bar
+/// and the rows move right past it.
+fn across(columns: &Columns, at: usize, bar: bool, profile: bool) -> Across {
     let bar_px = columns.bar_px;
     let left = columns.x(at) - bar_px / 2.0;
     let (gap, body_w) = narrow(bar_px);
+    let start = (left + gap).round();
+    let (profile, start) = match profile {
+        false => ((start, 0.0), start),
+        true => {
+            let width = rows_room(bar_px, bar, true);
+            ((start, width), start + width + gap)
+        }
+    };
     let rows_x = match bar {
-        true => (left + gap).round() + body_w + gap,
-        false => (left + gap).round(),
+        true => start + body_w + gap,
+        false => start,
     };
     let rows_w = (left + bar_px - gap - rows_x).max(0.0);
-    Across { rows: (rows_x, rows_w) }
+    Across { rows: (rows_x, rows_w), profile }
 }
 
 /// Whether the chart draws a bar at all, which a footprint then draws
@@ -396,12 +552,16 @@ fn bar_drawn(state: &State) -> bool {
 /// The chart's own bars, in its own style and colours, narrow at each
 /// column's left: the routine that draws them across a whole column, handed
 /// the columns narrowed.
-fn narrow_bars(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+fn narrow_bars(cr: &cairo::Context, state: &State, columns: &Columns, profile: bool, to_y: &impl Fn(f64) -> f64) {
     let (gap, body_w) = narrow(columns.bar_px);
     // The face a body of `body_w` is drawn from, and its middle's offset
-    // from the column's.
+    // from the column's: past the profile, where there is one.
     let face = body_w / 0.68;
-    let nudge = gap + body_w / 2.0 - columns.bar_px / 2.0;
+    let past = match profile {
+        false => 0.0,
+        true => rows_room(columns.bar_px, true, true) + gap,
+    };
+    let nudge = past + gap + body_w / 2.0 - columns.bar_px / 2.0;
     let narrowed = columns.narrowed(face, nudge);
     super::candles(cr, state.bar_style, state.ohlc_thickness, &state.scheme, &narrowed, to_y);
 }
@@ -415,11 +575,13 @@ fn paint(
     step: u32,
     (intensity, numbers): (bool, bool),
     chosen_inks: &flow::Inks,
+    profile: Option<&flow::BarProfile>,
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     let bars = columns.slice;
     let with_bar = bar_drawn(state);
+    let profiled = profile.is_some();
     let tick_px = (to_y(0.0) - to_y(tick_size)).abs();
     // A row's pitch, and the height drawn in it: a gap of a pixel or two
     // between rows, and never taller than a line of small type.
@@ -440,11 +602,18 @@ fn paint(
     };
 
     // The biggest row on screen, which every row's length and strength is
-    // measured against.
+    // measured against; and the most traded, which every profile row is,
+    // in the same pass.
     let mut largest: u64 = 0;
+    let mut most: u64 = 0;
     for bar in bars {
         if let Some(cells) = cache.bars.get(&bar.ts) {
-            cells.each_row(step, |_, delta| largest = largest.max(delta.unsigned_abs()));
+            cells.each_row(step, |_, tick| {
+                largest = largest.max(tick.delta.unsigned_abs());
+                if profiled {
+                    most = most.max(tick.total);
+                }
+            });
         }
     }
 
@@ -465,24 +634,30 @@ fn paint(
             false => strong,
         }
     };
-    let bar_length = |delta: i64, room: f64| match largest {
+    // A row's length against the biggest it is measured with.
+    let bar_length = |value: i64, room: f64, largest: u64| match largest {
         0 => 0.0,
-        largest => (room * delta.unsigned_abs() as f64 / largest as f64).max(1.0),
+        largest => (room * value.unsigned_abs() as f64 / largest as f64).max(1.0),
     };
     // A row is drawn at least as long as its figure, so the figure sits
     // inside its box however small the delta: a box round each number, the
     // bar running on past it as the delta is big.
-    let written = numbers && row_h >= FIGURE_MIN;
     let advance = figure_size(row_h) * 0.6;
-    let length = |delta: i64, room: f64| {
-        let long = bar_length(delta, room);
+    let fitted = |value: i64, room: f64, largest: u64, written: bool| {
+        let long = bar_length(value, room, largest);
         if !written {
             return long;
         }
         let mut buf = [0u8; 12];
-        let text = rows::short(delta, &mut buf).len() as f64 * advance + 2.0 * INSIDE;
+        let text = rows::short(value, &mut buf).len() as f64 * advance + 2.0 * INSIDE;
         long.max(text.min(room)).round()
     };
+    let written = numbers && row_h >= FIGURE_MIN;
+    let length = |delta: i64, room: f64| fitted(delta, room, largest, written);
+    // A profile's rows, measured as the delta rows are, against the most
+    // traded on screen, and written as they are.
+    let profile_written = profile.is_some_and(|p| p.numbers) && row_h >= FIGURE_MIN;
+    let profile_length = |total: u64, room: f64| fitted(total as i64, room, most, profile_written);
 
     cr.save().ok();
     // Each side's rows, a strength at a time, each strength one path.
@@ -492,8 +667,9 @@ fn paint(
             let mut any = false;
             for (at, bar) in bars.iter().enumerate() {
                 let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-                let (x, room) = across(columns, at, with_bar).rows;
-                cells.each_row(step, |low, delta| {
+                let (x, room) = across(columns, at, with_bar, profiled).rows;
+                cells.each_row(step, |low, tick| {
+                    let delta = tick.delta;
                     if delta == 0 || (delta > 0) != buying || rows::strength(delta, largest, levels) != level {
                         return;
                     }
@@ -515,8 +691,9 @@ fn paint(
         let mut any = false;
         for (at, bar) in bars.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-            let (x, room) = across(columns, at, with_bar).rows;
-            cells.each_row(step, |low, delta| {
+            let (x, room) = across(columns, at, with_bar, profiled).rows;
+            cells.each_row(step, |low, tick| {
+                let delta = tick.delta;
                 if delta == 0 || (delta > 0) != buying {
                     return;
                 }
@@ -536,10 +713,82 @@ fn paint(
         }
     }
 
+    // The profile's rows, in its one colour, each ending against the bar:
+    // a strength at a time, as the delta's, then their outlines.
+    let profile_ink = profile.map(|p| (profile_colour(p, state), p.drawn_alpha()));
+    if let Some((ink, full)) = &profile_ink {
+        let faint = FAINT * full;
+        for level in 1..=levels {
+            let mut any = false;
+            for (at, bar) in bars.iter().enumerate() {
+                let Some(cells) = cache.bars.get(&bar.ts) else { continue };
+                let (x, room) = across(columns, at, with_bar, true).profile;
+                cells.each_row(step, |low, tick| {
+                    if rows::strength(tick.total as i64, most, levels) != level {
+                        return;
+                    }
+                    let (top, bottom) = row_y(low);
+                    let long = profile_length(tick.total, room);
+                    cr.rectangle(x + room - long, top, long, bottom - top);
+                    any = true;
+                });
+            }
+            if any {
+                let alpha = match intensity {
+                    true => rows::step_alpha(level, levels, faint, *full),
+                    false => *full,
+                };
+                colors::set_source_alpha(cr, ink, alpha);
+                let _ = cr.fill();
+            }
+        }
+        let mut any = false;
+        for (at, bar) in bars.iter().enumerate() {
+            let Some(cells) = cache.bars.get(&bar.ts) else { continue };
+            let (x, room) = across(columns, at, with_bar, true).profile;
+            cells.each_row(step, |low, tick| {
+                let (top, bottom) = row_y(low);
+                let h = bottom - top;
+                if h < 3.0 {
+                    return;
+                }
+                let long = profile_length(tick.total, room);
+                cr.rectangle(x + room - long + 0.5, top + 0.5, (long - 1.0).max(0.0), h - 1.0);
+                any = true;
+            });
+        }
+        if any {
+            cr.set_line_width(1.0);
+            colors::set_source_alpha(cr, ink, full.max(0.35));
+            let _ = cr.stroke();
+        }
+    }
+
     // The chart's own bars, narrow, in its own style and colours: the
     // footprint's colouring is the rows' alone.
     if with_bar {
-        narrow_bars(cr, state, columns, to_y);
+        narrow_bars(cr, state, columns, profiled, to_y);
+    }
+
+    // The profile's figures, each at its row's end against the bar, dark
+    // on a row solid enough to want it, as the delta's.
+    if let Some((ink, full)) = &profile_ink
+        && profile_written
+    {
+        use omacharts_engine::theme::luminance;
+        let ground = luminance(&state.theme.ui.background);
+        let text = luminance(&state.theme.ui.text);
+        let light = luminance(ink);
+        let alpha_of = |total: u64| match intensity {
+            true => rows::step_alpha(rows::strength(total as i64, most, levels), levels, FAINT * full, *full),
+            false => *full,
+        };
+        let place = |total: i64, room: f64, text_px: f64| {
+            let fill = ground + (light - ground) * alpha_of(total as u64);
+            let dark = (fill - ground).abs() > (fill - text).abs();
+            (room - INSIDE - text_px, dark && profile_length(total as u64, room) >= text_px + INSIDE)
+        };
+        figures(cr, state, cache, (step, with_bar), Lane::Profile, columns, &row_y, &place);
     }
 
     // The figures, where the rows are tall enough to read them, unless
@@ -563,18 +812,29 @@ fn paint(
             let dark = (fill - ground).abs() > (fill - text).abs();
             (INSIDE, dark && long >= text_px + INSIDE)
         };
-        figures(cr, state, cache, (step, with_bar), columns, &row_y, &place);
+        figures(cr, state, cache, (step, with_bar), Lane::Delta { profiled }, columns, &row_y, &place);
     }
     cr.restore().ok();
 }
 
-/// Each row's delta written where `place` puts it, in one face, as glyphs
-/// drawn a batch at a time.
+/// Which of a bar's rows a figure is written in.
+#[derive(Clone, Copy)]
+enum Lane {
+    /// The delta rows, past the bar: past a profile too, if there is one.
+    Delta { profiled: bool },
+    /// The profile's rows, before the bar, each its total.
+    Profile,
+}
+
+/// Each row's figure in `lane` written where `place` puts it, in one face,
+/// as glyphs drawn a batch at a time.
+#[allow(clippy::too_many_arguments)]
 fn figures(
     cr: &cairo::Context,
     state: &State,
     cache: &Cache,
     (step, with_bar): (u32, bool),
+    lane: Lane,
     columns: &Columns,
     row_y: &impl Fn(i32) -> (f64, f64),
     place: &impl Fn(i64, f64, f64) -> (f64, bool),
@@ -582,7 +842,7 @@ fn figures(
     const BATCH: usize = 256;
     let row_h = row_y(0).1 - row_y(0).0;
     let size = figure_size(row_h);
-    cr.select_font_face(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    use_face(cr);
     cr.set_font_size(size);
     let Some(table) = glyphs(cr) else { return };
     let advance = cr
@@ -599,8 +859,16 @@ fn figures(
         let mut n = 0;
         for (at, bar) in columns.slice.iter().enumerate() {
             let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-            let (x, room) = across(columns, at, with_bar).rows;
-            cells.each_row(step, |low, delta| {
+            let (x, room) = match lane {
+                Lane::Delta { profiled } => across(columns, at, with_bar, profiled).rows,
+                Lane::Profile => across(columns, at, with_bar, true).profile,
+            };
+            cells.each_row(step, |low, tick| {
+                let value = match lane {
+                    Lane::Delta { .. } => tick.delta,
+                    Lane::Profile => tick.total as i64,
+                };
+                let delta = value;
                 let text = rows::short(delta, &mut buf);
                 let text_px = text.len() as f64 * advance;
                 if text_px + PAD > room {
@@ -729,9 +997,158 @@ mod tests {
         assert!(line.chunks(4).all(|p| !(p[2] > 200 && p[1] < 60 && p[0] > 200)), "no magenta in the rows");
     }
 
+    /// FNV-1a over the plot's pixels, left of the price axis and above the
+    /// time axis, where no word is written: a frame's fingerprint that does
+    /// not hang on the machine's fonts.
+    fn plot_print(pixels: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for y in 40..840 {
+            let row = &pixels[y * 1600 * 4..(y + 1) * 1600 * 4];
+            for byte in &row[..1400 * 4] {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    /// What the command line reads out of a footprint is what it draws:
+    /// every bar on screen, row by row, the same delta and total as the
+    /// rows the frame was painted from, in the same step; and the sides
+    /// add up to both.
+    #[test]
+    fn the_rows_read_out_are_the_rows_drawn() {
+        let scene = crate::flow_bench::FlowScene::new(120, 20, &["footprint"], 60, 0);
+        let _ = shot_of(&scene);
+        let state = scene.state();
+        let read = read_out(state, BarPick::Visible, None).expect("volume at price");
+        let cache = state.footprint.borrow();
+        let step = cache.auto_step().expect("drawn automatically");
+        assert_eq!(read.row_ticks, step);
+        assert_eq!(read.bars.len(), 20);
+        for bar in &read.bars {
+            let kept = cache.bars.get(&bar.bar.ts).expect("drawn");
+            let mut drawn = Vec::new();
+            kept.each_row(step, |low, tick| drawn.push((low, tick)));
+            let out: Vec<(i32, rows::Tick)> = bar.rows.iter().map(|row| (row.low_tick, row.sides.tick())).collect();
+            assert_eq!(out, drawn, "bar {}", bar.bar.ts);
+            let volume: u64 = bar.rows.iter().map(|row| row.sides.total()).sum();
+            assert_eq!(volume as f64, bar.bar.volume, "bar {}'s rows hold its volume", bar.bar.ts);
+            let most = bar.rows.iter().max_by_key(|row| row.sides.total()).map(|row| row.low_tick);
+            assert_eq!(bar.poc.is_some(), most.is_some());
+        }
+        let last = read_out(state, BarPick::Last(3), Some(4)).unwrap();
+        assert_eq!(last.bars.len(), 3);
+        assert!(last.bars.iter().all(|bar| bar.rows.iter().all(|row| row.low_tick.rem_euclid(4) == 0)));
+        let (from, to) = (read.bars[2].bar.ts, read.bars[5].bar.ts);
+        let between = read_out(state, BarPick::Between(from, to), None).unwrap();
+        assert_eq!(between.bars, read.bars[2..5].to_vec());
+    }
+
+    fn shot_of(scene: &crate::flow_bench::FlowScene) -> Vec<u8> {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 1600, 900).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            scene.view_frame(&cr, 1600.0, 900.0);
+        }
+        surface.flush();
+        surface.data().unwrap().to_vec()
+    }
+
+    /// The footprints the volume profile beside the rows must leave as they
+    /// were when it is off: numbers off, so no font is in the frame.
+    fn as_before() -> Vec<(&'static str, Vec<u8>)> {
+        use omacharts_engine::bars::BarStyle;
+        let scene = || crate::flow_bench::FlowScene::new(120, 20, &["footprint"], 60, 0).footprint_numbers(false);
+        vec![
+            ("candles", shot(scene())),
+            ("ohlc", shot(scene().bars(BarStyle::Ohlc, "#ff00ff", "#00ffff"))),
+            ("line", shot(scene().bars(BarStyle::Line, "#ff00ff", "#00ffff"))),
+            ("wide", shot(crate::flow_bench::FlowScene::new(120, 12, &["footprint"], 60, 0).footprint_numbers(false))),
+        ]
+    }
+
+    /// A footprint with its volume profile off draws exactly what it drew
+    /// before the profile was there: the same pixels, bar for bar, in every
+    /// bar style, zoomed in and just wide enough. Each print was taken from
+    /// the footprint as it stood before the profile was added.
+    #[test]
+    fn a_footprint_with_its_profile_off_draws_exactly_as_before() {
+        let before = [
+            ("candles", 0xd861_13e3_7be1_03d3_u64),
+            ("ohlc", 0xe2d5_0520_13a9_0444),
+            ("line", 0xa34e_1a17_ac46_3877),
+            ("wide", 0x1273_edbd_fa0f_a845),
+        ];
+        for ((name, pixels), (was, print)) in as_before().into_iter().zip(before) {
+            assert_eq!(name, was);
+            assert_eq!(plot_print(&pixels), print, "{name}: the profile off moved a pixel");
+        }
+    }
+
+    /// The columns a profile's rows and a footprint's delta rows take: the
+    /// profile at the column's left, the narrow bar past it, the delta rows
+    /// past that, each side as wide as the other, and with it off, the
+    /// delta rows where they always were.
+    #[test]
+    fn a_profile_takes_the_column_s_left_and_the_rows_move_past_it() {
+        for bar_px in [40.0, 64.0, 90.0, 140.0] {
+            let columns = Columns::of(&[], 0, 10, 0.3, bar_px * 10.0);
+            for with_bar in [true, false] {
+                let off = across(&columns, 3, with_bar, false);
+                let on = across(&columns, 3, with_bar, true);
+                let (gap, body) = narrow(bar_px);
+                assert_eq!(off.profile.1, 0.0);
+                let (px, pw) = on.profile;
+                assert_eq!(px, off.rows.0 - if with_bar { body + gap } else { 0.0 }, "the profile starts where the column's parts did");
+                let past = if with_bar { pw + gap + body + gap } else { pw + gap };
+                assert_eq!(on.rows.0, px + past, "{bar_px} {with_bar}");
+                assert!((on.rows.1 - pw).abs() < 2.0, "two halves, but for rounding: {pw} and {}", on.rows.1);
+                assert_eq!(pw, rows_room(bar_px, with_bar, true));
+            }
+        }
+    }
+
+    /// With a profile on, a footprint waits for room for both its sides,
+    /// with their figures or not; with it off, it comes where it came.
+    #[test]
+    fn a_footprint_with_a_profile_waits_for_both_sides() {
+        let at = |numbers: bool, profile: Option<bool>| (1..600).map(f64::from).find(|px| fits(*px, true, numbers, profile, false)).unwrap();
+        let alone = at(true, None);
+        let both = at(true, Some(true));
+        assert!(both > alone * 1.6, "both written: {both} against {alone}");
+        assert!(rows_room(both, true, true) >= room_needed(true));
+        assert!(at(true, Some(false)) == both, "the delta's figures still want their room");
+        assert!(at(false, Some(false)) < at(false, Some(true)), "a profile without figures comes sooner");
+        assert!(at(false, Some(false)) > at(false, None));
+    }
+
+    /// The profile drawn: every row of the bars on screen at its total, at
+    /// the column's left, in its own colour, with and without its figures;
+    /// the delta rows and the bar moved, not changed.
+    #[test]
+    fn a_profile_draws_beside_each_bar_in_its_own_colour() {
+        let scene = || crate::flow_bench::FlowScene::new(120, 10, &["footprint"], 60, 0).footprint_numbers(false);
+        let off = shot(scene());
+        let on = shot(scene().footprint_profile(false));
+        let written = shot(scene().footprint_profile(true));
+        assert_ne!(off, on, "the profile draws");
+        assert_ne!(on, written, "and its figures");
+        // Blue, the theme's, see-through over the chart: pixels leaning to
+        // blue where nothing did. Cairo's pixels are blue, green, red.
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().unwrap();
+        let blue = theme.swatches.iter().find(|s| s.name == flow::PROFILE_SWATCH).unwrap().hex.clone();
+        let (r, g, b, _) = crate::colors::rgba(&blue);
+        assert!(b > r && b > g, "the swatch is blue");
+        let near = |pixels: &[u8]| {
+            pixels.chunks(4).filter(|p| i32::from(p[0]) > i32::from(p[2]) + 24 && i32::from(p[0]) > i32::from(p[1]) + 8).count()
+        };
+        assert!(near(&on) > near(&off) + 200, "drawn in its swatch: {} against {}", near(&on), near(&off));
+    }
+
     /// The first bar width, a pixel at a time, a footprint comes at.
     fn comes_at(with_bar: bool, numbers: bool) -> f64 {
-        (1..400).map(f64::from).find(|px| fits(*px, with_bar, numbers, false)).unwrap()
+        (1..400).map(f64::from).find(|px| fits(*px, with_bar, numbers, None, false)).unwrap()
     }
 
     /// A footprint comes once a column holds the narrow bar and a row the
@@ -744,11 +1161,11 @@ mod tests {
         let (gap, body) = narrow(edge);
         assert!(edge - 3.0 * gap - body >= widest() + 2.0 * INSIDE, "the widest figure fits at {edge}");
         assert!((40.0..80.0).contains(&edge), "a readable column: {edge}");
-        assert!(fits(edge, true, true, false));
-        assert!(!fits(edge - 1.0, true, true, false), "narrower, not yet");
-        assert!(fits(edge - 2.0, true, true, true), "shown, it stays a little under");
-        assert!(!fits(edge - HYSTERESIS - 2.0, true, true, true), "and goes past that");
-        assert!(!fits(edge - 2.0, true, true, false), "coming back, the whole width again");
+        assert!(fits(edge, true, true, None, false));
+        assert!(!fits(edge - 1.0, true, true, None, false), "narrower, not yet");
+        assert!(fits(edge - 2.0, true, true, None, true), "shown, it stays a little under");
+        assert!(!fits(edge - HYSTERESIS - 2.0, true, true, None, true), "and goes past that");
+        assert!(!fits(edge - 2.0, true, true, None, false), "coming back, the whole width again");
     }
 
     /// Without its figures a row needs only to be a short bar, and without
@@ -757,7 +1174,7 @@ mod tests {
     fn rows_alone_and_rows_without_a_bar_come_sooner() {
         let (figures, alone, no_bar) = (comes_at(true, true), comes_at(true, false), comes_at(false, true));
         assert!(alone < figures / 2.0, "rows alone at {alone}, with figures at {figures}");
-        assert!(rows_room(alone, true) >= BARS_ONLY);
+        assert!(rows_room(alone, true, false) >= BARS_ONLY);
         assert!(no_bar < figures, "a line chart's at {no_bar}");
     }
 
@@ -778,12 +1195,13 @@ mod tests {
 
     #[test]
     fn rows_fold_kept_ticks_on_the_fly() {
-        let cells = Cells { low_tick: 99, cells: vec![-1, 2, 0, UNTRADED, 4], volume: 0 };
+        let tick = |bid, ask| rows::Tick::of(bid, ask, 0);
+        let cells = Cells { low_tick: 99, cells: vec![tick(3, 2), tick(1, 3), tick(2, 2), rows::Tick::default(), tick(0, 4)], volume: 0 };
         let mut seen = Vec::new();
-        cells.each_row(1, |low, delta| seen.push((low, delta)));
-        assert_eq!(seen, vec![(99, -1), (100, 2), (101, 0), (103, 4)], "nothing traded, no row");
+        cells.each_row(1, |low, tick| seen.push((low, tick.delta, tick.total)));
+        assert_eq!(seen, vec![(99, -1, 5), (100, 2, 4), (101, 0, 4), (103, 4, 4)], "nothing traded, no row");
         seen.clear();
-        cells.each_row(2, |low, delta| seen.push((low, delta)));
-        assert_eq!(seen, vec![(98, -1), (100, 2), (102, 4)]);
+        cells.each_row(2, |low, tick| seen.push((low, tick.delta, tick.total)));
+        assert_eq!(seen, vec![(98, -1, 5), (100, 2, 8), (102, 4, 4)]);
     }
 }
