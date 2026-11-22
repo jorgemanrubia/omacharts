@@ -3,7 +3,7 @@ title: "Circle"
 description: "An ellipse inside a box between two corners"
 section: charting
 parent: drawings
-nav_order: 7
+nav_order: 8
 hotkey: "Alt + C"
 ---
 

@@ -3,7 +3,7 @@ title: "Fib retracement"
 description: "Levels across a swing at the Fibonacci ratios"
 section: agents
 parent: cli/drawings
-nav_order: 11
+nav_order: 12
 ---
 
 `fib`, or `fibonacci`, `retracement`, is a Fib retracement of the swing from `--from` to `--to`, with 0 at `--to`. It takes no `--text`. Its levels are set with the flags below, beside the ones [every drawing takes](/manual/cli/drawings/#flags). What it draws, and its properties in the window, are in [Fib retracement](/manual/drawings/fib-retracement/).

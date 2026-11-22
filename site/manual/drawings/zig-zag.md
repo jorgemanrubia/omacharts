@@ -3,15 +3,15 @@ title: "Zig-zag"
 description: "A line through as many corners as you place"
 section: charting
 parent: drawings
-nav_order: 5
-hotkey: "Alt + Z"
+nav_order: 6
+hotkey: "Alt + G"
 ---
 
 A line through as many corners as you place.
 
 | Key | Placing it | CLI |
 |---|---|---|
-| <kbd>Alt</kbd> + <kbd>Z</kbd> | Press at each corner. A second press on the last corner, a double-click or <kbd>Enter</kbd> ends it there; <kbd>Esc</kbd> drops it | `zigzag` |
+| <kbd>Alt</kbd> + <kbd>G</kbd> | Press at each corner. A second press on the last corner, a double-click or <kbd>Enter</kbd> ends it there; <kbd>Esc</kbd> drops it | `zigzag` |
 
 ## Properties
 

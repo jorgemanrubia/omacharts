@@ -165,6 +165,7 @@ pub fn dispatch(
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
+        ("chart", "zoom") => chart_zoom(live, m, json),
         ("chart", "profile") => chart_profile(live, m, json),
         ("chartbook", _) | ("chart", _) => {
             // "The one I am looking at" needs something to be looking at. The
@@ -2032,6 +2033,93 @@ fn chart_measure(
         json!({"chart": chart, "measurement": measured}),
         text,
     )
+}
+
+fn chart_zoom(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
+    let zone = live.measurement_zone();
+    let back = arg(m, "ACTION").is_some_and(|action| action == "back");
+    let given = ["from", "to", "low", "high"].into_iter().filter(|id| arg(m, id).is_some()).count();
+    let span = match back {
+        true if given > 0 => {
+            return Err(Fault::usage("chart zoom back takes no --from, --to, --low or --high".into()));
+        }
+        true => None,
+        false => {
+            let (Some(from), Some(to)) = (arg(m, "from"), arg(m, "to")) else {
+                return Err(Fault::usage(
+                    "say which bars to zoom to with --from and --to, or step back with chart zoom back".into(),
+                ));
+            };
+            let (from, to) = (read_when(from, "from", zone)?, read_when(to, "to", zone)?);
+            let price = |id: &str| -> Result<Option<f64>, Fault> {
+                arg(m, id)
+                    .map(|text| {
+                        text.trim()
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|p| p.is_finite())
+                            .ok_or_else(|| Fault::usage(format!("--{id} takes a price, not {text:?}")))
+                    })
+                    .transpose()
+            };
+            let prices = match (price("low")?, price("high")?) {
+                (None, None) => None,
+                (Some(low), Some(high)) if low < high => Some((low, high)),
+                (Some(_), Some(_)) => return Err(Fault::usage("--low has to be below --high".into())),
+                _ => return Err(Fault::usage("give --low and --high together, or neither".into())),
+            };
+            Some((from, to, prices))
+        }
+    };
+    let zoomed = live.zoom(span)?;
+    let chart = &zoomed.chart;
+    let shown = zoomed.view.map(|(from, to, low, high)| {
+        let at = |ts: i64| {
+            chrono::DateTime::from_timestamp(ts, 0).map_or_else(
+                || ts.to_string(),
+                |utc| {
+                    let local = utc.with_timezone(&zone);
+                    match local.format("%H:%M").to_string().as_str() {
+                        "00:00" => local.format("%Y-%m-%d").to_string(),
+                        _ => local.format("%Y-%m-%d %H:%M").to_string(),
+                    }
+                },
+            )
+        };
+        format!("{} to {}, prices {} to {}", at(from), at(to), trim_price(low), trim_price(high))
+    });
+    let shown = shown.unwrap_or_else(|| "nothing".into());
+    let text = match (back, zoomed.changed) {
+        (false, true) => format!("zoomed {chart} to {shown}"),
+        (false, false) => format!("{chart} has no bars to zoom to"),
+        (true, true) => format!("back to the view before the last zoom on {chart}: {shown}"),
+        (true, false) => format!("no zoom to go back from on {chart}"),
+    };
+    let (from, to, low, high) = match zoomed.view {
+        Some((from, to, low, high)) => (json!(from), json!(to), json!(low), json!(high)),
+        None => (Value::Null, Value::Null, Value::Null, Value::Null),
+    };
+    said(
+        as_json,
+        json!({
+            "chart": chart,
+            "changed": zoomed.changed,
+            "from": from,
+            "to": to,
+            "low": low,
+            "high": high,
+            "back": zoomed.back,
+        }),
+        text,
+    )
+}
+
+/// A price as short as it says itself: six decimals at most, and none of
+/// the zeros at the end.
+fn trim_price(price: f64) -> String {
+    let text = format!("{price:.6}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 fn chart_verb(
@@ -11219,6 +11307,19 @@ mod tests {
                     .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[], None)),
             ))
         }
+        /// A zoom remembered by nobody: the span it was asked for comes back
+        /// as the view, and a step back has none to take.
+        fn zoom(&self, span: Option<crate::cli::ZoomSpan>) -> Result<crate::cli::Zoomed, Fault> {
+            Ok(crate::cli::Zoomed {
+                chart: "pos:0 SPY 1D in Main".into(),
+                changed: span.is_some(),
+                view: span.map(|(from, to, prices)| {
+                    let (low, high) = prices.unwrap_or((90.0, 110.0));
+                    (from, to, low, high)
+                }),
+                back: usize::from(span.is_some()),
+            })
+        }
         /// Two sessions, so there is one to merge into the other: a flat
         /// one, and one with two shelves and a thin stretch between them.
         fn profiles(&self, _id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
@@ -11304,6 +11405,52 @@ mod tests {
             assert_eq!(invoke(&bad, Some(&NoWindow)).code, crate::cli::EXIT_USAGE);
         }
         assert_eq!(invoke(&["--clear"], Some(&NoWindow)).code, 0);
+    }
+
+    #[test]
+    fn a_zoom_needs_a_window_and_a_whole_box_or_back_alone() {
+        let store = seeded();
+        let invoke = |tail: &[&str], live: Option<&dyn Live>| {
+            let args = ["omacharts", "chart", "zoom"]
+                .into_iter()
+                .chain(tail.iter().copied())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            dispatch(&args, &store, live, &super::super::Here)
+        };
+        let boxed = ["--from", "2026-09-01", "--to", "2026-09-19", "--low", "180", "--high", "195.5", "--json"];
+        assert_eq!(invoke(&boxed, None).code, crate::cli::EXIT_NO_WINDOW);
+        assert_eq!(invoke(&["back"], None).code, crate::cli::EXIT_NO_WINDOW);
+
+        let result = invoke(&boxed, Some(&NoWindow));
+        assert_eq!(result.code, 0, "{}", result.err);
+        let value: Value = serde_json::from_str(&result.out).unwrap();
+        let midnight = chrono::DateTime::parse_from_rfc3339("2026-09-01T04:00:00Z").unwrap().timestamp();
+        assert_eq!(value["from"], midnight, "read in the focused chart's clock");
+        assert_eq!((value["low"].as_f64(), value["high"].as_f64()), (Some(180.0), Some(195.5)));
+        assert_eq!(value["changed"], true);
+
+        let text = invoke(&boxed[..8], Some(&NoWindow));
+        assert_eq!(text.out.trim(), "zoomed pos:0 SPY 1D in Main to 2026-09-01 to 2026-09-19, prices 180 to 195.5");
+        // Time alone leaves the scale as it is.
+        assert_eq!(invoke(&boxed[..4], Some(&NoWindow)).code, 0);
+
+        let back = invoke(&["back"], Some(&NoWindow));
+        assert_eq!(back.code, 0, "{}", back.err);
+        assert_eq!(back.out.trim(), "no zoom to go back from on pos:0 SPY 1D in Main");
+
+        for bad in [
+            vec![],
+            vec!["--from", "2026-09-01"],
+            vec!["--from", "2026-09-01", "--to", "2026-09-19", "--low", "180"],
+            vec!["--from", "2026-09-01", "--to", "2026-09-19", "--low", "195", "--high", "180"],
+            vec!["--from", "2026-09-01", "--to", "2026-09-19", "--low", "NaN", "--high", "180"],
+            vec!["--from", "soon", "--to", "2026-09-19"],
+            vec!["back", "--from", "2026-09-01"],
+            vec!["forward"],
+        ] {
+            assert_eq!(invoke(&bad, Some(&NoWindow)).code, crate::cli::EXIT_USAGE, "{bad:?}");
+        }
     }
 
     /// A market profile is expanded and collapsed at a moment inside it,
