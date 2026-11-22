@@ -1387,7 +1387,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "zoom",
-                about: "Zoom the focused chart to a box of time and prices, as the Zoom tool (Alt+X) does: the bars from --from to --to fill it and the price scale holds --low to --high, autoscale off; or, with back, return to the view before the last zoom (Alt+Shift+Z); requires a window",
+                about: "Zoom the focused chart to a box of time and prices, as the Zoom tool (Alt+Z) does: the bars from --from to --to fill it and the price scale holds --low to --high, autoscale off; or, with back, return to the view before the last zoom (Alt+Shift+Z); requires a window",
                 args: &[Arg::opt("ACTION", "back: the view before the last zoom, one zoom at a time").of(&["back"])],
                 flags: &[
                     Flag::valued("from", "WHEN", "the first bar shown: 2026-09-01 or 2026-09-01T14:30 in the chart's clock, or unix seconds"),

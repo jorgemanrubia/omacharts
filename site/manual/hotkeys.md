@@ -128,7 +128,7 @@ Tools and configurations:
 | <kbd>Alt</kbd> + <kbd>L</kbd> | A line: click where it starts, then where it ends | [Line](/manual/drawings/line/) |
 | <kbd>Alt</kbd> + <kbd>H</kbd> | A horizontal line | [Horizontal line](/manual/drawings/horizontal-line/) |
 | <kbd>Alt</kbd> + <kbd>A</kbd> | An arrow | [Arrow](/manual/drawings/arrow/) |
-| <kbd>Alt</kbd> + <kbd>Z</kbd> | A zig-zag: click each corner, then click the last one again, double-click or press <kbd>Enter</kbd> to end it | [Zig-zag](/manual/drawings/zig-zag/) |
+| <kbd>Alt</kbd> + <kbd>G</kbd> | A zig-zag: click each corner, then click the last one again, double-click or press <kbd>Enter</kbd> to end it | [Zig-zag](/manual/drawings/zig-zag/) |
 | <kbd>Alt</kbd> + <kbd>R</kbd> | A rectangle | [Rectangle](/manual/drawings/rectangle/) |
 | <kbd>Alt</kbd> + <kbd>C</kbd> | A circle, dragged to any shape | [Circle](/manual/drawings/circle/) |
 | <kbd>Alt</kbd> + <kbd>T</kbd> | Text: click, then type | [Text](/manual/drawings/text/) |
@@ -136,7 +136,7 @@ Tools and configurations:
 | <kbd>Alt</kbd> + <kbd>W</kbd> | An anchored VWAP from the bar clicked | [Anchored VWAP](/manual/drawings/anchored-vwap/) |
 | <kbd>Alt</kbd> + <kbd>F</kbd> | A Fib retracement of the swing dragged across | [Fib retracement](/manual/drawings/fib-retracement/) |
 | <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Measure](/manual/drawings/measure/) |
-| <kbd>Alt</kbd> + <kbd>X</kbd> | Zoom: drag a box, and the chart shows just that | [Zoom](/manual/drawings/zoom/) |
+| <kbd>Alt</kbd> + <kbd>Z</kbd> | Zoom: drag a box, and the chart shows just that | [Zoom](/manual/drawings/zoom/) |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Back to the view before the last zoom | [Zoom](/manual/drawings/zoom/#going-back) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Configuration N, for the selected drawing or the one about to be drawn | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd>, held | A point being placed or dragged snaps to the open, high, low or close of the candle under it | [Drawings](/manual/drawings/) |

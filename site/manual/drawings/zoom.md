@@ -4,14 +4,14 @@ description: "A box dragged over the chart, and the chart zoomed to it"
 section: charting
 parent: drawings
 nav_order: 2
-hotkey: "Alt + X"
+hotkey: "Alt + Z"
 ---
 
 Zoom shows the stretch of time and the band of prices you drag a box over.
 
 | Key | Using it | CLI |
 |---|---|---|
-| <kbd>Alt</kbd> + <kbd>X</kbd>, or **Zoom** just below **Measure** at the top of the tools | Drag a box over the bars you want to see | [`chart zoom`](/manual/cli/drawings/zoom/) |
+| <kbd>Alt</kbd> + <kbd>Z</kbd>, or **Zoom** just below **Measure** at the top of the tools | Drag a box over the bars you want to see | [`chart zoom`](/manual/cli/drawings/zoom/) |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Back to the view before the last zoom | [`chart zoom back`](/manual/cli/drawings/zoom/) |
 
 <!-- regenerate:
@@ -22,7 +22,7 @@ state:
   omacharts config set theme omarchy:tokyo-night   (before the window opens)
   omacharts chart set --symbol ES --resolution 1h --template none
   key ctrl+shift+d
-  key alt+x
+  key alt+z
   press at 420 140, move to 700 330 and hold (the drag still in progress)
 capture: bin/headless-window shot /tmp/zoom.png; magick /tmp/zoom.png -crop 1995x1600+0+0 +repage -resize 1600x site/assets/manual/drawings/zoom.png
 crop: 0,0,1995,1600

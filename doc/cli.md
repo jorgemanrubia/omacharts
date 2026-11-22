@@ -997,7 +997,7 @@ and is numbered below zero, so one id names a drawing wherever it lives.
 `list` names the symbol and both switches; `clear` removes everything the
 chart can see.
 
-By hand: Ctrl+Shift+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C,
+By hand: Ctrl+Shift+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+G, Alt+R, Alt+C,
 Alt+T, Alt+V and Alt+W arm them
 (Escape is the pointer again; a right-click drops a drawing half laid down
 and keeps the tool), a press and a second press (or one
@@ -1129,7 +1129,7 @@ them it stops fitting the bars. The reply names the chart and what is now in
 view, and `--json` adds `back`, how many zooms are left to step back through.
 `back` with none left changes nothing and says so, exit 0. The zooms are
 forgotten when the chart's symbol or resolution changes, or it is reset. In
-the window, Alt+X or Zoom in the drawing tools picks up the tool: drag a box;
+the window, Alt+Z or Zoom in the drawing tools picks up the tool: drag a box;
 Alt+Shift+Z goes back.
 
 ## Taking a picture of a chart

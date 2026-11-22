@@ -643,9 +643,8 @@ fn hand_tool(
     toggle
 }
 
-/// The zoom tool's sign: a lens with a box in it. The lens is what every
-/// application's zoom is; the box inside, dashed the way a selection is,
-/// says this one zooms to what you drag out rather than a step at a time.
+/// The zoom tool's sign: a plain lens with its handle, which is what every
+/// application's zoom is.
 fn paint_zoom(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32) {
     let (w, h) = (w as f64, h as f64);
     let fg = area.color();
@@ -663,16 +662,6 @@ fn paint_zoom(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: i32, h: i32)
     cr.move_to(cx + (radius + 0.65) * reach, cy + (radius + 0.65) * reach);
     cr.line_to(cx + (radius + 6.0) * reach, cy + (radius + 6.0) * reach);
     let _ = cr.stroke();
-    // The box, square inside the lens, on whole pixels and dashed so a
-    // dash sits on each corner, which keeps it a box at 1x.
-    let half = 3.5;
-    let (x0, y0) = ((cx - half).round() + 0.5, (cy - half).round() + 0.5);
-    cr.set_line_width(1.0);
-    cr.set_source_rgba(r, g, b, a * 0.8);
-    cr.set_dash(&[2.0, 1.0], 0.5);
-    cr.rectangle(x0, y0, half * 2.0, half * 2.0);
-    let _ = cr.stroke();
-    cr.set_dash(&[], 0.0);
 }
 
 #[cfg(test)]
@@ -685,7 +674,7 @@ mod tests {
         crate::ui::on_gtk(|| {
             assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
             assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
-            assert_eq!(tooltip(Button::Zoom), "Zoom (Alt+X)");
+            assert_eq!(tooltip(Button::Zoom), "Zoom (Alt+Z)");
             assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
             for kind in Kind::ALL {
                 let tip = tooltip(Button::Draw(kind));
