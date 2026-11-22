@@ -42,6 +42,8 @@ use crate::colors;
 pub(super) const LEVELS: usize = 5;
 /// The weakest row's opacity, against the strongest's.
 const FAINT: f64 = 0.16;
+/// The fill past which a row's number is written dark.
+const DARK_FIGURES: f64 = 0.5;
 /// The least a row is drawn tall, in pixels: thinner, ticks fold together.
 const ROW_MIN: f64 = 3.0;
 /// The least a row is tall for its figure to be written in it.
@@ -398,7 +400,17 @@ fn paint(
 
     // The figures, where the rows are tall enough to read them.
     if row_h >= FIGURE_MIN {
-        figures(cr, state, cache, step, columns, &row_y);
+        // A number goes dark where it sits wholly on a row filled solidly
+        // enough that the light one would fade into it.
+        let on_fill = |delta: i64, room: f64, text_px: f64| {
+            let full = if delta > 0 { buy_alpha } else { sell_alpha };
+            let alpha = match intensity {
+                true => rows::step_alpha(rows::strength(delta, largest, levels), levels, FAINT * full, full),
+                false => full,
+            };
+            alpha >= DARK_FIGURES && length(delta, room) >= text_px + 5.0
+        };
+        figures(cr, state, cache, step, columns, &row_y, &on_fill);
     }
     cr.restore().ok();
 }
@@ -412,6 +424,7 @@ fn figures(
     step: u32,
     columns: &Columns,
     row_y: &impl Fn(i32) -> (f64, f64),
+    on_fill: &impl Fn(i64, f64, f64) -> bool,
 ) {
     const BATCH: usize = 256;
     let row_h = row_y(0).1 - row_y(0).0;
@@ -424,35 +437,40 @@ fn figures(
         .glyph_extents(&[cairo::Glyph::new(table[0], 0.0, 0.0)])
         .x_advance();
     let advance = if advance > 0.0 { advance } else { size * 0.6 };
-    colors::set_source_alpha(cr, &state.theme.ui.text, 0.92);
     let mut batch = [cairo::Glyph::new(0, 0.0, 0.0); BATCH];
-    let mut n = 0;
     let mut buf = [0u8; 12];
-    for (at, bar) in columns.slice.iter().enumerate() {
-        let Some(cells) = cache.bars.get(&bar.ts) else { continue };
-        let (x, room) = across(columns, at).rows;
-        cells.each_row(step, |low, delta| {
-            let text = rows::short(delta, &mut buf);
-            if text.len() as f64 * advance + 4.0 > room {
-                return;
-            }
-            let (top, bottom) = row_y(low);
-            let baseline = ((top + bottom) / 2.0 + size * 0.36).round();
-            let mut pen = x + 3.0;
-            for byte in text.bytes() {
-                let Some(at) = CHARS.iter().position(|c| *c == byte) else { continue };
-                batch[n] = cairo::Glyph::new(table[at], pen, baseline);
-                pen += advance;
-                n += 1;
-                if n == BATCH {
-                    let _ = cr.show_glyphs(&batch);
-                    n = 0;
+    // Light numbers first, then the dark ones on solid rows: one colour,
+    // and a batch of glyphs, at a time.
+    for (dark, ink, alpha) in [(false, &state.theme.ui.text, 0.92), (true, &state.theme.ui.background, 0.95)] {
+        colors::set_source_alpha(cr, ink, alpha);
+        let mut n = 0;
+        for (at, bar) in columns.slice.iter().enumerate() {
+            let Some(cells) = cache.bars.get(&bar.ts) else { continue };
+            let (x, room) = across(columns, at).rows;
+            cells.each_row(step, |low, delta| {
+                let text = rows::short(delta, &mut buf);
+                let text_px = text.len() as f64 * advance;
+                if text_px + 4.0 > room || on_fill(delta, room, text_px) != dark {
+                    return;
                 }
-            }
-        });
-    }
-    if n > 0 {
-        let _ = cr.show_glyphs(&batch[..n]);
+                let (top, bottom) = row_y(low);
+                let baseline = ((top + bottom) / 2.0 + size * 0.36).round();
+                let mut pen = x + 3.0;
+                for byte in text.bytes() {
+                    let Some(at) = CHARS.iter().position(|c| *c == byte) else { continue };
+                    batch[n] = cairo::Glyph::new(table[at], pen, baseline);
+                    pen += advance;
+                    n += 1;
+                    if n == BATCH {
+                        let _ = cr.show_glyphs(&batch);
+                        n = 0;
+                    }
+                }
+            });
+        }
+        if n > 0 {
+            let _ = cr.show_glyphs(&batch[..n]);
+        }
     }
 }
 
