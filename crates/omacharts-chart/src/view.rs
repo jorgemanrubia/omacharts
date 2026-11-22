@@ -21,6 +21,7 @@
 
 pub mod bench;
 mod compare;
+mod bubbles;
 mod executions;
 mod footprint;
 mod market;
@@ -179,6 +180,12 @@ struct ProfileKey {
 /// a chart of a feed without ladders has none.
 pub type VolumeAtPrice = Rc<dyn Fn(i64, &mut dyn FnMut(Option<&omacharts_engine::ladders::Held>, bool))>;
 
+/// A chart's large orders: handed a large orders indicator's thresholds,
+/// regular and extended, and whether it combines same-time prints, the book
+/// of them built so far and the tick its prices are in. The window lends it;
+/// it answers nothing until the book has come.
+pub type LargeOrderBooks = Rc<dyn Fn(u64, u64, bool) -> Option<(std::sync::Arc<omacharts_engine::studies::orders::Book>, f64)>>;
+
 /// A chart's ladders, as far as a profile worked out from them can tell
 /// whether it has to be worked out again: none, on their way, or held as of
 /// some change — days and pieces read, a minute forming.
@@ -252,6 +259,7 @@ struct State {
     /// Where the volume profile drawings read what traded at each price,
     /// as the study's periods do. `None` on a chart of a feed without it.
     volume_at_price: Option<VolumeAtPrice>,
+    large_orders: Option<LargeOrderBooks>,
     /// What a footprint has read of each bar's ladder.
     footprint: RefCell<footprint::Cache>,
     /// The lines the anchored VWAP drawings show, kept for the same reason:
@@ -1457,6 +1465,7 @@ impl State {
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
             volume_at_price: None,
+            large_orders: None,
             footprint: RefCell::default(),
             vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
@@ -5536,6 +5545,19 @@ impl ChartView {
             state.volume_at_price = read;
             state.profile_cache.borrow_mut().clear();
         }
+        self.redraw();
+    }
+
+    /// Where this chart's large orders indicators read their books: see
+    /// [`LargeOrderBooks`]. Only this chart is drawn again.
+    pub fn set_large_orders(&self, books: Option<LargeOrderBooks>) {
+        self.state.borrow_mut().large_orders = books;
+        self.redraw();
+    }
+
+    /// A book this chart's large orders read has been swapped for a newer
+    /// one: drawn again, and nothing worked out.
+    pub fn large_orders_changed(&self) {
         self.redraw();
     }
 
@@ -10704,7 +10726,7 @@ fn draw_indicator_lines(
             | Output::Time(_)
             | Output::Unmet(_)
             | Output::Footprint => {}
-            Output::LargeOrders => {}
+            Output::LargeOrders => bubbles::draw(cr, state, drawn, columns, to_y),
         }
     }
 }

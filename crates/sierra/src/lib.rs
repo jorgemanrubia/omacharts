@@ -48,7 +48,7 @@ mod time;
 pub use dly::Daily;
 pub use fold::Bar;
 pub use install::{Install, Problem, candidates};
-pub use scid::{Record, Scid, sc_from_unix_micros, unix_micros_from_sc};
+pub use scid::{FIRST_SUB_TRADE_OF_UNBUNDLED_TRADE, LAST_SUB_TRADE_OF_UNBUNDLED_TRADE, Record, Scid, sc_from_unix_micros, unix_micros_from_sc};
 pub use settings::{Scale, SymbolSettings};
 pub use symbols::{Contract, Entry, FileSymbol, Intraday, Listing, Style, parse};
 pub use tail::{Appended, StopHandle, Tail};

@@ -45,7 +45,7 @@ pub use bars::{
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkMode;
 pub use provider::{
-    Capability, Closes, Delivery, Described, FetchFailure, LadderSink, LadderUpdate, Ladders, Pacing, Provider,
+    Capability, Closes, Delivery, Described, FetchFailure, LadderSink, LadderUpdate, Ladders, Pacing, PrintSink, Provider,
     ProviderError, SharedCooldown,
     Sink, Stream, Subscription, Update,
 };

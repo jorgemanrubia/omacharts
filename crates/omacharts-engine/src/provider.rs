@@ -413,6 +413,10 @@ pub enum LadderUpdate {
 /// cheap by contract, as a [`Sink`] is.
 pub type LadderSink = Box<dyn Fn(LadderUpdate) + Send + Sync>;
 
+/// Where a feed's live single trades go, a batch at a time, oldest first.
+/// Called on the provider's thread, cheap by contract.
+pub type PrintSink = Box<dyn Fn(&[crate::studies::orders::Print]) + Send + Sync>;
+
 /// A provider's volume at price: minute ladders as history and live.
 ///
 /// A capability of its own, reached through [`Provider::ladders`], which is
@@ -465,6 +469,41 @@ pub trait Ladders: Send + Sync {
     /// network, reconnecting is the provider's, and dropping the handle ends
     /// it without blocking.
     fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError>;
+
+    /// Does it have the single trades of `symbol`, each with its size and
+    /// side, for large orders? Offline. Most feeds with ladders do not.
+    fn has_prints(&self, _symbol: &str) -> bool {
+        false
+    }
+
+    /// The single trades of `symbol` printed in `from..to`, unix seconds,
+    /// oldest first, priced in whole ticks of `tick_size`: one request, on
+    /// the caller's thread, never the one drawing the window. An empty
+    /// answer is a span that traded nothing, or one past what the feed
+    /// keeps: a feed that says nothing of how far back it goes is walked
+    /// back from today until a weekday comes back empty.
+    fn prints(
+        &self,
+        _symbol: &str,
+        _tick_size: f64,
+        _from: i64,
+        _to: i64,
+    ) -> Result<Vec<crate::studies::orders::Print>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    /// Start delivering `symbol`'s single trades as they print, into `sink`,
+    /// until the handle is dropped; `None` for a feed that has no live
+    /// stream of them, whose newest trades are asked for with
+    /// [`Self::prints`] as each minute closes instead.
+    fn watch_prints(
+        &self,
+        _symbol: &str,
+        _tick_size: f64,
+        _sink: PrintSink,
+    ) -> Result<Option<Box<dyn Subscription>>, ProviderError> {
+        Ok(None)
+    }
 }
 
 pub trait Provider: Send + Sync {

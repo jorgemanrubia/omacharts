@@ -218,6 +218,139 @@ pub fn bubble_share(size: u64, largest: u64) -> f64 {
     (size as f64 / largest as f64).clamp(0.0, 1.0).sqrt()
 }
 
+/// A large order where it is drawn: the order, whether it printed in
+/// regular hours, and which of the book's sessions it is in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Placed {
+    pub order: Order,
+    pub regular: bool,
+    pub session: u32,
+}
+
+/// The largest orders of one session, all told and in each part of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SessionLargest {
+    /// What the hours said the session is: its trading date, say.
+    pub key: i64,
+    pub all: u64,
+    pub regular: u64,
+    pub extended: u64,
+}
+
+/// The large orders of a span, oldest first, filtered once: a chart finds
+/// the ones it shows by binary search and sizes them against the largest
+/// of their session, or of their hours, read here, or of those it shows.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Book {
+    pub orders: Vec<Placed>,
+    pub sessions: Vec<SessionLargest>,
+}
+
+impl Book {
+    /// The orders that began printing in `from..to`, unix nanoseconds.
+    pub fn within(&self, from: i64, to: i64) -> &[Placed] {
+        let start = self.orders.partition_point(|placed| placed.order.ts_nanos < from);
+        let end = start + self.orders[start..].partition_point(|placed| placed.order.ts_nanos < to);
+        &self.orders[start..end]
+    }
+
+    /// The largest order of `placed`'s session, or of its session's
+    /// regular or extended hours when `by_hours`.
+    pub fn largest_for(&self, placed: &Placed, by_hours: bool) -> u64 {
+        let Some(session) = self.sessions.get(placed.session as usize) else { return placed.order.size };
+        match (by_hours, placed.regular) {
+            (false, _) => session.all,
+            (true, true) => session.regular,
+            (true, false) => session.extended,
+        }
+    }
+
+    /// The largest of `orders`.
+    pub fn largest_in(orders: &[Placed]) -> u64 {
+        orders.iter().map(|placed| placed.order.size).max().unwrap_or(0)
+    }
+}
+
+/// A [`Book`] built a print at a time: from the history, oldest first, then
+/// from each trade as it prints.
+#[derive(Clone, Debug)]
+pub struct Builder {
+    combiner: Combiner,
+    thresholds: Thresholds,
+    book: Book,
+}
+
+impl Builder {
+    pub fn new(combine: bool, thresholds: Thresholds) -> Builder {
+        Builder { combiner: Combiner::new(combine), thresholds, book: Book::default() }
+    }
+
+    /// Take the next print. `hours` says, of a moment in unix seconds, the
+    /// session it is in and whether it is in regular hours; it is asked
+    /// only of an order big enough to count in either.
+    #[inline]
+    pub fn push(&mut self, print: Print, hours: &mut impl FnMut(i64) -> (i64, bool)) {
+        if let Some(order) = self.combiner.push(print) {
+            self.place(order, hours);
+        }
+    }
+
+    fn place(&mut self, order: Order, hours: &mut impl FnMut(i64) -> (i64, bool)) {
+        if let Some(placed) = placed(&self.book, &self.thresholds, order, hours) {
+            add(&mut self.book, placed.0, placed.1);
+        }
+    }
+
+    /// The book as it stands, with the order still open — a sweep whose
+    /// next fill may yet come — in it if it counts.
+    pub fn book(&self, hours: &mut impl FnMut(i64) -> (i64, bool)) -> Book {
+        let mut book = self.book.clone();
+        if let Some(open) = self.combiner.peek()
+            && let Some((placed, key)) = placed(&book, &self.thresholds, open, hours)
+        {
+            add(&mut book, placed, key);
+        }
+        book
+    }
+
+    /// Every print in: the open order is closed, and the book is final.
+    pub fn finish(mut self, hours: &mut impl FnMut(i64) -> (i64, bool)) -> Book {
+        if let Some(order) = self.combiner.flush() {
+            self.place(order, hours);
+        }
+        self.book
+    }
+}
+
+fn placed(book: &Book, thresholds: &Thresholds, order: Order, hours: &mut impl FnMut(i64) -> (i64, bool)) -> Option<(Placed, i64)> {
+    if order.size <= thresholds.floor() {
+        return None;
+    }
+    let (key, regular) = hours(order.ts_nanos.div_euclid(1_000_000_000));
+    if !thresholds.counts(order.size, regular) {
+        return None;
+    }
+    let session = match book.sessions.last() {
+        Some(last) if last.key == key => book.sessions.len() - 1,
+        _ => book.sessions.len(),
+    };
+    Some((Placed { order, regular, session: session as u32 }, key))
+}
+
+fn add(book: &mut Book, placed: Placed, key: i64) {
+    if placed.session as usize == book.sessions.len() {
+        book.sessions.push(SessionLargest { key, ..SessionLargest::default() });
+    }
+    let session = &mut book.sessions[placed.session as usize];
+    let size = placed.order.size;
+    session.all = session.all.max(size);
+    match placed.regular {
+        true => session.regular = session.regular.max(size),
+        false => session.extended = session.extended.max(size),
+    }
+    book.orders.push(placed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +434,51 @@ mod tests {
         assert_eq!(bubble_share(25, 100), 0.5);
         assert_eq!(bubble_share(200, 100), 1.0, "held to the largest");
         assert_eq!(bubble_share(5, 0), 1.0);
+    }
+
+    /// Regular hours are 10 to 20 seconds into each 100-second "session".
+    fn hours(seconds: i64) -> (i64, bool) {
+        (seconds.div_euclid(100), (10..20).contains(&seconds.rem_euclid(100)))
+    }
+
+    const S: i64 = 1_000_000_000;
+
+    #[test]
+    fn a_book_keeps_only_the_orders_bigger_than_their_hours_threshold() {
+        use Aggressor::*;
+        let thresholds = Thresholds { regular: 50, extended: 20 };
+        let prints = [
+            p(5 * S, 100, 30, Buy),   // extended, counts
+            p(12 * S, 100, 30, Buy),  // regular, too small
+            p(13 * S, 101, 40, Sell), // regular: 40 + 20 combined = 60
+            p(13 * S, 100, 20, Sell),
+            p(105 * S, 99, 25, Buy), // the next session, extended
+        ];
+        let mut builder = Builder::new(true, thresholds);
+        for print in prints {
+            builder.push(print, &mut hours);
+        }
+        let book = builder.finish(&mut hours);
+        let sizes: Vec<(u64, bool, u32)> = book.orders.iter().map(|o| (o.order.size, o.regular, o.session)).collect();
+        assert_eq!(sizes, vec![(30, false, 0), (60, true, 0), (25, false, 1)]);
+        assert_eq!(book.sessions[0], SessionLargest { key: 0, all: 60, regular: 60, extended: 30 });
+        assert_eq!(book.largest_for(&book.orders[0], true), 30);
+        assert_eq!(book.largest_for(&book.orders[0], false), 60);
+        assert_eq!(book.within(10 * S, 106 * S).len(), 2);
+        assert_eq!(book.within(0, 5 * S).len(), 0, "to is not included");
+        assert_eq!(Book::largest_in(book.within(0, 200 * S)), 60);
+    }
+
+    #[test]
+    fn a_book_as_it_stands_shows_the_open_order_without_closing_it() {
+        let thresholds = Thresholds { regular: 10, extended: 10 };
+        let mut builder = Builder::new(true, thresholds);
+        builder.push(p(S, 100, 8, Aggressor::Buy), &mut hours);
+        assert!(builder.book(&mut hours).orders.is_empty());
+        builder.push(p(S, 101, 8, Aggressor::Buy), &mut hours);
+        assert_eq!(builder.book(&mut hours).orders.len(), 1, "the sweep so far counts");
+        builder.push(p(S, 102, 8, Aggressor::Buy), &mut hours);
+        let book = builder.finish(&mut hours);
+        assert_eq!(book.orders.iter().map(|o| o.order.size).collect::<Vec<_>>(), vec![24]);
     }
 }

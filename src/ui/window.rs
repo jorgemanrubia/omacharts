@@ -4201,6 +4201,10 @@ struct Feed {
     /// Its volume at price, for a feed whose provider has ladders. `None`
     /// for every other, which then pays nothing: no thread, no query.
     at_price: Option<Rc<AtPrice>>,
+    /// Its large orders, for a feed with single trades: a thread and a
+    /// queue of their own, apart from the ladders', so a slow history of
+    /// trades holds up no bar and no ladder.
+    large_orders: Option<Rc<crate::large_orders::LargeOrders>>,
     /// Can it be charted from with what is saved? Read from disk when the
     /// list is built and when a sign-in or sign-out finishes, never by
     /// connecting. A feed that cannot is passed over by [`Window::route`].
@@ -4229,11 +4233,14 @@ impl Feed {
             .is_some()
             .then(|| Rc::new(Live::new(provider.clone(), store.path().map(Path::to_path_buf))));
         let at_price = AtPrice::new(provider.clone(), store.path().map(Path::to_path_buf)).map(Rc::new);
+        let large_orders =
+            crate::large_orders::LargeOrders::new(provider.clone(), store.path().map(Path::to_path_buf)).map(Rc::new);
         let feed = Feed {
             provider,
             loader,
             live,
             at_price,
+            large_orders,
             usable: Cell::new(true),
             unusable_because: Cell::new(""),
             backfill_quiet_until: Cell::new(None),
@@ -5949,6 +5956,7 @@ impl Window {
         let keeper = self.clone();
         pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
         pane.view.set_volume_at_price(Some(self.volume_at_price_for(&pane)));
+        pane.view.set_large_orders(Some(Self::large_orders_for(&pane)));
         // What the hand did to the orders and the position on it, which the
         // window sends, never the chart.
         let trader = self.clone();
@@ -10133,12 +10141,20 @@ impl Window {
             .at_price
             .as_ref()
             .filter(|at_price| at_price.serves(&symbol, &instrument))
-            .map(|at_price| LadderSource { at_price: at_price.clone(), key: key.clone(), symbol: symbol.clone() });
+            .map(|at_price| LadderSource {
+                at_price: at_price.clone(),
+                large_orders: feed.large_orders.clone().filter(|large| large.serves(&symbol, &instrument)),
+                key: key.clone(),
+                symbol: symbol.clone(),
+            });
         let was = pane.ladders.replace(source);
         if let Some(was) = was
             && pane.ladders.borrow().as_ref().is_none_or(|now| now.key != was.key)
         {
             was.at_price.unwatch(pane.id);
+            if let Some(large) = &was.large_orders {
+                large.unwatch(pane.id);
+            }
         }
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
@@ -10945,6 +10961,19 @@ impl Window {
         })
     }
 
+    /// Where chart `pane`'s large orders indicators read their books: from
+    /// its feed's, for whatever contract it shows now.
+    fn large_orders_for(pane: &Rc<ChartPane>) -> crate::ui::chart::LargeOrderBooks {
+        let pane = Rc::downgrade(pane);
+        Rc::new(move |regular, extended, combine| {
+            let pane = pane.upgrade()?;
+            let source = pane.ladders.borrow();
+            let source = source.as_ref()?;
+            let large = source.large_orders.as_ref()?;
+            large.book(&source.key, crate::large_orders::Settings { regular, extended, combine })
+        })
+    }
+
     /// [`Self::drawn_indicators`]'s computation, on the context it made.
     #[allow(clippy::too_many_arguments)]
     fn compute_drawn(
@@ -11008,6 +11037,7 @@ impl Window {
         // to the bars.
         let source = pane.ladders.borrow().clone();
         let Some(source) = source else { return compute(&context) };
+        self.want_large_orders(pane, &source, instrument, bars, all);
         // A volume profile drawing reads them as the study does.
         if !all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) && !pane.view.has_profile_drawing() {
             source.at_price.unwatch(pane.id);
@@ -11085,6 +11115,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 self.wire_at_price(at_price.clone());
             }
+            if let Some(large) = &feed.large_orders {
+                self.wire_large_orders(large.clone());
+            }
         }
     }
 
@@ -11154,6 +11187,62 @@ impl Window {
                 this.recompute_panes(&panes);
             }
         });
+    }
+
+    /// The same for a feed's large orders: a book built is swapped in and
+    /// only the charts drawing it are drawn again, once however many came
+    /// back together. Nothing is worked out again.
+    fn wire_large_orders(self: &Rc<Self>, large: Rc<crate::large_orders::LargeOrders>) {
+        let this = Rc::downgrade(self);
+        let done = large.done();
+        glib::spawn_future_local(async move {
+            while let Ok(first) = done.recv().await {
+                let mut panes = large.finished(first);
+                while let Ok(more) = done.try_recv() {
+                    panes.extend(large.finished(more));
+                }
+                let Some(this) = this.upgrade() else { return };
+                panes.sort_unstable();
+                panes.dedup();
+                for id in panes {
+                    if let Some(pane) = this.pane(id) {
+                        pane.view.large_orders_changed();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Chart `pane`'s large orders indicators, asked of its feed: only once
+    /// its bars are drawn and its ladders have come, so the trades are never
+    /// in their way. The chart is worked out again when the ladders come,
+    /// and asks then.
+    fn want_large_orders(
+        &self,
+        pane: &Rc<ChartPane>,
+        source: &LadderSource,
+        instrument: &Instrument,
+        bars: &[omacharts_engine::Bar],
+        all: &[Indicator],
+    ) {
+        let Some(large) = &source.large_orders else { return };
+        let settings: Vec<crate::large_orders::Settings> = all
+            .iter()
+            .filter(|indicator| indicator.visible)
+            .filter_map(|indicator| match indicator.params {
+                omacharts_engine::Params::LargeOrders { regular, extended, combine, .. } => {
+                    Some(crate::large_orders::Settings { regular, extended, combine })
+                }
+                _ => None,
+            })
+            .collect();
+        let (Some(settings), Some(first)) = (settings.first(), bars.first()) else {
+            large.unwatch(pane.id);
+            return;
+        };
+        let waiting = source.at_price.loading(&source.key) || !source.at_price.watches(pane.id);
+        let stored = source.at_price.stored_for(&source.key, &source.symbol);
+        large.want(pane.id, &source.key, &stored, &source.symbol, instrument, first.ts, *settings, waiting);
     }
 
     /// Work out the indicators of the charts `ids` again, over the bars
@@ -11681,6 +11770,7 @@ impl Window {
         let mut receivers = Vec::new();
         let mut lives = Vec::new();
         let mut at_prices = Vec::new();
+        let mut larges = Vec::new();
         let feeds: Vec<Rc<Feed>> = providers
             .into_iter()
             .map(|provider| {
@@ -11693,6 +11783,7 @@ impl Window {
                 receivers.push((Rc::downgrade(&feed), receiver));
                 lives.extend(feed.live.clone());
                 at_prices.extend(feed.at_price.clone());
+                larges.extend(feed.large_orders.clone());
                 feed
             })
             .collect();
@@ -11711,6 +11802,9 @@ impl Window {
         }
         for at_price in at_prices {
             self.wire_at_price(at_price);
+        }
+        for large in larges {
+            self.wire_large_orders(large);
         }
         self.wire_refresh();
     }
@@ -11843,6 +11937,9 @@ impl Window {
         if let Some(at_price) = &feed.at_price {
             at_price.shutdown();
         }
+        if let Some(large) = &feed.large_orders {
+            large.shutdown();
+        }
         feed.loader.drop_prefetches();
         feed.loader.drop_backfill();
         // Whatever the provider holds beyond its value: a connection, a
@@ -11892,6 +11989,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 let touched = at_price.drain();
                 self.recompute_panes(&touched);
+            }
+            if let Some(large) = &feed.large_orders {
+                large.tick();
             }
             let Some(live) = &feed.live else { continue };
             let drained = live.drain();
@@ -12064,6 +12164,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch(id);
             }
+            if let Some(large) = &feed.large_orders {
+                large.unwatch(id);
+            }
         }
     }
 
@@ -12082,6 +12185,9 @@ impl Window {
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch(id);
             }
+            if let Some(large) = &feed.large_orders {
+                large.unwatch(id);
+            }
         }
     }
 
@@ -12096,6 +12202,9 @@ impl Window {
             pane.ladders.borrow_mut().take();
         }
         for feed in self.feeds() {
+            if let Some(large) = &feed.large_orders {
+                large.unwatch_all();
+            }
             if let Some(at_price) = &feed.at_price {
                 at_price.unwatch_all();
                 // On idle, as a series is: the next chartbook's charts take

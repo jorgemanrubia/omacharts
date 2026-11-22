@@ -249,6 +249,12 @@ impl AtPrice {
         }
     }
 
+    /// What `key`'s data is kept under: a root that rolls keeps each month
+    /// apart.
+    pub fn stored_for(&self, key: &str, symbol: &str) -> String {
+        stored_key(key, symbol, self.provider.ladders().and_then(|ladders| ladders.contract(symbol)))
+    }
+
     /// Chart `pane` shows `key` (`symbol` to the provider) from `from` on,
     /// and one of its indicators wants its ladders. The first chart of a
     /// contract loads it and opens its live feed; a chart reaching further

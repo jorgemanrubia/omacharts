@@ -20,6 +20,7 @@ use std::sync::{Mutex, RwLock};
 
 use crate::bars::{Bar, Timeframe};
 use crate::ladders::{to_price, to_tick, Minute, Side};
+use crate::studies::orders::{Aggressor, Print};
 use crate::provider::{
     Capability, LadderSink, Ladders, Provider, ProviderError, Stream, Subscription,
 };
@@ -124,6 +125,28 @@ impl Ladders for Fake {
     fn watch(&self, _: &str, _: f64, _: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
         Ok(Box::new(Watching))
     }
+
+    fn has_prints(&self, _: &str) -> bool {
+        true
+    }
+
+    /// The trades [`trades_of`] invents for each synthetic minute of the
+    /// span, the same every time.
+    fn prints(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Print>, ProviderError> {
+        let bars = self.bars.bars(symbol, Timeframe::minutes(1), Some(from))?;
+        let mut out = Vec::new();
+        for bar in bars.iter().filter(|bar| (from..to).contains(&bar.ts)) {
+            trades_of(symbol, bar, tick_size, |ts, tick, size, side| {
+                let side = match side {
+                    Side::Buy => Aggressor::Buy,
+                    Side::Sell => Aggressor::Sell,
+                    Side::Unknown => Aggressor::Unknown,
+                };
+                out.push(Print::new(ts, tick, size, side, false));
+            });
+        }
+        Ok(out)
+    }
 }
 
 /// A synthetic minute bar as a minute with its ladder: the trades
@@ -178,7 +201,7 @@ pub fn trades_of(symbol: &str, bar: &Bar, tick_size: f64, mut each: impl FnMut(i
                 std::cmp::Ordering::Equal => Side::Sell,
             };
             last = tick;
-            let size = if next(1_500) == 0 { 60 + next(340) } else { 1 + next(12) + next(12) * next(3) };
+            let size = if next(1_500) == 0 { 60 + next(340) } else { 1 + next(6) + next(6) * next(2) };
             if next(30) == 0 {
                 // A sweep: one order through several prices at one moment.
                 let fills = 2 + next(3) as i32;

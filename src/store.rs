@@ -23,6 +23,7 @@ use omacharts_engine::{Bar, Configurations, Drawing, Indicator, Theme, Timeframe
 pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
 
 mod ladders;
+pub mod prints;
 pub(crate) use ladders::forget_day as forget_ladder_day;
 
 use crate::migrations;

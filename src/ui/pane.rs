@@ -25,6 +25,8 @@ use crate::ui::shortcuts;
 #[derive(Clone)]
 pub struct LadderSource {
     pub at_price: Rc<crate::at_price::AtPrice>,
+    /// Its large orders, for a feed with single trades.
+    pub large_orders: Option<Rc<crate::large_orders::LargeOrders>>,
     /// The cache key, `provider:symbol`.
     pub key: String,
     pub symbol: String,

@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::ladders::{to_tick, Forming, Minute, Side};
+use crate::studies::orders::{Aggressor, Print};
 use crate::provider::{LadderSink, LadderUpdate, Ladders, ProviderError, Subscription};
 
 use super::{mapped, multiplier, not_set_up, opened, read_failed, stem_for, Sierra};
@@ -38,6 +39,35 @@ fn prints(record: &sierra::Record, multiplier: f64, tick_size: f64) -> Option<Pr
     let (bid, ask, all) = (u64::from(record.bid_volume), u64::from(record.ask_volume), u64::from(record.volume));
     let unknown = all.saturating_sub(bid + ask);
     Some((tick, price, [(bid, Side::Sell), (ask, Side::Buy), (unknown, Side::Unknown)]))
+}
+
+/// The single trades of `records`, oldest first. A record carries what
+/// traded at the bid and at the ask; a record with both is two prints of
+/// one moment, one a side. The pieces of a trade Sierra Chart split are
+/// marked, the first as such and the rest as continuing it, up to the one
+/// marked last, so combining folds them back into the order they were.
+pub(super) fn trades_in(records: &[sierra::Record], multiplier: f64, tick_size: f64) -> Vec<Print> {
+    let mut out = Vec::with_capacity(records.len());
+    let mut unbundled = false;
+    for record in records {
+        let Some((tick, _, sides)) = prints(record, multiplier, tick_size) else { continue };
+        let first = record.is_first_sub_trade();
+        let continues = unbundled && !first;
+        unbundled = first || (unbundled && !record.is_last_sub_trade());
+        let ts = record.unix_micros().saturating_mul(1_000);
+        for (size, side) in sides {
+            if size == 0 {
+                continue;
+            }
+            let side = match side {
+                Side::Buy => Aggressor::Buy,
+                Side::Sell => Aggressor::Sell,
+                Side::Unknown => Aggressor::Unknown,
+            };
+            out.push(Print::new(ts, tick, size, side, continues));
+        }
+    }
+    out
 }
 
 /// The minutes of `records` after records up to `latest`, oldest first, in
@@ -213,6 +243,20 @@ impl Ladders for Sierra {
         Ok(minutes_in(scid.between(from, to), multiplier(&opened, &stem), tick_size))
     }
 
+    /// Every record of a tick file is one trade.
+    fn has_prints(&self, symbol: &str) -> bool {
+        self.serves(symbol)
+    }
+
+    fn prints(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Print>, ProviderError> {
+        let opened = opened().ok_or_else(not_set_up)?;
+        let stem = stem_for(&opened, symbol).ok_or(ProviderError::NotFound)?;
+        let path = opened.scid_path(&stem).ok_or(ProviderError::NotFound)?;
+        let scid = mapped(&path)?;
+        let scid = scid.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(trades_in(scid.between(from, to), multiplier(&opened, &stem), tick_size))
+    }
+
     fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
         let stop = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(Mutex::new(None));
@@ -236,6 +280,26 @@ impl Ladders for Sierra {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each record is a print a side, at its own moment, and the pieces of
+    /// a trade Sierra Chart split continue the first of them, up to the
+    /// last; a trade after them starts afresh.
+    #[test]
+    fn single_trades_come_from_the_records_and_their_sub_trade_marks() {
+        let mut split = [trade(1, 100.0, 5, true), trade(1, 100.25, 7, true), trade(1, 100.5, 3, true), trade(2, 100.5, 4, false)];
+        split[0].open = sierra::FIRST_SUB_TRADE_OF_UNBUNDLED_TRADE;
+        split[2].open = sierra::LAST_SUB_TRADE_OF_UNBUNDLED_TRADE;
+        let prints = trades_in(&split, 1.0, 0.25);
+        let seen: Vec<(i32, u64, Aggressor, bool)> = prints.iter().map(|p| (p.tick, p.size(), p.side(), p.continues())).collect();
+        assert_eq!(
+            seen,
+            vec![(400, 5, Aggressor::Buy, false), (401, 7, Aggressor::Buy, true), (402, 3, Aggressor::Buy, true), (402, 4, Aggressor::Sell, false)]
+        );
+        let mut combiner = crate::studies::orders::Combiner::new(true);
+        let mut orders: Vec<u64> = prints.iter().filter_map(|p| combiner.push(*p)).map(|o| o.size).collect();
+        orders.extend(combiner.flush().map(|o| o.size));
+        assert_eq!(orders, vec![15, 4], "the split trade is one order again");
+    }
 
     fn trade(seconds: i64, price: f32, size: u32, at_ask: bool) -> sierra::Record {
         let micros = seconds * 1_000_000;
