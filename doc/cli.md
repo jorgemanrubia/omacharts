@@ -108,6 +108,15 @@ the screen either way.
 
 ## Indicators and their parameters
 
+`chart indicator kinds` lists every indicator kind with the flags that set
+it; with `--json`, `{kinds: [{kind, name, category, needs, ownPane, flags,
+defaults}]}`, `needs` being `bars` or `volume at price` and `defaults` its
+settings as `indicator list --json` writes them. `surface --json` carries the
+same list as `indicators`, and each flag of `chart indicator` and `template
+indicator` says the kinds it sets in `appliesTo`. Both are worked out from
+what the command takes, so they cannot disagree with it. A flag given to a
+kind it does not set is refused (exit `2`) naming the kinds it is for.
+
 Every indicator the app has, with every parameter it exposes:
 
 | Indicator | Parameters |

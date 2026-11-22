@@ -514,7 +514,7 @@ pub const COLOUR: &str =
 /// first two: one list, so the two verbs cannot come to accept different
 /// flags for the same parameter. The chartbook and the chart come first so a
 /// template's verb can leave them off — it has no chart to name.
-const INDICATOR_FLAGS: &[Flag] = &[
+pub const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
     Flag::valued("chart", "CHART", CHART_SELECTOR),
     Flag::valued("id", "N", "which one, from `indicator list`: remove and set then need no KIND; `selected` for the one selected in the window"),
@@ -1268,7 +1268,7 @@ pub const SURFACE: &[Noun] = &[
                 name: "indicator",
                 about: "Add, remove, list or reconfigure a chart's indicators",
                 args: &[
-                    Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
+                    Arg::req("ACTION", "what to do; kinds lists every kind there is, with the flags that set it and its defaults").of(&["list", "add", "remove", "set", "kinds"]),
                     Arg::opt("KIND", "the indicator: for add, and for remove and set without --id").of(KINDS),
                 ],
                 flags: INDICATOR_FLAGS,
@@ -1532,7 +1532,7 @@ pub const SURFACE: &[Noun] = &[
                 about: "Add, remove, list or reconfigure a chart template's indicators; \
                         every chart using it follows",
                 args: &[
-                    Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
+                    Arg::req("ACTION", "what to do; kinds lists every kind there is, with the flags that set it and its defaults").of(&["list", "add", "remove", "set", "kinds"]),
                     Arg::req("TEMPLATE", TEMPLATE_SELECTOR),
                     Arg::opt("KIND", "the indicator: for add, and for remove and set without --id").of(KINDS),
                 ],

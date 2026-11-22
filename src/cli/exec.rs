@@ -115,6 +115,9 @@ pub fn dispatch(
     }
 
     let result = match (noun, verb) {
+        ("chart" | "template", "indicator") if arg(m, "ACTION").is_some_and(|action| action == "kinds") => {
+            Ok(indicator_kinds(json))
+        }
         ("symbol", "search") => symbol_search(store, m, json, live),
         ("symbol", "show") => symbol_show(store, m, json, live),
         ("symbol", "refresh") => symbol_refresh(json),
@@ -2662,7 +2665,8 @@ fn chart_indicator(
     {
         let mut list: Vec<Value> =
             template.indicators.iter().map(to_value).collect::<Result<_, _>>()?;
-        let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart's template")?;
+        let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart's template")
+            .map_err(|why| refused_on(why, kind, &given_settings(m)))?;
         let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
             .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
         crate::templates::set_indicators(store, template.id, indicators.clone());
@@ -2697,7 +2701,8 @@ fn chart_indicator(
     let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
         Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
     })?;
-    let text = edit_indicators(wanted, action, kind, &edits, indicators, "this chart")?;
+    let text = edit_indicators(wanted, action, kind, &edits, indicators, "this chart")
+        .map_err(|why| refused_on(why, kind, &given_settings(m)))?;
 
     workspace.save(store);
 
@@ -2994,6 +2999,164 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+/// Flags of the `indicator` verbs that say which chart or indicator, or
+/// what to list, rather than change a setting.
+const NOT_SETTINGS: &[&str] = &["book", "chart", "id", "selected"];
+
+/// A value `flag` takes, to try it on an indicator with.
+fn sample(flag: &super::spec::Flag) -> String {
+    if flag.long == "add-range" {
+        return "london".into();
+    }
+    if let Some(first) = flag.values.first() {
+        return first.to_string();
+    }
+    match (flag.long, flag.value.unwrap_or("")) {
+        ("overbought", _) => "80".into(),
+        ("anchor", _) => "session".into(),
+        ("bands", _) => "1,2".into(),
+        ("add-range", _) => "09:30-16:00".into(),
+        ("remove-range" | "range", _) => "1".into(),
+        ("from", _) => "09:30".into(),
+        ("to", _) => "16:00".into(),
+        ("zone", _) => "UTC".into(),
+        ("rows" | "row-ticks", _) => "4".into(),
+        ("tpo-minutes", _) => "30".into(),
+        ("fast", _) => "3".into(),
+        ("slow", _) => "40".into(),
+        (_, "N") => "5".into(),
+        (_, "F") => "0.5".into(),
+        (_, "COLOUR") => "#ff0000".into(),
+        (_, "BOOL") => "on".into(),
+        (_, "STYLE") => "dashed".into(),
+        (_, "TEXT") => "Lunch".into(),
+        _ => "1".into(),
+    }
+}
+
+/// Whether `flag` is a setting of `kind`: given with a value it takes, to
+/// an indicator of that kind at its defaults, it is taken rather than
+/// refused, by the same code `chart indicator set` runs.
+fn takes(parser: &mut clap::Command, flag: &super::spec::Flag, kind: IndicatorKind) -> bool {
+    let mut line: Vec<String> = ["omacharts", "chart", "indicator", "set", kind.key()].map(String::from).to_vec();
+    line.push(format!("--{}", flag.long));
+    if flag.value.is_some() {
+        line.push(sample(flag));
+    }
+    // A range for a session times' range flags to change.
+    if matches!(flag.long, "from" | "to" | "name" | "zone") {
+        line.extend(["--add-range".into(), "london".into()]);
+    }
+    let Ok(m) = parser.try_get_matches_from_mut(&line) else { return false };
+    let Some(m) = m.subcommand_matches("chart").and_then(|m| m.subcommand_matches("indicator")) else { return false };
+    let Ok(mut edits) = Edits::read(m) else { return false };
+    if edits.touches_colours() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next();
+        let Some(theme) = theme else { return false };
+        let scheme = omacharts_engine::BarColouring::default().scheme(&theme);
+        edits.look = Some(ColourLook { theme, house: Default::default(), swapped: false, scheme });
+    }
+    let Ok(mut stored) = serde_json::to_value(Indicator::new(1, kind)) else { return false };
+    edits.apply(&mut stored, kind).is_ok()
+}
+
+/// Every flag of the `indicator` verbs that changes a setting, with the
+/// kinds it is a setting of, worked out once by [`takes`]: so what this
+/// says a flag applies to is what the command does, and cannot drift.
+pub(super) fn indicator_flag_kinds() -> &'static [(&'static str, Vec<IndicatorKind>)] {
+    static TABLE: std::sync::OnceLock<Vec<(&'static str, Vec<IndicatorKind>)>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut parser = parser::command_for(&["omacharts".into(), "chart".into()]);
+        super::spec::INDICATOR_FLAGS
+            .iter()
+            .filter(|flag| !NOT_SETTINGS.contains(&flag.long))
+            .map(|flag| (flag.long, IndicatorKind::ALL.into_iter().filter(|kind| takes(&mut parser, flag, *kind)).collect()))
+            .collect()
+    })
+}
+
+/// Every indicator kind, as `chart indicator kinds --json` and `surface
+/// --json` give it: its key, name, category, what it needs, whether it has
+/// a pane of its own, the flags that set it, and its settings at their
+/// defaults as `indicator list --json` writes them.
+pub(super) fn indicator_kinds_json() -> Vec<Value> {
+    use omacharts_engine::indicators::Needs;
+    IndicatorKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let flags: Vec<&str> = indicator_flag_kinds()
+                .iter()
+                .filter(|(_, kinds)| kinds.contains(&kind))
+                .map(|(flag, _)| *flag)
+                .collect();
+            json!({
+                "kind": kind.key(),
+                "name": kind.name(),
+                "category": kind.category().label(),
+                "needs": match kind.needs() { Needs::Bars => "bars", Needs::VolumeAtPrice => "volume at price" },
+                "ownPane": kind.in_own_pane(),
+                "flags": flags,
+                "defaults": serde_json::to_value(Indicator::new(1, kind)).map(|stored| stored["params"].clone()).unwrap_or(Value::Null),
+            })
+        })
+        .collect()
+}
+
+/// `chart indicator kinds`: every kind there is.
+fn indicator_kinds(as_json: bool) -> String {
+    let kinds = indicator_kinds_json();
+    if as_json {
+        return format!("{}\n", json!({"kinds": kinds}));
+    }
+    let width = kinds.iter().filter_map(|kind| kind["kind"].as_str()).map(str::len).max().unwrap_or(0);
+    kinds
+        .iter()
+        .map(|kind| {
+            let needs = match kind["needs"].as_str() {
+                Some("bars") | None => String::new(),
+                Some(needs) => format!(", needs {needs}"),
+            };
+            let flags: Vec<String> =
+                kind["flags"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|flag| format!("--{flag}")).collect();
+            format!(
+                "{:width$}  {} ({}{needs})\n{:width$}  {}\n",
+                kind["kind"].as_str().unwrap_or(""),
+                kind["name"].as_str().unwrap_or(""),
+                kind["category"].as_str().unwrap_or(""),
+                "",
+                flags.join(" "),
+            )
+        })
+        .collect()
+}
+
+/// The setting flags given on an `indicator` command line.
+fn given_settings(m: &clap::ArgMatches) -> Vec<&'static str> {
+    super::spec::INDICATOR_FLAGS
+        .iter()
+        .map(|flag| flag.long)
+        .filter(|long| !NOT_SETTINGS.contains(long) && m.try_contains_id(long).unwrap_or(false) && m.value_source(long).is_some())
+        .collect()
+}
+
+/// A refusal of `flags` on `kind`, naming the kinds each one is a setting
+/// of, after `why`.
+fn refused_on(why: Fault, kind: IndicatorKind, given: &[&str]) -> Fault {
+    let mut extra = Vec::new();
+    for (flag, kinds) in indicator_flag_kinds() {
+        if given.contains(flag) && !kinds.contains(&kind) {
+            extra.push(match kinds.as_slice() {
+                [] => format!("--{flag} is a setting of no indicator alone"),
+                kinds => format!("--{flag} is for {}", kinds.iter().map(|kind| kind.key()).collect::<Vec<_>>().join(", ")),
+            });
+        }
+    }
+    match extra.is_empty() {
+        true => why,
+        false => Fault::new(why.code, format!("{}; {}", why.message, extra.join("; "))),
+    }
 }
 
 /// The indicator kind an `indicator` verb names.
@@ -7004,7 +7167,8 @@ fn template_indicator(
     if edits.touches_colours() {
         edits.look = Some(ColourLook::load(store));
     }
-    let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart template")?;
+    let text = edit_indicators(wanted, action, kind, &edits, &mut list, "this chart template")
+        .map_err(|why| refused_on(why, kind, &given_settings(m)))?;
     let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
         .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
     crate::templates::set_indicators(store, template.id, indicators.clone());
@@ -10523,6 +10687,43 @@ mod tests {
     /// it was spelled before, keep it painted as the chart paints its
     /// candles, and the four colourings are its own, Monochrome among them;
     /// a word that is no colouring is refused.
+    /// What `surface --json` and `chart indicator kinds` say a flag sets
+    /// is what the command takes: every setting flag is some kind's, and a
+    /// flag given to a kind it is not for is refused naming the kinds it is.
+    #[test]
+    fn every_indicator_flag_says_which_kinds_it_sets() {
+        for (flag, kinds) in indicator_flag_kinds() {
+            assert!(!kinds.is_empty(), "--{flag} sets no indicator: give `sample` a value it takes");
+        }
+        let kinds_of = |flag: &str| {
+            indicator_flag_kinds().iter().find(|(long, _)| *long == flag).map(|(_, kinds)| kinds.clone()).unwrap_or_default()
+        };
+        assert!(kinds_of("period").contains(&IndicatorKind::Sma) && !kinds_of("period").contains(&IndicatorKind::Volume));
+        assert_eq!(kinds_of("rth-threshold"), vec![IndicatorKind::LargeOrders]);
+
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add volume --book Macro --period 5", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE);
+        assert!(out.err.contains("--period is for sma, ema"), "{}", out.err);
+
+        let out = run("chart indicator kinds --json", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
+        let kinds = listed["kinds"].as_array().unwrap();
+        assert_eq!(kinds.len(), IndicatorKind::ALL.len());
+        let footprint = kinds.iter().find(|kind| kind["kind"] == "footprint").unwrap();
+        assert_eq!(footprint["needs"], "volume at price");
+        assert!(footprint["flags"].as_array().unwrap().iter().any(|flag| flag == "numbers"), "{footprint}");
+        assert_eq!(footprint["defaults"]["numbers"], true, "{footprint}");
+
+        let surface: serde_json::Value = serde_json::from_str(&super::super::parser::surface_json()).unwrap();
+        assert_eq!(surface["indicators"], listed["kinds"]);
+        let verb = surface["commands"].as_array().unwrap().iter().find(|verb| verb["command"] == "chart indicator").unwrap();
+        let period = verb["flags"].as_array().unwrap().iter().find(|flag| flag["name"] == "period").unwrap();
+        assert!(period["appliesTo"].as_array().unwrap().iter().any(|kind| kind == "stochastic"), "{period}");
+    }
+
     #[test]
     fn volume_takes_the_delta_profiles_colourings() {
         let store = bare();
