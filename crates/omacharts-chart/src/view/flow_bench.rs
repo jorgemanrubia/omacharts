@@ -53,7 +53,7 @@ impl FlowScene {
                 let step = (next(&mut walk) % 3) as i32 - 1;
                 price_tick += step;
                 let side = if step >= 0 { Side::Buy } else { Side::Sell };
-                let large = large_every > 0 && next(&mut walk) % large_every as u64 == 0;
+                let large = large_every > 0 && next(&mut walk).is_multiple_of(large_every as u64);
                 let size = if large { 60 + next(&mut walk) % 300 } else { 1 + next(&mut walk) % 8 };
                 minute.add_trade(price_tick, f64::from(price_tick) * TICK, size, side, 1);
                 if large {

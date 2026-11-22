@@ -238,7 +238,7 @@ fn trades(count: usize, from: i64, span: i64) -> Vec<Print> {
             seed ^= seed >> 7;
             seed ^= seed << 17;
             tick += (seed % 3) as i32 - 1;
-            let large = seed % 500 == 0;
+            let large = seed.is_multiple_of(500);
             let size = if large { 60 + seed % 300 } else { 1 + seed % 8 };
             let side = if seed & 8 == 0 { Aggressor::Buy } else { Aggressor::Sell };
             let at = started + (n as i64) * (span * 1_000_000_000 / count as i64);

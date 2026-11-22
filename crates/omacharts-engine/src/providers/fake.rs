@@ -169,7 +169,7 @@ fn minute_of(symbol: &str, bar: &Bar, tick_size: f64) -> Option<Minute> {
 /// sweep of two to four prints at one moment on one side, and one in a
 /// thousand five hundred an order many times the usual size.
 pub fn trades_of(symbol: &str, bar: &Bar, tick_size: f64, mut each: impl FnMut(i64, i32, u64, Side)) {
-    if !(tick_size > 0.0) || !bar.open.is_finite() || !bar.close.is_finite() {
+    if tick_size.is_nan() || tick_size <= 0.0 || !bar.open.is_finite() || !bar.close.is_finite() {
         return;
     }
     let mut state = symbol.bytes().fold(bar.ts as u64 ^ 0x9e37_79b9_7f4a_7c15, |h, b| {

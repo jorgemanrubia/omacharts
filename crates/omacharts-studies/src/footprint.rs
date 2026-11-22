@@ -48,7 +48,7 @@ const STEPS: [u32; 15] = [1, 2, 4, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 
 /// The fewest ticks a row may hold and still be `least` pixels tall, when a
 /// tick is `tick_px` pixels: one of 1, 2, 4, 5, 10, 20, 25, 50 and on.
 pub fn ticks_per_row(tick_px: f64, least: f64) -> u32 {
-    if !(tick_px > 0.0) {
+    if tick_px.is_nan() || tick_px <= 0.0 {
         return *STEPS.last().unwrap_or(&1);
     }
     STEPS.into_iter().find(|step| f64::from(*step) * tick_px >= least).unwrap_or(*STEPS.last().unwrap_or(&1))

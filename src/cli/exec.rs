@@ -5319,10 +5319,11 @@ impl Edits {
                 false => return Err(refuse("combining of prints")),
             }
         }
-        if flow && params["inks"].as_object().is_some_and(|inks| inks.is_empty()) {
-            if let Some(params) = params.as_object_mut() {
-                params.remove("inks");
-            }
+        if flow
+            && params["inks"].as_object().is_some_and(|inks| inks.is_empty())
+            && let Some(params) = params.as_object_mut()
+        {
+            params.remove("inks");
         }
         Ok(())
     }
