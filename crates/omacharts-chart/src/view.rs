@@ -999,6 +999,8 @@ impl<'a> Columns<'a> {
             bar_px: self.bar_px,
             start: self.start,
             end: self.end,
+            live: self.live,
+            margin_end: self.margin_end,
             slice: self.slice,
             per: self.per,
             groups: self.groups.clone(),

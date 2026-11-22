@@ -25,7 +25,7 @@ state:
 capture: bin/headless-window cli chart screenshot --output /tmp/footprint.png; magick /tmp/footprint.png -quality 88 site/assets/manual/indicators/footprint.jpg
 crop: none
 -->
-{% include figure.html src="/assets/manual/indicators/footprint.jpg" alt="ES one-minute bars zoomed in, each a narrow hollow candle beside rows of buying minus selling at each price, with the number written by each row" caption="A footprint on ES 1m, zoomed in, on the synthetic feed." %}
+{% include figure.html src="/assets/manual/indicators/footprint.jpg" alt="ES one-minute bars zoomed in, each a narrow candle beside a stack of thin rows of buying minus selling, one a price, each boxed in its colour with its number inside at its left" caption="A footprint on ES 1m, zoomed in, on the synthetic feed." %}
 
 ## Settings
 

@@ -395,9 +395,23 @@ fn paint(
             false => strong,
         }
     };
-    let length = |delta: i64, room: f64| match largest {
+    let bar_length = |delta: i64, room: f64| match largest {
         0 => 0.0,
         largest => (room * delta.unsigned_abs() as f64 / largest as f64).max(1.0),
+    };
+    // A row is drawn at least as long as its figure, so the figure sits
+    // inside its box however small the delta: a box round each number, the
+    // bar running on past it as the delta is big.
+    let written = numbers && row_h >= FIGURE_MIN;
+    let advance = figure_size(row_h) * 0.6;
+    let length = |delta: i64, room: f64| {
+        let long = bar_length(delta, room);
+        if !written {
+            return long;
+        }
+        let mut buf = [0u8; 12];
+        let text = rows::short(delta, &mut buf).len() as f64 * advance + 2.0 * INSIDE;
+        long.max(text.min(room)).round()
     };
 
     cr.save().ok();
@@ -497,7 +511,7 @@ fn figures(
 ) {
     const BATCH: usize = 256;
     let row_h = row_y(0).1 - row_y(0).0;
-    let size = (row_h * 0.75).clamp(8.0, FIGURE_SIZE);
+    let size = figure_size(row_h);
     cr.select_font_face(FACE, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(size);
     let Some(table) = glyphs(cr) else { return };
@@ -545,6 +559,11 @@ fn figures(
             let _ = cr.show_glyphs(&batch[..n]);
         }
     }
+}
+
+/// The figures' type size in a row `row_h` pixels tall.
+fn figure_size(row_h: f64) -> f64 {
+    (row_h * 0.75).clamp(8.0, FIGURE_SIZE)
 }
 
 /// The glyph of each of [`CHARS`], looked up once.
