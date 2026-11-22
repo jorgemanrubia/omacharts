@@ -11037,14 +11037,11 @@ impl Window {
         // to the bars.
         let source = pane.ladders.borrow().clone();
         let Some(source) = source else { return compute(&context) };
-        self.want_large_orders(pane, &source, instrument, bars, all);
         // A volume profile drawing reads them as the study does.
-        if !all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) && !pane.view.has_profile_drawing() {
-            source.at_price.unwatch(pane.id);
+        let ladders = all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) || pane.view.has_profile_drawing();
+        source.want(pane.id, instrument, bars, all, ladders);
+        if !ladders {
             return compute(&context);
-        }
-        if let Some(first) = bars.first() {
-            source.at_price.want(pane.id, &source.key, &source.symbol, instrument, first.ts);
         }
         // Ladders on their way are waited for: a profile drawn from the bars
         // now would be redrawn from them in a moment, rows and shape.
@@ -11211,39 +11208,6 @@ impl Window {
                 }
             }
         });
-    }
-
-    /// Chart `pane`'s large orders indicators, asked of its feed: only once
-    /// its bars are drawn and its ladders have come, so the trades are never
-    /// in their way. The chart is worked out again when the ladders come,
-    /// and asks then.
-    fn want_large_orders(
-        &self,
-        pane: &Rc<ChartPane>,
-        source: &LadderSource,
-        instrument: &Instrument,
-        bars: &[omacharts_engine::Bar],
-        all: &[Indicator],
-    ) {
-        let Some(large) = &source.large_orders else { return };
-        // Hidden ones too, as their ladders are kept: showing an indicator
-        // again only redraws the chart, and asks nothing.
-        let settings: Vec<crate::large_orders::Settings> = all
-            .iter()
-            .filter_map(|indicator| match indicator.params {
-                omacharts_engine::Params::LargeOrders { regular, extended, combine, .. } => {
-                    Some(crate::large_orders::Settings { regular, extended, combine })
-                }
-                _ => None,
-            })
-            .collect();
-        let (Some(settings), Some(first)) = (settings.first(), bars.first()) else {
-            large.unwatch(pane.id);
-            return;
-        };
-        let waiting = source.at_price.loading(&source.key) || !source.at_price.watches(pane.id);
-        let stored = source.at_price.stored_for(&source.key, &source.symbol);
-        large.want(pane.id, &source.key, &stored, &source.symbol, instrument, first.ts, *settings, waiting);
     }
 
     /// Work out the indicators of the charts `ids` again, over the bars

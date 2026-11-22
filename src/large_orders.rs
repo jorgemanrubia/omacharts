@@ -850,6 +850,47 @@ mod tests {
         assert!(book.orders.iter().any(|o| o.order.size == 10));
     }
 
+    /// `chart set` puts a new pane in the old one's place, over ladders
+    /// already held: nothing loads, so nothing works the chart out again,
+    /// and its first computation must ask for the trades itself.
+    #[test]
+    fn a_chart_put_back_over_held_ladders_gets_its_bubbles() {
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let path = scratch("put-back");
+        let provider: Arc<dyn Provider> = Arc::new(Fake(asked));
+        let at_price = std::rc::Rc::new(crate::at_price::AtPrice::new(provider.clone(), Some(path.clone())).unwrap());
+        at_price.set_clock(now);
+        let large = std::rc::Rc::new(LargeOrders::new(provider, Some(path)).unwrap());
+        large.set_clock(now);
+        let source = crate::ui::pane::LadderSource {
+            at_price: at_price.clone(),
+            large_orders: Some(large.clone()),
+            key: KEY.into(),
+            symbol: "ES".into(),
+        };
+        let bars = [Bar { ts: NOW - DAY, open: 1.0, high: 1.0, low: 1.0, close: 1.0, volume: 0.0 }];
+        let mut indicator = omacharts_engine::Indicator::new(1, omacharts_engine::indicators::Kind::LargeOrders);
+        if let omacharts_engine::Params::LargeOrders { regular, extended, combine, .. } = &mut indicator.params {
+            (*regular, *extended, *combine) = (SETTINGS.regular, SETTINGS.extended, SETTINGS.combine);
+        }
+        let all = [indicator];
+
+        source.want(1, &es(), &bars, &all, true);
+        let done = at_price.done().recv_blocking().expect("the ladders come");
+        at_price.finished(done);
+        source.want(1, &es(), &bars, &all, true);
+        assert_eq!(settle(&large), vec![1]);
+        let before = sizes(&large);
+        assert!(!before.is_empty());
+
+        large.unwatch(1);
+        source.want(2, &es(), &bars, &all, true);
+        assert_eq!(settle(&large), vec![2], "asked once, by its first computation");
+        assert_eq!(sizes(&large), before);
+        at_price.shutdown();
+        large.shutdown();
+    }
+
     #[test]
     fn hidden_and_shown_again_a_chart_gets_its_bubbles_back() {
         let asked = Arc::new(Mutex::new(Asked::default()));

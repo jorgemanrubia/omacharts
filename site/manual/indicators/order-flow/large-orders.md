@@ -22,6 +22,7 @@ state:
   omacharts chart set --resolution 1m
   omacharts chart indicator add large_orders
   (wait for the bubbles: the trades are read after the bars)
+  scroll 1000 450 -2 (zoom in to about 1h45m); scroll 700 889 0 (park the pointer on the tab bar, no crosshair)
 capture: bin/headless-window cli chart screenshot --output /tmp/large-orders.png; magick /tmp/large-orders.png -quality 88 site/assets/manual/indicators/large-orders.jpg
 crop: none
 -->
