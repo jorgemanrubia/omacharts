@@ -8613,36 +8613,14 @@ fn draw_pane(
     draw_axis_chips(cr, state, chips, plot_x + plot_w, top + height, width);
 }
 
-/// The bars of a cumulative delta a column stands for, as one: from the
-/// first one's open to the last one's close, as far as any went either way.
+/// The bars of a delta a column stands for, as one: see
+/// [`indicators::cvd::DeltaBar::spanning`] and
+/// [`indicators::cvd::DeltaBar::summed`].
 fn delta_column(bars: &[indicators::cvd::DeltaBar], per_bar: bool) -> Option<indicators::cvd::DeltaBar> {
-    if per_bar {
-        return bar_delta_column(bars);
+    match per_bar {
+        true => indicators::cvd::DeltaBar::summed(bars),
+        false => indicators::cvd::DeltaBar::spanning(bars),
     }
-    let (first, last) = (bars.first()?, bars.last()?);
-    let mut column = indicators::cvd::DeltaBar { close: last.close, starts: bars.iter().any(|b| b.starts), ..*first };
-    for bar in bars {
-        column.high = column.high.max(bar.high);
-        column.low = column.low.min(bar.low);
-    }
-    Some(column)
-}
-
-/// The bars of a volume delta a column stands for, as one: each starts
-/// from nought, so the column's runs on from one to the next, from nought
-/// to their sum, as far as it went either way on the way.
-fn bar_delta_column(bars: &[indicators::cvd::DeltaBar]) -> Option<indicators::cvd::DeltaBar> {
-    let first = bars.first()?;
-    let mut column = indicators::cvd::DeltaBar { open: 0.0, high: 0.0, low: 0.0, close: 0.0, ..*first };
-    let mut running = 0.0;
-    for bar in bars {
-        column.high = column.high.max(running + bar.high);
-        column.low = column.low.min(running + bar.low);
-        running += bar.close;
-        column.estimated |= bar.estimated;
-    }
-    column.close = running;
-    Some(column)
 }
 
 /// A cumulative delta's candles: rising ones in the up colour, falling ones

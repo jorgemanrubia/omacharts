@@ -73,19 +73,7 @@ impl Style {
 /// What the Reset every row says for a delta that never starts again.
 pub const NEVER: &str = "Never";
 
-/// One bar of the running delta.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct DeltaBar {
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    /// Estimated from the bar's direction rather than read from what
-    /// traded at the bid and the ask.
-    pub estimated: bool,
-    /// The first bar of its reset period, which starts from nought.
-    pub starts: bool,
-}
+pub use omacharts_studies::cvd::DeltaBar;
 
 /// Where a chart's volume at price comes from, for a delta read from it.
 pub struct Source<'a> {
@@ -140,13 +128,6 @@ impl Memos {
     pub fn keep(&self, ids: &[u32]) {
         self.0.borrow_mut().retain(|id, _| ids.contains(id));
     }
-}
-
-/// A bar's volume with the side its direction gives it: bought when it
-/// closed above its open, sold below, and for one that closed where it
-/// opened, the side of its close against `previous`, or nought.
-pub fn estimate(bar: &Bar, previous: Option<f64>) -> f64 {
-    omacharts_studies::cvd::estimate(bar, previous)
 }
 
 /// The running delta of `bars`, starting again at each `reset` period
@@ -217,42 +198,30 @@ fn run(
         if starts {
             running = 0.0;
         }
-        let open = running;
-        let read = source.and_then(|source| read(bar, open, timeframe, source));
-        let delta = match read {
-            Some(delta) => delta,
-            None => {
-                let close = open + estimate(bar, previous.map(|p| p.close));
-                DeltaBar { open, high: open.max(close), low: open.min(close), close, estimated: true, starts }
-            }
-        };
+        let mut delta = DeltaBar::opening(running, starts);
+        if !source.is_some_and(|source| read(bar, &mut delta, timeframe, source)) {
+            delta = DeltaBar::estimated(running, starts, bar, previous.map(|p| p.close));
+        }
         running = delta.close;
-        memo.out.push(DeltaBar { starts, ..delta });
+        memo.out.push(delta);
     }
     memo.out.clone()
 }
 
-/// One bar's running delta read from what traded at the bid and the ask,
-/// from `open` on, or `None` when the ladders cannot tell it whole.
-fn read(bar: &Bar, open: f64, timeframe: Timeframe, source: &Source) -> Option<DeltaBar> {
-    let (mut high, mut low, mut close) = (open, open, open);
+/// Move `delta` through `bar` by what traded at the bid and the ask;
+/// false when the ladders cannot tell it whole.
+fn read(bar: &Bar, delta: &mut DeltaBar, timeframe: Timeframe, source: &Source) -> bool {
     if timeframe.is_intraday() {
-        let whole = source.held.minute_deltas(bar.ts, bar.ts + timeframe.seconds(), |_, delta| {
-            close += delta as f64;
-            high = high.max(close);
-            low = low.min(close);
-        });
-        if !whole {
-            return None;
-        }
-    } else {
-        let end = timeframe.shift(bar.ts, 1);
-        let delta = source.held.days_delta(bar.ts.div_euclid(86_400), end.div_euclid(86_400), source.days)?;
-        close += delta as f64;
-        high = high.max(close);
-        low = low.min(close);
+        return source.held.minute_deltas(bar.ts, bar.ts + timeframe.seconds(), |_, minute| delta.add(minute as f64));
     }
-    Some(DeltaBar { open, high, low, close, estimated: false, starts: false })
+    let end = timeframe.shift(bar.ts, 1);
+    match source.held.days_delta(bar.ts.div_euclid(86_400), end.div_euclid(86_400), source.days) {
+        Some(day) => {
+            delta.add(day as f64);
+            true
+        }
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -270,20 +239,6 @@ mod tests {
 
     fn closes(out: &[DeltaBar]) -> Vec<f64> {
         out.iter().map(|b| b.close).collect()
-    }
-
-    /// A rising bar's volume is bought, a falling one's sold, and a bar that
-    /// closed where it opened takes the side its close moved from the close
-    /// before it, or none.
-    #[test]
-    fn an_estimate_takes_its_side_from_the_bars_direction() {
-        assert_eq!(estimate(&bar(0, 10.0, 11.0, 50.0), None), 50.0);
-        assert_eq!(estimate(&bar(0, 11.0, 10.0, 50.0), None), -50.0);
-        assert_eq!(estimate(&bar(0, 10.0, 10.0, 50.0), Some(9.0)), 50.0, "a doji above the close before");
-        assert_eq!(estimate(&bar(0, 10.0, 10.0, 50.0), Some(11.0)), -50.0, "below it");
-        assert_eq!(estimate(&bar(0, 10.0, 10.0, 50.0), Some(10.0)), 0.0, "unchanged either way");
-        assert_eq!(estimate(&bar(0, 10.0, 10.0, 50.0), None), 0.0, "nothing before it");
-        assert_eq!(estimate(&bar(0, 10.0, 11.0, f64::NAN), None), 0.0);
     }
 
     /// Estimated bars add up, start from nought at each period, and run on

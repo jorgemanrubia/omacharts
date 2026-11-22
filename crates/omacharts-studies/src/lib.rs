@@ -47,7 +47,7 @@ pub mod vwap;
 pub use at_price::{AtPrice, AtPriceStudy, DeltaReading, DevelopingProfile, ProfileReading, VolumeDelta};
 pub use average::{Ema, EmaOf, Sma};
 pub use bollinger::Bollinger;
-pub use cvd::{BarDeltaEstimate, CvdEstimate};
+pub use cvd::{BarDeltaEstimate, CvdEstimate, DeltaBar};
 pub use catalog::{Form, AT_PRICE, DEVELOPING, INDICATORS};
 pub use market_profile::DevelopingMarketProfile;
 pub use orders::{Aggressor, Combiner, Order, Print, Thresholds};
